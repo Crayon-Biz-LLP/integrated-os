@@ -63,7 +63,7 @@ export default async function handler(req, res) {
         }
 
         // 2. THINK
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
         const prompt = `
     ROLE: Chief of Staff for Danny (Executive Office).
