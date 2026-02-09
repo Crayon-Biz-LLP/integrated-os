@@ -6,6 +6,9 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANO
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 export default async function handler(req, res) {
+    // Timer for the 10s Vercel limit
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8500); // Trigger at 8.5s
     try {
         // --- 1.1 SECURITY GATEKEEPER ---
         // Verifies the trigger is authorized to prevent outside interference.
@@ -25,7 +28,7 @@ export default async function handler(req, res) {
         const { data: core } = await supabase.from('core_config').select('*');
         const { data: projects } = await supabase.from('projects').select('*');
         const { data: people } = await supabase.from('people').select('*'); // Added for network awareness.
-        const { data: active_tasks } = await supabase.from('tasks').select('id, title, project_id, priority').neq('status', 'done');
+        const { data: active_tasks } = await supabase.from('tasks').select('id, title, project_id, priority, created_at').neq('status', 'done');
 
         // --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         const now = new Date();
@@ -35,9 +38,10 @@ export default async function handler(req, res) {
         const day = istDate.getDay();
         const hour = istDate.getHours();
         const isWeekend = (day === 0 || day === 6);
+        const isMondayMorning = (day === 1 && hour < 11); // Detection for Monday re-entry
 
-        let briefing_mode = "";
-        let system_persona = "";
+        let briefing_mode = isWeekend ? "⚪ CHORES & 💡 IDEAS" : (hour < 11 ? "🔴 URGENT: CRITICAL ACTIONS" : "🟡 IMPORTANT");
+        let system_persona = isWeekend ? "Relaxed Father Mode" : "High-energy Battlefield Chief of Staff";
 
         if (isWeekend) {
             briefing_mode = "⚪ CHORES & 💡 IDEAS (Weekend Rest)";
@@ -71,7 +75,7 @@ export default async function handler(req, res) {
 
         // --- 1.5 SEASON EXPIRY LOGIC ---
         const seasonRow = core.find(c => c.key === 'current_season');
-        const seasonConfig = seasonRow?.content || '';
+        const seasonConfig = core.find(c => c.key === 'current_season')?.content || '';
         const expiryMatch = seasonConfig.match(/\[EXPIRY:\s*(\d{4}-\d{2}-\d{2})\]/);
 
         let system_context = "OPERATIONAL";
@@ -89,13 +93,12 @@ export default async function handler(req, res) {
         }).map(t => t.title);
 
         // 2. THINK
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // Upgraded for faster reasoning
-
         const prompt = `
     ROLE: Chief of Staff for Danny (Executive Office).
     STRATEGIC CONTEXT: ${seasonConfig}
     CURRENT PHASE: ${briefing_mode}
     SYSTEM_LOAD: ${isOverloaded ? 'OVERLOADED' : 'OPTIMAL'}
+    MONDAY_REENTRY: ${isMondayMorning ? 'TRUE' : 'FALSE'}
     STAGNANT_URGENT_TASKS: ${JSON.stringify(overdueTasks)}
     PERSONA GUIDELINE: ${system_persona}
     SYSTEM STATUS: ${system_context}
@@ -121,6 +124,7 @@ export default async function handler(req, res) {
        - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
        - SECTIONS: ✅ COMPLETED, 🛡️ WORK (Hide on weekends), 🏠 HOME, 💡 IDEAS (Only at night pulse).
        - TONE: Match the PERSONA GUIDELINE.
+    8. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.   
     
     OUTPUT JSON:
     {
@@ -132,10 +136,16 @@ export default async function handler(req, res) {
       "briefing": "The formatted text string for Telegram."
     }
     `;
-
-        const result = await model.generateContent(prompt);
-        const text = result.response.text().replace(/```json|```/g, '').trim();
-        const aiData = JSON.parse(text);
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Upgraded for faster reasoning
+        const aiCall = model.generateContent(prompt);
+        const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('AI_TIMEOUT')), 8500)
+        );
+        const result = await Promise.race([aiCall, timeoutPromise]);
+        clearTimeout(timeoutId);
+        const rawText = await result.response.text();
+        const textResponse = rawText.replace(/```json|```/g, '').trim();
+        const aiData = JSON.parse(textResponse);
 
         // 3. WRITE (Database Updates)
 
@@ -187,6 +197,9 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, briefing: aiData.briefing });
 
     } catch (error) {
+        if (error.message === 'AI_TIMEOUT') {
+            return res.status(200).json({ success: false, message: 'AI Timed out - keeping dumps for next run.' });
+        }
         console.error('Pulse Error:', error);
         return res.status(500).json({ error: error.message });
     }
