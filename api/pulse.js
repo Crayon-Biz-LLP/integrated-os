@@ -8,7 +8,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 export default async function handler(req, res) {
     // Timer for the 10s Vercel limit
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8500); // Trigger at 8.5s
+    const timeoutId = setTimeout(() => controller.abort(), 9000); // Trigger at 8.5s
     try {
         // --- 1.1 SECURITY GATEKEEPER ---
         // Verifies the trigger is authorized to prevent outside interference.
@@ -136,10 +136,10 @@ export default async function handler(req, res) {
       "briefing": "The formatted text string for Telegram."
     }
     `;
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // Upgraded for faster reasoning
+        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" }); // Upgraded for faster reasoning
         const aiCall = model.generateContent(prompt);
         const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('AI_TIMEOUT')), 8500)
+            setTimeout(() => reject(new Error('AI_TIMEOUT')), 9000)
         );
         const result = await Promise.race([aiCall, timeoutPromise]);
         clearTimeout(timeoutId);
