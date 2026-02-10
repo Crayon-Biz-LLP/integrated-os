@@ -24,11 +24,17 @@ export default async function handler(req, res) {
         if (!dumps || dumps.length === 0) {
             return res.status(200).json({ message: 'No new dumps. Silence is golden.' });
         }
+        const [coreRes, projectsRes, peopleRes, tasksRes] = await Promise.all([
+            supabase.from('core_config').select('*'),
+            supabase.from('projects').select('*'),
+            supabase.from('people').select('*'),
+            supabase.from('tasks').select('id, title, project_id, priority, created_at').neq('status', 'done')
+        ]);
 
-        const { data: core } = await supabase.from('core_config').select('*');
-        const { data: projects } = await supabase.from('projects').select('*');
-        const { data: people } = await supabase.from('people').select('*'); // Added for network awareness.
-        const { data: active_tasks } = await supabase.from('tasks').select('id, title, project_id, priority, created_at').neq('status', 'done');
+        const core = coreRes.data;
+        const projects = projectsRes.data;
+        const people = peopleRes.data;
+        const active_tasks = tasksRes.data;
 
         // --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         const now = new Date();
@@ -69,7 +75,8 @@ export default async function handler(req, res) {
         // --- 1.4 CONTEXT COMPRESSION ---
         // Strips metadata but keeps Project context for accurate completion matching.
         const compressedTasks = active_tasks.map(t => {
-            const pName = projects.find(p => p.id === t.project_id)?.name || "General";
+            const p = projects.find(proj => proj.id === t.project_id);
+            const pName = p ? p.name : "General"; // Fallback to "General"
             return `[${pName}] ${t.title} (${t.priority}) [ID:${t.id}]`;
         }).join(' | ');
 
@@ -104,11 +111,11 @@ export default async function handler(req, res) {
     SYSTEM STATUS: ${system_context}
     
     CONTEXT:
-    - IDENTITY: ${JSON.stringify(core)}
+    - IDENTITY: ${JSON.stringify(core.map(c => ({ key: c.key, val: c.content })))}
     - PROJECTS: ${JSON.stringify(projects.map(p => p.name))}
-    - PEOPLE: ${JSON.stringify(people?.map(p => p.name) || [])}
-    - CURRENT OPEN TASKS (COMPRESSED): ${compressedTasks}
-    - NEW INPUTS: ${JSON.stringify(dumps)}
+    - PEOPLE: ${JSON.stringify(people.map(p => ({ n: p.name, w: p.strategic_weight })))}
+    - OPEN TASKS: ${compressedTasks}
+    - NEW INPUT: ${JSON.stringify(dumps.map(d => d.content))}
     
     INSTRUCTIONS:
     1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects.
