@@ -159,6 +159,7 @@ export default async function handler(req, res) {
         console.log('🤖 Prompt ready, length:', prompt.length);
         console.log('🤖 Calling Gemini...');
 
+        let rawText = '';
         let aiData = {
             briefing: `⚠️ FALLBACK MODE\\n\\n${dumps.length} new inputs:\\n${newInputSummary.substring(0, 200)}`,
             new_tasks: [], logs: [], completed_task_ids: [], new_projects: [], new_people: []
@@ -182,6 +183,7 @@ export default async function handler(req, res) {
                 .trim();
             aiData = JSON.parse(textResponse);
             console.log('✅ AI parsed:', Object.keys(aiData));
+            rawText = await result.response.text();  // Now accessible in catch
 
         } catch (parseError) {
             console.error('💥 PARSE ERROR - Raw text:', rawText.substring(0, 300));
