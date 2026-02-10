@@ -73,11 +73,14 @@ export default async function handler(req, res) {
 
         // --- 1.4 CONTEXT COMPRESSION ---
         // Strips metadata but keeps Project context for accurate completion matching.
-        const compressedTasks = active_tasks.map(t => {
-            const p = projects.find(proj => proj.id === t.project_id);
-            const pName = p ? p.name : "General"; // Fallback to "General"
-            return `[${pName}] ${t.title} (${t.priority}) [ID:${t.id}]`;
-        }).join(' | ');
+        const compressedTasks = active_tasks.slice(0, 10).map(t => { /* ... */ }).join(' | ');  // Cap at 10
+
+        // Before prompt
+        const newInputSummary = dumps.slice(0, 5).map(d => d.content).join(' | ') || '';  // Limit raw dumps
+
+        // In prompt, use summaries
+        // - OPEN TASKS: ${compressedTasks.slice(0, 4000)}  // Hard char limit
+        // - NEW INPUT: ${newInputSummary}
 
         // --- 1.5 SEASON EXPIRY LOGIC ---
         const seasonRow = core.find(c => c.key === 'current_season');
@@ -143,6 +146,8 @@ export default async function handler(req, res) {
     }
     `;
         const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" }); // Upgraded for faster reasoning
+
+
         const aiCall = model.generateContent(prompt);
         const timeoutPromise = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('AI_TIMEOUT')), 9000)
@@ -150,7 +155,7 @@ export default async function handler(req, res) {
         const result = await Promise.race([aiCall, timeoutPromise]);
         clearTimeout(timeoutId);
         const rawText = await result.response.text();
-        const textResponse = rawText.replace(/```json|```/g, '').trim();
+        const textResponse = rawText.replace(/```json | ```/g, '').trim();
         const aiData = JSON.parse(textResponse);
 
         // 3. WRITE (Database Updates)
