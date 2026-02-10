@@ -103,6 +103,16 @@ export default async function handler(req, res) {
 
 
         // 2. THINK
+        console.log('🤖 Building prompt...');
+        console.log('📊 Data: dumps=', dumps.length, 'tasks=', active_tasks.length);
+
+        // FIXED CONTEXT (prevents bloat)
+        const coreSummary = JSON.stringify(core.map(c => ({ [c.key]: c.content })));
+        const projectsList = projects.map(p => p.name).join(', ');
+        const peopleSummary = JSON.stringify(people.map(p => ({ n: p.name, w: p.strategic_weight })));
+        const compressedTasksFinal = compressedTasks.slice(0, 3000);  // Hard limit
+        const newInputSummary = dumps.slice(0, 5).map(d => d.content).join(' | ');
+
         const prompt = `    
         ROLE: Chief of Staff for Danny (Executive Office).
         STRATEGIC CONTEXT: ${seasonConfig}
@@ -119,43 +129,60 @@ export default async function handler(req, res) {
         - CURRENT OPEN TASKS (COMPRESSED): ${compressedTasks}
         - NEW INPUTS: ${JSON.stringify(dumps)}
 
-    INSTRUCTIONS:
-    1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects.
-    2. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
-    3. CHECK FOR COMPLETION: Compare inputs against OPEN TASKS to identify IDs finished by Danny.
-    4. AUTO-ONBOARDING:
-        - If a new Client/Project is mentioned, add to "new_projects".
-        - If a new Person is mentioned, add to "new_people".
-    5. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
-    6. WEEKEND FILTER: If isWeekend is true (${isWeekend}), do NOT suggest or list Work tasks. Move work inputs to a 'Monday' reminder.
-    7. EXECUTIVE BRIEF FORMAT:
-    - HEADLINE RULE: Use exactly "${briefing_mode}".
-    - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
-    - SECTIONS: ✅ COMPLETED, 🛡️ WORK (Hide on weekends), 🏠 HOME, 💡 IDEAS (Only at night pulse).
-    - TONE: Match the PERSONA GUIDELINE.
-    8. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
+        INSTRUCTIONS:
+        1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects.
+        2. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
+        3. CHECK FOR COMPLETION: Compare inputs against OPEN TASKS to identify IDs finished by Danny.
+        4. AUTO-ONBOARDING:
+            - If a new Client/Project is mentioned, add to "new_projects".
+            - If a new Person is mentioned, add to "new_people".
+        5. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
+        6. WEEKEND FILTER: If isWeekend is true (${isWeekend}), do NOT suggest or list Work tasks. Move work inputs to a 'Monday' reminder.
+        7. EXECUTIVE BRIEF FORMAT:
+        - HEADLINE RULE: Use exactly "${briefing_mode}".
+        - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
+        - SECTIONS: ✅ COMPLETED, 🛡️ WORK (Hide on weekends), 🏠 HOME, 💡 IDEAS (Only at night pulse).
+        - TONE: Match the PERSONA GUIDELINE.
+        8. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
 
-    OUTPUT JSON:
-    {
-        "completed_task_ids": [],
-        "new_projects": [{ "name": "...", "importance": 8 }],
-        "new_people": [{ "name": "...", "role": "...", "strategic_weight": 9 }],
-        "new_tasks": [{ "title": "...", "project_name": "...", "priority": "urgent/important/chores", "est_min": 15 }],
-        "logs": [{ "entry_type": "IDEAS/OBSERVATION/JOURNAL", "content": "..." }],
-    "briefing": "The formatted text string for Telegram."
-    }
-`;
+        OUTPUT JSON:
+        {
+            "completed_task_ids": [],
+            "new_projects": [{ "name": "...", "importance": 8 }],
+            "new_people": [{ "name": "...", "role": "...", "strategic_weight": 9 }],
+            "new_tasks": [{ "title": "...", "project_name": "...", "priority": "urgent/important/chores", "est_min": 15 }],
+            "logs": [{ "entry_type": "IDEAS/OBSERVATION/JOURNAL", "content": "..." }],
+        "briefing": "The formatted text string for Telegram."
+        }
+    `;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" }); // Upgraded for faster reasoning
-        const aiCall = model.generateContent(prompt);
-        const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('AI_TIMEOUT')), 8500)
-        );
-        const result = await Promise.race([aiCall, timeoutPromise]);
-        clearTimeout(timeoutId);
-        const rawText = await result.response.text();
-        const textResponse = rawText.replace(/```json|```/g, '').trim();
-        const aiData = JSON.parse(textResponse);
+        console.log('🤖 Prompt ready, length:', prompt.length);
+        console.log('🤖 Calling Gemini...');
+
+        let aiData = {
+            briefing: `⚠️ FALLBACK MODE\\n\\n${dumps.length} new inputs:\\n${newInputSummary.substring(0, 200)}`,
+            new_tasks: [], logs: [], completed_task_ids: [], new_projects: [], new_people: []
+        };
+
+        try {
+            const model = genAI.getGenerativeModel({
+                model: "gemini-1.5-flash",  // STABLE [web:82]
+                generationConfig: { maxOutputTokens: 1500, temperature: 0.3 }
+            });
+
+            const result = await model.generateContent(prompt);
+            const rawText = await result.response.text();
+            console.log('🤖 Gemini response length:', rawText.length);
+
+            const textResponse = rawText.replace(/```json|```/g, '').trim();
+            aiData = JSON.parse(textResponse);
+            console.log('✅ AI parsed:', Object.keys(aiData));
+
+        } catch (aiError) {
+            console.error('💥 GEMINI ERROR:', aiError.message);
+        }
+
+        console.log('📝 Starting DB writes with:', Object.keys(aiData));
 
         // 3. WRITE (Database Updates)
 
