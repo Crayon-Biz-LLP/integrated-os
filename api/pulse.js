@@ -135,7 +135,7 @@ export default async function handler(req, res) {
     }
 `;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-3-flash" }); // Upgraded for faster reasoning
+        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" }); // Upgraded for faster reasoning
         const aiCall = model.generateContent(prompt);
         const timeoutPromise = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('AI_TIMEOUT')), 8500)
