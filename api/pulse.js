@@ -75,7 +75,7 @@ export default async function handler(req, res) {
 
         // --- 1.5 SEASON EXPIRY LOGIC ---
         const seasonRow = core.find(c => c.key === 'current_season');
-        const seasonConfig = core.find(c => c.key === 'current_season')?.content || '';
+        const seasonConfig = seasonRow?.content || ''; // One source of truth
         const expiryMatch = seasonConfig.match(/\[EXPIRY:\s*(\d{4}-\d{2}-\d{2})\]/);
 
         let system_context = "OPERATIONAL";
