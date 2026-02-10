@@ -197,10 +197,19 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, briefing: aiData.briefing });
 
     } catch (error) {
-        if (error.message === 'AI_TIMEOUT') {
-            return res.status(200).json({ success: false, message: 'AI Timed out - keeping dumps for next run.' });
-        }
         console.error('Pulse Error:', error);
+
+        // This is your new "Black Box" recorder
+        if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+            await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id: process.env.TELEGRAM_CHAT_ID,
+                    text: `🚨 PULSE CRASH DETECTED:\n\nError: ${error.message}\n\nDanny, check the logic around: ${error.stack.split('\n')[1]}`
+                })
+            });
+        }
         return res.status(500).json({ error: error.message });
     }
 }
