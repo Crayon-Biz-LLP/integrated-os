@@ -18,23 +18,22 @@ export default async function handler(req, res) {
         }
 
         // 1. READ
+        // 1. READ (Parallelized for Speed)
         const { data: dumps } = await supabase.from('raw_dumps').select('*').eq('is_processed', false);
+        if (!dumps || dumps.length === 0) return res.status(200).json({ message: 'Silence is golden.' });
 
-        // --- 🤫 SILENCE IS GOLDEN ---
-        if (!dumps || dumps.length === 0) {
-            return res.status(200).json({ message: 'No new dumps. Silence is golden.' });
-        }
+        // Fire all these requests simultaneously
         const [coreRes, projectsRes, peopleRes, tasksRes] = await Promise.all([
             supabase.from('core_config').select('*'),
             supabase.from('projects').select('*'),
             supabase.from('people').select('*'),
-            supabase.from('tasks').select('id, title, project_id, priority, created_at').neq('status', 'done')
+            supabase.from('tasks').select('id, title, project_id, priority, created_at').neq('status', 'done').limit(15)
         ]);
 
-        const core = coreRes.data;
-        const projects = projectsRes.data;
-        const people = peopleRes.data;
-        const active_tasks = tasksRes.data;
+        const core = coreRes.data || [];
+        const projects = projectsRes.data || [];
+        const people = peopleRes.data || [];
+        const active_tasks = tasksRes.data || [];
 
         // --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         const now = new Date();
@@ -111,11 +110,11 @@ export default async function handler(req, res) {
     SYSTEM STATUS: ${system_context}
     
     CONTEXT:
-    - IDENTITY: ${JSON.stringify(core.map(c => ({ key: c.key, val: c.content })))}
-    - PROJECTS: ${JSON.stringify(projects.map(p => p.name))}
+    - IDENTITY: ${JSON.stringify(core.map(c => ({ [c.key]: c.content })))}
+    - PROJECTS: ${projects.map(p => p.name).join(', ')}
     - PEOPLE: ${JSON.stringify(people.map(p => ({ n: p.name, w: p.strategic_weight })))}
     - OPEN TASKS: ${compressedTasks}
-    - NEW INPUT: ${JSON.stringify(dumps.map(d => d.content))}
+    - NEW INPUT: ${dumps.map(d => d.content).join(' | ')}
     
     INSTRUCTIONS:
     1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects.
