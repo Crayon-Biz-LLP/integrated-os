@@ -167,20 +167,29 @@ export default async function handler(req, res) {
         try {
             const model = genAI.getGenerativeModel({
                 model: "gemini-2.5-flash",  // STABLE [web:82]
-                generationConfig: { maxOutputTokens: 1500, temperature: 0.3 }
+                generationConfig: { maxOutputTokens: 1500, temperature: 0.3 },
+                responseMimeType: "application/json",  // FORCE JSON! [web:91]
             });
 
             const result = await model.generateContent(prompt);
             const rawText = await result.response.text();
-            console.log('🤖 Gemini response length:', rawText.length);
+            console.log('🤖 Raw length:', rawText.length, 'Preview:', rawText.substring(0, 200));
 
-            const textResponse = rawText.replace(/```json|```/g, '').trim();
+            const textResponse = rawText
+                .replace(/```(?:json)?\n?/g, '')  // Remove ```json
+                .replace(/```/g, '')              // Remove leftover ```
+                .replace(/[\r\n]+/g, ' ')         // Flatten newlines
+                .trim();
             aiData = JSON.parse(textResponse);
             console.log('✅ AI parsed:', Object.keys(aiData));
 
-        } catch (aiError) {
-            console.error('💥 GEMINI ERROR:', aiError.message);
+        } catch (parseError) {
+            console.error('💥 PARSE ERROR - Raw text:', rawText.substring(0, 300));
+            console.error('💥 Full error:', parseError.message);
+            // Enhanced fallback
+            aiData.briefing = `⚠️ JSON PARSE FAILED\\nRaw AI: ${rawText.substring(0, 150)}...`;
         }
+
 
         console.log('📝 Starting DB writes with:', Object.keys(aiData));
 
