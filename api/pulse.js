@@ -168,7 +168,7 @@ export default async function handler(req, res) {
         try {
             const model = genAI.getGenerativeModel({
                 model: "gemini-2.5-flash",  // STABLE [web:82]
-                generationConfig: { maxOutputTokens: 1500, temperature: 0.3 },
+                generationConfig: { maxOutputTokens: 3000 },
                 responseMimeType: "application/json",  // FORCE JSON! [web:91]
             });
 
@@ -177,10 +177,15 @@ export default async function handler(req, res) {
             console.log('🤖 Raw length:', rawText.length, 'Preview:', rawText.substring(0, 200));
 
             const textResponse = rawText
-                .replace(/```(?:json)?\n?/g, '')  // Remove ```json
-                .replace(/```/g, '')              // Remove leftover ```
-                .replace(/[\r\n]+/g, ' ')         // Flatten newlines
+                .replace(/```(?:json)?[\s\S]*?```/gs, '')  // Aggressive codeblock strip
+                .replace(/[^\x20-\x7E\n]/g, '')           // Strip control chars
+                .replace(/,\s*([}\]])/g, '$1')            // Fix trailing commas
+                .replace(/:\s*,\s*/g, ': null,')          // Fix empty values
                 .trim();
+            // VALIDATION before parse
+            if (!textResponse.startsWith('{')) {
+                throw new Error('Not JSON: ' + textResponse.substring(0, 100));
+            }
             aiData = JSON.parse(textResponse);
             console.log('✅ AI parsed:', Object.keys(aiData));
             rawText = await result.response.text();  // Now accessible in catch
