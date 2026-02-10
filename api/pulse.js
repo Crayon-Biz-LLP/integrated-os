@@ -19,6 +19,17 @@ export default async function handler(req, res) {
 
         // 1. READ
         const { data: dumps } = await supabase.from('raw_dumps').select('*').eq('is_processed', false);
+        console.log('🔍 RAW_DUMPS QUERY RESULT:', {
+            count: dumps?.length || 0,
+            firstContent: dumps?.[0]?.content || 'NONE',
+            firstId: dumps?.[0]?.id || 'NONE'
+        });
+
+        if (!dumps || dumps.length === 0) {
+            console.log('❌ Silence is golden - NO UNPROCESSED DUMPS');
+            return res.status(200).json({ message: 'Silence is golden.' });
+        }
+        console.log('🚀 PROCESSING', dumps.length, 'dumps...');
         // --- 🤫 SILENCE IS GOLDEN ---
         if (!dumps || dumps.length === 0) {
             return res.status(200).json({ message: 'No new dumps. Silence is golden.' });
@@ -179,6 +190,7 @@ export default async function handler(req, res) {
         if (aiData.logs?.length) await supabase.from('logs').insert(aiData.logs);
         const dumpIds = dumps.map(d => d.id);
         await supabase.from('raw_dumps').update({ is_processed: true }).in('id', dumpIds);
+
 
         // 4. SPEAK
         if (process.env.TELEGRAM_CHAT_ID && aiData.briefing) {
