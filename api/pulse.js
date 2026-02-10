@@ -6,9 +6,6 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANO
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 export default async function handler(req, res) {
-    // Timer for the 10s Vercel limit
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8500); // Trigger at 8.5s
     try {
         // --- 1.1 SECURITY GATEKEEPER ---
         // Verifies the trigger is authorized to prevent outside interference.
@@ -19,21 +16,22 @@ export default async function handler(req, res) {
 
         // 1. READ
         const { data: dumps } = await supabase.from('raw_dumps').select('*').eq('is_processed', false);
-        console.log('🔍 RAW_DUMPS QUERY RESULT:', {
-            count: dumps?.length || 0,
-            firstContent: dumps?.[0]?.content || 'NONE',
-            firstId: dumps?.[0]?.id || 'NONE'
-        });
+        if (!dumps || dumps.length === 0) return res.status(200).json({ message: 'Silence is golden.' });
+        // console.log('🔍 RAW_DUMPS QUERY RESULT:', {
+        // count: dumps?.length || 0,
+        // firstContent: dumps?.[0]?.content || 'NONE',
+        // firstId: dumps?.[0]?.id || 'NONE'
+        // });
 
-        if (!dumps || dumps.length === 0) {
-            console.log('❌ Silence is golden - NO UNPROCESSED DUMPS');
-            return res.status(200).json({ message: 'Silence is golden.' });
-        }
+        // if (!dumps || dumps.length === 0) {
+        // console.log('❌ Silence is golden - NO UNPROCESSED DUMPS');
+        // return res.status(200).json({ message: 'Silence is golden.' });
+        // }
         console.log('🚀 PROCESSING', dumps.length, 'dumps...');
         // --- 🤫 SILENCE IS GOLDEN ---
-        if (!dumps || dumps.length === 0) {
-            return res.status(200).json({ message: 'No new dumps. Silence is golden.' });
-        }
+        // if (!dumps || dumps.length === 0) {
+        // return res.status(200).json({ message: 'No new dumps. Silence is golden.' });
+        // }
 
         const { data: core } = await supabase.from('core_config').select('*');
         const { data: projects } = await supabase.from('projects').select('*');
@@ -127,7 +125,7 @@ export default async function handler(req, res) {
         - PROJECTS: ${JSON.stringify(projects.map(p => p.name))}
         - PEOPLE: ${JSON.stringify(people?.map(p => p.name) || [])}
         - CURRENT OPEN TASKS (COMPRESSED): ${compressedTasks}
-        - NEW INPUTS: ${JSON.stringify(dumps)}
+        - NEW INPUTS: ${dumps.map(d => d.content).join('\n---\n')}
 
         INSTRUCTIONS:
         1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects.
@@ -147,7 +145,7 @@ export default async function handler(req, res) {
 
         OUTPUT JSON:
         {
-            "completed_task_ids": [],
+            "completed_task_ids": ["uuid-here"],
             "new_projects": [{ "name": "...", "importance": 8 }],
             "new_people": [{ "name": "...", "role": "...", "strategic_weight": 9 }],
             "new_tasks": [{ "title": "...", "project_name": "...", "priority": "urgent/important/chores", "est_min": 15 }],
@@ -168,12 +166,12 @@ export default async function handler(req, res) {
         try {
             const model = genAI.getGenerativeModel({
                 model: "gemini-2.5-flash",  // STABLE [web:82]
-                generationConfig: { maxOutputTokens: 3000 },
-                responseMimeType: "application/json",  // FORCE JSON! [web:91]
+                generationConfig: { responseMimeType: "application/json" },  // FORCE JSON! [web:91]
             });
 
             const result = await model.generateContent(prompt);
-            const rawText = await result.response.text();
+            aiData = JSON.parse(result.response.text());
+            rawText = await result.response.text();
             console.log('🤖 Raw length:', rawText.length, 'Preview:', rawText.substring(0, 200));
 
             // SUPER ROBUST JSON EXTRACTOR[4]
@@ -224,7 +222,7 @@ export default async function handler(req, res) {
         if (aiData.new_people?.length) await supabase.from('people').insert(aiData.new_people);
 
         // B. TASK UPDATES
-        if (aiData.completed_task_ids?.length > 0) {
+        if (aiData.completed_task_ids?.length) {
             await supabase.from('tasks').update({ status: 'done', completed_at: new Date() }).in('id', aiData.completed_task_ids);
         }
 
