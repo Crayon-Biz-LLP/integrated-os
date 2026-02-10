@@ -176,23 +176,35 @@ export default async function handler(req, res) {
             const rawText = await result.response.text();
             console.log('🤖 Raw length:', rawText.length, 'Preview:', rawText.substring(0, 200));
 
-            const textResponse = rawText
-                .replace(/```(?:json)?[\s\S]*?```/gs, '')  // Aggressive codeblock strip
-                .replace(/[^\x20-\x7E\n]/g, '')           // Strip control chars
-                .replace(/,\s*([}\]])/g, '$1')            // Fix trailing commas
-                .replace(/:\s*,\s*/g, ': null,')          // Fix empty values
+            // SUPER ROBUST JSON EXTRACTOR[4]
+            // 1. Aggressive markdown strip
+            let jsonStr = rawText
+                .replace(/^```json\n?/, '')     // Leading ```json
+                .replace(/\n?```$/, '')         // Trailing ```
+                .replace(/[\r\n]+/g, ' ')       // Newlines → spaces
                 .trim();
-            // VALIDATION before parse
-            if (!textResponse.startsWith('{')) {
-                throw new Error('Not JSON: ' + textResponse.substring(0, 100));
+
+            // 2. Fix common JSON errors
+            jsonStr = jsonStr
+                .replace(/,\s*([}\]])/g, '$1')  // Trailing commas
+                .replace(/:\s*([}\]]|$)/g, ': ""');  // Empty values
+
+            // 3. Extract JSON object (handles partial)
+            const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                jsonStr = jsonMatch;
             }
-            aiData = JSON.parse(textResponse);
-            console.log('✅ AI parsed:', Object.keys(aiData));
+
+            console.log('🔧 Cleaned JSON preview:', jsonStr.substring(0, 300));
+            aiData = JSON.parse(jsonStr);
+            console.log('✅ Parsed:', Object.keys(aiData));
             rawText = await result.response.text();  // Now accessible in catch
 
-        } catch (parseError) {
+        } catch (error) {
             console.error('💥 PARSE ERROR - Raw text:', rawText.substring(0, 300));
-            console.error('💥 Full error:', parseError.message);
+            console.error('💥 Full error:', error.message);
+            console.error('💥 ERROR:', error.message);
+            console.error('💥 Raw preview:', rawText.substring(0, 400));
             // Enhanced fallback
             aiData.briefing = `⚠️ JSON PARSE FAILED\\nRaw AI: ${rawText.substring(0, 150)}...`;
         }
