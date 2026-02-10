@@ -8,7 +8,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 export default async function handler(req, res) {
     // Timer for the 10s Vercel limit
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 9000); // Trigger at 8.5s
+    const timeoutId = setTimeout(() => controller.abort(), 8500); // Trigger at 8.5s
     try {
         // --- 1.1 SECURITY GATEKEEPER ---
         // Verifies the trigger is authorized to prevent outside interference.
@@ -18,28 +18,21 @@ export default async function handler(req, res) {
         }
 
         // 1. READ
-        // 1. READ (Parallelized for Speed)
         const { data: dumps } = await supabase.from('raw_dumps').select('*').eq('is_processed', false);
-        if (!dumps || dumps.length === 0) return res.status(200).json({ message: 'Silence is golden.' });
+        // --- 🤫 SILENCE IS GOLDEN ---
+        if (!dumps || dumps.length === 0) {
+            return res.status(200).json({ message: 'No new dumps. Silence is golden.' });
+        }
 
-        // Fire all these requests simultaneously
-        const [coreRes, projectsRes, peopleRes, tasksRes] = await Promise.all([
-            supabase.from('core_config').select('*'),
-            supabase.from('projects').select('*'),
-            supabase.from('people').select('*'),
-            supabase.from('tasks').select('id, title, project_id, priority, created_at').neq('status', 'done').limit(15)
-        ]);
-
-        const core = coreRes.data || [];
-        const projects = projectsRes.data || [];
-        const people = peopleRes.data || [];
-        const active_tasks = tasksRes.data || [];
+        const { data: core } = await supabase.from('core_config').select('*');
+        const { data: projects } = await supabase.from('projects').select('*');
+        const { data: people } = await supabase.from('people').select('*'); // Added for network awareness.
+        const { data: active_tasks } = await supabase.from('tasks').select('id, title, project_id, priority, created_at').neq('status', 'done');
 
         // --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         const now = new Date();
         const istOffset = 5.5 * 60 * 60 * 1000;
         const istDate = new Date(now.getTime() + istOffset);
-
         const day = istDate.getDay();
         const hour = istDate.getHours();
         const isWeekend = (day === 0 || day === 6);
@@ -73,14 +66,10 @@ export default async function handler(req, res) {
 
         // --- 1.4 CONTEXT COMPRESSION ---
         // Strips metadata but keeps Project context for accurate completion matching.
-        const compressedTasks = active_tasks.slice(0, 10).map(t => { /* ... */ }).join(' | ');  // Cap at 10
-
-        // Before prompt
-        const newInputSummary = dumps.slice(0, 5).map(d => d.content).join(' | ') || '';  // Limit raw dumps
-
-        // In prompt, use summaries
-        // - OPEN TASKS: ${compressedTasks.slice(0, 4000)}  // Hard char limit
-        // - NEW INPUT: ${newInputSummary}
+        const compressedTasks = active_tasks.map(t => {
+            const pName = projects.find(p => p.id === t.project_id)?.name || "General";
+            return `[${pName}] ${t.title} (${t.priority}) [ID:${t.id}]`;
+        }).join(' | ');
 
         // --- 1.5 SEASON EXPIRY LOGIC ---
         const seasonRow = core.find(c => c.key === 'current_season');
@@ -101,61 +90,60 @@ export default async function handler(req, res) {
             return t.priority === 'urgent' && hoursOld > 48;
         }).map(t => t.title);
 
+
         // 2. THINK
-        const prompt = `
-    ROLE: Chief of Staff for Danny (Executive Office).
-    STRATEGIC CONTEXT: ${seasonConfig}
-    CURRENT PHASE: ${briefing_mode}
-    SYSTEM_LOAD: ${isOverloaded ? 'OVERLOADED' : 'OPTIMAL'}
-    MONDAY_REENTRY: ${isMondayMorning ? 'TRUE' : 'FALSE'}
-    STAGNANT_URGENT_TASKS: ${JSON.stringify(overdueTasks)}
-    PERSONA GUIDELINE: ${system_persona}
-    SYSTEM STATUS: ${system_context}
-    
-    CONTEXT:
-    - IDENTITY: ${JSON.stringify(core.map(c => ({ [c.key]: c.content })))}
-    - PROJECTS: ${projects.map(p => p.name).join(', ')}
-    - PEOPLE: ${JSON.stringify(people.map(p => ({ n: p.name, w: p.strategic_weight })))}
-    - OPEN TASKS: ${compressedTasks}
-    - NEW INPUT: ${dumps.map(d => d.content).join(' | ')}
-    
+        const prompt = `    
+        ROLE: Chief of Staff for Danny (Executive Office).
+        STRATEGIC CONTEXT: ${seasonConfig}
+        CURRENT PHASE: ${briefing_mode}
+        SYSTEM_LOAD: ${isOverloaded ? 'OVERLOADED' : 'OPTIMAL'}
+        MONDAY_REENTRY: ${isMondayMorning ? 'TRUE' : 'FALSE'}
+        STAGNANT URGENT_TASKS: ${JSON.stringify(overdueTasks)}
+        PERSONA GUIDELINE: ${system_persona}
+        SYSTEM STATUS: ${system_context}
+        CONTEXT:
+        - IDENTITY: ${JSON.stringify(core)}
+        - PROJECTS: ${JSON.stringify(projects.map(p => p.name))}
+        - PEOPLE: ${JSON.stringify(people?.map(p => p.name) || [])}
+        - CURRENT OPEN TASKS (COMPRESSED): ${compressedTasks}
+        - NEW INPUTS: ${JSON.stringify(dumps)}
+
     INSTRUCTIONS:
     1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects.
     2. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
     3. CHECK FOR COMPLETION: Compare inputs against OPEN TASKS to identify IDs finished by Danny.
-    4. AUTO-ONBOARDING: 
-       - If a new Client/Project is mentioned, add to "new_projects".
-       - If a new Person is mentioned, add to "new_people".
+    4. AUTO-ONBOARDING:
+        - If a new Client/Project is mentioned, add to "new_projects".
+        - If a new Person is mentioned, add to "new_people".
     5. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
     6. WEEKEND FILTER: If isWeekend is true (${isWeekend}), do NOT suggest or list Work tasks. Move work inputs to a 'Monday' reminder.
     7. EXECUTIVE BRIEF FORMAT:
-       - HEADLINE RULE: Use exactly "${briefing_mode}".
-       - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
-       - SECTIONS: ✅ COMPLETED, 🛡️ WORK (Hide on weekends), 🏠 HOME, 💡 IDEAS (Only at night pulse).
-       - TONE: Match the PERSONA GUIDELINE.
-    8. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.   
-    
+    - HEADLINE RULE: Use exactly "${briefing_mode}".
+    - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
+    - SECTIONS: ✅ COMPLETED, 🛡️ WORK (Hide on weekends), 🏠 HOME, 💡 IDEAS (Only at night pulse).
+    - TONE: Match the PERSONA GUIDELINE.
+    8. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
+
     OUTPUT JSON:
     {
-      "completed_task_ids": [], 
-      "new_projects": [{ "name": "...", "importance": 8 }],
-      "new_people": [{ "name": "...", "role": "...", "strategic_weight": 9 }],
-      "new_tasks": [{ "title": "...", "project_name": "...", "priority": "urgent/important/chores", "est_min": 15 }],
-      "logs": [{ "entry_type": "IDEAS/OBSERVATION/JOURNAL", "content": "..." }],
-      "briefing": "The formatted text string for Telegram."
+        "completed_task_ids": [],
+        "new_projects": [{ "name": "...", "importance": 8 }],
+        "new_people": [{ "name": "...", "role": "...", "strategic_weight": 9 }],
+        "new_tasks": [{ "title": "...", "project_name": "...", "priority": "urgent/important/chores", "est_min": 15 }],
+        "logs": [{ "entry_type": "IDEAS/OBSERVATION/JOURNAL", "content": "..." }],
+    "briefing": "The formatted text string for Telegram."
     }
-    `;
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Optimized for speed and low latency
+`;
 
-
+        const model = genAI.getGenerativeModel({ model: "gemini-3-flash" }); // Upgraded for faster reasoning
         const aiCall = model.generateContent(prompt);
         const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('AI_TIMEOUT')), 9000)
+            setTimeout(() => reject(new Error('AI_TIMEOUT')), 8500)
         );
         const result = await Promise.race([aiCall, timeoutPromise]);
         clearTimeout(timeoutId);
         const rawText = await result.response.text();
-        const textResponse = rawText.replace(/```json | ```/g, '').trim();
+        const textResponse = rawText.replace(/```json|```/g, '').trim();
         const aiData = JSON.parse(textResponse);
 
         // 3. WRITE (Database Updates)
@@ -208,19 +196,11 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, briefing: aiData.briefing });
 
     } catch (error) {
-        console.error('Pulse Error:', error);
-
-        // This is your new "Black Box" recorder
-        if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
-            await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    chat_id: process.env.TELEGRAM_CHAT_ID,
-                    text: `🚨 PULSE CRASH DETECTED:\n\nError: ${error.message}\n\nDanny, check the logic around: ${error.stack.split('\n')[1]}`
-                })
-            });
+        if (error.message === 'AI_TIMEOUT') {
+            return res.status(200).json({ success: false, message: 'AI Timed out - keeping dumps for next run.' });
         }
+
+        console.error('Pulse Error:', error);
         return res.status(500).json({ error: error.message });
     }
-}
+} 
