@@ -136,7 +136,7 @@ export default async function handler(req, res) {
       "briefing": "The formatted text string for Telegram."
     }
     `;
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Upgraded for faster reasoning
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // Upgraded for faster reasoning
         const aiCall = model.generateContent(prompt);
         const timeoutPromise = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('AI_TIMEOUT')), 8500)
