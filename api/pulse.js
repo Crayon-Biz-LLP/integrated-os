@@ -177,9 +177,8 @@ export default async function handler(req, res) {
             // SUPER ROBUST JSON EXTRACTOR[4]
             // 1. Aggressive markdown strip
             let jsonStr = rawText
-                .replace(/^```json\n?/, '')     // Leading ```json
-                .replace(/\n?```$/, '')         // Trailing ```
-                .replace(/[\r\n]+/g, ' ')       // Newlines → spaces
+                .replace(/^```json\n?/, '')     // Strip leading markdown
+                .replace(/\n?```$/, '')         // Strip trailing markdown
                 .trim();
 
             // 2. Fix common JSON errors
@@ -190,7 +189,7 @@ export default async function handler(req, res) {
             // 3. Extract JSON object (handles partial)
             const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
-                jsonStr = jsonMatch;
+                jsonStr = jsonMatch[0]; // <--- Added [0] here. This was the bug.
             }
 
             console.log('🔧 Cleaned JSON preview:', jsonStr.substring(0, 300));
