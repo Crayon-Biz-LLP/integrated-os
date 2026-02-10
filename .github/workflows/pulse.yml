@@ -1,0 +1,21 @@
+name: Pulse Cron
+on:
+  schedule:
+    - cron: '30 8,10,12,14,16,18 * * 1-5' 
+  workflow_dispatch:  # Manual test button
+
+jobs:
+  pulse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # Gemini safe
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Trigger Vercel Pulse
+      run: |
+        RESPONSE=$(curl -s -w "HTTP: %{http_code}" -X POST \
+          https://integrated-os.vercel.app/api/pulse \
+          -H "x-pulse-secret: ${{ secrets.PULSE_SECRET }}")
+        echo $RESPONSE
+      env:
+        CURL_CA_BUNDLE: ""
