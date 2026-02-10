@@ -145,7 +145,7 @@ export default async function handler(req, res) {
       "briefing": "The formatted text string for Telegram."
     }
     `;
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // Optimized for speed and low latency
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Optimized for speed and low latency
 
 
         const aiCall = model.generateContent(prompt);
