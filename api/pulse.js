@@ -166,7 +166,7 @@ export default async function handler(req, res) {
 
         try {
             const model = genAI.getGenerativeModel({
-                model: "gemini-1.5-flash",  // STABLE [web:82]
+                model: "gemini-2.5-flash",  // STABLE [web:82]
                 generationConfig: { maxOutputTokens: 1500, temperature: 0.3 }
             });
 
