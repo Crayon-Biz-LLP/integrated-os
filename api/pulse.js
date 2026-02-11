@@ -23,10 +23,7 @@ export default async function handler(req, res) {
         const { data: core } = await supabase.from('core_config').select('key, content');
         const { data: projects } = await supabase.from('projects').select('id, name, org_tag'); // Added org_tag for mapping accuracy
         const { data: people } = await supabase.from('people').select('name, strategic_weight');
-        const { data: active_tasks } = await supabase
-            .from('tasks')
-            .select('id, title, project_id, priority, created_at')
-            .not('status', 'in', '("done","cancelled")'); // Exclude completed tasks    
+        const { data: active_tasks } = await supabase.from('tasks').select('id, title, project_id, priority, created_at').not('status', 'in', '("done","cancelled")'); // Exclude completed tasks    
 
         // --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         const now = new Date();
@@ -59,19 +56,36 @@ export default async function handler(req, res) {
             }
         }
 
-        // --- 1.3 BANDWIDTH & BUFFER CHECK ---
-        // Flag for the AI if task volume is high during Operation Turnaround.
-        const isOverloaded = active_tasks.length > 15;
+        // --- 1.3.1 STRATEGIC TASK FILTERING ---
+        const filteredTasks = active_tasks.filter(t => {
+            // 1. THE URGENT BYPASS: Always show Urgent tasks regardless of day/time
+            if (t.priority === 'urgent') return true;
 
-        // --- 1.4 CONTEXT COMPRESSION ---
-        // Strips metadata but keeps Project context for accurate completion matching.
-        const compressedTasks = active_tasks.map(t => {
-            // Find the associated project and its organization tag
+            // Find the project's org_tag to apply situational filters
+            const project = projects.find(p => p.id === t.project_id);
+            const oTag = project?.org_tag || "INBOX";
+
+            // 2. WEEKEND FILTER: Only show Home/Church
+            if (isWeekend) {
+                return (oTag === 'PERSONAL' || oTag === 'CHURCH');
+            }
+
+            // 3. WEEKDAY TIME FILTERS:
+            if (hour < 19) {
+                // Business Hours: Solvstrat, Product Labs, Crayon, or Inbox
+                return (oTag === 'SOLVSTRAT' || oTag === 'PRODUCT_LABS' || oTag === 'CRAYON' || oTag === 'INBOX');
+            } else {
+                // After Hours: Transition to Home/Church
+                return (oTag === 'PERSONAL' || oTag === 'CHURCH');
+            }
+        });
+
+        // --- 1.4 CONTEXT COMPRESSION (Updated to use filteredTasks) ---
+        const compressedTasks = filteredTasks.map(t => {
             const project = projects.find(p => p.id === t.project_id);
             const pName = project?.name || "General";
-            const oTag = project?.org_tag || "INBOX"; // Fallback to INBOX if no tag exists.
+            const oTag = project?.org_tag || "INBOX";
 
-            // New Format: [ORGANIZATION >> PROJECT] Title (Priority) [ID:uuid]
             return `[${oTag} >> ${pName}] ${t.title} (${t.priority}) [ID:${t.id}]`;
         }).join(' | ');
 
@@ -87,8 +101,8 @@ export default async function handler(req, res) {
         }
 
         // --- 🛡️ 1.6 THE NAG LOGIC (STAGNANT TASK GUARD) ---
-        // Identifies stagnant URGENT tasks older than 48 hours.
-        const overdueTasks = active_tasks.filter(t => {
+        // Change active_tasks to filteredTasks here to respect the Day/Time filters
+        const overdueTasks = filteredTasks.filter(t => {
             const createdDate = new Date(t.created_at);
             const hoursOld = (now - createdDate) / (1000 * 60 * 60);
             return t.priority === 'urgent' && hoursOld > 48;
