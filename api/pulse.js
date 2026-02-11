@@ -23,7 +23,10 @@ export default async function handler(req, res) {
         const { data: core } = await supabase.from('core_config').select('key, content');
         const { data: projects } = await supabase.from('projects').select('id, name, org_tag'); // Added org_tag for mapping accuracy
         const { data: people } = await supabase.from('people').select('name, strategic_weight');
-        const { data: active_tasks } = await supabase.from('tasks').select('id, title, project_id, priority, created_at').neq('status', 'done');
+        const { data: active_tasks } = await supabase
+            .from('tasks')
+            .select('id, title, project_id, priority, created_at')
+            .not('status', 'in', '("done","cancelled")'); // Exclude completed tasks    
 
         // --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         const now = new Date();
@@ -138,6 +141,8 @@ export default async function handler(req, res) {
         1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
         2. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
         3. CHECK FOR COMPLETION: Compare inputs against OPEN TASKS to identify IDs finished by Danny.
+            - If Danny says he finished or completed a task, mark it as done.
+            - If Danny says "Cancel", "Ignore", "Forget", or "Not doing" a task, mark it as cancelled.
         4. AUTO-ONBOARDING:
             - If a new Client/Project is mentioned, add to "new_projects".
             - If a new Person is mentioned, add to "new_people".
@@ -152,12 +157,15 @@ export default async function handler(req, res) {
 
         OUTPUT JSON:
         {
-            "completed_task_ids": ["uuid-here"],
-            "new_projects": [{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT/PRODUCT_LABS/PERSONAL" }],
+            "completed_task_ids": [
+                { "id": "uuid-here", "status": "done" },
+                { "id": "uuid-here", "status": "cancelled" }
+            ],
+            "new_projects": [{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT/PRODUCT_LABS/PERSONAL/CHURCH" }],
             "new_people": [{ "name": "...", "role": "...", "strategic_weight": 9 }],
             "new_tasks": [{ "title": "...", "project_name": "...", "priority": "urgent/important/chores", "est_min": 15 }],
             "logs": [{ "entry_type": "IDEAS/OBSERVATION/JOURNAL", "content": "..." }],
-        "briefing": "The formatted text string for Telegram."
+            "briefing": "The formatted text string for Telegram."
         }
     `;
 
@@ -248,11 +256,23 @@ export default async function handler(req, res) {
         // B. Batch New People
         if (aiData.new_people?.length) await supabase.from('people').insert(aiData.new_people);
 
-        // C. Batch Task Updates (Completions)
+        // C. BATCH TASK UPDATES (The Safety Bridge)
         if (aiData.completed_task_ids?.length) {
-            await supabase.from('tasks')
-                .update({ status: 'done', completed_at: new Date().toISOString() })
-                .in('id', aiData.completed_task_ids);
+            const updates = aiData.completed_task_ids.map(item => {
+                // SAFETY CHECK: Handle both old string format and new object format
+                const id = typeof item === 'string' ? item : item.id;
+                const status = (typeof item !== 'string' && item.status === 'cancelled') ? 'cancelled' : 'done';
+
+                return supabase.from('tasks')
+                    .update({
+                        status: status,
+                        completed_at: new Date().toISOString()
+                    })
+                    .eq('id', id);
+            });
+
+            await Promise.all(updates);
+            console.log(`✅ Processed ${aiData.completed_task_ids.length} task status updates.`);
         }
 
         // D. BATCH NEW TASKS (Entity-First Matching)
