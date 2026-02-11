@@ -129,8 +129,10 @@ export default async function handler(req, res) {
         3. CRAYON (UMBRELLA): Match Governance, Tax, and Legal here.
         4. PERSONAL: Match Sunju, kids, dogs here.
         5. CHURCH: 
-            - Match Anita, new People and tasks related to Church here.
-            - Logic: If a new person or project is mentioned in a church context, assign org_tag: "CHURCH"
+            - Note: All church-related activities must map to the project "Church".
+
+        NEW PROJECT CREATION CRITERIA:
+        1. Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned 
 
         INSTRUCTIONS:
         1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
@@ -209,29 +211,38 @@ export default async function handler(req, res) {
 
         // 3. WRITE (Database Updates)
 
-        // A. BATCH NEW PROJECTS
+        // A. BATCH NEW PROJECTS (Deduplicated)
         if (aiData.new_projects?.length) {
             const validTags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH'];
 
-            const projectInserts = aiData.new_projects.map(p => ({
-                name: p.name,
-                org_tag: validTags.includes(p.org_tag) ? p.org_tag : 'INBOX',
-                status: 'active',
-                // FIX: Derive context from org_tag to satisfy the DB constraint
-                context: (p.org_tag === 'CHURCH' || p.org_tag === 'PERSONAL') ? 'personal' : 'work'
-            }));
+            // Filter out projects that are actually just sub-tasks of existing ones
+            const filteredNewProjects = aiData.new_projects.filter(newP => {
+                const alreadyExists = projects.some(existingP =>
+                    newP.name.toLowerCase().includes(existingP.name.toLowerCase()) ||
+                    existingP.name.toLowerCase().includes(newP.name.toLowerCase())
+                );
+                return !alreadyExists; // Only keep if it's truly a new entity
+            });
 
-            // BATCH INSERT
-            const { data: createdProjects, error: pError } = await supabase
-                .from('projects')
-                .insert(projectInserts)
-                .select();
+            if (filteredNewProjects.length > 0) {
+                const projectInserts = filteredNewProjects.map(p => ({
+                    name: p.name,
+                    org_tag: validTags.includes(p.org_tag) ? p.org_tag : 'INBOX',
+                    status: 'active',
+                    context: (p.org_tag === 'CHURCH' || p.org_tag === 'PERSONAL') ? 'personal' : 'work'
+                }));
 
-            if (pError) {
-                console.error("❌ Project Insert Error:", pError.message);
-            } else if (createdProjects && createdProjects.length > 0) { // Added safety check
-                projects.push(...createdProjects);
-                console.log(`✅ Created ${createdProjects.length} new projects.`);
+                const { data: createdProjects, error: pError } = await supabase
+                    .from('projects')
+                    .insert(projectInserts)
+                    .select();
+
+                if (pError) {
+                    console.error("❌ Project Insert Error:", pError.message);
+                } else if (createdProjects) {
+                    projects.push(...createdProjects);
+                    console.log(`✅ Created ${createdProjects.length} new entity projects.`);
+                }
             }
         }
         // B. Batch New People
@@ -244,10 +255,18 @@ export default async function handler(req, res) {
                 .in('id', aiData.completed_task_ids);
         }
 
-        // D. Batch New Tasks
+        // D. BATCH NEW TASKS (Entity-First Matching)
         if (aiData.new_tasks?.length) {
             const taskInserts = aiData.new_tasks.map(task => {
-                const project = projects.find(p => p.name.toLowerCase().includes(task.project_name?.toLowerCase()))
+                // 1. Clean the AI's suggested project name to look for the core entity
+                const aiTarget = task.project_name?.toLowerCase() || "";
+
+                // 2. Strong Matching: Look for exact or partial matches in your existing project list
+                const project = projects.find(p =>
+                    aiTarget.includes(p.name.toLowerCase()) ||
+                    p.name.toLowerCase().includes(aiTarget)
+                )
+                    // 3. Fallback logic: Map to INBOX or generic PERSONAL to prevent Atna.ai pollution
                     || projects.find(p => p.org_tag === 'INBOX')
                     || projects[0];
 
