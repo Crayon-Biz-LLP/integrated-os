@@ -209,22 +209,29 @@ export default async function handler(req, res) {
 
         // 3. WRITE (Database Updates)
 
-        // A. Batch New Projects
+        // A. BATCH NEW PROJECTS
         if (aiData.new_projects?.length) {
-            for (const p of aiData.new_projects) {
-                const validTags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH'];
-                const projectInserts = aiData.new_projects.map(p => ({
-                    name: p.name,
-                    org_tag: validTags.includes(p.org_tag) ? p.org_tag : 'INBOX',
-                    status: 'active'
-                }));
-                const { data: createdProjects, error: pError } = await supabase
-                    .from('projects')
-                    .insert(projectInserts)
-                    .select();
-                if (pError) console.error("❌ Project Insert Error:", pError.message);
-                if (createdProjects) projects.push(...createdProjects);
-                console.log(`✅ Created ${createdProjects.length} new projects:`, createdProjects.map(p => p.name));
+            const validTags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH'];
+
+            const projectInserts = aiData.new_projects.map(p => ({
+                name: p.name,
+                org_tag: validTags.includes(p.org_tag) ? p.org_tag : 'INBOX',
+                status: 'active',
+                // FIX: Derive context from org_tag to satisfy the DB constraint
+                context: (p.org_tag === 'CHURCH' || p.org_tag === 'PERSONAL') ? 'personal' : 'work'
+            }));
+
+            // BATCH INSERT
+            const { data: createdProjects, error: pError } = await supabase
+                .from('projects')
+                .insert(projectInserts)
+                .select();
+
+            if (pError) {
+                console.error("❌ Project Insert Error:", pError.message);
+            } else if (createdProjects && createdProjects.length > 0) { // Added safety check
+                projects.push(...createdProjects);
+                console.log(`✅ Created ${createdProjects.length} new projects.`);
             }
         }
         // B. Batch New People
