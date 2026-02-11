@@ -15,27 +15,14 @@ export default async function handler(req, res) {
         }
 
         // 1. READ
-        const { data: dumps } = await supabase.from('raw_dumps').select('*').eq('is_processed', false);
-        if (!dumps || dumps.length === 0) return res.status(200).json({ message: 'Silence is golden.' });
-        // console.log('🔍 RAW_DUMPS QUERY RESULT:', {
-        // count: dumps?.length || 0,
-        // firstContent: dumps?.[0]?.content || 'NONE',
-        // firstId: dumps?.[0]?.id || 'NONE'
-        // });
-
-        // if (!dumps || dumps.length === 0) {
-        // console.log('❌ Silence is golden - NO UNPROCESSED DUMPS');
-        // return res.status(200).json({ message: 'Silence is golden.' });
-        // }
+        const { data: dumps } = await supabase.from('raw_dumps').select('id, content').eq('is_processed', false);
+        if (!dumps?.length) return res.status(200).json({ message: 'Silence is golden.' });
         console.log('🚀 PROCESSING', dumps.length, 'dumps...');
-        // --- 🤫 SILENCE IS GOLDEN ---
-        // if (!dumps || dumps.length === 0) {
-        // return res.status(200).json({ message: 'No new dumps. Silence is golden.' });
-        // }
 
-        const { data: core } = await supabase.from('core_config').select('*');
-        const { data: projects } = await supabase.from('projects').select('*');
-        const { data: people } = await supabase.from('people').select('*'); // Added for network awareness.
+
+        const { data: core } = await supabase.from('core_config').select('key, content');
+        const { data: projects } = await supabase.from('projects').select('id, name, org_tag'); // Added org_tag for mapping accuracy
+        const { data: people } = await supabase.from('people').select('name, strategic_weight');
         const { data: active_tasks } = await supabase.from('tasks').select('id, title, project_id, priority, created_at').neq('status', 'done');
 
         // --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
@@ -76,8 +63,13 @@ export default async function handler(req, res) {
         // --- 1.4 CONTEXT COMPRESSION ---
         // Strips metadata but keeps Project context for accurate completion matching.
         const compressedTasks = active_tasks.map(t => {
-            const pName = projects.find(p => p.id === t.project_id)?.name || "General";
-            return `[${pName}] ${t.title} (${t.priority}) [ID:${t.id}]`;
+            // Find the associated project and its organization tag
+            const project = projects.find(p => p.id === t.project_id);
+            const pName = project?.name || "General";
+            const oTag = project?.org_tag || "INBOX"; // Fallback to INBOX if no tag exists.
+
+            // New Format: [ORGANIZATION >> PROJECT] Title (Priority) [ID:uuid]
+            return `[${oTag} >> ${pName}] ${t.title} (${t.priority}) [ID:${t.id}]`;
         }).join(' | ');
 
         // --- 1.5 SEASON EXPIRY LOGIC ---
@@ -127,8 +119,18 @@ export default async function handler(req, res) {
         - CURRENT OPEN TASKS (COMPRESSED): ${compressedTasks}
         - NEW INPUTS: ${dumps.map(d => d.content).join('\n---\n')}
 
+        / --- NEW: PROJECT ROUTING LOGIC ---
+        // Use this hierarchy to assign NEW_TASKS or match COMPLETIONS:
+        1. SOLVSTRAT (CASH ENGINE): Match tasks for Atna.ai, Smudge, or Lead Gen here. Goal: High-ticket revenue.
+        2. PRODUCT LABS (INCUBATOR): 
+            - Match existing: CashFlow+ (Vasuuli), Integrated-OS.
+            - Match NEW IDEAS: If the input involves "SaaS research," "New Product concept," "MVPs," or "Validation" that is NOT for a current Solvstrat client, tag as PRODUCT LABS.
+            - Goal: Future equity and passive income.
+        3. CRAYON (UMBRELLA): Match Governance, Tax, and Legal here.
+        4. PERSONAL: Match Sunju, kids, dogs, and Church/Anita here.
+
         INSTRUCTIONS:
-        1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects.
+        1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
         2. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
         3. CHECK FOR COMPLETION: Compare inputs against OPEN TASKS to identify IDs finished by Danny.
         4. AUTO-ONBOARDING:
@@ -137,16 +139,16 @@ export default async function handler(req, res) {
         5. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
         6. WEEKEND FILTER: If isWeekend is true (${isWeekend}), do NOT suggest or list Work tasks. Move work inputs to a 'Monday' reminder.
         7. EXECUTIVE BRIEF FORMAT:
-        - HEADLINE RULE: Use exactly "${briefing_mode}".
-        - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
-        - SECTIONS: ✅ COMPLETED, 🛡️ WORK (Hide on weekends), 🏠 HOME, 💡 IDEAS (Only at night pulse).
-        - TONE: Match the PERSONA GUIDELINE.
+            - HEADLINE RULE: Use exactly "${briefing_mode}".
+            - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
+            - SECTIONS: ✅ COMPLETED, 🛡️ WORK (Hide on weekends), 🏠 HOME, 💡 IDEAS (Only at night pulse).
+            - TONE: Match the PERSONA GUIDELINE.
         8. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
 
         OUTPUT JSON:
         {
             "completed_task_ids": ["uuid-here"],
-            "new_projects": [{ "name": "...", "importance": 8 }],
+            "new_projects": [{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT/PRODUCT_LABS/PERSONAL" }],
             "new_people": [{ "name": "...", "role": "...", "strategic_weight": 9 }],
             "new_tasks": [{ "title": "...", "project_name": "...", "priority": "urgent/important/chores", "est_min": 15 }],
             "logs": [{ "entry_type": "IDEAS/OBSERVATION/JOURNAL", "content": "..." }],
@@ -170,6 +172,7 @@ export default async function handler(req, res) {
             });
 
             const result = await model.generateContent(prompt);
+            let aiData;
             aiData = JSON.parse(result.response.text());
             rawText = await result.response.text();
             console.log('🤖 Raw length:', rawText.length, 'Preview:', rawText.substring(0, 200));
@@ -194,16 +197,9 @@ export default async function handler(req, res) {
 
             console.log('🔧 Cleaned JSON preview:', jsonStr.substring(0, 300));
             aiData = JSON.parse(jsonStr);
-            console.log('✅ Parsed:', Object.keys(aiData));
-            rawText = await result.response.text();  // Now accessible in catch
-
-        } catch (error) {
-            console.error('💥 PARSE ERROR - Raw text:', rawText.substring(0, 300));
-            console.error('💥 Full error:', error.message);
-            console.error('💥 ERROR:', error.message);
-            console.error('💥 Raw preview:', rawText.substring(0, 400));
-            // Enhanced fallback
-            aiData.briefing = `⚠️ JSON PARSE FAILED\\nRaw AI: ${rawText.substring(0, 150)}...`;
+        } catch (e) {
+            console.error("AI JSON Parse Error. Falling back.");
+            return res.status(500).json({ error: "AI response failed validation." });
         }
 
 
@@ -211,37 +207,50 @@ export default async function handler(req, res) {
 
         // 3. WRITE (Database Updates)
 
-        // A. AUTO-EXPANSION (Projects & People)
+        // A. Batch New Projects
         if (aiData.new_projects?.length) {
             for (const p of aiData.new_projects) {
-                const { data: nP } = await supabase.from('projects').insert({ name: p.name, status: 'active' }).select().single();
-                if (nP) projects.push(nP);
+                const validTags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON'];
+                const projectInserts = aiData.new_projects.map(p => ({
+                    name: p.name,
+                    org_tag: validTags.includes(p.org_tag) ? p.org_tag : 'INBOX',
+                    status: 'active'
+                }));
+                const { data: createdProjects } = await supabase.from('projects').insert(projectInserts).select();
+                if (createdProjects) projects.push(...createdProjects);
             }
         }
+        // B. Batch New People
         if (aiData.new_people?.length) await supabase.from('people').insert(aiData.new_people);
 
-        // B. TASK UPDATES
+        // C. Batch Task Updates (Completions)
         if (aiData.completed_task_ids?.length) {
-            await supabase.from('tasks').update({ status: 'done', completed_at: new Date() }).in('id', aiData.completed_task_ids);
+            await supabase.from('tasks')
+                .update({ status: 'done', completed_at: new Date().toISOString() })
+                .in('id', aiData.completed_task_ids);
         }
 
+        // D. Batch New Tasks
         if (aiData.new_tasks?.length) {
-            for (const task of aiData.new_tasks) {
-                const project = projects.find(p => p.name.toLowerCase().includes(task.project_name?.toLowerCase())) || projects[0];
-                const priorityClean = task.priority?.toLowerCase() || 'important';
-                await supabase.from('tasks').insert({
+            const taskInserts = aiData.new_tasks.map(task => {
+                const project = projects.find(p => p.name.toLowerCase().includes(task.project_name?.toLowerCase()))
+                    || projects.find(p => p.org_tag === 'PRODUCT_LABS')
+                    || projects[0];
+
+                return {
                     title: task.title,
                     project_id: project.id,
-                    priority: priorityClean,
+                    priority: task.priority?.toLowerCase() || 'important',
+                    status: 'todo',
                     estimated_minutes: task.est_min || 15
-                });
-            }
+                };
+            });
+            await supabase.from('tasks').insert(taskInserts);
         }
 
-        // C. LOGS & CLEANUP
+        // E. Cleanup & Logs
         if (aiData.logs?.length) await supabase.from('logs').insert(aiData.logs);
-        const dumpIds = dumps.map(d => d.id);
-        await supabase.from('raw_dumps').update({ is_processed: true }).in('id', dumpIds);
+        await supabase.from('raw_dumps').update({ is_processed: true }).in('id', dumps.map(d => d.id));
 
 
         // 4. SPEAK
@@ -260,11 +269,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, briefing: aiData.briefing });
 
     } catch (error) {
-        if (error.message === 'AI_TIMEOUT') {
-            return res.status(200).json({ success: false, message: 'AI Timed out - keeping dumps for next run.' });
-        }
-
-        console.error('Pulse Error:', error);
+        console.error('Pulse Critical Error:', error);
         return res.status(500).json({ error: error.message });
     }
-} 
+}
