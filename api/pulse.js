@@ -172,14 +172,13 @@ export default async function handler(req, res) {
             });
 
             const result = await model.generateContent(prompt);
-            let aiData;
-            aiData = JSON.parse(result.response.text());
-            rawText = await result.response.text();
-            console.log('🤖 Raw length:', rawText.length, 'Preview:', rawText.substring(0, 200));
+            const responseText = result.response.text();
+            aiData = JSON.parse(responseText);
+            console.log('✅ AI Data Parsed Successfully:', Object.keys(aiData));
 
             // SUPER ROBUST JSON EXTRACTOR[4]
             // 1. Aggressive markdown strip
-            let jsonStr = rawText
+            let jsonStr = responseText
                 .replace(/^```json\n?/, '')     // Strip leading markdown
                 .replace(/\n?```$/, '')         // Strip trailing markdown
                 .trim();
