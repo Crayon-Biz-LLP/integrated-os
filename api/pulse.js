@@ -212,7 +212,7 @@ export default async function handler(req, res) {
         // A. Batch New Projects
         if (aiData.new_projects?.length) {
             for (const p of aiData.new_projects) {
-                const validTags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON'];
+                const validTags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH'];
                 const projectInserts = aiData.new_projects.map(p => ({
                     name: p.name,
                     org_tag: validTags.includes(p.org_tag) ? p.org_tag : 'INBOX',
@@ -236,7 +236,7 @@ export default async function handler(req, res) {
         if (aiData.new_tasks?.length) {
             const taskInserts = aiData.new_tasks.map(task => {
                 const project = projects.find(p => p.name.toLowerCase().includes(task.project_name?.toLowerCase()))
-                    || projects.find(p => p.org_tag === 'PRODUCT_LABS')
+                    || projects.find(p => p.org_tag === 'INBOX')
                     || projects[0];
 
                 return {
