@@ -218,8 +218,13 @@ export default async function handler(req, res) {
                     org_tag: validTags.includes(p.org_tag) ? p.org_tag : 'INBOX',
                     status: 'active'
                 }));
-                const { data: createdProjects } = await supabase.from('projects').insert(projectInserts).select();
+                const { data: createdProjects, error: pError } = await supabase
+                    .from('projects')
+                    .insert(projectInserts)
+                    .select();
+                if (pError) console.error("❌ Project Insert Error:", pError.message);
                 if (createdProjects) projects.push(...createdProjects);
+                console.log(`✅ Created ${createdProjects.length} new projects:`, createdProjects.map(p => p.name));
             }
         }
         // B. Batch New People
