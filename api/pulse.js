@@ -121,13 +121,16 @@ export default async function handler(req, res) {
 
         / --- NEW: PROJECT ROUTING LOGIC ---
         // Use this hierarchy to assign NEW_TASKS or match COMPLETIONS:
-        1. SOLVSTRAT (CASH ENGINE): Match tasks for Atna.ai, Smudge, or Lead Gen here. Goal: High-ticket revenue.
+        1. SOLVSTRAT (CASH ENGINE): Match tasks for Atna.ai, Smudge, new Lead Gen here or new SaaS and technology projects. Goal: High-ticket revenue.
         2. PRODUCT LABS (INCUBATOR): 
             - Match existing: CashFlow+ (Vasuuli), Integrated-OS.
             - Match NEW IDEAS: If the input involves "SaaS research," "New Product concept," "MVPs," or "Validation" that is NOT for a current Solvstrat client, tag as PRODUCT LABS.
             - Goal: Future equity and passive income.
         3. CRAYON (UMBRELLA): Match Governance, Tax, and Legal here.
-        4. PERSONAL: Match Sunju, kids, dogs, and Church/Anita here.
+        4. PERSONAL: Match Sunju, kids, dogs here.
+        5. CHURCH: 
+            - Match Anita, new People and tasks related to Church here.
+            - Logic: If a new person or project is mentioned in a church context, assign org_tag: "CHURCH"
 
         INSTRUCTIONS:
         1. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
