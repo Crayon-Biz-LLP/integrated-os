@@ -14,16 +14,21 @@ export default async function handler(req, res) {
             return res.status(401).json({ error: 'Unauthorized manual trigger.' });
         }
 
-        // 1. READ
+        // 1. READ: Fetch everything needed for a full state briefing
         const { data: dumps } = await supabase.from('raw_dumps').select('id, content').eq('is_processed', false);
-        if (!dumps?.length) return res.status(200).json({ message: 'Silence is golden.' });
-        console.log('🚀 PROCESSING', dumps.length, 'dumps...');
+        const { data: active_tasks } = await supabase.from('tasks').select('id, title, project_id, priority, created_at').not('status', 'in', '("done","cancelled")');
 
+        // 💡 NEW LOGIC: Only silence the tool if BOTH new dumps AND open tasks are empty
+        if (!dumps?.length && !active_tasks?.length) {
+            return res.status(200).json({ message: 'Nothing to process, nothing to nag about. Silence is golden.' });
+        }
 
+        console.log(`🚀 PULSE START: Processing ${dumps?.length || 0} new dumps and ${active_tasks?.length || 0} active tasks.`);
+
+        // Fetch supporting metadata
         const { data: core } = await supabase.from('core_config').select('key, content');
-        const { data: projects } = await supabase.from('projects').select('id, name, org_tag'); // Added org_tag for mapping accuracy
+        const { data: projects } = await supabase.from('projects').select('id, name, org_tag');
         const { data: people } = await supabase.from('people').select('name, strategic_weight');
-        const { data: active_tasks } = await supabase.from('tasks').select('id, title, project_id, priority, created_at').not('status', 'in', '("done","cancelled")'); // Exclude completed tasks    
 
         // --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         const now = new Date();
