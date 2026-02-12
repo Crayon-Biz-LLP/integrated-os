@@ -61,6 +61,10 @@ export default async function handler(req, res) {
             }
         }
 
+        // --- 1.3 BANDWIDTH & BUFFER CHECK ---
+        // Flag for the AI if task volume is high during Operation Turnaround.
+        const isOverloaded = active_tasks.length > 15;
+
         // --- 1.3.1 STRATEGIC TASK FILTERING ---
         const filteredTasks = active_tasks.filter(t => {
             // 1. THE URGENT BYPASS: Always show Urgent tasks regardless of day/time
