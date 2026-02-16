@@ -1,26 +1,21 @@
 name: Pulse Cron
 on:
   schedule:
-    # WEEKDAYS (Mon-Fri)
-    # Runs at: 08:30, 10:30, 14:30, 16:30, 18:30 IST
-    - cron: '00 3,5,9,11,13 * * 1-5' 
-    
-    # WEEKENDS (Sat-Sun)
-    # Runs at: 10:00, 12:00, 15:00, 18:00 IST
-    - cron: '30 4,6,9,12 * * 0,6'
+    # Runs every hour at minute 30 UTC (Which is exactly the top of the hour in IST)
+    - cron: '30 * * * *'
   workflow_dispatch:  # Manual test button
 
 jobs:
   pulse:
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # Gemini safe
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@v4
     
     - name: Trigger Vercel Pulse
       run: |
         RESPONSE=$(curl -s -w "HTTP: %{http_code}" -X POST \
-          https://integrated-os.vercel.app/api/pulse \
+          https://chief-three.vercel.app/api/pulse \
           -H "x-pulse-secret: ${{ secrets.PULSE_SECRET }}")
         echo $RESPONSE
       env:

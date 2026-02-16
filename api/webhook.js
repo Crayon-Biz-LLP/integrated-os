@@ -12,7 +12,7 @@ const KEYBOARD = {
     persistent: true
 };
 
-// ⏱️ 14-DAY KILL SWITCH HELPER..
+// ⏱️ 14-DAY KILL SWITCH HELPER
 async function isTrialExpired(userId, supabase) {
     const { data, error } = await supabase
         .from('core_config')
@@ -21,36 +21,20 @@ async function isTrialExpired(userId, supabase) {
         .limit(1)
         .single();
 
-    if (error || !data) return false; // New user, hasn't started yet
-    const tenDaysMs = 14 * 24 * 60 * 60 * 1000;
-    return (Date.now() - new Date(data.created_at).getTime()) > tenDaysMs;
-}
-
-// 🏗️ DATABASE INITIALIZATION (ONBOARDING)
-async function initializeUser(userId, supabase) {
-    // Check if they already exist to avoid overwriting
-    const { data: existing } = await supabase.from('core_config').select('id').eq('user_id', userId).limit(1);
-    if (existing && existing.length > 0) return false; // Already initialized
-
-    // Seed their private config rows
-    await supabase.from('core_config').upsert([
-        { user_id: userId, key: 'identity', content: 'PENDING_PERSONA' },
-        { user_id: userId, key: 'current_season', content: 'PENDING_SEASON' }
-    ], { onConflict: 'user_id, key' });
-
-    return true; // Newly initialized
+    if (error || !data) return false;
+    const fourteenDaysMs = 14 * 24 * 60 * 60 * 1000; // Updated to 14 days
+    return (Date.now() - new Date(data.created_at).getTime()) > fourteenDaysMs;
 }
 
 export default async function handler(req, res) {
     try {
         const update = req.body;
-        if (!update || !update.message) return res.status(200).json({ message: 'No message' });
+        if (!update?.message) return res.status(200).json({ message: 'No message' });
 
         const chatId = update.message.chat.id;
-        const userId = update.message.from.id; // Unique Telegram User ID
+        const userId = update.message.from.id;
         const text = update.message.text || '';
 
-        // Helper to send messages with the persistent keyboard
         const sendTelegram = async (messageText) => {
             await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
                 method: 'POST',
@@ -66,23 +50,73 @@ export default async function handler(req, res) {
 
         // --- 0. NEW USER REGISTRATION (/start) ---
         if (text === '/start') {
-            const isNew = await initializeUser(userId, supabase);
-            if (isNew) {
-                const welcomeMsg = `🎯 **Welcome to the 10-Day Sprint.**\n\nI am your Digital 2iC. To protect your focus, we need to configure your operating system.\n\n**Reply with your North Star:** What is the single most important outcome you are hunting for these 10 days? (e.g., 'Close 2 new leads' or 'Launch beta'). I will update your Season Context.`;
-                await sendTelegram(welcomeMsg);
+            // SAFETY CHECK: Don't overwrite existing users
+            const { data: existing } = await supabase.from('core_config').select('id').eq('user_id', userId).limit(1);
+
+            if (existing && existing.length > 0) {
+                await sendTelegram("✅ Your OS is already active. Type your thoughts or use the menu.");
+                return res.status(200).json({ success: true });
+            }
+
+            // Seed new user
+            await supabase.from('core_config').upsert([
+                { user_id: userId, key: 'identity', content: '1' },
+                { user_id: userId, key: 'pulse_schedule', content: '2' },
+                { user_id: userId, key: 'current_season', content: 'PENDING' }
+            ], { onConflict: 'user_id, key' });
+
+            // Do not indent this text, otherwise Telegram formats it poorly!
+            const welcomeMsg = `🎯 **Welcome to your 14-Day Sprint.**
+
+I am your Digital 2iC. Let's configure your engine:
+
+**1. Choose My Persona:**
+Type \`/persona 1\` for ⚔️ The Commander (Direct, ROI-focused)
+Type \`/persona 2\` for 🏗️ The Architect (Systems-focused)
+Type \`/persona 3\` for 🌿 The Nurturer (Wholeness-focused)
+
+**2. Choose Your Pulse Schedule:** *(4 on Weekdays, 2 on Weekends)*
+Type \`/schedule 1\` for 🌅 Early (7am, 11am, 3pm, 7pm)
+Type \`/schedule 2\` for ☀️ Standard (9am, 1pm, 5pm, 9pm)
+Type \`/schedule 3\` for 🌙 Late (11am, 3pm, 7pm, 11pm)
+
+**3. Define Your North Star:**
+Type \`/season [Your Main Goal Here]\` to lock in your focus.`;
+
+            await sendTelegram(welcomeMsg);
+            return res.status(200).json({ success: true });
+        }
+
+        // --- 1. SETTINGS COMMANDS (/persona & /schedule) ---
+        if (text.startsWith('/persona ')) {
+            const choice = text.replace('/persona', '').trim();
+            if (['1', '2', '3'].includes(choice)) {
+                await supabase.from('core_config').update({ content: choice }).eq('key', 'identity').eq('user_id', userId);
+                await sendTelegram(`✅ **Persona updated.** I have adjusted my communication style.`);
             } else {
-                await sendTelegram("✅ Your OS is already initialized and active.");
+                await sendTelegram("❌ Invalid choice. Use /persona 1, 2, or 3.");
             }
             return res.status(200).json({ success: true });
         }
 
-        // --- 🔒 1. THE KILL SWITCH (Trial Expiry Check) ---
-        if (await isTrialExpired(userId, supabase)) {
-            await sendTelegram("⏳ **Your 10-Day Sprint has concluded.**\n\nTo continue utilizing the Integrated OS and maintain your operational velocity, it is time for a Season Review. Contact Danny to upgrade.");
+        if (text.startsWith('/schedule ')) {
+            const choice = text.replace('/schedule', '').trim();
+            if (['1', '2', '3'].includes(choice)) {
+                await supabase.from('core_config').update({ content: choice }).eq('key', 'pulse_schedule').eq('user_id', userId);
+                await sendTelegram(`✅ **Schedule updated.** Your briefing times are locked in.`);
+            } else {
+                await sendTelegram("❌ Invalid choice. Use /schedule 1, 2, or 3.");
+            }
             return res.status(200).json({ success: true });
         }
 
-        // --- 2. COMMAND MODE ---
+        // --- 🔒 2. THE KILL SWITCH (Trial Expiry Check) ---
+        if (await isTrialExpired(userId, supabase)) {
+            await sendTelegram("⏳ **Your 14-Day Sprint has concluded.**\n\nTo continue utilizing the Integrated OS and maintain your operational velocity, it is time for a Season Review. Contact Danny to upgrade.");
+            return res.status(200).json({ success: true });
+        }
+
+        // --- 3. COMMAND MODE ---
         if (text.startsWith('/') || text === '🔴 Urgent' || text === '📋 Brief' || text === '🧭 Season Context' || text === '🔓 Vault') {
             let reply = "Thinking...";
 
@@ -91,7 +125,7 @@ export default async function handler(req, res) {
                 const { data: ideas } = await supabase
                     .from('logs')
                     .select('content, created_at')
-                    .eq('user_id', userId) // <-- Privacy Firewall
+                    .eq('user_id', userId)
                     .ilike('entry_type', '%IDEAS%')
                     .order('created_at', { ascending: false })
                     .limit(5);
@@ -115,7 +149,7 @@ export default async function handler(req, res) {
                         .from('core_config')
                         .select('content')
                         .eq('key', 'current_season')
-                        .eq('user_id', userId) // <-- Privacy Firewall
+                        .eq('user_id', userId)
                         .single();
 
                     reply = season
@@ -129,7 +163,7 @@ export default async function handler(req, res) {
                             .from('core_config')
                             .update({ content: params })
                             .eq('key', 'current_season')
-                            .eq('user_id', userId); // <-- Privacy Firewall (CRITICAL)
+                            .eq('user_id', userId);
                         reply = error ? "❌ Database Error" : "✅ **Season Updated.**\nTarget Locked.";
                     }
                 }
@@ -142,7 +176,7 @@ export default async function handler(req, res) {
                     .select('*')
                     .eq('priority', 'urgent')
                     .eq('status', 'todo')
-                    .eq('user_id', userId) // <-- Privacy Firewall
+                    .eq('user_id', userId)
                     .limit(1)
                     .single();
 
@@ -157,7 +191,7 @@ export default async function handler(req, res) {
                     .from('tasks')
                     .select('title, priority')
                     .eq('status', 'todo')
-                    .eq('user_id', userId) // <-- Privacy Firewall
+                    .eq('user_id', userId)
                     .limit(10);
 
                 if (tasks && tasks.length > 0) {
@@ -179,9 +213,8 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true });
         }
 
-        // --- 3. CAPTURE MODE (Default) ---
+        // --- 4. CAPTURE MODE (Default) ---
         if (text) {
-            // Note the addition of user_id here so the system knows whose brain dump this is!
             const { error } = await supabase.from('raw_dumps').insert([{ user_id: userId, content: text }]);
             if (error) throw error;
 
