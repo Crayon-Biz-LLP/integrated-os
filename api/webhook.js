@@ -16,38 +16,70 @@ export default async function handler(req, res) {
         const userId = String(update.message.from.id);
         const text = update.message.text || '';
 
-        const sendTelegram = async (msg) => {
+        const sendTelegram = async (msg, kb = { remove_keyboard: true }) => {
             await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: chatId, text: msg })
+                body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: 'Markdown', reply_markup: kb })
             });
         };
 
+        // --- 1. THE RE-ENGINEERED SAVER ---
+        const forceSave = async (key, content) => {
+            // We delete first to clear any 'ghost' rows, then insert fresh
+            await supabase.from('core_config').delete().eq('user_id', userId).eq('key', key);
+            const { error } = await supabase.from('core_config').insert([{ user_id: userId, key, content }]);
+            if (error) throw new Error(error.message);
+        };
+
+        // --- 2. MASTER RESET ---
         if (text === '/start') {
-            const { error } = await supabase.from('core_config').delete().eq('user_id', userId);
-            await sendTelegram("🛠️ **HARD-WIRED TEST ACTIVE.**\n\nStep 1: Pick a Persona (Commander/Architect)");
+            await supabase.from('core_config').delete().eq('user_id', userId);
+            const welcome = "🎯 **System Reset.**\n\n**Step 1: Choose Persona**";
+            const kb = { keyboard: [[{ text: "⚔️ Commander" }, { text: "🏗️ Architect" }]], resize_keyboard: true };
+            await sendTelegram(welcome, kb);
             return res.status(200).send('ok');
         }
 
-        // --- THE ACTUAL WRITE TEST ---
-        if (text.includes('Architect') || text.includes('Commander')) {
-            const { error } = await supabase.from('core_config').insert([
-                { user_id: userId, key: 'identity', content: text }
-            ]);
+        // --- 3. STATE CHECK ---
+        const { data: configs } = await supabase.from('core_config').select('key, content').eq('user_id', userId);
+        const identity = configs?.find(c => c.key === 'identity')?.content;
+        const schedule = configs?.find(c => c.key === 'pulse_schedule')?.content;
 
-            if (error) {
-                await sendTelegram(`❌ DB REJECTED: ${error.message}`);
+        // --- 4. THE FLOW ---
+        // If no identity, save it and ask for schedule
+        if (!identity) {
+            if (text.includes('Commander') || text.includes('Architect')) {
+                await forceSave('identity', text);
+                const kb = { keyboard: [[{ text: "🌅 Early" }, { text: "☀️ Standard" }]], resize_keyboard: true };
+                await sendTelegram("✅ **Persona Locked.**\n\n**Step 2: Choose Schedule**", kb);
             } else {
-                await sendTelegram("✅ SUCCESS! Database updated. Now try picking a schedule.");
+                await sendTelegram("Please select a Persona:");
             }
             return res.status(200).send('ok');
         }
 
-        await sendTelegram("I'm receiving your messages, but the state is still resetting. This means the DB write above failed.");
+        // If no schedule, save it and ask for North Star
+        if (!schedule) {
+            if (text.includes('Early') || text.includes('Standard')) {
+                await forceSave('pulse_schedule', text);
+                await sendTelegram("✅ **Schedule Locked.**\n\n**Step 3: Define your North Star.**");
+            } else {
+                await sendTelegram("Please select a Schedule:");
+            }
+            return res.status(200).send('ok');
+        }
+
+        await sendTelegram("🚀 **Configuration Complete.** Just dump your thoughts now.");
         return res.status(200).send('ok');
 
     } catch (err) {
-        return res.status(200).send(err.message);
+        // This will now text you the EXACT reason it failed
+        await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: req.body.message.chat.id, text: `🐞 CRITICAL ERROR: ${err.message}` })
+        });
+        return res.status(200).send('ok');
     }
 }
