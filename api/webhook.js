@@ -60,30 +60,39 @@ export default async function handler(req, res) {
         let { data: configs } = await supabase.from('core_config').select('key, content').eq('user_id', userId);
         configs = configs || [];
 
-        // --- 2. NEW USER INITIALIZATION ---
-        if (text === '/start' && configs.length === 0) {
-            await supabase.from('core_config').upsert([
-                { user_id: userId, key: 'identity', content: 'PENDING_PERSONA' },
-                { user_id: userId, key: 'pulse_schedule', content: 'PENDING_SCHEDULE' },
-                { user_id: userId, key: 'current_season', content: 'PENDING_SEASON' }
-            ], { onConflict: 'user_id, key' });
+        // --- 2. BULLETPROOF /start COMMAND (THE RESET) ---
+        if (text === '/start') {
+            const currentSeason = configs.find(c => c.key === 'current_season')?.content;
 
-            configs = [
-                { key: 'identity', content: 'PENDING_PERSONA' },
-                { key: 'pulse_schedule', content: 'PENDING_SCHEDULE' },
-                { key: 'current_season', content: 'PENDING_SEASON' }
-            ];
+            // If they are fully set up, don't wipe their brain
+            if (currentSeason && currentSeason !== 'PENDING_SEASON' && currentSeason !== 'PENDING') {
+                await sendTelegram("✅ Your OS is already fully configured and armed. Use the menu below or just type a task.", MAIN_KEYBOARD);
+                return res.status(200).json({ success: true });
+            } else {
+                // Force a clean slate in the database if they are stuck
+                await supabase.from('core_config').upsert([
+                    { user_id: userId, key: 'identity', content: 'PENDING_PERSONA' },
+                    { user_id: userId, key: 'pulse_schedule', content: 'PENDING_SCHEDULE' },
+                    { user_id: userId, key: 'current_season', content: 'PENDING_SEASON' }
+                ], { onConflict: 'user_id, key' });
+
+                configs = [
+                    { key: 'identity', content: 'PENDING_PERSONA' },
+                    { key: 'pulse_schedule', content: 'PENDING_SCHEDULE' },
+                    { key: 'current_season', content: 'PENDING_SEASON' }
+                ];
+            }
         }
 
-        const identity = configs.find(c => c.key === 'identity')?.content;
-        const schedule = configs.find(c => c.key === 'pulse_schedule')?.content;
-        const season = configs.find(c => c.key === 'current_season')?.content;
+        // Failsafe fallbacks
+        const identity = configs.find(c => c.key === 'identity')?.content || 'PENDING_PERSONA';
+        const schedule = configs.find(c => c.key === 'pulse_schedule')?.content || 'PENDING_SCHEDULE';
+        const season = configs.find(c => c.key === 'current_season')?.content || 'PENDING_SEASON';
 
         // --- 3. THE ONBOARDING STATE MACHINE ---
 
         // Step 1: Persona
         if (identity === 'PENDING_PERSONA') {
-            // We now check if the text simply *contains* the word, ignoring emojis
             if (text.includes('Commander') || text.includes('Architect') || text.includes('Nurturer')) {
                 const val = text.includes('Commander') ? '1' : text.includes('Architect') ? '2' : '3';
                 await supabase.from('core_config').update({ content: val }).eq('key', 'identity').eq('user_id', userId);
@@ -111,22 +120,11 @@ export default async function handler(req, res) {
         }
 
         // Step 3: North Star
-        if (season === 'PENDING_SEASON') {
-            // As long as they type a sentence (more than 5 characters) that isn't a command
+        if (season === 'PENDING_SEASON' || season === 'PENDING') {
             if (text && text.length > 5 && !text.startsWith('/')) {
                 await supabase.from('core_config').update({ content: text }).eq('key', 'current_season').eq('user_id', userId);
 
-                const finalMessage = `✅ **North Star locked. Your OS is armed.**
-
-**How to use me:** Just talk to me naturally. No rigid commands needed.
-
-📥 **To capture tasks or ideas:** Just dump them here. 
-*(e.g., "Remind me to call John on Tuesday," or "Idea: start a podcast.")*
-
-✅ **To close or cancel a task:** Just tell me. 
-*(e.g., "I finished the John call," or "Cancel the podcast idea.")*
-
-Use the menu below for quick status reports. Let's get to work.`;
+                const finalMessage = `✅ **North Star locked. Your OS is armed.**\n\n**How to use me:** Just talk to me naturally. No rigid commands needed.\n\n📥 **To capture tasks or ideas:** Just dump them here.\n*(e.g., "Remind me to call John on Tuesday," or "Idea: start a podcast.")*\n\n✅ **To close or cancel a task:** Just tell me.\n*(e.g., "I finished the John call," or "Cancel the podcast idea.")*\n\nUse the menu below for quick status reports. Let's get to work.`;
 
                 await sendTelegram(finalMessage, MAIN_KEYBOARD);
                 return res.status(200).json({ success: true });
