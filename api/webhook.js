@@ -95,12 +95,20 @@ export default async function handler(req, res) {
         if (identity === 'PENDING_PERSONA') {
             if (text.includes('Commander') || text.includes('Architect') || text.includes('Nurturer')) {
                 const val = text.includes('Commander') ? '1' : text.includes('Architect') ? '2' : '3';
-                await supabase.from('core_config').update({ content: val }).eq('key', 'identity').eq('user_id', userId);
+
+                // BULLETPROOF SAVE
+                await supabase.from('core_config').upsert(
+                    { user_id: userId, key: 'identity', content: val },
+                    { onConflict: 'user_id, key' }
+                );
 
                 await sendTelegram("✅ **Persona locked.**\n\n**Step 2: Choose your Pulse Schedule**\nWhen do you want your Battlefield Briefings? (4 on Weekdays, 2 on Weekends)", SCHEDULE_KEYBOARD);
                 return res.status(200).json({ success: true });
             } else {
-                await sendTelegram("🎯 **Welcome to your 14-Day Sprint.**\n\nI am your Digital 2iC. Let's configure your engine.\n\n**Step 1: Choose my Persona** using the buttons below:", PERSONA_KEYBOARD);
+                const msg = text === '/start'
+                    ? "🎯 **Welcome to your 14-Day Sprint.**\n\nI am your Digital 2iC. Let's configure your engine.\n\n**Step 1: Choose my Persona** using the buttons below:"
+                    : "Please select a persona using the buttons below:";
+                await sendTelegram(msg, PERSONA_KEYBOARD);
                 return res.status(200).json({ success: true });
             }
         }
@@ -109,7 +117,12 @@ export default async function handler(req, res) {
         if (schedule === 'PENDING_SCHEDULE') {
             if (text.includes('Early') || text.includes('Standard') || text.includes('Late')) {
                 const val = text.includes('Early') ? '1' : text.includes('Standard') ? '2' : '3';
-                await supabase.from('core_config').update({ content: val }).eq('key', 'pulse_schedule').eq('user_id', userId);
+
+                // BULLETPROOF SAVE
+                await supabase.from('core_config').upsert(
+                    { user_id: userId, key: 'pulse_schedule', content: val },
+                    { onConflict: 'user_id, key' }
+                );
 
                 await sendTelegram("✅ **Schedule locked.**\n\n**Step 3: Define your North Star.**\nWhat is the single most important outcome you are hunting for these 14 days? (Type your answer below)", { remove_keyboard: true });
                 return res.status(200).json({ success: true });
@@ -122,7 +135,12 @@ export default async function handler(req, res) {
         // Step 3: North Star
         if (season === 'PENDING_SEASON' || season === 'PENDING') {
             if (text && text.length > 5 && !text.startsWith('/')) {
-                await supabase.from('core_config').update({ content: text }).eq('key', 'current_season').eq('user_id', userId);
+
+                // BULLETPROOF SAVE
+                await supabase.from('core_config').upsert(
+                    { user_id: userId, key: 'current_season', content: text },
+                    { onConflict: 'user_id, key' }
+                );
 
                 const finalMessage = `✅ **North Star locked. Your OS is armed.**\n\n**How to use me:** Just talk to me naturally. No rigid commands needed.\n\n📥 **To capture tasks or ideas:** Just dump them here.\n*(e.g., "Remind me to call John on Tuesday," or "Idea: start a podcast.")*\n\n✅ **To close or cancel a task:** Just tell me.\n*(e.g., "I finished the John call," or "Cancel the podcast idea.")*\n\nUse the menu below for quick status reports. Let's get to work.`;
 
