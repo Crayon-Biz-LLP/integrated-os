@@ -54,9 +54,14 @@ export default async function handler(req, res) {
             await supabase.from('core_config').insert([{ user_id: userId, key, content }]);
         };
 
-        // --- 1. /start COMMAND (THE MASTER RESET) ---
+        // --- 1. /start COMMAND ---
         if (text === '/start') {
+            const firstName = update.message.from.first_name || 'Leader'; // Captures Telegram name
             await supabase.from('core_config').delete().eq('user_id', userId);
+
+            // Save the name immediately
+            await setConfig('user_name', firstName);
+
             await sendTelegram("🎯 **Welcome to your 14-Day Sprint.**\n\nI am your Digital 2iC. Let's configure your engine.\n\n**Step 1: Choose my Persona**:", PERSONA_KEYBOARD);
             return res.status(200).json({ success: true });
         }
