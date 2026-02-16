@@ -12,7 +12,7 @@ const KEYBOARD = {
     persistent: true
 };
 
-// ⏱️ 10-DAY KILL SWITCH HELPER
+// ⏱️ 14-DAY KILL SWITCH HELPER..
 async function isTrialExpired(userId, supabase) {
     const { data, error } = await supabase
         .from('core_config')
@@ -22,7 +22,7 @@ async function isTrialExpired(userId, supabase) {
         .single();
 
     if (error || !data) return false; // New user, hasn't started yet
-    const tenDaysMs = 10 * 24 * 60 * 60 * 1000;
+    const tenDaysMs = 14 * 24 * 60 * 60 * 1000;
     return (Date.now() - new Date(data.created_at).getTime()) > tenDaysMs;
 }
 
