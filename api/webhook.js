@@ -1,85 +1,173 @@
+// api/webhook.js
 import { createClient } from '@supabase/supabase-js';
 
-// --- MANUALLY PASTE YOUR KEYS HERE FOR THIS TEST ---
-const SB_URL = "https://tjlerjcbssargalmqpxd.supabase.co";
-const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRqbGVyamNic3NhcmdhbG1xcHhkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzEyMjAwMjQsImV4cCI6MjA4Njc5NjAyNH0.8NIs86TfFl_lmkFi5Xw7H9fAsq5iPq31whPwWQ55lRc";
-const TG_TOKEN = "8557809212:AAEVBr3A4hnHLxpi9yQ93_o1WT5TkRSJ1nU";
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-const supabase = createClient(SB_URL, SB_KEY);
+const MAIN_KEYBOARD = {
+    keyboard: [
+        [{ text: "🔴 Urgent" }, { text: "📋 Brief" }],
+        [{ text: "🧭 Season Context" }, { text: "🔓 Vault" }]
+    ],
+    resize_keyboard: true,
+    persistent: true
+};
+
+const PERSONA_KEYBOARD = {
+    keyboard: [[{ text: "⚔️ Commander" }, { text: "🏗️ Architect" }, { text: "🌿 Nurturer" }]],
+    resize_keyboard: true,
+    one_time_keyboard: true
+};
+
+const SCHEDULE_KEYBOARD = {
+    keyboard: [[{ text: "🌅 Early" }, { text: "☀️ Standard" }, { text: "🌙 Late" }]],
+    resize_keyboard: true,
+    one_time_keyboard: true
+};
+
+async function isTrialExpired(userId) {
+    const { data, error } = await supabase.from('core_config').select('created_at').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).single();
+    if (error || !data) return false;
+    const fourteenDaysMs = 14 * 24 * 60 * 60 * 1000;
+    return (Date.now() - new Date(data.created_at).getTime()) > fourteenDaysMs;
+}
 
 export default async function handler(req, res) {
     try {
         const update = req.body;
-        if (!update?.message) return res.status(200).send('ok');
+        if (!update?.message) return res.status(200).json({ message: 'No message' });
 
         const chatId = update.message.chat.id;
         const userId = String(update.message.from.id);
         const text = update.message.text || '';
 
-        const sendTelegram = async (msg, kb = { remove_keyboard: true }) => {
-            await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+        const sendTelegram = async (messageText, customKeyboard = MAIN_KEYBOARD) => {
+            await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: 'Markdown', reply_markup: kb })
+                body: JSON.stringify({ chat_id: chatId, text: messageText, parse_mode: 'Markdown', reply_markup: customKeyboard })
             });
         };
 
-        // --- 1. THE RE-ENGINEERED SAVER ---
-        const forceSave = async (key, content) => {
-            // We delete first to clear any 'ghost' rows, then insert fresh
+        // 🛡️ BULLETPROOF DATABASE SAVER
+        const setConfig = async (key, content) => {
             await supabase.from('core_config').delete().eq('user_id', userId).eq('key', key);
-            const { error } = await supabase.from('core_config').insert([{ user_id: userId, key, content }]);
-            if (error) throw new Error(error.message);
+            await supabase.from('core_config').insert([{ user_id: userId, key, content }]);
         };
 
-        // --- 2. MASTER RESET ---
+        // --- 1. /start COMMAND (THE MASTER RESET) ---
         if (text === '/start') {
             await supabase.from('core_config').delete().eq('user_id', userId);
-            const welcome = "🎯 **System Reset.**\n\n**Step 1: Choose Persona**";
-            const kb = { keyboard: [[{ text: "⚔️ Commander" }, { text: "🏗️ Architect" }]], resize_keyboard: true };
-            await sendTelegram(welcome, kb);
-            return res.status(200).send('ok');
+            await sendTelegram("🎯 **Welcome to your 14-Day Sprint.**\n\nI am your Digital 2iC. Let's configure your engine.\n\n**Step 1: Choose my Persona**:", PERSONA_KEYBOARD);
+            return res.status(200).json({ success: true });
         }
 
-        // --- 3. STATE CHECK ---
-        const { data: configs } = await supabase.from('core_config').select('key, content').eq('user_id', userId);
-        const identity = configs?.find(c => c.key === 'identity')?.content;
-        const schedule = configs?.find(c => c.key === 'pulse_schedule')?.content;
+        // --- 2. FETCH CURRENT STATE ---
+        let { data: configs } = await supabase.from('core_config').select('key, content').eq('user_id', userId);
+        configs = configs || [];
 
-        // --- 4. THE FLOW ---
-        // If no identity, save it and ask for schedule
+        const identity = configs.find(c => c.key === 'identity')?.content;
+        const schedule = configs.find(c => c.key === 'pulse_schedule')?.content;
+        const season = configs.find(c => c.key === 'current_season')?.content;
+
+        // --- 3. THE ONBOARDING STATE MACHINE ---
+
+        // Step 1: Persona
         if (!identity) {
-            if (text.includes('Commander') || text.includes('Architect')) {
-                await forceSave('identity', text);
-                const kb = { keyboard: [[{ text: "🌅 Early" }, { text: "☀️ Standard" }]], resize_keyboard: true };
-                await sendTelegram("✅ **Persona Locked.**\n\n**Step 2: Choose Schedule**", kb);
+            if (text.includes('Commander') || text.includes('Architect') || text.includes('Nurturer')) {
+                const val = text.includes('Commander') ? '1' : text.includes('Architect') ? '2' : '3';
+                await setConfig('identity', val);
+
+                const scheduleMsg = "✅ **Persona locked.**\n\n**Step 2: Choose your Pulse Schedule**\nWhen do you want your Battlefield Briefings?\n\n" +
+                    "🌅 **Early:** 6AM, 10AM, 2PM, 6PM\n" +
+                    "☀️ **Standard:** 8AM, 12PM, 4PM, 8PM\n" +
+                    "🌙 **Late:** 10AM, 2PM, 6PM, 10PM\n\n" +
+                    "*(Weekends are reduced to 2 pulses per day)*";
+
+                await sendTelegram(scheduleMsg, SCHEDULE_KEYBOARD);
             } else {
-                await sendTelegram("Please select a Persona:");
+                const personaMsg = "🎯 **Choose your OS Persona:**\n\n" +
+                    "⚔️ **Commander:** Direct, urgent, and focused on rapid execution.\n\n" +
+                    "🏗️ **Architect:** Methodical, structured, and focused on engineering systems.\n\n" +
+                    "🌿 **Nurturer:** Balanced, proactive, and focused on team dynamics.";
+                await sendTelegram(personaMsg, PERSONA_KEYBOARD);
             }
-            return res.status(200).send('ok');
+            return res.status(200).json({ success: true });
         }
 
-        // If no schedule, save it and ask for North Star
+        // Step 2: Schedule
         if (!schedule) {
-            if (text.includes('Early') || text.includes('Standard')) {
-                await forceSave('pulse_schedule', text);
-                await sendTelegram("✅ **Schedule Locked.**\n\n**Step 3: Define your North Star.**");
+            if (text.includes('Early') || text.includes('Standard') || text.includes('Late')) {
+                const val = text.includes('Early') ? '1' : text.includes('Standard') ? '2' : '3';
+                await setConfig('pulse_schedule', val);
+
+                const northStarMsg = "✅ **Schedule locked.**\n\n**Step 3: Define your North Star.**\n" +
+                    "What is the single most important outcome you are hunting for these 14 days?\n\n" +
+                    "Type your answer clearly below. This will be the anchor for every briefing I send you.";
+
+                await sendTelegram(northStarMsg, { remove_keyboard: true });
             } else {
-                await sendTelegram("Please select a Schedule:");
+                await sendTelegram("Please select a briefing schedule using the buttons below:", SCHEDULE_KEYBOARD);
             }
-            return res.status(200).send('ok');
+            return res.status(200).json({ success: true });
         }
 
-        await sendTelegram("🚀 **Configuration Complete.** Just dump your thoughts now.");
-        return res.status(200).send('ok');
+        // Step 3: North Star
+        if (!season) {
+            if (text && text.length > 5 && !text.startsWith('/')) {
+                await setConfig('current_season', text);
+                const finalMsg = `✅ **North Star locked. Your OS is armed.**\n\n**How to use me:** Just talk to me naturally. No rigid commands needed.\n\n📥 **To capture tasks or ideas:** Just dump them here.\n\n✅ **To close or cancel a task:** Just tell me.\n\nUse the menu below for quick status reports. Let's get to work.`;
+                await sendTelegram(finalMsg, MAIN_KEYBOARD);
+            } else {
+                await sendTelegram("Please reply with a short text defining your North Star for this sprint.", { remove_keyboard: true });
+            }
+            return res.status(200).json({ success: true });
+        }
 
-    } catch (err) {
-        // This will now text you the EXACT reason it failed
-        await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: req.body.message.chat.id, text: `🐞 CRITICAL ERROR: ${err.message}` })
-        });
-        return res.status(200).send('ok');
+        // --- 4. THE KILL SWITCH ---
+        if (await isTrialExpired(userId)) {
+            await sendTelegram("⏳ **Your 14-Day Sprint has concluded.** Contact Danny to upgrade.");
+            return res.status(200).json({ success: true });
+        }
+
+        // --- 5. COMMAND MODE ---
+        if (text.startsWith('/') || text === '🔴 Urgent' || text === '📋 Brief' || text === '🧭 Season Context' || text === '🔓 Vault') {
+            let reply = "Thinking...";
+
+            if (text === '/vault' || text === '🔓 Vault') {
+                const { data: ideas } = await supabase.from('logs').select('content, created_at').eq('user_id', userId).ilike('entry_type', '%IDEAS%').order('created_at', { ascending: false }).limit(5);
+                reply = (ideas && ideas.length > 0) ? "🔓 **THE IDEA VAULT (Last 5):**\n\n" + ideas.map(i => `💡 *${new Date(i.created_at).toLocaleDateString()}:* ${i.content}`).join('\n\n') : "The Vault is empty.";
+            }
+            else if (text.startsWith('/season') || text === '🧭 Season Context') {
+                const params = text.replace('/season', '').replace('🧭 Season Context', '').trim();
+                if (params.length === 0) reply = `🧭 **CURRENT NORTH STAR:**\n\n${season}`;
+                else if (params.length > 5) { await setConfig('current_season', params); reply = "✅ **Season Updated.**"; }
+            }
+            else if (text === '/urgent' || text === '🔴 Urgent') {
+                const { data: fire } = await supabase.from('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').eq('user_id', userId).limit(1).single();
+                reply = fire ? `🔴 **ACTION REQUIRED:**\n\n🔥 ${fire.title}` : "✅ No active fires.";
+            }
+            else if (text === '/brief' || text === '📋 Brief') {
+                const { data: tasks } = await supabase.from('tasks').select('title, priority').eq('status', 'todo').eq('user_id', userId).limit(10);
+                if (tasks && tasks.length > 0) {
+                    const sorted = tasks.sort((a, b) => (a.priority === 'urgent' ? -1 : 1)).slice(0, 5);
+                    reply = "📋 **EXECUTIVE BRIEF:**\n\n" + sorted.map(t => `${t.priority === 'urgent' ? '🔴' : '⚪'} ${t.title}`).join('\n');
+                } else reply = "The list is empty.";
+            }
+
+            await sendTelegram(reply);
+            return res.status(200).json({ success: true });
+        }
+
+        // --- 6. CAPTURE MODE ---
+        if (text) {
+            await supabase.from('raw_dumps').insert([{ user_id: userId, content: text }]);
+            await sendTelegram('✅');
+        }
+
+        return res.status(200).json({ success: true });
+
+    } catch (error) {
+        console.error('Webhook Error:', error);
+        return res.status(500).json({ error: error.message });
     }
 }
