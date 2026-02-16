@@ -80,9 +80,11 @@ export default async function handler(req, res) {
         const season = configs.find(c => c.key === 'current_season')?.content;
 
         // --- 3. THE ONBOARDING STATE MACHINE ---
+
         // Step 1: Persona
         if (identity === 'PENDING_PERSONA') {
-            if (['⚔️ Commander', '🏗️ Architect', '🌿 Nurturer'].includes(text)) {
+            // We now check if the text simply *contains* the word, ignoring emojis
+            if (text.includes('Commander') || text.includes('Architect') || text.includes('Nurturer')) {
                 const val = text.includes('Commander') ? '1' : text.includes('Architect') ? '2' : '3';
                 await supabase.from('core_config').update({ content: val }).eq('key', 'identity').eq('user_id', userId);
 
@@ -96,7 +98,7 @@ export default async function handler(req, res) {
 
         // Step 2: Schedule
         if (schedule === 'PENDING_SCHEDULE') {
-            if (['🌅 Early', '☀️ Standard', '🌙 Late'].includes(text)) {
+            if (text.includes('Early') || text.includes('Standard') || text.includes('Late')) {
                 const val = text.includes('Early') ? '1' : text.includes('Standard') ? '2' : '3';
                 await supabase.from('core_config').update({ content: val }).eq('key', 'pulse_schedule').eq('user_id', userId);
 
@@ -110,6 +112,7 @@ export default async function handler(req, res) {
 
         // Step 3: North Star
         if (season === 'PENDING_SEASON') {
+            // As long as they type a sentence (more than 5 characters) that isn't a command
             if (text && text.length > 5 && !text.startsWith('/')) {
                 await supabase.from('core_config').update({ content: text }).eq('key', 'current_season').eq('user_id', userId);
 
