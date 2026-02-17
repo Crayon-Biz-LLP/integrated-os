@@ -155,11 +155,42 @@ export default async function handler(req, res) {
                 if (error) return await sendTelegram(`❌ Error: ${error.message}`);
 
                 await setConfig('initial_people_setup', 'true');
-                const armedMsg = `✅ **System Armed.** Your inner circle is now intelligent context.\n\n` +
-                    `**How to use your Digital 2iC:**\n` +
-                    `Treat this chat as your raw brain dump. Whenever a task, idea, or problem crosses your mind, just type it here naturally.\n\n` +
-                    `I will capture it, analyze it against your North Star, and structure it for your next Briefing.\n\n` +
-                    `**Try sending your first raw thought now:**`;
+
+                // --- THE NEW EXECUTIVE SUMMARY ---
+                const personaMap = {
+                    '1': '⚔️ **Commander:** I will drive rapid execution, prioritizing immediate action and urgent deliverables in your briefings.',
+                    '2': '🏗️ **Architect:** I will engineer structured systems, breaking your raw thoughts down into methodical, scalable steps.',
+                    '3': '🌿 **Nurturer:** I will balance your momentum with team dynamics, focusing on sustainable growth and key relationships.'
+                };
+
+                const scheduleMap = {
+                    '1': '🌅 **Early:** Expect your briefings at 6AM, 10AM, 2PM, and 6PM.',
+                    '2': '☀️ **Standard:** Expect your briefings at 8AM, 12PM, 4PM, and 8PM.',
+                    '3': '🌙 **Late:** Expect your briefings at 10AM, 2PM, 6PM, and 10PM.'
+                };
+                const armedMsg = `✅ **System Armed. Initialization Complete.**\n\n` +
+                    `Here is how your Digital Chief of Staff is engineered for this 14-Day Sprint:\n\n` +
+                    `🧠 **Your AI Persona:**\n${personaMap[identity] || 'Default'}\n\n` +
+                    `⏱️ **The Pulse Schedule:**\n${scheduleMap[schedule] || 'Standard'}\n` +
+                    `*(A "Pulse" is a proactive Battlefield Briefing where I organize your raw thoughts into actionable tasks).* \n\n` +
+                    `🧭 **Your North Star:**\n"${season}"\n` +
+                    `*(Every idea or task you send me will be ruthlessly prioritized against this specific outcome).*\n\n` +
+                    `👥 **Influence Map:**\n${peopleData.length} key stakeholders registered.\n` +
+                    `*(I will automatically tag and prioritize tasks that involve these specific individuals).*\n\n` +
+                    `🔒 **Ironclad Privacy Protocol:**\n` +
+                    `Your inputs are your intellectual property. Your data is stored in a secure, isolated database and is **never** used to train public AI models.\n\n` +
+                    `---\n` +
+                    `📱 **YOUR DASHBOARD (Menu Buttons):**\n` +
+                    `Use the keyboard below to pull data instantly outside of your scheduled Pulses:\n` +
+                    `• **Urgent / Brief:** Pulls your active tasks.\n` +
+                    `• **Vault:** Retrieves your latest captured ideas.\n` +
+                    `• **Season / People:** Checks your current strategic context.\n\n` +
+                    `🔄 **Recalibration:** If your strategy shifts or you need to change your Persona/Schedule, simply type \`/start\` to reset your engine.\n\n` +
+                    `---\n` +
+                    `**HOW TO OPERATE:**\n` +
+                    `Do not worry about formatting. Treat this chat as your raw brain dump. Whenever a task, idea, or problem crosses your mind—just type it here naturally.\n\n` +
+                    `I will capture the chaos, engineer it into order, and serve it back to you at your next Pulse.\n\n` +
+                    `*Send your first raw thought below to begin:*`;
 
                 await sendTelegram(armedMsg, MAIN_KEYBOARD);
             } else await sendTelegram("List your stakeholders (separated by commas).");
