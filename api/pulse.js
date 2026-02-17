@@ -96,7 +96,7 @@ export default async function handler(req, res) {
                     });
                 }
 
-                // Database Updates
+                // Database Updates (Atomic)
                 if (dumps?.length > 0) {
                     await supabase.from('raw_dumps').update({ is_processed: true }).in('id', dumps.map(d => d.id));
                 }
@@ -110,8 +110,20 @@ export default async function handler(req, res) {
             }
         };
 
-        // ⚡ FIRE PARALLEL EXECUTION
-        await Promise.allSettled(uniqueUserIds.map(id => processUser(id)));
+        // --- 🚀 THE PARALLEL BATCHING ENGINE ---
+        const BATCH_SIZE = 10;
+
+        for (let i = 0; i < uniqueUserIds.length; i += BATCH_SIZE) {
+            const batch = uniqueUserIds.slice(i, i + BATCH_SIZE);
+
+            // Fire 10 users to Gemini simultaneously
+            await Promise.allSettled(batch.map(id => processUser(id)));
+
+            // If there are more users waiting, pause for 1 second to respect Gemini Rate Limits
+            if (i + BATCH_SIZE < uniqueUserIds.length) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
 
         return res.status(200).json({ success: true });
     } catch (error) {
