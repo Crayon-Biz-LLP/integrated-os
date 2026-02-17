@@ -88,10 +88,11 @@ export default async function handler(req, res) {
             - NEW RAW INPUTS: ${dumps.map(d => d.content).join('\n---\n')}
 
             INSTRUCTIONS: 
-            1. Analyze new inputs to create new tasks, projects, or people.
-            2. Generate a briefing that strictly matches the Persona Guideline. 
-            3. Use exactly "${briefing_mode}" as the header.
-            4. Keep the tone professional, direct, and ROI-focused.
+            1. Address ${userName} personally in the briefing.
+            2. Analyze new inputs to create new tasks, projects, or people.
+            3. Generate a briefing that strictly matches the Persona Guideline. 
+            4. Use exactly "${briefing_mode}" as the header.
+            5. Keep the tone professional, direct, and ROI-focused.
 
             OUTPUT JSON:
             {

@@ -6,7 +6,8 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANO
 const MAIN_KEYBOARD = {
     keyboard: [
         [{ text: "🔴 Urgent" }, { text: "📋 Brief" }],
-        [{ text: "🧭 Season Context" }, { text: "🔓 Vault" }]
+        [{ text: "👥 People" }, { text: "🔓 Vault" }],
+        [{ text: "🧭 Season Context" }]
     ],
     resize_keyboard: true,
     persistent: true
@@ -128,6 +129,38 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true });
         }
 
+        // Step 3: North Star
+        if (!season) {
+            if (text && text.length > 5 && !text.startsWith('/')) {
+                await setConfig('current_season', text);
+
+                const peopleMsg = "✅ **North Star locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top 3 people that influence your success this sprint? (e.g., 'John (Investor), Sarah (CTO)')\n\n*Type their names below, separated by commas:*";
+
+                await sendTelegram(peopleMsg, { remove_keyboard: true });
+            } else {
+                await sendTelegram("Please reply with your North Star for this sprint.", { remove_keyboard: true });
+            }
+            return res.status(200).json({ success: true });
+        }
+
+        // Step 4: Key People
+        const hasPeople = configs.find(c => c.key === 'initial_people_setup')?.content;
+        if (!hasPeople) {
+            if (text && !text.startsWith('/')) {
+                const names = text.split(',').map(n => n.trim());
+                for (const name of names) {
+                    await supabase.from('people').insert([{ user_id: userId, name: name, strategic_weight: 5 }]);
+                }
+                await setConfig('initial_people_setup', 'true'); // Marks this step done
+
+                const finalMsg = `✅ **System Armed, ${configs.find(c => c.key === 'user_name')?.content || 'Leader'}.**\n\nYour Persona, Schedule, North Star, and Stakeholders are all locked in.\n\n📥 **Capture:** Just dump thoughts or tasks here.\n✅ **Close:** Tell me when a task is done.\n\nUse the menu below to navigate. Let's conquer these 14 days.`;
+                await sendTelegram(finalMsg, MAIN_KEYBOARD);
+            } else {
+                await sendTelegram("Please list at least one key person to continue.", { remove_keyboard: true });
+            }
+            return res.status(200).json({ success: true });
+        }
+
         // --- 4. THE KILL SWITCH ---
         if (await isTrialExpired(userId)) {
             await sendTelegram("⏳ **Your 14-Day Sprint has concluded.** Contact Danny to upgrade.");
@@ -135,7 +168,7 @@ export default async function handler(req, res) {
         }
 
         // --- 5. COMMAND MODE ---
-        if (text.startsWith('/') || text === '🔴 Urgent' || text === '📋 Brief' || text === '🧭 Season Context' || text === '🔓 Vault') {
+        if (text.startsWith('/') || text === '🔴 Urgent' || text === '📋 Brief' || text === '🧭 Season Context' || text === '🔓 Vault' || text === '👥 People') {
             let reply = "Thinking...";
 
             if (text === '/vault' || text === '🔓 Vault') {
@@ -157,6 +190,48 @@ export default async function handler(req, res) {
                     const sorted = tasks.sort((a, b) => (a.priority === 'urgent' ? -1 : 1)).slice(0, 5);
                     reply = "📋 **EXECUTIVE BRIEF:**\n\n" + sorted.map(t => `${t.priority === 'urgent' ? '🔴' : '⚪'} ${t.title}`).join('\n');
                 } else reply = "The list is empty.";
+            }
+            else if (text.startsWith('/person ')) {
+                const input = text.replace('/person ', '').trim();
+                // Expected format: Name | Weight (1-10)
+                const [name, weight] = input.split('|').map(s => s.trim());
+
+                if (name) {
+                    const { error } = await supabase.from('people').insert([{
+                        user_id: userId,
+                        name: name,
+                        strategic_weight: parseInt(weight) || 5
+                    }]);
+
+                    if (error) {
+                        reply = "❌ Error adding person. Ensure the 'people' table exists.";
+                    } else {
+                        reply = `👤 **Stakeholder Registered:** ${name}\nStrategic Weight: ${weight || 5}/10`;
+                    }
+                } else {
+                    reply = "❌ Format: `/person Name | Weight` (e.g., `/person John Doe | 9`)";
+                }
+            }
+            else if (text.startsWith('/person ')) {
+                const input = text.replace('/person ', '').trim();
+                // Expected format: Name | Weight (1-10)
+                const [name, weight] = input.split('|').map(s => s.trim());
+
+                if (name) {
+                    const { error } = await supabase.from('people').insert([{
+                        user_id: userId,
+                        name: name,
+                        strategic_weight: parseInt(weight) || 5
+                    }]);
+
+                    if (error) {
+                        reply = "❌ Error adding person. Ensure the 'people' table exists.";
+                    } else {
+                        reply = `👤 **Stakeholder Registered:** ${name}\nStrategic Weight: ${weight || 5}/10`;
+                    }
+                } else {
+                    reply = "❌ Format: `/person Name | Weight` (e.g., `/person John Doe | 9`)";
+                }
             }
 
             await sendTelegram(reply);
