@@ -128,8 +128,7 @@ export default async function handler(req, res) {
             if (text && text.length > 5 && !text.startsWith('/')) {
                 await setConfig('current_season', text);
 
-                const peopleMsg = "✅ **North Star locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top people that influence your success? (e.g., 'manager, team lead, client, wife...')\n\n*Type their names below, separated by commas:*";
-
+                const peopleMsg = "✅ **North Star locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top people that influence your success? \n\n*Format:* Name (Role), Name (Role)\n*Example:* Jane (Wife), John (Client Partner)\n\n*Type them below:*";
                 await sendTelegram(peopleMsg, { remove_keyboard: true });
             } else {
                 await sendTelegram("Please define your 14-day North Star.", { remove_keyboard: true });
@@ -156,7 +155,13 @@ export default async function handler(req, res) {
                 if (error) return await sendTelegram(`❌ Error: ${error.message}`);
 
                 await setConfig('initial_people_setup', 'true');
-                await sendTelegram(`✅ **System Armed.** Your inner circle is now intelligent context.`, MAIN_KEYBOARD);
+                const armedMsg = `✅ **System Armed.** Your inner circle is now intelligent context.\n\n` +
+                    `**How to use your Digital 2iC:**\n` +
+                    `Treat this chat as your raw brain dump. Whenever a task, idea, or problem crosses your mind, just type it here naturally.\n\n` +
+                    `I will capture it, analyze it against your North Star, and structure it for your next Briefing.\n\n` +
+                    `**Try sending your first raw thought now:**`;
+
+                await sendTelegram(armedMsg, MAIN_KEYBOARD);
             } else await sendTelegram("List your stakeholders (separated by commas).");
             return res.status(200).json({ success: true });
         }
