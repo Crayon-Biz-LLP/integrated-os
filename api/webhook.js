@@ -6,7 +6,7 @@ const MAIN_KEYBOARD = {
     keyboard: [
         [{ text: "🔴 Urgent" }, { text: "📋 Brief" }],
         [{ text: "👥 People" }, { text: "🔓 Vault" }],
-        [{ text: "🧭 Season Context" }]
+        [{ text: "🧭 Main Goal" }, { text: "⚙️ Settings" }]
     ],
     resize_keyboard: true,
     persistent: true
@@ -22,6 +22,21 @@ const SCHEDULE_KEYBOARD = {
     keyboard: [[{ text: "🌅 Early" }, { text: "☀️ Standard" }, { text: "🌙 Late" }]],
     resize_keyboard: true,
     one_time_keyboard: true
+};
+
+const SETTINGS_KEYBOARD = {
+    keyboard: [
+        [{ text: "🎭 Change Persona" }, { text: "⏰ Change Schedule" }],
+        [{ text: "📍 Change Location" }, { text: "🎯 Change Goal" }],
+        [{ text: "🔙 Back to Dashboard" }]
+    ],
+    resize_keyboard: true
+};
+
+const tzDisplay = (offset) => {
+    const num = parseFloat(offset);
+    const sign = num >= 0 ? "+" : "";
+    return `🌍 **Local Sync:** GMT${sign}${num}`;
 };
 
 async function isTrialExpired(userId) {
@@ -89,7 +104,11 @@ export default async function handler(req, res) {
             if (text.match(/Commander|Architect|Nurturer/)) {
                 const val = text.includes('Commander') ? '1' : text.includes('Architect') ? '2' : '3';
                 await setConfig('identity', val);
-
+                // NEW BYPASS
+                if (hasPeople) {
+                    await sendTelegram(`✅ **Persona Updated.**`, MAIN_KEYBOARD);
+                    return res.status(200).json({ success: true });
+                }
                 const scheduleMsg = "✅ **Persona locked.**\n\n**Step 2: Choose your Briefing Schedule**\nWhen do you want your Briefings?\n\n" +
                     "🌅 **Early:** 6AM, 10AM, 2PM, 6PM\n" +
                     "☀️ **Standard:** 8AM, 12PM, 4PM, 8PM\n" +
@@ -108,22 +127,53 @@ export default async function handler(req, res) {
             if (text.match(/Early|Standard|Late/)) {
                 const val = text.includes('Early') ? '1' : text.includes('Standard') ? '2' : '3';
                 await setConfig('pulse_schedule', val);
-
-                const northStarMsg = "✅ **Schedule locked.**\n\n**Step 3: Define your Main Goal:.**\n" +
-                    "This is the single most important outcome you are hunting for these 14 days. This will be the anchor for every briefing I send you.";
-
-                await sendTelegram(northStarMsg, { remove_keyboard: true });
+                // NEW BYPASS
+                if (hasPeople) {
+                    await sendTelegram(`✅ **Schedule Updated.**`, MAIN_KEYBOARD);
+                    return res.status(200).json({ success: true });
+                }
+                const locMsg = "✅ **Schedule locked.**\n\n**Step 3: What is your GMT/UTC Timezone Offset?**\n" +
+                    "Type your number (e.g., `5.5` for India, `-5` for EST, `11` for Sydney, `0` for UK).";
+                await sendTelegram(locMsg, { remove_keyboard: true });
             } else {
                 await sendTelegram("Please select a briefing schedule:", SCHEDULE_KEYBOARD);
             }
             return res.status(200).json({ success: true });
         }
 
-        // Step 3: Main Goal
+        // Step 3: Pure Number Timezone Resolver
+        const tzOffset = configs.find(c => c.key === 'timezone_offset')?.content;
+        if (!tzOffset) {
+            // Extract the first valid number (positive or negative) from their reply
+            const match = text.match(/-?\d+(\.\d+)?/);
+
+            if (match) {
+                const offset = match[0]; // Gets exactly what they typed (e.g., "-5" or "5.5")
+                await setConfig('timezone_offset', offset);
+
+                // Bypass for existing users using the Settings menu
+                if (hasPeople) {
+                    await sendTelegram(`✅ **Timezone Updated to GMT${parseFloat(offset) >= 0 ? '+' : ''}${offset}.**`, MAIN_KEYBOARD);
+                    return res.status(200).json({ success: true });
+                }
+
+                const goalMsg = `✅ **Synced to GMT${parseFloat(offset) >= 0 ? '+' : ''}${offset}.**\n\n**Step 4: Define your Main Goal:**\n` +
+                    "This is the single most important outcome you are hunting for these 14 days.";
+                await sendTelegram(goalMsg);
+            } else {
+                await sendTelegram("⚠️ Please enter a valid number for your offset (e.g., `-5`, `5.5`, `11`).");
+            }
+            return res.status(200).json({ success: true });
+        }
+
+        // Step 4: Main Goal
         if (!season) {
             if (text && text.length > 5 && !text.startsWith('/')) {
                 await setConfig('current_season', text);
-
+                if (hasPeople) {
+                    await sendTelegram(`✅ **Main Goal Updated.**`, MAIN_KEYBOARD);
+                    return res.status(200).json({ success: true });
+                }
                 const peopleMsg = "✅ **Main Goal locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top people that influence your success?\n\n*Format:* Name (Role), Name (Role)\n*Example:* Jane (Wife), John (Client Partner)\n\n*(If you prefer to add these later, just type **Skip**)*\n\n*Type them below:*";
 
                 await sendTelegram(peopleMsg, { remove_keyboard: true });
@@ -133,7 +183,7 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true });
         }
 
-        // Step 4: Key People & Finalizing Onboarding
+        // Step 5: Key People & Finalizing Onboarding
         if (!hasPeople) {
             if (text && !text.startsWith('/') && text !== '👥 People') {
 
@@ -179,6 +229,7 @@ export default async function handler(req, res) {
                     `Here is how your Digital Chief of Staff is engineered for this 14-Day Sprint:\n\n` +
                     `🧠 **Your AI Persona:**\n${personaMap[identity] || 'Default'}\n\n` +
                     `⏱️ **The Check-in Schedule:**\n${scheduleMap[schedule] || 'Standard'}\n` +
+                    `${tzDisplay(tzOffset || '5.5')}\n` +
                     `*(A "Check-in" is a proactive Briefing where I organize your raw thoughts into actionable tasks).* \n\n` +
                     `🧭 **Your Main Goal:**\n"${season}"\n` +
                     `*(Every idea or task you send me will be ruthlessly prioritized against this specific outcome).*\n\n` +
@@ -190,7 +241,7 @@ export default async function handler(req, res) {
                     `Use the keyboard below to pull data instantly outside of your scheduled Check-in:\n` +
                     `• **Urgent / Brief:** Pulls your active tasks.\n` +
                     `• **Vault:** Retrieves your latest captured ideas.\n` +
-                    `• **Season / People:** Checks your current strategic context.\n\n` +
+                    `• **Main Goal / People:** Checks your current strategic context.\n\n` +
                     `🔄 **Change Settings:** If your strategy shifts or you need to change your Persona/Schedule, simply type \`/start\` to reset your engine.\n\n` +
                     `---\n` +
                     `**HOW TO OPERATE:**\n` +
@@ -214,13 +265,48 @@ export default async function handler(req, res) {
         // --- 5. COMMAND MODE ---
         let finalReply = "";
 
-        if (text.startsWith('/') || ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '👥 People'].includes(text)) {
+        // Ensure this list perfectly matches your button text
+        const commandList = ['🔴 Urgent', '📋 Brief', '🧭 Main Goal', '🔓 Vault', '👥 People', '⚙️ Settings', '🎭 Change Persona', '⏰ Change Schedule', '📍 Change Location', '🎯 Change Goal', '🔙 Back to Dashboard'];
 
-            if (text === '🔓 Vault') {
+        if (text.startsWith('/') || commandList.includes(text)) {
+
+            // --- A. SETTINGS SUB-MENU LOGIC ---
+            if (text === '⚙️ Settings') {
+                finalReply = "⚙️ **CONTROL PANEL**\nSelect an element of your engine to recalibrate:";
+                await sendTelegram(finalReply, SETTINGS_KEYBOARD);
+                return res.status(200).json({ success: true });
+            }
+            else if (text === '🎭 Change Persona') {
+                await supabase.from('core_config').delete().eq('user_id', userId).eq('key', 'identity');
+                finalReply = "Choose your new Persona:";
+                await sendTelegram(finalReply, PERSONA_KEYBOARD);
+            }
+            else if (text === '⏰ Change Schedule') {
+                await supabase.from('core_config').delete().eq('user_id', userId).eq('key', 'pulse_schedule');
+                finalReply = "Choose your new Briefing Schedule:";
+                await sendTelegram(finalReply, SCHEDULE_KEYBOARD);
+            }
+            else if (text === '📍 Change Location') {
+                await supabase.from('core_config').delete().eq('user_id', userId).eq('key', 'timezone_offset');
+                finalReply = "Where are you located? (Enter city name):";
+                await sendTelegram(finalReply, { remove_keyboard: true });
+            }
+            else if (text === '🎯 Change Goal') {
+                await supabase.from('core_config').delete().eq('user_id', userId).eq('key', 'current_season');
+                finalReply = "What is your new Main Goal for this sprint?";
+                await sendTelegram(finalReply, { remove_keyboard: true });
+            }
+            else if (text === '🔙 Back to Dashboard') {
+                finalReply = "Returning to Dashboard.";
+                await sendTelegram(finalReply, MAIN_KEYBOARD);
+            }
+
+            // --- B. CORE DASHBOARD LOGIC (Now independent and reachable) ---
+            else if (text === '🔓 Vault') {
                 const { data: ideas } = await supabase.from('logs').select('content, created_at').eq('user_id', userId).ilike('entry_type', '%IDEAS%').order('created_at', { ascending: false }).limit(5);
                 finalReply = (ideas && ideas.length > 0) ? "🔓 **THE IDEA VAULT (Last 5):**\n\n" + ideas.map(i => `💡 *${new Date(i.created_at).toLocaleDateString()}:* ${i.content}`).join('\n\n') : "The Vault is empty.";
             }
-            else if (text === '🧭 Season Context') {
+            else if (text === '🧭 Main Goal') { // Synchronized jargon
                 finalReply = `🧭 **CURRENT MAIN GOAL:**\n\n${season}`;
             }
             else if (text === '🔴 Urgent') {

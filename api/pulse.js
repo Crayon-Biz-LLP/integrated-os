@@ -36,8 +36,9 @@ export default async function handler(req, res) {
                 const { data: core } = await supabase.from('core_config').select('key, content').eq('user_id', userId);
 
                 const now = new Date();
-                const istDate = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
-                const hour = istDate.getHours();
+                const userOffset = core?.find(c => c.key === 'timezone_offset')?.content || '5.5';
+                const localDate = new Date(now.getTime() + (parseFloat(userOffset) * 60 * 60 * 1000));
+                const hour = localDate.getHours();
                 const scheduleRow = core?.find(c => c.key === 'pulse_schedule')?.content || '2';
 
                 let shouldPulse = isManualTest;
@@ -75,8 +76,9 @@ export default async function handler(req, res) {
                     - CATEGORIZED LISTS: (Work, Home, Ideas). 
                     - Use 🔴 for Urgent, 🟡 for Important, ⚪ for Chore/Idea.
                 4. Prioritize tasks involving stakeholders based on their roles.
-                5. If new tasks are identified in the inputs, add them to the new_tasks array.
-                6. If the user states they completed or closed an existing task, add its ID (number only) to the "completed_task_ids" array.
+                5. NEVER display Task IDs to the user. Keep the text clean.
+                6. If new tasks are identified in the inputs, add them to the new_tasks array.
+                7. SEMANTIC MATCHING: If the user's input indicates they finished or closed a task, find its 'id' in the ACTIVE TASKS list and add it to the "completed_task_ids" array.
 
                 OUTPUT JSON:
                 {
