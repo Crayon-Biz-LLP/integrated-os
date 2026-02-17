@@ -34,7 +34,7 @@ async function isTrialExpired(userId) {
 export default async function handler(req, res) {
     try {
         const update = req.body;
-        if (!update?.message) return res.status(200).json({ message: 'No message' });
+        if (!update?.message) return res.status(200).json({ ok: true });
 
         const chatId = update.message.chat.id;
         const userId = String(update.message.from.id);
@@ -58,6 +58,7 @@ export default async function handler(req, res) {
             const firstName = update.message.from.first_name || 'Leader';
             await supabase.from('core_config').delete().eq('user_id', userId);
             await supabase.from('people').delete().eq('user_id', userId);
+            await supabase.from('core_config').insert([{ user_id: userId, key: 'user_name', content: firstName }]);
             await setConfig('user_name', firstName);
 
             const welcomeMsg = `🎯 **Welcome to your 14-Day Sprint, ${firstName}.**\n\nI am your Digital 2iC. Let's configure your engine.\n\n` +
@@ -66,7 +67,10 @@ export default async function handler(req, res) {
                 "🏗️ **Architect:** Methodical and structured. Focuses on engineering systems.\n\n" +
                 "🌿 **Nurturer:** Balanced and proactive. Focuses on team dynamics and growth.";
 
-            await sendTelegram(welcomeMsg, PERSONA_KEYBOARD);
+            await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, text: welcomeMsg, parse_mode: 'Markdown', reply_markup: PERSONA_KEYBOARD })
+            });
             return res.status(200).json({ success: true });
         }
 
