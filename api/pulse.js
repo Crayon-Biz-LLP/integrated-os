@@ -60,7 +60,7 @@ export default async function handler(req, res) {
 
                 const prompt = `
                 ROLE: Digital 2iC for ${userName}.
-                NORTH STAR: ${season}
+                Main Goal: ${season}
                 STAKEHOLDERS: ${JSON.stringify(people)}
                 ACTIVE TASKS: ${JSON.stringify(tasks)}
                 NEW INPUTS: ${dumps?.map(d => d.content).join('\n---\n') || 'None'}
@@ -74,10 +74,8 @@ export default async function handler(req, res) {
                     - 1-2 sharp, direct sentences from the Persona (Commander: Urgent/Aggressive | Architect: Systems/Logic | Nurturer: Balanced/Relationship-focused).
                     - CATEGORIZED LISTS: (Work, Home, Ideas). 
                     - Use 🔴 for Urgent, 🟡 for Important, ⚪ for Chore/Idea.
-                4. Include the exact progress string "${progressString}" at the top of your briefing.
-                5. Prioritize tasks involving stakeholders based on their roles.
-                6. Persona: Architect (Methodical, structured, systems-focused).
-                7. If new tasks are identified in the inputs, add them to the new_tasks array.
+                4. Prioritize tasks involving stakeholders based on their roles.
+                5. If new tasks are identified in the inputs, add them to the new_tasks array.
 
                 OUTPUT JSON:
                 {
