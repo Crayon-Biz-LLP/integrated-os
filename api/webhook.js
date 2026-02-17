@@ -57,6 +57,7 @@ export default async function handler(req, res) {
         if (text === '/start') {
             const firstName = update.message.from.first_name || 'Leader';
             await supabase.from('core_config').delete().eq('user_id', userId);
+            await supabase.from('people').delete().eq('user_id', userId);
             await setConfig('user_name', firstName);
 
             const welcomeMsg = `🎯 **Welcome to your 14-Day Sprint, ${firstName}.**\n\nI am your Digital 2iC. Let's configure your engine.\n\n` +
@@ -120,7 +121,7 @@ export default async function handler(req, res) {
             if (text && text.length > 5 && !text.startsWith('/')) {
                 await setConfig('current_season', text);
 
-                const peopleMsg = "✅ **North Star locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top people that influence your success? (e.g., 'Sunju, Jeremy, Christy')\n\n*Type their names below, separated by commas:*";
+                const peopleMsg = "✅ **North Star locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top people that influence your success? (e.g., 'manager, team lead, client, wife...')\n\n*Type their names below, separated by commas:*";
 
                 await sendTelegram(peopleMsg, { remove_keyboard: true });
             } else {
