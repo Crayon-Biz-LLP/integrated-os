@@ -16,7 +16,7 @@ jobs:
       run: |
         RESPONSE=$(curl -s -w "HTTP: %{http_code}" -X POST \
           https://chief-three.vercel.app/api/pulse \
-          -H "x-pulse-secret: ${{ secrets.PULSE_SECRET }}")
+          -H "x-pulse-secret: ${{ secrets.TRIAL_PULSE_SECRET }}")
         echo $RESPONSE
       env:
         CURL_CA_BUNDLE: ""
