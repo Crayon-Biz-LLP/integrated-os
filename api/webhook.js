@@ -121,10 +121,13 @@ export default async function handler(req, res) {
         if (!season) {
             if (text && text.length > 5 && !text.startsWith('/')) {
                 await setConfig('current_season', text);
-                const finalMsg = `✅ **North Star locked. Your OS is armed.**\n\n**How to use me:** Just talk to me naturally. No rigid commands needed.\n\n📥 **To capture tasks or ideas:** Just dump them here.\n\n✅ **To close or cancel a task:** Just tell me.\n\nUse the menu below for quick status reports. Let's get to work.`;
-                await sendTelegram(finalMsg, MAIN_KEYBOARD);
+
+                // POINT TO STEP 4 INSTEAD OF FINISHING
+                const peopleMsg = "✅ **North Star locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top 3 people that influence your success this sprint? (e.g., 'John (Investor), Sarah (CTO)')\n\n*Type their names below, separated by commas:*";
+
+                await sendTelegram(peopleMsg, { remove_keyboard: true });
             } else {
-                await sendTelegram("Please reply with a short text defining your North Star for this sprint.", { remove_keyboard: true });
+                await sendTelegram("Please reply with your North Star for this sprint.", { remove_keyboard: true });
             }
             return res.status(200).json({ success: true });
         }
@@ -146,17 +149,17 @@ export default async function handler(req, res) {
         // Step 4: Key People
         const hasPeople = configs.find(c => c.key === 'initial_people_setup')?.content;
         if (!hasPeople) {
-            if (text && !text.startsWith('/')) {
+            if (text && !text.startsWith('/') && text !== '👥 People') { // Ignore the button text
                 const names = text.split(',').map(n => n.trim());
                 for (const name of names) {
                     await supabase.from('people').insert([{ user_id: userId, name: name, strategic_weight: 5 }]);
                 }
-                await setConfig('initial_people_setup', 'true'); // Marks this step done
+                await setConfig('initial_people_setup', 'true');
 
-                const finalMsg = `✅ **System Armed, ${configs.find(c => c.key === 'user_name')?.content || 'Leader'}.**\n\nYour Persona, Schedule, North Star, and Stakeholders are all locked in.\n\n📥 **Capture:** Just dump thoughts or tasks here.\n✅ **Close:** Tell me when a task is done.\n\nUse the menu below to navigate. Let's conquer these 14 days.`;
+                const finalMsg = `✅ **System Armed, ${configs.find(c => c.key === 'user_name')?.content || 'Leader'}.**\n\nYour OS is locked and loaded.\n\n📥 **Capture:** Just dump thoughts or tasks here.\n✅ **Close:** Tell me when a task is done.\n\nUse the menu below to navigate. Let's conquer these 14 days.`;
                 await sendTelegram(finalMsg, MAIN_KEYBOARD);
             } else {
-                await sendTelegram("Please list at least one key person to continue.", { remove_keyboard: true });
+                await sendTelegram("Please list at least one key person (e.g., John, Sarah) to continue.", { remove_keyboard: true });
             }
             return res.status(200).json({ success: true });
         }
