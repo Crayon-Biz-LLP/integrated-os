@@ -132,28 +132,24 @@ export default async function handler(req, res) {
         // Step 4: Key People (Finalizing Onboarding)
         if (!hasPeople) {
             if (text && !text.startsWith('/') && text !== '👥 People') {
-                const names = text.split(',').map(n => n.trim());
+                const entries = text.split(',').map(e => e.trim());
 
-                const { error } = await supabase.from('people').insert(
-                    names.map(name => ({
+                const peopleData = entries.map(entry => {
+                    const match = entry.match(/(.*?)\((.*?)\)/);
+                    return {
                         user_id: userId,
-                        name: name,
-                        strategic_weight: 5,
-                        role: 'Sprint Contact'
-                    }))
-                );
+                        name: match ? match[1].trim() : entry,
+                        role: match ? match[2].trim() : 'Sprint Contact',
+                        strategic_weight: 5
+                    };
+                });
 
-                if (error) {
-                    await sendTelegram(`❌ **DB Error:** ${error.message}. Try typing the names again.`);
-                } else {
-                    await setConfig('initial_people_setup', 'true');
-                    const userName = configs.find(c => c.key === 'user_name')?.content || 'Leader';
-                    const finalMsg = `✅ **System Armed, ${userName}.**\n\nYour OS is locked and loaded. Your inner circle is now being tracked. Use the menu below to navigate.`;
-                    await sendTelegram(finalMsg, MAIN_KEYBOARD);
-                }
-            } else {
-                await sendTelegram("Please list at least one key person (e.g., Sunju, Jeremy) to finish setup.", { remove_keyboard: true });
-            }
+                const { error } = await supabase.from('people').insert(peopleData);
+                if (error) return await sendTelegram(`❌ Error: ${error.message}`);
+
+                await setConfig('initial_people_setup', 'true');
+                await sendTelegram(`✅ **System Armed.** Your inner circle is now intelligent context.`, MAIN_KEYBOARD);
+            } else await sendTelegram("List your stakeholders (separated by commas).");
             return res.status(200).json({ success: true });
         }
 
@@ -187,8 +183,8 @@ export default async function handler(req, res) {
                 } else finalReply = "The list is empty.";
             }
             else if (text === '👥 People') {
-                const { data: people } = await supabase.from('people').select('name, strategic_weight').eq('user_id', userId).order('strategic_weight', { ascending: false });
-                finalReply = (people && people.length > 0) ? "👥 **KEY STAKEHOLDERS:**\n\n" + people.map(p => `• ${p.name} (Weight: ${p.strategic_weight})`).join('\n') : "No stakeholders registered.";
+                const { data: people } = await supabase.from('people').select('name, role').eq('user_id', userId);
+                finalReply = people?.length ? "👥 **STAKEHOLDERS:**\n\n" + people.map(p => `• ${p.name} (${p.role})`).join('\n') : "No one registered.";
             }
             else if (text.startsWith('/person ')) {
                 const input = text.replace('/person ', '').trim();
