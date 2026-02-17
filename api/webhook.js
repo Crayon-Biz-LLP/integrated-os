@@ -149,17 +149,26 @@ export default async function handler(req, res) {
         // Step 4: Key People
         const hasPeople = configs.find(c => c.key === 'initial_people_setup')?.content;
         if (!hasPeople) {
-            if (text && !text.startsWith('/') && text !== '👥 People') { // Ignore the button text
+            // 🛡️ Logic check: Ensure it's not a command and not empty
+            if (text && !text.startsWith('/') && text !== '👥 People') {
                 const names = text.split(',').map(n => n.trim());
-                for (const name of names) {
-                    await supabase.from('people').insert([{ user_id: userId, name: name, strategic_weight: 5 }]);
-                }
+
+                // Use Promise.all to ensure ALL names are saved before proceeding
+                await Promise.all(names.map(name =>
+                    supabase.from('people').insert([{
+                        user_id: userId,
+                        name: name,
+                        strategic_weight: 5,
+                        role: 'Sprint Contact' // Adding a default role for the database
+                    }])
+                ));
+
                 await setConfig('initial_people_setup', 'true');
 
-                const finalMsg = `✅ **System Armed, ${configs.find(c => c.key === 'user_name')?.content || 'Leader'}.**\n\nYour OS is locked and loaded.\n\n📥 **Capture:** Just dump thoughts or tasks here.\n✅ **Close:** Tell me when a task is done.\n\nUse the menu below to navigate. Let's conquer these 14 days.`;
+                const finalMsg = `✅ **System Armed, ${configs.find(c => c.key === 'user_name')?.content || 'Leader'}.**\n\nYour OS is locked and loaded. Your inner circle is now being tracked. Use the menu below to navigate.`;
                 await sendTelegram(finalMsg, MAIN_KEYBOARD);
             } else {
-                await sendTelegram("Please list at least one key person (e.g., John, Sarah) to continue.", { remove_keyboard: true });
+                await sendTelegram("Please list at least one key person (e.g., Sunju, Jeremy) to finish setup.", { remove_keyboard: true });
             }
             return res.status(200).json({ success: true });
         }
@@ -215,26 +224,15 @@ export default async function handler(req, res) {
                     reply = "❌ Format: `/person Name | Weight` (e.g., `/person John Doe | 9`)";
                 }
             }
-            else if (text.startsWith('/person ')) {
-                const input = text.replace('/person ', '').trim();
-                // Expected format: Name | Weight (1-10)
-                const [name, weight] = input.split('|').map(s => s.trim());
+            else if (text === '👥 People') {
+                const { data: people } = await supabase.from('people')
+                    .select('name, strategic_weight')
+                    .eq('user_id', userId)
+                    .order('strategic_weight', { ascending: false });
 
-                if (name) {
-                    const { error } = await supabase.from('people').insert([{
-                        user_id: userId,
-                        name: name,
-                        strategic_weight: parseInt(weight) || 5
-                    }]);
-
-                    if (error) {
-                        reply = "❌ Error adding person. Ensure the 'people' table exists.";
-                    } else {
-                        reply = `👤 **Stakeholder Registered:** ${name}\nStrategic Weight: ${weight || 5}/10`;
-                    }
-                } else {
-                    reply = "❌ Format: `/person Name | Weight` (e.g., `/person John Doe | 9`)";
-                }
+                reply = (people && people.length > 0)
+                    ? "👥 **KEY STAKEHOLDERS:**\n\n" + people.map(p => `• ${p.name} (Weight: ${p.strategic_weight})`).join('\n')
+                    : "No stakeholders registered. Use `/person Name | Weight` to add one.";
             }
 
             await sendTelegram(reply);
