@@ -58,24 +58,26 @@ export default async function handler(req, res) {
 
                 if (!dumps?.length && !tasks?.length) return;
 
-                // 📊 PROGRESS TRACKER LOGIC
-                const { count: completedCount } = await supabase.from('tasks').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('status', 'done');
-                const progressString = `Progress: ${completedCount || 0}/20 Tasks Complete`;
-
                 const prompt = `
                 ROLE: Digital 2iC for ${userName}.
                 NORTH STAR: ${season}
-                PROGRESS: ${progressString}
                 STAKEHOLDERS: ${JSON.stringify(people)}
                 ACTIVE TASKS: ${JSON.stringify(tasks)}
                 NEW INPUTS: ${dumps?.map(d => d.content).join('\n---\n') || 'None'}
 
                 INSTRUCTIONS:
                 1. Address ${userName} personally.
-                2. Include the exact progress string "${progressString}" at the top of your briefing.
-                3. Prioritize tasks involving stakeholders based on their roles.
-                4. Persona: Architect (Methodical, structured, systems-focused).
-                5. If new tasks are identified in the inputs, add them to the new_tasks array.
+                2. Use a high-density, scannable Markdown format. No long paragraphs.
+                3. Structure: 
+                    - [Emoji] [PULSE NAME]: [TIME-STAMP/TRIGGER NAME]
+                    - Personal Greeting + Progress Tracker.
+                    - 1-2 sharp, direct sentences from the Persona (Commander: Urgent/Aggressive | Architect: Systems/Logic | Nurturer: Balanced/Relationship-focused).
+                    - CATEGORIZED LISTS: (Work, Home, Ideas). 
+                    - Use 🔴 for Urgent, 🟡 for Important, ⚪ for Chore/Idea.
+                4. Include the exact progress string "${progressString}" at the top of your briefing.
+                5. Prioritize tasks involving stakeholders based on their roles.
+                6. Persona: Architect (Methodical, structured, systems-focused).
+                7. If new tasks are identified in the inputs, add them to the new_tasks array.
 
                 OUTPUT JSON:
                 {

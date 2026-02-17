@@ -90,11 +90,11 @@ export default async function handler(req, res) {
                 const val = text.includes('Commander') ? '1' : text.includes('Architect') ? '2' : '3';
                 await setConfig('identity', val);
 
-                const scheduleMsg = "✅ **Persona locked.**\n\n**Step 2: Choose your Pulse Schedule**\nWhen do you want your Battlefield Briefings?\n\n" +
+                const scheduleMsg = "✅ **Persona locked.**\n\n**Step 2: Choose your Briefing Schedule**\nWhen do you want your Briefings?\n\n" +
                     "🌅 **Early:** 6AM, 10AM, 2PM, 6PM\n" +
                     "☀️ **Standard:** 8AM, 12PM, 4PM, 8PM\n" +
                     "🌙 **Late:** 10AM, 2PM, 6PM, 10PM\n\n" +
-                    "*(Weekends are reduced to 2 pulses per day)*";
+                    "*(Weekends are reduced to 2 Check-ins per day)*";
 
                 await sendTelegram(scheduleMsg, SCHEDULE_KEYBOARD);
             } else {
@@ -109,7 +109,7 @@ export default async function handler(req, res) {
                 const val = text.includes('Early') ? '1' : text.includes('Standard') ? '2' : '3';
                 await setConfig('pulse_schedule', val);
 
-                const northStarMsg = "✅ **Schedule locked.**\n\n**Step 3: Define your North Star.**\n" +
+                const northStarMsg = "✅ **Schedule locked.**\n\n**Step 3: Define your Main Goal:.**\n" +
                     "This is the single most important outcome you are hunting for these 14 days. This will be the anchor for every briefing I send you.";
 
                 await sendTelegram(northStarMsg, { remove_keyboard: true });
@@ -119,16 +119,16 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true });
         }
 
-        // Step 3: North Star
+        // Step 3: Main Goal
         if (!season) {
             if (text && text.length > 5 && !text.startsWith('/')) {
                 await setConfig('current_season', text);
 
-                const peopleMsg = "✅ **North Star locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top people that influence your success?\n\n*Format:* Name (Role), Name (Role)\n*Example:* Jane (Wife), John (Client Partner)\n\n*(If you prefer to add these later, just type **Skip**)*\n\n*Type them below:*";
+                const peopleMsg = "✅ **Main Goal locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top people that influence your success?\n\n*Format:* Name (Role), Name (Role)\n*Example:* Jane (Wife), John (Client Partner)\n\n*(If you prefer to add these later, just type **Skip**)*\n\n*Type them below:*";
 
                 await sendTelegram(peopleMsg, { remove_keyboard: true });
             } else {
-                await sendTelegram("Please define your 14-day North Star.", { remove_keyboard: true });
+                await sendTelegram("Please define your 14-day Main Goal.", { remove_keyboard: true });
             }
             return res.status(200).json({ success: true });
         }
@@ -175,27 +175,27 @@ export default async function handler(req, res) {
                     ? `${peopleData.length} key stakeholders registered.`
                     : `None registered yet. (You can add them later using /person)`;
 
-                const armedMsg = `✅ **System Armed. Initialization Complete.**\n\n` +
+                const armedMsg = `✅ **Setup Complete. Initialization Complete.**\n\n` +
                     `Here is how your Digital Chief of Staff is engineered for this 14-Day Sprint:\n\n` +
                     `🧠 **Your AI Persona:**\n${personaMap[identity] || 'Default'}\n\n` +
-                    `⏱️ **The Pulse Schedule:**\n${scheduleMap[schedule] || 'Standard'}\n` +
-                    `*(A "Pulse" is a proactive Battlefield Briefing where I organize your raw thoughts into actionable tasks).* \n\n` +
-                    `🧭 **Your North Star:**\n"${season}"\n` +
+                    `⏱️ **The Check-in Schedule:**\n${scheduleMap[schedule] || 'Standard'}\n` +
+                    `*(A "Check-in" is a proactive Briefing where I organize your raw thoughts into actionable tasks).* \n\n` +
+                    `🧭 **Your Main Goal:**\n"${season}"\n` +
                     `*(Every idea or task you send me will be ruthlessly prioritized against this specific outcome).*\n\n` +
                     `👥 **Influence Map:**\n${stakeholdersDisplay}\n\n` +
                     `🔒 **Ironclad Privacy Protocol:**\n` +
                     `Your inputs are your intellectual property. Your data is stored in a secure, isolated database and is **never** used to train public AI models.\n\n` +
                     `---\n` +
                     `📱 **YOUR DASHBOARD (Menu Buttons):**\n` +
-                    `Use the keyboard below to pull data instantly outside of your scheduled Pulses:\n` +
+                    `Use the keyboard below to pull data instantly outside of your scheduled Check-in:\n` +
                     `• **Urgent / Brief:** Pulls your active tasks.\n` +
                     `• **Vault:** Retrieves your latest captured ideas.\n` +
                     `• **Season / People:** Checks your current strategic context.\n\n` +
-                    `🔄 **Recalibration:** If your strategy shifts or you need to change your Persona/Schedule, simply type \`/start\` to reset your engine.\n\n` +
+                    `🔄 **Change Settings:** If your strategy shifts or you need to change your Persona/Schedule, simply type \`/start\` to reset your engine.\n\n` +
                     `---\n` +
                     `**HOW TO OPERATE:**\n` +
                     `Do not worry about formatting. Treat this chat as your raw brain dump. Whenever a task, idea, or problem crosses your mind—just type it here naturally.\n\n` +
-                    `I will capture the chaos, engineer it into order, and serve it back to you at your next Pulse.\n\n` +
+                    `I will capture the chaos, engineer it into order, and serve it back to you at your next Check-in.\n\n` +
                     `*Send your first raw thought below to begin:*`;
 
                 await sendTelegram(armedMsg, MAIN_KEYBOARD);
@@ -221,7 +221,7 @@ export default async function handler(req, res) {
                 finalReply = (ideas && ideas.length > 0) ? "🔓 **THE IDEA VAULT (Last 5):**\n\n" + ideas.map(i => `💡 *${new Date(i.created_at).toLocaleDateString()}:* ${i.content}`).join('\n\n') : "The Vault is empty.";
             }
             else if (text === '🧭 Season Context') {
-                finalReply = `🧭 **CURRENT NORTH STAR:**\n\n${season}`;
+                finalReply = `🧭 **CURRENT MAIN GOAL:**\n\n${season}`;
             }
             else if (text === '🔴 Urgent') {
                 const { data: fire } = await supabase.from('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').eq('user_id', userId).limit(1).single();
