@@ -53,10 +53,8 @@ export default async function handler(req, res) {
             await supabase.from('core_config').insert([{ user_id: userId, key, content }]);
         };
 
-        // --- 1. /start COMMAND (THE FIX IS HERE) ---
-        // Using startsWith catches trailing spaces or deep link payloads
+        // --- 1. /start COMMAND (THE RESET GATEKEEPER) ---
         if (text.startsWith('/start')) {
-            // Sanitize name to prevent Telegram Markdown crashes (e.g., if name is User_Name)
             const rawName = update.message.from.first_name || 'Leader';
             const firstName = rawName.replace(/[*_`\[\]]/g, '');
 
@@ -71,9 +69,7 @@ export default async function handler(req, res) {
                 "🏗️ **Architect:** Methodical and structured. Focuses on engineering systems.\n\n" +
                 "🌿 **Nurturer:** Balanced and proactive. Focuses on team dynamics and growth.";
 
-            // Standardized to use the helper function
             await sendTelegram(welcomeMsg, PERSONA_KEYBOARD);
-
             return res.status(200).json({ success: true });
         }
 
@@ -128,7 +124,8 @@ export default async function handler(req, res) {
             if (text && text.length > 5 && !text.startsWith('/')) {
                 await setConfig('current_season', text);
 
-                const peopleMsg = "✅ **North Star locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top people that influence your success? \n\n*Format:* Name (Role), Name (Role)\n*Example:* Jane (Wife), John (Client Partner)\n\n*Type them below:*";
+                const peopleMsg = "✅ **North Star locked.**\n\n**Step 4: Key Stakeholders**\nWho are the top people that influence your success?\n\n*Format:* Name (Role), Name (Role)\n*Example:* Jane (Wife), John (Client Partner)\n\n*(If you prefer to add these later, just type **Skip**)*\n\n*Type them below:*";
+
                 await sendTelegram(peopleMsg, { remove_keyboard: true });
             } else {
                 await sendTelegram("Please define your 14-day North Star.", { remove_keyboard: true });
@@ -136,27 +133,32 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true });
         }
 
-        // Step 4: Key People (Finalizing Onboarding)
+        // Step 4: Key People & Finalizing Onboarding
         if (!hasPeople) {
             if (text && !text.startsWith('/') && text !== '👥 People') {
-                const entries = text.split(',').map(e => e.trim());
 
-                const peopleData = entries.map(entry => {
-                    const match = entry.match(/(.*?)\((.*?)\)/);
-                    return {
-                        user_id: userId,
-                        name: match ? match[1].trim() : entry,
-                        role: match ? match[2].trim() : 'Sprint Contact',
-                        strategic_weight: 5
-                    };
-                });
+                const lowerText = text.trim().toLowerCase();
+                let peopleData = [];
 
-                const { error } = await supabase.from('people').insert(peopleData);
-                if (error) return await sendTelegram(`❌ Error: ${error.message}`);
+                if (['skip', 'none', 'no', 'me'].includes(lowerText)) {
+                    await setConfig('initial_people_setup', 'true');
+                } else {
+                    const entries = text.split(',').map(e => e.trim());
+                    peopleData = entries.map(entry => {
+                        const match = entry.match(/(.*?)\((.*?)\)/);
+                        return {
+                            user_id: userId,
+                            name: match ? match[1].trim() : entry,
+                            role: match ? match[2].trim() : 'Sprint Contact',
+                            strategic_weight: 5
+                        };
+                    });
 
-                await setConfig('initial_people_setup', 'true');
+                    const { error } = await supabase.from('people').insert(peopleData);
+                    if (error) return await sendTelegram(`❌ Error: ${error.message}`);
+                    await setConfig('initial_people_setup', 'true');
+                }
 
-                // --- THE NEW EXECUTIVE SUMMARY ---
                 const personaMap = {
                     '1': '⚔️ **Commander:** I will drive rapid execution, prioritizing immediate action and urgent deliverables in your briefings.',
                     '2': '🏗️ **Architect:** I will engineer structured systems, breaking your raw thoughts down into methodical, scalable steps.',
@@ -168,6 +170,11 @@ export default async function handler(req, res) {
                     '2': '☀️ **Standard:** Expect your briefings at 8AM, 12PM, 4PM, and 8PM.',
                     '3': '🌙 **Late:** Expect your briefings at 10AM, 2PM, 6PM, and 10PM.'
                 };
+
+                const stakeholdersDisplay = peopleData.length > 0
+                    ? `${peopleData.length} key stakeholders registered.`
+                    : `None registered yet. (You can add them later using /person)`;
+
                 const armedMsg = `✅ **System Armed. Initialization Complete.**\n\n` +
                     `Here is how your Digital Chief of Staff is engineered for this 14-Day Sprint:\n\n` +
                     `🧠 **Your AI Persona:**\n${personaMap[identity] || 'Default'}\n\n` +
@@ -175,8 +182,7 @@ export default async function handler(req, res) {
                     `*(A "Pulse" is a proactive Battlefield Briefing where I organize your raw thoughts into actionable tasks).* \n\n` +
                     `🧭 **Your North Star:**\n"${season}"\n` +
                     `*(Every idea or task you send me will be ruthlessly prioritized against this specific outcome).*\n\n` +
-                    `👥 **Influence Map:**\n${peopleData.length} key stakeholders registered.\n` +
-                    `*(I will automatically tag and prioritize tasks that involve these specific individuals).*\n\n` +
+                    `👥 **Influence Map:**\n${stakeholdersDisplay}\n\n` +
                     `🔒 **Ironclad Privacy Protocol:**\n` +
                     `Your inputs are your intellectual property. Your data is stored in a secure, isolated database and is **never** used to train public AI models.\n\n` +
                     `---\n` +
@@ -193,7 +199,9 @@ export default async function handler(req, res) {
                     `*Send your first raw thought below to begin:*`;
 
                 await sendTelegram(armedMsg, MAIN_KEYBOARD);
-            } else await sendTelegram("List your stakeholders (separated by commas).");
+            } else {
+                await sendTelegram("List your stakeholders (e.g., Sunju (Wife), Christy (Client)), or type **Skip**.");
+            }
             return res.status(200).json({ success: true });
         }
 
@@ -206,7 +214,7 @@ export default async function handler(req, res) {
         // --- 5. COMMAND MODE ---
         let finalReply = "";
 
-        if (text.startsWith('/') || text === '🔴 Urgent' || text === '📋 Brief' || text === '🧭 Season Context' || text === '🔓 Vault' || text === '👥 People') {
+        if (text.startsWith('/') || ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '👥 People'].includes(text)) {
 
             if (text === '🔓 Vault') {
                 const { data: ideas } = await supabase.from('logs').select('content, created_at').eq('user_id', userId).ilike('entry_type', '%IDEAS%').order('created_at', { ascending: false }).limit(5);
