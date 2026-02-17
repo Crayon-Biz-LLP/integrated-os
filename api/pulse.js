@@ -76,11 +76,13 @@ export default async function handler(req, res) {
                     - Use 🔴 for Urgent, 🟡 for Important, ⚪ for Chore/Idea.
                 4. Prioritize tasks involving stakeholders based on their roles.
                 5. If new tasks are identified in the inputs, add them to the new_tasks array.
+                6. If the user states they completed or closed an existing task, add its ID (number only) to the "completed_task_ids" array.
 
                 OUTPUT JSON:
                 {
                     "new_tasks": [{"title": "", "priority": "urgent/important/chore"}],
-                    "briefing": "The Markdown string for Telegram."
+                    "completed_task_ids": [],
+                    "briefing": "The Clean Markdown string."
                 }`;
 
                 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash", generationConfig: { responseMimeType: "application/json" } });
@@ -104,6 +106,10 @@ export default async function handler(req, res) {
                     await supabase.from('tasks').insert(aiData.new_tasks.map(t => ({
                         user_id: userId, title: t.title, priority: t.priority, status: 'todo'
                     })));
+                }
+                // --- NEW: CLOSE COMPLETED TASKS ---
+                if (aiData.completed_task_ids?.length > 0) {
+                    await supabase.from('tasks').update({ status: 'done' }).in('id', aiData.completed_task_ids).eq('user_id', userId);
                 }
             } catch (userError) {
                 console.error(`Error processing user ${userId}:`, userError);
