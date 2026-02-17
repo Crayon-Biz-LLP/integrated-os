@@ -14,9 +14,20 @@ jobs:
     
     - name: Trigger Vercel Pulse
       run: |
-        RESPONSE=$(curl -s -w "HTTP: %{http_code}" -X POST \
-          https://chief-three.vercel.app/api/pulse \
-          -H "x-pulse-secret: ${{ secrets.TRIAL_PULSE_SECRET }}")
-        echo $RESPONSE
+        # Check if the trigger was a manual button click
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "Manual dispatch detected: Sending override header."
+          RESPONSE=$(curl -s -w "HTTP: %{http_code}" -X POST \
+            https://chief-three.vercel.app/api/pulse \
+            -H "x-pulse-secret: ${{ secrets.TRIAL_PULSE_SECRET }}" \
+            -H "x-manual-trigger: true")
+        else
+          echo "Scheduled cron detected: Respecting time locks."
+          RESPONSE=$(curl -s -w "HTTP: %{http_code}" -X POST \
+            https://chief-three.vercel.app/api/pulse \
+            -H "x-pulse-secret: ${{ secrets.TRIAL_PULSE_SECRET }}")
+        fi
+        
+        echo "Response: $RESPONSE"
       env:
         CURL_CA_BUNDLE: ""
