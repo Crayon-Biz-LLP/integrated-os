@@ -43,9 +43,10 @@ export default async function handler(req, res) {
 
                 let shouldPulse = isManualTest;
                 if (!isManualTest) {
-                    if (scheduleRow === '1' && [6, 10, 14, 18].includes(hour)) shouldPulse = true;
-                    if (scheduleRow === '2' && [8, 12, 16, 20].includes(hour)) shouldPulse = true;
-                    if (scheduleRow === '3' && [10, 14, 18, 22].includes(hour)) shouldPulse = true;
+                    const checkHour = (targetHours) => targetHours.includes(hour);
+                    if (scheduleRow === '1' && checkHour([6, 10, 14, 18])) shouldPulse = true;
+                    if (scheduleRow === '2' && checkHour([8, 12, 16, 20])) shouldPulse = true;
+                    if (scheduleRow === '3' && checkHour([10, 14, 18, 22])) shouldPulse = true;
                 }
 
                 if (!shouldPulse) return;
@@ -115,6 +116,19 @@ export default async function handler(req, res) {
                 }
             } catch (userError) {
                 console.error(`Error processing user ${userId}:`, userError);
+                try {
+                    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            chat_id: '756478183', // REPLACE WITH YOUR ACTUAL TELEGRAM ID
+                            text: `🚨 **PULSE ENGINE FAILURE**\n\n**User:** ${userId}\n**Error:** ${userError.message}\n\nCheck Vercel logs immediately.`,
+                            parse_mode: 'Markdown'
+                        })
+                    });
+                } catch (notifyError) {
+                    console.error("Failed to send error notification to admin:", notifyError);
+                }
             }
         };
 
