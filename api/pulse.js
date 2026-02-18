@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// 🛡️ FREE TIER OVERRIDE: Instructs Vercel to allow up to 60 seconds of execution (Hobby Tier max)
+// 🛡️ Hobby Tier max execution time
 export const maxDuration = 60;
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
@@ -23,15 +23,16 @@ export default async function handler(req, res) {
 
         const isManualTest = req.headers['x-manual-trigger'] === 'true';
 
+        // Fetch users who have completed setup
         const { data: activeUsers } = await supabase.from('core_config').select('user_id').eq('key', 'current_season');
         if (!activeUsers?.length) return res.status(200).json({ message: 'No active users.' });
 
-        const uniqueUserIds = [...new Set(activeUsers.map(u => String(u.user_id)))];
+        // 🛠️ FIX 1: Robust ID Normalization (Trimmed Strings)
+        const uniqueUserIds = [...new Set(activeUsers.map(u => String(u.user_id).trim()))];
+        console.log(`[ENGINE] Found ${uniqueUserIds.length} active users: ${uniqueUserIds.join(', ')}`);
 
-        // --- 🚀 THE PARALLEL PROCESSING ENGINE ---
         const processUser = async (userId) => {
             try {
-                // LOG 1: Entry Check (Confirms the engine actually sees the user)
                 console.log(`[PULSE START] Processing User: ${userId}`);
 
                 if (await isTrialExpired(userId)) {
@@ -41,9 +42,8 @@ export default async function handler(req, res) {
 
                 const { data: core } = await supabase.from('core_config').select('key, content').eq('user_id', userId);
 
-                // LOG 2: Data Check (Detects the String/Integer mismatch)
                 if (!core || core.length === 0) {
-                    console.log(`[EXIT] User ${userId}: No core_config found. Possible type mismatch.`);
+                    console.log(`[EXIT] User ${userId}: No configuration found.`);
                     return;
                 }
 
@@ -53,7 +53,6 @@ export default async function handler(req, res) {
                 const hour = localDate.getHours();
                 const scheduleRow = core?.find(c => c.key === 'pulse_schedule')?.content || '2';
 
-                // LOG 3: Time Sync (Verifies if the bot thinks it's the right hour)
                 console.log(`[TIME CHECK] User ${userId}: Local Hour ${hour} | Schedule ${scheduleRow} | Offset ${userOffset}`);
 
                 let shouldPulse = isManualTest;
@@ -65,18 +64,21 @@ export default async function handler(req, res) {
                 }
 
                 if (!shouldPulse) {
-                    console.log(`[EXIT] User ${userId}: Not scheduled for Hour ${hour}.`);
+                    console.log(`[EXIT] User ${userId}: Not scheduled for current hour.`);
                     return;
                 }
 
-                // Fetch Context & Data
+                // Data Retrieval
                 const { data: dumps } = await supabase.from('raw_dumps').select('id, content').eq('user_id', userId).eq('is_processed', false);
-                const { data: tasks } = await supabase.from('tasks').select('id, title, priority').eq('user_id', userId).not('status', 'in', '("done","cancelled")');
+                const { data: tasks } = await supabase.from('tasks').select('id, title, priority').eq('user_id', userId).neq('status', 'done').neq('status', 'cancelled');
                 const { data: people } = await supabase.from('people').select('name, role').eq('user_id', userId);
                 const season = core?.find(c => c.key === 'current_season')?.content || 'No Goal Set';
                 const userName = core?.find(c => c.key === 'user_name')?.content || 'Leader';
 
-                if (!dumps?.length && !tasks?.length) return;
+                if (!dumps?.length && !tasks?.length) {
+                    console.log(`[EXIT] User ${userId}: No active data to pulse.`);
+                    return;
+                }
 
                 const prompt = `
                 ROLE: Digital 2iC for ${userName}.
@@ -108,61 +110,58 @@ export default async function handler(req, res) {
 
                 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash", generationConfig: { responseMimeType: "application/json" } });
                 const result = await model.generateContent(prompt);
-                const aiData = JSON.parse(result.response.text());
 
-                // Send to Telegram
+                // 🛠️ FIX 2: JSON Sanitizer (Removes markdown code blocks if Gemini includes them)
+                const rawText = result.response.text();
+                const cleanJson = rawText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+                const aiData = JSON.parse(cleanJson);
+
                 if (aiData.briefing) {
-                    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                    const tgUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+
+                    // 🛠️ FIX 3: Telegram Markdown Failsafe
+                    const tgRes = await fetch(tgUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ chat_id: userId, text: aiData.briefing, parse_mode: 'Markdown' })
                     });
+
+                    // If Markdown fails (bad tag), retry as plain text so the user gets the message
+                    if (!tgRes.ok) {
+                        console.error(`[TG ERROR] User ${userId}: Markdown rejected. Retrying plain text.`);
+                        await fetch(tgUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ chat_id: userId, text: aiData.briefing })
+                        });
+                    }
                 }
 
-                // Database Updates (Atomic)
-                if (dumps?.length > 0) {
-                    await supabase.from('raw_dumps').update({ is_processed: true }).in('id', dumps.map(d => d.id));
-                }
+                // Database Updates
+                if (dumps?.length > 0) await supabase.from('raw_dumps').update({ is_processed: true }).in('id', dumps.map(d => d.id));
                 if (aiData.new_tasks?.length > 0) {
-                    await supabase.from('tasks').insert(aiData.new_tasks.map(t => ({
-                        user_id: userId, title: t.title, priority: t.priority, status: 'todo'
-                    })));
+                    await supabase.from('tasks').insert(aiData.new_tasks.map(t => ({ user_id: userId, title: t.title, priority: t.priority, status: 'todo' })));
                 }
-                // --- NEW: CLOSE COMPLETED TASKS ---
                 if (aiData.completed_task_ids?.length > 0) {
                     await supabase.from('tasks').update({ status: 'done' }).in('id', aiData.completed_task_ids).eq('user_id', userId);
                 }
+
             } catch (userError) {
-                console.error(`Error processing user ${userId}:`, userError);
-                try {
-                    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            chat_id: '756478183', // REPLACE WITH YOUR ACTUAL TELEGRAM ID
-                            text: `🚨 **PULSE ENGINE FAILURE**\n\n**User:** ${userId}\n**Error:** ${userError.message}\n\nCheck Vercel logs immediately.`,
-                            parse_mode: 'Markdown'
-                        })
-                    });
-                } catch (notifyError) {
-                    console.error("Failed to send error notification to admin:", notifyError);
-                }
+                console.error(`[CRITICAL] User ${userId}:`, userError.message);
+                // Notification to YOU (Admin)
+                await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: '756478183', text: `🚨 Pulse Failure: ${userId}\nErr: ${userError.message}` })
+                });
             }
         };
 
-        // --- 🚀 THE PARALLEL BATCHING ENGINE ---
         const BATCH_SIZE = 10;
-
         for (let i = 0; i < uniqueUserIds.length; i += BATCH_SIZE) {
             const batch = uniqueUserIds.slice(i, i + BATCH_SIZE);
-
-            // Fire 10 users to Gemini simultaneously
-            await Promise.allSettled(batch.map(id => processUser(String(id))));
-
-            // If there are more users waiting, pause for 1 second to respect Gemini Rate Limits
-            if (i + BATCH_SIZE < uniqueUserIds.length) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
+            await Promise.allSettled(batch.map(id => processUser(String(id).trim())));
+            if (i + BATCH_SIZE < uniqueUserIds.length) await new Promise(r => setTimeout(r, 1000));
         }
 
         return res.status(200).json({ success: true });
