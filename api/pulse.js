@@ -90,16 +90,21 @@ export default async function handler(req, res) {
                 INSTRUCTIONS:
                 1. Address ${userName} personally.
                 2. Use a high-density, scannable Markdown format. No long paragraphs.
-                3. Structure: 
+                3. **CRITICAL MARKDOWN SAFETY**: 
+                    - Use ONLY single asterisks (*) for bold. 
+                    - Never use underscores (_) as they cause parsing errors.
+                    - Do not use nested formatting (e.g., no bold inside italics).
+                    - Ensure every opening asterisk has a matching closing asterisk.    
+                4. Structure: 
                     - [Emoji] [PULSE NAME]: [TIME-STAMP/TRIGGER NAME]
                     - Personal Greeting + Progress Tracker.
                     - 1-2 sharp, direct sentences from the Persona (Commander: Urgent/Aggressive | Architect: Systems/Logic | Nurturer: Balanced/Relationship-focused).
                     - CATEGORIZED LISTS: (Work, Home, Ideas). 
                     - Use 🔴 for Urgent, 🟡 for Important, ⚪ for Chore/Idea.
-                4. Prioritize tasks involving stakeholders based on their roles.
-                5. NEVER display Task IDs to the user. Keep the text clean.
-                6. If new tasks are identified in the inputs, add them to the new_tasks array.
-                7. SEMANTIC MATCHING: If the user's input indicates they finished or closed a task, find its 'id' in the ACTIVE TASKS list and add it to the "completed_task_ids" array.
+                5. Prioritize tasks involving stakeholders based on their roles.
+                6. NEVER display Task IDs to the user. Keep the text clean.
+                7. If new tasks are identified in the inputs, add them to the new_tasks array.
+                8. SEMANTIC MATCHING: If the user's input indicates they finished or closed a task, find its 'id' in the ACTIVE TASKS list and add it to the "completed_task_ids" array.
 
                 OUTPUT JSON:
                 {
