@@ -26,7 +26,7 @@ export default async function handler(req, res) {
         const { data: activeUsers } = await supabase.from('core_config').select('user_id').eq('key', 'current_season');
         if (!activeUsers?.length) return res.status(200).json({ message: 'No active users.' });
 
-        const uniqueUserIds = [...new Set(activeUsers.map(u => u.user_id))];
+        const uniqueUserIds = [...new Set(activeUsers.map(u => String(u.user_id)))];
 
         // --- 🚀 THE PARALLEL PROCESSING ENGINE ---
         const processUser = async (userId) => {
@@ -139,7 +139,7 @@ export default async function handler(req, res) {
             const batch = uniqueUserIds.slice(i, i + BATCH_SIZE);
 
             // Fire 10 users to Gemini simultaneously
-            await Promise.allSettled(batch.map(id => processUser(id)));
+            await Promise.allSettled(batch.map(id => processUser(String(id))));
 
             // If there are more users waiting, pause for 1 second to respect Gemini Rate Limits
             if (i + BATCH_SIZE < uniqueUserIds.length) {
