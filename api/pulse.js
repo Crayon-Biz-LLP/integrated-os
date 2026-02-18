@@ -31,15 +31,30 @@ export default async function handler(req, res) {
         // --- 🚀 THE PARALLEL PROCESSING ENGINE ---
         const processUser = async (userId) => {
             try {
-                if (await isTrialExpired(userId)) return;
+                // LOG 1: Entry Check (Confirms the engine actually sees the user)
+                console.log(`[PULSE START] Processing User: ${userId}`);
+
+                if (await isTrialExpired(userId)) {
+                    console.log(`[EXIT] User ${userId}: Trial Expired.`);
+                    return;
+                }
 
                 const { data: core } = await supabase.from('core_config').select('key, content').eq('user_id', userId);
+
+                // LOG 2: Data Check (Detects the String/Integer mismatch)
+                if (!core || core.length === 0) {
+                    console.log(`[EXIT] User ${userId}: No core_config found. Possible type mismatch.`);
+                    return;
+                }
 
                 const now = new Date();
                 const userOffset = core?.find(c => c.key === 'timezone_offset')?.content || '5.5';
                 const localDate = new Date(now.getTime() + (parseFloat(userOffset) * 60 * 60 * 1000));
                 const hour = localDate.getHours();
                 const scheduleRow = core?.find(c => c.key === 'pulse_schedule')?.content || '2';
+
+                // LOG 3: Time Sync (Verifies if the bot thinks it's the right hour)
+                console.log(`[TIME CHECK] User ${userId}: Local Hour ${hour} | Schedule ${scheduleRow} | Offset ${userOffset}`);
 
                 let shouldPulse = isManualTest;
                 if (!isManualTest) {
@@ -49,7 +64,10 @@ export default async function handler(req, res) {
                     if (scheduleRow === '3' && checkHour([10, 14, 18, 22])) shouldPulse = true;
                 }
 
-                if (!shouldPulse) return;
+                if (!shouldPulse) {
+                    console.log(`[EXIT] User ${userId}: Not scheduled for Hour ${hour}.`);
+                    return;
+                }
 
                 // Fetch Context & Data
                 const { data: dumps } = await supabase.from('raw_dumps').select('id, content').eq('user_id', userId).eq('is_processed', false);
