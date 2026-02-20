@@ -165,7 +165,11 @@ export default async function handler(req, res) {
         2. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
         3. CHECK FOR COMPLETION: Compare inputs against OPEN TASKS to identify IDs finished by Danny.
             - If Danny says he finished or completed a task, mark it as done.
+            - If Danny describes a result that fulfills a task's objective (e.g., "The contract is signed" fulfills "Get contract signed"), mark it DONE.
+            - If Danny uses the past tense of a task's core action verb (e.g., "Mailed the check" fulfills "Mail the check"), mark it DONE.
+            - If the input describes the final step of a process (e.g., "App is on the store" fulfills "Submit app for review"), mark it DONE.
             - If Danny says "Cancel", "Ignore", "Forget", or "Not doing" a task, mark it as cancelled.
+            - If Danny indicates he is "skipping," "dropping," or "not doing" something, add the ID to "cancelled_task_ids".
         4. AUTO-ONBOARDING:
             - If a new Client/Project is mentioned, add to "new_projects".
             - If a new Person is mentioned, add to "new_people".
