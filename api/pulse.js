@@ -335,6 +335,9 @@ export default async function handler(req, res) {
         // E. Cleanup & Logs
         if (aiData.logs?.length) await supabase.from('logs').insert(aiData.logs);
         await supabase.from('raw_dumps').update({ is_processed: true }).in('id', dumps.map(d => d.id));
+        if (aiData.briefing) {
+            aiData.briefing = aiData.briefing.replace(/\[?ID:\s*\d+\]?/gi, '').trim();
+        }
 
 
         // 4. SPEAK
