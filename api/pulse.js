@@ -207,7 +207,7 @@ export default async function handler(req, res) {
 
         try {
             const model = genAI.getGenerativeModel({
-                model: "gemini-2.5-flash",  // STABLE [web:82]
+                model: "gemini-3-pro-preview",  // STABLE [web:82]
                 generationConfig: { responseMimeType: "application/json" },  // FORCE JSON! [web:91]
             });
 
