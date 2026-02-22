@@ -283,23 +283,27 @@ export default async function handler(req, res) {
         // B. Batch New People
         if (aiData.new_people?.length) await supabase.from('people').insert(aiData.new_people);
 
-        // C. BATCH TASK UPDATES (The Safety Bridge)
+        // C. BATCH TASK UPDATES (Hardened Synchronization)
         if (aiData.status_updates?.length) {
-            const updates = aiData.status_updates.map(item => {
-                // Ensure we have a valid ID and a valid status (default to 'done' as a safety)
+            console.log(`[SYNC] Attempting ${aiData.status_updates.length} status updates...`);
+
+            for (const item of aiData.status_updates) {
                 const targetId = item.id;
                 const targetStatus = ['done', 'cancelled'].includes(item.status) ? item.status : 'done';
 
-                return supabase.from('tasks')
+                const { error } = await supabase.from('tasks')
                     .update({
                         status: targetStatus,
-                        completed_at: new Date().toISOString()
+                        completed_at: targetStatus === 'done' ? new Date().toISOString() : null
                     })
                     .eq('id', targetId);
-            });
 
-            await Promise.all(updates);
-            console.log(`✅ Semantic Engine: Processed ${aiData.status_updates.length} task status changes.`);
+                if (error) {
+                    console.error(`[SYNC ERROR] Task ${targetId}:`, error.message);
+                } else {
+                    console.log(`[SYNC SUCCESS] Task ${targetId} set to ${targetStatus}`);
+                }
+            }
         }
 
         // D. BATCH NEW TASKS (Entity-First Matching)
