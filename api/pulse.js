@@ -185,13 +185,13 @@ export default async function handler(req, res) {
         OUTPUT JSON:
         {
             "completed_task_ids": [
-                { "id": "uuid-here", "status": "done" },
-                { "id": "uuid-here", "status": "cancelled" }
+                { "id": "123", "status": "done" },
+                { "id": "456", "status": "cancelled" }
             ],
-            "new_projects": [{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT/PRODUCT_LABS/PERSONAL/CHURCH" }],
+            "new_projects": [{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }],
             "new_people": [{ "name": "...", "role": "...", "strategic_weight": 9 }],
-            "new_tasks": [{ "title": "...", "project_name": "...", "priority": "urgent/important/chores", "est_min": 15 }],
-            "logs": [{ "entry_type": "IDEAS/OBSERVATION/JOURNAL", "content": "..." }],
+            "new_tasks": [{ "title": "...", "project_name": "...", "priority": "urgent", "est_min": 15 }],
+            "logs": [{ "entry_type": "IDEAS", "content": "..." }],
             "briefing": "The formatted text string for Telegram."
         }
     `;
@@ -284,10 +284,10 @@ export default async function handler(req, res) {
         if (aiData.new_people?.length) await supabase.from('people').insert(aiData.new_people);
 
         // C. BATCH TASK UPDATES (Hardened Synchronization)
-        if (aiData.status_updates?.length) {
-            console.log(`[SYNC] Attempting ${aiData.status_updates.length} status updates...`);
+        if (aiData.completed_task_ids?.length) {
+            console.log(`[SYNC] Attempting ${aiData.completed_task_ids.length} status updates...`);
 
-            for (const item of aiData.status_updates) {
+            for (const item of aiData.completed_task_ids) {
                 const targetId = item.id;
                 const targetStatus = ['done', 'cancelled'].includes(item.status) ? item.status : 'done';
 
