@@ -284,22 +284,22 @@ export default async function handler(req, res) {
         if (aiData.new_people?.length) await supabase.from('people').insert(aiData.new_people);
 
         // C. BATCH TASK UPDATES (The Safety Bridge)
-        if (aiData.completed_task_ids?.length) {
-            const updates = aiData.completed_task_ids.map(item => {
-                // SAFETY CHECK: Handle both old string format and new object format
-                const id = typeof item === 'string' ? item : item.id;
-                const status = (typeof item !== 'string' && item.status === 'cancelled') ? 'cancelled' : 'done';
+        if (aiData.status_updates?.length) {
+            const updates = aiData.status_updates.map(item => {
+                // Ensure we have a valid ID and a valid status (default to 'done' as a safety)
+                const targetId = item.id;
+                const targetStatus = ['done', 'cancelled'].includes(item.status) ? item.status : 'done';
 
                 return supabase.from('tasks')
                     .update({
-                        status: status,
+                        status: targetStatus,
                         completed_at: new Date().toISOString()
                     })
-                    .eq('id', id);
+                    .eq('id', targetId);
             });
 
             await Promise.all(updates);
-            console.log(`✅ Processed ${aiData.completed_task_ids.length} task status updates.`);
+            console.log(`✅ Semantic Engine: Processed ${aiData.status_updates.length} task status changes.`);
         }
 
         // D. BATCH NEW TASKS (Entity-First Matching)
