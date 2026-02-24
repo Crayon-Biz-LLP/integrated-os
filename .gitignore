@@ -1,4 +1,5 @@
-.vercel
-node_modules
+__pycache__/
 .env
-.vercel
+.venv/
+node_modules/
+.vercel/
