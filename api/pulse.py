@@ -4,17 +4,21 @@ import httpx
 import json
 from datetime import datetime, timedelta, timezone
 import google.generativeai as genai
-from supabase import create_client, Client
+from supabase import create_async_client, AsyncClient
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Use a dynamic client or singleton per function call to keep thread safety and simplify context transfer
-def get_supabase() -> Client:
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
+_supabase_client: AsyncClient | None = None
+
+async def get_supabase() -> AsyncClient:
+    global _supabase_client
+    if _supabase_client is None:
+        _supabase_client = await create_async_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
+    return _supabase_client
 
 async def is_trial_expired(user_id: str) -> bool:
-    supabase = get_supabase()
-    response = supabase.table('core_config').select('created_at').eq('user_id', user_id).order('created_at', desc=False).limit(1).execute()
+    supabase = await get_supabase()
+    response = await supabase.table('core_config').select('created_at').eq('user_id', user_id).order('created_at', desc=False).limit(1).execute()
     data = response.data
     if not data:
         return False
@@ -40,13 +44,13 @@ async def notify_admin(message: str):
 async def process_user(user_id: str, is_manual_test: bool):
     try:
         print(f"[PULSE START] Processing User: {user_id}")
-        supabase = get_supabase()
+        supabase = await get_supabase()
 
         if await is_trial_expired(user_id):
             print(f"[EXIT] User {user_id}: Trial Expired.")
             return
 
-        core_response = supabase.table('core_config').select('key, content').eq('user_id', user_id).execute()
+        core_response = await supabase.table('core_config').select('key, content').eq('user_id', user_id).execute()
         core = core_response.data
 
         if not core:
@@ -80,13 +84,13 @@ async def process_user(user_id: str, is_manual_test: bool):
             return
 
         # Data Retrieval
-        dumps_response = supabase.table('raw_dumps').select('id, content').eq('user_id', user_id).eq('is_processed', False).execute()
+        dumps_response = await supabase.table('raw_dumps').select('id, content').eq('user_id', user_id).eq('is_processed', False).execute()
         dumps = dumps_response.data or []
         
-        tasks_response = supabase.table('tasks').select('id, title, priority').eq('user_id', user_id).neq('status', 'done').neq('status', 'cancelled').execute()
+        tasks_response = await supabase.table('tasks').select('id, title, priority').eq('user_id', user_id).neq('status', 'done').neq('status', 'cancelled').execute()
         tasks = tasks_response.data or []
         
-        people_response = supabase.table('people').select('name, role').eq('user_id', user_id).execute()
+        people_response = await supabase.table('people').select('name, role').eq('user_id', user_id).execute()
         people = people_response.data or []
         
         season = next((c['content'] for c in core if c['key'] == 'current_season'), 'No Goal Set')
@@ -164,16 +168,16 @@ OUTPUT JSON:
         # Database Updates
         if dumps:
             dump_ids = [d['id'] for d in dumps]
-            supabase.table('raw_dumps').update({'is_processed': True}).in_('id', dump_ids).execute()
+            await supabase.table('raw_dumps').update({'is_processed': True}).in_('id', dump_ids).execute()
             
         new_tasks = ai_data.get("new_tasks", [])
         if new_tasks:
             task_inserts = [{'user_id': user_id, 'title': t['title'], 'priority': t.get('priority', 'chore'), 'status': 'todo'} for t in new_tasks]
-            supabase.table('tasks').insert(task_inserts).execute()
+            await supabase.table('tasks').insert(task_inserts).execute()
             
         completed_task_ids = ai_data.get("completed_task_ids", [])
         if completed_task_ids:
-            supabase.table('tasks').update({'status': 'done'}).in_('id', completed_task_ids).eq('user_id', user_id).execute()
+            await supabase.table('tasks').update({'status': 'done'}).in_('id', completed_task_ids).eq('user_id', user_id).execute()
 
     except Exception as e:
         print(f"[CRITICAL] User {user_id}: {str(e)}")
@@ -182,8 +186,8 @@ OUTPUT JSON:
 
 async def process_pulse(is_manual_test: bool):
     try:
-        supabase = get_supabase()
-        response = supabase.table('core_config').select('user_id').eq('key', 'current_season').execute()
+        supabase = await get_supabase()
+        response = await supabase.table('core_config').select('user_id').eq('key', 'current_season').execute()
         active_users = response.data or []
         
         if not active_users:
@@ -193,7 +197,7 @@ async def process_pulse(is_manual_test: bool):
         unique_user_ids = list(set([str(u['user_id']).strip() for u in active_users]))
         print(f"[ENGINE] Found {len(unique_user_ids)} active users.")
 
-        batch_size = 10
+        batch_size = 3
         for i in range(0, len(unique_user_ids), batch_size):
             batch = unique_user_ids[i:i + batch_size]
             tasks = [process_user(uid, is_manual_test) for uid in batch]

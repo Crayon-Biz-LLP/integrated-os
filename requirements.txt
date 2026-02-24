@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-supabase
+supabase>=2.4.0
 google-generativeai
 httpx
 python-dotenv

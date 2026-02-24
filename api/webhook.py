@@ -1,12 +1,16 @@
 import os
 import httpx
-from supabase import create_client, Client
+from supabase import create_async_client, AsyncClient
 from datetime import datetime, timezone
 import re
 
-# We dynamically create the client in the request to ensure no state bleeding, but for simplicity here we can create one globally as Python handles it okay, or instantiate in processing. Since supabase is thread-safe for basic operations, this is fine.
-def get_supabase() -> Client:
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
+_supabase_client: AsyncClient | None = None
+
+async def get_supabase() -> AsyncClient:
+    global _supabase_client
+    if _supabase_client is None:
+        _supabase_client = await create_async_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
+    return _supabase_client
 
 MAIN_KEYBOARD = {
     "keyboard": [
@@ -48,8 +52,8 @@ def tz_display(offset: str) -> str:
         return f"🌍 **Local Sync:** GMT+5.5"
 
 async def is_trial_expired(user_id: str) -> bool:
-    supabase = get_supabase()
-    response = supabase.table('core_config').select('created_at').eq('user_id', user_id).order('created_at', desc=False).limit(1).execute()
+    supabase = await get_supabase()
+    response = await supabase.table('core_config').select('created_at').eq('user_id', user_id).order('created_at', desc=False).limit(1).execute()
     data = response.data
     if not data:
         return False
@@ -76,9 +80,9 @@ async def send_telegram(chat_id: str, text: str, reply_markup: dict = MAIN_KEYBO
         await client.post(url, json=payload)
 
 async def set_config(user_id: str, key: str, content: str):
-    supabase = get_supabase()
-    supabase.table('core_config').delete().eq('user_id', user_id).eq('key', key).execute()
-    supabase.table('core_config').insert([{'user_id': user_id, 'key': key, 'content': content}]).execute()
+    supabase = await get_supabase()
+    await supabase.table('core_config').delete().eq('user_id', user_id).eq('key', key).execute()
+    await supabase.table('core_config').insert([{'user_id': user_id, 'key': key, 'content': content}]).execute()
 
 async def process_webhook(update: dict):
     message = update.get("message")
@@ -89,15 +93,15 @@ async def process_webhook(update: dict):
     user_id = str(message["from"]["id"])
     text = message.get("text", "")
     
-    supabase = get_supabase()
+    supabase = await get_supabase()
 
     # --- 1. /start COMMAND ---
     if text.startswith('/start'):
         raw_name = message["from"].get("first_name", "Leader")
         first_name = re.sub(r'[*_`\[\]]', '', raw_name)
 
-        supabase.table('core_config').delete().eq('user_id', user_id).execute()
-        supabase.table('people').delete().eq('user_id', user_id).execute()
+        await supabase.table('core_config').delete().eq('user_id', user_id).execute()
+        await supabase.table('people').delete().eq('user_id', user_id).execute()
 
         await set_config(user_id, 'user_name', first_name)
 
@@ -114,7 +118,7 @@ async def process_webhook(update: dict):
         return
 
     # --- 2. FETCH CURRENT STATE ---
-    response = supabase.table('core_config').select('key, content').eq('user_id', user_id).execute()
+    response = await supabase.table('core_config').select('key, content').eq('user_id', user_id).execute()
     configs = response.data or []
 
     identity = next((c['content'] for c in configs if c['key'] == 'identity'), None)
@@ -224,7 +228,7 @@ async def process_webhook(update: dict):
                     })
                 
                 if people_data:
-                    supabase.table('people').insert(people_data).execute()
+                    await supabase.table('people').insert(people_data).execute()
                 await set_config(user_id, 'initial_people_setup', 'true')
 
             persona_map = {
@@ -289,22 +293,22 @@ async def process_webhook(update: dict):
             await send_telegram(chat_id, final_reply, SETTINGS_KEYBOARD)
             return
         elif text == '🎭 Change Persona':
-            supabase.table('core_config').delete().eq('user_id', user_id).eq('key', 'identity').execute()
+            await supabase.table('core_config').delete().eq('user_id', user_id).eq('key', 'identity').execute()
             final_reply = "Choose your new Persona:"
             await send_telegram(chat_id, final_reply, PERSONA_KEYBOARD)
             return
         elif text == '⏰ Change Schedule':
-            supabase.table('core_config').delete().eq('user_id', user_id).eq('key', 'pulse_schedule').execute()
+            await supabase.table('core_config').delete().eq('user_id', user_id).eq('key', 'pulse_schedule').execute()
             final_reply = "Choose your new Briefing Schedule:"
             await send_telegram(chat_id, final_reply, SCHEDULE_KEYBOARD)
             return
         elif text == '📍 Change Location':
-            supabase.table('core_config').delete().eq('user_id', user_id).eq('key', 'timezone_offset').execute()
+            await supabase.table('core_config').delete().eq('user_id', user_id).eq('key', 'timezone_offset').execute()
             final_reply = "Where are you located? (Enter city name):"
             await send_telegram(chat_id, final_reply, {"remove_keyboard": True})
             return
         elif text == '🎯 Change Goal':
-            supabase.table('core_config').delete().eq('user_id', user_id).eq('key', 'current_season').execute()
+            await supabase.table('core_config').delete().eq('user_id', user_id).eq('key', 'current_season').execute()
             final_reply = "What is your new Main Goal for this sprint?"
             await send_telegram(chat_id, final_reply, {"remove_keyboard": True})
             return
@@ -314,7 +318,7 @@ async def process_webhook(update: dict):
             return
         
         elif text == '🔓 Vault':
-            response = supabase.table('logs').select('content, created_at').eq('user_id', user_id).ilike('entry_type', '%IDEAS%').order('created_at', desc=True).limit(5).execute()
+            response = await supabase.table('logs').select('content, created_at').eq('user_id', user_id).ilike('entry_type', '%IDEAS%').order('created_at', desc=True).limit(5).execute()
             ideas = response.data
             if ideas:
                 formatted_ideas = "\n\n".join([f"💡 *{datetime.fromisoformat(i['created_at'].replace('Z','+00:00')).strftime('%m/%d/%Y')}:* {i['content']}" for i in ideas])
@@ -326,12 +330,12 @@ async def process_webhook(update: dict):
             final_reply = f"🧭 **CURRENT MAIN GOAL:**\n\n{season}"
         
         elif text == '🔴 Urgent':
-            response = supabase.table('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').eq('user_id', user_id).limit(1).execute()
+            response = await supabase.table('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').eq('user_id', user_id).limit(1).execute()
             fire = response.data[0] if response.data else None
             final_reply = f"🔴 **ACTION REQUIRED:**\n\n🔥 {fire['title']}" if fire else "✅ No active fires."
             
         elif text == '📋 Brief':
-            response = supabase.table('tasks').select('title, priority').eq('status', 'todo').eq('user_id', user_id).limit(10).execute()
+            response = await supabase.table('tasks').select('title, priority').eq('status', 'todo').eq('user_id', user_id).limit(10).execute()
             tasks = response.data or []
             if tasks:
                 sorted_tasks = sorted(tasks, key=lambda t: -1 if t['priority'] == 'urgent' else 1)[:5]
@@ -341,7 +345,7 @@ async def process_webhook(update: dict):
                 final_reply = "The list is empty."
                 
         elif text == '👥 People':
-            response = supabase.table('people').select('name, role').eq('user_id', user_id).execute()
+            response = await supabase.table('people').select('name, role').eq('user_id', user_id).execute()
             people = response.data or []
             final_reply = "👥 **STAKEHOLDERS:**\n\n" + "\n".join([f"• {p['name']} ({p['role']})" for p in people]) if people else "No one registered."
             
@@ -354,7 +358,7 @@ async def process_webhook(update: dict):
             if name:
                 weight_int = int(weight) if weight.isdigit() else 5
                 try:
-                    supabase.table('people').insert([{'user_id': user_id, 'name': name, 'strategic_weight': weight_int}]).execute()
+                    await supabase.table('people').insert([{'user_id': user_id, 'name': name, 'strategic_weight': weight_int}]).execute()
                     final_reply = f"👤 **Stakeholder Registered:** {name}\nStrategic Weight: {weight_int}/10"
                 except Exception:
                     final_reply = "❌ Error adding person."
@@ -367,5 +371,5 @@ async def process_webhook(update: dict):
 
     # --- 6. CAPTURE MODE ---
     if text:
-        supabase.table('raw_dumps').insert([{'user_id': user_id, 'content': text}]).execute()
+        await supabase.table('raw_dumps').insert([{'user_id': user_id, 'content': text}]).execute()
         await send_telegram(chat_id, '✅')
