@@ -23,6 +23,48 @@ async def get_supabase() -> AsyncClient:
         _supabase_client = await create_async_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
     return _supabase_client
 
+# ─────────────────────────────────────────────
+# Unified Notification Router
+# ─────────────────────────────────────────────
+
+WHATSAPP_API_URL = "https://graph.facebook.com/v22.0"
+
+async def send_message(user_id: str, text: str):
+    """Route a Pulse briefing to either Telegram or WhatsApp based on user_id prefix."""
+    if user_id.startswith("wa_"):
+        phone_number = user_id[3:]  # strip 'wa_'
+        phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+        # Append reply prompt to keep 24-hour window rolling
+        wa_text = text + "\n\n_Reply 'ok' to confirm receipt._"
+        url = f"{WHATSAPP_API_URL}/{phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {os.getenv('WHATSAPP_ACCESS_TOKEN')}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": phone_number,
+            "type": "text",
+            "text": {"body": wa_text}
+        }
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, json=payload, headers=headers)
+            if not res.is_success:
+                print(f"[WA PULSE ERROR] User {user_id}: {res.text}")
+    else:
+        # Treat as Telegram — user_id IS the chat_id (no prefix stripping for legacy Telegram users)
+        tg_chat_id = user_id[3:] if user_id.startswith("tg_") else user_id
+        tg_url = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/sendMessage"
+        async with httpx.AsyncClient() as client:
+            tg_res = await client.post(tg_url, json={
+                "chat_id": tg_chat_id,
+                "text": text,
+                "parse_mode": "Markdown"
+            })
+            if not tg_res.is_success:
+                print(f"[TG ERROR] User {user_id}: Markdown rejected. Retrying plain text.")
+                await client.post(tg_url, json={"chat_id": tg_chat_id, "text": text})
+
 async def is_trial_expired(user_id: str) -> bool:
     supabase = await get_supabase()
     response = await supabase.table('core_config').select('created_at').eq('user_id', user_id).order('created_at', desc=False).limit(1).execute()
@@ -162,21 +204,7 @@ OUTPUT JSON:
             return
             
         if ai_data.get("briefing"):
-            tg_url = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/sendMessage"
-            
-            async with httpx.AsyncClient() as client:
-                tg_res = await client.post(tg_url, json={
-                    "chat_id": user_id, 
-                    "text": ai_data["briefing"], 
-                    "parse_mode": "Markdown"
-                })
-                
-                if not tg_res.is_success:
-                    print(f"[TG ERROR] User {user_id}: Markdown rejected. Retrying plain text.")
-                    await client.post(tg_url, json={
-                        "chat_id": user_id, 
-                        "text": ai_data["briefing"]
-                    })
+            await send_message(user_id, ai_data["briefing"])
 
         # Database Updates
         if dumps:
