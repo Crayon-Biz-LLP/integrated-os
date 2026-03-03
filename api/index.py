@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from .webhook import process_webhook
 from .pulse import process_pulse
+from .whatsapp import process_whatsapp_webhook
 import os
 
 app = FastAPI(title="Integrated-OS")
@@ -50,6 +51,5 @@ async def verify_whatsapp_webhook(request: Request):
 @app.post("/api/whatsapp/webhook")
 async def receive_whatsapp_webhook(request: Request):
     update = await request.json()
-    # We will build process_whatsapp_webhook in the next step
-    # await process_whatsapp_webhook(update) 
+    await process_whatsapp_webhook(update)
     return {"success": True}
