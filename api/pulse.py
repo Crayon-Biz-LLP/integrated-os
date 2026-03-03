@@ -67,12 +67,12 @@ async def send_message(user_id: str, text: str):
 
 async def is_trial_expired(user_id: str) -> bool:
     supabase = await get_supabase()
-    response = await supabase.table('core_config').select('created_at').eq('user_id', user_id).order('created_at', desc=False).limit(1).execute()
+    response = await supabase.table('core_config').select('updated_at').eq('user_id', user_id).order('updated_at', desc=False).limit(1).execute()
     data = response.data
     if not data:
         return False
     
-    created_str = data[0]['created_at'].replace('Z', '+00:00')
+    created_str = data[0]['updated_at'].replace('Z', '+00:00')
     try:
         created_at = datetime.fromisoformat(created_str)
     except ValueError:
