@@ -2,6 +2,7 @@ import 'dotenv/config'; // Load env vars before other imports
 import express from 'express';
 import cors from 'cors';
 import pulseHandler from './api/pulse.js';
+import webhookHandler from './api/webhook.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,7 +22,10 @@ app.get('/', (req, res) => {
 // Express handlers are `(req, res, next)`. The Vercel signature is `(req, res)`.
 // So it should be largely compatible, but we need to ensure `res.status().json()` works.
 // Express `res` object has these methods, so it should be fine.
+
+
 app.all('/api/pulse', pulseHandler);
+app.all('/api/webhook', webhookHandler);
 
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
