@@ -10,6 +10,23 @@ import google.generativeai as genai
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
+# --- 🛰️ LAYER 2: THE AUTO-ENRICHER ---
+async def fetch_url_metadata(url: str):
+    """Scrapes basic metadata so Gemini has ground truth instead of guessing."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+            response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            if response.status_code == 200:
+                html = response.text
+                title = re.search('<title>(.*?)</title>', html, re.IGNORECASE)
+                title = title.group(1) if title else "Unknown Title"
+                # Grab meta description if it exists
+                desc = re.search('<meta name="description" content="(.*?)"', html, re.IGNORECASE)
+                desc = desc.group(1) if desc else ""
+                return {"title": title, "description": desc}
+    except Exception as e:
+        print(f"Scraper error for {url}: {e}")
+    return {"title": "Unknown", "description": ""}
 
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
 async def process_pulse(auth_secret: str = None):
@@ -122,6 +139,18 @@ async def process_pulse(auth_secret: str = None):
             if t.get('priority') == 'urgent' and hours_old > 48:
                 overdue_tasks.append(t.get('title'))
 
+        # --- 🧭 LAYER 3: PATTERN DETECTION CONTEXT ---
+        recent_lib = supabase.table('resources').select('category, title').order('created_at', desc=True).limit(15).execute()
+        pattern_context = " | ".join([f"[{r['category']}] {r['title']}" for r in recent_lib.data]) if recent_lib.data else "None"
+
+        # --- 🛰️ LAYER 2: URL ENRICHMENT ---
+        enriched_links = []
+        urls = re.findall(r'(https?://\S+)', new_inputs_text)
+        for url in urls:
+            meta = await fetch_url_metadata(url)
+            enriched_links.append(f"URL: {url} | Title: {meta['title']} | Snippet: {meta['description']}")
+        link_context = "\n".join(enriched_links) if enriched_links else "None"  
+        
         # --- 2. THINK Phase ---
         print('🤖 Building prompt...')
 
@@ -144,13 +173,21 @@ async def process_pulse(auth_secret: str = None):
         - IDENTITY: {json.dumps(core)}
         - PROJECTS: {json.dumps(project_names)}
         - PEOPLE: {json.dumps(people_names)}
-        - CURRENT OPEN TASKS (COMPRESSED): {compressed_tasks_final}
         - ACTIONABLE TASKS (DAY FILTERED): {compressed_tasks_final}
         - ALL SYSTEM TASKS (FOR ID MATCHING): {universal_task_map[:3000]}
+        - RECENT LIBRARY PATTERNS: {pattern_context}
+        - ENRICHED WEB LINKS: {link_context}
         - NEW INPUTS: {new_inputs_text}
 
-        / --- NEW: PROJECT ROUTING LOGIC ---
-        // Use this hierarchy to assign NEW_TASKS or match COMPLETIONS:
+---     STRATEGIC AUDIT INSTRUCTIONS ---
+        1. BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects. 
+           - If a link provides a solution for "CashFlow+" or "Solvstrat", call it out in the briefing.
+        2. CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
+        3. PATTERN DETECTION: Review RECENT LIBRARY PATTERNS. If you see a trend (e.g., 3 links about AI SaaS), mention it as a "Strategic Trend" in the briefing.
+        4. RESOURCE OUTPUT: For every URL, generate a "strategic_note" explaining how it specifically helps the ₹30L debt recovery or revenue growth.
+
+        PROJECT ROUTING LOGIC
+        Use this hierarchy to assign NEW_TASKS or match COMPLETIONS:
         1. SOLVSTRAT (CASH ENGINE): Match tasks for Atna.ai, Smudge, new Lead Gen here or new SaaS and technology projects. Goal: High-ticket revenue.
         2. PRODUCT LABS (INCUBATOR): 
             - Match existing: CashFlow+ (Vasuuli), Integrated-OS.
@@ -163,6 +200,12 @@ async def process_pulse(auth_secret: str = None):
 
         NEW PROJECT CREATION CRITERIA:
         1. Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned 
+
+        NEW: RESOURCE CAPTURE LOGIC ---
+        Identify any URLs in the NEW INPUTS. For each URL:
+        1. CATEGORIZE: Tag as GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL.
+        2. SUMMARIZE: Write a concise, 1-sentence description of the value.
+        3. PROJECT MATCH: If the link relates to an existing project (e.g., Crayon or Solvstrat), provide the project name.
 
         INSTRUCTIONS:
         1. STRICT DATA FIDELITY: You are strictly forbidden from inventing, hallucinating, or generating new tasks, projects, or people. 
@@ -189,7 +232,10 @@ async def process_pulse(auth_secret: str = None):
         10. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
         11. STRICT TASK SYNTAX: Every single task listed in the briefing MUST follow this exact format: "- [ICON] [Task Title]". 
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
-
+        12. RESOURCE-TO-TASK BRIDGE: 
+            - For every new resource, if it is a TOOL, suggest a specific 15-min task to 'Experiment' or 'Implement' it for a current project.
+            - If it is an ARTICLE, identify the one "Killer Insight" Danny needs to know for Solvstrat or Crayon.   
+        
         OUTPUT JSON:
         {{
             "completed_task_ids": [
@@ -199,6 +245,7 @@ async def process_pulse(auth_secret: str = None):
             "new_projects": [{{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }}],
             "new_people": [{{ "name": "...", "role": "...", "strategic_weight": 9 }}],
             "new_tasks": [{{ "title": "...", "project_name": "...", "priority": "urgent", "est_min": 15 }}],
+            "resources": [{{ "url": "...", "title": "...", "summary": "...", "category": "...", "project_name": "...", "strategic_note": "..." }}],
             "logs": [{{ "entry_type": "IDEAS", "content": "..." }}],
             "briefing": "The formatted text string for Telegram."
         }}
@@ -331,6 +378,26 @@ async def process_pulse(auth_secret: str = None):
         briefing_text = ai_data.get('briefing', '')
         if briefing_text:
             briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
+
+        # F. BATCH NEW RESOURCES (Upgraded with Strategic Notes)
+        if ai_data.get('resources'):
+            resource_inserts = []
+            for res in ai_data['resources']:
+                p_name = (res.get('project_name') or "").lower()
+                project_match = next((p for p in projects if p_name in p['name'].lower()), None)
+                
+                resource_inserts.append({
+                    "url": res.get('url'),
+                    "title": res.get('title'),
+                    "summary": res.get('summary'),
+                    "strategic_note": res.get('strategic_note'), # <--- New Intelligence
+                    "category": res.get('category', 'LINK'),
+                    "project_id": project_match['id'] if project_match else None
+                })
+            
+            if resource_inserts:
+                supabase.table('resources').insert(resource_inserts).execute()
+                print(f"✅ Vaulted {len(resource_inserts)} resources with Strategic Audit.")
 
         # --- 4. SPEAK Phase ---
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")

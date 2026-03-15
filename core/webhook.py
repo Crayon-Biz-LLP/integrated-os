@@ -13,7 +13,8 @@ supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_
 KEYBOARD = {
     "keyboard": [
         [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
-        [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}]
+        [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}],
+        [{"text": "📚 Library"}]
     ],
     "resize_keyboard": True,
     "persistent": True
@@ -54,12 +55,34 @@ async def process_webhook(update: dict):
                 await client.post(url, json=payload)
 
         # 1. COMMAND MODE (Handles /commands AND Button Text)
-        command_triggers = ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault']
+        command_triggers = ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library']
         if text.startswith('/') or text in command_triggers:
             reply = "Thinking..."
 
+            # --- COMMAND: LIBRARY (Retrieve Saved Links) ---
+            if text in ['/library', '📚 Library']:
+                lib_res = supabase.table('resources')\
+                    .select('title, url, category')\
+                    .order('created_at', desc=True)\
+                    .limit(5)\
+                    .execute()
+                
+                items = lib_res.data or []
+                if items:
+                    formatted_items = []
+                    for i in items:
+                        display_name = i.get('title') or "Untitled Resource"
+                        cat = i.get('category', 'LINK')
+                        # Using Markdown link syntax [Title](URL)
+                        formatted_items.append(f"🔖 *[{cat}]* [{display_name}]({i.get('url')})")
+                    
+                    lib_str = "\n\n".join(formatted_items)
+                    reply = f"📚 **RESOURCE LIBRARY (Last 5):**\n\n{lib_str}"
+                else:
+                    reply = "The library is empty. Save some links first!"
+
             # --- COMMAND: VAULT (Retrieve Ideas) ---
-            if text in ['/vault', '🔓 Vault']:
+            elif text in ['/vault', '🔓 Vault']:
                 vault_res = supabase.table('logs')\
                     .select('content, created_at')\
                     .ilike('entry_type', '%IDEAS%')\
