@@ -100,6 +100,7 @@ async def process_pulse(auth_secret: str = None):
             compressed_tasks_list.append(f"[{o_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]")
 
         compressed_tasks = " | ".join(compressed_tasks_list)
+        universal_task_map = " | ".join([f"[ID:{t.get('id')}] {t.get('title')}" for t in active_tasks])
 
         # --- 1.5 SEASON EXPIRY LOGIC ---
         season_row = next((c for c in core if c.get('key') == 'current_season'), None)
@@ -144,6 +145,8 @@ async def process_pulse(auth_secret: str = None):
         - PROJECTS: {json.dumps(project_names)}
         - PEOPLE: {json.dumps(people_names)}
         - CURRENT OPEN TASKS (COMPRESSED): {compressed_tasks_final}
+        - ACTIONABLE TASKS (DAY FILTERED): {compressed_tasks_final}
+        - ALL SYSTEM TASKS (FOR ID MATCHING): {universal_task_map[:3000]}
         - NEW INPUTS: {new_inputs_text}
 
         / --- NEW: PROJECT ROUTING LOGIC ---
@@ -166,7 +169,7 @@ async def process_pulse(auth_secret: str = None):
         2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "new_projects", and "new_people" arrays MUST remain 100% empty [].
         3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
         4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
-        5. CHECK FOR COMPLETION: Compare inputs against OPEN TASKS to identify IDs finished by Danny.
+        5. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
             - If Danny says he finished or completed a task, mark it as done.
             - If Danny describes a result that fulfills a task's objective (e.g., "The contract is signed" fulfills "Get contract signed"), mark it DONE.
             - If Danny uses the past tense of a task's core action verb (e.g., "Mailed the check" fulfills "Mail the check"), mark it DONE.
