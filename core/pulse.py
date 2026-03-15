@@ -15,14 +15,26 @@ async def fetch_url_metadata(url: str):
     """Scrapes basic metadata so Gemini has ground truth instead of guessing."""
     try:
         async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            # Added a more specific User-Agent to avoid being blocked by some sites
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+            response = await client.get(url, headers=headers)
+            
             if response.status_code == 200:
                 html = response.text
-                title = re.search('<title>(.*?)</title>', html, re.IGNORECASE)
-                title = title.group(1) if title else "Unknown Title"
-                # Grab meta description if it exists
-                desc = re.search('<meta name="description" content="(.*?)"', html, re.IGNORECASE)
-                desc = desc.group(1) if desc else ""
+                
+                # Title Extraction (with whitespace cleanup)
+                title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+                title = title_match.group(1).strip() if title_match else "Unknown Title"
+                
+                # Description Extraction (More flexible regex to handle attribute order)
+                # This looks for any meta tag where name="description" exists
+                desc_match = re.search(r'<meta [^>]*name=["\']description["\'] [^>]*content=["\'](.*?)["\']', html, re.IGNORECASE)
+                if not desc_match:
+                    # Fallback for sites that put content BEFORE name
+                    desc_match = re.search(r'<meta [^>]*content=["\'](.*?)["\'] [^>]*name=["\']description["\']', html, re.IGNORECASE)
+                
+                desc = desc_match.group(1).strip() if desc_match else ""
+                
                 return {"title": title, "description": desc}
     except Exception as e:
         print(f"Scraper error for {url}: {e}")
@@ -144,17 +156,19 @@ async def process_pulse(auth_secret: str = None):
             if t.get('priority') == 'urgent' and hours_old > 48:
                 overdue_tasks.append(t.get('title'))
 
+        new_inputs_text = "\n---\n".join([d['content'] for d in dumps]) if dumps else "None"    
+
         # --- 🧭 LAYER 3: PATTERN DETECTION CONTEXT ---
         recent_lib = supabase.table('resources').select('category, title').order('created_at', desc=True).limit(15).execute()
         pattern_context = " | ".join([f"[{r['category']}] {r['title']}" for r in recent_lib.data]) if recent_lib.data else "None"
 
         # --- 🛰️ LAYER 2: URL ENRICHMENT ---
         enriched_links = []
-        urls = re.findall(r'(https?://\S+)', new_inputs_text)
+        urls = re.findall(r'(https?://\S+)', new_inputs_text) 
         for url in urls:
             meta = await fetch_url_metadata(url)
             enriched_links.append(f"URL: {url} | Title: {meta['title']} | Snippet: {meta['description']}")
-        link_context = "\n".join(enriched_links) if enriched_links else "None"  
+        link_context = "\n".join(enriched_links) if enriched_links else "None" 
         
         # --- 2. THINK Phase ---
         print('🤖 Building prompt...')
@@ -393,7 +407,20 @@ async def process_pulse(auth_secret: str = None):
             if task_inserts:
                 supabase.table('tasks').insert(task_inserts).execute()
 
-        # E. BATCH NEW RESOURCES (Upgraded with Strategic Notes)
+        # E. BATCH NEW MISSIONS (Auto-Creation)
+        if ai_data.get('new_missions'):
+            for m in ai_data['new_missions']:
+                m_title = m.get('title')
+                # Check for duplicates
+                if not any(m_title.lower() in existing['title'].lower() for existing in active_missions):
+                    try:
+                        m_res = supabase.table('missions').insert({"title": m_title}).execute()
+                        if m_res.data:
+                            active_missions.extend(m_res.data) # Add to local list so resources can link to it
+                            print(f"🚀 AUTO-MISSION CREATED: {m_title}")
+                    except Exception as e:
+                        print(f"Error creating mission: {e}")
+        # F. BATCH NEW RESOURCES (Upgraded with Strategic Notes)
         if ai_data.get('resources'):
             resource_inserts = []
             for res in ai_data['resources']:
@@ -419,18 +446,7 @@ async def process_pulse(auth_secret: str = None):
                 supabase.table('resources').insert(resource_inserts).execute()
                 print(f"✅ Vaulted {len(resource_inserts)} resources with Strategic Audit.")
 
-        # E.2 BATCH NEW MISSIONS (Auto-Creation)
-                if ai_data.get('new_missions'):
-                    for m in ai_data['new_missions']:
-                        m_title = m.get('title')
-                        # Check for duplicates
-                        if not any(m_title.lower() in existing['title'].lower() for existing in active_missions):
-                            m_res = supabase.table('missions').insert({"title": m_title}).execute()
-                            if m_res.data:
-                                active_missions.extend(m_res.data) # Add to local list so resources can link to it
-                                print(f"🚀 AUTO-MISSION CREATED: {m_title}")
-
-        # F. CLEANUP & LOGS
+        # G. CLEANUP & LOGS
         if ai_data.get('logs'):
             supabase.table('logs').insert(ai_data['logs']).execute()
 
