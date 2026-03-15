@@ -80,15 +80,15 @@ async def process_pulse(auth_secret: str = None):
             if hour < 11:
                 briefing_mode = "🔴 URGENT: CRITICAL ACTIONS"
                 system_persona = "High-energy. Direct focus toward URGENT tasks and high-stakes 'Battlefield' items."
-            elif hour < 15:
+            elif hour < 14:
                 briefing_mode = "🟡 IMPORTANT: STRATEGIC MOMENTUM"
-                system_persona = "Tactical update. Focus on IMPORTANT tasks, scaling, and growth projects."
-            elif hour < 19:
+                system_persona = "Tactical update. Focus on IMPORTANT tasks and MISSION progress, scaling, and growth projects."
+            elif hour < 18:
                 briefing_mode = "⚪ CHORES: OPERATIONAL SHUTDOWN"
-                system_persona = "Shutdown mode. Push Danny to close work loops and transition to Father mode."
+                system_persona = "Closing loops. Push Danny to close work loops and transition to Father mode. Log pending items."
             else:
                 briefing_mode = "💡 IDEAS: MENTAL CLEAR-OUT"
-                system_persona = "Relaxed reflection. Focus on logging IDEAS and observations. Prep for sleep."
+                system_persona = "Relaxed reflection. Focus on new product ideas, strategic trends, and library insights. Prep for sleep."
 
         # --- 1.3 BANDWIDTH & BUFFER CHECK ---
         is_overloaded = len(active_tasks) > 15
@@ -219,6 +219,7 @@ async def process_pulse(auth_secret: str = None):
            - Tag it as project_name: "INCUBATOR".
            - In the "strategic_note", evaluate its "Success DNA" (Market fit/Founder match).
         3. SPARK DETECTION: If a link is a "Spark" (brand new project concept), create a log with entry_type: "SPARK".
+        4. AUTO-MISSION DETECTION: If 3+ items in NEW INPUTS or RECENT LIBRARY PATTERNS suggest a cohesive new goal (e.g., "Automate Solvstrat Lead Gen"), add it to the "new_missions" array.
 
         INSTRUCTIONS:
         1. STRICT DATA FIDELITY: You are strictly forbidden from inventing, hallucinating, or generating new tasks, projects, or people. 
@@ -242,6 +243,12 @@ async def process_pulse(auth_secret: str = None):
             - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
             - SECTIONS: ✅ COMPLETED, 🛡️ WORK (Hide on weekends), 🏠 HOME, 💡 IDEAS (Only at night pulse).
             - TONE: Match the PERSONA GUIDELINE.
+            - INTELLIGENT FILTERING: 
+                - If mode is 🔴 URGENT: HIDE the 🏠 HOME, 💡 IDEAS, and new Resources. Focus strictly on 🛡️ WORK and ✅ COMPLETED.
+                - If mode is 🟡 IMPORTANT: Prioritize 🚀 MISSION progress and 🛡️ WORK.
+                - If mode is 💡 IDEAS: Prioritize the 💡 IDEAS section, Incubator Sparks, and 📚 Library links.
+            - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
+            - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
         10. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
         11. STRICT TASK SYNTAX: Every single task listed in the briefing MUST follow this exact format: "- [ICON] [Task Title]". 
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
@@ -250,6 +257,9 @@ async def process_pulse(auth_secret: str = None):
             - If it is an ARTICLE, identify the one "Killer Insight" Danny needs to know for Solvstrat or Crayon.   
             - For every MISSION-related tool, suggest a 15-min 'Implementation' task.
             - For every INCUBATOR spark, suggest a 15-min 'Validation' task.
+        13. AUTO-MISSION DETECTION:
+            - If 3+ new inputs or recent resources suggest a cohesive new goal (e.g., "SaaS Lead Gen"), add a new mission to "new_missions".
+            - In the briefing, if a new mission is created, announce it with a 🚀 icon and a 1-sentence "Why".
 
         OUTPUT JSON:
         {{
@@ -262,6 +272,7 @@ async def process_pulse(auth_secret: str = None):
             "new_tasks": [{{ "title": "...", "project_name": "...", "priority": "urgent", "est_min": 15 }}],
             "resources": [{{ "url": "...", "title": "...", "summary": "...", "mission_name": "...", "project_name": "...", "strategic_note": "..." }}],
             "logs": [{{ "entry_type": "IDEAS", "content": "..." }}],
+            "new_missions": [{{ "title": "...", "description": "..." }}],
             "briefing": "The formatted text string for Telegram."
         }}
         """
@@ -382,19 +393,7 @@ async def process_pulse(auth_secret: str = None):
             if task_inserts:
                 supabase.table('tasks').insert(task_inserts).execute()
 
-        # E. CLEANUP & LOGS
-        if ai_data.get('logs'):
-            supabase.table('logs').insert(ai_data['logs']).execute()
-
-        if dumps:
-            dump_ids = [d['id'] for d in dumps]
-            supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
-
-        briefing_text = ai_data.get('briefing', '')
-        if briefing_text:
-            briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
-
-        # F. BATCH NEW RESOURCES (Upgraded with Strategic Notes)
+        # E. BATCH NEW RESOURCES (Upgraded with Strategic Notes)
         if ai_data.get('resources'):
             resource_inserts = []
             for res in ai_data['resources']:
@@ -420,6 +419,29 @@ async def process_pulse(auth_secret: str = None):
                 supabase.table('resources').insert(resource_inserts).execute()
                 print(f"✅ Vaulted {len(resource_inserts)} resources with Strategic Audit.")
 
+        # E.2 BATCH NEW MISSIONS (Auto-Creation)
+                if ai_data.get('new_missions'):
+                    for m in ai_data['new_missions']:
+                        m_title = m.get('title')
+                        # Check for duplicates
+                        if not any(m_title.lower() in existing['title'].lower() for existing in active_missions):
+                            m_res = supabase.table('missions').insert({"title": m_title}).execute()
+                            if m_res.data:
+                                active_missions.extend(m_res.data) # Add to local list so resources can link to it
+                                print(f"🚀 AUTO-MISSION CREATED: {m_title}")
+
+        # F. CLEANUP & LOGS
+        if ai_data.get('logs'):
+            supabase.table('logs').insert(ai_data['logs']).execute()
+
+        if dumps:
+            dump_ids = [d['id'] for d in dumps]
+            supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
+
+        briefing_text = ai_data.get('briefing', '')
+        if briefing_text:
+            briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
+            
         # --- 4. SPEAK Phase ---
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")

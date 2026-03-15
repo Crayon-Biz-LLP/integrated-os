@@ -2,8 +2,8 @@ name: Pulse Cron
 on:
   schedule:
     # WEEKDAYS (Mon-Fri)
-    # Runs at: 08:30, 10:30, 14:30, 16:30, 18:30 IST
-    - cron: '00 3,5,9,11,13 * * 1-5' 
+    # Runs at: 03:30, 06:30, 10:30, 13:30 UTC matches 9AM, 12PM, 4PM, 7PM IST
+    - cron: '30 3,6,10,13 * * *'
     
     # WEEKENDS (Sat-Sun)
     # Runs at: 10:00, 15:00 IST
