@@ -13,8 +13,8 @@ supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_
 KEYBOARD = {
     "keyboard": [
         [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
-        [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}],
-        [{"text": "📚 Library"}]
+        [{"text": "🚀 Mission"}, {"text": "📚 Library"}],
+        [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}]
     ],
     "resize_keyboard": True,
     "persistent": True
@@ -58,6 +58,26 @@ async def process_webhook(update: dict):
         command_triggers = ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library']
         if text.startswith('/') or text in command_triggers:
             reply = "Thinking..."
+
+            # --- COMMAND: MISSION (View or Create) ---
+            if text.startswith('/mission') or text == '🚀 Mission':
+                params = text.replace('/mission', '').replace('🚀 Mission', '').strip()
+                
+                if not params:
+                    # List Active Missions
+                    m_res = supabase.table('missions').select('title').eq('status', 'active').execute()
+                    if m_res.data:
+                        m_list = "\n".join([f"• {m['title']}" for m in m_res.data])
+                        reply = f"🚀 **ACTIVE MISSIONS:**\n\n{m_list}\n\n_To start a new one, type /mission [Goal]_"
+                    else:
+                        reply = "🚀 No active missions. Type `/mission [Goal]` to start hunting."
+                else:
+                    # Create New Mission
+                    try:
+                        supabase.table('missions').insert({"title": params}).execute()
+                        reply = f"🚀 **MISSION DECLARED:** {params}\n\nI am now hunting for components and 'Sparks' related to this goal."
+                    except Exception:
+                        reply = "❌ Database Error creating mission."
 
             # --- COMMAND: LIBRARY (Retrieve Saved Links) ---
             if text in ['/library', '📚 Library']:

@@ -59,6 +59,11 @@ async def process_pulse(auth_secret: str = None):
         people_res = supabase.table('people').select('name, strategic_weight').execute()
         people = people_res.data or []
 
+        # Fetch Active Missions for Context
+        missions_res = supabase.table('missions').select('id, title').eq('status', 'active').execute()
+        active_missions = missions_res.data or []
+        mission_names = [m['title'] for m in active_missions]
+
         # --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist_offset)
@@ -179,13 +184,6 @@ async def process_pulse(auth_secret: str = None):
         - ENRICHED WEB LINKS: {link_context}
         - NEW INPUTS: {new_inputs_text}
 
----     STRATEGIC AUDIT INSTRUCTIONS ---
-        1. BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects. 
-           - If a link provides a solution for "CashFlow+" or "Solvstrat", call it out in the briefing.
-        2. CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
-        3. PATTERN DETECTION: Review RECENT LIBRARY PATTERNS. If you see a trend (e.g., 3 links about AI SaaS), mention it as a "Strategic Trend" in the briefing.
-        4. RESOURCE OUTPUT: For every URL, generate a "strategic_note" explaining how it specifically helps the ₹30L debt recovery or revenue growth.
-
         PROJECT ROUTING LOGIC
         Use this hierarchy to assign NEW_TASKS or match COMPLETIONS:
         1. SOLVSTRAT (CASH ENGINE): Match tasks for Atna.ai, Smudge, new Lead Gen here or new SaaS and technology projects. Goal: High-ticket revenue.
@@ -201,11 +199,26 @@ async def process_pulse(auth_secret: str = None):
         NEW PROJECT CREATION CRITERIA:
         1. Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned 
 
-        NEW: RESOURCE CAPTURE LOGIC ---
+        NEW: RESOURCE CAPTURE LOGIC
         Identify any URLs in the NEW INPUTS. For each URL:
         1. CATEGORIZE: Tag as GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL.
         2. SUMMARIZE: Write a concise, 1-sentence description of the value.
         3. PROJECT MATCH: If the link relates to an existing project (e.g., Crayon or Solvstrat), provide the project name.
+
+        STRATEGIC AUDIT INSTRUCTIONS
+        1. BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects. 
+           - If a link provides a solution for "CashFlow+" or "Solvstrat", call it out in the briefing.
+        2. CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
+        3. PATTERN DETECTION: Review RECENT LIBRARY PATTERNS. If you see a trend (e.g., 3 links about AI SaaS), mention it as a "Strategic Trend" in the briefing.
+        4. RESOURCE OUTPUT: For every URL, generate a "strategic_note" explaining how it specifically helps the ₹30L debt recovery or revenue growth.
+
+         MISSION vs. INCUBATOR FRAMEWORK
+        1. MISSION ASSEMBLY: Evaluate every URL and Input against ACTIVE MISSIONS. 
+           - If a link provides a "component" (tool, code, strategy) for a mission, assign the "mission_name".
+        2. THE INCUBATOR AUDIT: If an input represents a high-potential standalone product idea NOT related to current goals:
+           - Tag it as project_name: "INCUBATOR".
+           - In the "strategic_note", evaluate its "Success DNA" (Market fit/Founder match).
+        3. SPARK DETECTION: If a link is a "Spark" (brand new project concept), create a log with entry_type: "SPARK".
 
         INSTRUCTIONS:
         1. STRICT DATA FIDELITY: You are strictly forbidden from inventing, hallucinating, or generating new tasks, projects, or people. 
@@ -235,7 +248,9 @@ async def process_pulse(auth_secret: str = None):
         12. RESOURCE-TO-TASK BRIDGE: 
             - For every new resource, if it is a TOOL, suggest a specific 15-min task to 'Experiment' or 'Implement' it for a current project.
             - If it is an ARTICLE, identify the one "Killer Insight" Danny needs to know for Solvstrat or Crayon.   
-        
+            - For every MISSION-related tool, suggest a 15-min 'Implementation' task.
+            - For every INCUBATOR spark, suggest a 15-min 'Validation' task.
+
         OUTPUT JSON:
         {{
             "completed_task_ids": [
@@ -245,7 +260,7 @@ async def process_pulse(auth_secret: str = None):
             "new_projects": [{{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }}],
             "new_people": [{{ "name": "...", "role": "...", "strategic_weight": 9 }}],
             "new_tasks": [{{ "title": "...", "project_name": "...", "priority": "urgent", "est_min": 15 }}],
-            "resources": [{{ "url": "...", "title": "...", "summary": "...", "category": "...", "project_name": "...", "strategic_note": "..." }}],
+            "resources": [{{ "url": "...", "title": "...", "summary": "...", "mission_name": "...", "project_name": "...", "strategic_note": "..." }}],
             "logs": [{{ "entry_type": "IDEAS", "content": "..." }}],
             "briefing": "The formatted text string for Telegram."
         }}
@@ -383,6 +398,11 @@ async def process_pulse(auth_secret: str = None):
         if ai_data.get('resources'):
             resource_inserts = []
             for res in ai_data['resources']:
+                # Match to Mission
+                m_name = (res.get('mission_name') or "").lower()
+                mission_match = next((m for m in active_missions if m_name in m['title'].lower()), None)
+                
+                # Match to Project
                 p_name = (res.get('project_name') or "").lower()
                 project_match = next((p for p in projects if p_name in p['name'].lower()), None)
                 
@@ -390,8 +410,9 @@ async def process_pulse(auth_secret: str = None):
                     "url": res.get('url'),
                     "title": res.get('title'),
                     "summary": res.get('summary'),
-                    "strategic_note": res.get('strategic_note'), # <--- New Intelligence
+                    "strategic_note": res.get('strategic_note'),
                     "category": res.get('category', 'LINK'),
+                    "mission_id": mission_match['id'] if mission_match else None,
                     "project_id": project_match['id'] if project_match else None
                 })
             
