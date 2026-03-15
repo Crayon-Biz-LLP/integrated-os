@@ -12,28 +12,38 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # --- 🛰️ LAYER 2: THE AUTO-ENRICHER ---
 async def fetch_url_metadata(url: str):
-    """Scrapes basic metadata so Gemini has ground truth instead of guessing."""
+    """Scrapes metadata with Social Media (OpenGraph) fallback."""
     try:
         async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            # Added a more specific User-Agent to avoid being blocked by some sites
+            # Using a more robust User-Agent to mimic a real browser
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
             response = await client.get(url, headers=headers)
             
             if response.status_code == 200:
                 html = response.text
                 
-                # Title Extraction (with whitespace cleanup)
+                # 1. Standard Title extraction
                 title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-                title = title_match.group(1).strip() if title_match else "Unknown Title"
+                title = title_match.group(1).strip() if title_match else "Unknown"
                 
-                # Description Extraction (More flexible regex to handle attribute order)
-                # This looks for any meta tag where name="description" exists
-                desc_match = re.search(r'<meta [^>]*name=["\']description["\'] [^>]*content=["\'](.*?)["\']', html, re.IGNORECASE)
-                if not desc_match:
-                    # Fallback for sites that put content BEFORE name
-                    desc_match = re.search(r'<meta [^>]*content=["\'](.*?)["\'] [^>]*name=["\']description["\']', html, re.IGNORECASE)
-                
-                desc = desc_match.group(1).strip() if desc_match else ""
+                # 2. OpenGraph Fallback (For X, LinkedIn, etc.)
+                # If title is generic or unknown, hunt for 'og:title'
+                if title in ["Unknown", "X", "LinkedIn", "Twitter"]:
+                    og_title = re.search(r'property=["\']og:title["\'] content=["\'](.*?)["\']', html, re.IGNORECASE)
+                    if og_title:
+                        title = og_title.group(1).strip()
+
+                # 3. Description Extraction (Check Meta first, then OG)
+                desc = ""
+                # Try standard meta description
+                m_desc = re.search(r'<meta [^>]*name=["\']description["\'] [^>]*content=["\'](.*?)["\']', html, re.IGNORECASE)
+                if m_desc:
+                    desc = m_desc.group(1).strip()
+                else:
+                    # Try OpenGraph description fallback
+                    og_desc = re.search(r'property=["\']og:description["\'] content=["\'](.*?)["\']', html, re.IGNORECASE)
+                    if og_desc:
+                        desc = og_desc.group(1).strip()
                 
                 return {"title": title, "description": desc}
     except Exception as e:
@@ -407,28 +417,30 @@ async def process_pulse(auth_secret: str = None):
             if task_inserts:
                 supabase.table('tasks').insert(task_inserts).execute()
 
-        # E. BATCH NEW MISSIONS (Auto-Creation)
+        # 🚀 E. BATCH NEW MISSIONS (Auto-Creation) - MOVED UP & FLUSH LEFT
         if ai_data.get('new_missions'):
             for m in ai_data['new_missions']:
                 m_title = m.get('title')
-                # Check for duplicates
+                # Check for duplicates in active_missions
                 if not any(m_title.lower() in existing['title'].lower() for existing in active_missions):
                     try:
-                        m_res = supabase.table('missions').insert({"title": m_title}).execute()
+                        m_res = supabase.table('missions').insert({
+                            "title": m_title,
+                            "status": "active"
+                        }).execute()
                         if m_res.data:
-                            active_missions.extend(m_res.data) # Add to local list so resources can link to it
+                            active_missions.extend(m_res.data) # Add to list for Resource matching
                             print(f"🚀 AUTO-MISSION CREATED: {m_title}")
                     except Exception as e:
                         print(f"Error creating mission: {e}")
-        # F. BATCH NEW RESOURCES (Upgraded with Strategic Notes)
+
+        # 🔖 F. BATCH NEW RESOURCES (Indented same level as Mission block)
         if ai_data.get('resources'):
             resource_inserts = []
             for res in ai_data['resources']:
-                # Match to Mission
                 m_name = (res.get('mission_name') or "").lower()
                 mission_match = next((m for m in active_missions if m_name in m['title'].lower()), None)
                 
-                # Match to Project
                 p_name = (res.get('project_name') or "").lower()
                 project_match = next((p for p in projects if p_name in p['name'].lower()), None)
                 
