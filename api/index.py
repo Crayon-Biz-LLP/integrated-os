@@ -1,10 +1,11 @@
+# api/index.py
 import os
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-# Relative imports mapping directly to your core files
-from .webhook import process_webhook
-from .pulse import process_pulse
+# Updated imports: Pulling from your new 'core' module
+from core.webhook import process_webhook
+from core.pulse import process_pulse
 
 app = FastAPI(title="Integrated-OS")
 
