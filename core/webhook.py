@@ -108,28 +108,14 @@ async def process_webhook(update: dict):
 
             # --- COMMAND: VAULT (Retrieve Ideas) ---
             elif text in ['/vault', '🔓 Vault']:
-                vault_res = supabase.table('logs')\
-                    .select('content, created_at')\
-                    .ilike('entry_type', '%IDEAS%')\
-                    .order('created_at', desc=True)\
-                    .limit(5)\
-                    .execute()
-
-                ideas = vault_res.data or []
-
-                if ideas:
-                    formatted_ideas = []
-                    for i in ideas:
-                        created_date = datetime.fromisoformat(i['created_at'].replace('Z', '+00:00'))
-                        # 🟡 FIX #1: Locale-style date format to match JS toLocaleDateString()
-                        # Output: "15/3/2026" — clean and consistent for India locale
-                        date_str = f"{created_date.day}/{created_date.month}/{created_date.year}"
-                        formatted_ideas.append(f"💡 *{date_str}:* {i['content']}")
-
-                    ideas_str = "\n\n".join(formatted_ideas)
-                    reply = f"🔓 **THE IDEA VAULT (Last 5):**\n\n{ideas_str}"
-                else:
-                    reply = "The Vault is empty. Start dreaming."
+                # Ensure this matches your actual Streamlit URL
+                vault_url = "https://danny-integrated-os.streamlit.app" 
+                
+                reply = (
+                    "🔓 **COMMAND CENTER ONLINE**\n\n"
+                    "Your strategic overview, mission progress, and full research library are live on the big screen.\n\n"
+                    f"👉 [Access Secure Vault]({vault_url})"
+                )
 
             # --- COMMAND: SEASON (View or Update) ---
             elif text.startswith('/season') or text == '🧭 Season Context':
