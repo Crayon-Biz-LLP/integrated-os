@@ -25,6 +25,7 @@ KEYBOARD = {
 
 
 async def process_webhook(update: dict):
+    reply = ""
     try:
         if not update or 'message' not in update:
             return {"message": "No message"}
@@ -50,7 +51,7 @@ async def process_webhook(update: dict):
             url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
             payload = {
                 "chat_id": chat_id,
-                "text": reply,
+                "text": message_text,
                 "parse_mode": "Markdown",
                 "reply_markup": KEYBOARD,
                 "disable_web_page_preview": True  # Keeps the list clean/compact
@@ -84,7 +85,7 @@ async def process_webhook(update: dict):
                         reply = "❌ Database Error creating mission."
 
             # --- COMMAND: LIBRARY (Retrieve Saved Links) ---
-            if text in ['/library', '📚 Library']:
+            elif text in ['/library', '📚 Library']:
                 lib_res = supabase.table('resources')\
                     .select('title, url, category')\
                     .order('created_at', desc=True)\
