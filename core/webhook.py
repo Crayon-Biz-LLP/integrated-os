@@ -6,7 +6,10 @@ from supabase import create_client, Client
 
 
 # Initialize Supabase Client
-supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL"), 
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+)
 
 
 # --- 🎛️ THE CONTROL PANEL ---
@@ -46,12 +49,12 @@ async def process_webhook(update: dict):
             telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
             url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
             payload = {
-            "chat_id": chat_id,
-            "text": reply,
-            "parse_mode": "Markdown",
-            "reply_markup": KEYBOARD,
-            "disable_web_page_preview": True  # Keeps the list clean/compact
-        }
+                "chat_id": chat_id,
+                "text": reply,
+                "parse_mode": "Markdown",
+                "reply_markup": KEYBOARD,
+                "disable_web_page_preview": True  # Keeps the list clean/compact
+            }
             async with httpx.AsyncClient() as client:
                 await client.post(url, json=payload)
 

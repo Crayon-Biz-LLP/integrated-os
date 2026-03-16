@@ -7,7 +7,11 @@ from supabase import create_client, Client
 import google.generativeai as genai
 
 # Initialize Clients
-supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
+# Use SERVICE_ROLE_KEY to bypass RLS for background processing
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL"), 
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+)
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # --- 🛰️ LAYER 2: THE AUTO-ENRICHER ---
@@ -276,6 +280,7 @@ async def process_pulse(auth_secret: str = None):
             - Use Markdown `[Title](URL)` for EVERY mention of a resource in the briefing.
             - If a new resource is a TOOL: Create a "🔴 Implement" or "🟡 Experiment" task in the 🛡️ WORK section with the URL embedded.
             - If a new resource is an ARTICLE: Identify the "Killer Insight" and include the clickable link to the source.   
+            - MISSION LINKING: If a resource belongs to an ACTIVE MISSION, explicitly announce it: "🚀 Part of [Mission Title](link_to_mission_resource_if_exists)".
             - For every MISSION-related tool, suggest a 15-min 'Implementation' task.
             - For every INCUBATOR spark, suggest a 15-min 'Validation' task.
         13. AUTO-MISSION DETECTION:
