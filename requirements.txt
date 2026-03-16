@@ -2,3 +2,4 @@ fastapi
 supabase
 google-generativeai
 httpx
+streamlit

@@ -46,11 +46,12 @@ async def process_webhook(update: dict):
             telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
             url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
             payload = {
-                "chat_id": chat_id,
-                "text": message_text,
-                "parse_mode": "Markdown",
-                "reply_markup": KEYBOARD
-            }
+            "chat_id": chat_id,
+            "text": reply,
+            "parse_mode": "Markdown",
+            "reply_markup": KEYBOARD,
+            "disable_web_page_preview": True  # Keeps the list clean/compact
+        }
             async with httpx.AsyncClient() as client:
                 await client.post(url, json=payload)
 
@@ -84,7 +85,7 @@ async def process_webhook(update: dict):
                 lib_res = supabase.table('resources')\
                     .select('title, url, category')\
                     .order('created_at', desc=True)\
-                    .limit(5)\
+                    .limit(10)\
                     .execute()
                 
                 items = lib_res.data or []
@@ -92,12 +93,12 @@ async def process_webhook(update: dict):
                     formatted_items = []
                     for i in items:
                         display_name = i.get('title') or "Untitled Resource"
-                        cat = i.get('category', 'LINK')
+                        url = i.get('url')
                         # Using Markdown link syntax [Title](URL)
-                        formatted_items.append(f"🔖 *[{cat}]* [{display_name}]({i.get('url')})")
+                        formatted_items.append(f"🔖 *[{display_name}]({url})")
                     
                     lib_str = "\n\n".join(formatted_items)
-                    reply = f"📚 **RESOURCE LIBRARY (Last 5):**\n\n{lib_str}"
+                    reply = f"📚 **RESOURCE LIBRARY (Last 10):**\n\n{lib_str}"
                 else:
                     reply = "The library is empty. Save some links first!"
 

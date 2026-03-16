@@ -268,13 +268,14 @@ async def process_pulse(auth_secret: str = None):
             - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
             - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
         10. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
-        11. STRICT TASK SYNTAX: Every single task listed in the briefing MUST follow this exact format: "- [ICON] [Task Title]". 
-            - IMPORTANT: If a task is based on a URL, the URL MUST be embedded in the title using Markdown: "- [ICON] Task about [Title](URL)"
+        11. STRICT TASK SYNTAX: 
+            - Every single task listed in the briefing MUST follow this exact format: "- [ICON] [Task Title]". 
+            - THE LINK RULE: If a task is derived from a URL in NEW INPUTS, you MUST embed that URL into the task title using Markdown: "- [ICON] [Action] using [Source Title](URL)".
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
         12. RESOURCE-TO-TASK BRIDGE: 
-            - When mentioning a resource in the briefing, ALWAYS use Markdown: "[Title](URL)".
-            - For every new resource, if it is a TOOL, suggest a specific 15-min task to 'Experiment' or 'Implement' it for a current project.
-            - If it is an ARTICLE, identify the one "Killer Insight" Danny needs to know for Solvstrat or Crayon.   
+            - Use Markdown `[Title](URL)` for EVERY mention of a resource in the briefing.
+            - If a new resource is a TOOL: Create a "🔴 Implement" or "🟡 Experiment" task in the 🛡️ WORK section with the URL embedded.
+            - If a new resource is an ARTICLE: Identify the "Killer Insight" and include the clickable link to the source.   
             - For every MISSION-related tool, suggest a 15-min 'Implementation' task.
             - For every INCUBATOR spark, suggest a 15-min 'Validation' task.
         13. AUTO-MISSION DETECTION:
