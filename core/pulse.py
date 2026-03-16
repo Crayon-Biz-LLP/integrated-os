@@ -12,40 +12,32 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # --- 🛰️ LAYER 2: THE AUTO-ENRICHER ---
 async def fetch_url_metadata(url: str):
-    """Scrapes metadata with Social Media (OpenGraph) fallback."""
+    """Bypasses Social Media walls to extract real post content."""
     try:
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            # Using a more robust User-Agent to mimic a real browser
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            # 🕵️ Identity: Pretending to be the Twitter/Google bot to get the 'SEO' version of the page
+            headers = {
+                "User-Agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)", 
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+            }
             response = await client.get(url, headers=headers)
             
             if response.status_code == 200:
                 html = response.text
                 
-                # 1. Standard Title extraction
-                title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-                title = title_match.group(1).strip() if title_match else "Unknown"
-                
-                # 2. OpenGraph Fallback (For X, LinkedIn, etc.)
-                # If title is generic or unknown, hunt for 'og:title'
-                if title in ["Unknown", "X", "LinkedIn", "Twitter"]:
-                    og_title = re.search(r'property=["\']og:title["\'] content=["\'](.*?)["\']', html, re.IGNORECASE)
-                    if og_title:
-                        title = og_title.group(1).strip()
+                # 1. Extract the 'og:title' (The Headline/Author)
+                title_match = re.search(r'property=["\']og:title["\'] content=["\'](.*?)["\']', html, re.I)
+                title = title_match.group(1).strip() if title_match else "Unknown Post"
 
-                # 3. Description Extraction (Check Meta first, then OG)
-                desc = ""
-                # Try standard meta description
-                m_desc = re.search(r'<meta [^>]*name=["\']description["\'] [^>]*content=["\'](.*?)["\']', html, re.IGNORECASE)
-                if m_desc:
-                    desc = m_desc.group(1).strip()
-                else:
-                    # Try OpenGraph description fallback
-                    og_desc = re.search(r'property=["\']og:description["\'] content=["\'](.*?)["\']', html, re.IGNORECASE)
-                    if og_desc:
-                        desc = og_desc.group(1).strip()
+                # 2. Extract 'og:description' (This is where the actual Post Content lives!)
+                desc_match = re.search(r'property=["\']og:description["\'] content=["\'](.*?)["\']', html, re.I)
+                description = desc_match.group(1).strip() if desc_match else ""
+
+                # 🧼 Cleanup: Remove the "X.com" or "LinkedIn" branding from titles
+                clean_title = re.sub(r'(\s\|.*|on X:|on LinkedIn:)', '', title).strip()
                 
-                return {"title": title, "description": desc}
+                return {"title": clean_title, "description": description}
+                
     except Exception as e:
         print(f"Scraper error for {url}: {e}")
     return {"title": "Unknown", "description": ""}
@@ -219,6 +211,8 @@ async def process_pulse(auth_secret: str = None):
         4. PERSONAL: Match Sunju, kids, dogs here.
         5. CHURCH: 
             - Note: All church-related activities must map to the project "Church".
+        6. MISSION OVERRIDE: If a resource fits an ACTIVE MISSION, prioritize the Mission name over the Project name. 
+        7. LINK FIDELITY: Do not "hide" a link inside another project's task without including the clickable URL for the original resource.
 
         NEW PROJECT CREATION CRITERIA:
         1. Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned 
@@ -275,8 +269,10 @@ async def process_pulse(auth_secret: str = None):
             - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
         10. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
         11. STRICT TASK SYNTAX: Every single task listed in the briefing MUST follow this exact format: "- [ICON] [Task Title]". 
+            - IMPORTANT: If a task is based on a URL, the URL MUST be embedded in the title using Markdown: "- [ICON] Task about [Title](URL)"
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
         12. RESOURCE-TO-TASK BRIDGE: 
+            - When mentioning a resource in the briefing, ALWAYS use Markdown: "[Title](URL)".
             - For every new resource, if it is a TOOL, suggest a specific 15-min task to 'Experiment' or 'Implement' it for a current project.
             - If it is an ARTICLE, identify the one "Killer Insight" Danny needs to know for Solvstrat or Crayon.   
             - For every MISSION-related tool, suggest a 15-min 'Implementation' task.
