@@ -99,7 +99,7 @@ async def process_webhook(update: dict):
                         display_name = i.get('title') or "Untitled Resource"
                         url = i.get('url')
                         # Using Markdown link syntax [Title](URL)
-                        formatted_items.append(f"🔖 *[{display_name}]({url})")
+                        formatted_items.append(f"🔖 **[{display_name}]({url})**")
                     
                     lib_str = "\n\n".join(formatted_items)
                     reply = f"📚 **RESOURCE LIBRARY (Last 10):**\n\n{lib_str}"

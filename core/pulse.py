@@ -164,10 +164,19 @@ async def process_pulse(auth_secret: str = None):
 
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps]) if dumps else "None"    
 
-        # --- 🧭 LAYER 3: PATTERN DETECTION CONTEXT ---
-        recent_lib = supabase.table('resources').select('category, title').order('created_at', desc=True).limit(15).execute()
+        # --- 🧭 LAYER 3: SMART PATTERN CONTEXT (Last 30 Days) ---
+        # Look back 30 days so patterns can form over time, not just items
+        thirty_days_ago = (now - timedelta(days=30)).isoformat()
+        
+        recent_lib = supabase.table('resources')\
+            .select('category, title, created_at')\
+            .gt('created_at', thirty_days_ago)\
+            .order('created_at', desc=True)\
+            .limit(100)\
+            .execute()
+            
         pattern_context = " | ".join([f"[{r['category']}] {r['title']}" for r in recent_lib.data]) if recent_lib.data else "None"
-
+       
         # --- 🛰️ LAYER 2: URL ENRICHMENT ---
         enriched_links = []
         urls = re.findall(r'(https?://\S+)', new_inputs_text) 
@@ -194,6 +203,12 @@ async def process_pulse(auth_secret: str = None):
         STAGNANT URGENT_TASKS: {json.dumps(overdue_tasks)}
         PERSONA GUIDELINE: {system_persona}
         SYSTEM STATUS: {system_context}
+
+        MANDATE: THE SILENCE PROTOCOL
+        - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
+        - NEVER detect "missions" or "strategic trends" proactively.
+        - ONLY track what is manually entered or already exists in the database.
+
         CONTEXT:
         - IDENTITY: {json.dumps(core)}
         - PROJECTS: {json.dumps(project_names)}
@@ -226,13 +241,16 @@ async def process_pulse(auth_secret: str = None):
         1. CATEGORIZE: Tag as GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL.
         2. SUMMARIZE: Write a concise, 1-sentence description of the value.
         3. PROJECT MATCH: If the link relates to an existing project (e.g., Crayon or Solvstrat), provide the project name.
+        4. Do NOT create a task for these. Just save them to the "resources" array.
 
         STRATEGIC AUDIT INSTRUCTIONS
-        1. BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects. 
-           - If a link provides a solution for "CashFlow+" or "Solvstrat", call it out in the briefing.
+        1. BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects. For every URL, attempt to match it to an EXISTING mission or project.
         2. CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
-        3. PATTERN DETECTION: Review RECENT LIBRARY PATTERNS. If you see a trend (e.g., 3 links about AI SaaS), mention it as a "Strategic Trend" in the briefing.
-        4. RESOURCE OUTPUT: For every URL, generate a "strategic_note" explaining how it specifically helps the ₹30L debt recovery or revenue growth.
+        3. PATTERN DETECTION: If you see 3+ links on a new topic (e.g., "YC Prep" or "Lead Gen"), you MAY suggest a new mission in the `new_missions` JSON array.
+        4. THE VAULT GATE: These updates go to the DATABASE only.
+        5. THE BRIEFING GATE: 
+        - You are STRICTLY FORBIDDEN from mentioning new resources or new missions in the briefing UNLESS Danny specifically used the word "Vault" or "Mission" in the NEW INPUTS.
+        - If those keywords are absent, categorize them in the background and keep the Telegram brief silent about them.
 
          MISSION vs. INCUBATOR FRAMEWORK
         1. MISSION ASSEMBLY: Evaluate every URL and Input against ACTIVE MISSIONS. 
@@ -276,17 +294,7 @@ async def process_pulse(auth_secret: str = None):
             - Every single task listed in the briefing MUST follow this exact format: "- [ICON] [Task Title]". 
             - THE LINK RULE: If a task is derived from a URL in NEW INPUTS, you MUST embed that URL into the task title using Markdown: "- [ICON] [Action] using [Source Title](URL)".
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
-        12. RESOURCE-TO-TASK BRIDGE: 
-            - Use Markdown `[Title](URL)` for EVERY mention of a resource in the briefing.
-            - If a new resource is a TOOL: Create a "🔴 Implement" or "🟡 Experiment" task in the 🛡️ WORK section with the URL embedded.
-            - If a new resource is an ARTICLE: Identify the "Killer Insight" and include the clickable link to the source.   
-            - MISSION LINKING: If a resource belongs to an ACTIVE MISSION, explicitly announce it: "🚀 Part of [Mission Title](link_to_mission_resource_if_exists)".
-            - For every MISSION-related tool, suggest a 15-min 'Implementation' task.
-            - For every INCUBATOR spark, suggest a 15-min 'Validation' task.
-        13. AUTO-MISSION DETECTION:
-            - If 3+ new inputs or recent resources suggest a cohesive new goal (e.g., "SaaS Lead Gen"), add a new mission to "new_missions".
-            - In the briefing, if a new mission is created, announce it with a 🚀 icon and a 1-sentence "Why".
-
+        
         OUTPUT JSON:
         {{
             "completed_task_ids": [
@@ -419,19 +427,21 @@ async def process_pulse(auth_secret: str = None):
             if task_inserts:
                 supabase.table('tasks').insert(task_inserts).execute()
 
-        # 🚀 E. BATCH NEW MISSIONS (Auto-Creation) - MOVED UP & FLUSH LEFT
+        # 🚀 E. BATCH NEW MISSIONS (Updated to include Description)
         if ai_data.get('new_missions'):
             for m in ai_data['new_missions']:
                 m_title = m.get('title')
-                # Check for duplicates in active_missions
+                m_desc = m.get('description', 'Auto-detected strategic pattern.') # Capture the logic!
+                
                 if not any(m_title.lower() in existing['title'].lower() for existing in active_missions):
                     try:
                         m_res = supabase.table('missions').insert({
                             "title": m_title,
+                            "description": m_desc, # Now saving to DB
                             "status": "active"
                         }).execute()
                         if m_res.data:
-                            active_missions.extend(m_res.data) # Add to list for Resource matching
+                            active_missions.extend(m_res.data)
                             print(f"🚀 AUTO-MISSION CREATED: {m_title}")
                     except Exception as e:
                         print(f"Error creating mission: {e}")
