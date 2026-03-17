@@ -242,15 +242,22 @@ async def process_pulse(auth_secret: str = None):
         2. SUMMARIZE: Write a concise, 1-sentence description of the value.
         3. PROJECT MATCH: If the link relates to an existing project (e.g., Crayon or Solvstrat), provide the project name.
         4. Do NOT create a task for these. Just save them to the "resources" array.
+        5. STRICT MISSION MATCHING: 
+           - ONLY assign a `mission_id` if the resource is a direct "building block" for an ACTIVE MISSION. 
+           - If it is just a "cool tool" or "interesting read," you MUST leave `mission_id` as NULL.
+           - Do NOT force a match. It is better to have an unmapped resource than a wrongly mapped one.
 
         STRATEGIC AUDIT INSTRUCTIONS
         1. BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects. For every URL, attempt to match it to an EXISTING mission or project.
         2. CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
-        3. PATTERN DETECTION: If you see 3+ links on a new topic (e.g., "YC Prep" or "Lead Gen"), you MAY suggest a new mission in the `new_missions` JSON array.
+        3. PATTERN DETECTION: 
+          - Review RECENT LIBRARY PATTERNS.
+          - If you see 3+ links on a new topic (e.g., "YC Prep" or "Lead Gen"), you MAY suggest a new mission in the `new_missions` JSON array.
+          - NEVER dump unrelated links into an existing mission just because it's the only one open.
         4. THE VAULT GATE: These updates go to the DATABASE only.
         5. THE BRIEFING GATE: 
-        - You are STRICTLY FORBIDDEN from mentioning new resources or new missions in the briefing UNLESS Danny specifically used the word "Vault" or "Mission" in the NEW INPUTS.
-        - If those keywords are absent, categorize them in the background and keep the Telegram brief silent about them.
+            - You are STRICTLY FORBIDDEN from mentioning new resources or new missions in the briefing UNLESS Danny specifically used the word "Vault" or "Mission" in the NEW INPUTS.
+            - If those keywords are absent, categorize them in the background and keep the Telegram brief silent about them.
 
          MISSION vs. INCUBATOR FRAMEWORK
         1. MISSION ASSEMBLY: Evaluate every URL and Input against ACTIVE MISSIONS. 
