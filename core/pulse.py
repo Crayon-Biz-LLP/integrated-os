@@ -233,10 +233,13 @@ async def process_pulse(auth_secret: str = None):
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps])
         new_input_summary = " | ".join([d['content'] for d in dumps[:5]])
 
+        current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
+
         prompt = f"""    
         ROLE: Chief of Staff for Danny (Executive Office).
         STRATEGIC CONTEXT: {season_config}
         CURRENT PHASE: {briefing_mode}
+        CURRENT TIME: {current_time_str}
         SYSTEM_LOAD: {'OVERLOADED' if is_overloaded else 'OPTIMAL'}
         MONDAY_REENTRY: {'TRUE' if is_monday_morning else 'FALSE'}
         STAGNANT URGENT_TASKS: {json.dumps(overdue_tasks)}
