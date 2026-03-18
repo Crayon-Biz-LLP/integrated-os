@@ -16,39 +16,73 @@ supabase: Client = create_client(
 )
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-# --- 🛰️ LAYER 1: GOOGLE TASKS HELPERS
-def get_tasks_service():
-    creds = Credentials(
+# --- 🛰️ LAYER 1: GOOGLE INTEGRATION HELPERS ---
+
+def get_google_creds():
+    """Unified credential handshake for all Google services."""
+    return Credentials(
         None,
         refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
         client_id=os.getenv("GOOGLE_CLIENT_ID"),
         client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
         token_uri="https://oauth2.googleapis.com/token"
     )
-    return build('tasks', 'v1', credentials=creds)
+
+def get_tasks_service():
+    """Helper to spin up the Tasks engine."""
+    return build('tasks', 'v1', credentials=get_google_creds())
+
+def sync_to_calendar(title, start_iso):
+    """Creates a 30-minute block on Google Calendar for native alerts."""
+    service = build('calendar', 'v3', credentials=get_google_creds())
+    
+    try:
+        # Handle potential 'Z' from older entries or AI slip-ups
+        clean_iso = start_iso.replace('Z', '+00:00')
+        start_dt = datetime.fromisoformat(clean_iso)
+        end_dt = start_dt + timedelta(minutes=30)
+        
+        event = {
+            'summary': f"🔥 CRITICAL: {title}",
+            'description': 'Automated via Integrated-OS Sync',
+            'start': {'dateTime': start_iso, 'timeZone': 'Asia/Kolkata'},
+            'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'},
+            'reminders': {'useDefault': True} 
+        }
+        
+        service.events().insert(calendarId='primary', body=event).execute()
+        print(f"📅 Calendar block secured for {title}")
+    except Exception as e:
+        print(f"⚠️ Calendar sync failed: {e}")
 
 def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'):
-    
-    # Handle Completion/Deletion
+    """Checklist manager with Time Visibility Hack."""
+    # 1. Handle Completion/Deletion
     if task_id and (status == 'done' or status == 'cancelled'):
         try:
             service.tasks().patch(tasklist='@default', task=task_id, body={'status': 'completed'}).execute()
             return task_id
         except: return None
 
-    # Handle New Task or Update
+    # 2. Preparation: Handle Time Visibility Hack
+    if due_at and 'T' in due_at:
+        time_str = due_at.split('T')[1][:5] # Extract "09:00"
+        if title and f"{time_str}" not in title:
+            title = f"🕒 {time_str} | {title}"
+
+    # 3. Format Date for Google
     formatted_date = None
     if due_at:
-        # Google Tasks expects RFC 3339 format (YYYY-MM-DDTHH:MM:SSZ)
         formatted_date = due_at if 'T' in due_at else f"{due_at}T09:00:00+05:30"
 
-    body = {'due': formatted_date}
-    if title:
-        body['title'] = title
-    
-    if task_id: # Update existing
+    # 4. Execute API Call
+    body = {}
+    if title: body['title'] = title
+    if formatted_date: body['due'] = formatted_date
+
+    if task_id:
         res = service.tasks().patch(tasklist='@default', task=task_id, body=body).execute()
-    else: # Create new
+    else:
         res = service.tasks().insert(tasklist='@default', body=body).execute()
     
     return res['id']
@@ -232,7 +266,6 @@ async def process_pulse(auth_secret: str = None):
         compressed_tasks_final = compressed_tasks[:3000]  # Hard limit
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps])
         new_input_summary = " | ".join([d['content'] for d in dumps[:5]])
-
         current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
 
         prompt = f"""    
@@ -496,11 +529,15 @@ async def process_pulse(auth_secret: str = None):
                 except Exception as e:
                     print(f"[SYNC EXCEPTION] Database update failed for Task {target_id}: {e}")
 
-        # D. BATCH NEW TASKS (Google Tasks + Entity Matching)
+        # D. BATCH NEW TASKS (Checklist + Calendar Interruption)
         if ai_data.get('new_tasks'):
             task_inserts = []
+            
+            # Initialize Google Tasks service once for the batch
+            tasks_service = get_tasks_service()
+
             for task in ai_data['new_tasks']:
-                # 1. Project Matching Logic (Keep your existing matching)
+                # 1. Project Matching Logic (Existing Logic)
                 ai_target = (task.get('project_name') or "").lower()
                 project_match = next(
                     (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
@@ -510,10 +547,9 @@ async def process_pulse(auth_secret: str = None):
                     project_match = next((p for p in projects if p.get('org_tag') == 'INBOX'), projects[0] if projects else None)
 
                 if project_match:
-                    # 2. SYNC TO GOOGLE TASKS
-                    # We create the task in Google first to get the ID for our database
+                    # 2. SYNC TO GOOGLE TASKS (The Checklist)
                     g_id = None
-                    reminder_time = task.get('reminder_at') # Gemini extracts this from your text
+                    reminder_time = task.get('reminder_at') # e.g., "2026-03-20T09:00:00+05:30"
                     
                     try:
                         g_id = sync_to_google(
@@ -523,17 +559,27 @@ async def process_pulse(auth_secret: str = None):
                         )
                         print(f"📡 Google Task Created: {task.get('title')}")
                     except Exception as e:
-                        print(f"⚠️ Google Sync failed for '{task.get('title')}': {e}")
+                        print(f"⚠️ Google Tasks Sync failed for '{task.get('title')}': {e}")
 
-                    # 3. BUILD SUPABASE PAYLOAD
+                    # 3. STRATEGIC GATE: SYNC TO CALENDAR (The Alarm)
+                    # Logic: If 'T' is present, it's a specific time (e.g., T09:00:00).
+                    # Only specific appointments get a 30-minute block on your grid.
+                    if reminder_time and 'T' in reminder_time:
+                        try:
+                            sync_to_calendar(task.get('title'), reminder_time)
+                            print(f"📅 Calendar block secured: {task.get('title')} @ {reminder_time}")
+                        except Exception as ce:
+                            print(f"⚠️ Calendar Sync failed for '{task.get('title')}': {ce}")
+
+                    # 4. BUILD SUPABASE PAYLOAD (Existing Logic)
                     task_inserts.append({
                         "title": task.get('title', 'Untitled Task'),
                         "project_id": project_match['id'],
                         "priority": (task.get('priority') or 'important').lower(),
                         "status": "todo",
                         "estimated_minutes": task.get('est_min', 15),
-                        "google_task_id": g_id,         # The link to your phone notification
-                        "reminder_at": reminder_time,    # The ISO timestamp for the reminder
+                        "google_task_id": g_id,
+                        "reminder_at": reminder_time,
                         "is_revenue_critical": task.get('is_revenue_critical', False)
                     })
 
