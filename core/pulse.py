@@ -50,10 +50,22 @@ def sync_to_calendar(title, start_iso):
             'reminders': {'useDefault': True} 
         }
         
-        service.events().insert(calendarId='primary', body=event).execute()
-        print(f"📅 Calendar block secured for {title}")
+        res = service.events().insert(calendarId='primary', body=event).execute()
+        return res.get('id')
     except Exception as e:
         print(f"⚠️ Calendar sync failed: {e}")
+        return None
+
+def delete_calendar_event(event_id):
+    """Removes the protective block from the grid."""
+    if not event_id: return
+    service = build('calendar', 'v3', credentials=get_google_creds())
+    try:
+        service.events().delete(calendarId='primary', eventId=event_id).execute()
+        print(f"🗑️ Calendar event {event_id} removed.")
+    except Exception as e:
+        # If already deleted manually, Google returns a 410/404; we ignore it.
+        print(f"⚠️ Calendar delete failed or already gone.")       
 
 def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'):
     """Checklist manager with Time Visibility Hack."""
@@ -480,28 +492,32 @@ async def process_pulse(auth_secret: str = None):
         if ai_data.get('new_people'):
             supabase.table('people').insert(ai_data['new_people']).execute()
 
-        # C. BATCH TASK UPDATES (Hardened Google + Supabase Synchronization)
+        # C. BATCH TASK UPDATES (Self-Cleaning Google + Supabase Sync)
         if ai_data.get('completed_task_ids'):
             print(f"[SYNC] Processing {len(ai_data['completed_task_ids'])} task updates...")
             for item in ai_data['completed_task_ids']:
                 target_id = item.get('id')
-                if not target_id:
-                    continue
+                if not target_id: continue
 
-                # 1. DETERMINE INTENT (Completion vs. Snooze)
-                # If status is 'todo' but reminder_at is present, it's a SNOOZE.
                 item_status = item.get('status', 'done')
                 new_reminder = item.get('reminder_at')
                 
-                # 2. FETCH CURRENT GOOGLE LINK
-                task_ref = supabase.table('tasks').select('google_task_id, title').eq('id', target_id).single().execute()
+                # 1. FETCH CURRENT IDS
+                # We now select 'google_event_id' so we know which calendar block to kill
+                task_ref = supabase.table('tasks').select('google_task_id', 'google_event_id', 'title').eq('id', target_id).single().execute()
+                
                 g_id = task_ref.data.get('google_task_id') if task_ref.data else None
+                e_id = task_ref.data.get('google_event_id') if task_ref.data else None
                 task_title = task_ref.data.get('title') if task_ref.data else "Untitled Task"
 
-                # 3. GOOGLE SYNC (The "Handshake")
+                # 2. THE CALENDAR KILL SWITCH
+                # Kill the block if it's done, cancelled, OR being snoozed (moved)
+                if (item_status in ['done', 'cancelled'] or new_reminder) and e_id:
+                    delete_calendar_event(e_id)
+
+                # 3. GOOGLE TASKS HANDSHAKE
                 if g_id:
                     try:
-                        # This handles both marking 'completed' and updating 'due date'
                         sync_to_google(
                             tasks_service,
                             title=task_title,
@@ -516,25 +532,24 @@ async def process_pulse(auth_secret: str = None):
                 # 4. SUPABASE UPDATE
                 update_payload = {"status": item_status}
                 
-                # If done, timestamp it. If snoozed, update the reminder.
                 if item_status == 'done':
                     update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
+                
                 if new_reminder:
                     update_payload["reminder_at"] = new_reminder
+                    # If we snooze, the old calendar block is invalid, so we clear the ID
+                    update_payload["google_event_id"] = None 
 
                 try:
                     res = supabase.table('tasks').update(update_payload).eq('id', target_id).execute()
                     if res.data:
-                        print(f"[SYNC SUCCESS] Task {target_id} set to {item_status} in DB.")
+                        print(f"[SYNC SUCCESS] Task {target_id} updated in DB.")
                 except Exception as e:
                     print(f"[SYNC EXCEPTION] Database update failed for Task {target_id}: {e}")
 
-        # D. BATCH NEW TASKS (Checklist + Calendar Interruption)
+        # D. BATCH NEW TASKS (Checklist + Calendar Interruption + ID Tracking)
         if ai_data.get('new_tasks'):
             task_inserts = []
-            
-            # Initialize Google Tasks service once for the batch
-            tasks_service = get_tasks_service()
 
             for task in ai_data['new_tasks']:
                 # 1. Project Matching Logic (Existing Logic)
@@ -549,7 +564,8 @@ async def process_pulse(auth_secret: str = None):
                 if project_match:
                     # 2. SYNC TO GOOGLE TASKS (The Checklist)
                     g_id = None
-                    reminder_time = task.get('reminder_at') # e.g., "2026-03-20T09:00:00+05:30"
+                    e_id = None # Initialize empty Event ID
+                    reminder_time = task.get('reminder_at')
                     
                     try:
                         g_id = sync_to_google(
@@ -559,19 +575,19 @@ async def process_pulse(auth_secret: str = None):
                         )
                         print(f"📡 Google Task Created: {task.get('title')}")
                     except Exception as e:
-                        print(f"⚠️ Google Tasks Sync failed for '{task.get('title')}': {e}")
+                        print(f"⚠️ Google Tasks Sync failed: {e}")
 
                     # 3. STRATEGIC GATE: SYNC TO CALENDAR (The Alarm)
-                    # Logic: If 'T' is present, it's a specific time (e.g., T09:00:00).
-                    # Only specific appointments get a 30-minute block on your grid.
+                    # We now CAPTURE the e_id returned by the helper
                     if reminder_time and 'T' in reminder_time:
                         try:
-                            sync_to_calendar(task.get('title'), reminder_time)
-                            print(f"📅 Calendar block secured: {task.get('title')} @ {reminder_time}")
+                            e_id = sync_to_calendar(task.get('title'), reminder_time)
+                            if e_id:
+                                print(f"📅 Calendar block secured: {task.get('title')} [ID: {e_id}]")
                         except Exception as ce:
-                            print(f"⚠️ Calendar Sync failed for '{task.get('title')}': {ce}")
+                            print(f"⚠️ Calendar Sync failed: {ce}")
 
-                    # 4. BUILD SUPABASE PAYLOAD (Existing Logic)
+                    # 4. BUILD SUPABASE PAYLOAD (Including the new Event ID)
                     task_inserts.append({
                         "title": task.get('title', 'Untitled Task'),
                         "project_id": project_match['id'],
@@ -579,6 +595,7 @@ async def process_pulse(auth_secret: str = None):
                         "status": "todo",
                         "estimated_minutes": task.get('est_min', 15),
                         "google_task_id": g_id,
+                        "google_event_id": e_id, # <-- Save this so we can delete it later!
                         "reminder_at": reminder_time,
                         "is_revenue_critical": task.get('is_revenue_critical', False)
                     })
@@ -586,7 +603,7 @@ async def process_pulse(auth_secret: str = None):
             if task_inserts:
                 try:
                     supabase.table('tasks').insert(task_inserts).execute()
-                    print(f"✅ Successfully synced {len(task_inserts)} tasks to Supabase & Google.")
+                    print(f"✅ Successfully synced {len(task_inserts)} tasks with Calendar tracking.")
                 except Exception as e:
                     print(f"❌ Supabase Insert Error: {e}")
 
