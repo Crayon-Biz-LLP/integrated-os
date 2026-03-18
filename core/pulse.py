@@ -32,17 +32,15 @@ def get_tasks_service():
     """Helper to spin up the Tasks engine."""
     return build('tasks', 'v1', credentials=get_google_creds())
 
-def sync_to_calendar(title, start_iso):
-    """Creates a 30-minute block on Google Calendar for native alerts."""
+def sync_to_calendar(title, start_iso, event_id=None):
+    """Creates or UPDATES a 30-minute block on the grid."""
     service = build('calendar', 'v3', credentials=get_google_creds())
-    
     try:
-        # Handle potential 'Z' from older entries or AI slip-ups
         clean_iso = start_iso.replace('Z', '+00:00')
         start_dt = datetime.fromisoformat(clean_iso)
         end_dt = start_dt + timedelta(minutes=30)
         
-        event = {
+        event_body = {
             'summary': f"🔥 CRITICAL: {title}",
             'description': 'Automated via Integrated-OS Sync',
             'start': {'dateTime': start_iso, 'timeZone': 'Asia/Kolkata'},
@@ -50,9 +48,19 @@ def sync_to_calendar(title, start_iso):
             'reminders': {'useDefault': True} 
         }
         
-        res = service.events().insert(calendarId='primary', body=event).execute()
+        if event_id:
+            # 🔄 UPDATE EXISTING SLOT
+            res = service.events().patch(calendarId='primary', eventId=event_id, body=event_body).execute()
+            print(f"🔄 Calendar slot edited for {title}")
+        else:
+            # ✨ CREATE NEW SLOT
+            res = service.events().insert(calendarId='primary', body=event_body).execute()
+            print(f"📅 New calendar block secured for {title}")
+            
         return res.get('id')
     except Exception as e:
+        # Fallback: If the event_id was invalid (deleted manually), try creating a fresh one
+        if event_id: return sync_to_calendar(title, start_iso, event_id=None)
         print(f"⚠️ Calendar sync failed: {e}")
         return None
 
@@ -492,60 +500,43 @@ async def process_pulse(auth_secret: str = None):
         if ai_data.get('new_people'):
             supabase.table('people').insert(ai_data['new_people']).execute()
 
-        # C. BATCH TASK UPDATES (Self-Cleaning Google + Supabase Sync)
+        # C. BATCH TASK UPDATES (The Smart Rescheduler)
         if ai_data.get('completed_task_ids'):
-            print(f"[SYNC] Processing {len(ai_data['completed_task_ids'])} task updates...")
             for item in ai_data['completed_task_ids']:
                 target_id = item.get('id')
-                if not target_id: continue
-
                 item_status = item.get('status', 'done')
                 new_reminder = item.get('reminder_at')
                 
-                # 1. FETCH CURRENT IDS
-                # We now select 'google_event_id' so we know which calendar block to kill
+                # 1. Fetch current IDs
                 task_ref = supabase.table('tasks').select('google_task_id', 'google_event_id', 'title').eq('id', target_id).single().execute()
-                
                 g_id = task_ref.data.get('google_task_id') if task_ref.data else None
                 e_id = task_ref.data.get('google_event_id') if task_ref.data else None
                 task_title = task_ref.data.get('title') if task_ref.data else "Untitled Task"
 
-                # 2. THE CALENDAR KILL SWITCH
-                # Kill the block if it's done, cancelled, OR being snoozed (moved)
-                if (item_status in ['done', 'cancelled'] or new_reminder) and e_id:
+                # 2. THE SMART CALENDAR SYNC
+                if item_status in ['done', 'cancelled'] and e_id:
+                    # ACTION: Completion/Cancellation -> KILL the block
                     delete_calendar_event(e_id)
+                    e_id = None
+                elif new_reminder:
+                    if 'T' in new_reminder:
+                        # ACTION: Snooze with TIME -> EDIT or CREATE the block
+                        e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id)
+                    elif e_id:
+                        # ACTION: Snooze to DATE-ONLY -> Remove existing block (not needed anymore)
+                        delete_calendar_event(e_id)
+                        e_id = None
 
-                # 3. GOOGLE TASKS HANDSHAKE
+                # 3. GOOGLE TASKS SYNC (Title/Time Updates)
                 if g_id:
-                    try:
-                        sync_to_google(
-                            tasks_service,
-                            title=task_title,
-                            task_id=g_id,
-                            status=item_status,
-                            due_at=new_reminder
-                        )
-                        print(f"[GOOGLE SYNC] Handshake successful for Task {target_id}")
-                    except Exception as ge:
-                        print(f"[GOOGLE SYNC ERROR] Task {target_id}: {ge}")
+                    sync_to_google(tasks_service, title=task_title, task_id=g_id, status=item_status, due_at=new_reminder)
 
-                # 4. SUPABASE UPDATE
-                update_payload = {"status": item_status}
-                
-                if item_status == 'done':
-                    update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
-                
-                if new_reminder:
-                    update_payload["reminder_at"] = new_reminder
-                    # If we snooze, the old calendar block is invalid, so we clear the ID
-                    update_payload["google_event_id"] = None 
+                # 4. SUPABASE UPDATE (Save the new/existing Event ID)
+                update_payload = {"status": item_status, "google_event_id": e_id}
+                if item_status == 'done': update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
+                if new_reminder: update_payload["reminder_at"] = new_reminder
 
-                try:
-                    res = supabase.table('tasks').update(update_payload).eq('id', target_id).execute()
-                    if res.data:
-                        print(f"[SYNC SUCCESS] Task {target_id} updated in DB.")
-                except Exception as e:
-                    print(f"[SYNC EXCEPTION] Database update failed for Task {target_id}: {e}")
+                supabase.table('tasks').update(update_payload).eq('id', target_id).execute()
 
         # D. BATCH NEW TASKS (Checklist + Calendar Interruption + ID Tracking)
         if ai_data.get('new_tasks'):
