@@ -362,7 +362,7 @@ async def process_pulse(auth_secret: str = None):
         {{
             "completed_task_ids": [
                 {{ "id": "123", "status": "done" }},
-                { "id": "456", "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" },
+                {{ "id": "456", "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" }},
                 {{ "id": "456", "status": "cancelled" }}
             ],
             "new_projects": [{{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }}],
