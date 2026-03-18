@@ -4,13 +4,11 @@ import httpx
 from supabase import create_client, Client
 from datetime import datetime, timezone
 
-
 # Initialize Supabase Client
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
-
 
 # --- 🎛️ THE CONTROL PANEL ---
 KEYBOARD = {
@@ -22,7 +20,6 @@ KEYBOARD = {
     "resize_keyboard": True,
     "persistent": True
 }
-
 
 async def process_webhook(update: dict):
     reply = ""
