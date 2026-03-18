@@ -4,6 +4,8 @@ import re
 import httpx
 from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 import google.generativeai as genai
 
 # Initialize Clients
@@ -13,6 +15,43 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+# --- 🛰️ LAYER 1: GOOGLE TASKS HELPERS
+def get_tasks_service():
+    creds = Credentials(
+        None,
+        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
+        client_id=os.getenv("GOOGLE_CLIENT_ID"),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+        token_uri="https://oauth2.googleapis.com/token"
+    )
+    return build('tasks', 'v1', credentials=creds)
+
+def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'):
+    
+    # Handle Completion/Deletion
+    if task_id and (status == 'done' or status == 'cancelled'):
+        try:
+            service.tasks().patch(tasklist='@default', task=task_id, body={'status': 'completed'}).execute()
+            return task_id
+        except: return None
+
+    # Handle New Task or Update
+    formatted_date = None
+    if due_at:
+        # Google Tasks expects RFC 3339 format (YYYY-MM-DDTHH:MM:SSZ)
+        formatted_date = due_at if 'T' in due_at else f"{due_at}T09:00:00+05:30"
+
+    body = {'due': formatted_date}
+    if title:
+        body['title'] = title
+    
+    if task_id: # Update existing
+        res = service.tasks().patch(tasklist='@default', task=task_id, body=body).execute()
+    else: # Create new
+        res = service.tasks().insert(tasklist='@default', body=body).execute()
+    
+    return res['id']
 
 # --- 🛰️ LAYER 2: THE AUTO-ENRICHER ---
 async def fetch_url_metadata(url: str):
@@ -280,12 +319,29 @@ async def process_pulse(auth_secret: str = None):
             - If the input describes the final step of a process (e.g., "App is on the store" fulfills "Submit app for review"), mark it DONE.
             - If Danny says "Cancel", "Ignore", "Forget", or "Not doing" a task, mark it as cancelled.
             - If Danny indicates he is "skipping," "dropping," or "not doing" something, add the ID to "cancelled_task_ids".
-        6. AUTO-ONBOARDING:
+            - If Danny says a task is "on hold," "waiting," or "deferred until [Date/Time]," do NOT mark it as cancelled.
+            - Instead, update the `reminder_at` field and keep the status as `todo`.
+            - Identify if a task is "Revenue Critical" (anything involving payments, quotes, or ₹30L velocity). Set `is_revenue_critical: true`.
+        6. 🕒 HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30):
+            - When Danny mentions a time (e.g., "Friday 10am", "Tomorrow morning", "at 4pm"), you MUST convert this into a valid ISO-8601 timestamp.
+            - LOCAL TIMEZONE: Use Indian Standard Time (IST), which is UTC+05:30.
+            - FORMAT: Use "YYYY-MM-DDTHH:MM:SS+05:30".
+            - DEFAULTS: 
+                - If "Morning" is mentioned without a time: Use 09:00:00+05:30.
+                - If "Evening" is mentioned without a time: Use 18:00:00+05:30.
+                - If a day (e.g., "Friday") is mentioned without a time: Use 09:00:00+05:30 on that date.
+            - CURRENT REFERENCE: Use the system timestamp provided in the input to calculate relative dates (e.g., "Friday" relative to today).
+            - FIELD: Always populate this in the `reminder_at` field of the JSON output.
+        7. DYNAMIC TASK MATCHING:
+            - Compare inputs against ALL SYSTEM TASKS.
+            - If Danny says "I'm done" or "Completed," mark the status as `done`.
+            - Every NEW_TASK must now include a `reminder_at` if a time was implied.    
+        8. AUTO-ONBOARDING:
             - If a new Client/Project is mentioned, add to "new_projects".
             - If a new Person is mentioned, add to "new_people".
-        7. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
-        8. WEEKEND FILTER: If isWeekend is true ({is_weekend}), do NOT suggest or list Work tasks. Move work inputs to a 'Monday' reminder.
-        9. EXECUTIVE BRIEF FORMAT:
+        9. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
+        10. WEEKEND FILTER: If isWeekend is true ({is_weekend}), do NOT suggest or list Work tasks. Move work inputs to a 'Monday' reminder.
+        11. EXECUTIVE BRIEF FORMAT:
             - HEADLINE RULE: Use exactly "{briefing_mode}".
             - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
             - SECTIONS: ✅ COMPLETED, 🛡️ WORK (Hide on weekends), 🏠 HOME, 💡 IDEAS (Only at night pulse).
@@ -306,6 +362,7 @@ async def process_pulse(auth_secret: str = None):
         {{
             "completed_task_ids": [
                 {{ "id": "123", "status": "done" }},
+                { "id": "456", "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" },
                 {{ "id": "456", "status": "cancelled" }}
             ],
             "new_projects": [{{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }}],
@@ -354,6 +411,8 @@ async def process_pulse(auth_secret: str = None):
 
         # --- 3. WRITE Phase (Database Updates) ---
 
+        tasks_service = get_tasks_service()
+        
         # A. BATCH NEW PROJECTS (Deduplicated)
         if ai_data.get('new_projects'):
             valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH']
@@ -385,36 +444,61 @@ async def process_pulse(auth_secret: str = None):
         if ai_data.get('new_people'):
             supabase.table('people').insert(ai_data['new_people']).execute()
 
-        # C. BATCH TASK UPDATES (Hardened Synchronization)
+        # C. BATCH TASK UPDATES (Hardened Google + Supabase Synchronization)
         if ai_data.get('completed_task_ids'):
-            print(f"[SYNC] Attempting {len(ai_data['completed_task_ids'])} status updates...")
+            print(f"[SYNC] Processing {len(ai_data['completed_task_ids'])} task updates...")
             for item in ai_data['completed_task_ids']:
                 target_id = item.get('id')
                 if not target_id:
                     continue
+
+                # 1. DETERMINE INTENT (Completion vs. Snooze)
+                # If status is 'todo' but reminder_at is present, it's a SNOOZE.
                 item_status = item.get('status', 'done')
-                target_status = item_status if item_status in ['done', 'cancelled'] else 'done'
-                completed_time = datetime.now(timezone.utc).isoformat() if target_status == 'done' else None
+                new_reminder = item.get('reminder_at')
+                
+                # 2. FETCH CURRENT GOOGLE LINK
+                task_ref = supabase.table('tasks').select('google_task_id, title').eq('id', target_id).single().execute()
+                g_id = task_ref.data.get('google_task_id') if task_ref.data else None
+                task_title = task_ref.data.get('title') if task_ref.data else "Untitled Task"
+
+                # 3. GOOGLE SYNC (The "Handshake")
+                if g_id:
+                    try:
+                        # This handles both marking 'completed' and updating 'due date'
+                        sync_to_google(
+                            tasks_service,
+                            title=task_title,
+                            task_id=g_id,
+                            status=item_status,
+                            due_at=new_reminder
+                        )
+                        print(f"[GOOGLE SYNC] Handshake successful for Task {target_id}")
+                    except Exception as ge:
+                        print(f"[GOOGLE SYNC ERROR] Task {target_id}: {ge}")
+
+                # 4. SUPABASE UPDATE
+                update_payload = {"status": item_status}
+                
+                # If done, timestamp it. If snoozed, update the reminder.
+                if item_status == 'done':
+                    update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
+                if new_reminder:
+                    update_payload["reminder_at"] = new_reminder
 
                 try:
-                    res = supabase.table('tasks').update({
-                        "status": target_status,
-                        "completed_at": completed_time
-                    }).eq('id', target_id).execute()
-
+                    res = supabase.table('tasks').update(update_payload).eq('id', target_id).execute()
                     if res.data:
-                        print(f"[SYNC SUCCESS] Task {target_id} set to {target_status}")
-                    else:
-                        print(f"[SYNC ERROR] Task {target_id} — no data returned.")
+                        print(f"[SYNC SUCCESS] Task {target_id} set to {item_status} in DB.")
                 except Exception as e:
-                    print(f"[SYNC EXCEPTION] Failed to update task {target_id}: {e}")
+                    print(f"[SYNC EXCEPTION] Database update failed for Task {target_id}: {e}")
 
-        # D. BATCH NEW TASKS (Entity-First Matching)
+        # D. BATCH NEW TASKS (Google Tasks + Entity Matching)
         if ai_data.get('new_tasks'):
             task_inserts = []
             for task in ai_data['new_tasks']:
+                # 1. Project Matching Logic (Keep your existing matching)
                 ai_target = (task.get('project_name') or "").lower()
-
                 project_match = next(
                     (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
                     None
@@ -423,16 +507,39 @@ async def process_pulse(auth_secret: str = None):
                     project_match = next((p for p in projects if p.get('org_tag') == 'INBOX'), projects[0] if projects else None)
 
                 if project_match:
+                    # 2. SYNC TO GOOGLE TASKS
+                    # We create the task in Google first to get the ID for our database
+                    g_id = None
+                    reminder_time = task.get('reminder_at') # Gemini extracts this from your text
+                    
+                    try:
+                        g_id = sync_to_google(
+                            tasks_service,
+                            title=task.get('title', 'Untitled Task'),
+                            due_at=reminder_time
+                        )
+                        print(f"📡 Google Task Created: {task.get('title')}")
+                    except Exception as e:
+                        print(f"⚠️ Google Sync failed for '{task.get('title')}': {e}")
+
+                    # 3. BUILD SUPABASE PAYLOAD
                     task_inserts.append({
                         "title": task.get('title', 'Untitled Task'),
                         "project_id": project_match['id'],
                         "priority": (task.get('priority') or 'important').lower(),
                         "status": "todo",
-                        "estimated_minutes": task.get('est_min', 15)
+                        "estimated_minutes": task.get('est_min', 15),
+                        "google_task_id": g_id,         # The link to your phone notification
+                        "reminder_at": reminder_time,    # The ISO timestamp for the reminder
+                        "is_revenue_critical": task.get('is_revenue_critical', False)
                     })
 
             if task_inserts:
-                supabase.table('tasks').insert(task_inserts).execute()
+                try:
+                    supabase.table('tasks').insert(task_inserts).execute()
+                    print(f"✅ Successfully synced {len(task_inserts)} tasks to Supabase & Google.")
+                except Exception as e:
+                    print(f"❌ Supabase Insert Error: {e}")
 
         # 🚀 E. BATCH NEW MISSIONS (Updated to include Description)
         if ai_data.get('new_missions'):

@@ -1,8 +1,8 @@
 # api/webhook.py
 import os
-from datetime import datetime
 import httpx
 from supabase import create_client, Client
+from datetime import datetime, timezone
 
 
 # Initialize Supabase Client
@@ -154,10 +154,13 @@ async def process_webhook(update: dict):
 
             # --- COMMAND: URGENT (Fire Check) ---
             elif text in ['/urgent', '🔴 Urgent']:
+                now_iso = datetime.now(timezone.utc).isoformat()
+
                 fire_res = supabase.table('tasks')\
                     .select('*')\
                     .eq('priority', 'urgent')\
                     .eq('status', 'todo')\
+                    .or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}")\
                     .limit(1)\
                     .execute()
 
@@ -170,10 +173,12 @@ async def process_webhook(update: dict):
 
             # --- COMMAND: BRIEF (Strategic Plan) ---
             elif text in ['/brief', '📋 Brief']:
+                now_iso = datetime.now(timezone.utc).isoformat()
                 tasks_res = supabase.table('tasks')\
                     .select('title, priority')\
                     .eq('status', 'todo')\
-                    .limit(10)\
+                    .or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}")\
+                    .limit(15)\
                     .execute()
 
                 tasks = tasks_res.data or []

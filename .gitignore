@@ -2,3 +2,5 @@
 node_modules
 .env
 .vercel
+core/client_secret.json
+core/token_gen.py
