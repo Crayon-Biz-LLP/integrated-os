@@ -299,10 +299,14 @@ async def process_pulse(auth_secret: str = None):
         PERSONA GUIDELINE: {system_persona}
         SYSTEM STATUS: {system_context}
 
-        MANDATE: THE SILENCE PROTOCOL
+        MANDATE: THE SILENCE PROTOCOL & HALLUCINATION GUARD 
         - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
         - NEVER detect "missions" or "strategic trends" proactively.
         - ONLY track what is manually entered or already exists in the database.
+        - If NEW INPUTS is "None" or empty, you MUST return completely empty arrays for `completed_task_ids`, `new_tasks`, `new_projects`, and `resources` [].
+        - NEVER "make up", guess, or generate example tasks (e.g., "Pay bills", "Check emails").
+        - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
+        - ONLY track what is manually entered in NEW INPUTS.
 
         CONTEXT:
         - IDENTITY: {json.dumps(core)}
@@ -364,8 +368,8 @@ async def process_pulse(auth_secret: str = None):
         4. AUTO-MISSION DETECTION: If 3+ items in NEW INPUTS or RECENT LIBRARY PATTERNS suggest a cohesive new goal (e.g., "Automate Solvstrat Lead Gen"), add it to the "new_missions" array.
 
         INSTRUCTIONS:
-        1. STRICT DATA FIDELITY: You are strictly forbidden from inventing, hallucinating, or generating new tasks, projects, or people. 
-        2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "new_projects", and "new_people" arrays MUST remain 100% empty [].
+        1. STRICT DATA FIDELITY: You are strictly forbidden from inventing or hallucinating data to fill the JSON. If there is no explicit command in NEW INPUTS, do nothing.
+        2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "completed_task_ids", "new_projects", and "new_people" arrays MUST remain 100% empty [].
         3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
         4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
         5. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
@@ -414,19 +418,25 @@ async def process_pulse(auth_secret: str = None):
             - THE LINK RULE: If a task is derived from a URL in NEW INPUTS, you MUST embed that URL into the task title using Markdown: "- [ICON] [Action] using [Source Title](URL)".
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
         
-        OUTPUT JSON:
+        OUTPUT JSON SCHEMA (WARNING: ONLY POPULATE ARRAYS IF EXPLICITLY COMMANDED IN NEW INPUTS. OTHERWISE RETURN []):
         {{
             "completed_task_ids": [
-                {{ "id": "123", "status": "done" }},
-                {{ "id": "456", "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" }},
-                {{ "id": "456", "status": "cancelled" }}
+                // Example ONLY: {{ "id": 123, "status": "done" }}, {{ "id": 456, "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" }}
             ],
-            "new_projects": [{{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }}],
-            "new_people": [{{ "name": "...", "role": "...", "strategic_weight": 9 }}],
-            "new_tasks": [{{ "title": "...", "project_name": "...", "priority": "urgent", "est_min": 15 }}],
-            "resources": [{{ "url": "...", "title": "...", "summary": "...", "mission_name": "...", "project_name": "...", "strategic_note": "..." }}],
-            "logs": [{{ "entry_type": "IDEAS", "content": "..." }}],
-            "new_missions": [{{ "title": "...", "description": "..." }}],
+            "new_projects": [
+                // Example ONLY: {{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }}
+            ],
+            "new_people": [
+                // Example ONLY: {{ "name": "...", "role": "...", "strategic_weight": 9 }}
+            ],
+            "new_tasks": [
+                // Example ONLY: {{ "title": "...", "project_name": "...", "priority": "urgent", "est_min": 15, "reminder_at": "..." }}
+            ],
+            "resources": [
+                // Example ONLY: {{ "url": "...", "title": "...", "summary": "...", "mission_name": "...", "project_name": "...", "strategic_note": "..." }}
+            ],
+            "logs": [],
+            "new_missions": [],
             "briefing": "The formatted text string for Telegram."
         }}
         """
