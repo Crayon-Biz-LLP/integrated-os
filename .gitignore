@@ -4,3 +4,4 @@ node_modules
 .vercel
 core/client_secret.json
 core/token_gen.py
+venv/
