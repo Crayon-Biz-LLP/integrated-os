@@ -7,3 +7,4 @@ core/token_gen.py
 venv/
 client_secret.json
 get_token.py
+.DS_Store
