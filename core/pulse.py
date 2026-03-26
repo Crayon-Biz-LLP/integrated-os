@@ -517,11 +517,20 @@ async def process_pulse(auth_secret: str = None):
                 item_status = item.get('status', 'done')
                 new_reminder = item.get('reminder_at')
                 
-                # 1. Fetch current IDs
-                task_ref = supabase.table('tasks').select('google_task_id', 'google_event_id', 'title').eq('id', target_id).single().execute()
+                # 1. Fetch current IDs AND Status
+                task_ref = supabase.table('tasks').select('status', 'google_task_id', 'google_event_id', 'title').eq('id', target_id).single().execute()
+                
+                # Extract data safely
+                current_db_status = task_ref.data.get('status') if task_ref.data else None
                 g_id = task_ref.data.get('google_task_id') if task_ref.data else None
                 e_id = task_ref.data.get('google_event_id') if task_ref.data else None
                 task_title = task_ref.data.get('title') if task_ref.data else "Untitled Task"
+
+                # 🛑 THE LOCKDOWN: If the task is already 'done' or 'cancelled', 
+                # we ignore any "todo" or "reminder" updates from the AI.
+                if current_db_status in ['done', 'cancelled']:
+                    print(f"🚫 Task {target_id} ('{task_title}') is already {current_db_status}. Blocking AI resurrection.")
+                    continue
 
                 # 2. THE SMART CALENDAR SYNC
                 if item_status in ['done', 'cancelled'] and e_id:
