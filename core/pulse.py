@@ -32,51 +32,84 @@ def get_tasks_service():
     """Helper to spin up the Tasks engine."""
     return build('tasks', 'v1', credentials=get_google_creds())
 
+def format_rfc3339(date_str):
+    """Ensures a timestamp is 100% compliant with Google's strict RFC-3339 requirements."""
+    if not date_str: return None
+    # 🛡️ FIX: Replace space with 'T' and ensure IST timezone
+    clean = str(date_str).replace(' ', 'T')
+    if 'T' not in clean:
+        clean = f"{clean}T09:00:00+05:30"
+    if not (clean.endswith('Z') or '+' in clean[-6:]):
+        clean += "+05:30"
+    return clean
+
+def check_conflict(start_iso):
+    """Radar: Checks if a 30-minute window is already booked."""
+    try:
+        service = build('calendar', 'v3', credentials=get_google_creds())
+        rfc_time = format_rfc3339(start_iso)
+        
+        start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
+        end_dt = start_dt + timedelta(minutes=30)
+        
+        events_res = service.events().list(
+            calendarId='primary',
+            timeMin=rfc_time,
+            timeMax=end_dt.isoformat(),
+            singleEvents=True
+        ).execute()
+        
+        events = events_res.get('items', [])
+        return events[0].get('summary') if events else None
+    except Exception as e:
+        print(f"⚠️ Conflict check failed: {e}")
+        return None
+
 def sync_to_calendar(title, start_iso, event_id=None):
     """Creates or UPDATES a 30-minute block on the grid."""
     service = build('calendar', 'v3', credentials=get_google_creds())
     try:
-        clean_iso = start_iso.replace('Z', '+00:00')
-        start_dt = datetime.fromisoformat(clean_iso)
+        rfc_time = format_rfc3339(start_iso)
+        start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
         end_dt = start_dt + timedelta(minutes=30)
         
         event_body = {
             'summary': f"🔥 CRITICAL: {title}",
             'description': 'Automated via Integrated-OS Sync',
-            'start': {'dateTime': start_iso, 'timeZone': 'Asia/Kolkata'},
+            'start': {'dateTime': rfc_time, 'timeZone': 'Asia/Kolkata'},
             'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'},
             'reminders': {'useDefault': True} 
         }
         
         if event_id:
-            # 🔄 UPDATE EXISTING SLOT
             res = service.events().patch(calendarId='primary', eventId=event_id, body=event_body).execute()
-            print(f"🔄 Calendar slot edited for {title}")
+            print(f"🔄 SUCCESS: Calendar slot edited for {title}")
         else:
-            # ✨ CREATE NEW SLOT
             res = service.events().insert(calendarId='primary', body=event_body).execute()
-            print(f"📅 New calendar block secured for {title}")
+            print(f"📅 SUCCESS: New calendar block secured for {title}")
             
         return res.get('id')
     except Exception as e:
-        # Fallback: If the event_id was invalid (deleted manually), try creating a fresh one
-        if event_id: return sync_to_calendar(title, start_iso, event_id=None)
-        print(f"⚠️ Calendar sync failed: {e}")
+        # Fallback logic: If the event_id was invalid, try creating fresh
+        if event_id: 
+            print(f"⚠️ Event ID {event_id} invalid. Attempting fresh creation...")
+            return sync_to_calendar(title, start_iso, event_id=None)
+        print(f"❌ CRITICAL: Calendar sync failed: {e}")
         return None
 
 def delete_calendar_event(event_id):
-    """Removes the protective block from the grid."""
+    """Removes the protective block from the grid with explicit logging."""
     if not event_id: return
     service = build('calendar', 'v3', credentials=get_google_creds())
     try:
         service.events().delete(calendarId='primary', eventId=event_id).execute()
-        print(f"🗑️ Calendar event {event_id} removed.")
+        print(f"🗑️ SUCCESS: Calendar event {event_id} removed.")
     except Exception as e:
-        # If already deleted manually, Google returns a 410/404; we ignore it.
-        print(f"⚠️ Calendar delete failed or already gone.")       
+        # Don't use 'pass'—keep the warning so you know if the grid is dirty
+        print(f"⚠️ Note: Calendar delete failed (likely already gone).")
 
 def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'):
-    """Checklist manager with Time Visibility Hack."""
+    """Checklist Manager: Handles task sync with RFC-3339 guard."""
     # 1. Handle Completion/Deletion
     if task_id and (status == 'done' or status == 'cancelled'):
         try:
@@ -84,35 +117,29 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
             return task_id
         except: return None
 
-    # 2. Preparation: Handle Time Visibility Hack
-    if due_at and 'T' in due_at:
-        time_str = due_at.split('T')[1][:5] # Extract "09:00"
+    # 2. Preparation: RFC-3339 Formatting
+    rfc_date = format_rfc3339(due_at)
+    
+    # 3. Time-Visibility Title Hack
+    if rfc_date and 'T' in rfc_date:
+        time_str = rfc_date.split('T')[1][:5] # Extract "09:00"
         if title and f"{time_str}" not in title:
             title = f"🕒 {time_str} | {title}"
 
-    # 3. Format Date for Google
-    formatted_date = None
-    if due_at:
-        # 🛡️ FIX: Ensure there is a 'T' and no spaces
-        formatted_date = str(due_at).replace(' ', 'T')
-        if 'T' not in formatted_date:
-            formatted_date = f"{formatted_date}T09:00:00+05:30"
-        
-        # Ensure it ends with a timezone or 'Z'
-        if not (formatted_date.endswith('Z') or '+' in formatted_date[-6:]):
-            formatted_date += "+05:30"
-
-    # 4. Execute API Call
+    # 4. Build Body and Execute API Call
     body = {}
     if title: body['title'] = title
-    if formatted_date: body['due'] = formatted_date
+    if rfc_date: body['due'] = rfc_date
 
-    if task_id:
-        res = service.tasks().patch(tasklist='@default', task=task_id, body=body).execute()
-    else:
-        res = service.tasks().insert(tasklist='@default', body=body).execute()
-    
-    return res['id']
+    try:
+        if task_id:
+            res = service.tasks().patch(tasklist='@default', task=task_id, body=body).execute()
+        else:
+            res = service.tasks().insert(tasklist='@default', body=body).execute()
+        return res['id']
+    except Exception as e:
+        print(f"⚠️ Google Tasks API error: {e}")
+        return None
 
 # --- 🛰️ LAYER 2: THE AUTO-ENRICHER ---
 async def fetch_url_metadata(url: str):
@@ -522,7 +549,11 @@ async def process_pulse(auth_secret: str = None):
             for item in ai_data['completed_task_ids']:
                 target_id = item.get('id')
                 item_status = item.get('status', 'done')
-                new_reminder = item.get('reminder_at')
+                raw_reminder = item.get('reminder_at')
+                
+                # 🛡️ RFC-3339 GUARD: Sanitize the timestamp immediately
+                # This fixes the "Space" bug before Google ever sees it
+                new_reminder = format_rfc3339(raw_reminder) if raw_reminder else None
                 
                 # 1. Fetch current IDs AND Status
                 task_ref = supabase.table('tasks').select('status', 'google_task_id', 'google_event_id', 'title').eq('id', target_id).single().execute()
@@ -533,34 +564,41 @@ async def process_pulse(auth_secret: str = None):
                 e_id = task_ref.data.get('google_event_id') if task_ref.data else None
                 task_title = task_ref.data.get('title') if task_ref.data else "Untitled Task"
 
-                # 🛑 THE LOCKDOWN: If the task is already 'done' or 'cancelled', 
-                # we ignore any "todo" or "reminder" updates from the AI.
+                # 🛑 THE LOCKDOWN: Block AI resurrection of finished tasks
                 if current_db_status in ['done', 'cancelled']:
-                    print(f"🚫 Task {target_id} ('{task_title}') is already {current_db_status}. Blocking AI resurrection.")
+                    print(f"🚫 Task {target_id} ('{task_title}') is already {current_db_status}. Skipping.")
                     continue
 
-                # 2. THE SMART CALENDAR SYNC
+                # 2. THE SMART CALENDAR SYNC (With Radar)
                 if item_status in ['done', 'cancelled'] and e_id:
-                    # ACTION: Completion/Cancellation -> KILL the block
                     delete_calendar_event(e_id)
                     e_id = None
-                elif new_reminder:
-                    if 'T' in new_reminder:
-                        # ACTION: Snooze with TIME -> EDIT or CREATE the block
-                        e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id)
-                    elif e_id:
-                        # ACTION: Snooze to DATE-ONLY -> Remove existing block (not needed anymore)
-                        delete_calendar_event(e_id)
-                        e_id = None
+                elif new_reminder and 'T' in new_reminder:
+                    # 🛰️ RADAR: Check for conflict before moving the block
+                    conflict_name = check_conflict(new_reminder)
+                    if conflict_name:
+                        # 🛡️ Safety: Assignment ensures we don't crash if 'briefing' key is missing
+                        current_briefing = ai_data.get('briefing', "")
+                        ai_data['briefing'] = current_briefing + f"\n\n⚠️ **SNOOZE CONFLICT:** Tried moving '{task_title}' to {new_reminder.split('T')[1][:5]}, but you have '{conflict_name}' then."
+                    
+                    # Edit or create the block
+                    e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id)
+                elif e_id:
+                    # Snooze to DATE-ONLY -> Remove existing block
+                    delete_calendar_event(e_id)
+                    e_id = None
 
-                # 3. GOOGLE TASKS SYNC (Title/Time Updates)
+                # 3. GOOGLE TASKS SYNC (Uses the same sanitized timestamp)
                 if g_id:
                     sync_to_google(tasks_service, title=task_title, task_id=g_id, status=item_status, due_at=new_reminder)
 
-                # 4. SUPABASE UPDATE (Save the new/existing Event ID)
+                # 4. SUPABASE UPDATE (Saves 'T' format and allows time removal)
                 update_payload = {"status": item_status, "google_event_id": e_id}
-                if item_status == 'done': update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
-                if new_reminder: update_payload["reminder_at"] = new_reminder
+                if item_status == 'done': 
+                    update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
+                
+                # REMOVE the 'if' here to allow clearing the time
+                update_payload["reminder_at"] = new_reminder 
 
                 supabase.table('tasks').update(update_payload).eq('id', target_id).execute()
 
@@ -569,7 +607,7 @@ async def process_pulse(auth_secret: str = None):
             task_inserts = []
 
             for task in ai_data['new_tasks']:
-                # 1. Project Matching Logic (Existing Logic)
+                # 1. Project Matching Logic
                 ai_target = (task.get('project_name') or "").lower()
                 project_match = next(
                     (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
@@ -579,48 +617,58 @@ async def process_pulse(auth_secret: str = None):
                     project_match = next((p for p in projects if p.get('org_tag') == 'INBOX'), projects[0] if projects else None)
 
                 if project_match:
-                    # 2. SYNC TO GOOGLE TASKS (The Checklist)
-                    g_id = None
-                    e_id = None # Initialize empty Event ID
-                    reminder_time = task.get('reminder_at')
+                    # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
+                    raw_time = task.get('reminder_at')
+                    sanitized_time = format_rfc3339(raw_time) if raw_time else None
                     
+                    g_id = None
+                    e_id = None
+                    task_title = task.get('title', 'Untitled Task')
+
+                    # 2. SYNC TO GOOGLE TASKS (The Checklist)
                     try:
                         g_id = sync_to_google(
                             tasks_service,
-                            title=task.get('title', 'Untitled Task'),
-                            due_at=reminder_time
+                            title=task_title,
+                            due_at=sanitized_time
                         )
-                        print(f"📡 Google Task Created: {task.get('title')}")
+                        if g_id: print(f"📡 Google Task Created: {task_title}")
                     except Exception as e:
-                        print(f"⚠️ Google Tasks Sync failed: {e}")
+                        print(f"⚠️ Google Tasks Sync failed for {task_title}: {e}")
 
-                    # 3. STRATEGIC GATE: SYNC TO CALENDAR (The Alarm)
-                    # We now CAPTURE the e_id returned by the helper
-                    if reminder_time and 'T' in reminder_time:
+                    # 3. STRATEGIC GATE: SYNC TO CALENDAR (The Radar + Alarm)
+                    if sanitized_time and 'T' in sanitized_time:
                         try:
-                            e_id = sync_to_calendar(task.get('title'), reminder_time)
-                            if e_id:
-                                print(f"📅 Calendar block secured: {task.get('title')} [ID: {e_id}]")
+                            # 🛰️ RADAR: Check for clash
+                            conflict_name = check_conflict(sanitized_time)
+                            if conflict_name:
+                                briefing = ai_data.get('briefing', "")
+                                ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
+                            
+                            # Secure the block
+                            e_id = sync_to_calendar(task_title, sanitized_time)
+                            if e_id: print(f"📅 Calendar block secured: {task_title}")
+                            
                         except Exception as ce:
-                            print(f"⚠️ Calendar Sync failed: {ce}")
+                            print(f"⚠️ Calendar Sync failed for {task_title}: {ce}")
 
-                    # 4. BUILD SUPABASE PAYLOAD (Including the new Event ID)
+                    # 4. BUILD SUPABASE PAYLOAD (Using the Sanitized Time)
                     task_inserts.append({
-                        "title": task.get('title', 'Untitled Task'),
+                        "title": task_title,
                         "project_id": project_match['id'],
                         "priority": (task.get('priority') or 'important').lower(),
                         "status": "todo",
                         "estimated_minutes": task.get('est_min', 15),
                         "google_task_id": g_id,
-                        "google_event_id": e_id, # <-- Save this so we can delete it later!
-                        "reminder_at": reminder_time,
+                        "google_event_id": e_id,
+                        "reminder_at": sanitized_time, # Store 'T' format in DB
                         "is_revenue_critical": task.get('is_revenue_critical', False)
                     })
 
             if task_inserts:
                 try:
                     supabase.table('tasks').insert(task_inserts).execute()
-                    print(f"✅ Successfully synced {len(task_inserts)} tasks with Calendar tracking.")
+                    print(f"✅ Successfully synced {len(task_inserts)} new tasks.")
                 except Exception as e:
                     print(f"❌ Supabase Insert Error: {e}")
 
