@@ -93,7 +93,14 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
     # 3. Format Date for Google
     formatted_date = None
     if due_at:
-        formatted_date = due_at if 'T' in due_at else f"{due_at}T09:00:00+05:30"
+        # 🛡️ FIX: Ensure there is a 'T' and no spaces
+        formatted_date = str(due_at).replace(' ', 'T')
+        if 'T' not in formatted_date:
+            formatted_date = f"{formatted_date}T09:00:00+05:30"
+        
+        # Ensure it ends with a timezone or 'Z'
+        if not (formatted_date.endswith('Z') or '+' in formatted_date[-6:]):
+            formatted_date += "+05:30"
 
     # 4. Execute API Call
     body = {}
