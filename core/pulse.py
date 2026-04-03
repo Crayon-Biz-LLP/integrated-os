@@ -238,9 +238,31 @@ async def process_pulse(auth_secret: str = None):
         # --- 1.3 BANDWIDTH & BUFFER CHECK ---
         is_overloaded = len(active_tasks) > 15
 
-        # --- 1.3.1 STRATEGIC TASK FILTERING ---
+        # --- 1.3.1 STRATEGIC TASK FILTERING (Horizon Guard) ---
         filtered_tasks = []
+        # Focus Window: Only show tasks due within the next 48 hours (2 days)
+        # Anything further out stays on the Calendar/Tasks but hides from the Briefing.
+        horizon_cutoff = now + timedelta(days=2)
+
         for t in active_tasks:
+            raw_reminder = t.get('reminder_at')
+            
+            # 🛡️ THE HORIZON GUARD
+            if raw_reminder:
+                try:
+                    # Parse the ISO string (handling potential 'Z' or '+05:30')
+                    clean_reminder = raw_reminder.replace('Z', '+00:00')
+                    task_date = datetime.fromisoformat(clean_reminder)
+                    
+                    # LOGIC: If task is in the future AND beyond 48 hours, skip it.
+                    # This allows OVERDUE tasks (task_date < now) to still show up.
+                    if task_date > horizon_cutoff:
+                        continue 
+                except Exception as e:
+                    # If parsing fails, we keep it in the list to avoid missing something.
+                    print(f"⚠️ Horizon check skipped for '{t.get('title')}': {e}")
+
+            # --- Existing Priority & Category Logic ---
             if t.get('priority') == 'urgent':
                 filtered_tasks.append(t)
                 continue
@@ -354,17 +376,17 @@ async def process_pulse(auth_secret: str = None):
 
         PROJECT ROUTING LOGIC
         Use this hierarchy to assign NEW_TASKS or match COMPLETIONS:
-        1. SOLVSTRAT (CASH ENGINE): Match tasks for Atna.ai, Smudge, new Lead Gen here or new SaaS and technology projects. Goal: High-ticket revenue.
-        2. PRODUCT LABS (INCUBATOR): 
+        1. QHORD (THE MISSION): Any task related to the June launch, Joel (Co-founder), GTM strategies, or Qhord product features gets URGENT status and 10/10 strategic weight. Set is_revenue_critical: true for anything involving Pilots or Sales.
+        2. SOLVSTRAT (CASH ENGINE): Match tasks for Smudge, new Lead Gen, or high-ticket technology services here. Goal: High-ticket revenue to fuel the Qhord launch.
+        3. PRODUCT LABS (INCUBATOR): 
             - Match existing: CashFlow+ (Vasuuli), Integrated-OS.
             - Match NEW IDEAS: If the input involves "SaaS research," "New Product concept," "MVPs," or "Validation" that is NOT for a current Solvstrat client, tag as PRODUCT LABS.
-            - Goal: Future equity and passive income.
-        3. CRAYON (UMBRELLA): Match Governance, Tax, and Legal here.
-        4. PERSONAL: Match Sunju, kids, dogs here.
-        5. CHURCH: 
-            - Note: All church-related activities must map to the project "Church".
-        6. MISSION OVERRIDE: If a resource fits an ACTIVE MISSION, prioritize the Mission name over the Project name. 
-        7. LINK FIDELITY: Do not "hide" a link inside another project's task without including the clickable URL for the original resource.
+        4. CRAYON (UMBRELLA): Match Governance, Tax, and Legal here.
+        5. PERSONAL: Match Sunju, kids, dogs, and home maintenance here.
+        6. CHURCH: 
+            - Note: All church-related activities MUST map to the project "Church".
+        7. MISSION OVERRIDE: If a resource fits an ACTIVE MISSION, prioritize the Mission name over the Project name. 
+        8. LINK FIDELITY: Every task derived from a URL MUST include the clickable URL in the title.
 
         NEW PROJECT CREATION CRITERIA:
         1. Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned 
