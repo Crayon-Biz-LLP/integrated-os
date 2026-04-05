@@ -1,6 +1,6 @@
 fastapi
 supabase
-google-generativeai
+google-genai
 httpx
 google-auth
 google-auth-oauthlib

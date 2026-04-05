@@ -185,7 +185,7 @@ async def process_pulse(auth_secret: str = None):
         dumps_res = supabase.table('raw_dumps').select('id, content').eq('is_processed', False).execute()
         dumps = dumps_res.data or []
 
-        active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at').not_.in_('status', ['done', 'cancelled']).execute()
+        active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at, reminder_at, google_event_id').not_.in_('status', ['done', 'cancelled']).execute()
         active_tasks = active_tasks_res.data or []
 
         # 💡 Only silence the tool if BOTH new dumps AND open tasks are empty
