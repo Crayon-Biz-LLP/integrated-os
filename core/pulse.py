@@ -280,16 +280,22 @@ async def process_pulse(auth_secret: str = None):
                 if o_tag in ['PERSONAL', 'CHURCH']:
                     filtered_tasks.append(t)
 
-        # --- 1.4 CONTEXT COMPRESSION ---
-        compressed_tasks_list = []
-        for t in filtered_tasks:
-            project = next((p for p in projects if p.get('id') == t.get('project_id')), None)
-            p_name = project.get('name') if project else "General"
-            o_tag = project.get('org_tag') if project else "INBOX"
-            compressed_tasks_list.append(f"[{o_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]")
+        # --- 1.4 CONTEXT COMPRESSION & PRUNING ---
+        # 🛡️ THE PRUNER: Only show the AI tasks created or touched in the last 14 days
+        two_weeks_ago = now - timedelta(days=14)
+        
+        recent_tasks = []
+        for t in active_tasks:
+            try:
+                # Convert created_at to aware datetime for comparison
+                created_dt = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00'))
+                if created_dt > two_weeks_ago:
+                    recent_tasks.append(t)
+            except:
+                recent_tasks.append(t) # Keep if date parsing fails
 
-        compressed_tasks = " | ".join(compressed_tasks_list)
-        universal_task_map = " | ".join([f"[ID:{t.get('id')}] {t.get('title')}" for t in active_tasks])
+        # This map is used by the AI to identify task IDs for completion/edits
+        universal_task_map = " | ".join([f"[ID:{t.get('id')}] {t.get('title')}" for t in recent_tasks])
 
         # --- 1.5 SEASON EXPIRY LOGIC ---
         season_row = next((c for c in core if c.get('key') == 'current_season'), None)
@@ -314,17 +320,18 @@ async def process_pulse(auth_secret: str = None):
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps]) if dumps else "None"    
 
         # --- 🧭 LAYER 3: SMART PATTERN CONTEXT (Last 30 Days) ---
-        # Look back 30 days so patterns can form over time, not just items
-        thirty_days_ago = (now - timedelta(days=30)).isoformat()
-        
-        recent_lib = supabase.table('resources')\
-            .select('category, title, created_at')\
-            .gt('created_at', thirty_days_ago)\
-            .order('created_at', desc=True)\
-            .limit(100)\
-            .execute()
-            
-        pattern_context = " | ".join([f"[{r['category']}] {r['title']}" for r in recent_lib.data]) if recent_lib.data else "None"
+# Look back 30 days so patterns can form over time, not just items
+thirty_days_ago = (now - timedelta(days=30)).isoformat()
+
+recent_lib = supabase.table('resources')\
+    .select('url, category, title, created_at')\
+    .gt('created_at', thirty_days_ago)\
+    .order('created_at', desc=True)\
+    .limit(100)\
+    .execute()
+
+# The AI only needs the Category and Title for the prompt context
+pattern_context = " | ".join([f"[{r['category']}] {r['title']}" for r in recent_lib.data]) if recent_lib.data else "None"
        
         # --- 🛰️ LAYER 2: URL ENRICHMENT ---
         enriched_links = []
@@ -629,12 +636,21 @@ async def process_pulse(auth_secret: str = None):
             task_inserts = []
 
             for task in ai_data['new_tasks']:
-                # 1. Project Matching Logic
+                # 1. High-Precision Project Matching Logic
                 ai_target = (task.get('project_name') or "").lower()
-                project_match = next(
-                    (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
-                    None
-                )
+                
+                # 🛡️ STEP A: Try for an EXACT match first
+                # This prevents "Solvstrat" from accidentally hitting "Solvstrat Lead Gen"
+                project_match = next((p for p in projects if ai_target == p['name'].lower()), None)
+                
+                # 🛡️ STEP B: Fall back to a "Fuzzy" match only if Step A fails
+                if not project_match:
+                    project_match = next(
+                        (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
+                        None
+                    )
+                
+                # 🛡️ STEP C: The Safety Net (Default to INBOX)
                 if not project_match:
                     project_match = next((p for p in projects if p.get('org_tag') == 'INBOX'), projects[0] if projects else None)
 
@@ -713,18 +729,32 @@ async def process_pulse(auth_secret: str = None):
                     except Exception as e:
                         print(f"Error creating mission: {e}")
 
-        # 🔖 F. BATCH NEW RESOURCES (Indented same level as Mission block)
+        # 🔖 F. BATCH NEW RESOURCES (Titan-Grade De-Duplication)
         if ai_data.get('resources'):
             resource_inserts = []
+            # 🛡️ THE GUARD: Now works because we added 'url' to the select query above
+            existing_urls = {r['url'] for r in recent_lib.data} if recent_lib.data else set()
+
             for res in ai_data['resources']:
+                target_url = res.get('url')
+                
+                if target_url in existing_urls:
+                    print(f"⏩ Skipping duplicate resource: {target_url}")
+                    continue
+
+                # --- High-Precision Matching ---
                 m_name = (res.get('mission_name') or "").lower()
-                mission_match = next((m for m in active_missions if m_name in m['title'].lower()), None)
+                mission_match = next((m for m in active_missions if m_name == m['title'].lower()), None)
+                if not mission_match:
+                    mission_match = next((m for m in active_missions if m_name in m['title'].lower()), None)
                 
                 p_name = (res.get('project_name') or "").lower()
-                project_match = next((p for p in projects if p_name in p['name'].lower()), None)
+                project_match = next((p for p in projects if p_name == p['name'].lower()), None)
+                if not project_match:
+                    project_match = next((p for p in projects if p_name in p['name'].lower()), None)
                 
                 resource_inserts.append({
-                    "url": res.get('url'),
+                    "url": target_url,
                     "title": res.get('title'),
                     "summary": res.get('summary'),
                     "strategic_note": res.get('strategic_note'),
@@ -735,7 +765,7 @@ async def process_pulse(auth_secret: str = None):
             
             if resource_inserts:
                 supabase.table('resources').insert(resource_inserts).execute()
-                print(f"✅ Vaulted {len(resource_inserts)} resources with Strategic Audit.")
+                print(f"✅ Vaulted {len(resource_inserts)} unique resources.")
 
         # G. CLEANUP & LOGS
         if ai_data.get('logs'):
