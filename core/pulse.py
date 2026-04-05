@@ -238,31 +238,31 @@ async def process_pulse(auth_secret: str = None):
         # --- 1.3 BANDWIDTH & BUFFER CHECK ---
         is_overloaded = len(active_tasks) > 15
 
-        # --- 1.3.1 STRATEGIC TASK FILTERING (Horizon Guard) ---
+        # --- 1.3.1 STRATEGIC TASK FILTERING (Robust Horizon Guard) ---
         filtered_tasks = []
-        # Focus Window: Only show tasks due within the next 48 hours (2 days)
-        # Anything further out stays on the Calendar/Tasks but hides from the Briefing.
         horizon_cutoff = now + timedelta(days=2)
 
         for t in active_tasks:
             raw_reminder = t.get('reminder_at')
             
-            # 🛡️ THE HORIZON GUARD
             if raw_reminder:
                 try:
-                    # Parse the ISO string (handling potential 'Z' or '+05:30')
-                    clean_reminder = raw_reminder.replace('Z', '+00:00')
+                    # 🛡️ THE CLEANER: Replace space with 'T' and 'Z' with UTC offset
+                    clean_reminder = str(raw_reminder).replace(' ', 'T').replace('Z', '+00:00')
                     task_date = datetime.fromisoformat(clean_reminder)
                     
-                    # LOGIC: If task is in the future AND beyond 48 hours, skip it.
-                    # This allows OVERDUE tasks (task_date < now) to still show up.
+                    # 🛡️ TIMEZONE AWARENESS: Ensure we are comparing Apples to Apples (IST)
+                    if task_date.tzinfo is None:
+                        task_date = task_date.replace(tzinfo=ist_offset)
+                    
+                    # 🛡️ THE HORIZON CHECK: If task is > 2 days away, SKIP IT.
                     if task_date > horizon_cutoff:
                         continue 
                 except Exception as e:
-                    # If parsing fails, we keep it in the list to avoid missing something.
-                    print(f"⚠️ Horizon check skipped for '{t.get('title')}': {e}")
+                    # If it still fails, we log it but keep the task visible for safety
+                    print(f"⚠️ Horizon Guard bypassed for '{t.get('title')}': {e}")
 
-            # --- Existing Priority & Category Logic ---
+            # --- Existing Category Logic ---
             if t.get('priority') == 'urgent':
                 filtered_tasks.append(t)
                 continue
