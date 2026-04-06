@@ -284,18 +284,27 @@ async def process_pulse(auth_secret: str = None):
         # 🛡️ THE PRUNER: Only show the AI tasks created or touched in the last 14 days
         two_weeks_ago = now - timedelta(days=14)
         
+        # A. BUILD UNIVERSAL MAP (For AI ID Matching - Pruned by Date)
         recent_tasks = []
         for t in active_tasks:
             try:
-                # Convert created_at to aware datetime for comparison
                 created_dt = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00'))
                 if created_dt > two_weeks_ago:
                     recent_tasks.append(t)
             except:
-                recent_tasks.append(t) # Keep if date parsing fails
-
-        # This map is used by the AI to identify task IDs for completion/edits
+                recent_tasks.append(t)
         universal_task_map = " | ".join([f"[ID:{t.get('id')}] {t.get('title')}" for t in recent_tasks])
+
+        # B. BUILD COMPRESSED LIST (For the Briefing Context)
+        # 🛡️ FIX: Defining 'compressed_tasks' so the prompt builder doesn't crash!
+        compressed_tasks_list = []
+        for t in filtered_tasks:
+            project = next((p for p in projects if p.get('id') == t.get('project_id')), None)
+            p_name = project.get('name') if project else "General"
+            o_tag = project.get('org_tag') if project else "INBOX"
+            compressed_tasks_list.append(f"[{o_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]")
+
+        compressed_tasks = " | ".join(compressed_tasks_list)
 
         # --- 1.5 SEASON EXPIRY LOGIC ---
         season_row = next((c for c in core if c.get('key') == 'current_season'), None)
