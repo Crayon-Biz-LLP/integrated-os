@@ -312,26 +312,33 @@ async def process_pulse(auth_secret: str = None):
         # --- 🛡️ 1.6 THE NAG LOGIC (STAGNANT TASK GUARD) ---
         overdue_tasks = []
         for t in filtered_tasks:
-            created_date = datetime.fromisoformat(t.get('created_at').replace("Z", "+00:00"))
-            hours_old = (now - created_date).total_seconds() / 3600
-            if t.get('priority') == 'urgent' and hours_old > 48:
-                overdue_tasks.append(t.get('title'))
+            try:
+                raw_created = t.get('created_at')
+                if raw_created:
+                    # Normalize and compare hours
+                    created_date = datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
+                    hours_old = (now - created_date).total_seconds() / 3600
+                    if t.get('priority') == 'urgent' and hours_old > 48:
+                        overdue_tasks.append(t.get('title'))
+            except Exception as e:
+                print(f"⚠️ Nag Logic skipped for task '{t.get('title')}': {e}")
 
+        # --- 🕒 1.7 INPUT PREP ---
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps]) if dumps else "None"    
 
         # --- 🧭 LAYER 3: SMART PATTERN CONTEXT (Last 30 Days) ---
-# Look back 30 days so patterns can form over time, not just items
-thirty_days_ago = (now - timedelta(days=30)).isoformat()
+        # Look back 30 days so patterns can form over time, not just items
+        thirty_days_ago = (now - timedelta(days=30)).isoformat()
 
-recent_lib = supabase.table('resources')\
-    .select('url, category, title, created_at')\
-    .gt('created_at', thirty_days_ago)\
-    .order('created_at', desc=True)\
-    .limit(100)\
-    .execute()
+        recent_lib = supabase.table('resources')\
+            .select('url, category, title, created_at')\
+            .gt('created_at', thirty_days_ago)\
+            .order('created_at', desc=True)\
+            .limit(100)\
+            .execute()
 
-# The AI only needs the Category and Title for the prompt context
-pattern_context = " | ".join([f"[{r['category']}] {r['title']}" for r in recent_lib.data]) if recent_lib.data else "None"
+        # The AI only needs the Category and Title for the prompt context
+        pattern_context = " | ".join([f"[{r['category']}] {r['title']}" for r in recent_lib.data]) if recent_lib.data else "None"
        
         # --- 🛰️ LAYER 2: URL ENRICHMENT ---
         enriched_links = []
@@ -640,11 +647,10 @@ pattern_context = " | ".join([f"[{r['category']}] {r['title']}" for r in recent_
                 ai_target = (task.get('project_name') or "").lower()
                 
                 # 🛡️ STEP A: Try for an EXACT match first
-                # This prevents "Solvstrat" from accidentally hitting "Solvstrat Lead Gen"
                 project_match = next((p for p in projects if ai_target == p['name'].lower()), None)
                 
-                # 🛡️ STEP B: Fall back to a "Fuzzy" match only if Step A fails
-                if not project_match:
+                # 🛡️ STEP B: Fuzzy match ONLY if ai_target isn't empty
+                if not project_match and ai_target.strip():
                     project_match = next(
                         (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
                         None
@@ -742,15 +748,15 @@ pattern_context = " | ".join([f"[{r['category']}] {r['title']}" for r in recent_
                     print(f"⏩ Skipping duplicate resource: {target_url}")
                     continue
 
-                # --- High-Precision Matching ---
-                m_name = (res.get('mission_name') or "").lower()
+                # --- High-Precision Matching (No Empty Strings!) ---
+                m_name = (res.get('mission_name') or "").lower().strip()
                 mission_match = next((m for m in active_missions if m_name == m['title'].lower()), None)
-                if not mission_match:
+                if not mission_match and m_name:
                     mission_match = next((m for m in active_missions if m_name in m['title'].lower()), None)
                 
-                p_name = (res.get('project_name') or "").lower()
+                p_name = (res.get('project_name') or "").lower().strip()
                 project_match = next((p for p in projects if p_name == p['name'].lower()), None)
-                if not project_match:
+                if not project_match and p_name:
                     project_match = next((p for p in projects if p_name in p['name'].lower()), None)
                 
                 resource_inserts.append({
