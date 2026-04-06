@@ -281,18 +281,30 @@ async def process_pulse(auth_secret: str = None):
                     filtered_tasks.append(t)
 
         # --- 1.4 CONTEXT COMPRESSION & PRUNING ---
-        # 🛡️ THE PRUNER: Only show the AI tasks created or touched in the last 14 days
+        # 🛡️ THE HORIZON GATE (Rule 2)
+        horizon_cutoff = now + timedelta(days=2)
+        # 🛡️ THE NAG GATE (Rule 1)
         two_weeks_ago = now - timedelta(days=14)
         
-        # A. BUILD UNIVERSAL MAP (For AI ID Matching - Pruned by Date)
         recent_tasks = []
         for t in active_tasks:
             try:
+                # 🛡️ RULE 2: If the reminder is more than 48 hours away, HIDE IT FROM THE AI
+                raw_remind = t.get('reminder_at')
+                if raw_remind:
+                    clean_remind = str(raw_remind).replace(' ', 'T').replace('Z', '+00:00')
+                    remind_dt = datetime.fromisoformat(clean_remind)
+                    if remind_dt > horizon_cutoff:
+                        continue # Dawn (May 7) is skipped here!
+
+                # 🛡️ RULE 1: Only show recently created tasks for background context
                 created_dt = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00'))
                 if created_dt > two_weeks_ago:
                     recent_tasks.append(t)
             except:
-                recent_tasks.append(t)
+                recent_tasks.append(t) # Safety fallback
+
+        # This is the AI's "Visual Field"
         universal_task_map = " | ".join([f"[ID:{t.get('id')}] {t.get('title')}" for t in recent_tasks])
 
         # B. BUILD COMPRESSED LIST (For the Briefing Context)
