@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-import google.generativeai as genai
+from google import genai
 
 # Initialize Clients
 # Use SERVICE_ROLE_KEY to bypass RLS for background processing
@@ -14,7 +14,7 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # --- 🛰️ LAYER 1: GOOGLE INTEGRATION HELPERS ---
 
@@ -355,7 +355,7 @@ async def process_pulse(auth_secret: str = None):
             .select('url, category, title, created_at')\
             .gt('created_at', thirty_days_ago)\
             .order('created_at', desc=True)\
-            .limit(100)\
+            .limit(50)\
             .execute()
 
         # The AI only needs the Category and Title for the prompt context
@@ -544,7 +544,11 @@ async def process_pulse(auth_secret: str = None):
                 model_name="gemini-3-flash-preview",
                 generation_config={"response_mime_type": "application/json"}
             )
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+    model="gemini-3-flash-preview",
+    contents=prompt,
+    config={'response_mime_type': 'application/json'}
+)
             response_text = response.text
 
             # SUPER ROBUST JSON EXTRACTOR
