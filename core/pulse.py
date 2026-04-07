@@ -544,13 +544,12 @@ async def process_pulse(auth_secret: str = None):
                 model_name="gemini-3-flash-preview",
                 generation_config={"response_mime_type": "application/json"}
             )
-            response = client.models.generate_content(
-    model="gemini-3-flash-preview",
-    contents=prompt,
-    config={'response_mime_type': 'application/json'}
-)
+            response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt, config={'response_mime_type': 'application/json'})
             response_text = response.text
 
+        except Exception as e:
+            print(f"AI JSON Parse Error. Falling back: {e}")
+            
             # SUPER ROBUST JSON EXTRACTOR
             json_str = re.sub(r'^```json\n?', '', response_text)
             json_str = re.sub(r'\n?```$', '', json_str).strip()
