@@ -14,7 +14,7 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # --- 🛰️ LAYER 1: GOOGLE INTEGRATION HELPERS ---
 
@@ -145,13 +145,13 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
 async def fetch_url_metadata(url: str):
     """Bypasses Social Media walls to extract real post content."""
     try:
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as http_client:
             # 🕵️ Identity: Pretending to be the Twitter/Google bot to get the 'SEO' version of the page
             headers = {
                 "User-Agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)", 
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
             }
-            response = await client.get(url, headers=headers)
+            response = await http_client.get(url, headers=headers)
             
             if response.status_code == 200:
                 html = response.text
@@ -542,7 +542,7 @@ async def process_pulse(auth_secret: str = None):
 
         try:
             # 🛡️ Step 2: The Modern Call (No 'GenerativeModel' needed)
-            response = client.models.generate_content(
+            response = gemini_client.models.generate_content(
                 model="gemini-3-flash-preview", 
                 contents=prompt, 
                 config={'response_mime_type': 'application/json'}
@@ -820,8 +820,8 @@ async def process_pulse(auth_secret: str = None):
                 "text": briefing_text,
                 "parse_mode": "Markdown"
             }
-            async with httpx.AsyncClient() as client:
-                await client.post(url, json=payload)
+            async with httpx.AsyncClient() as tg_client:
+                await tg_client.post(url, json=payload)
 
         return {"success": True, "briefing": briefing_text}
 
