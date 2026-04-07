@@ -533,30 +533,30 @@ async def process_pulse(auth_secret: str = None):
         """
 
         # --- AI GENERATION ---
+        # 🛡️ Step 1: Initialize variables to prevent "UnboundLocalError"
+        response_text = ""
         ai_data = {
             "briefing": f"⚠️ FALLBACK MODE\n\n{len(dumps)} new inputs:\n{new_input_summary[:200]}",
             "new_tasks": [], "logs": [], "completed_task_ids": [], "new_projects": [], "new_people": []
         }
 
         try:
-            # 🔴 FIX #2: Model name synced to match pulse.js exactly
-            model = genai.GenerativeModel(
-                model_name="gemini-3-flash-preview",
-                generation_config={"response_mime_type": "application/json"}
+            # 🛡️ Step 2: The Modern Call (No 'GenerativeModel' needed)
+            response = client.models.generate_content(
+                model="gemini-3-flash-preview", 
+                contents=prompt, 
+                config={'response_mime_type': 'application/json'}
             )
-            response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt, config={'response_mime_type': 'application/json'})
             response_text = response.text
 
-        except Exception as e:
-            print(f"AI JSON Parse Error. Falling back: {e}")
-            
-            # SUPER ROBUST JSON EXTRACTOR
+            # 🛡️ Step 3: Precise Extraction
+            # We move this inside the primary try block so it only runs if we HAVE text
             json_str = re.sub(r'^```json\n?', '', response_text)
             json_str = re.sub(r'\n?```$', '', json_str).strip()
 
-            # 🟡 FIX #3: Both sanitization steps now present (trailing commas + empty values)
-            json_str = re.sub(r',\s*([}\]])', r'\1', json_str)           # Step 1: Trailing commas
-            json_str = re.sub(r':\s*([}\]]|$)', r': ""\1', json_str)     # Step 2: Empty/dangling values
+            # Sanitization (Trailing commas + empty values)
+            json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+            json_str = re.sub(r':\s*([}\]]|$)', r': ""\1', json_str)
 
             match = re.search(r'\{[\s\S]*\}', json_str)
             if match:
@@ -566,8 +566,8 @@ async def process_pulse(auth_secret: str = None):
             print("✅ AI Data Parsed Successfully:", list(ai_data.keys()))
 
         except Exception as e:
-            print("AI JSON Parse Error. Falling back.", e)
-            return {"error": "AI response failed validation."}
+            print(f"AI Execution or JSON Parse Error: {e}")
+            # The ai_data fallback is already set above, so the rest of the script won't crash
 
         # --- 3. WRITE Phase (Database Updates) ---
 
