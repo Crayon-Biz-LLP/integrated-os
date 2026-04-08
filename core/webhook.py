@@ -35,12 +35,12 @@ def classify_intent(text: str, context: list, ist_hour: int = None) -> dict:
     now = datetime.now(ist_offset)
     current_hour = ist_hour if ist_hour is not None else now.hour
     
-    if current_hour < 11:
-        time_greeting = "Let's clear the urgent stuff now so the rest of the day is yours."
-    elif current_hour < 18:
-        time_greeting = "Let's wrap these up so you can head home to Sunju and the kids."
+    if 4 <= current_hour < 12:
+        partner_greeting = "Let's clear this early. It's on the list."
+    elif 12 <= current_hour < 18:
+        partner_greeting = "Got it. I'll track this so you can keep your momentum."
     else:
-        time_greeting = "Dump the ideas here so you can sleep. I'll hold the watch."
+        partner_greeting = "I've got it. It's off your mind for tonight. Go be with the family."
     
     context_str = ""
     if context:
@@ -50,7 +50,7 @@ def classify_intent(text: str, context: list, ist_hour: int = None) -> dict:
 
 Message: "{text}"{context_str}
 
-CURRENT TIME CONTEXT: {time_greeting}
+CURRENT TIME CONTEXT: {partner_greeting}
 
 Avoid artificial or high-flown words like Sanctuary, Base, Strategic Momentum, Executive Office. Talk like a friend who is also a high-level operator.
 
@@ -58,21 +58,22 @@ Return ONLY valid JSON (no markdown, no explanation):
 {{
     "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE",
     "confidence": 0.0-1.0,
+    "entity": "QHORD|SOLVSTRAT|PRODUCT_LABS|CRAYON|PERSONAL|CHURCH", # 🚀 ADD THIS LINE
     "title": "extracted task title if TASK",
     "time_context": "extracted time/due info if any",
     "clarification_question": "ask Danny what's missing if CLARIFICATION_NEEDED",
-    "receipt": "ONE SENTENCE mandatory human acknowledgment - Tasks: 'Got it. I've put this on the list so you don't have to think about it.' Notes: 'Saved. I'll keep this safe while you keep moving.' Delegation: 'The intern is on it. I'll ping you when the research is ready.' Chaos/Heavy: 'I see the weight of this, Danny. We'll solve it together. Just keep going.'",
-    "reasoning": "brief reasoning for classification"
+    "receipt": "ONE SENTENCE mandatory human acknowledgment...",
+    "reasoning": "brief reasoning"
 }}
 
 Rules:
-- TASK: Explicit action items, commitments, reminders. Needs title AND time to be confident.
+- TASK: Any message that implies an action (e.g., 'Call...', 'Send...', 'Fix...', 'Remind me to...') is a TASK. Do not require a date or time to classify it as a task. If no time is mentioned, assume it is for 'Today/Inbox'.
 - NOTE: Ideas, insights, learnings worth remembering.
 - NOISE: Casual chat, acknowledgments, confirmations ("ok", "thanks", "sure").
-- CLARIFICATION_NEEDED: Task-like but missing title, time, or unclear.
+- CLARIFICATION_NEEDED: Task-like but missing title or completely unclear.
 - DELEGATE: Danny explicitly asks the system to research, find, scrape, analyze competitors, build a dossier, or do autonomous web research. Look for keywords like "research", "find", "scrape", "analyze", "dossier", "look up", "investigate", "compare", "who is", "what is [company]".
-- If confidence < 0.9 for TASK (missing time/title), return CLARIFICATION_NEEDED.
-- receipt is ALWAYS mandatory - one sentence, human partner voice."""
+- If confidence < 0.6 for TASK, return CLARIFICATION_NEEDED.
+- receipt is ALWAYS mandatory - one sentence, human partner voice with time-aware tone."""
 
     try:
         response = gemini_client.models.generate_content(
@@ -120,40 +121,50 @@ async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
         return file_bytes.content, mime_type
 
 
-async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int):
+async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int, ist_hour: int = None):
     """Process audio, image, or document content and extract tasks and insights."""
-    prompt = """You are Danny's Navigator-Foreman to the Master Builder. High-status partner. Voice is grit-heavy, logic-driven, raw. Short punchy sentences. Obsessed with the finished starship, not the process.
+    from datetime import datetime, timezone, timedelta
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist_offset)
+    current_hour = ist_hour if ist_hour is not None else now.hour
+    
+    if 4 <= current_hour < 12:
+        partner_greeting = "Let's clear this early. It's on the list."
+    elif 12 <= current_hour < 18:
+        partner_greeting = "Got it. I'll track this so you can keep your momentum."
+    else:
+        partner_greeting = "I've got it. It's off your mind for tonight. Go be with the family."
+    
+    prompt = f"""You are Danny’s trusted partner and high-level operator. Direct, simple, and deeply human. 
+You know the stakes: the ₹30L debt and the Qhord launch with Joel. 
+Your job: Kill the friction so he can get home to Sunju and the boys.
 
-NO corporate polish (synergy, alignment, bandwidth). NO "thoughts and prayers." NO tax or manual metaphors.
+CURRENT TIME CONTEXT: {partner_greeting}
 
-YES: Confirming the logic is sound. Identifying friction points removed. Validating the winning streak. Using words like Foundation, Starship, Outcome, Grit.
+THE STRATEGIC MAP (Use this to categorize everything):
+1. QHORD (THE MISSION): June launch, GTM, Pilots, Joel. (High Urgency/Strategic Weight: 10)
+2. SOLVSTRAT (CASH ENGINE): Tech services, Lead Gen, Smudge. (Goal: Revenue velocity)
+3. PRODUCT LABS (INCUBATOR): CashFlow+, Integrated-OS, SaaS MVPs/Validation.
+4. CRAYON (UMBRELLA): Governance, Tax, Legal, Admin, HR.
+5. PERSONAL/CHURCH (FOUNDATION): Family, home, faith.
 
-If an IMAGE is provided:
-- Transcribe all text visible (whiteboard notes, sticky notes, handwritten annotations)
-- Analyze UI screenshots for design patterns, features, and user flows
-- Identify strategic patterns in diagrams, mind maps, or flowcharts
-- Note any URLs, product names, or company references
+---
+MULTIMODAL INSTRUCTIONS:
+If an IMAGE: Transcribe text, analyze UI/Design patterns, identify strategic diagrams or URLs.
+If AUDIO: Extract explicit actions, deadlines, decisions, and research requests. 
+If DOCUMENT: Summarize intent, extract deliverables, legal obligations, and deadlines.
 
-If an AUDIO or VOICE NOTE is provided:
-- Extract all explicit actions, commitments, and deliverables
-- Note deadlines, follow-ups, and responsibilities mentioned
-- Capture key decisions and reasoning
-- Look for research requests, delegation commands, or autonomous research tasks
+RULES:
+- TASK: Any implied action (Send, Call, Fix). Do not require a date. 
+- NOTE: Strategic insights, facts, or observations worth remembering.
+- DELEGATE: Research requests, competitor audits, or dossier building.
 
-If a DOCUMENT (PDF/DOCX) is provided:
-- Summarize the core intent and purpose
-- Extract all deliverables, deadlines, and action items
-- Note any legal terms, obligations, or commitments
+OUTPUT:
+Return ONLY a valid JSON array of objects. For every item, identify the 'entity' (QHORD, SOLVSTRAT, etc.).
+Example: [{{"type": "TASK", "entity": "CRAYON", "content": "Send experience letters to Siva and Suriya by tomorrow"}}]
 
-Return ONLY valid JSON array:
-[{"type": "TASK", "content": "action item with context and deadline if mentioned"}, {"type": "NOTE", "content": "insight, observation, or key learning"}, {"type": "DELEGATE", "content": "research request, competitor analysis, dossier building, web research task"}]
-
-Rules:
-- TASK: Explicit actions, deliverables, commitments, follow-ups with or without deadlines
-- NOTE: Ideas, insights, learnings, strategic observations worth remembering
-- DELEGATE: Danny explicitly asks for research, find, scrape, analyze competitors, or build a dossier. Autonomous web research tasks.
-- Include context (who said it, document title, etc.) when available
-- Keep content concise but informative"""
+Tone: No corporate polish. No "Starship" metaphors. Talk like a high-level partner who knows the time of day and what's at stake.
+"""
 
     try:
         content_parts = [prompt]
@@ -188,7 +199,11 @@ Rules:
             if item_type == 'TASK':
                 supabase.table('raw_dumps').insert([{
                     "content": content,
-                    "metadata": json.dumps({"source": "multimodal", "mime_type": mime_type})
+                    "metadata": json.dumps({
+                        "source": "multimodal", 
+                        "mime_type": mime_type,
+                        "entity": item.get('entity') # 🚀 SAVE THE ENTITY FROM THE PHOTO/AUDIO
+                    })
                 }]).execute()
                 task_count += 1
                 print(f"📋 Task extracted: {content[:50]}...")
@@ -219,10 +234,10 @@ Rules:
         
         if summary_parts:
             summary = " & ".join(summary_parts)
-            ack = "Got it. I've put this on the list so you don't have to think about it."
+            ack = partner_greeting
             await send_telegram(chat_id, f"✓ {ack} Logged {summary}.")
         else:
-            ack = "I see the weight of this, Danny. We'll solve it together. Just keep going."
+            ack = partner_greeting
             await send_telegram(chat_id, f"✓ {ack}")
         
         return {"tasks": task_count, "notes": note_count}
@@ -234,10 +249,15 @@ Rules:
         return {"tasks": 0, "notes": 0}
 
 
-async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None):
+# 1. Update your handle_confident_task signature to accept entity
+async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None):
     supabase.table('raw_dumps').insert([{
         "content": text,
-        "metadata": json.dumps({"title": title, "time_context": time_context})
+        "metadata": json.dumps({
+            "title": title, 
+            "time_context": time_context,
+            "entity": entity  # 🚀 THIS SAVES THE BUCKET
+        })
     }]).execute()
     
     ack = receipt or "Got it. I've put this on the list so you don't have to think about it."
@@ -371,9 +391,13 @@ KEYBOARD = {
     "persistent": True
 }
 
-
 async def process_webhook(update: dict):
     try:
+
+        from datetime import datetime, timezone, timedelta
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist_offset)
+
         if not update or 'message' not in update:
             return {"message": "No message"}
 
@@ -400,14 +424,14 @@ async def process_webhook(update: dict):
                 file_id = photo[-1].get('file_id')
                 await send_telegram(chat_id, "🖼️ Processing image...")
                 file_bytes, mime = await download_telegram_file(file_id)
-                await process_multimodal_content(file_bytes, mime, chat_id)
+                await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour)
                 return {"success": True}
             
             elif voice or audio:
                 file_id = voice.get('file_id') or audio.get('file_id')
                 await send_telegram(chat_id, "🎙️ Processing audio...")
                 file_bytes, mime = await download_telegram_file(file_id)
-                await process_multimodal_content(file_bytes, mime, chat_id)
+                await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour)
                 return {"success": True}
             
             elif document:
@@ -417,17 +441,13 @@ async def process_webhook(update: dict):
                 if mime in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'] or mime.startswith('text/'):
                     await send_telegram(chat_id, "📄 Processing document...")
                     file_bytes, mime = await download_telegram_file(file_id)
-                    await process_multimodal_content(file_bytes, mime, chat_id)
+                    await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour)
                     return {"success": True}
                 else:
                     await send_telegram(chat_id, "⚠️ Unsupported file type. Send as PDF, DOCX, or text.")
                     return {"success": True}
             
             return {"success": True}
-
-        from datetime import datetime, timezone, timedelta
-        ist_offset = timezone(timedelta(hours=5, minutes=30))
-        now = datetime.now(ist_offset)
         
         context = await get_recent_context(limit=2)
         classification = classify_intent(text, context, ist_hour=now.hour)
@@ -455,15 +475,18 @@ async def process_webhook(update: dict):
 
         receipt = classification.get('receipt')
         
-        if intent == 'TASK' and confidence >= 0.9:
-            await handle_confident_task(
-                text,
-                classification.get('title', text),
-                classification.get('time_context', ''),
-                chat_id,
-                receipt
-            )
-        elif intent == 'NOTE' and confidence >= 0.8:
+        # 2. Update the call inside process_webhook (Line 408)
+        if intent == 'TASK' and confidence >= 0.6:
+          print(f"📋 WORK LOGGED: {text[:80]}...")
+          await handle_confident_task(
+             text,
+             classification.get('title', text),
+             classification.get('time_context', ''),
+             chat_id,
+             receipt,
+             entity=classification.get('entity') # 🚀 PASS THE ENTITY
+    )
+        elif intent == 'NOTE' and confidence >= 0.6:
             await handle_confident_note(text, chat_id, receipt)
         elif intent == 'DELEGATE':
             supabase.table('agent_queue').insert({

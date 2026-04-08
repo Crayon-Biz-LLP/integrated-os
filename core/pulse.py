@@ -174,7 +174,7 @@ async def batch_enrich_resources():
     if not enrichment_data:
         return []
     
-    prompt = f"""You are Danny's Chief of Staff. For each resource below, provide a strategic_note (one sentence on strategic value) and category.
+    prompt = f"""You are Danny's Trusted Partner. For each resource below, provide a strategic_note (one sentence on strategic value) and category.
 
 Categories: COMPETITOR, TECH_TOOL, LEAD_POTENTIAL, MARKET_TREND, CHURCH, PERSONAL
 Rules:
@@ -531,17 +531,17 @@ Inputs:
             system_persona = "Focus ONLY on Home, Family, and Chores. Explicitly hide Work tasks. Be relaxed."
         else:
             if hour < 11:
-                briefing_mode = "🔴 URGENT: CRITICAL ACTIONS"
-                system_persona = "High-energy. Direct focus toward URGENT tasks and high-stakes 'Battlefield' items."
+                briefing_mode = "🔴 Urgent: What matters now"
+                system_persona = "High-energy. Cut through the noise and focus Danny on what truly moves the needle today."
             elif hour < 14:
-                briefing_mode = "🟡 IMPORTANT: STRATEGIC MOMENTUM"
-                system_persona = "Tactical update. Focus on IMPORTANT tasks and MISSION progress, scaling, and growth projects."
+                briefing_mode = "🟡 Important: Getting traction"
+                system_persona = "Focused on the main effort. Keep Danny building momentum toward the ₹30L goal."
             elif hour < 18:
-                briefing_mode = "⚪ CHORES: OPERATIONAL SHUTDOWN"
-                system_persona = "Closing loops. Push Danny to close work loops and transition to Father mode. Log pending items."
+                briefing_mode = "⚪ Closing the loop"
+                system_persona = "Push Danny to close work tasks so he can transition to Sunju and the boys. Log pending items."
             else:
-                briefing_mode = "💡 IDEAS: MENTAL CLEAR-OUT"
-                system_persona = "Relaxed reflection. Focus on new product ideas, strategic trends, and library insights. Prep for sleep."
+                briefing_mode = "💡 Tonight's reflections"
+                system_persona = "Quiet, simple, focused on clearing the mind for rest. Be gentle but clear."
 
         # --- 1.3 BANDWIDTH & BUFFER CHECK ---
         is_overloaded = len(active_tasks) > 15
@@ -702,7 +702,7 @@ Inputs:
         current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
 
         prompt = f"""    
-        ROLE: Chief of Staff for Danny (Executive Office).
+        ROLE: Danny's Trusted Partner.
         STRATEGIC CONTEXT: {season_config}
         CURRENT PHASE: {briefing_mode}
         CURRENT TIME: {current_time_str}
@@ -714,10 +714,9 @@ Inputs:
 
         MANDATE: THE SILENCE PROTOCOL & HALLUCINATION GUARD 
         - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
-        - NEVER detect "missions" or "strategic trends" proactively.
-        - ONLY track what is manually entered or already exists in the database.
+        - NEVER proactively invent tasks or ideas. ONLY track what is manually entered or already exists.
         - If NEW INPUTS is "None" or empty, you MUST return completely empty arrays for `completed_task_ids`, `new_tasks`, `new_projects`, and `resources` [].
-        - NEVER "make up", guess, or generate example tasks (e.g., "Pay bills", "Check emails").
+        - NEVER "make up", guess, or generate example tasks.
         - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
         - ONLY track what is manually entered in NEW INPUTS.
 
@@ -824,13 +823,14 @@ Inputs:
         10. WEEKEND FILTER: If isWeekend is true ({is_weekend}), do NOT suggest or list Work tasks. Move work inputs to a 'Monday' reminder.
         11. EXECUTIVE BRIEF FORMAT:
             - HEADLINE RULE: Use exactly "{briefing_mode}".
-            - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
-            - SECTIONS: ✅ Done, 🚀 Work (Hide on weekends), 🏠 Home, 💡 IDEAS (Only at night pulse).
-            - TONE: Match the PERSONA GUIDELINE.
+            - ICON RULES: 🔴 (Urgent), 🟡 (Important), ⚪ (Chores), 💡 (Ideas).
+            - SECTIONS: ✅ Done, 🚀 Work (Hide on weekends), 🏠 Home, 💡 Ideas (Only at night pulse).
+            - TONE: Match the PERSONA GUIDELINE. Be direct, simple, human. Talk like a friend who is also a high-level operator.
+            - TONE GUARD: NEVER use words like 'Operational', 'Vanguard', 'Strategic Momentum', 'Audit', 'Battlefield', 'Chief of Staff', 'Tactical', 'Executive Office'. Use simple, punchy sentences.
             - INTELLIGENT FILTERING: 
-                - If mode is 🔴 URGENT: HIDE the 🏠 Home, 💡 IDEAS, and new Resources. Focus strictly on 🚀 Work and ✅ Done.
-                - If mode is 🟡 IMPORTANT: Prioritize 🚀 MISSION progress and 🚀 Work.
-                - If mode is 💡 IDEAS: Prioritize the 💡 IDEAS section, Incubator Sparks, and 📚 Library links.
+                - If mode is 🔴 Urgent: HIDE the 🏠 Home and 💡 Ideas sections. Focus strictly on 🚀 Work and ✅ Done.
+                - If mode is 🟡 Important: Prioritize 🚀 Work.
+                - If mode is 💡 Tonight's reflections: Prioritize the 💡 Ideas section and library insights.
             - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
             - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
         10. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
