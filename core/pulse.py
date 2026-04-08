@@ -6,7 +6,19 @@ from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.discovery_cache import base
 from google import genai
+
+
+class MemoryCache(base.Cache):
+    _cache = {}
+
+    def get(self, url):
+        return self._cache.get(url)
+
+    def set(self, url, content):
+        self._cache[url] = content
+
 
 # Initialize Clients
 # Use SERVICE_ROLE_KEY to bypass RLS for background processing
@@ -78,7 +90,7 @@ def get_google_creds():
 
 def get_tasks_service():
     """Helper to spin up the Tasks engine."""
-    return build('tasks', 'v1', credentials=get_google_creds())
+    return build('tasks', 'v1', credentials=get_google_creds(), cache=MemoryCache())
 
 def format_rfc3339(date_str):
     """Ensures a timestamp is 100% compliant with Google's strict RFC-3339 requirements."""
@@ -94,7 +106,7 @@ def format_rfc3339(date_str):
 def check_conflict(start_iso):
     """Radar: Checks if a 30-minute window is already booked."""
     try:
-        service = build('calendar', 'v3', credentials=get_google_creds())
+        service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
         rfc_time = format_rfc3339(start_iso)
         
         start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
@@ -115,7 +127,7 @@ def check_conflict(start_iso):
 
 def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
     """Creates or UPDATES a block on the grid with dynamic duration."""
-    service = build('calendar', 'v3', credentials=get_google_creds())
+    service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
     try:
         rfc_time = format_rfc3339(start_iso)
         start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
@@ -150,7 +162,7 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
 def delete_calendar_event(event_id):
     """Removes the protective block from the grid with explicit logging."""
     if not event_id: return
-    service = build('calendar', 'v3', credentials=get_google_creds())
+    service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
     try:
         service.events().delete(calendarId='primary', eventId=event_id).execute()
         print(f"🗑️ SUCCESS: Calendar event {event_id} removed.")
@@ -190,38 +202,6 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
     except Exception as e:
         print(f"⚠️ Google Tasks API error: {e}")
         return None
-
-# --- 🛰️ LAYER 2: THE AUTO-ENRICHER ---
-async def fetch_url_metadata(url: str):
-    """Bypasses Social Media walls to extract real post content."""
-    try:
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as http_client:
-            # 🕵️ Identity: Pretending to be the Twitter/Google bot to get the 'SEO' version of the page
-            headers = {
-                "User-Agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)", 
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-            }
-            response = await http_client.get(url, headers=headers)
-            
-            if response.status_code == 200:
-                html = response.text
-                
-                # 1. Extract the 'og:title' (The Headline/Author)
-                title_match = re.search(r'property=["\']og:title["\'] content=["\'](.*?)["\']', html, re.I)
-                title = title_match.group(1).strip() if title_match else "Unknown Post"
-
-                # 2. Extract 'og:description' (This is where the actual Post Content lives!)
-                desc_match = re.search(r'property=["\']og:description["\'] content=["\'](.*?)["\']', html, re.I)
-                description = desc_match.group(1).strip() if desc_match else ""
-
-                # 🧼 Cleanup: Remove the "X.com" or "LinkedIn" branding from titles
-                clean_title = re.sub(r'(\s\|.*|on X:|on LinkedIn:)', '', title).strip()
-                
-                return {"title": clean_title, "description": description}
-                
-    except Exception as e:
-        print(f"Scraper error for {url}: {e}")
-    return {"title": "Unknown", "description": ""}
 
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
 async def process_pulse(auth_secret: str = None):
@@ -406,22 +386,22 @@ async def process_pulse(auth_secret: str = None):
         thirty_days_ago = (now - timedelta(days=30)).isoformat()
 
         recent_lib = supabase.table('resources')\
-            .select('url, category, title, created_at')\
+            .select('url, category, title, summary, strategic_note, created_at')\
             .gt('created_at', thirty_days_ago)\
             .order('created_at', desc=True)\
             .limit(50)\
             .execute()
 
-        # The AI only needs the Category and Title for the prompt context
-        pattern_context = " | ".join([f"[{r['category']}] {r['title']}" for r in recent_lib.data]) if recent_lib.data else "None"
-       
-        # --- 🛰️ LAYER 2: URL ENRICHMENT ---
-        enriched_links = []
-        urls = re.findall(r'(https?://\S+)', new_inputs_text) 
-        for url in urls:
-            meta = await fetch_url_metadata(url)
-            enriched_links.append(f"URL: {url} | Title: {meta['title']} | Snippet: {meta['description']}")
-        link_context = "\n".join(enriched_links) if enriched_links else "None" 
+        if recent_lib.data:
+            enriched_items = []
+            for r in recent_lib.data:
+                note = r.get('strategic_note') or ""
+                enriched_items.append(f"[{r['category']}] {r['title']} | {note}".strip())
+            pattern_context = " | ".join(enriched_items)
+        else:
+            pattern_context = "None"
+        
+        link_context = "None"
         
         # --- 2. THINK Phase ---
         print('🤖 Building prompt...')
