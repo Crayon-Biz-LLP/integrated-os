@@ -40,7 +40,7 @@ Message: "{text}"{context_str}
 
 Return ONLY valid JSON (no markdown, no explanation):
 {{
-    "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED",
+    "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE",
     "confidence": 0.0-1.0,
     "title": "extracted task title if TASK",
     "time_context": "extracted time/due info if any",
@@ -53,6 +53,7 @@ Rules:
 - NOTE: Ideas, insights, learnings worth remembering.
 - NOISE: Casual chat, acknowledgments, confirmations ("ok", "thanks", "sure").
 - CLARIFICATION_NEEDED: Task-like but missing title, time, or unclear.
+- DELEGATE: Danny explicitly asks the system to research, find, scrape, analyze competitors, build a dossier, or do autonomous web research. Look for keywords like "research", "find", "scrape", "analyze", "dossier", "look up", "investigate", "compare", "who is", "what is [company]".
 - If confidence < 0.9 for TASK (missing time/title), return CLARIFICATION_NEEDED."""
 
     try:
@@ -115,6 +116,7 @@ If an AUDIO or VOICE NOTE is provided:
 - Extract all explicit actions, commitments, and deliverables
 - Note deadlines, follow-ups, and responsibilities mentioned
 - Capture key decisions and reasoning
+- Look for research requests, delegation commands, or autonomous research tasks
 
 If a DOCUMENT (PDF/DOCX) is provided:
 - Summarize the core intent and purpose
@@ -122,11 +124,12 @@ If a DOCUMENT (PDF/DOCX) is provided:
 - Note any legal terms, obligations, or commitments
 
 Return ONLY valid JSON array:
-[{"type": "TASK", "content": "action item with context and deadline if mentioned"}, {"type": "NOTE", "content": "insight, observation, or key learning"}]
+[{"type": "TASK", "content": "action item with context and deadline if mentioned"}, {"type": "NOTE", "content": "insight, observation, or key learning"}, {"type": "DELEGATE", "content": "research request, competitor analysis, dossier building, web research task"}]
 
 Rules:
 - TASK: Explicit actions, deliverables, commitments, follow-ups with or without deadlines
 - NOTE: Ideas, insights, learnings, strategic observations worth remembering
+- DELEGATE: Danny explicitly asks for research, find, scrape, analyze competitors, or build a dossier. Autonomous web research tasks.
 - Include context (who said it, document title, etc.) when available
 - Keep content concise but informative"""
 
@@ -177,6 +180,14 @@ Rules:
                 }).execute()
                 note_count += 1
                 print(f"📝 Note vaulted: {content[:50]}...")
+            
+            elif item_type == 'DELEGATE':
+                supabase.table('agent_queue').insert({
+                    "task": content,
+                    "status": "pending",
+                    "metadata": json.dumps({"source": "multimodal", "mime_type": mime_type})
+                }).execute()
+                print(f"🕵️ Agent dispatched: {content[:50]}...")
         
         summary_parts = []
         if task_count > 0:
@@ -225,6 +236,73 @@ async def handle_clarification(text: str, question: str, chat_id: int):
         "content": text,
         "metadata": json.dumps({"awaiting_clarification": True})
     }]).execute()
+
+
+async def interrogate_brain(query: str, chat_id: int):
+    """On-Demand Brain Interrogation - Search memories and resources."""
+    try:
+        await send_telegram(chat_id, "🧠 *Searching your vault...*")
+        
+        embedding = get_embedding(query)
+        
+        memories_res = supabase.rpc(
+            'match_memories',
+            {
+                'query_embedding': embedding,
+                'match_count': 5,
+                'match_threshold': 0.5
+            }
+        ).execute()
+        memories = memories_res.data if memories_res.data else []
+        
+        try:
+            resources_res = supabase.table('resources').select('title, url, category, content').execute()
+            resources = resources_res.data or []
+        except:
+            resources = []
+        
+        all_context = []
+        
+        for m in memories:
+            source = m.get('memory_type', 'memory').upper()
+            content = m.get('content', '')
+            link = m.get('url') or ''
+            all_context.append(f"[{source}] {content}" + (f" | Link: {link}" if link else ""))
+        
+        for r in resources[:3]:
+            title = r.get('title', 'Untitled')
+            url = r.get('url', '')
+            category = r.get('category', 'resource')
+            content = r.get('content', title)
+            all_context.append(f"[{category.upper()}] {content}" + (f" | Link: {url}" if url else ""))
+        
+        if not all_context:
+            await send_telegram(chat_id, "🔍 *No relevant memories found.*\n\n_Try a different query._")
+            return
+        
+        context_str = "\n\n".join(all_context)
+        
+        prompt = f"""You are Danny's memory assistant. Based on the provided context from his vault, answer his question accurately and concisely. If you don't know the answer, say so. Cite the source (Memory Type or Link) if possible.
+
+Vault Context:
+{context_str}
+
+Question: {query}
+
+Provide a clear, concise answer. Format with Markdown. If referencing a specific memory, cite it like [MEMORY] or [RESOURCE]."""
+        
+        response = gemini_client.models.generate_content(
+            model=CLASSIFICATION_MODEL,
+            contents=prompt
+        )
+        
+        answer = response.text.strip()
+        
+        await send_telegram(chat_id, f"🧠 *Brain Interrogation:*\n\n{answer}")
+        
+    except Exception as e:
+        print(f"Interrogation error: {e}")
+        await send_telegram(chat_id, "⚠️ *Search failed.*\n\n_Try again._")
 
 
 async def handle_noise(chat_id: int):
@@ -327,6 +405,12 @@ async def process_webhook(update: dict):
         
         print(f"🎯 Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
 
+        if text.startswith('?'):
+            query = text[1:].strip()
+            if query:
+                await interrogate_brain(query, chat_id)
+                return {"success": True}
+
         if text.startswith('/') or text in ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library']:
             return await handle_command(text, chat_id)
 
@@ -345,6 +429,12 @@ async def process_webhook(update: dict):
             )
         elif intent == 'NOTE' and confidence >= 0.8:
             await handle_confident_note(text, chat_id)
+        elif intent == 'DELEGATE':
+            supabase.table('agent_queue').insert({
+                "task": text,
+                "status": "pending"
+            }).execute()
+            await send_telegram(chat_id, "🕵️‍♂️ **Agent Dispatched:** I've queued this research. I'll drop the dossier here when it's done.")
         elif intent == 'NOISE':
             await handle_noise(chat_id)
             supabase.table('raw_dumps').insert([{"content": text}]).execute()
