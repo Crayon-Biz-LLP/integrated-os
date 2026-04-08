@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import asyncio
 import httpx
 from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
@@ -18,6 +19,101 @@ class MemoryCache(base.Cache):
 
     def set(self, url, content):
         self._cache[url] = content
+
+
+async def fetch_url_metadata(url: str):
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as http_client:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+            }
+            response = await http_client.get(url, headers=headers)
+            if response.status_code == 200:
+                html = response.text
+                title_match = re.search(r'property=["\']og:title["\'] content=["\'](.*?)["\']', html, re.I)
+                title = title_match.group(1).strip() if title_match else "Unknown"
+                desc_match = re.search(r'property=["\']og:description["\'] content=["\'](.*?)["\']', html, re.I)
+                description = desc_match.group(1).strip() if desc_match else ""
+                return {"title": title, "description": description}
+    except Exception as e:
+        print(f"Scraper error for {url}: {e}")
+    return {"title": "Unknown", "description": ""}
+
+
+async def batch_enrich_resources():
+    unenriched = supabase.table('resources').select('id, url').is_('summary', None).execute()
+    if not unenriched.data:
+        print("📚 No unenriched resources found.")
+        return []
+    
+    print(f"🔍 Found {len(unenriched.data)} unenriched resources. Scraping in parallel...")
+    scraped = await asyncio.gather(*[fetch_url_metadata(r['url']) for r in unenriched.data])
+    
+    enrichment_data = []
+    for i, r in enumerate(unenriched.data):
+        enrichment_data.append({
+            "id": r['id'],
+            "url": r['url'],
+            "title": scraped[i].get('title', 'Unknown'),
+            "description": scraped[i].get('description', '')
+        })
+    
+    if not enrichment_data:
+        return []
+    
+    prompt = f"""You are Danny's Chief of Staff. For each resource below, provide a strategic_note (one sentence on strategic value) and category.
+
+Categories: COMPETITOR, TECH_TOOL, LEAD_POTENTIAL, MARKET_TREND, CHURCH, PERSONAL
+Rules:
+- CHURCH or PERSONAL for family/home/faith topics
+- COMPETITOR for competitors to Qhord
+- TECH_TOOL for SaaS/dev/productivity tools
+- LEAD_POTENTIAL for potential clients/partners
+- MARKET_TREND for market patterns/industry shifts
+- Default: MARKET_TREND
+
+Return ONLY valid JSON array:
+[
+  {{"id": 1, "strategic_note": "...", "category": "..."}},
+  ...
+]
+
+Resources:
+{json.dumps(enrichment_data, indent=2)}"""
+    
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=prompt,
+            config={'response_mime_type': 'application/json'}
+        )
+        parsed = json.loads(response.text)
+        
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        enriched_at = datetime.now(ist_offset).isoformat()
+        
+        for item in parsed:
+            for ed in enrichment_data:
+                if ed['id'] == item.get('id'):
+                    item['title'] = ed['title']
+                    item['description'] = ed['description']
+                    break
+        
+        for item in parsed:
+            supabase.table('resources').update({
+                "title": item.get('title'),
+                "summary": item.get('description'),
+                "strategic_note": item.get('strategic_note'),
+                "category": item.get('category', 'MARKET_TREND'),
+                "enriched_at": enriched_at
+            }).eq('id', item['id']).execute()
+        
+        print(f"✅ Batch enriched {len(parsed)} resources in 1 Gemini call.")
+        return parsed
+    except Exception as e:
+        print(f"Batch enrichment error: {e}")
+        return []
 
 
 # Initialize Clients
@@ -215,6 +311,9 @@ async def process_pulse(auth_secret: str = None):
         tasks_service = get_tasks_service()
         sync_completed_tasks_from_google(supabase, tasks_service)
         
+        # --- 0.1 BATCH ENRICHMENT (One Gemini call for all unenriched resources) ---
+        batch_enrich_results = await batch_enrich_resources()
+        
         # --- 1. READ: Fetch everything needed for a full state briefing ---
         dumps_res = supabase.table('raw_dumps').select('id, content').eq('is_processed', False).execute()
         dumps = dumps_res.data or []
@@ -401,6 +500,11 @@ async def process_pulse(auth_secret: str = None):
         else:
             pattern_context = "None"
         
+        newly_enriched_context = "None"
+        if batch_enrich_results:
+            newly_enriched_lines = [f"[{r.get('category', 'LINK')}] {r.get('title', 'Unknown')} | {r.get('strategic_note', '')}" for r in batch_enrich_results]
+            newly_enriched_context = " | ".join(newly_enriched_lines)
+        
         link_context = "None"
         
         # --- 2. THINK Phase ---
@@ -440,6 +544,7 @@ async def process_pulse(auth_secret: str = None):
         - ACTIONABLE TASKS (DAY FILTERED): {compressed_tasks_final}
         - ALL SYSTEM TASKS (FOR ID MATCHING): {universal_task_map[:3000]}
         - RECENT LIBRARY PATTERNS: {pattern_context}
+        - NEWLY ENRICHED RESOURCES: {newly_enriched_context}
         - ENRICHED WEB LINKS: {link_context}
         - NEW INPUTS: {new_inputs_text}
 

@@ -6,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 # Updated imports: Pulling from your new 'core' module
 from core.webhook import process_webhook
 from core.pulse import process_pulse
-from api.enrich import enrich_resource_from_webhook, enrich_resource_by_id, SupabasePayload
 
 app = FastAPI(title="Integrated-OS")
 
@@ -44,7 +43,3 @@ async def pulse_route_post(request: Request):
         raise HTTPException(status_code=result.get("status", 500), detail=result["error"])
         
     return {"success": True, "briefing": result.get("briefing")}
-
-@app.post("/api/enrich")
-async def enrich_webhook_route(payload: SupabasePayload):
-    return await enrich_resource_from_webhook(payload)
