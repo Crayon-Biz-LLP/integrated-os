@@ -13,7 +13,7 @@ supabase: Client = create_client(
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 EMBEDDING_MODEL = "text-embedding-004"
-CLASSIFICATION_MODEL = "gemini-3.1-flash-lite"
+CLASSIFICATION_MODEL = "gemini-3.1-flash-lite-preview"
 EMBEDDING_DIMENSION = 768
 
 
@@ -85,7 +85,7 @@ Rules:
         return result
     except Exception as e:
         print(f"Classification error: {e}")
-        return {"intent": "TASK", "confidence": 0.5, "reasoning": "classification failed"}
+        return {"intent": "CLARIFICATION_NEEDED", "confidence": 0.0, "clarification_question": "My brain stalled. Could you repeat that?"}
 
 
 async def get_recent_context(limit: int = 2) -> list:
