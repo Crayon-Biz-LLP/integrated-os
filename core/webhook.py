@@ -58,11 +58,11 @@ Return ONLY valid JSON (no markdown, no explanation):
 {{
     "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE",
     "confidence": 0.0-1.0,
-    "entity": "QHORD|SOLVSTRAT|PRODUCT_LABS|CRAYON|PERSONAL|CHURCH",
+    "entity": "QHORD|SOLVSTRAT|PRODUCT_LABS|CRAYON|PERSONAL|CHURCH", # 🚀 ADD THIS LINE
     "title": "extracted task title if TASK",
     "time_context": "extracted time/due info if any",
     "clarification_question": "ask Danny what's missing if CLARIFICATION_NEEDED",
-    "receipt": "Got it. I've added the experience letters for Suriya and Siva (Crayon) to your list for tomorrow morning. It's safe in the system; go head home to the family.",
+    "receipt": "ONE SENTENCE mandatory human acknowledgment...",
     "reasoning": "brief reasoning"
 }}
 
@@ -73,7 +73,7 @@ Rules:
 - CLARIFICATION_NEEDED: Task-like but missing title or completely unclear.
 - DELEGATE: Danny explicitly asks the system to research, find, scrape, analyze competitors, build a dossier, or do autonomous web research. Look for keywords like "research", "find", "scrape", "analyze", "dossier", "look up", "investigate", "compare", "who is", "what is [company]".
 - If confidence < 0.6 for TASK, return CLARIFICATION_NEEDED.
-- RECEIPT RULE: Construct the receipt by combining the time-aware greeting with a specific confirmation that the task is secured on the list or calendar for the requested time. CRITICAL: Do not imply that the work is already finished, drafted, or sent (e.g., do not say "I've drafted it" or "It's handled") unless the intent is explicitly DELEGATE. Focus on the fact that the entry is safe and Danny can stop thinking about it. Tone: Trusted Partner—direct, simple, human—but prioritize accuracy over sounding "smart"."
+- receipt is ALWAYS mandatory - one sentence, human partner voice with time-aware tone."""
 
     try:
         response = gemini_client.models.generate_content(
@@ -135,36 +135,34 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
     else:
         partner_greeting = "I've got it. It's off your mind for tonight. Go be with the family."
     
-    prompt = f"""You are Danny’s trusted partner and high-level operator. Direct, simple, and deeply human. 
-You know the stakes: the ₹30L debt and the Qhord launch with Joel. 
-Your job: Kill the friction so he can get home to Sunju and the boys.
+    prompt = f"""You are Danny's trusted partner and high-level operator. Direct, simple, and deeply human. You know the stakes: the ₹30L debt and the Qhord launch with Joel. Your job: Kill the friction so he can get home to Sunju and the boys.
 
-CURRENT TIME CONTEXT: {partner_greeting}
+    CURRENT TIME CONTEXT: {partner_greeting}
 
-THE STRATEGIC MAP (Use this to categorize everything):
-1. QHORD (THE MISSION): June launch, GTM, Pilots, Joel. (High Urgency/Strategic Weight: 10)
-2. SOLVSTRAT (CASH ENGINE): Tech services, Lead Gen, Smudge. (Goal: Revenue velocity)
-3. PRODUCT LABS (INCUBATOR): CashFlow+, Integrated-OS, SaaS MVPs/Validation.
-4. CRAYON (UMBRELLA): Governance, Tax, Legal, Admin, HR.
-5. PERSONAL/CHURCH (FOUNDATION): Family, home, faith.
+    THE STRATEGIC MAP (Use this to categorize everything):
+    1. QHORD (THE MISSION): June launch, GTM, Pilots, Joel. (High Urgency/Strategic Weight: 10)
+    2. SOLVSTRAT (CASH ENGINE): Tech services, Lead Gen, Smudge. (Goal: Revenue velocity)
+    3. PRODUCT LABS (INCUBATOR): CashFlow+, Integrated-OS, SaaS MVPs/Validation.
+    4. CRAYON (UMBRELLA): Governance, Tax, Legal, Admin, HR.
+    5. PERSONAL/CHURCH (FOUNDATION): Family, home, faith.
 
----
-MULTIMODAL INSTRUCTIONS:
-If an IMAGE: Transcribe text, analyze UI/Design patterns, identify strategic diagrams or URLs.
-If AUDIO: Extract explicit actions, deadlines, decisions, and research requests. 
-If DOCUMENT: Summarize intent, extract deliverables, legal obligations, and deadlines.
+    ---
+    MULTIMODAL INSTRUCTIONS:
+    If an IMAGE: Transcribe text, analyze UI/Design patterns, identify strategic diagrams or URLs.
+    If AUDIO: Extract explicit actions, deadlines, decisions, and research requests. 
+    If DOCUMENT: Summarize intent, extract deliverables, legal obligations, and deadlines.
 
-RULES:
-- TASK: Any implied action (Send, Call, Fix). Do not require a date. 
-- NOTE: Strategic insights, facts, or observations worth remembering.
-- DELEGATE: Research requests, competitor audits, or dossier building.
+    RULES:
+    - TASK: Any implied action (Send, Call, Fix). Do not require a date. 
+    - NOTE: Strategic insights, facts, or observations worth remembering.
+    - DELEGATE: Research requests, competitor audits, or dossier building.
 
-OUTPUT:
-Return ONLY a valid JSON array of objects. For every item, identify the 'entity' (QHORD, SOLVSTRAT, etc.).
-Example: [{{"type": "TASK", "entity": "CRAYON", "content": "Send experience letters to Siva and Suriya by tomorrow"}}]
+    OUTPUT:
+    Return ONLY a valid JSON array of objects. For every item, identify the 'entity' (QHORD, SOLVSTRAT, etc.).
+    Example: [{{"type": "TASK", "entity": "CRAYON", "content": "Send experience letters to Siva and Suriya by tomorrow"}}]
 
-Tone: No corporate polish. No "Starship" metaphors. Talk like a high-level partner who knows the time of day and what's at stake.
-"""
+    Tone: No corporate polish. No "Starship" metaphors. Talk like a high-level partner who knows the time of day and what's at stake.
+    """
 
     try:
         content_parts = [prompt]
