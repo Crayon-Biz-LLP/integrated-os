@@ -825,11 +825,11 @@ Inputs:
         11. EXECUTIVE BRIEF FORMAT:
             - HEADLINE RULE: Use exactly "{briefing_mode}".
             - ICON RULES: 🔴 (URGENT), 🟡 (IMPORTANT), ⚪ (CHORES), 💡 (IDEAS).
-            - SECTIONS: ✅ COMPLETED, 🛡️ WORK (Hide on weekends), 🏠 HOME, 💡 IDEAS (Only at night pulse).
+            - SECTIONS: ✅ Done, 🚀 Work (Hide on weekends), 🏠 Home, 💡 IDEAS (Only at night pulse).
             - TONE: Match the PERSONA GUIDELINE.
             - INTELLIGENT FILTERING: 
-                - If mode is 🔴 URGENT: HIDE the 🏠 HOME, 💡 IDEAS, and new Resources. Focus strictly on 🛡️ WORK and ✅ COMPLETED.
-                - If mode is 🟡 IMPORTANT: Prioritize 🚀 MISSION progress and 🛡️ WORK.
+                - If mode is 🔴 URGENT: HIDE the 🏠 Home, 💡 IDEAS, and new Resources. Focus strictly on 🚀 Work and ✅ Done.
+                - If mode is 🟡 IMPORTANT: Prioritize 🚀 MISSION progress and 🚀 Work.
                 - If mode is 💡 IDEAS: Prioritize the 💡 IDEAS section, Incubator Sparks, and 📚 Library links.
             - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
             - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.

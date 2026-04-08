@@ -29,14 +29,30 @@ def get_embedding(text: str) -> list:
         return [0] * EMBEDDING_DIMENSION
 
 
-def classify_intent(text: str, context: list) -> dict:
+def classify_intent(text: str, context: list, ist_hour: int = None) -> dict:
+    from datetime import datetime, timezone, timedelta
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist_offset)
+    current_hour = ist_hour if ist_hour is not None else now.hour
+    
+    if current_hour < 11:
+        time_greeting = "Let's clear the urgent stuff now so the rest of the day is yours."
+    elif current_hour < 18:
+        time_greeting = "Let's wrap these up so you can head home to Sunju and the kids."
+    else:
+        time_greeting = "Dump the ideas here so you can sleep. I'll hold the watch."
+    
     context_str = ""
     if context:
         context_str = f"\n\nPrevious messages for context:\n" + "\n".join([f"- {c['content']}" for c in context])
     
-    prompt = f"""You are Danny's executive assistant. Classify this message and extract structured info.
+    prompt = f"""You are Danny's trusted partner. Direct, simple, deeply human. You know he's carrying a ₹30L debt and building Qhord, but you also know he has a wife and three sons waiting for him. Your job is to help him kill the friction so he can get home.
 
 Message: "{text}"{context_str}
+
+CURRENT TIME CONTEXT: {time_greeting}
+
+Avoid artificial or high-flown words like Sanctuary, Base, Strategic Momentum, Executive Office. Talk like a friend who is also a high-level operator.
 
 Return ONLY valid JSON (no markdown, no explanation):
 {{
@@ -45,6 +61,7 @@ Return ONLY valid JSON (no markdown, no explanation):
     "title": "extracted task title if TASK",
     "time_context": "extracted time/due info if any",
     "clarification_question": "ask Danny what's missing if CLARIFICATION_NEEDED",
+    "receipt": "ONE SENTENCE mandatory human acknowledgment - Tasks: 'Got it. I've put this on the list so you don't have to think about it.' Notes: 'Saved. I'll keep this safe while you keep moving.' Delegation: 'The intern is on it. I'll ping you when the research is ready.' Chaos/Heavy: 'I see the weight of this, Danny. We'll solve it together. Just keep going.'",
     "reasoning": "brief reasoning for classification"
 }}
 
@@ -54,7 +71,8 @@ Rules:
 - NOISE: Casual chat, acknowledgments, confirmations ("ok", "thanks", "sure").
 - CLARIFICATION_NEEDED: Task-like but missing title, time, or unclear.
 - DELEGATE: Danny explicitly asks the system to research, find, scrape, analyze competitors, build a dossier, or do autonomous web research. Look for keywords like "research", "find", "scrape", "analyze", "dossier", "look up", "investigate", "compare", "who is", "what is [company]".
-- If confidence < 0.9 for TASK (missing time/title), return CLARIFICATION_NEEDED."""
+- If confidence < 0.9 for TASK (missing time/title), return CLARIFICATION_NEEDED.
+- receipt is ALWAYS mandatory - one sentence, human partner voice."""
 
     try:
         response = gemini_client.models.generate_content(
@@ -104,7 +122,11 @@ async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
 
 async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int):
     """Process audio, image, or document content and extract tasks and insights."""
-    prompt = """You are Danny's Executive Assistant acting as an Architect analyzing content.
+    prompt = """You are Danny's Navigator-Foreman to the Master Builder. High-status partner. Voice is grit-heavy, logic-driven, raw. Short punchy sentences. Obsessed with the finished starship, not the process.
+
+NO corporate polish (synergy, alignment, bandwidth). NO "thoughts and prayers." NO tax or manual metaphors.
+
+YES: Confirming the logic is sound. Identifying friction points removed. Validating the winning streak. Using words like Foundation, Starship, Outcome, Grit.
 
 If an IMAGE is provided:
 - Transcribe all text visible (whiteboard notes, sticky notes, handwritten annotations)
@@ -197,39 +219,45 @@ Rules:
         
         if summary_parts:
             summary = " & ".join(summary_parts)
-            await send_telegram(chat_id, f"🖼️ **Content Processed:** Logged {summary}.")
+            ack = "Got it. I've put this on the list so you don't have to think about it."
+            await send_telegram(chat_id, f"✓ {ack} Logged {summary}.")
         else:
-            await send_telegram(chat_id, "🖼️ **Content Processed:** No tasks or insights found.")
+            ack = "I see the weight of this, Danny. We'll solve it together. Just keep going."
+            await send_telegram(chat_id, f"✓ {ack}")
         
         return {"tasks": task_count, "notes": note_count}
     
     except Exception as e:
         print(f"Multimodal processing error: {e}")
-        await send_telegram(chat_id, "⚠️ **Processing Failed**\n\nCould not extract content. Try sending as text.")
+        ack = "Something went wrong. Try sending as text."
+        await send_telegram(chat_id, f"⚠️ {ack}")
         return {"tasks": 0, "notes": 0}
 
 
-async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int):
+async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None):
     supabase.table('raw_dumps').insert([{
         "content": text,
         "metadata": json.dumps({"title": title, "time_context": time_context})
     }]).execute()
     
-    await send_telegram(chat_id, f"✅ **Task Logged**\n\n{title}\n{'⏰ ' + time_context if time_context else ''}")
+    ack = receipt or "Got it. I've put this on the list so you don't have to think about it."
+    await send_telegram(chat_id, f"✓ {ack}\n\n{title}\n{'⏰ ' + time_context if time_context else ''}")
 
 
-async def handle_confident_note(text: str, chat_id: int):
+async def handle_confident_note(text: str, chat_id: int, receipt: str = None):
     embedding = get_embedding(text)
     supabase.table('memories').insert({
         "content": text,
         "memory_type": "note",
         "embedding": embedding
     }).execute()
-    await send_telegram(chat_id, "📝 **Insight Vaulted**")
+    ack = receipt or "Saved. I'll keep this safe while you keep moving."
+    await send_telegram(chat_id, f"✓ {ack}")
 
 
-async def handle_clarification(text: str, question: str, chat_id: int):
-    reply = f"🤔 **Clarification Needed**\n\n{question}\n\n_Context: \"{text[:100]}...\"_"
+async def handle_clarification(text: str, question: str, chat_id: int, receipt: str = None):
+    ack = receipt or "I see the weight of this, Danny. We'll solve it together. Just keep going."
+    reply = f"✓ {ack}\n\n{question}\n\n_Context: \"{text[:100]}...\"_"
     await send_telegram(chat_id, reply)
     
     supabase.table('raw_dumps').insert([{
@@ -397,8 +425,12 @@ async def process_webhook(update: dict):
             
             return {"success": True}
 
+        from datetime import datetime, timezone, timedelta
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist_offset)
+        
         context = await get_recent_context(limit=2)
-        classification = classify_intent(text, context)
+        classification = classify_intent(text, context, ist_hour=now.hour)
         
         intent = classification.get('intent', 'TASK')
         confidence = classification.get('confidence', 0.5)
@@ -417,24 +449,29 @@ async def process_webhook(update: dict):
         if text.startswith('N:') or text.startswith('Note:'):
             note_content = text[2:].strip() if text.startswith('N:') else text[5:].strip()
             if note_content:
-                await handle_confident_note(note_content, chat_id)
+                receipt = "Saved. I'll keep this safe while you keep moving."
+                await handle_confident_note(note_content, chat_id, receipt)
             return {"success": True}
 
+        receipt = classification.get('receipt')
+        
         if intent == 'TASK' and confidence >= 0.9:
             await handle_confident_task(
                 text,
                 classification.get('title', text),
                 classification.get('time_context', ''),
-                chat_id
+                chat_id,
+                receipt
             )
         elif intent == 'NOTE' and confidence >= 0.8:
-            await handle_confident_note(text, chat_id)
+            await handle_confident_note(text, chat_id, receipt)
         elif intent == 'DELEGATE':
             supabase.table('agent_queue').insert({
                 "task": text,
                 "status": "pending"
             }).execute()
-            await send_telegram(chat_id, "🕵️‍♂️ **Agent Dispatched:** I've queued this research. I'll drop the dossier here when it's done.")
+            ack = receipt or "The intern is on it. I'll ping you when the research is ready."
+            await send_telegram(chat_id, f"✓ {ack}")
         elif intent == 'NOISE':
             await handle_noise(chat_id)
             supabase.table('raw_dumps').insert([{"content": text}]).execute()
@@ -442,7 +479,8 @@ async def process_webhook(update: dict):
             await handle_clarification(
                 text,
                 classification.get('clarification_question', 'Could you provide more details?'),
-                chat_id
+                chat_id,
+                receipt
             )
 
         return {"success": True}
