@@ -18,6 +18,54 @@ gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # --- 🛰️ LAYER 1: GOOGLE INTEGRATION HELPERS ---
 
+def sync_completed_tasks_from_google(supabase_client, tasks_service):
+    """Pulls completed status from Google Tasks and updates Supabase."""
+    try:
+        result = supabase_client.table('tasks')\
+            .select('id, title, google_task_id, status')\
+            .eq('status', 'todo')\
+            .not_.is_('google_task_id', None)\
+            .execute()
+        
+        tasks_to_sync = result.data or []
+        if not tasks_to_sync:
+            print("📋 No Google Tasks to sync.")
+            return
+        
+        print(f"🔍 Checking {len(tasks_to_sync)} tasks against Google Tasks...")
+        
+        synced_count = 0
+        for task in tasks_to_sync:
+            task_id = task['id']
+            google_task_id = task['google_task_id']
+            title = task.get('title', 'Untitled')
+            
+            try:
+                google_task = tasks_service.tasks().get(
+                    tasklist='@default',
+                    task=google_task_id
+                ).execute()
+                
+                if google_task.get('status') == 'completed':
+                    supabase_client.table('tasks').update({
+                        'status': 'done',
+                        'completed_at': datetime.now(timezone.utc).isoformat()
+                    }).eq('id', task_id).execute()
+                    
+                    print(f"✅ Synced from Google: '{title}' (ID: {task_id})")
+                    synced_count += 1
+                    
+            except Exception as e:
+                if 'notFound' in str(e):
+                    print(f"⚠️ Google Task {google_task_id} not found, skipping.")
+                else:
+                    print(f"⚠️ Error checking Google Task {google_task_id}: {e}")
+        
+        print(f"📊 Google→Supabase Sync complete: {synced_count}/{len(tasks_to_sync)} tasks marked done.")
+        
+    except Exception as e:
+        print(f"❌ sync_completed_tasks_from_google failed: {e}")
+
 def get_google_creds():
     """Unified credential handshake for all Google services."""
     return Credentials(
@@ -65,13 +113,15 @@ def check_conflict(start_iso):
         print(f"⚠️ Conflict check failed: {e}")
         return None
 
-def sync_to_calendar(title, start_iso, event_id=None):
-    """Creates or UPDATES a 30-minute block on the grid."""
+def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
+    """Creates or UPDATES a block on the grid with dynamic duration."""
     service = build('calendar', 'v3', credentials=get_google_creds())
     try:
         rfc_time = format_rfc3339(start_iso)
         start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
-        end_dt = start_dt + timedelta(minutes=30)
+        
+        # 🕒 DYNAMIC DURATION (Defaulting to 15 now)
+        end_dt = start_dt + timedelta(minutes=int(duration_mins))
         
         event_body = {
             'summary': f"🔥 CRITICAL: {title}",
@@ -181,6 +231,10 @@ async def process_pulse(auth_secret: str = None):
         if pulse_secret and auth_secret != pulse_secret:
             return {"error": "Unauthorized manual trigger.", "status": 401}
 
+        # --- 0. GOOGLE→SUPABASE SYNC (After auth check) ---
+        tasks_service = get_tasks_service()
+        sync_completed_tasks_from_google(supabase, tasks_service)
+        
         # --- 1. READ: Fetch everything needed for a full state briefing ---
         dumps_res = supabase.table('raw_dumps').select('id, content').eq('is_processed', False).execute()
         dumps = dumps_res.data or []
@@ -486,7 +540,11 @@ async def process_pulse(auth_secret: str = None):
         7. DYNAMIC TASK MATCHING:
             - Compare inputs against ALL SYSTEM TASKS.
             - If Danny says "I'm done" or "Completed," mark the status as `done`.
-            - Every NEW_TASK must now include a `reminder_at` if a time was implied.    
+            - Every NEW_TASK must now include a `reminder_at` if a time was implied.
+            - DURATION ASSIGNMENT: Assign `estimated_duration` based on task type:
+              - 15 minutes for routine tasks (emails, quick replies, status updates)
+              - 45 minutes for anything related to Pilots, Sales, or high-stakes Mission 10 items
+              - Default to 15 minutes if unspecified
         8. AUTO-ONBOARDING:
             - If a new Client/Project is mentioned, add to "new_projects".
             - If a new Person is mentioned, add to "new_people".
@@ -521,7 +579,7 @@ async def process_pulse(auth_secret: str = None):
                 // Example ONLY: {{ "name": "...", "role": "...", "strategic_weight": 9 }}
             ],
             "new_tasks": [
-                // Example ONLY: {{ "title": "...", "project_name": "...", "priority": "urgent", "est_min": 15, "reminder_at": "..." }}
+                // Example ONLY: {{ "title": "...", "project_name": "...", "priority": "urgent", "estimated_duration": 15, "reminder_at": "..." }}
             ],
             "resources": [
                 // Example ONLY: {{ "url": "...", "title": "...", "summary": "...", "mission_name": "...", "project_name": "...", "strategic_note": "..." }}
@@ -713,9 +771,10 @@ async def process_pulse(auth_secret: str = None):
                                 briefing = ai_data.get('briefing', "")
                                 ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
                             
-                            # Secure the block
-                            e_id = sync_to_calendar(task_title, sanitized_time)
-                            if e_id: print(f"📅 Calendar block secured: {task_title}")
+                            # Secure the block with dynamic duration
+                            duration_mins = task.get('estimated_duration', 15)
+                            e_id = sync_to_calendar(task_title, sanitized_time, duration_mins=duration_mins)
+                            if e_id: print(f"📅 Calendar block secured: {task_title} ({duration_mins}m)")
                             
                         except Exception as ce:
                             print(f"⚠️ Calendar Sync failed for {task_title}: {ce}")
@@ -726,7 +785,7 @@ async def process_pulse(auth_secret: str = None):
                         "project_id": project_match['id'],
                         "priority": (task.get('priority') or 'important').lower(),
                         "status": "todo",
-                        "estimated_minutes": task.get('est_min', 15),
+                        "estimated_minutes": task.get('estimated_duration', 15),
                         "google_task_id": g_id,
                         "google_event_id": e_id,
                         "reminder_at": sanitized_time, # Store 'T' format in DB
