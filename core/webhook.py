@@ -1,16 +1,260 @@
 # api/webhook.py
 import os
+import json
 import httpx
 from supabase import create_client, Client
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from google import genai
 
-# Initialize Supabase Client
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-# --- 🎛️ THE CONTROL PANEL ---
+EMBEDDING_MODEL = "text-embedding-004"
+CLASSIFICATION_MODEL = "gemini-3.1-flash-lite"
+EMBEDDING_DIMENSION = 768
+
+
+def get_embedding(text: str) -> list:
+    try:
+        result = gemini_client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            content=text
+        )
+        return result.embeddings[0].values
+    except Exception as e:
+        print(f"Embedding error: {e}")
+        return [0] * EMBEDDING_DIMENSION
+
+
+def classify_intent(text: str, context: list) -> dict:
+    context_str = ""
+    if context:
+        context_str = f"\n\nPrevious messages for context:\n" + "\n".join([f"- {c['content']}" for c in context])
+    
+    prompt = f"""You are Danny's executive assistant. Classify this message and extract structured info.
+
+Message: "{text}"{context_str}
+
+Return ONLY valid JSON (no markdown, no explanation):
+{{
+    "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED",
+    "confidence": 0.0-1.0,
+    "title": "extracted task title if TASK",
+    "time_context": "extracted time/due info if any",
+    "clarification_question": "ask Danny what's missing if CLARIFICATION_NEEDED",
+    "reasoning": "brief reasoning for classification"
+}}
+
+Rules:
+- TASK: Explicit action items, commitments, reminders. Needs title AND time to be confident.
+- NOTE: Ideas, insights, learnings worth remembering.
+- NOISE: Casual chat, acknowledgments, confirmations ("ok", "thanks", "sure").
+- CLARIFICATION_NEEDED: Task-like but missing title, time, or unclear.
+- If confidence < 0.9 for TASK (missing time/title), return CLARIFICATION_NEEDED."""
+
+    try:
+        response = gemini_client.models.generate_content(
+            model=CLASSIFICATION_MODEL,
+            contents=prompt,
+            config={'response_mime_type': 'application/json'}
+        )
+        result = json.loads(response.text)
+        return result
+    except Exception as e:
+        print(f"Classification error: {e}")
+        return {"intent": "TASK", "confidence": 0.5, "reasoning": "classification failed"}
+
+
+async def get_recent_context(limit: int = 2) -> list:
+    try:
+        res = supabase.table('raw_dumps')\
+            .select('content')\
+            .eq('is_processed', False)\
+            .order('created_at', desc=True)\
+            .limit(limit)\
+            .execute()
+        return res.data if res.data else []
+    except:
+        return []
+
+
+async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
+    """Download file from Telegram and return (bytes, mime_type)."""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    
+    async with httpx.AsyncClient() as client:
+        file_info = await client.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}")
+        file_data = file_info.json()
+        
+        if not file_data.get('ok'):
+            raise Exception(f"Telegram API error: {file_data}")
+        
+        file_path = file_data['result']['file_path']
+        mime_type = file_data['result'].get('mime_type', 'application/octet-stream')
+        
+        download_url = f"https://api.telegram.org/bot{bot_token}/file/{file_path}"
+        file_bytes = await client.get(download_url)
+        
+        return file_bytes.content, mime_type
+
+
+async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int):
+    """Process audio, image, or document content and extract tasks and insights."""
+    prompt = """You are Danny's Executive Assistant acting as an Architect analyzing content.
+
+If an IMAGE is provided:
+- Transcribe all text visible (whiteboard notes, sticky notes, handwritten annotations)
+- Analyze UI screenshots for design patterns, features, and user flows
+- Identify strategic patterns in diagrams, mind maps, or flowcharts
+- Note any URLs, product names, or company references
+
+If an AUDIO or VOICE NOTE is provided:
+- Extract all explicit actions, commitments, and deliverables
+- Note deadlines, follow-ups, and responsibilities mentioned
+- Capture key decisions and reasoning
+
+If a DOCUMENT (PDF/DOCX) is provided:
+- Summarize the core intent and purpose
+- Extract all deliverables, deadlines, and action items
+- Note any legal terms, obligations, or commitments
+
+Return ONLY valid JSON array:
+[{"type": "TASK", "content": "action item with context and deadline if mentioned"}, {"type": "NOTE", "content": "insight, observation, or key learning"}]
+
+Rules:
+- TASK: Explicit actions, deliverables, commitments, follow-ups with or without deadlines
+- NOTE: Ideas, insights, learnings, strategic observations worth remembering
+- Include context (who said it, document title, etc.) when available
+- Keep content concise but informative"""
+
+    try:
+        content_parts = [prompt]
+        
+        if mime_type.startswith('image/'):
+            content_parts.append({"mime_type": mime_type, "data": file_bytes})
+        elif mime_type.startswith('audio/') or mime_type == 'application/octet-stream':
+            content_parts.append({"mime_type": mime_type, "data": file_bytes})
+        elif mime_type in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']:
+            content_parts.append({"mime_type": mime_type, "data": file_bytes})
+        else:
+            content_parts.append(file_bytes.decode('utf-8', errors='ignore'))
+        
+        response = gemini_client.models.generate_content(
+            model=CLASSIFICATION_MODEL,
+            contents=content_parts,
+            config={'response_mime_type': 'application/json'}
+        )
+        
+        extracted = json.loads(response.text)
+        
+        task_count = 0
+        note_count = 0
+        
+        for item in extracted:
+            item_type = item.get('type', '').upper()
+            content = item.get('content', '')
+            
+            if not content:
+                continue
+            
+            if item_type == 'TASK':
+                supabase.table('raw_dumps').insert([{
+                    "content": content,
+                    "metadata": json.dumps({"source": "multimodal", "mime_type": mime_type})
+                }]).execute()
+                task_count += 1
+                print(f"📋 Task extracted: {content[:50]}...")
+            
+            elif item_type == 'NOTE':
+                embedding = get_embedding(content)
+                supabase.table('memories').insert({
+                    "content": content,
+                    "memory_type": "note",
+                    "embedding": embedding
+                }).execute()
+                note_count += 1
+                print(f"📝 Note vaulted: {content[:50]}...")
+        
+        summary_parts = []
+        if task_count > 0:
+            summary_parts.append(f"{task_count} Task{'s' if task_count != 1 else ''}")
+        if note_count > 0:
+            summary_parts.append(f"{note_count} Insight{'s' if note_count != 1 else ''}")
+        
+        if summary_parts:
+            summary = " & ".join(summary_parts)
+            await send_telegram(chat_id, f"🖼️ **Content Processed:** Logged {summary}.")
+        else:
+            await send_telegram(chat_id, "🖼️ **Content Processed:** No tasks or insights found.")
+        
+        return {"tasks": task_count, "notes": note_count}
+    
+    except Exception as e:
+        print(f"Multimodal processing error: {e}")
+        await send_telegram(chat_id, "⚠️ **Processing Failed**\n\nCould not extract content. Try sending as text.")
+        return {"tasks": 0, "notes": 0}
+
+
+async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int):
+    supabase.table('raw_dumps').insert([{
+        "content": text,
+        "metadata": json.dumps({"title": title, "time_context": time_context})
+    }]).execute()
+    
+    await send_telegram(chat_id, f"✅ **Task Logged**\n\n{title}\n{'⏰ ' + time_context if time_context else ''}")
+
+
+async def handle_confident_note(text: str, chat_id: int):
+    embedding = get_embedding(text)
+    supabase.table('memories').insert({
+        "content": text,
+        "memory_type": "note",
+        "embedding": embedding
+    }).execute()
+    await send_telegram(chat_id, "📝 **Insight Vaulted**")
+
+
+async def handle_clarification(text: str, question: str, chat_id: int):
+    reply = f"🤔 **Clarification Needed**\n\n{question}\n\n_Context: \"{text[:100]}...\"_"
+    await send_telegram(chat_id, reply)
+    
+    supabase.table('raw_dumps').insert([{
+        "content": text,
+        "metadata": json.dumps({"awaiting_clarification": True})
+    }]).execute()
+
+
+async def handle_noise(chat_id: int):
+    await send_telegram(chat_id, "👍")
+
+
+async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True):
+    telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message_text,
+        "parse_mode": "Markdown"
+    }
+    if show_keyboard:
+        payload["reply_markup"] = {
+            "keyboard": [
+                [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
+                [{"text": "🚀 Mission"}, {"text": "📚 Library"}],
+                [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}]
+            ],
+            "resize_keyboard": True,
+            "persistent": True
+        }
+        payload["disable_web_page_preview"] = True
+    
+    async with httpx.AsyncClient() as client:
+        await client.post(url, json=payload)
+
+
 KEYBOARD = {
     "keyboard": [
         [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
@@ -21,8 +265,8 @@ KEYBOARD = {
     "persistent": True
 }
 
+
 async def process_webhook(update: dict):
-    reply = ""
     try:
         if not update or 'message' not in update:
             return {"message": "No message"}
@@ -32,180 +276,163 @@ async def process_webhook(update: dict):
         chat_id = chat.get('id')
         text = message.get('text', '')
 
-        if not chat_id or not text:
-            return {"success": True}  # Acknowledge non-text messages to clear queue
-
-        # --- 🔒 SECURITY GATEKEEPER ---
-        owner_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not owner_id or str(chat_id) != str(owner_id):
-            print(f"⛔ Unauthorized access attempt from Chat ID: {chat_id}")
-            return {"message": "Unauthorized"}
-        # -----------------------------
-
-        # Helper to send message with the Keyboard attached
-        async def send_telegram(message_text: str):
-            telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-            url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": message_text,
-                "parse_mode": "Markdown",
-                "reply_markup": KEYBOARD,
-                "disable_web_page_preview": True  # Keeps the list clean/compact
-            }
-            async with httpx.AsyncClient() as client:
-                await client.post(url, json=payload)
-
-        # 1. COMMAND MODE (Handles /commands AND Button Text)
-        command_triggers = ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library']
-        if text.startswith('/') or text in command_triggers:
-            reply = "Thinking..."
-
-            # --- COMMAND: MISSION (View or Create) ---
-            if text.startswith('/mission') or text == '🚀 Mission':
-                params = text.replace('/mission', '').replace('🚀 Mission', '').strip()
-                
-                if not params:
-                    # List Active Missions
-                    m_res = supabase.table('missions').select('title').eq('status', 'active').execute()
-                    if m_res.data:
-                        m_list = "\n".join([f"• {m['title']}" for m in m_res.data])
-                        reply = f"🚀 **ACTIVE MISSIONS:**\n\n{m_list}\n\n_To start a new one, type /mission [Goal]_"
-                    else:
-                        reply = "🚀 No active missions. Type `/mission [Goal]` to start hunting."
-                else:
-                    # Create New Mission
-                    try:
-                        supabase.table('missions').insert({"title": params}).execute()
-                        reply = f"🚀 **MISSION DECLARED:** {params}\n\nI am now hunting for components and 'Sparks' related to this goal."
-                    except Exception:
-                        reply = "❌ Database Error creating mission."
-
-            # --- COMMAND: LIBRARY (Retrieve Saved Links) ---
-            elif text in ['/library', '📚 Library']:
-                lib_res = supabase.table('resources')\
-                    .select('title, url, category')\
-                    .order('created_at', desc=True)\
-                    .limit(10)\
-                    .execute()
-                
-                items = lib_res.data or []
-                if items:
-                    formatted_items = []
-                    for i in items:
-                        display_name = i.get('title') or "Untitled Resource"
-                        url = i.get('url')
-                        # Using Markdown link syntax [Title](URL)
-                        formatted_items.append(f"🔖 **[{display_name}]({url})**")
-                    
-                    lib_str = "\n\n".join(formatted_items)
-                    reply = f"📚 **RESOURCE LIBRARY (Last 10):**\n\n{lib_str}"
-                else:
-                    reply = "The library is empty. Save some links first!"
-
-            # --- COMMAND: VAULT (Retrieve Ideas) ---
-            elif text in ['/vault', '🔓 Vault']:
-                # Ensure this matches your actual Streamlit URL
-                vault_url = "https://danny-integrated-os.streamlit.app" 
-                
-                reply = (
-                    "🔓 **COMMAND CENTER ONLINE**\n\n"
-                    "Your strategic overview, mission progress, and full research library are live on the big screen.\n\n"
-                    f"👉 [Access Secure Vault]({vault_url})"
-                )
-
-            # --- COMMAND: SEASON (View or Update) ---
-            elif text.startswith('/season') or text == '🧭 Season Context':
-                params = text.replace('/season', '').replace('🧭 Season Context', '').strip()
-
-                # Scenario A: View Current Season
-                if not params:
-                    season_res = supabase.table('core_config')\
-                        .select('content')\
-                        .eq('key', 'current_season')\
-                        .limit(1)\
-                        .execute()
-
-                    season_data = season_res.data
-                    if season_data:
-                        reply = f"🧭 **CURRENT NORTH STAR:**\n\n{season_data[0]['content']}"
-                    else:
-                        reply = "⚠️ No Season Context found. Set one using `/season text...`"
-
-                # Scenario B: Update Season
-                else:
-                    if len(params) < 10:
-                        reply = "❌ **Error:** Definition too short."
-                    else:
-                        # 🔴 FIX #2: supabase-py UPDATE returns empty data [] by default (204 No Content).
-                        # Checking update_res.data always evaluates as False even on success.
-                        # Correct pattern: trust the exception — if no exception is raised, it succeeded.
-                        try:
-                            supabase.table('core_config')\
-                                .update({"content": params})\
-                                .eq('key', 'current_season')\
-                                .execute()
-                            reply = "✅ **Season Updated.**\nTarget Locked."
-                        except Exception:
-                            reply = "❌ Database Error"
-
-            # --- COMMAND: URGENT (Fire Check) ---
-            elif text in ['/urgent', '🔴 Urgent']:
-                now_iso = datetime.now(timezone.utc).isoformat()
-
-                fire_res = supabase.table('tasks')\
-                    .select('*')\
-                    .eq('priority', 'urgent')\
-                    .eq('status', 'todo')\
-                    .or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}")\
-                    .limit(1)\
-                    .execute()
-
-                fire_data = fire_res.data
-                if fire_data:
-                    fire = fire_data[0]
-                    reply = f"🔴 **ACTION REQUIRED:**\n\n🔥 {fire.get('title')}\n⏱️ Est: {fire.get('estimated_minutes')} mins"
-                else:
-                    reply = "✅ No active fires. You are strategic."
-
-            # --- COMMAND: BRIEF (Strategic Plan) ---
-            elif text in ['/brief', '📋 Brief']:
-                now_iso = datetime.now(timezone.utc).isoformat()
-                tasks_res = supabase.table('tasks')\
-                    .select('title, priority')\
-                    .eq('status', 'todo')\
-                    .or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}")\
-                    .limit(15)\
-                    .execute()
-
-                tasks = tasks_res.data or []
-
-                if tasks:
-                    sort_order = {'urgent': 1, 'important': 2, 'chores': 3, 'ideas': 4}
-                    sorted_tasks = sorted(tasks, key=lambda x: sort_order.get(x.get('priority'), 99))[:5]
-
-                    formatted_tasks = []
-                    for t in sorted_tasks:
-                        icon = '🔴' if t.get('priority') == 'urgent' else '🟡' if t.get('priority') == 'important' else '⚪'
-                        formatted_tasks.append(f"{icon} {t.get('title')}")
-
-                    tasks_str = "\n".join(formatted_tasks)
-                    reply = f"📋 **EXECUTIVE BRIEF:**\n\n{tasks_str}"
-                else:
-                    reply = "The list is empty. Go enjoy your family."
-
-            await send_telegram(reply)
+        if not chat_id:
             return {"success": True}
 
-        # 2. CAPTURE MODE (Default)
-        if text:
-            supabase.table('raw_dumps').insert([{"content": text}]).execute()
+        owner_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not owner_id or str(chat_id) != str(owner_id):
+            print(f"⛔ Unauthorized access from Chat ID: {chat_id}")
+            return {"message": "Unauthorized"}
 
-            # Receipt Tick
-            await send_telegram('✅')
+        if not text:
+            photo = message.get('photo')
+            voice = message.get('voice')
+            audio = message.get('audio')
+            document = message.get('document')
+            
+            if photo:
+                file_id = photo[-1].get('file_id')
+                await send_telegram(chat_id, "🖼️ Processing image...")
+                file_bytes, mime = await download_telegram_file(file_id)
+                await process_multimodal_content(file_bytes, mime, chat_id)
+                return {"success": True}
+            
+            elif voice or audio:
+                file_id = voice.get('file_id') or audio.get('file_id')
+                await send_telegram(chat_id, "🎙️ Processing audio...")
+                file_bytes, mime = await download_telegram_file(file_id)
+                await process_multimodal_content(file_bytes, mime, chat_id)
+                return {"success": True}
+            
+            elif document:
+                file_id = document.get('file_id')
+                mime = document.get('mime_type', '')
+                
+                if mime in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'] or mime.startswith('text/'):
+                    await send_telegram(chat_id, "📄 Processing document...")
+                    file_bytes, mime = await download_telegram_file(file_id)
+                    await process_multimodal_content(file_bytes, mime, chat_id)
+                    return {"success": True}
+                else:
+                    await send_telegram(chat_id, "⚠️ Unsupported file type. Send as PDF, DOCX, or text.")
+                    return {"success": True}
+            
+            return {"success": True}
+
+        context = await get_recent_context(limit=2)
+        classification = classify_intent(text, context)
+        
+        intent = classification.get('intent', 'TASK')
+        confidence = classification.get('confidence', 0.5)
+        
+        print(f"🎯 Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
+
+        if text.startswith('/') or text in ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library']:
+            return await handle_command(text, chat_id)
+
+        if text.startswith('N:') or text.startswith('Note:'):
+            note_content = text[2:].strip() if text.startswith('N:') else text[5:].strip()
+            if note_content:
+                await handle_confident_note(note_content, chat_id)
+            return {"success": True}
+
+        if intent == 'TASK' and confidence >= 0.9:
+            await handle_confident_task(
+                text,
+                classification.get('title', text),
+                classification.get('time_context', ''),
+                chat_id
+            )
+        elif intent == 'NOTE' and confidence >= 0.8:
+            await handle_confident_note(text, chat_id)
+        elif intent == 'NOISE':
+            await handle_noise(chat_id)
+            supabase.table('raw_dumps').insert([{"content": text}]).execute()
+        else:
+            await handle_clarification(
+                text,
+                classification.get('clarification_question', 'Could you provide more details?'),
+                chat_id
+            )
 
         return {"success": True}
 
     except Exception as e:
         print(f"Webhook Error: {e}")
         return {"error": str(e), "status": 500}
+
+
+async def handle_command(text: str, chat_id: int):
+    reply = ""
+    
+    if text.startswith('/mission') or text == '🚀 Mission':
+        params = text.replace('/mission', '').replace('🚀 Mission', '').strip()
+        if not params:
+            m_res = supabase.table('missions').select('title').eq('status', 'active').execute()
+            if m_res.data:
+                m_list = "\n".join([f"• {m['title']}" for m in m_res.data])
+                reply = f"🚀 **ACTIVE MISSIONS:**\n\n{m_list}\n\n_To start a new one, type /mission [Goal]_"
+            else:
+                reply = "🚀 No active missions. Type `/mission [Goal]` to start hunting."
+        else:
+            try:
+                supabase.table('missions').insert({"title": params}).execute()
+                reply = f"🚀 **MISSION DECLARED:** {params}\n\nI am now hunting for components and 'Sparks' related to this goal."
+            except:
+                reply = "❌ Database Error creating mission."
+
+    elif text in ['/library', '📚 Library']:
+        lib_res = supabase.table('resources').select('title, url, category').order('created_at', desc=True).limit(10).execute()
+        items = lib_res.data or []
+        if items:
+            formatted = [f"🔖 **[{i.get('title') or 'Untitled'}]({i.get('url')})**" for i in items]
+            reply = f"📚 **RESOURCE LIBRARY (Last 10):**\n\n" + "\n\n".join(formatted)
+        else:
+            reply = "The library is empty. Save some links first!"
+
+    elif text in ['/vault', '🔓 Vault']:
+        vault_url = "https://danny-integrated-os.streamlit.app"
+        reply = f"🔓 **COMMAND CENTER ONLINE**\n\nYour strategic overview and research library are live.\n\n👉 [Access Secure Vault]({vault_url})"
+
+    elif text.startswith('/season') or text == '🧭 Season Context':
+        params = text.replace('/season', '').replace('🧭 Season Context', '').strip()
+        if not params:
+            season_res = supabase.table('core_config').select('content').eq('key', 'current_season').limit(1).execute()
+            if season_res.data:
+                reply = f"🧭 **CURRENT NORTH STAR:**\n\n{season_res.data[0]['content']}"
+            else:
+                reply = "⚠️ No Season Context found. Set one using `/season text...`"
+        else:
+            if len(params) < 10:
+                reply = "❌ **Error:** Definition too short."
+            else:
+                try:
+                    supabase.table('core_config').update({"content": params}).eq('key', 'current_season').execute()
+                    reply = "✅ **Season Updated.**\nTarget Locked."
+                except:
+                    reply = "❌ Database Error"
+
+    elif text in ['/urgent', '🔴 Urgent']:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        fire_res = supabase.table('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}").limit(1).execute()
+        if fire_res.data:
+            fire = fire_res.data[0]
+            reply = f"🔴 **ACTION REQUIRED:**\n\n🔥 {fire.get('title')}\n⏱️ Est: {fire.get('estimated_minutes')} mins"
+        else:
+            reply = "✅ No active fires. You are strategic."
+
+    elif text in ['/brief', '📋 Brief']:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        tasks_res = supabase.table('tasks').select('title, priority').eq('status', 'todo').or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}").limit(15).execute()
+        tasks = tasks_res.data or []
+        if tasks:
+            sort_order = {'urgent': 1, 'important': 2, 'chores': 3, 'ideas': 4}
+            sorted_tasks = sorted(tasks, key=lambda x: sort_order.get(x.get('priority'), 99))[:5]
+            icons = {'urgent': '🔴', 'important': '🟡', 'chores': '⚪', 'ideas': '💡'}
+            formatted = [f"{icons.get(t.get('priority'), '⚪')} {t.get('title')}" for t in sorted_tasks]
+            reply = f"📋 **EXECUTIVE BRIEF:**\n\n" + "\n".join(formatted)
+        else:
+            reply = "The list is empty. Go enjoy your family."
+
+    await send_telegram(chat_id, reply)
+    return {"success": True}

@@ -11,6 +11,118 @@ from googleapiclient.discovery_cache import base
 from google import genai
 
 
+EMBEDDING_MODEL = "text-embedding-004"
+EMBEDDING_DIMENSION = 768
+
+
+def get_embedding(text: str) -> list:
+    """Generate embedding for text using text-embedding-004."""
+    try:
+        result = gemini_client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            content=text
+        )
+        return result.embeddings[0].values
+    except Exception as e:
+        print(f"Embedding error: {e}")
+        return [0] * EMBEDDING_DIMENSION
+
+
+async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top_k: int = 5) -> list:
+    """High-Res Hindsight: Multi-signal vector search across tasks and inputs."""
+    try:
+        search_queries = []
+        
+        if task_inputs:
+            combined_tasks = " ".join(task_inputs)
+            search_queries.append(("combined_tasks", combined_tasks))
+        
+        top_active = sorted(active_tasks, key=lambda t: t.get('priority', 'chores') == 'urgent', reverse=True)[:3]
+        for t in top_active:
+            title = t.get('title', '')
+            if title:
+                search_queries.append((f"task:{title}", title))
+        
+        if not search_queries:
+            return []
+        
+        async def fetch_memories_for_query(query_name: str, query_text: str):
+            try:
+                embedding = await asyncio.to_thread(get_embedding, query_text)
+                res = supabase.rpc(
+                    'match_memories',
+                    {
+                        'query_embedding': embedding,
+                        'match_count': top_k,
+                        'match_threshold': 0.6
+                    }
+                ).execute()
+                return res.data if res.data else []
+            except Exception as e:
+                print(f"Hindsight query error ({query_name}): {e}")
+                return []
+        
+        all_results = await asyncio.gather(*[fetch_memories_for_query(name, text) for name, text in search_queries])
+        
+        seen_ids = set()
+        unique_memories = []
+        for results in all_results:
+            for m in results:
+                m_id = m.get('id')
+                if m_id and m_id not in seen_ids:
+                    seen_ids.add(m_id)
+                    unique_memories.append(m)
+        
+        unique_memories.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+        top_memories = unique_memories[:top_k]
+        
+        if top_memories:
+            formatted = [f"[{m.get('memory_type', 'memory').upper()}] {m.get('content', '')}" for m in top_memories]
+            return formatted
+    except Exception as e:
+        print(f"High-Res Hindsight error: {e}")
+    return []
+
+
+async def generate_daily_reflection() -> str:
+    """Generate a daily lesson from the day's activities and save to memories."""
+    try:
+        now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        
+        completed_tasks_res = supabase.table('tasks').select('title').eq('status', 'done').gte('completed_at', today_start).execute()
+        completed_count = len(completed_tasks_res.data) if completed_tasks_res.data else 0
+        
+        new_tasks_res = supabase.table('tasks').select('id').gte('created_at', today_start).execute()
+        created_count = len(new_tasks_res.data) if new_tasks_res.data else 0
+        
+        prompt = f"""You are Danny's strategic reflection assistant. Based on today's activity:
+- Tasks completed: {completed_count}
+- Tasks created: {created_count}
+
+Generate a single, actionable "Daily Lesson" - one key insight or principle Danny should remember from today. Keep it to 1-2 sentences. Focus on strategic patterns, not mundane details."""
+        
+        response = gemini_client.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=prompt
+        )
+        
+        lesson = response.text.strip()
+        
+        if lesson and len(lesson) > 10:
+            embedding = get_embedding(lesson)
+            supabase.table('memories').insert({
+                "content": lesson,
+                "memory_type": "reflection",
+                "embedding": embedding
+            }).execute()
+            print(f"📝 Daily Reflection saved: {lesson[:50]}...")
+            return lesson
+    except Exception as e:
+        print(f"Daily reflection error: {e}")
+    return ""
+
+
 class MemoryCache(base.Cache):
     _cache = {}
 
@@ -84,7 +196,7 @@ Resources:
     
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-flash-lite",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
@@ -101,15 +213,21 @@ Resources:
                     break
         
         for item in parsed:
+            title = item.get('title', '')
+            strategic_note = item.get('strategic_note', '')
+            embedding_text = f"{title}. {strategic_note}"
+            embedding = get_embedding(embedding_text)
+            
             supabase.table('resources').update({
-                "title": item.get('title'),
+                "title": title,
                 "summary": item.get('description'),
-                "strategic_note": item.get('strategic_note'),
+                "strategic_note": strategic_note,
                 "category": item.get('category', 'MARKET_TREND'),
-                "enriched_at": enriched_at
+                "enriched_at": enriched_at,
+                "embedding": embedding
             }).eq('id', item['id']).execute()
         
-        print(f"✅ Batch enriched {len(parsed)} resources in 1 Gemini call.")
+        print(f"✅ Batch enriched {len(parsed)} resources with embeddings.")
         return parsed
     except Exception as e:
         print(f"Batch enrichment error: {e}")
@@ -321,6 +439,63 @@ async def process_pulse(auth_secret: str = None):
         active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at, reminder_at, google_event_id').not_.in_('status', ['done', 'cancelled']).execute()
         active_tasks = active_tasks_res.data or []
 
+        # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
+        if dumps:
+            sort_prompt = f"""You are Danny's executive assistant. Categorize each input into one of three types:
+
+- TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track
+- NOTE: Ideas, insights, observations, learnings, or things worth remembering but not actionable
+- NOISE: Casual conversation, acknowledgments, confirmations, or low-value content
+
+Return ONLY a valid JSON array (no markdown, no explanation):
+[{{"id": {dumps[0]['id']}, "category": "TASK|NOTE|NOISE"}}, ...]
+
+Inputs:
+{json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
+            
+            try:
+                sort_response = gemini_client.models.generate_content(
+                    model="gemini-3.1-flash-lite",
+                    contents=sort_prompt,
+                    config={'response_mime_type': 'application/json'}
+                )
+                sort_result = json.loads(sort_response.text)
+                
+                task_dump_ids = []
+                note_dump_ids = []
+                
+                for item in sort_result:
+                    dump_id = item.get('id')
+                    category = item.get('category', '').upper()
+                    
+                    if category == 'NOTE':
+                        dump_content = next((d['content'] for d in dumps if d['id'] == dump_id), None)
+                        if dump_content:
+                            embedding = get_embedding(dump_content)
+                            supabase.table('memories').insert({
+                                "content": dump_content,
+                                "memory_type": "note",
+                                "embedding": embedding
+                            }).execute()
+                            note_dump_ids.append(dump_id)
+                            print(f"📝 Note filed to memory: {dump_content[:50]}...")
+                        note_dump_ids.append(dump_id)
+                    
+                    elif category == 'NOISE':
+                        note_dump_ids.append(dump_id)
+                    
+                    elif category == 'TASK':
+                        task_dump_ids.append(dump_id)
+                
+                if note_dump_ids:
+                    supabase.table('raw_dumps').update({"is_processed": True}).in_('id', note_dump_ids).execute()
+                    print(f"🗃️ Staging Area: {len(task_dump_ids)} tasks, {len(note_dump_ids)} notes/noise")
+                
+                dumps = [d for d in dumps if d['id'] in task_dump_ids]
+            
+            except Exception as e:
+                print(f"Staging Area Sort error: {e}")
+
         # 💡 Only silence the tool if BOTH new dumps AND open tasks are empty
         if not dumps and not active_tasks:
             return {"message": "Nothing to process, nothing to nag about. Silence is golden."}
@@ -484,6 +659,15 @@ async def process_pulse(auth_secret: str = None):
         # Look back 30 days so patterns can form over time, not just items
         thirty_days_ago = (now - timedelta(days=30)).isoformat()
 
+        # --- 🧠 HIGH-RES HINDSIGHT RETRIEVAL ---
+        hindsight_context = "None"
+        task_inputs = [d['content'] for d in dumps] if dumps else []
+        if task_inputs or active_tasks:
+            hindsight_memories = await retrieve_hindsight_memories(task_inputs, active_tasks, top_k=5)
+            if hindsight_memories:
+                hindsight_context = "\n".join(hindsight_memories)
+                print(f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
+
         recent_lib = supabase.table('resources')\
             .select('url, category, title, summary, strategic_note, created_at')\
             .gt('created_at', thirty_days_ago)\
@@ -536,6 +720,9 @@ async def process_pulse(auth_secret: str = None):
         - NEVER "make up", guess, or generate example tasks (e.g., "Pay bills", "Check emails").
         - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
         - ONLY track what is manually entered in NEW INPUTS.
+
+        HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
+        {hindsight_context}
 
         CONTEXT:
         - IDENTITY: {json.dumps(core)}
@@ -966,6 +1153,10 @@ async def process_pulse(auth_secret: str = None):
             }
             async with httpx.AsyncClient() as tg_client:
                 await tg_client.post(url, json=payload)
+
+        # --- 📝 DAILY REFLECTION ---
+        if hour >= 20 or hour < 4:
+            await generate_daily_reflection()
 
         return {"success": True, "briefing": briefing_text}
 
