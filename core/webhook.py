@@ -58,11 +58,11 @@ Return ONLY valid JSON (no markdown, no explanation):
 {{
     "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE",
     "confidence": 0.0-1.0,
-    "entity": "QHORD|SOLVSTRAT|PRODUCT_LABS|CRAYON|PERSONAL|CHURCH", # 🚀 ADD THIS LINE
+    "entity": "QHORD|SOLVSTRAT|PRODUCT_LABS|CRAYON|PERSONAL|CHURCH",
     "title": "extracted task title if TASK",
     "time_context": "extracted time/due info if any",
     "clarification_question": "ask Danny what's missing if CLARIFICATION_NEEDED",
-    "receipt": "ONE SENTENCE mandatory human acknowledgment...",
+    "receipt": "Got it. I've added the experience letters for Suriya and Siva (Crayon) to your list for tomorrow morning. It's safe in the system; go head home to the family.",
     "reasoning": "brief reasoning"
 }}
 
@@ -73,7 +73,7 @@ Rules:
 - CLARIFICATION_NEEDED: Task-like but missing title or completely unclear.
 - DELEGATE: Danny explicitly asks the system to research, find, scrape, analyze competitors, build a dossier, or do autonomous web research. Look for keywords like "research", "find", "scrape", "analyze", "dossier", "look up", "investigate", "compare", "who is", "what is [company]".
 - If confidence < 0.6 for TASK, return CLARIFICATION_NEEDED.
-- receipt is ALWAYS mandatory - one sentence, human partner voice with time-aware tone."""
+- RECEIPT RULE: Construct the receipt by combining the time-aware greeting with a specific confirmation that the task is secured on the list or calendar for the requested time. CRITICAL: Do not imply that the work is already finished, drafted, or sent (e.g., do not say "I've drafted it" or "It's handled") unless the intent is explicitly DELEGATE. Focus on the fact that the entry is safe and Danny can stop thinking about it. Tone: Trusted Partner—direct, simple, human—but prioritize accuracy over sounding "smart"."
 
     try:
         response = gemini_client.models.generate_content(
