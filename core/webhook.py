@@ -64,7 +64,7 @@ def get_embedding(text: str) -> list:
         return [0] * EMBEDDING_DIMENSION
 
 
-def classify_intent(text: str, context: list, ist_hour: int = None) -> dict:
+def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]") -> dict:
     from datetime import datetime, timezone, timedelta
     ist_offset = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist_offset)
@@ -85,14 +85,16 @@ def classify_intent(text: str, context: list, ist_hour: int = None) -> dict:
 
     Message: "{text}"{context_str}
     CURRENT TIME CONTEXT: {partner_greeting}
-    
+
+    IDENTITY & BUSINESS CONTEXT: {core_json}
+
     Avoid artificial or high-flown words like Sanctuary, Base, Strategic Momentum, Executive Office. Talk like a friend who is also a high-level operator.
 
     Return ONLY valid JSON (no markdown, no explanation):
     {{
         "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE",
         "confidence": 0.0-1.0,
-        "entity": "QHORD|SOLVSTRAT|PRODUCT_LABS|CRAYON|PERSONAL|CHURCH|INBOX",
+        "entity": "Extract matching entity from business_entities context (e.g., QHORD, SOLVSTRAT) or default to INBOX",
         "title": "extracted task title if TASK",
         "time_context": "extracted time/due info if any",
         "clarification_question": "ask Danny what's missing if CLARIFICATION_NEEDED",
@@ -102,7 +104,7 @@ def classify_intent(text: str, context: list, ist_hour: int = None) -> dict:
 
     Rules:
     - STRICT TITLE FIDELITY: The title field must be a literal extraction of the task as spoken. NEVER add project names, infer entities, or change Danny's wording (e.g., if he says "this OS," do NOT change it to "Qhord OS").
-    - PROJECT ROUTING: Categorize the entity based ONLY on explicit keywords. If no project is mentioned, default to "PERSONAL" or "INBOX".
+    - PROJECT ROUTING: Use the 'business_entities' and 'current_season' definitions provided in the context to assign the entity. If it mentions home, family, or faith, route to PERSONAL or CHURCH. Default to INBOX.
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - DELEGATE: Research, competitor audits, or autonomous web research.
@@ -159,7 +161,7 @@ async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
         return file_bytes.content, mime_type
 
 
-async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int, ist_hour: int = None):
+async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int, ist_hour: int = None, core_json: str = "[]"):
     """Process audio, image, or document content and extract tasks and insights."""
     from datetime import datetime, timezone, timedelta
     ist_offset = timezone(timedelta(hours=5, minutes=30))
@@ -177,12 +179,9 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
 
     CURRENT TIME CONTEXT: {partner_greeting}
 
-    THE STRATEGIC MAP (Use this to categorize everything):
-    1. QHORD (THE MISSION): June launch, GTM, Pilots, Joel. (High Urgency/Strategic Weight: 10)
-    2. SOLVSTRAT (CASH ENGINE): Tech services, Lead Gen, Smudge. (Goal: Revenue velocity)
-    3. PRODUCT LABS (INCUBATOR): CashFlow+, Integrated-OS, SaaS MVPs/Validation.
-    4. CRAYON (UMBRELLA): Governance, Tax, Legal, Admin, HR.
-    5. PERSONAL/CHURCH (FOUNDATION): Family, home, faith.
+    IDENTITY & BUSINESS CONTEXT: {core_json}
+
+    THE STRATEGIC MAP: Categorize the 'entity' based on the business_entities defined in the context above. If it's family/home, use PERSONAL. Default to INBOX.
 
     ---
     MULTIMODAL INSTRUCTIONS:
@@ -439,6 +438,9 @@ async def process_webhook(update: dict):
         chat_id = chat.get('id')
         text = message.get('text', '')
 
+        core_res = supabase.table('core_config').select('key, content').execute()
+        core_json = json.dumps(core_res.data or [])
+
         if not chat_id:
             return {"success": True}
 
@@ -457,14 +459,14 @@ async def process_webhook(update: dict):
                 file_id = photo[-1].get('file_id')
                 await send_telegram(chat_id, "🖼️ Processing image...")
                 file_bytes, mime = await download_telegram_file(file_id)
-                await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour)
+                await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour, core_json=core_json)
                 return {"success": True}
             
             elif voice or audio:
                 file_id = voice.get('file_id') or audio.get('file_id')
                 await send_telegram(chat_id, "🎙️ Processing audio...")
                 file_bytes, mime = await download_telegram_file(file_id)
-                await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour)
+                await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour, core_json=core_json)
                 return {"success": True}
             
             elif document:
@@ -474,7 +476,7 @@ async def process_webhook(update: dict):
                 if mime in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'] or mime.startswith('text/'):
                     await send_telegram(chat_id, "📄 Processing document...")
                     file_bytes, mime = await download_telegram_file(file_id)
-                    await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour)
+                    await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour, core_json=core_json)
                     return {"success": True}
                 else:
                     await send_telegram(chat_id, "⚠️ Unsupported file type. Send as PDF, DOCX, or text.")
@@ -483,7 +485,7 @@ async def process_webhook(update: dict):
             return {"success": True}
         
         context = await get_recent_context(limit=2)
-        classification = classify_intent(text, context, ist_hour=now.hour)
+        classification = classify_intent(text, context, ist_hour=now.hour, core_json=core_json)
         
         intent = classification.get('intent', 'TASK')
         confidence = classification.get('confidence', 0.5)

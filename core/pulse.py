@@ -769,17 +769,14 @@ Inputs:
 
         PROJECT ROUTING LOGIC
         Use this hierarchy to assign NEW_TASKS or match COMPLETIONS:
-        1. QHORD (THE MISSION): Any task related to the June launch, Joel (Co-founder), GTM strategies, or Qhord product features gets URGENT status and 10/10 strategic weight. Set is_revenue_critical: true for anything involving Pilots or Sales.
-        2. SOLVSTRAT (CASH ENGINE): Match tasks for Smudge, new Lead Gen, or high-ticket technology services here. Goal: High-ticket revenue to fuel the Qhord launch.
-        3. PRODUCT LABS (INCUBATOR): 
-            - Match existing: CashFlow+ (Vasuuli), Integrated-OS.
-            - Match NEW IDEAS: If the input involves "SaaS research," "New Product concept," "MVPs," or "Validation" that is NOT for a current Solvstrat client, tag as PRODUCT LABS.
-        4. CRAYON (UMBRELLA): Match Governance, Tax, and Legal here.
-        5. PERSONAL: Match Sunju, kids, dogs, and home maintenance here.
-        6. CHURCH: 
+        1. DYNAMIC ROUTING: Use the 'business_entities' and 'current_season' definitions provided in the IDENTITY context above to assign NEW_TASKS to the matching project in the PROJECTS list.
+        2. REVENUE FLAG: Set `is_revenue_critical: true` for any tasks involving Sales, Pilots, or high-ticket revenue generation as defined in your entity map.
+        3. DEFAULT ROUTING: If a task explicitly mentions home, family, or faith, route to 'PERSONAL' or 'CHURCH'. For all other unmatched items, default to 'INBOX'.
+        4. PERSONAL: Match Sunju, kids, dogs, and home maintenance here.
+        5. CHURCH: 
             - Note: All church-related activities MUST map to the project "Church".
-        7. MISSION OVERRIDE: If a resource fits an ACTIVE MISSION, prioritize the Mission name over the Project name. 
-        8. LINK FIDELITY: Every task derived from a URL MUST include the clickable URL in the title.
+        6. MISSION OVERRIDE: If a resource fits an ACTIVE MISSION, prioritize the Mission name over the Project name. 
+        7. LINK FIDELITY: Every task derived from a URL MUST include the clickable URL in the title.
 
         NEW PROJECT CREATION CRITERIA:
         1. Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned 
@@ -834,7 +831,8 @@ Inputs:
         6. 🕒 HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30):
             - When Danny mentions a time (e.g., "Friday 10am", "Tomorrow morning", "at 4pm"), you MUST convert this into a valid ISO-8601 timestamp.
             - LOCAL TIMEZONE: Use Indian Standard Time (IST), which is UTC+05:30.
-            - FORMAT: Use "YYYY-MM-DDTHH:MM:SS+05:30".
+            - If Danny specifies a DAY but NO TIME (e.g., "today"), output ONLY the date format: "YYYY-MM-DD". If and ONLY IF he specifies an EXACT TIME (e.g., "at 4pm"), output the full format: "YYYY-MM-DDTHH:MM:SS+05:30".
+            - TASK GROUPING: If Danny mentions multiple people for the same action (e.g., "Suriya and Siva"), extract it as ONE single task. Do not split them into multiple tasks.
             - DEFAULTS: 
                 - If "Morning" is mentioned without a time: Use 09:00:00+05:30.
                 - If "Evening" is mentioned without a time: Use 18:00:00+05:30.
@@ -1053,7 +1051,7 @@ Inputs:
                     sanitized_time = format_rfc3339(raw_time) if raw_time else None
                     
                     # 🔄 DE-CLASH LOGIC: Auto-stagger reminder_at by 15-min increments for same slot
-                    if sanitized_time and 'T' in sanitized_time:
+                    if raw_time and 'T' in str(raw_time) and sanitized_time:
                         time_slot = sanitized_time.split('T')[0]
                         existing_same_slot = [t for t in task_inserts if t.get('reminder_at', '').startswith(time_slot)]
                         if existing_same_slot:
@@ -1067,19 +1065,20 @@ Inputs:
                     e_id = None
                     task_title = task.get('title', 'Untitled Task')
 
-                    # 2. SYNC TO GOOGLE TASKS (The Checklist)
-                    try:
-                        g_id = sync_to_google(
-                            tasks_service,
-                            title=task_title,
-                            due_at=sanitized_time
-                        )
-                        if g_id: print(f"📡 Google Task Created: {task_title}")
-                    except Exception as e:
-                        print(f"⚠️ Google Tasks Sync failed for {task_title}: {e}")
+                    # 2. SYNC TO GOOGLE TASKS (The Checklist) - Only if time was extracted
+                    if sanitized_time:
+                        try:
+                            g_id = sync_to_google(
+                                tasks_service,
+                                title=task_title,
+                                due_at=sanitized_time
+                            )
+                            if g_id: print(f"📡 Google Task Created: {task_title}")
+                        except Exception as e:
+                            print(f"⚠️ Google Tasks Sync failed for {task_title}: {e}")
 
                     # 3. STRATEGIC GATE: SYNC TO CALENDAR (The Radar + Alarm)
-                    if sanitized_time and 'T' in sanitized_time:
+                    if raw_time and 'T' in str(raw_time) and sanitized_time:
                         try:
                             # 🛰️ RADAR: Check for clash
                             conflict_name = check_conflict(sanitized_time)
