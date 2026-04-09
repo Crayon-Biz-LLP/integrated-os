@@ -85,6 +85,7 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
         async def fetch_memories_for_query(query_name: str, query_text: str):
             try:
                 embedding = await asyncio.to_thread(get_embedding, query_text)
+                if not any(embedding): return []
                 res = supabase.rpc(
                     'match_memories',
                     {
