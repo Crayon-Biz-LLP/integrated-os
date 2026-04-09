@@ -335,42 +335,39 @@ async def hybrid_search_graph(query: str) -> str:
     try:
         query_lower = query.lower()
         
-        nodes_res = supabase.table('graph_nodes').select('node_id, label').ilike('label', f'%{query}%').limit(1).execute()
+        nodes_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{query}%').limit(1).execute()
         
         if not nodes_res.data:
             return ""
         
         primary_node = nodes_res.data[0]
-        primary_id = primary_node['node_id']
+        primary_id = primary_node['id']
         
-        edges_res = supabase.table('graph_edges').select('source_id, target_id, relationship').or_(f'source_id.eq.{primary_id},target_id.eq.{primary_id}').execute()
+        edges_res = supabase.table('graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').execute()
         
         if not edges_res.data:
             return ""
         
         connected_ids = set()
-        tactical_map = []
         
         for edge in edges_res.data:
-            if edge['source_id'] == primary_id:
-                connected_ids.add(edge['target_id'])
-                tactical_map.append(f"[{primary_node['label']}] -> [{edge['relationship']}] -> [Node {edge['target_id']}]")
-            elif edge['target_id'] == primary_id:
-                connected_ids.add(edge['source_id'])
-                tactical_map.append(f"[Node {edge['source_id']}] -> [{edge['relationship']}] -> [{primary_node['label']}]")
+            if edge['source_node_id'] == primary_id:
+                connected_ids.add(edge['target_node_id'])
+            elif edge['target_node_id'] == primary_id:
+                connected_ids.add(edge['source_node_id'])
         
         if connected_ids:
-            labels_res = supabase.table('graph_nodes').select('node_id, label').in_('node_id', list(connected_ids)).execute()
-            label_map = {n['node_id']: n['label'] for n in labels_res.data}
+            labels_res = supabase.table('graph_nodes').select('id, label').in_('id', list(connected_ids)).execute()
+            label_map = {str(n['id']): n['label'] for n in labels_res.data}
             
             labeled_map = []
             for edge in edges_res.data:
-                src_label = label_map.get(edge['source_id'], f"Node {edge['source_id']}")
-                tgt_label = label_map.get(edge['target_id'], f"Node {edge['target_id']}")
+                src_label = label_map.get(str(edge['source_node_id']), "Unknown")
+                tgt_label = label_map.get(str(edge['target_node_id']), "Unknown")
                 
-                if edge['source_id'] == primary_id:
+                if edge['source_node_id'] == primary_id:
                     labeled_map.append(f"[{primary_node['label']}] -> [{edge['relationship']}] -> [{tgt_label}]")
-                elif edge['target_id'] == primary_id:
+                elif edge['target_node_id'] == primary_id:
                     labeled_map.append(f"[{src_label}] -> [{edge['relationship']}] -> [{primary_node['label']}]")
             
             return "\n".join(labeled_map)
