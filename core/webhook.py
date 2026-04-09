@@ -13,7 +13,7 @@ supabase: Client = create_client(
 )
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-EMBEDDING_MODEL = "text-embedding-004"
+EMBEDDING_MODEL = "gemini-embedding-2-preview"
 CLASSIFICATION_MODEL = "gemini-3.1-flash-lite-preview"
 EMBEDDING_DIMENSION = 768
 
@@ -85,26 +85,23 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     Message: "{text}"{context_str}
     CURRENT TIME CONTEXT: It's the {time_phase}.
-
     IDENTITY & BUSINESS CONTEXT: {core_json}
-
-    Avoid artificial or high-flown words like Sanctuary, Base, Strategic Momentum, Executive Office. Talk like a friend who is also a high-level operator.
 
     Return ONLY valid JSON (no markdown, no explanation):
     {{
         "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE",
         "confidence": 0.0-1.0,
-        "entity": "Extract matching entity from business_entities context (e.g., QHORD, SOLVSTRAT) or default to INBOX",
-        "title": "extracted task title if TASK",
-        "time_context": "extracted time/due info if any",
-        "clarification_question": "ask Danny what's missing if CLARIFICATION_NEEDED",
-        "receipt": "The [TASK SUBJECT] is on tonight's list. You're clear to move on.",
-        "reasoning": "brief reasoning for classification"
+        "entity": "SOLVSTRAT|QHORD|PERSONAL|CHURCH|INBOX",
+        "title": "extracted task title",
+        "time_context": "time info if any",
+        "clarification_question": "question if needed",
+        "receipt": "Status report here.",
+        "reasoning": "brief logic"
     }}
 
     Rules:
     - STRICT TITLE FIDELITY: The title field must be a literal extraction of the task as spoken. NEVER add project names, infer entities, or change Danny's wording (e.g., if he says "this OS," do NOT change it to "Qhord OS").
-    - PROJECT ROUTING: Route tasks about personal finances, bills, home, or family to PERSONAL. Only route to CRAYON if the task specifically relates to corporate governance, business taxes, or legal compliance. Route tech/client work to SOLVSTRAT. Default to INBOX.
+    - PROJECT ROUTING: Route tasks about personal finances, bills, home, or family to PERSONAL. Only route to CRAYON if it relates to corporate governance, business taxes, or legal compliance. Route tech/client work to SOLVSTRAT.
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - DELEGATE: Research, competitor audits, or autonomous web research.
@@ -112,7 +109,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         STRICT ISOLATION: Never use words like 'focus,' 'momentum,' or 'distraction.' Never explain WHY you are logging something (do NOT say 'so you can...').
         BRIDGE-BUILDING GUARD: Do NOT reference Danny's other projects or North Stars (like pilots) unless he explicitly mentions them.
         SUBJECT-AWARENESS: Mention the task subject directly. (e.g., 'ICICI bill is on the list.').
-    - Tone: Trusted Partner—direct, simple, human—but prioritize accuracy over sounding "smart"."""
+    - Tone: Rhodey—direct, grounded, professional."""
 
     try:
         response = await call_gemini_with_retry(
@@ -272,10 +269,9 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
         
         if summary_parts:
             summary = " & ".join(summary_parts)
-            ack = f"Logged {summary}."
-            await send_telegram(chat_id, f"✓ {ack}")
+            await send_telegram(chat_id, f"✓ Logged {summary}.")
         else:
-            await send_telegram(chat_id, f"✓ Done.")
+            await send_telegram(chat_id, f"✓ Understood.")
         
         return {"tasks": task_count, "notes": note_count}
     

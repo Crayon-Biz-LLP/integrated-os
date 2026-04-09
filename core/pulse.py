@@ -11,7 +11,7 @@ from googleapiclient.discovery_cache import base
 from google import genai
 
 
-EMBEDDING_MODEL = "text-embedding-004"
+EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIMENSION = 768
 
 BRIEFING_MODEL = "gemini-3-flash-preview"
@@ -52,7 +52,7 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
 
 
 def get_embedding(text: str) -> list:
-    """Generate embedding for text using text-embedding-004."""
+    """Generate embedding for text using gemini-embedding-2-preview."""
     try:
         result = gemini_client.models.embed_content(
             model=EMBEDDING_MODEL,
