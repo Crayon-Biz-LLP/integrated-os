@@ -1,4 +1,7 @@
 {
+  "extraction_rules": {
+    "priority_family_nodes": "If the name Sunju, Jeremy, Jaden, or Jeffery appears, they are high-priority Family nodes. Never skip them."
+  },
   "nodes": [
     {
       "label": "Christy",
@@ -37,14 +40,14 @@
     },
     {
       "label": "Rex",
-      "type": "person",
+      "type": "pet/dog",
       "metadata": {
         "source_dump": 145
       }
     },
     {
       "label": "Dawn",
-      "type": "person",
+      "type": "pet/dog",
       "metadata": {
         "source_dump": 154
       }
@@ -75,6 +78,34 @@
       "type": "person",
       "metadata": {
         "source_dump": 215
+      }
+    },
+    {
+      "label": "Sunju",
+      "type": "person/wife",
+      "metadata": {
+        "source": "manual_injection"
+      }
+    },
+    {
+      "label": "Jeremy",
+      "type": "person/son",
+      "metadata": {
+        "source": "manual_injection"
+      }
+    },
+    {
+      "label": "Jaden",
+      "type": "person/son",
+      "metadata": {
+        "source": "manual_injection"
+      }
+    },
+    {
+      "label": "Jeffery",
+      "type": "person/son",
+      "metadata": {
+        "source": "manual_injection"
       }
     }
   ],
