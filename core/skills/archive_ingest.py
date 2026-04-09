@@ -78,7 +78,7 @@ def create_edge(source_label: str, target_label: str, relationship: str, memory_
         "target_node_id": target_id,
         "relationship": relationship,
         "metadata": json.dumps({"memory_id": memory_id})
-    }, on_conflict="source_node_id_target_node_id").execute()
+    }, on_conflict="source_node_id,target_node_id").execute()
 
 
 def check_duplicate(timestamp: str) -> bool:
