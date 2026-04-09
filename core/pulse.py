@@ -20,7 +20,7 @@ def get_embedding(text: str) -> list:
     try:
         result = gemini_client.models.embed_content(
             model=EMBEDDING_MODEL,
-            content=text
+            contents=text
         )
         return result.embeddings[0].values
     except Exception as e:
@@ -196,7 +196,7 @@ Resources:
     
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-3.1-flash-lite",
+            model="gemini-3.1-flash-lite-preview",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
@@ -455,7 +455,7 @@ Inputs:
             
             try:
                 sort_response = gemini_client.models.generate_content(
-                    model="gemini-3.1-flash-lite",
+                    model="gemini-3.1-flash-lite-preview",
                     contents=sort_prompt,
                     config={'response_mime_type': 'application/json'}
                 )
