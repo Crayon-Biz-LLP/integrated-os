@@ -95,7 +95,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         "title": "extracted task title",
         "time_context": "time info if any",
         "clarification_question": "question if needed",
-        "receipt": "Status report here.",
+        "receipt": "Stealth status report (no entity names).",
         "reasoning": "brief logic"
     }}
 
@@ -105,7 +105,11 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - DELEGATE: Research, competitor audits, or autonomous web research.
-    - RECEIPT RULE: Construct a one-sentence Tactical Receipt. You must use the 'LITERAL SUBJECT RULE': Mirror Danny's verb (e.g., 'Check with X' becomes 'X check-in logged'). Mention the entity (e.g., 'Logged under PERSONAL'). ABSOLUTELY NO rephrasing as a third-party request. NO coaching. NO filler words like 'I have' or 'for you'.
+    - RECEIPT RULE: Generate a one-sentence Tactical Receipt using these constraints:
+    1. ZERO DATA LOSS: You must preserve every specific detail Danny mentions (e.g., 'Canadian project', 'Zoho CRM API', 'NDA'). These are mission-critical identifiers. Never summarize them away.
+    2. STEALTH ROUTING: Correctly assign the 'entity' in the JSON, but NEVER mention the entity name in the receipt string. No 'under SOLVSTRAT' or 'under PERSONAL'.
+    3. VERB MIRRORING: Use the literal subject Danny used. 'Check with Vasanth' becomes 'Vasanth check-in logged.'
+    4. NO FILLER: No 'I have,' no 'is now,' no 'for you.' Just the status.
     - Tone: Rhodey—direct, grounded, professional."""
 
     try:
@@ -186,7 +190,11 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
     - TASK: Any implied action (Send, Call, Fix). Do not require a date. 
     - NOTE: Strategic insights, facts, or observations worth remembering.
     - DELEGATE: Research requests, competitor audits, or dossier building.
-    - RECEIPT RULE: Construct a one-sentence Tactical Receipt. You must use the 'LITERAL SUBJECT RULE': Mirror Danny's verb (e.g., 'Check with X' becomes 'X check-in logged'). Mention the entity (e.g., 'Logged under PERSONAL'). ABSOLUTELY NO rephrasing as a third-party request. NO coaching. NO filler words like 'I have' or 'for you'.
+    - RECEIPT RULE: Generate a one-sentence Tactical Receipt using these constraints:
+    1. ZERO DATA LOSS: You must preserve every specific detail Danny mentions (e.g., 'Canadian project', 'Zoho CRM API', 'NDA'). These are mission-critical identifiers. Never summarize them away.
+    2. STEALTH ROUTING: Correctly assign the 'entity' in the JSON, but NEVER mention the entity name in the receipt string. No 'under SOLVSTRAT' or 'under PERSONAL'.
+    3. VERB MIRRORING: Use the literal subject Danny used. 'Check with Vasanth' becomes 'Vasanth check-in logged.'
+    4. NO FILLER: No 'I have,' no 'is now,' no 'for you.' Just the status.
 
     OUTPUT:
     Return ONLY a valid JSON array of objects. For every item, identify the 'entity' (QHORD, SOLVSTRAT, etc.).
