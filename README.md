@@ -64,24 +64,6 @@ You will need to populate a .env file with the following:
 
     Security: PULSE_SECRET (A custom string to authorize cron jobs)
 
-2. Local Installation
-Bash
-
-# Clone and enter
-git clone https://github.com/Crayon-Biz-LLP/integrated-os.git
-cd integrated-os
-
-# Setup environment
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Run the API locally
-uvicorn api.index:app --reload
-
-3. Deployment
-
-The project is optimized for Vercel. Simply connect your repository to Vercel, and it will automatically use vercel.json to route the FastAPI endpoints.
 🧭 Strategic Note
 
 Integrated-OS is governed by a "Season Context" stored in core_config. The AI uses this to prioritize tasks that align with your current 3–6 month goals (e.g., debt recovery or scaling a specific product). Any task not aligning with the "North Star" is deprioritized in the briefings.
