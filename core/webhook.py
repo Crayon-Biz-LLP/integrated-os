@@ -71,10 +71,13 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     current_hour = ist_hour if ist_hour is not None else now.hour
     
     if 4 <= current_hour < 12:
+        time_phase = "Morning"
         partner_greeting = "Let's clear this early. It's on the list."
     elif 12 <= current_hour < 18:
+        time_phase = "Afternoon"
         partner_greeting = "Got it. I'll track this so you can keep your momentum."
     else:
+        time_phase = "Night"
         partner_greeting = "I've got it. It's off your mind for tonight. Go be with the family."
     
     context_str = ""
@@ -84,7 +87,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     prompt = f"""You are Danny's trusted partner. Direct, simple, deeply human. You know the stakes: the ₹30L debt and the Qhord launch with Joel. Your job: Kill the friction so he can get home to Sunju and the boys.
 
     Message: "{text}"{context_str}
-    CURRENT TIME CONTEXT: {partner_greeting}
+    CURRENT TIME CONTEXT: {partner_greeting} (Phase: {time_phase})
 
     IDENTITY & BUSINESS CONTEXT: {core_json}
 
@@ -98,7 +101,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         "title": "extracted task title if TASK",
         "time_context": "extracted time/due info if any",
         "clarification_question": "ask Danny what's missing if CLARIFICATION_NEEDED",
-        "receipt": "Got it. I've added the task to test this OS and document the process to your list for tomorrow.",
+        "receipt": "The [TASK SUBJECT] is on tonight's list. You're clear to move on.",
         "reasoning": "brief reasoning for classification"
     }}
 
@@ -108,7 +111,12 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - DELEGATE: Research, competitor audits, or autonomous web research.
-    - RECEIPT RULE: Construct the receipt by combining the time-aware greeting ('{partner_greeting}') with a specific confirmation that the task is SECURED on the list or calendar. 
+    - DYNAMIC RECEIPT RULE: Construct a 'Tactical Receipt.' You must incorporate the subject of Danny's message into your response so every acknowledgment is unique.
+        Objective: Confirm the entry is secured.
+        Constraint: One punchy sentence. No coaching, no gushing.
+        Style: Professional familiarity. Use the {time_phase} to subtly shift your tone.
+        Example Logic: If he says 'ICICI bill,' say 'ICICI bill is on the list for tonight.' If he says 'Call Joel,' say 'Understood, I've got the Joel call logged.'
+    - PERSONA GUARD: NEVER start every response with 'Got it' or 'Understood.' Vary your openings. Talk like a partner, not a script.
     - CRITICAL: Do not imply that the work is already finished, drafted, or sent (e.g., do not say "I've drafted it" or "It's handled") unless the intent is explicitly DELEGATE. Focus on the fact that the entry is safe so Danny can stop thinking about it.
     - Tone: Trusted Partner—direct, simple, human—but prioritize accuracy over sounding "smart"."""
 
@@ -166,15 +174,18 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
     current_hour = ist_hour if ist_hour is not None else now.hour
     
     if 4 <= current_hour < 12:
+        time_phase = "Morning"
         partner_greeting = "Let's clear this early. It's on the list."
     elif 12 <= current_hour < 18:
+        time_phase = "Afternoon"
         partner_greeting = "Got it. I'll track this so you can keep your momentum."
     else:
+        time_phase = "Night"
         partner_greeting = "I've got it. It's off your mind for tonight. Go be with the family."
     
     prompt = f"""You are Danny's trusted partner and high-level operator. Direct, simple, and deeply human. You know the stakes: the ₹30L debt and the Qhord launch with Joel. Your job: Kill the friction so he can get home to Sunju and the boys.
 
-    CURRENT TIME CONTEXT: {partner_greeting}
+    CURRENT TIME CONTEXT: {partner_greeting} (Phase: {time_phase})
 
     IDENTITY & BUSINESS CONTEXT: {core_json}
 
