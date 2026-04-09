@@ -74,7 +74,7 @@ Rules:
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash-exp",
+            model="gemini-3-flash-preview",
             contents=prompt,
             config={"response_mime_type": "application/json"}
         )
