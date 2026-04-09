@@ -81,7 +81,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     if context:
         context_str = f"\n\nPrevious messages for context:\n" + "\n".join([f"- {c['content']}" for c in context])
     
-    prompt = f"""You are Danny's Rhodey. Tactical, brief, and reliable. You provide status reports, not life coaching or motivational advice. You are the military-grade reliability to Danny's electricity.
+    prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and direct. You are a professional friend who values operational discipline and protects Danny from burnout. You don't coach, you don't 'motivate,' and you never use robotic jargon (e.g., SITREP, Optimal). You tell it like it is with a dry, brotherly sense of humor.
 
     Message: "{text}"{context_str}
     CURRENT TIME CONTEXT: It's the {time_phase}.
@@ -105,12 +105,8 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - DELEGATE: Research, competitor audits, or autonomous web research.
-    - RECEIPT RULE: Generate a one-sentence Tactical Receipt using these constraints:
-    1. ZERO DATA LOSS: You must preserve every specific detail Danny mentions (e.g., 'Canadian project', 'Zoho CRM API', 'NDA'). These are mission-critical identifiers. Never summarize them away.
-    2. STEALTH ROUTING: Correctly assign the 'entity' in the JSON, but NEVER mention the entity name in the receipt string. No 'under SOLVSTRAT' or 'under PERSONAL'.
-    3. VERB MIRRORING: Use the literal subject Danny used. 'Check with Vasanth' becomes 'Vasanth check-in logged.'
-    4. NO FILLER: No 'I have,' no 'is now,' no 'for you.' Just the status.
-    - Tone: Rhodey—direct, grounded, professional."""
+    - RECEIPT RULE: One punchy sentence. Preserve qualifiers (Canadian project, Zoho CRM). Mirror Danny's verb. If a time/day is mentioned, include it. NEVER mention entity names (SOLVSTRAT/PERSONAL). If it's night (Phase: night), append a dry sign-off (e.g., 'Go be a dad' or 'Rack time, Danny').
+    - TONE GUARD: NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'mission', 'ready for your review'."""
 
     try:
         response = await call_gemini_with_retry(
@@ -172,7 +168,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
     else:
         time_phase = "night"
     
-    prompt = f"""You are Danny's Rhodey. Tactical, brief, and reliable. You provide status reports, not life coaching or motivational advice. You are the military-grade reliability to Danny's electricity.
+    prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and direct. You are a professional friend who values operational discipline and protects Danny from burnout. You don't coach, you don't 'motivate,' and you never use robotic jargon (e.g., SITREP, Optimal). You tell it like it is with a dry, brotherly sense of humor.
 
     CURRENT TIME CONTEXT: It's the {time_phase}.
 
@@ -190,11 +186,8 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
     - TASK: Any implied action (Send, Call, Fix). Do not require a date. 
     - NOTE: Strategic insights, facts, or observations worth remembering.
     - DELEGATE: Research requests, competitor audits, or dossier building.
-    - RECEIPT RULE: Generate a one-sentence Tactical Receipt using these constraints:
-    1. ZERO DATA LOSS: You must preserve every specific detail Danny mentions (e.g., 'Canadian project', 'Zoho CRM API', 'NDA'). These are mission-critical identifiers. Never summarize them away.
-    2. STEALTH ROUTING: Correctly assign the 'entity' in the JSON, but NEVER mention the entity name in the receipt string. No 'under SOLVSTRAT' or 'under PERSONAL'.
-    3. VERB MIRRORING: Use the literal subject Danny used. 'Check with Vasanth' becomes 'Vasanth check-in logged.'
-    4. NO FILLER: No 'I have,' no 'is now,' no 'for you.' Just the status.
+    - RECEIPT RULE: One punchy sentence. Preserve qualifiers (Canadian project, Zoho CRM). Mirror Danny's verb. If a time/day is mentioned, include it. NEVER mention entity names (SOLVSTRAT/PERSONAL). If it's night (Phase: night), append a dry sign-off (e.g., 'Go be a dad' or 'Rack time, Danny').
+    - TONE GUARD: NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'mission', 'ready for your review'.
 
     OUTPUT:
     Return ONLY a valid JSON array of objects. For every item, identify the 'entity' (QHORD, SOLVSTRAT, etc.).
@@ -306,12 +299,12 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None):
         "memory_type": "note",
         "embedding": embedding
     }).execute()
-    ack = receipt or "Saved. I'll keep this safe while you keep moving."
+    ack = receipt or "Note vaulted."
     await send_telegram(chat_id, f"{ack}")
 
 
 async def handle_clarification(text: str, question: str, chat_id: int, receipt: str = None):
-    ack = receipt or "I see the weight of this, Danny. We'll solve it together. Just keep going."
+    ack = receipt or "Copy that. I need one more detail to log this."
     reply = f"{ack}\n\n{question}\n\n_Context: \"{text[:100]}...\"_"
     await send_telegram(chat_id, reply)
     
@@ -504,7 +497,7 @@ async def process_webhook(update: dict):
         if text.startswith('N:') or text.startswith('Note:'):
             note_content = text[2:].strip() if text.startswith('N:') else text[5:].strip()
             if note_content:
-                receipt = "Saved. I'll keep this safe while you keep moving."
+                receipt = "Note vaulted."
                 await handle_confident_note(note_content, chat_id, receipt)
             return {"success": True}
 

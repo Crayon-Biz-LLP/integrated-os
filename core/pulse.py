@@ -121,8 +121,8 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
     return []
 
 
-async def generate_daily_reflection() -> str:
-    """Generate a daily lesson from the day's activities and save to memories."""
+async def generate_after_action_report() -> str:
+    """Generate an After-Action Report on the day's activities and save to memories."""
     try:
         now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -133,11 +133,9 @@ async def generate_daily_reflection() -> str:
         new_tasks_res = supabase.table('tasks').select('id').gte('created_at', today_start).execute()
         created_count = len(new_tasks_res.data) if new_tasks_res.data else 0
         
-        prompt = f"""You are Danny's strategic reflection assistant. Based on today's activity:
+        prompt = f"""You are Danny's Rhodey. Provide a dry After-Action Report (AAR) on the day's combat effectiveness regarding debt recovery and product velocity. 1-2 sentences max. Based on today's activity:
 - Tasks completed: {completed_count}
-- Tasks created: {created_count}
-
-Generate a single, actionable "Daily Lesson" - one key insight or principle Danny should remember from today. Keep it to 1-2 sentences. Focus on strategic patterns, not mundane details."""
+- Tasks created: {created_count}"""
         
         response = await call_gemini_with_retry(prompt=prompt)
         
@@ -475,11 +473,13 @@ async def process_pulse(auth_secret: str = None):
 
         # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
         if dumps:
-            sort_prompt = f"""You are Danny's executive assistant. Categorize each input into one of three types:
+            sort_prompt = f"""You are Danny's Rhodey. Categorize each input into one of three types:
 
 - TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track
 - NOTE: Ideas, insights, observations, learnings, or things worth remembering but not actionable
 - NOISE: Casual conversation, acknowledgments, confirmations, or low-value content
+
+Rhodey Rule: Be dismissive of NOISE. If it's low-value chatter, categorize it and keep the brief silent about it.
 
 Return ONLY a valid JSON array (no markdown, no explanation):
 [{{"id": {dumps[0]['id']}, "category": "TASK|NOTE|NOISE"}}, ...]
@@ -565,17 +565,17 @@ Inputs:
             system_persona = "Focus ONLY on Home, Family, and Chores. Explicitly hide Work tasks. Be relaxed."
         else:
             if hour < 11:
-                briefing_mode = "🔴 Urgent: What matters now"
-                system_persona = "High-energy. Cut through the noise and focus Danny on what truly moves the needle today."
+                briefing_mode = "Morning Status: We're cleared."
+                system_persona = "Cut through the noise and focus Danny on what moves the needle today. No coaching, no motivation—just what needs doing."
             elif hour < 14:
-                briefing_mode = "🟡 Important: Getting traction"
-                system_persona = "Focused on the main effort. Keep Danny building momentum toward the ₹30L goal."
+                briefing_mode = "Afternoon Check: Moving the needle."
+                system_persona = "Focused on the main effort. Keep Danny building toward the goal. Be direct."
             elif hour < 18:
-                briefing_mode = "⚪ Closing the loop"
-                system_persona = "Push Danny to close work tasks so he can transition to Sunju and the boys. Log pending items."
+                briefing_mode = "Closing the loop: Sign off."
+                system_persona = "Push Danny to close work tasks so he can transition to family. Log pending items. Be dry."
             else:
-                briefing_mode = "💡 Tonight's reflections"
-                system_persona = "Quiet, simple, focused on clearing the mind for rest. Be gentle but clear."
+                briefing_mode = "Intel: Vaulted."
+                system_persona = "Quiet, simple, focused on clearing the mind for rest. Keep it minimal."
 
         # --- 1.3 BANDWIDTH & BUFFER CHECK ---
         is_overloaded = len(active_tasks) > 15
@@ -819,7 +819,8 @@ Inputs:
         2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "completed_task_ids", "new_projects", and "new_people" arrays MUST remain 100% empty [].
         3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
         4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
-        5. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
+        5. THE COMPASS NUDGE: If tasks in PERSONAL or CHURCH are >48hrs old, add a dry one-liner: "The board is green, but don't forget the home front. Check your personal list."
+        6. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
             - If Danny says he finished or completed a task, mark it as done.
             - If Danny describes a result that fulfills a task's objective (e.g., "The contract is signed" fulfills "Get contract signed"), mark it DONE.
             - If Danny uses the past tense of a task's core action verb (e.g., "Mailed the check" fulfills "Mail the check"), mark it DONE.
@@ -853,13 +854,14 @@ Inputs:
             - ICON RULES: 🔴 (Urgent), 🟡 (Important), ⚪ (Chores), 💡 (Ideas).
             - SECTIONS: ✅ Done, 🚀 Work (Hide on weekends), 🏠 Home, 💡 Ideas (Only at night pulse).
             - TONE: Match the PERSONA GUIDELINE. Be direct, simple, human. Talk like a friend who is also a high-level operator.
-            - TONE GUARD: NEVER use words like 'Operational', 'Vanguard', 'Strategic Momentum', 'Audit', 'Battlefield', 'Chief of Staff', 'Tactical', 'Executive Office'. Use simple, punchy sentences.
+            - TONE GUARD: NEVER use words like 'Operational', 'Vanguard', 'Strategic Momentum', 'Audit', 'Battlefield', 'Chief of Staff', 'Tactical', 'Executive Office'. Use simple, punchy sentences. NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'mission', 'ready for your review'.
             - INTELLIGENT FILTERING: 
                 - If mode is 🔴 Urgent: HIDE the 🏠 Home and 💡 Ideas sections. Focus strictly on 🚀 Work and ✅ Done.
                 - If mode is 🟡 Important: Prioritize 🚀 Work.
                 - If mode is 💡 Tonight's reflections: Prioritize the 💡 Ideas section and library insights.
             - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
             - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
+            - REVENUE BOLDING: Bold all tasks involving Sales, Pilots, or Payments using **task title**.
         10. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
         11. STRICT TASK SYNTAX: 
             - Every single task listed in the briefing MUST follow this exact format: "- [ICON] [Task Title]". 
@@ -1138,9 +1140,9 @@ Inputs:
             async with httpx.AsyncClient() as tg_client:
                 await tg_client.post(url, json=payload)
 
-        # --- 📝 DAILY REFLECTION ---
+        # --- 📝 AFTER-ACTION REPORT ---
         if hour >= 20 or hour < 4:
-            await generate_daily_reflection()
+            await generate_after_action_report()
 
         return {"success": True, "briefing": briefing_text}
 
