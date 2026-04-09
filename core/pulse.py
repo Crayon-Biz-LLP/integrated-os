@@ -130,12 +130,12 @@ async def generate_after_action_report() -> str:
         completed_tasks_res = supabase.table('tasks').select('title').eq('status', 'done').gte('completed_at', today_start).execute()
         completed_count = len(completed_tasks_res.data) if completed_tasks_res.data else 0
         
-        new_tasks_res = supabase.table('tasks').select('id').gte('created_at', today_start).execute()
-        created_count = len(new_tasks_res.data) if new_tasks_res.data else 0
+        open_tasks_res = supabase.table('tasks').select('id').eq('status', 'todo').execute()
+        open_count = len(open_tasks_res.data) if open_tasks_res.data else 0
         
-        prompt = f"""You are Danny's Rhodey. Provide a dry After-Action Report (AAR) on the day's combat effectiveness regarding debt recovery and product velocity. 1-2 sentences max. Based on today's activity:
-- Tasks completed: {completed_count}
-- Tasks created: {created_count}"""
+        prompt = f"""You are Danny's Rhodey. Provide a dry After-Action Report (AAR). 1-2 sentences max. Focus on loops closed vs. open.
+- Loops closed today: {completed_count}
+- Loops still open: {open_count}"""
         
         response = await call_gemini_with_retry(prompt=prompt)
         
@@ -480,6 +480,7 @@ async def process_pulse(auth_secret: str = None):
 - NOISE: Casual conversation, acknowledgments, confirmations, or low-value content
 
 Rhodey Rule: Be dismissive of NOISE. If it's low-value chatter, categorize it and keep the brief silent about it.
+If an input is 'Check with X,' categorize it as a TASK for Danny, never as something for the system to do.
 
 Return ONLY a valid JSON array (no markdown, no explanation):
 [{{"id": {dumps[0]['id']}, "category": "TASK|NOTE|NOISE"}}, ...]
@@ -747,6 +748,7 @@ Inputs:
         SYSTEM STATUS: {system_context}
 
         MANDATE: THE SILENCE PROTOCOL & HALLUCINATION GUARD 
+        - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
         - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
         - NEVER proactively invent tasks or ideas. ONLY track what is manually entered or already exists.
         - If NEW INPUTS is "None" or empty, you MUST return completely empty arrays for `completed_task_ids`, `new_tasks`, `new_projects`, and `resources` [].
