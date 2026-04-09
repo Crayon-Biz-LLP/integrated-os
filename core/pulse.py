@@ -473,7 +473,11 @@ async def process_pulse(auth_secret: str = None):
 
         # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
         if dumps:
-            sort_prompt = f"""You are Danny's Rhodey. Categorize each input into one of three types:
+            sort_prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
+
+PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
+
+Categorize each input into one of three types:
 
 - TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track
 - NOTE: Ideas, insights, observations, learnings, or things worth remembering but not actionable
@@ -1053,7 +1057,7 @@ Inputs:
                     # 🔄 DE-CLASH LOGIC: Auto-stagger reminder_at by 15-min increments for same slot
                     if raw_time and 'T' in str(raw_time) and sanitized_time:
                         time_slot = sanitized_time.split('T')[0]
-                        existing_same_slot = [t for t in task_inserts if t.get('reminder_at', '').startswith(time_slot)]
+                        existing_same_slot = [t for t in task_inserts if (t.get('reminder_at') or '').startswith(time_slot)]
                         if existing_same_slot:
                             stagger_count = len(existing_same_slot)
                             original_time = datetime.fromisoformat(sanitized_time.replace('Z', '+00:00'))
