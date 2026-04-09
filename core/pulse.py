@@ -64,6 +64,55 @@ def get_embedding(text: str) -> list:
         return [0] * EMBEDDING_DIMENSION
 
 
+async def hybrid_search_graph(query: str) -> str:
+    """Graph-first search: Find primary entity and its connections."""
+    try:
+        query_lower = query.lower()
+        
+        nodes_res = supabase.table('graph_nodes').select('node_id, label').ilike('label', f'%{query}%').limit(1).execute()
+        
+        if not nodes_res.data:
+            return ""
+        
+        primary_node = nodes_res.data[0]
+        primary_id = primary_node['node_id']
+        
+        edges_res = supabase.table('graph_edges').select('source_id, target_id, relationship').or_(f'source_id.eq.{primary_id},target_id.eq.{primary_id}').execute()
+        
+        if not edges_res.data:
+            return ""
+        
+        connected_ids = set()
+        
+        for edge in edges_res.data:
+            if edge['source_id'] == primary_id:
+                connected_ids.add(edge['target_id'])
+            elif edge['target_id'] == primary_id:
+                connected_ids.add(edge['source_id'])
+        
+        if connected_ids:
+            labels_res = supabase.table('graph_nodes').select('node_id, label').in_('node_id', list(connected_ids)).execute()
+            label_map = {n['node_id']: n['label'] for n in labels_res.data}
+            
+            labeled_map = []
+            for edge in edges_res.data:
+                src_label = label_map.get(edge['source_id'], f"Node {edge['source_id']}")
+                tgt_label = label_map.get(edge['target_id'], f"Node {edge['target_id']}")
+                
+                if edge['source_id'] == primary_id:
+                    labeled_map.append(f"[{primary_node['label']}] -> [{edge['relationship']}] -> [{tgt_label}]")
+                elif edge['target_id'] == primary_id:
+                    labeled_map.append(f"[{src_label}] -> [{edge['relationship']}] -> [{primary_node['label']}]")
+            
+            return "\n".join(labeled_map)
+        
+        return ""
+    
+    except Exception as e:
+        print(f"Hybrid search error: {e}")
+        return ""
+
+
 async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top_k: int = 5) -> list:
     """High-Res Hindsight: Multi-signal vector search across tasks and inputs."""
     try:
@@ -698,13 +747,27 @@ Inputs:
         # Look back 30 days so patterns can form over time, not just items
         thirty_days_ago = (now - timedelta(days=30)).isoformat()
 
-        # --- 🧠 HIGH-RES HINDSIGHT RETRIEVAL ---
+        # --- 🧠 HIGH-RES HINDSIGHT RETRIEVAL (Hybrid Graph + Vector) ---
         hindsight_context = "None"
+        graph_context = "None"
         task_inputs = [d['content'] for d in dumps] if dumps else []
+        
+        # Graph-first: Search for primary entity in task inputs
+        if task_inputs:
+            combined_input = " ".join(task_inputs[:3])
+            graph_context = await hybrid_search_graph(combined_input[:100])
+        
         if task_inputs or active_tasks:
             hindsight_memories = await retrieve_hindsight_memories(task_inputs, active_tasks, top_k=5)
             if hindsight_memories:
-                hindsight_context = "\n".join(hindsight_memories)
+                memory_lines = []
+                if graph_context:
+                    memory_lines.append(f"TACTICAL MAP:\n{graph_context}")
+                for m in hindsight_memories:
+                    content = m.get('content', '')
+                    mtype = m.get('memory_type', 'memory').upper()
+                    memory_lines.append(f"[{mtype}] {content}")
+                hindsight_context = "\n\n".join(memory_lines)
                 print(f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
 
         recent_lib = supabase.table('resources')\

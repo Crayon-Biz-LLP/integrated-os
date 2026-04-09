@@ -330,10 +330,64 @@ async def handle_clarification(text: str, question: str, chat_id: int, receipt: 
     }]).execute()
 
 
+async def hybrid_search_graph(query: str) -> str:
+    """Graph-first search: Find primary entity and its connections."""
+    try:
+        query_lower = query.lower()
+        
+        nodes_res = supabase.table('graph_nodes').select('node_id, label').ilike('label', f'%{query}%').limit(1).execute()
+        
+        if not nodes_res.data:
+            return ""
+        
+        primary_node = nodes_res.data[0]
+        primary_id = primary_node['node_id']
+        
+        edges_res = supabase.table('graph_edges').select('source_id, target_id, relationship').or_(f'source_id.eq.{primary_id},target_id.eq.{primary_id}').execute()
+        
+        if not edges_res.data:
+            return ""
+        
+        connected_ids = set()
+        tactical_map = []
+        
+        for edge in edges_res.data:
+            if edge['source_id'] == primary_id:
+                connected_ids.add(edge['target_id'])
+                tactical_map.append(f"[{primary_node['label']}] -> [{edge['relationship']}] -> [Node {edge['target_id']}]")
+            elif edge['target_id'] == primary_id:
+                connected_ids.add(edge['source_id'])
+                tactical_map.append(f"[Node {edge['source_id']}] -> [{edge['relationship']}] -> [{primary_node['label']}]")
+        
+        if connected_ids:
+            labels_res = supabase.table('graph_nodes').select('node_id, label').in_('node_id', list(connected_ids)).execute()
+            label_map = {n['node_id']: n['label'] for n in labels_res.data}
+            
+            labeled_map = []
+            for edge in edges_res.data:
+                src_label = label_map.get(edge['source_id'], f"Node {edge['source_id']}")
+                tgt_label = label_map.get(edge['target_id'], f"Node {edge['target_id']}")
+                
+                if edge['source_id'] == primary_id:
+                    labeled_map.append(f"[{primary_node['label']}] -> [{edge['relationship']}] -> [{tgt_label}]")
+                elif edge['target_id'] == primary_id:
+                    labeled_map.append(f"[{src_label}] -> [{edge['relationship']}] -> [{primary_node['label']}]")
+            
+            return "\n".join(labeled_map)
+        
+        return ""
+    
+    except Exception as e:
+        print(f"Hybrid search error: {e}")
+        return ""
+
+
 async def interrogate_brain(query: str, chat_id: int):
-    """On-Demand Brain Interrogation - Search memories and resources."""
+    """On-Demand Brain Interrogation - Hybrid Graph + Vector Search."""
     try:
         await send_telegram(chat_id, "🧠 *Searching your vault...*")
+        
+        tactical_map = await hybrid_search_graph(query)
         
         embedding = get_embedding(query)
         
@@ -355,6 +409,9 @@ async def interrogate_brain(query: str, chat_id: int):
         
         all_context = []
         
+        if tactical_map:
+            all_context.append(f"TACTICAL MAP:\n{tactical_map}")
+        
         for m in memories:
             source = m.get('memory_type', 'memory').upper()
             content = m.get('content', '')
@@ -374,9 +431,8 @@ async def interrogate_brain(query: str, chat_id: int):
         
         context_str = "\n\n".join(all_context)
         
-        prompt = f"""You are Danny's memory assistant. Based on the provided context from his vault, answer his question accurately and concisely. If you don't know the answer, say so. Cite the source (Memory Type or Link) if possible.
+        prompt = f"""You are Danny's Rhodey. Danny is asking about a node in your network. Use the TACTICAL MAP to identify dependencies and potential bottlenecks. Give a direct, logic-based answer. If you don't know the answer, say so. Cite the source if possible.
 
-Vault Context:
 {context_str}
 
 Question: {query}
