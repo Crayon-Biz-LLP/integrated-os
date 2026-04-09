@@ -1,6 +1,7 @@
 # api/webhook.py
 import os
 import json
+import asyncio
 import httpx
 from supabase import create_client, Client
 from datetime import datetime, timezone, timedelta
@@ -15,6 +16,40 @@ gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 EMBEDDING_MODEL = "text-embedding-004"
 CLASSIFICATION_MODEL = "gemini-3.1-flash-lite-preview"
 EMBEDDING_DIMENSION = 768
+
+
+async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
+    """Call Gemini with retry logic (3 retries, exponential backoff for 503 errors)."""
+    if model is None:
+        model = CLASSIFICATION_MODEL
+    
+    max_retries = 3
+    base_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            if contents is not None:
+                response = gemini_client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config or {}
+                )
+            else:
+                response = gemini_client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=config or {}
+                )
+            return response
+        except Exception as e:
+            error_str = str(e).lower()
+            if '503' in error_str and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"⚠️ Gemini 503 error, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
+                await asyncio.sleep(delay)
+                continue
+            else:
+                raise
 
 
 def get_embedding(text: str) -> list:
@@ -75,17 +110,20 @@ def classify_intent(text: str, context: list, ist_hour: int = None) -> dict:
     - CRITICAL: Do not imply that the work is already finished, drafted, or sent (e.g., do not say "I've drafted it" or "It's handled") unless the intent is explicitly DELEGATE. Focus on the fact that the entry is safe so Danny can stop thinking about it.
     - Tone: Trusted Partner—direct, simple, human—but prioritize accuracy over sounding "smart"."""
 
-    try:
-        response = gemini_client.models.generate_content(
-            model=CLASSIFICATION_MODEL,
-            contents=prompt,
-            config={'response_mime_type': 'application/json'}
-        )
-        result = json.loads(response.text)
-        return result
-    except Exception as e:
-        print(f"Classification error: {e}")
-        return {"intent": "CLARIFICATION_NEEDED", "confidence": 0.0, "clarification_question": "My brain stalled. Could you repeat that?"}
+    async def _classify():
+        try:
+            response = await call_gemini_with_retry(
+                prompt=prompt,
+                model=CLASSIFICATION_MODEL,
+                config={'response_mime_type': 'application/json'}
+            )
+            result = json.loads(response.text)
+            return result
+        except Exception as e:
+            print(f"Classification error: {e}")
+            return {"intent": "CLARIFICATION_NEEDED", "confidence": 0.0, "clarification_question": "My brain stalled. Could you repeat that?"}
+    
+    return asyncio.get_event_loop().run_until_complete(_classify())
 
 
 async def get_recent_context(limit: int = 2) -> list:
@@ -176,9 +214,9 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
         else:
             content_parts.append(file_bytes.decode('utf-8', errors='ignore'))
         
-        response = gemini_client.models.generate_content(
-            model=CLASSIFICATION_MODEL,
+        response = await call_gemini_with_retry(
             contents=content_parts,
+            model=CLASSIFICATION_MODEL,
             config={'response_mime_type': 'application/json'}
         )
         
@@ -337,10 +375,7 @@ Question: {query}
 
 Provide a clear, concise answer. Format with Markdown. If referencing a specific memory, cite it like [MEMORY] or [RESOURCE]."""
         
-        response = gemini_client.models.generate_content(
-            model=CLASSIFICATION_MODEL,
-            contents=prompt
-        )
+        response = await call_gemini_with_retry(prompt=prompt, model=CLASSIFICATION_MODEL)
         
         answer = response.text.strip()
         

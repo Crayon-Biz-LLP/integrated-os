@@ -14,6 +14,42 @@ from google import genai
 EMBEDDING_MODEL = "text-embedding-004"
 EMBEDDING_DIMENSION = 768
 
+BRIEFING_MODEL = "gemini-3-flash-preview"
+
+
+async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
+    """Call Gemini with retry logic (3 retries, exponential backoff for 503 errors)."""
+    if model is None:
+        model = BRIEFING_MODEL
+    
+    max_retries = 3
+    base_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            if contents is not None:
+                response = gemini_client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config or {}
+                )
+            else:
+                response = gemini_client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=config or {}
+                )
+            return response
+        except Exception as e:
+            error_str = str(e).lower()
+            if '503' in error_str and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"⚠️ Gemini 503 error, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
+                await asyncio.sleep(delay)
+                continue
+            else:
+                raise
+
 
 def get_embedding(text: str) -> list:
     """Generate embedding for text using text-embedding-004."""
@@ -102,10 +138,7 @@ async def generate_daily_reflection() -> str:
 
 Generate a single, actionable "Daily Lesson" - one key insight or principle Danny should remember from today. Keep it to 1-2 sentences. Focus on strategic patterns, not mundane details."""
         
-        response = gemini_client.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=prompt
-        )
+        response = await call_gemini_with_retry(prompt=prompt)
         
         lesson = response.text.strip()
         
@@ -872,9 +905,9 @@ Inputs:
 
         try:
             # 🛡️ Step 2: The Modern Call (No 'GenerativeModel' needed)
-            response = gemini_client.models.generate_content(
-                model="gemini-3-flash-preview", 
-                contents=prompt, 
+            response = await call_gemini_with_retry(
+                prompt=prompt,
+                model=BRIEFING_MODEL,
                 config={'response_mime_type': 'application/json'}
             )
             response_text = response.text
@@ -1018,6 +1051,17 @@ Inputs:
                     # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
                     raw_time = task.get('reminder_at')
                     sanitized_time = format_rfc3339(raw_time) if raw_time else None
+                    
+                    # 🔄 DE-CLASH LOGIC: Auto-stagger reminder_at by 15-min increments for same slot
+                    if sanitized_time and 'T' in sanitized_time:
+                        time_slot = sanitized_time.split('T')[0]
+                        existing_same_slot = [t for t in task_inserts if t.get('reminder_at', '').startswith(time_slot)]
+                        if existing_same_slot:
+                            stagger_count = len(existing_same_slot)
+                            original_time = datetime.fromisoformat(sanitized_time.replace('Z', '+00:00'))
+                            staggered_time = original_time + timedelta(minutes=15 * stagger_count)
+                            sanitized_time = staggered_time.strftime('%Y-%m-%dT%H:%M:%S+05:30')
+                            print(f"⏰ De-clash: Staggered '{task_title}' to {sanitized_time.split('T')[1][:5]}")
                     
                     g_id = None
                     e_id = None
