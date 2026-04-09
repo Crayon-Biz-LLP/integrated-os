@@ -1,23 +1,37 @@
-name: Pulse Cron
+name: Pulse Engine (Rhodey SITREP)
 on:
   schedule:
-    # WEEKDAYS (Mon-Fri)
-    # Runs at: 03:30, 06:30, 10:30, 13:30 UTC matches 9AM, 12PM, 4PM, 7PM IST
-    - cron: '30 3,6,10,13 * * 1-5'
-    
-    # WEEKENDS (Sat-Sun)
-    # Runs at: 10:00, 15:00 IST
-    - cron: '30 4,9 * * 0,6'
-  workflow_dispatch:  # Manual test button
+    - cron: '30 3,6,10,13 * * 1-5' # Weekdays IST: 9AM, 12PM, 4PM, 7PM
+    - cron: '30 4,9 * * 0,6'       # Weekends IST: 10AM, 3PM
+  workflow_dispatch:              # Manual trigger button in GitHub
+  repository_dispatch:            # Allows Vercel to trigger this
+    types: [trigger_pulse]
 
 jobs:
-  pulse:
+  run-pulse:
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # Gemini safe
     steps:
-    - name: Trigger Vercel Pulse (Python Engine)
-      run: |
-        curl -f -s -w "\nHTTP Status: %{http_code}" -X POST \
-          https://integrated-os.vercel.app/api/pulse \
-          -H "x-pulse-secret: ${{ secrets.PULSE_SECRET }}" \
-          -H "Content-Length: 0"
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Execute Rhodey SITREP
+        env:
+          # You MUST add these to GitHub Settings > Secrets > Actions
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          PULSE_SECRET: ${{ secrets.PULSE_SECRET }}
+        run: python core/pulse_cli.py
