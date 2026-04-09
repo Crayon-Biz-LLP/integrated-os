@@ -431,7 +431,7 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
     rfc_date = format_rfc3339(due_at)
     
     # 3. Time-Visibility Title Hack
-    if rfc_date and 'T' in rfc_date:
+    if due_at and 'T' in str(due_at):
         time_str = rfc_date.split('T')[1][:5] # Extract "09:00"
         if title and f"{time_str}" not in title:
             title = f"🕒 {time_str} | {title}"
@@ -834,16 +834,11 @@ Inputs:
             - LOCAL TIMEZONE: Use Indian Standard Time (IST), which is UTC+05:30.
             - If Danny specifies a DAY but NO TIME (e.g., "today"), output ONLY the date format: "YYYY-MM-DD". If and ONLY IF he specifies an EXACT TIME (e.g., "at 4pm"), output the full format: "YYYY-MM-DDTHH:MM:SS+05:30".
             - TASK GROUPING: If Danny mentions multiple people for the same action (e.g., "Suriya and Siva"), extract it as ONE single task. Do not split them into multiple tasks.
-            - DEFAULTS: 
-                - If "Morning" is mentioned without a time: Use 09:00:00+05:30.
-                - If "Evening" is mentioned without a time: Use 18:00:00+05:30.
-                - If a day (e.g., "Friday") is mentioned without a time: Use 09:00:00+05:30 on that date.
+            - NAKED TASKS: If Danny does NOT explicitly mention a day, date, or time, you MUST set reminder_at to null. Do not guess 'today'.
             - CURRENT REFERENCE: Use the system timestamp provided in the input to calculate relative dates (e.g., "Friday" relative to today).
-            - FIELD: Always populate this in the `reminder_at` field of the JSON output.
         7. DYNAMIC TASK MATCHING:
             - Compare inputs against ALL SYSTEM TASKS.
             - If Danny says "I'm done" or "Completed," mark the status as `done`.
-            - Every NEW_TASK must now include a `reminder_at` if a time was implied.
             - DURATION ASSIGNMENT: Assign `estimated_duration` based on task type:
               - 15 minutes for routine tasks (emails, quick replies, status updates)
               - 45 minutes for anything related to Pilots, Sales, or high-stakes Mission 10 items
@@ -1072,7 +1067,7 @@ Inputs:
                             g_id = sync_to_google(
                                 tasks_service,
                                 title=task_title,
-                                due_at=sanitized_time
+                                due_at=raw_time
                             )
                             if g_id: print(f"📡 Google Task Created: {task_title}")
                         except Exception as e:
