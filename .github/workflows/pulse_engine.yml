@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - bulk-archive-sync
+          - backfill-graph
 
 jobs:
   bulk-archive-sync:
