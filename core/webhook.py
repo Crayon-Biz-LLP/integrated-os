@@ -105,10 +105,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - DELEGATE: Research, competitor audits, or autonomous web research.
-    - RECEIPT RULE: Construct a 'Tactical Receipt.' One punchy sentence.
-        STRICT ISOLATION: Never use words like 'focus,' 'momentum,' or 'distraction.' Never explain WHY you are logging something (do NOT say 'so you can...').
-        BRIDGE-BUILDING GUARD: Do NOT reference Danny's other projects or North Stars (like pilots) unless he explicitly mentions them.
-        SUBJECT-AWARENESS: Mention the task subject directly. (e.g., 'ICICI bill is on the list.').
+    - RECEIPT RULE: Construct a one-sentence Tactical Receipt. You must use the 'LITERAL SUBJECT RULE': Mirror Danny's verb (e.g., 'Check with X' becomes 'X check-in logged'). Mention the entity (e.g., 'Logged under PERSONAL'). ABSOLUTELY NO rephrasing as a third-party request. NO coaching. NO filler words like 'I have' or 'for you'.
     - Tone: Rhodey—direct, grounded, professional."""
 
     try:
@@ -189,10 +186,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
     - TASK: Any implied action (Send, Call, Fix). Do not require a date. 
     - NOTE: Strategic insights, facts, or observations worth remembering.
     - DELEGATE: Research requests, competitor audits, or dossier building.
-    - RECEIPT RULE: Construct a 'Tactical Receipt.' One punchy sentence.
-        STRICT ISOLATION: Never use words like 'focus,' 'momentum,' or 'distraction.' Never explain WHY you are logging something (do NOT say 'so you can...').
-        BRIDGE-BUILDING GUARD: Do NOT reference Danny's other projects or North Stars (like pilots) unless he explicitly mentions them.
-        SUBJECT-AWARENESS: Mention the task subject directly.
+    - RECEIPT RULE: Construct a one-sentence Tactical Receipt. You must use the 'LITERAL SUBJECT RULE': Mirror Danny's verb (e.g., 'Check with X' becomes 'X check-in logged'). Mention the entity (e.g., 'Logged under PERSONAL'). ABSOLUTELY NO rephrasing as a third-party request. NO coaching. NO filler words like 'I have' or 'for you'.
 
     OUTPUT:
     Return ONLY a valid JSON array of objects. For every item, identify the 'entity' (QHORD, SOLVSTRAT, etc.).
@@ -269,9 +263,9 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
         
         if summary_parts:
             summary = " & ".join(summary_parts)
-            await send_telegram(chat_id, f"✓ Logged {summary}.")
+            await send_telegram(chat_id, f"Logged {summary}.")
         else:
-            await send_telegram(chat_id, f"✓ Understood.")
+            await send_telegram(chat_id, f"Understood.")
         
         return {"tasks": task_count, "notes": note_count}
     
@@ -293,8 +287,8 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         })
     }]).execute()
     
-    ack = receipt or "Got it. I've put this on the list so you don't have to think about it."
-    await send_telegram(chat_id, f"✓ {ack}\n\n{title}\n{'⏰ ' + time_context if time_context else ''}")
+    ack = receipt or "Logged."
+    await send_telegram(chat_id, f"{ack}")
 
 
 async def handle_confident_note(text: str, chat_id: int, receipt: str = None):
@@ -305,12 +299,12 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None):
         "embedding": embedding
     }).execute()
     ack = receipt or "Saved. I'll keep this safe while you keep moving."
-    await send_telegram(chat_id, f"✓ {ack}")
+    await send_telegram(chat_id, f"{ack}")
 
 
 async def handle_clarification(text: str, question: str, chat_id: int, receipt: str = None):
     ack = receipt or "I see the weight of this, Danny. We'll solve it together. Just keep going."
-    reply = f"✓ {ack}\n\n{question}\n\n_Context: \"{text[:100]}...\"_"
+    reply = f"{ack}\n\n{question}\n\n_Context: \"{text[:100]}...\"_"
     await send_telegram(chat_id, reply)
     
     supabase.table('raw_dumps').insert([{
