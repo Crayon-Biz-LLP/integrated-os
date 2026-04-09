@@ -57,15 +57,17 @@ def classify_intent(text: str, context: list, ist_hour: int = None) -> dict:
     {{
         "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE",
         "confidence": 0.0-1.0,
-        "entity": "QHORD|SOLVSTRAT|PRODUCT_LABS|CRAYON|PERSONAL|CHURCH",
+        "entity": "QHORD|SOLVSTRAT|PRODUCT_LABS|CRAYON|PERSONAL|CHURCH|INBOX",
         "title": "extracted task title if TASK",
         "time_context": "extracted time/due info if any",
         "clarification_question": "ask Danny what's missing if CLARIFICATION_NEEDED",
-        "receipt": "Got it. I've added the experience letters for Suriya and Siva (Crayon) to your list for tomorrow morning. It's safe in the system; go head home to the family.",
+        "receipt": "Got it. I've added the task to test this OS and document the process to your list for tomorrow.",
         "reasoning": "brief reasoning for classification"
     }}
 
     Rules:
+    - STRICT TITLE FIDELITY: The title field must be a literal extraction of the task as spoken. NEVER add project names, infer entities, or change Danny's wording (e.g., if he says "this OS," do NOT change it to "Qhord OS").
+    - PROJECT ROUTING: Categorize the entity based ONLY on explicit keywords. If no project is mentioned, default to "PERSONAL" or "INBOX".
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - DELEGATE: Research, competitor audits, or autonomous web research.

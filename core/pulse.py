@@ -1067,74 +1067,19 @@ Inputs:
             if task_inserts:
                 try:
                     supabase.table('tasks').insert(task_inserts).execute()
-                    print(f"✅ Successfully synced {len(task_inserts)} new tasks.")
-                except Exception as e:
-                    print(f"❌ Supabase Insert Error: {e}")
-
-        # 🚀 E. BATCH NEW MISSIONS (Updated to include Description)
-        if ai_data.get('new_missions'):
-            for m in ai_data['new_missions']:
-                m_title = m.get('title')
-                m_desc = m.get('description', 'Auto-detected strategic pattern.') # Capture the logic!
-                
-                if not any(m_title.lower() in existing['title'].lower() for existing in active_missions):
-                    try:
-                        m_res = supabase.table('missions').insert({
-                            "title": m_title,
-                            "description": m_desc, # Now saving to DB
-                            "status": "active"
-                        }).execute()
-                        if m_res.data:
-                            active_missions.extend(m_res.data)
-                            print(f"🚀 AUTO-MISSION CREATED: {m_title}")
-                    except Exception as e:
-                        print(f"Error creating mission: {e}")
-
-        # 🔖 F. BATCH NEW RESOURCES (Titan-Grade De-Duplication)
-        if ai_data.get('resources'):
-            resource_inserts = []
-            # 🛡️ THE GUARD: Now works because we added 'url' to the select query above
-            existing_urls = {r['url'] for r in recent_lib.data} if recent_lib.data else set()
-
-            for res in ai_data['resources']:
-                target_url = res.get('url')
-                
-                if target_url in existing_urls:
-                    print(f"⏩ Skipping duplicate resource: {target_url}")
-                    continue
-
-                # --- High-Precision Matching (No Empty Strings!) ---
-                m_name = (res.get('mission_name') or "").lower().strip()
-                mission_match = next((m for m in active_missions if m_name == m['title'].lower()), None)
-                if not mission_match and m_name:
-                    mission_match = next((m for m in active_missions if m_name in m['title'].lower()), None)
-                
-                p_name = (res.get('project_name') or "").lower().strip()
-                project_match = next((p for p in projects if p_name == p['name'].lower()), None)
-                if not project_match and p_name:
-                    project_match = next((p for p in projects if p_name in p['name'].lower()), None)
-                
-                resource_inserts.append({
-                    "url": target_url,
-                    "title": res.get('title'),
-                    "summary": res.get('summary'),
-                    "strategic_note": res.get('strategic_note'),
-                    "category": res.get('category', 'LINK'),
-                    "mission_id": mission_match['id'] if mission_match else None,
-                    "project_id": project_match['id'] if project_match else None
-                })
-            
-            if resource_inserts:
-                supabase.table('resources').insert(resource_inserts).execute()
-                print(f"✅ Vaulted {len(resource_inserts)} unique resources.")
+                    print(f"✅ Inserted {len(task_inserts)} new tasks.")
+                    
+                    # Conditional Update: Only mark raw_dumps as processed after successful task insertion
+                    if dumps:
+                        dump_ids = [d['id'] for d in dumps]
+                        supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
+                except Exception as te:
+                    print(f"⚠️ Task insertion failed: {te}")
+                    # Safety Logic: Do NOT mark dumps as processed if task insertion failed
 
         # G. CLEANUP & LOGS
         if ai_data.get('logs'):
             supabase.table('logs').insert(ai_data['logs']).execute()
-
-        if dumps:
-            dump_ids = [d['id'] for d in dumps]
-            supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
 
         briefing_text = ai_data.get('briefing', '')
         if briefing_text:
