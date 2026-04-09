@@ -18,6 +18,44 @@ CLASSIFICATION_MODEL = "gemini-3.1-flash-lite-preview"
 EMBEDDING_DIMENSION = 768
 
 
+async def trigger_github_pulse() -> bool:
+    """Trigger GitHub Actions workflow dispatch for pulse briefing."""
+    try:
+        github_token = os.getenv("GITHUB_TOKEN")
+        if not github_token:
+            print("ERROR: GITHUB_TOKEN not set")
+            return False
+        
+        owner = os.getenv("GITHUB_OWNER", "Crayon-Biz-LLP")
+        repo = os.getenv("GITHUB_REPO", "integrated-os")
+        
+        url = f"https://api.github.com/repos/{owner}/{repo}/dispatches"
+        
+        headers = {
+            "Authorization": f"token {github_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        
+        payload = {
+            "event_type": "trigger_pulse"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, headers=headers, timeout=10)
+            
+            if response.status_code == 204:
+                print("✓ GitHub Actions workflow triggered successfully")
+                return True
+            else:
+                print(f"✗ GitHub dispatch failed: {response.status_code} - {response.text}")
+                return False
+                
+    except Exception as e:
+        print(f"ERROR triggering GitHub pulse: {e}")
+        return False
+
+
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
     """Call Gemini with retry logic (3 retries, exponential backoff for 503 errors)."""
     if model is None:
@@ -670,17 +708,11 @@ async def handle_command(text: str, chat_id: int):
             reply = "✅ No active fires. You are strategic."
 
     elif text in ['/brief', '📋 Brief']:
-        now_iso = datetime.now(timezone.utc).isoformat()
-        tasks_res = supabase.table('tasks').select('title, priority').eq('status', 'todo').or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}").limit(15).execute()
-        tasks = tasks_res.data or []
-        if tasks:
-            sort_order = {'urgent': 1, 'important': 2, 'chores': 3, 'ideas': 4}
-            sorted_tasks = sorted(tasks, key=lambda x: sort_order.get(x.get('priority'), 99))[:5]
-            icons = {'urgent': '🔴', 'important': '🟡', 'chores': '⚪', 'ideas': '💡'}
-            formatted = [f"{icons.get(t.get('priority'), '⚪')} {t.get('title')}" for t in sorted_tasks]
-            reply = f"📋 **EXECUTIVE BRIEF:**\n\n" + "\n".join(formatted)
+        triggered = await trigger_github_pulse()
+        if triggered:
+            reply = "Understood. Offloading heavy intel to the remote server. Sit tight, the SITREP will arrive in about 60 seconds."
         else:
-            reply = "The list is empty. Go enjoy your family."
+            reply = "⚠️ Could not trigger remote briefing. Try again or check system config."
 
     await send_telegram(chat_id, reply)
     return {"success": True}
