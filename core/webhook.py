@@ -64,7 +64,7 @@ def get_embedding(text: str) -> list:
         return [0] * EMBEDDING_DIMENSION
 
 
-def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]") -> dict:
+async def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]") -> dict:
     from datetime import datetime, timezone, timedelta
     ist_offset = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist_offset)
@@ -112,20 +112,17 @@ def classify_intent(text: str, context: list, ist_hour: int = None, core_json: s
     - CRITICAL: Do not imply that the work is already finished, drafted, or sent (e.g., do not say "I've drafted it" or "It's handled") unless the intent is explicitly DELEGATE. Focus on the fact that the entry is safe so Danny can stop thinking about it.
     - Tone: Trusted Partner—direct, simple, human—but prioritize accuracy over sounding "smart"."""
 
-    async def _classify():
-        try:
-            response = await call_gemini_with_retry(
-                prompt=prompt,
-                model=CLASSIFICATION_MODEL,
-                config={'response_mime_type': 'application/json'}
-            )
-            result = json.loads(response.text)
-            return result
-        except Exception as e:
-            print(f"Classification error: {e}")
-            return {"intent": "CLARIFICATION_NEEDED", "confidence": 0.0, "clarification_question": "My brain stalled. Could you repeat that?"}
-    
-    return asyncio.get_event_loop().run_until_complete(_classify())
+    try:
+        response = await call_gemini_with_retry(
+            prompt=prompt,
+            model=CLASSIFICATION_MODEL,
+            config={'response_mime_type': 'application/json'}
+        )
+        result = json.loads(response.text)
+        return result
+    except Exception as e:
+        print(f"Classification error: {e}")
+        return {"intent": "CLARIFICATION_NEEDED", "confidence": 0.0, "clarification_question": "My brain stalled. Could you repeat that?"}
 
 
 async def get_recent_context(limit: int = 2) -> list:
@@ -485,7 +482,7 @@ async def process_webhook(update: dict):
             return {"success": True}
         
         context = await get_recent_context(limit=2)
-        classification = classify_intent(text, context, ist_hour=now.hour, core_json=core_json)
+        classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json)
         
         intent = classification.get('intent', 'TASK')
         confidence = classification.get('confidence', 0.5)
