@@ -71,23 +71,20 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     current_hour = ist_hour if ist_hour is not None else now.hour
     
     if 4 <= current_hour < 12:
-        time_phase = "Morning"
-        partner_greeting = "Let's clear this early. It's on the list."
+        time_phase = "morning"
     elif 12 <= current_hour < 18:
-        time_phase = "Afternoon"
-        partner_greeting = "Got it. I'll track this so you can keep your momentum."
+        time_phase = "afternoon"
     else:
-        time_phase = "Night"
-        partner_greeting = "I've got it. It's off your mind for tonight. Go be with the family."
+        time_phase = "night"
     
     context_str = ""
     if context:
         context_str = f"\n\nPrevious messages for context:\n" + "\n".join([f"- {c['content']}" for c in context])
     
-    prompt = f"""You are Danny's Rhodey. A high-level tactical partner. You are the military-grade reliability to Danny's electricity. You speak with professional familiarity, providing status reports, not life coaching or motivational advice.
+    prompt = f"""You are Danny's Rhodey. Tactical, brief, and reliable. You provide status reports, not life coaching or motivational advice. You are the military-grade reliability to Danny's electricity.
 
     Message: "{text}"{context_str}
-    CURRENT TIME CONTEXT: {partner_greeting} (Phase: {time_phase})
+    CURRENT TIME CONTEXT: It's the {time_phase}.
 
     IDENTITY & BUSINESS CONTEXT: {core_json}
 
@@ -107,24 +104,14 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     Rules:
     - STRICT TITLE FIDELITY: The title field must be a literal extraction of the task as spoken. NEVER add project names, infer entities, or change Danny's wording (e.g., if he says "this OS," do NOT change it to "Qhord OS").
-    - PROJECT ROUTING: Use the 'business_entities' and 'current_season' definitions provided in the context to assign the entity. If it mentions home, family, or faith, route to PERSONAL or CHURCH. Default to INBOX.
+    - PROJECT ROUTING: Route tasks about personal finances, bills, home, or family to PERSONAL. Only route to CRAYON if the task specifically relates to corporate governance, business taxes, or legal compliance. Route tech/client work to SOLVSTRAT. Default to INBOX.
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - DELEGATE: Research, competitor audits, or autonomous web research.
-    - RECEIPT RULE: Construct a 'Tactical Receipt.' Every receipt MUST incorporate the specific subject of Danny's message so the response is unique and grounded.
-        Objective: Confirm the entry is secured.
-        Constraint: One punchy sentence. No coaching, no gushing.
-        Style: Professional familiarity. Use the {time_phase} to subtly shift your tone.
-        NO BRIDGE-BUILDING: Do NOT reference Danny's other projects, goals, or 'pilots' unless he explicitly mentions them in the current message.
-        NO COACHING: Absolute prohibition on words like 'focus,' 'momentum,' or 'distraction.' Do NOT explain 'why' a task is being logged (e.g., never say 'so you can...').
-        SUBJECT-AWARENESS: Every receipt MUST incorporate the specific subject of Danny's message (e.g., 'Zoho API' or 'Vasanth roadmap') so the response is unique and grounded.
-        Output Tone:
-        - Morning: "The {{subject}} is on the list for this morning."
-        - Afternoon: "Secured. {{subject}} is logged under {{entity}}."
-        - Night: "Got the {{subject}}. It's safe for tomorrow; get some rest."
-        Vary the phrasing so it doesn't sound like a template, but keep it within this 'Status Report' style.
-    - PERSONA GUARD: NEVER start every response with 'Got it' or 'Understood.' Vary your openings. Talk like a partner, not a script.
-    - CRITICAL: Do not imply that the work is already finished, drafted, or sent (e.g., do not say "I've drafted it" or "It's handled") unless the intent is explicitly DELEGATE. Focus on the fact that the entry is safe so Danny can stop thinking about it.
+    - RECEIPT RULE: Construct a 'Tactical Receipt.' One punchy sentence.
+        STRICT ISOLATION: Never use words like 'focus,' 'momentum,' or 'distraction.' Never explain WHY you are logging something (do NOT say 'so you can...').
+        BRIDGE-BUILDING GUARD: Do NOT reference Danny's other projects or North Stars (like pilots) unless he explicitly mentions them.
+        SUBJECT-AWARENESS: Mention the task subject directly. (e.g., 'ICICI bill is on the list.').
     - Tone: Trusted Partner—direct, simple, human—but prioritize accuracy over sounding "smart"."""
 
     try:
@@ -181,22 +168,19 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
     current_hour = ist_hour if ist_hour is not None else now.hour
     
     if 4 <= current_hour < 12:
-        time_phase = "Morning"
-        partner_greeting = "Let's clear this early. It's on the list."
+        time_phase = "morning"
     elif 12 <= current_hour < 18:
-        time_phase = "Afternoon"
-        partner_greeting = "Got it. I'll track this so you can keep your momentum."
+        time_phase = "afternoon"
     else:
-        time_phase = "Night"
-        partner_greeting = "I've got it. It's off your mind for tonight. Go be with the family."
+        time_phase = "night"
     
-    prompt = f"""You are Danny's Rhodey. A high-level tactical partner. You are the military-grade reliability to Danny's electricity. You speak with professional familiarity, providing status reports, not life coaching or motivational advice.
+    prompt = f"""You are Danny's Rhodey. Tactical, brief, and reliable. You provide status reports, not life coaching or motivational advice. You are the military-grade reliability to Danny's electricity.
 
-    CURRENT TIME CONTEXT: {partner_greeting} (Phase: {time_phase})
+    CURRENT TIME CONTEXT: It's the {time_phase}.
 
     IDENTITY & BUSINESS CONTEXT: {core_json}
 
-    THE STRATEGIC MAP: Categorize the 'entity' based on the business_entities defined in the context above. If it's family/home, use PERSONAL. Default to INBOX.
+    THE STRATEGIC MAP: PROJECT ROUTING: Route tasks about personal finances, bills, home, or family to PERSONAL. Only route to CRAYON if the task specifically relates to corporate governance, business taxes, or legal compliance. Route tech/client work to SOLVSTRAT. Default to INBOX.
 
     ---
     MULTIMODAL INSTRUCTIONS:
@@ -208,6 +192,10 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
     - TASK: Any implied action (Send, Call, Fix). Do not require a date. 
     - NOTE: Strategic insights, facts, or observations worth remembering.
     - DELEGATE: Research requests, competitor audits, or dossier building.
+    - RECEIPT RULE: Construct a 'Tactical Receipt.' One punchy sentence.
+        STRICT ISOLATION: Never use words like 'focus,' 'momentum,' or 'distraction.' Never explain WHY you are logging something (do NOT say 'so you can...').
+        BRIDGE-BUILDING GUARD: Do NOT reference Danny's other projects or North Stars (like pilots) unless he explicitly mentions them.
+        SUBJECT-AWARENESS: Mention the task subject directly.
 
     OUTPUT:
     Return ONLY a valid JSON array of objects. For every item, identify the 'entity' (QHORD, SOLVSTRAT, etc.).
@@ -284,11 +272,10 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
         
         if summary_parts:
             summary = " & ".join(summary_parts)
-            ack = partner_greeting
-            await send_telegram(chat_id, f"✓ {ack} Logged {summary}.")
-        else:
-            ack = partner_greeting
+            ack = f"Logged {summary}."
             await send_telegram(chat_id, f"✓ {ack}")
+        else:
+            await send_telegram(chat_id, f"✓ Done.")
         
         return {"tasks": task_count, "notes": note_count}
     
