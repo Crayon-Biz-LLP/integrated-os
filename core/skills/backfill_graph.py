@@ -123,6 +123,7 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         
         existing_id = graph_entities.get(label)
         if existing_id:
+            # Updating an existing verified entity
             node_records.append({
                 "id": existing_id,
                 "label": label,
@@ -130,15 +131,17 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
                 "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
             })
         else:
+            # Creating or updating a new concept
+            # 🛡️ REMOVED "on_conflict" from the data dict
             node_records.append({
                 "label": label,
                 "type": node_type,
-                "on_conflict": "label",
                 "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
             })
     
     if node_records:
         try:
+            # The on_conflict instruction lives here, in the method call
             supabase.table("graph_nodes").upsert(
                 node_records,
                 on_conflict="label"
