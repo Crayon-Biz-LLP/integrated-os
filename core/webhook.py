@@ -654,15 +654,20 @@ async def handle_command(text: str, chat_id: int):
     if text.startswith('/mission') or text == '🚀 Mission':
         params = text.replace('/mission', '').replace('🚀 Mission', '').strip()
         if not params:
-            m_res = supabase.table('missions').select('title').eq('status', 'active').execute()
-            if m_res.data:
-                m_list = "\n".join([f"• {m['title']}" for m in m_res.data])
+            m_res = supabase.table('graph_nodes').select('label').eq('type', 'mission').execute()
+            active_missions = [m for m in (m_res.data or []) if json.loads(m.get('metadata', '{}')).get('status') == 'active']
+            if active_missions:
+                m_list = "\n".join([f"• {m['label']}" for m in active_missions])
                 reply = f"🚀 **ACTIVE MISSIONS:**\n\n{m_list}\n\n_To start a new one, type /mission [Goal]_"
             else:
                 reply = "🚀 No active missions. Type `/mission [Goal]` to start hunting."
         else:
             try:
-                supabase.table('missions').insert({"title": params}).execute()
+                supabase.table('graph_nodes').insert({
+                    "label": params,
+                    "type": "mission",
+                    "metadata": json.dumps({"status": "active", "origin": "webhook_command"})
+                }).execute()
                 reply = f"🚀 **MISSION DECLARED:** {params}\n\nI am now hunting for components and 'Sparks' related to this goal."
             except:
                 reply = "❌ Database Error creating mission."
