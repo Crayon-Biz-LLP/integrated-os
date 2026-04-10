@@ -5,6 +5,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from google import genai
 
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
 load_dotenv(dotenv_path)
@@ -16,6 +17,9 @@ if not supabase_url or not supabase_key:
     raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
 
 supabase: Client = create_client(supabase_url, supabase_key)
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
@@ -71,60 +75,58 @@ def fetch_sheet_data():
 
 
 def synthesize_content(entry_type: str, row) -> str:
-    is_list = isinstance(row, list)
+    topic = row[3].strip() if len(row) > 3 and row[3] else ""
+    thoughts = row[4].strip() if len(row) > 4 and row[4] else ""
+    takeaway = row[5].strip() if len(row) > 5 and row[5] else ""
+    word = row[6].strip() if len(row) > 6 and row[6] else ""
+    psalm = row[10].strip() if len(row) > 10 and row[10] else ""
+    testimony = row[12].strip() if len(row) > 12 and row[12] else ""
+    action = row[15].strip() if len(row) > 15 and row[15] else ""
+    prayer = row[19].strip() if len(row) > 19 and row[19] else ""
+    sermon = row[24].strip() if len(row) > 24 and row[24] else ""
+
+    parts = []
     
-    if is_list:
-        topic = row[2].strip() if len(row) > 2 else ""
-        thoughts = row[6].strip() if len(row) > 6 else ""
-        prayer = row[7].strip() if len(row) > 7 else ""
-        word_received = row[5].strip() if len(row) > 5 else ""
-        psalm = row[4].strip() if len(row) > 4 else ""
-        key_takeaway = row[19].strip() if len(row) > 19 else ""
+    if entry_type == "Psalm" and psalm:
+        parts.append(f"[PSALM] {psalm}")
+    elif entry_type == "Prayer" and prayer:
+        parts.append(f"[PRAYER] {prayer}")
+    elif entry_type == "Sermon" and sermon:
+        parts.append(f"[SERMON] {sermon}")
+    elif entry_type == "Prophecy" and word:
+        parts.append(f"[PROPHECY] {word}")
+    elif thoughts:
+        parts.append(thoughts)
     else:
-        topic = row.get("What is on your heart today?", "").strip()
-        thoughts = row.get("Pour out your thoughts here.", "").strip()
-        prayer = row.get("The Prayer Content", "").strip()
-        word_received = row.get("What is the word received?", "").strip()
-        psalm = row.get("Write your psalm to the Lord.", "").strip()
-        key_takeaway = row.get("Key Takeaway or Lesson Learned?", "").strip()
-    
-    if entry_type == "Prophecy":
-        parts = [f"[PROPHECY] {word_received}" if word_received else ""]
-        if topic:
-            parts.append(f"Topic: {topic}")
-        if key_takeaway:
-            parts.append(f"Lesson: {key_takeaway}")
-        return " | ".join([p for p in parts if p])
-    
-    elif entry_type == "Psalm":
-        parts = [f"[PSALM] {psalm}" if psalm else ""]
-        if word_received:
-            parts.append(f"Word: {word_received}")
-        if key_takeaway:
-            parts.append(f"Takeaway: {key_takeaway}")
-        return " | ".join([p for p in parts if p])
-    
-    elif entry_type == "Prayer":
-        parts = [f"[PRAYER] {prayer}" if prayer else ""]
-        if topic:
-            parts.append(f"Praying for: {topic}")
-        return " | ".join([p for p in parts if p])
-    
-    elif entry_type == "Sermon":
-        parts = [f"[SERMON] {thoughts}" if thoughts else ""]
-        if word_received:
-            parts.append(f"Revelation: {word_received}")
-        if key_takeaway:
-            parts.append(f"Application: {key_takeaway}")
-        return " | ".join([p for p in parts if p])
-    
-    else:
-        parts = [thoughts] if thoughts else []
-        if word_received:
-            parts.append(f"Word: {word_received}")
-        if key_takeaway:
-            parts.append(f"Takeaway: {key_takeaway}")
-        return " | ".join([p for p in parts if p])
+        return ""
+
+    if word and entry_type != "Prophecy":
+        parts.append(f"Word: {word}")
+    if takeaway:
+        parts.append(f"Takeaway: {takeaway}")
+    if action:
+        parts.append(f"Action: {action}")
+    if testimony:
+        parts.append(f"Testimony: {testimony}")
+
+    return " | ".join([p for p in parts if p])
+
+
+def get_embedding(text: str) -> list:
+    if not text:
+        return []
+    try:
+        result = gemini_client.models.embed_content(
+            model="gemini-embedding-2-preview",
+            content=text,
+            config={"output_dimensionality": 768}
+        )
+        if result and hasattr(result, 'embeddings') and result.embeddings:
+            return result.embeddings[0].values
+        return []
+    except Exception as e:
+        print(f"Embedding generation error: {e}")
+        return []
 
 
 def parse_timestamp(ts: str) -> str:
@@ -222,7 +224,7 @@ def process_row(row) -> dict:
     created_at = parse_timestamp(ts)
     
     if is_list:
-        entry_type_raw = row[2].strip() if len(row) > 2 else ""
+        entry_type_raw = row[3].strip() if len(row) > 3 else ""
     else:
         entry_type_raw = row.get("What is on your heart today?", "").strip()
     entry_type = MEMORY_TYPE_MAPPING.get(entry_type_raw, "Journal")
@@ -243,7 +245,7 @@ def process_row(row) -> dict:
     
     if is_list:
         try:
-            intensity = int(row[21]) if len(row) > 21 and row[21] else 0
+            intensity = int(row[14]) if len(row) > 14 and row[14] else 0
         except:
             intensity = 0
         try:
@@ -255,13 +257,13 @@ def process_row(row) -> dict:
             em_int = int(row[21]) if len(row) > 21 and row[21] else 0
         except:
             em_int = 0
-        category = row[28].strip() if len(row) > 28 else ""
-        action_velocity = row[31].strip() if len(row) > 31 else ""
-        consistency_score = row[32].strip() if len(row) > 32 else ""
-        victory_flag = row[33].strip() if len(row) > 33 else ""
-        input_score = row[34].strip() if len(row) > 34 else ""
-        location = row[17].strip() if len(row) > 17 else ""
-        tags = row[20].strip() if len(row) > 20 else ""
+        category = row[28].strip() if len(row) > 28 and row[28] else ""
+        action_velocity = row[31].strip() if len(row) > 31 and row[31] else ""
+        consistency_score = row[32].strip() if len(row) > 32 and row[32] else ""
+        victory_flag = row[33].strip() if len(row) > 33 and row[33] else ""
+        input_score = row[34].strip() if len(row) > 34 and row[34] else ""
+        location = row[2].strip() if len(row) > 2 and row[2] else ""
+        tags = row[16].strip() if len(row) > 16 and row[16] else ""
     else:
         try:
             intensity = int(row.get("Emotional Intensity", "").strip() or 0)
@@ -345,12 +347,15 @@ def run_ingest():
             skipped += 1
             continue
         
+        embedding = get_embedding(parsed["content"])
+        
         try:
             result = supabase.table("memories").insert({
                 "created_at": parsed["created_at"],
                 "content": parsed["content"],
                 "memory_type": "archive",
-                "metadata": parsed["metadata"]
+                "metadata": parsed["metadata"],
+                "embedding": embedding if embedding else None
             }).execute()
             
             memory_id = result.data[0]["id"] if result.data else None
