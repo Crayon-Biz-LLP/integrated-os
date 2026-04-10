@@ -23,10 +23,22 @@ MEMORY_TYPES = ["Prophecy", "Psalm", "Prayer", "Journal", "archive"]
 
 
 def fetch_memories():
+    existing_edges = supabase.table("graph_edges").select("metadata").execute()
+    processed_memory_ids = set()
+    for row in existing_edges.data or []:
+        try:
+            meta = json.loads(row.get("metadata", "{}"))
+            if meta.get("memory_id"):
+                processed_memory_ids.add(meta["memory_id"])
+        except:
+            pass
+    
     result = supabase.table("memories").select(
         "id, content, memory_type, metadata, created_at"
     ).in_("memory_type", MEMORY_TYPES).execute()
-    return result.data or []
+    
+    memories = [m for m in (result.data or []) if m["id"] not in processed_memory_ids]
+    return memories
 
 
 def fetch_graph_entities():

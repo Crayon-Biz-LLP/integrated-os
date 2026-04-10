@@ -94,7 +94,7 @@ def get_embedding(text: str) -> list:
     try:
         result = gemini_client.models.embed_content(
             model=EMBEDDING_MODEL,
-            content=text
+            contents=text
         )
         return result.embeddings[0].values
     except Exception as e:
@@ -525,11 +525,34 @@ KEYBOARD = {
 
 async def process_webhook(update: dict):
     try:
-
         from datetime import datetime, timezone, timedelta
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist_offset)
 
+        # 🚀 ADD THIS: JOURNAL SYNC HANDLER (Cloud Signal)
+        intent_signal = update.get('intent')
+        auth_secret = update.get('auth_secret')
+
+        if intent_signal == 'JOURNAL_SYNC':
+            # Verify the secret matches your .env PULSE_SECRET
+            if auth_secret != os.getenv("PULSE_SECRET"):
+                print("⛔ Unauthorized Journal Sync attempt.")
+                return {"status": "unauthorized", "message": "Invalid Secret"}
+            
+            print("📂 JOURNAL_SYNC signal received from Google Sheets.")
+            # Trigger the GitHub Action which now runs Ingest -> Backfill -> Briefing
+            triggered = await trigger_github_pulse()
+            
+            if triggered:
+                # Optional: Send a notification to your Telegram so you know it's working
+                owner_id = os.getenv("TELEGRAM_CHAT_ID")
+                if owner_id:
+                    await send_telegram(owner_id, "📂 *Journal signal received.* Synchronizing archive and re-wiring graph...")
+                return {"success": True, "message": "Sync pipeline triggered"}
+            else:
+                return {"success": False, "message": "GitHub trigger failed"}
+
+        # --- Standard Telegram Logic continues below ---
         if not update or 'message' not in update:
             return {"message": "No message"}
 
@@ -622,7 +645,16 @@ async def process_webhook(update: dict):
              entity=classification.get('entity') # 🚀 PASS THE ENTITY
     )
         elif intent == 'NOTE' and confidence >= 0.6:
-            await handle_confident_note(text, chat_id, receipt)
+            # 🚀 ADD THIS: Check if the note is a URL to route it to resources
+            if text.startswith('http') or 'www.' in text:
+                supabase.table('resources').insert({
+                    "url": text,
+                    "title": classification.get('title', 'New Resource'),
+                    "category": classification.get('entity', 'INBOX')
+                }).execute()
+                await send_telegram(chat_id, "🔖 Resource saved to Library.")
+            else:
+                await handle_confident_note(text, chat_id, receipt)
         elif intent == 'DELEGATE':
             supabase.table('agent_queue').insert({
                 "task": text,
