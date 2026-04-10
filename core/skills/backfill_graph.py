@@ -100,11 +100,12 @@ def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, me
                 "organization" if label in ["Solvstrat", "Crayon", "Church"] else \
                 "project" if label in ["CashFlow+", "Integrated-OS"] else "concept"
     
-    resp = supabase.table("graph_nodes").insert({
+    # 🛡️ THE FIX: Switch from .insert() to .upsert()
+    resp = supabase.table("graph_nodes").upsert({
         "label": label,
         "type": node_type,
         "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
-    }).execute()
+    }, on_conflict="label").execute()
     
     node_id = resp.data[0]["id"] if resp.data else None
     if node_id:
@@ -121,27 +122,22 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         label = node.get("label", "")
         node_type = node.get("type", "concept")
         
+        # We only include the 'id' if we definitely have a legacy one
+        record = {
+            "label": label,
+            "type": node_type,
+            "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
+        }
+        
         existing_id = graph_entities.get(label)
         if existing_id:
-            # Updating an existing verified entity
-            node_records.append({
-                "id": existing_id,
-                "label": label,
-                "type": node_type,
-                "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
-            })
-        else:
-            # Creating or updating a new concept
-            # 🛡️ REMOVED "on_conflict" from the data dict
-            node_records.append({
-                "label": label,
-                "type": node_type,
-                "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
-            })
+            record["id"] = existing_id
+            
+        node_records.append(record)
     
     if node_records:
         try:
-            # The on_conflict instruction lives here, in the method call
+            # 🛡️ THE FIX: on_conflict is a parameter, NOT a column
             supabase.table("graph_nodes").upsert(
                 node_records,
                 on_conflict="label"
