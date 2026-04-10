@@ -1,5 +1,6 @@
 import os
 import json
+import uuid
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from google import genai
@@ -112,7 +113,6 @@ def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, me
         created_nodes[label] = node_id
     return node_id
 
-
 def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
     if not nodes:
         return
@@ -122,7 +122,7 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         label = node.get("label", "")
         node_type = node.get("type", "concept")
         
-        # We only include the 'id' if we definitely have a legacy one
+        # Start the record
         record = {
             "label": label,
             "type": node_type,
@@ -132,12 +132,15 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         existing_id = graph_entities.get(label)
         if existing_id:
             record["id"] = existing_id
+        else:
+            # 🛡️ THE FIX: Generate a fresh UUID if no existing ID is found.
+            # This prevents the bulk upsert from sending 'null' for the ID.
+            record["id"] = str(uuid.uuid4())
             
         node_records.append(record)
     
     if node_records:
         try:
-            # 🛡️ THE FIX: on_conflict is a parameter, NOT a column
             supabase.table("graph_nodes").upsert(
                 node_records,
                 on_conflict="label"
