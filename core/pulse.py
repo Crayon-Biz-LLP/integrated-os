@@ -594,8 +594,28 @@ Inputs:
         core_res = supabase.table('core_config').select('key, content').execute()
         core = core_res.data or []
 
+        # Fetch business context from graph
+        graph_projects_res = supabase.table('graph_nodes').select('id, label, metadata').eq('type', 'project').execute()
+        graph_projects = graph_projects_res.data or []
+
+        projects = []
+        for gp in graph_projects:
+            metadata = gp.get('metadata', '{}')
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+            projects.append({
+                'id': gp['id'],
+                'name': gp['label'],
+                'org_tag': metadata.get('org_tag', 'INBOX'),
+                'description': metadata.get('description', ''),
+                'legacy_id': metadata.get('legacy_id')
+            })
+
         projects_res = supabase.table('projects').select('id, name, org_tag').execute()
-        projects = projects_res.data or []
+        legacy_projects = projects_res.data or []
 
         people_res = supabase.table('people').select('name, strategic_weight').execute()
         people = people_res.data or []
@@ -796,6 +816,15 @@ Inputs:
         # --- 2. THINK Phase ---
         print('🤖 Building prompt...')
 
+        # Build project context for AI
+        project_details = []
+        for p in projects:
+            desc = p.get('description', '')
+            detail = p['name']
+            if desc:
+                detail += f" | {desc}"
+            project_details.append(detail)
+
         project_names = [p['name'] for p in projects]
         people_names = [p['name'] for p in people]
         compressed_tasks_final = compressed_tasks[:3000]  # Hard limit
@@ -828,7 +857,7 @@ Inputs:
 
         CONTEXT:
         - IDENTITY: {json.dumps(core)}
-        - PROJECTS: {json.dumps(project_names)}
+        - PROJECTS: {json.dumps(project_details)}
         - PEOPLE: {json.dumps(people_names)}
         - ACTIONABLE TASKS (DAY FILTERED): {compressed_tasks_final}
         - ALL SYSTEM TASKS (FOR ID MATCHING): {universal_task_map[:3000]}
@@ -1013,6 +1042,10 @@ Inputs:
                     p_name.lower() in existing_p['name'].lower() or
                     existing_p['name'].lower() in p_name.lower()
                     for existing_p in projects
+                ) or any(
+                    p_name.lower() in lp['name'].lower() or
+                    lp['name'].lower() in p_name.lower()
+                    for lp in legacy_projects
                 )
                 if not already_exists:
                     filtered_new_projects.append({
@@ -1101,14 +1134,21 @@ Inputs:
                 # 🛡️ STEP A: Try for an EXACT match first
                 project_match = next((p for p in projects if ai_target == p['name'].lower()), None)
                 
-                # 🛡️ STEP B: Fuzzy match ONLY if ai_target isn't empty
+                # 🛡️ STEP B: Try legacy projects if not found
+                if not project_match and ai_target.strip():
+                    project_match = next(
+                        (p for p in legacy_projects if ai_target == p['name'].lower()),
+                        None
+                    )
+                
+                # 🛡️ STEP C: Fuzzy match ONLY if ai_target isn't empty
                 if not project_match and ai_target.strip():
                     project_match = next(
                         (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
                         None
                     )
                 
-                # 🛡️ STEP C: The Safety Net (Default to INBOX)
+                # 🛡️ STEP D: The Safety Net (Default to INBOX)
                 if not project_match:
                     project_match = next((p for p in projects if p.get('org_tag') == 'INBOX'), projects[0] if projects else None)
 
@@ -1162,9 +1202,11 @@ Inputs:
                             print(f"⚠️ Calendar Sync failed for {task_title}: {ce}")
 
                     # 4. BUILD SUPABASE PAYLOAD (Using the Sanitized Time)
+                    # Use legacy_id for tasks table since it expects integer project_id
+                    task_project_id = project_match.get('legacy_id') or project_match.get('id')
                     task_inserts.append({
                         "title": task_title,
-                        "project_id": project_match['id'],
+                        "project_id": task_project_id,
                         "priority": (task.get('priority') or 'important').lower(),
                         "status": "todo",
                         "estimated_minutes": task.get('estimated_duration', 15),

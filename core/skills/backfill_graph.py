@@ -28,9 +28,9 @@ def fetch_memories():
     return result.data or []
 
 
-def fetch_people_lookup():
-    result = supabase.table("people").select("id, name").execute()
-    return {row["name"]: row["id"] for row in (result.data or [])}
+def fetch_graph_entities():
+    result = supabase.table("graph_nodes").select("id, label, type").in_("type", ["person", "project"]).execute()
+    return {row["label"]: row["id"] for row in (result.data or [])}
 
 
 def synthesize_content(memory: dict) -> str:
@@ -87,17 +87,12 @@ Rules:
         return {"nodes": [], "edges": []}
 
 
-def get_or_create_node(label: str, people_lookup: dict, created_nodes: dict, memory_id: str = None) -> str:
+def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, memory_id: str = None) -> str:
     if label in created_nodes:
         return created_nodes[label]
     
-    if label in people_lookup:
-        created_nodes[label] = people_lookup[label]
-        return people_lookup[label]
-    
-    existing = supabase.table("graph_nodes").select("id").eq("label", label).execute()
-    if existing.data:
-        node_id = existing.data[0]["id"]
+    if label in graph_entities:
+        node_id = graph_entities[label]
         created_nodes[label] = node_id
         return node_id
     
@@ -117,7 +112,7 @@ def get_or_create_node(label: str, people_lookup: dict, created_nodes: dict, mem
     return node_id
 
 
-def upsert_nodes(nodes: list, people_lookup: dict, memory_id: str):
+def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
     if not nodes:
         return
     
@@ -126,7 +121,7 @@ def upsert_nodes(nodes: list, people_lookup: dict, memory_id: str):
         label = node.get("label", "")
         node_type = node.get("type", "concept")
         
-        existing_id = people_lookup.get(label)
+        existing_id = graph_entities.get(label)
         if existing_id:
             node_records.append({
                 "id": existing_id,
@@ -172,7 +167,7 @@ def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
         }).execute()
 
 
-def process_memory(memory: dict, people_lookup: dict) -> bool:
+def process_memory(memory: dict, graph_entities: dict) -> bool:
     memory_id = memory["id"]
     synthesized = synthesize_content(memory)
     
@@ -191,20 +186,20 @@ def process_memory(memory: dict, people_lookup: dict) -> bool:
     
     for node in nodes:
         label = node.get("label", "")
-        if label in people_lookup:
-            created_nodes[label] = people_lookup[label]
+        if label in graph_entities:
+            created_nodes[label] = graph_entities[label]
     
-    upsert_nodes(nodes, people_lookup, memory_id)
+    upsert_nodes(nodes, graph_entities, memory_id)
     
     node_label_to_id = {}
     for node in nodes:
         label = node.get("label", "")
-        node_id = get_or_create_node(label, people_lookup, created_nodes, memory_id)
+        node_id = get_or_create_node(label, graph_entities, created_nodes, memory_id)
         if node_id:
             node_label_to_id[label] = node_id
     
     if not node_label_to_id:
-        danny_id = get_or_create_node("Danny", people_lookup, created_nodes)
+        danny_id = get_or_create_node("Danny", graph_entities, created_nodes)
         if danny_id:
             node_label_to_id["Danny"] = danny_id
     
@@ -218,9 +213,9 @@ def run_backfill():
     memories = fetch_memories()
     print(f"Found {len(memories)} memories")
     
-    print("Building people lookup...")
-    people_lookup = fetch_people_lookup()
-    print(f"Found {len(people_lookup)} people")
+    print("Building graph entities lookup...")
+    graph_entities = fetch_graph_entities()
+    print(f"Found {len(graph_entities)} entities (people + projects)")
     
     processed = 0
     failed = 0
@@ -232,7 +227,7 @@ def run_backfill():
         
         for memory in batch:
             try:
-                success = process_memory(memory, people_lookup)
+                success = process_memory(memory, graph_entities)
                 if success:
                     processed += 1
                 else:
