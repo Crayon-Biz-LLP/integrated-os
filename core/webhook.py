@@ -92,9 +92,13 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
 
 def get_embedding(text: str) -> list:
     try:
+        # 🎯 Force the model to return 768 dimensions to match Supabase
         result = gemini_client.models.embed_content(
             model=EMBEDDING_MODEL,
-            contents=text
+            contents=text,
+            config={
+                'output_dimensionality': EMBEDDING_DIMENSION
+            }
         )
         return result.embeddings[0].values
     except Exception as e:
