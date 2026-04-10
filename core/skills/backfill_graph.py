@@ -30,7 +30,8 @@ def fetch_memories():
 
 
 def fetch_graph_entities():
-    result = supabase.table("graph_nodes").select("id, label, type").in_("type", ["person", "project"]).execute()
+    # 🛡️ FIX: Remove the .in_("type") filter to see ALL existing nodes
+    result = supabase.table("graph_nodes").select("id, label").execute()
     return {row["label"]: row["id"] for row in (result.data or [])}
 
 
@@ -101,7 +102,7 @@ def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, me
                 "organization" if label in ["Solvstrat", "Crayon", "Church"] else \
                 "project" if label in ["CashFlow+", "Integrated-OS"] else "concept"
     
-    # 🛡️ THE FIX: Switch from .insert() to .upsert()
+    # 🛡️ FIX: Use upsert here too to ensure we get the ID back without a 23505 conflict
     resp = supabase.table("graph_nodes").upsert({
         "label": label,
         "type": node_type,
@@ -122,20 +123,17 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         label = node.get("label", "")
         node_type = node.get("type", "concept")
         
-        # Start the record
         record = {
             "label": label,
             "type": node_type,
             "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
         }
         
+        # 🛡️ FIX: Only provide an ID if it already exists in the DB.
+        # If it's a new node, OMIT the 'id' key so the DB creates it automatically.
         existing_id = graph_entities.get(label)
         if existing_id:
             record["id"] = existing_id
-        else:
-            # 🛡️ THE FIX: Generate a fresh UUID if no existing ID is found.
-            # This prevents the bulk upsert from sending 'null' for the ID.
-            record["id"] = str(uuid.uuid4())
             
         node_records.append(record)
     
