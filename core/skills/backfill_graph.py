@@ -88,7 +88,6 @@ Rules:
         print(f"Graph extraction error: {e}")
         return {"nodes": [], "edges": []}
 
-
 def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, memory_id: str = None) -> str:
     if label in created_nodes:
         return created_nodes[label]
@@ -98,18 +97,22 @@ def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, me
         created_nodes[label] = node_id
         return node_id
     
-    node_type = "person" if label in ["Sunju", "Jaden", "Jeffery", "The Boys", "Danny"] else \
-                "organization" if label in ["Solvstrat", "Crayon", "Church"] else \
-                "project" if label in ["CashFlow+", "Integrated-OS"] else "concept"
+    # Standard mapping logic for types...
+    node_type = "person" if label in ["Sunju", "Jaden", "Jeffery", "The Boys", "Danny", "Jeremy"] else \
+                "organization" if label in ["Solvstrat", "Crayon", "Church", "Qhord"] else \
+                "project" if label in ["CashFlow+", "Integrated-OS", "Solvstrat", "Qhord"] else "concept"
     
-    # 🛡️ FIX: Use upsert here too to ensure we get the ID back without a 23505 conflict
+    # 🛡️ THE FIX: Always provide a generated ID
+    new_id = str(uuid.uuid4())
     resp = supabase.table("graph_nodes").upsert({
+        "id": new_id,
         "label": label,
         "type": node_type,
         "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
     }, on_conflict="label").execute()
     
-    node_id = resp.data[0]["id"] if resp.data else None
+    # If a conflict occurred, the upsert returns the existing row's ID
+    node_id = resp.data[0]["id"] if resp.data else new_id
     if node_id:
         created_nodes[label] = node_id
     return node_id
@@ -123,17 +126,20 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         label = node.get("label", "")
         node_type = node.get("type", "concept")
         
+        # Start the record with all known data
         record = {
             "label": label,
             "type": node_type,
             "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
         }
         
-        # 🛡️ FIX: Only provide an ID if it already exists in the DB.
-        # If it's a new node, OMIT the 'id' key so the DB creates it automatically.
         existing_id = graph_entities.get(label)
         if existing_id:
             record["id"] = existing_id
+        else:
+            # 🛡️ THE FIX: Generate a UUID for new nodes here.
+            # This ensures the batch never contains 'null' IDs.
+            record["id"] = str(uuid.uuid4())
             
         node_records.append(record)
     
