@@ -17,7 +17,7 @@ if not supabase_url or not supabase_key:
 supabase: Client = create_client(supabase_url, supabase_key)
 gemini_client = genai.Client(api_key=gemini_api_key)
 
-BATCH_SIZE = 10
+BATCH_SIZE = 20
 MEMORY_TYPES = ["Prophecy", "Psalm", "Prayer", "Journal", "archive"]
 
 
