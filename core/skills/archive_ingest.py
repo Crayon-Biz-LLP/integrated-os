@@ -118,7 +118,7 @@ def get_embedding(text: str) -> list:
     try:
         result = gemini_client.models.embed_content(
             model="gemini-embedding-2-preview",
-            content=text,
+            contents=text,
             config={"output_dimensionality": 768}
         )
         if result and hasattr(result, 'embeddings') and result.embeddings:
