@@ -643,7 +643,7 @@ async def process_webhook(update: dict):
              chat_id,
              receipt,
              entity=classification.get('entity') # 🚀 PASS THE ENTITY
-    )
+          )
         elif intent == 'NOTE' and confidence >= 0.6:
             # 🚀 ADD THIS: Check if the note is a URL to route it to resources
             if text.startswith('http') or 'www.' in text:
