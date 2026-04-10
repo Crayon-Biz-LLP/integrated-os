@@ -68,7 +68,6 @@ def get_embedding(text: str) -> list:
         print(f"Embedding error: {e}")
         return [0] * EMBEDDING_DIMENSION
 
-
 async def hybrid_search_graph(query: str) -> str:
     """Graph-first search: Find primary entity and its connections."""
     try:
@@ -788,10 +787,11 @@ Inputs:
                 memory_lines = []
                 if graph_context:
                     memory_lines.append(f"TACTICAL MAP:\n{graph_context}")
-                for m in hindsight_memories:
-                    content = m.get('content', '')
-                    mtype = m.get('memory_type', 'memory').upper()
-                    memory_lines.append(f"[{mtype}] {content}")
+                
+                # 🛡️ THE FIX: memories are already formatted as strings by the helper.
+                # We just need to add them to our lines, not process them again.
+                memory_lines.extend(hindsight_memories)
+                
                 hindsight_context = "\n\n".join(memory_lines)
                 print(f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
 
