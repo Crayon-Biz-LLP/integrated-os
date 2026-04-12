@@ -76,7 +76,6 @@ class PulseOutput(BaseModel):
     new_missions: List[str] = Field(default_factory=list)
     briefing: str
 
-
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
     """Call Gemini with retry logic (3 retries, exponential backoff for 503 errors)."""
     if model is None:
