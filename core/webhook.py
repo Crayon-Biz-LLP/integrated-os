@@ -133,7 +133,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     Return ONLY valid JSON (no markdown, no explanation):
     {{
-        "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE",
+        "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE|QUERY",
         "confidence": 0.0-1.0,
         "entity": "SOLVSTRAT|QHORD|PERSONAL|CHURCH|INBOX",
         "title": "extracted task title",
@@ -148,6 +148,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - PROJECT ROUTING: Route tasks about personal finances, bills, home, or family to PERSONAL. Only route to CRAYON if it relates to corporate governance, business taxes, or legal compliance. Route tech/client work to SOLVSTRAT.
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
+    - QUERY: The user is asking a question to retrieve information from their past notes, tasks, or the vault (e.g., "What did the analyst say?", "When is my meeting?").
     - DELEGATE: Research, competitor audits, or autonomous web research.
     - RECEIPT RULE: Receipts must be confirmation-only. Use: '[Subject] logged for [Time/Day].'
     - LITERAL SUBJECT RULE: Mirror Danny's verb. (e.g., 'Check with Vasanth' → 'Vasanth check-in logged').
@@ -648,6 +649,9 @@ async def process_webhook(update: dict):
              receipt,
              entity=classification.get('entity') # 🚀 PASS THE ENTITY
           )
+        elif intent == 'QUERY' and confidence >= 0.6:
+            print(f"🧠 QUERY DETECTED: Routing to brain...")
+            await interrogate_brain(text, chat_id)
         elif intent == 'NOTE' and confidence >= 0.6:
             # 🚀 ADD THIS: Check if the note is a URL to route it to resources
             if text.startswith('http') or 'www.' in text:
