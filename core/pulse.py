@@ -1184,10 +1184,7 @@ async def process_pulse(auth_secret: str = None):
             task_inserts = []
             
             # PHASE 0: Dynamic Inbox Discovery - Find real INBOX project ID
-            actual_inbox_id = next(
-                (p['id'] for p in projects if p.get('org_tag') == 'INBOX'),
-                projects[0]['id'] if projects else 1
-            )
+            actual_inbox_id = next((p['id'] for p in projects if p.get('org_tag') == 'INBOX'), 1)
 
             for task in ai_data['new_tasks']:
                 # 1. High-Precision Project Matching Logic
@@ -1303,12 +1300,6 @@ async def process_pulse(auth_secret: str = None):
         if ai_data.get('logs'):
             supabase.table('logs').insert(ai_data['logs']).execute()
 
-        # PHASE 3: Processed Gate - Mark dumps as processed (only after DB operations succeeded)
-        if dumps:
-            dump_ids = [d['id'] for d in dumps]
-            supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
-            print(f"✅ Phase 3: Marked {len(dump_ids)} dumps as processed.")
-
         briefing_text = ai_data.get('briefing', '')
         if briefing_text:
             briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
@@ -1330,6 +1321,12 @@ async def process_pulse(auth_secret: str = None):
         # --- 📝 AFTER-ACTION REPORT ---
         if hour >= 20 or hour < 4:
             await generate_after_action_report()
+
+        # PHASE 3: Processed Gate - Mark dumps as processed (only after ALL operations succeeded)
+        if dumps:
+            dump_ids = [d['id'] for d in dumps]
+            supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
+            print(f"✅ Phase 3: Marked {len(dump_ids)} dumps as processed.")
 
         return {"success": True, "briefing": briefing_text}
 
