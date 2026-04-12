@@ -23,16 +23,22 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
-ENTITY_MAPPINGS = {
-    "Sunju": ["sunju", "wife", "wife's", "sunju's"],
-    "Jaden": ["jaden"],
-    "Jeffery": ["jeffery", "jeffrey"],
-    "The Boys": ["boys", "son", "sons"],
-    "Solvstrat": ["solvstrat", "solv", "production team", "2.0"],
-    "Crayon": ["crayon", "crayon biz"],
-    "Church": ["church", "pastor", "pastor marcus", "marcus"],
-    "₹30L Debt": ["debt", "loan", "loan(s)", "borrowed", "borrower", "financial", "money", "credit card", "₹", "rs.", "lakh", "lakhs"],
-}
+def get_entity_mappings() -> dict:
+    try:
+        res = supabase.table('core_config').select('content').eq('key', 'entity_mappings').execute()
+        if res.data and res.data[0].get('content'):
+            return res.data[0]['content']
+    except Exception as e:
+        print(f"⚠️ Failed to fetch dynamic mappings: {e}")
+    
+    # Absolute fallback to prevent crashes if DB fails
+    return {
+        "Solvstrat": ["solvstrat"],
+        "Crayon": ["crayon"],
+        "Qhord": ["qhord"]
+    }
+
+ENTITY_MAPPINGS = get_entity_mappings()
 
 MEMORY_TYPE_MAPPING = {
     "Prophetic Word (From God or others)": "Prophecy",
