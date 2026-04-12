@@ -17,11 +17,41 @@ EMBEDDING_DIMENSION = 768
 
 BRIEFING_MODEL = "gemini-3-flash-preview"
 
+# 1. Define specific models for every array item
+class CompletedTask(BaseModel):
+    class Config: extra = "forbid"
+    id: int
+    status: str
+    reminder_at: Optional[str] = None
+
+class NewProject(BaseModel):
+    class Config: extra = "forbid"
+    name: str
+    importance: Optional[int] = 5
+    org_tag: Optional[str] = "INBOX"
+
+class NewPerson(BaseModel):
+    class Config: extra = "forbid"
+    name: str
+    role: Optional[str] = None
+    strategic_weight: Optional[int] = 5
+
+class ResourceItem(BaseModel):
+    class Config: extra = "forbid"
+    url: str
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    mission_name: Optional[str] = None
+    project_name: Optional[str] = None
+    strategic_note: Optional[str] = None
+
+class LogEntry(BaseModel):
+    class Config: extra = "forbid"
+    entry_type: str
+    content: str
+
 class NewTask(BaseModel):
-    # This block is mandatory for Gemini API compatibility
-    class Config:
-        extra = "forbid" 
-    
+    class Config: extra = "forbid"
     title: str
     project_name: Optional[str] = None
     priority: Optional[str] = None
@@ -29,17 +59,16 @@ class NewTask(BaseModel):
     reminder_at: Optional[str] = None
     is_revenue_critical: Optional[bool] = False
 
+# 2. Update the main Output to use these models instead of 'dict'
 class PulseOutput(BaseModel):
-    # This block is mandatory for Gemini API compatibility
-    class Config:
-        extra = "forbid"
+    class Config: extra = "forbid"
 
-    completed_task_ids: List[dict] = Field(default_factory=list)
-    new_projects: List[dict] = Field(default_factory=list)
-    new_people: List[dict] = Field(default_factory=list)
+    completed_task_ids: List[CompletedTask] = Field(default_factory=list)
+    new_projects: List[NewProject] = Field(default_factory=list)
+    new_people: List[NewPerson] = Field(default_factory=list)
     new_tasks: List[NewTask] = Field(default_factory=list)
-    resources: List[dict] = Field(default_factory=list)
-    logs: List[dict] = Field(default_factory=list)
+    resources: List[ResourceItem] = Field(default_factory=list)
+    logs: List[LogEntry] = Field(default_factory=list)
     new_missions: List[str] = Field(default_factory=list)
     briefing: str
 
