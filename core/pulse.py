@@ -1182,6 +1182,12 @@ async def process_pulse(auth_secret: str = None):
         # D. BATCH NEW TASKS (Checklist + Calendar Interruption + ID Tracking)
         if ai_data.get('new_tasks'):
             task_inserts = []
+            
+            # PHASE 0: Dynamic Inbox Discovery - Find real INBOX project ID
+            actual_inbox_id = next(
+                (p['id'] for p in projects if p.get('org_tag') == 'INBOX'),
+                projects[0]['id'] if projects else 1
+            )
 
             for task in ai_data['new_tasks']:
                 # 1. High-Precision Project Matching Logic
@@ -1222,13 +1228,45 @@ async def process_pulse(auth_secret: str = None):
                             original_time = datetime.fromisoformat(sanitized_time.replace('Z', '+00:00'))
                             staggered_time = original_time + timedelta(minutes=15 * stagger_count)
                             sanitized_time = staggered_time.strftime('%Y-%m-%dT%H:%M:%S+05:30')
-                            print(f"⏰ De-clash: Staggered '{task_title}' to {sanitized_time.split('T')[1][:5]}")
+                            print(f"⏰ De-clash: Staggered '{task.get('title', 'Untitled Task')}' to {sanitized_time.split('T')[1][:5]}")
+                    
+                    task_title = task.get('title', 'Untitled Task')
+
+                    # 🛡️ BigInt Guard: Force project_id to be an integer to prevent Supabase 22P02 errors
+                    try:
+                        task_project_id = int(project_match.get('legacy_id') or project_match.get('id', 1))
+                    except (ValueError, TypeError):
+                        task_project_id = actual_inbox_id
+                    
+                    task_inserts.append({
+                        "title": task_title,
+                        "project_id": task_project_id,
+                        "priority": (task.get('priority') or 'important').lower(),
+                        "status": "todo",
+                        "estimated_minutes": task.get('estimated_duration', 15),
+                        "reminder_at": sanitized_time,
+                        "is_revenue_critical": task.get('is_revenue_critical', False),
+                        "raw_time": raw_time,
+                        "duration_mins": task.get('estimated_duration', 15)
+                    })
+
+            # PHASE 1: Supabase Commit - Insert all tasks first, no side effects yet
+            if task_inserts:
+                insert_res = supabase.table('tasks').insert(task_inserts).execute()
+                print(f"✅ Phase 1: Inserted {len(insert_res.data)} new tasks to Supabase.")
+                
+                # PHASE 2: Side-Effect Orchestration - Google Sync after DB success
+                for i, db_task in enumerate(insert_res.data):
+                    task_id = db_task['id']
+                    task_title = db_task.get('title', 'Untitled Task')
+                    raw_time = task_inserts[i].get('raw_time')
+                    sanitized_time = db_task.get('reminder_at')
+                    duration_mins = task_inserts[i].get('duration_mins', 15)
                     
                     g_id = None
                     e_id = None
-                    task_title = task.get('title', 'Untitled Task')
 
-                    # 2. SYNC TO GOOGLE TASKS (The Checklist) - Only if time was extracted
+                    # 2a. SYNC TO GOOGLE TASKS (The Checklist)
                     if sanitized_time:
                         try:
                             g_id = sync_to_google(
@@ -1240,55 +1278,36 @@ async def process_pulse(auth_secret: str = None):
                         except Exception as e:
                             print(f"⚠️ Google Tasks Sync failed for {task_title}: {e}")
 
-                    # 3. STRATEGIC GATE: SYNC TO CALENDAR (The Radar + Alarm)
+                    # 2b. STRATEGIC GATE: SYNC TO CALENDAR (The Radar + Alarm)
                     if raw_time and 'T' in str(raw_time) and sanitized_time:
                         try:
-                            # 🛰️ RADAR: Check for clash
                             conflict_name = check_conflict(sanitized_time)
                             if conflict_name:
                                 briefing = ai_data.get('briefing', "")
                                 ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
                             
-                            # Secure the block with dynamic duration
-                            duration_mins = task.get('estimated_duration', 15)
                             e_id = sync_to_calendar(task_title, sanitized_time, duration_mins=duration_mins)
                             if e_id: print(f"📅 Calendar block secured: {task_title} ({duration_mins}m)")
-                            
                         except Exception as ce:
                             print(f"⚠️ Calendar Sync failed for {task_title}: {ce}")
 
-                    # 4. BUILD SUPABASE PAYLOAD (Using the Sanitized Time)
-                    # Use legacy_id for tasks table since it expects integer project_id
-                    # 🛡️ BigInt Guard: Force project_id to be an integer to prevent Supabase 22P02 errors
-                    try:
-                        # Attempt to use legacy_id or cast the current ID to an integer
-                        task_project_id = int(project_match.get('legacy_id') or project_match.get('id', 1))
-                    except (ValueError, TypeError):
-                        # If the ID is a UUID string (from the graph), fallback to Inbox (1)
-                        task_project_id = 1
-                    task_inserts.append({
-                        "title": task_title,
-                        "project_id": task_project_id,
-                        "priority": (task.get('priority') or 'important').lower(),
-                        "status": "todo",
-                        "estimated_minutes": task.get('estimated_duration', 15),
-                        "google_task_id": g_id,
-                        "google_event_id": e_id,
-                        "reminder_at": sanitized_time, # Store 'T' format in DB
-                        "is_revenue_critical": task.get('is_revenue_critical', False)
-                    })
-
-            if task_inserts:
-                supabase.table('tasks').insert(task_inserts).execute()
-                print(f"✅ Inserted {len(task_inserts)} new tasks.")
-
-            if dumps:
-                dump_ids = [d['id'] for d in dumps]
-                supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
+                    # 2c. Store Google IDs back to Supabase
+                    if g_id or e_id:
+                        update_payload = {}
+                        if g_id: update_payload['google_task_id'] = g_id
+                        if e_id: update_payload['google_event_id'] = e_id
+                        supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
+                        print(f"🔄 Updated task {task_id} with Google IDs.")
 
         # G. CLEANUP & LOGS
         if ai_data.get('logs'):
             supabase.table('logs').insert(ai_data['logs']).execute()
+
+        # PHASE 3: Processed Gate - Mark dumps as processed (only after DB operations succeeded)
+        if dumps:
+            dump_ids = [d['id'] for d in dumps]
+            supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
+            print(f"✅ Phase 3: Marked {len(dump_ids)} dumps as processed.")
 
         briefing_text = ai_data.get('briefing', '')
         if briefing_text:
