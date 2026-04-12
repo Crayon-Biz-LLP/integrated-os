@@ -515,7 +515,7 @@ def delete_calendar_event(event_id):
         # Don't use 'pass'—keep the warning so you know if the grid is dirty
         print(f"⚠️ Note: Calendar delete failed (likely already gone).")
 
-def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'):
+def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo', explicit_time=False):
     """Checklist Manager: Handles task sync with RFC-3339 guard."""
     # 1. Handle Completion/Deletion
     if task_id and (status == 'done' or status == 'cancelled'):
@@ -527,11 +527,16 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
     # 2. Preparation: RFC-3339 Formatting
     rfc_date = format_rfc3339(due_at)
     
-    # 3. Time-Visibility Title Hack
-    if due_at and 'T' in str(due_at):
-        time_str = rfc_date.split('T')[1][:5] # Extract "09:00"
-        if title and f"{time_str}" not in title:
-            title = f"🕒 {time_str} | {title}"
+    # 3. Time-Visibility Title Hack (ONLY if explicit time was given)
+    if explicit_time and rfc_date and 'T' in str(rfc_date):
+        try:
+            dt = datetime.fromisoformat(rfc_date.replace('Z', '+00:00'))
+            ist_dt = dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
+            time_str = ist_dt.strftime('%H:%M')
+            if title and f"{time_str}" not in title:
+                title = f"🕒 {time_str} | {title}"
+        except Exception as e:
+            pass
 
     # 4. Build Body and Execute API Call
     body = {}
@@ -984,7 +989,7 @@ async def process_pulse(auth_secret: str = None):
             - LOCAL TIMEZONE: Use Indian Standard Time (IST), which is UTC+05:30.
             - If Danny specifies a DAY but NO TIME (e.g., "today"), output ONLY the date format: "YYYY-MM-DD". If and ONLY IF he specifies an EXACT TIME (e.g., "at 4pm"), output the full format: "YYYY-MM-DDTHH:MM:SS+05:30".
             - TASK GROUPING: If Danny mentions multiple people for the same action (e.g., "Suriya and Siva"), extract it as ONE single task. Do not split them into multiple tasks.
-            - NAKED TASKS: If Danny does NOT explicitly mention a day, date, or time, you MUST set reminder_at to null. Do not guess 'today'.
+            - 🚫 NAKED TASKS: If the input has NO date and NO time (e.g., "Review Shield NDA"), you MUST return null for reminder_at. NEVER hallucinate or guess 'today' or 'tomorrow'. Leave it empty so it stays in the backlog.
             - CURRENT REFERENCE: Use the system timestamp provided in the input to calculate relative dates (e.g., "Friday" relative to today).
         8. DYNAMIC TASK MATCHING:
             - Compare inputs against ALL SYSTEM TASKS.
@@ -1282,17 +1287,18 @@ async def process_pulse(auth_secret: str = None):
                     g_id = None
                     e_id = None
 
-                    # 2a. SYNC TO GOOGLE TASKS (Always runs if there is a date)
+                    # 2a. SYNC TO GOOGLE TASKS
                     if sanitized_time:
                         try:
                             g_id = sync_to_google(
                                 tasks_service,
                                 title=task_title,
-                                due_at=sanitized_time # Feed the clean RFC-3339 time
+                                due_at=sanitized_time,
+                                explicit_time=explicit_time
                             )
                             if g_id: print(f"📡 Google Task Created: {task_title}")
                         except Exception as e:
-                            print(f"⚠️ Google Tasks Sync failed for {task_title}: {e}")
+                            print(f"⚠️ Google Tasks Sync failed: {e}")
 
                     # 2b. STRATEGIC GATE: SYNC TO CALENDAR (Only runs if explicit time was given)
                     if sanitized_time and explicit_time:
