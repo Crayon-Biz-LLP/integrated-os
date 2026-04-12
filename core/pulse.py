@@ -9,12 +9,61 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
 from google import genai
+from google.genai import types
+from pydantic import BaseModel, Field
+from typing import List, Optional
 
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIMENSION = 768
 
 BRIEFING_MODEL = "gemini-3-flash-preview"
+
+
+class CompletedTask(BaseModel):
+    id: int
+    status: str
+    reminder_at: Optional[str] = None
+
+class NewProject(BaseModel):
+    name: str
+    importance: Optional[int] = None
+    org_tag: Optional[str] = None
+
+class NewPerson(BaseModel):
+    name: str
+    role: Optional[str] = None
+    strategic_weight: Optional[int] = None
+
+class NewTask(BaseModel):
+    title: str
+    project_name: Optional[str] = None
+    priority: Optional[str] = None
+    estimated_duration: Optional[int] = None
+    reminder_at: Optional[str] = None
+    is_revenue_critical: Optional[bool] = None
+
+class Resource(BaseModel):
+    url: str
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    mission_name: Optional[str] = None
+    project_name: Optional[str] = None
+    strategic_note: Optional[str] = None
+
+class LogEntry(BaseModel):
+    entry_type: Optional[str] = None
+    content: str
+
+class PulseOutput(BaseModel):
+    completed_task_ids: List[CompletedTask] = Field(default_factory=list)
+    new_projects: List[NewProject] = Field(default_factory=list)
+    new_people: List[NewPerson] = Field(default_factory=list)
+    new_tasks: List[NewTask] = Field(default_factory=list)
+    resources: List[Resource] = Field(default_factory=list)
+    logs: List[LogEntry] = Field(default_factory=list)
+    new_missions: List[str] = Field(default_factory=list)
+    briefing: str
 
 
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
@@ -945,18 +994,15 @@ Inputs:
                 - If Danny describes a result that fulfills a task's objective (e.g., "The contract is signed" fulfills "Get contract signed"), mark it DONE.
                 - If Danny uses the past tense of a task's core action verb (e.g., "Mailed the check" fulfills "Mail the check"), mark it DONE.
                 - If the input describes the final step of a process (e.g., "App is on the store" fulfills "Submit app for review"), mark it DONE.
-                - If Danny says "Cancel", "Ignore", "Forget", or "Not doing" a task, mark it as cancelled.
-                - If Danny indicates he is "skipping," "dropping," or "not doing" something, add the ID to "cancelled_task_ids".
+                - DESTRUCTIVE ACTION GUARD: If Danny says "Cancel", "Ignore", "Drop", or "Forget" a task, you are STRICTLY FORBIDDEN from deleting it or marking it 'cancelled'.
+                - Instead, you MUST update its status to "pending_review". This acts as a manual approval gate so no critical task is destroyed by AI misinterpretation.
                 - If Danny says a task is "on hold," "waiting," or "deferred until [Date/Time]," do NOT mark it as cancelled.
                 - Instead, update the `reminder_at` field and keep the status as `todo`.
                 - Identify if a task is "Revenue Critical" (anything involving payments, quotes, or ₹30L velocity). Set `is_revenue_critical: true`.
-            6. 🕒 HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30):
-                - When Danny mentions a time (e.g., "Friday 10am", "Tomorrow morning", "at 4pm"), you MUST convert this into a valid ISO-8601 timestamp.
-                - LOCAL TIMEZONE: Use Indian Standard Time (IST), which is UTC+05:30.
-                - If Danny specifies a DAY but NO TIME (e.g., "today"), output ONLY the date format: "YYYY-MM-DD". If and ONLY IF he specifies an EXACT TIME (e.g., "at 4pm"), output the full format: "YYYY-MM-DDTHH:MM:SS+05:30".
-                - TASK GROUPING: If Danny mentions multiple people for the same action (e.g., "Suriya and Siva"), extract it as ONE single task. Do not split them into multiple tasks.
-                - NAKED TASKS: If Danny does NOT explicitly mention a day, date, or time, you MUST set reminder_at to null. Do not guess 'today'.
-                - CURRENT REFERENCE: Use the system timestamp provided in the input to calculate relative dates (e.g., "Friday" relative to today).
+            6. 🕒 TIMEZONE LOCKDOWN (UTC-AT-REST):
+                - TIMEZONE LOCKDOWN (UTC-AT-REST): You must NEVER output a naive datetime. Danny operates in IST. When he specifies an exact time, you MUST output the exact IST time and append the strictly formatted offset (+05:30). The database will automatically intercept this and convert it to UTC at rest.
+                - FORMAT: "YYYY-MM-DDTHH:MM:SS+05:30".
+                - NAKED TASKS: If no exact time is specified, leave reminder_at as null. Do not guess the time.
             7. DYNAMIC TASK MATCHING:
                 - Compare inputs against ALL SYSTEM TASKS.
                 - If Danny says "I'm done" or "Completed," mark the status as `done`.
@@ -1016,33 +1062,53 @@ Inputs:
             response_text = ""
             ai_data = {
                 "briefing": f"⚠️ FALLBACK MODE\n\n{len(dumps)} new inputs:\n{new_input_summary[:200]}",
-                "new_tasks": [], "logs": [], "completed_task_ids": [], "new_projects": [], "new_people": []
+                "new_tasks": [], "logs": [], "completed_task_ids": [], "new_projects": [], "new_people": [], "resources": [], "new_missions": []
             }
 
             try:
-                # 🛡️ Step 2: The Modern Call (No 'GenerativeModel' needed)
+                # 🛡️ Step 2: The Modern Call with Pydantic Strict Schema Enforcement
+                pulse_config = types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=PulseOutput,
+                    temperature=0.2
+                )
+                
                 response = await call_gemini_with_retry(
                     prompt=prompt,
-                    model=BRIEFING_MODEL,
-                    config={'response_mime_type': 'application/json'}
+                    config=pulse_config
                 )
-                response_text = response.text
+                
+                # Parse structured output directly
+                if hasattr(response, 'parsed') and response.parsed is not None:
+                    ai_data = {
+                        "briefing": response.parsed.briefing,
+                        "completed_task_ids": [{"id": t.id, "status": t.status, "reminder_at": t.reminder_at} for t in response.parsed.completed_task_ids],
+                        "new_projects": [{"name": p.name, "importance": p.importance, "org_tag": p.org_tag} for p in response.parsed.new_projects],
+                        "new_people": [{"name": p.name, "role": p.role, "strategic_weight": p.strategic_weight} for p in response.parsed.new_people],
+                        "new_tasks": [{"title": t.title, "project_name": t.project_name, "priority": t.priority, "estimated_duration": t.estimated_duration, "reminder_at": t.reminder_at, "is_revenue_critical": t.is_revenue_critical} for t in response.parsed.new_tasks],
+                        "resources": [{"url": r.url, "title": r.title, "summary": r.summary, "mission_name": r.mission_name, "project_name": r.project_name, "strategic_note": r.strategic_note} for r in response.parsed.resources],
+                        "logs": [{"entry_type": l.entry_type, "content": l.content} for l in response.parsed.logs],
+                        "new_missions": response.parsed.new_missions
+                    }
+                    print("✅ AI Data Parsed Successfully (Structured Output):", list(ai_data.keys()))
+                    response_text = ""
+                else:
+                    response_text = response.text
 
-                # 🛡️ Step 3: Precise Extraction
-                # We move this inside the primary try block so it only runs if we HAVE text
-                json_str = re.sub(r'^```json\n?', '', response_text)
-                json_str = re.sub(r'\n?```$', '', json_str).strip()
+                # 🛡️ Step 3: Fallback JSON Extraction (only if no structured output)
+                if response_text:
+                    json_str = re.sub(r'^```json\n?', '', response_text)
+                    json_str = re.sub(r'\n?```$', '', json_str).strip()
 
-                # Sanitization (Trailing commas + empty values)
-                json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
-                json_str = re.sub(r':\s*([}\]]|$)', r': ""\1', json_str)
+                    json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+                    json_str = re.sub(r':\s*([}\]]|$)', r': ""\1', json_str)
 
-                match = re.search(r'\{[\s\S]*\}', json_str)
-                if match:
-                    json_str = match.group(0)
+                    match = re.search(r'\{[\s\S]*\}', json_str)
+                    if match:
+                        json_str = match.group(0)
 
-                ai_data = json.loads(json_str)
-                print("✅ AI Data Parsed Successfully:", list(ai_data.keys()))
+                    ai_data = json.loads(json_str)
+                    print("✅ AI Data Parsed Successfully (JSON Fallback):", list(ai_data.keys()))
 
             except Exception as e:
                 print(f"AI Execution or JSON Parse Error: {e}")
