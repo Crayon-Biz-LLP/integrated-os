@@ -1183,6 +1183,9 @@ async def process_pulse(auth_secret: str = None):
         if ai_data.get('new_tasks'):
             task_inserts = []
             
+            # PHASE 0: Time Tracker - Track explicit times from AI
+            time_tracker = {}
+
             # PHASE 0: Dynamic Inbox Discovery - Ensure we grab an INTEGER, not a graph UUID
             try:
                 actual_inbox_id = int(next((p.get('legacy_id') for p in projects if p.get('org_tag') == 'INBOX' and p.get('legacy_id') is not None), 1))
@@ -1231,6 +1234,9 @@ async def process_pulse(auth_secret: str = None):
                             print(f"⏰ De-clash: Staggered '{task.get('title', 'Untitled Task')}' to {sanitized_time.split('T')[1][:5]}")
                     
                     task_title = task.get('title', 'Untitled Task')
+                    
+                    # Record if the user explicitly requested a time (presence of 'T')
+                    time_tracker[task_title] = bool(raw_time and 'T' in str(raw_time))
 
                     # 🛡️ BigInt Guard: Intelligently extract integer IDs depending on where the match came from
                     task_project_id = actual_inbox_id # Default fallback
@@ -1270,10 +1276,13 @@ async def process_pulse(auth_secret: str = None):
                     sanitized_time = db_task.get('reminder_at')
                     duration_mins = db_task.get('duration_mins') or 15
                     
+                    # Look up the true intent from Phase 1
+                    explicit_time = time_tracker.get(task_title, False)
+                    
                     g_id = None
                     e_id = None
 
-                    # 2a. SYNC TO GOOGLE TASKS
+                    # 2a. SYNC TO GOOGLE TASKS (Always runs if there is a date)
                     if sanitized_time:
                         try:
                             g_id = sync_to_google(
@@ -1285,8 +1294,8 @@ async def process_pulse(auth_secret: str = None):
                         except Exception as e:
                             print(f"⚠️ Google Tasks Sync failed for {task_title}: {e}")
 
-                    # 2b. SYNC TO CALENDAR
-                    if sanitized_time and 'T' in sanitized_time:
+                    # 2b. STRATEGIC GATE: SYNC TO CALENDAR (Only runs if explicit time was given)
+                    if sanitized_time and explicit_time:
                         try:
                             conflict_name = check_conflict(sanitized_time)
                             if conflict_name:
@@ -1294,7 +1303,7 @@ async def process_pulse(auth_secret: str = None):
                                 ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
                             
                             e_id = sync_to_calendar(task_title, sanitized_time, duration_mins=duration_mins)
-                            if e_id: print(f"📅 Calendar block secured: {task_title} ({duration_mins}m)")
+                            if e_id: print(f"🔥 Calendar block secured: {task_title} ({duration_mins}m)")
                         except Exception as ce:
                             print(f"⚠️ Calendar Sync failed for {task_title}: {ce}")
 
