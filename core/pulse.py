@@ -1183,8 +1183,11 @@ async def process_pulse(auth_secret: str = None):
         if ai_data.get('new_tasks'):
             task_inserts = []
             
-            # PHASE 0: Dynamic Inbox Discovery - Find real INBOX project ID
-            actual_inbox_id = next((p['id'] for p in projects if p.get('org_tag') == 'INBOX'), 1)
+            # PHASE 0: Dynamic Inbox Discovery - Ensure we grab an INTEGER, not a graph UUID
+            try:
+                actual_inbox_id = int(next((p.get('legacy_id') for p in projects if p.get('org_tag') == 'INBOX' and p.get('legacy_id') is not None), 1))
+            except (ValueError, TypeError):
+                actual_inbox_id = 1
 
             for task in ai_data['new_tasks']:
                 # 1. High-Precision Project Matching Logic
@@ -1229,11 +1232,18 @@ async def process_pulse(auth_secret: str = None):
                     
                     task_title = task.get('title', 'Untitled Task')
 
-                    # 🛡️ BigInt Guard: Force project_id to be an integer to prevent Supabase 22P02 errors
-                    try:
-                        task_project_id = int(project_match.get('legacy_id') or project_match.get('id', 1))
-                    except (ValueError, TypeError):
-                        task_project_id = actual_inbox_id
+                    # 🛡️ BigInt Guard: Intelligently extract integer IDs depending on where the match came from
+                    task_project_id = actual_inbox_id # Default fallback
+                    if project_match:
+                        try:
+                            # 1. Try legacy_id (if the match came from the Graph nodes)
+                            if project_match.get('legacy_id'):
+                                task_project_id = int(project_match['legacy_id'])
+                            # 2. Try id (if the match came from legacy_projects, it will be numeric)
+                            elif str(project_match.get('id', '')).isdigit():
+                                task_project_id = int(project_match['id'])
+                        except (ValueError, TypeError):
+                            pass # Silently fallback to actual_inbox_id
                     
                     task_inserts.append({
                         "title": task_title,
