@@ -12,7 +12,15 @@ from google import genai
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
+EMBEDDING_MODEL = "gemini-embedding-2-preview"
+EMBEDDING_DIMENSION = 768
+
+BRIEFING_MODEL = "gemini-3-flash-preview"
+
 class NewTask(BaseModel):
+    class Config:
+        extra = "forbid" # 🛡️ This stops the 'additionalProperties' API crash
+    
     title: str
     project_name: Optional[str] = None
     priority: Optional[str] = None
@@ -21,6 +29,9 @@ class NewTask(BaseModel):
     is_revenue_critical: Optional[bool] = False
 
 class PulseOutput(BaseModel):
+    class Config:
+        extra = "forbid" 
+
     completed_task_ids: List[dict] = Field(default_factory=list)
     new_projects: List[dict] = Field(default_factory=list)
     new_people: List[dict] = Field(default_factory=list)
@@ -29,12 +40,6 @@ class PulseOutput(BaseModel):
     logs: List[dict] = Field(default_factory=list)
     new_missions: List[str] = Field(default_factory=list)
     briefing: str
-
-
-EMBEDDING_MODEL = "gemini-embedding-2-preview"
-EMBEDDING_DIMENSION = 768
-
-BRIEFING_MODEL = "gemini-3-flash-preview"
 
 
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
