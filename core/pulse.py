@@ -1002,7 +1002,7 @@ async def process_pulse(auth_secret: str = None):
             - If a new Client/Project is mentioned, add to "new_projects".
             - If a new Person is mentioned, add to "new_people".
         10. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
-        11. WEEKEND FILTER: If isWeekend is true ({is_weekend}), do NOT suggest or list Work tasks. Move work inputs to a 'Monday' reminder.
+        11. WEEKEND FILTER: If isWeekend is true ({is_weekend}), do NOT suggest or list Work tasks in the briefing. CRITICAL: Do NOT auto-assign naked work tasks to Monday. If a work task has no date, leave it as null.
         12. EXECUTIVE BRIEF FORMAT:
             - HEADLINE RULE: Use exactly "{briefing_mode}".
             - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
