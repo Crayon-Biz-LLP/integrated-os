@@ -9,61 +9,32 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
 from google import genai
-from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List, Optional
+
+class NewTask(BaseModel):
+    title: str
+    project_name: Optional[str] = None
+    priority: Optional[str] = None
+    estimated_duration: Optional[int] = 15
+    reminder_at: Optional[str] = None
+    is_revenue_critical: Optional[bool] = False
+
+class PulseOutput(BaseModel):
+    completed_task_ids: List[dict] = Field(default_factory=list)
+    new_projects: List[dict] = Field(default_factory=list)
+    new_people: List[dict] = Field(default_factory=list)
+    new_tasks: List[NewTask] = Field(default_factory=list)
+    resources: List[dict] = Field(default_factory=list)
+    logs: List[dict] = Field(default_factory=list)
+    new_missions: List[str] = Field(default_factory=list)
+    briefing: str
 
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIMENSION = 768
 
 BRIEFING_MODEL = "gemini-3-flash-preview"
-
-
-class CompletedTask(BaseModel):
-    id: int
-    status: str
-    reminder_at: Optional[str] = None
-
-class NewProject(BaseModel):
-    name: str
-    importance: Optional[int] = None
-    org_tag: Optional[str] = None
-
-class NewPerson(BaseModel):
-    name: str
-    role: Optional[str] = None
-    strategic_weight: Optional[int] = None
-
-class NewTask(BaseModel):
-    title: str
-    project_name: Optional[str] = None
-    priority: Optional[str] = None
-    estimated_duration: Optional[int] = None
-    reminder_at: Optional[str] = None
-    is_revenue_critical: Optional[bool] = None
-
-class Resource(BaseModel):
-    url: str
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    mission_name: Optional[str] = None
-    project_name: Optional[str] = None
-    strategic_note: Optional[str] = None
-
-class LogEntry(BaseModel):
-    entry_type: Optional[str] = None
-    content: str
-
-class PulseOutput(BaseModel):
-    completed_task_ids: List[CompletedTask] = Field(default_factory=list)
-    new_projects: List[NewProject] = Field(default_factory=list)
-    new_people: List[NewPerson] = Field(default_factory=list)
-    new_tasks: List[NewTask] = Field(default_factory=list)
-    resources: List[Resource] = Field(default_factory=list)
-    logs: List[LogEntry] = Field(default_factory=list)
-    new_missions: List[str] = Field(default_factory=list)
-    briefing: str
 
 
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
@@ -376,25 +347,6 @@ supabase: Client = create_client(
 )
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-
-def fetch_all_paginated(table_name: str, select_str: str = "*", in_filter_col=None, in_filter_val=None):
-    all_rows = []
-    start = 0
-    page_size = 1000
-    while True:
-        query = supabase.table(table_name).select(select_str)
-        if in_filter_col and in_filter_val:
-            query = query.in_(in_filter_col, in_filter_val)
-        
-        res = query.range(start, start + page_size - 1).execute()
-        data = res.data or []
-        all_rows.extend(data)
-        
-        if len(data) < page_size:
-            break
-        start += page_size
-    return all_rows
-
 # --- 🛰️ LAYER 1: GOOGLE INTEGRATION HELPERS ---
 
 def sync_completed_tasks_from_google(supabase_client, tasks_service):
@@ -586,783 +538,760 @@ async def process_pulse(auth_secret: str = None):
         batch_enrich_results = await batch_enrich_resources()
         
         # --- 1. READ: Fetch everything needed for a full state briefing ---
-        try:
-            dumps_res = supabase.table('raw_dumps').select('id, content').eq('is_processed', False).execute()
-            dumps = dumps_res.data or []
+        dumps_res = supabase.table('raw_dumps').select('id, content').eq('is_processed', False).execute()
+        dumps = dumps_res.data or []
 
-            active_tasks = fetch_all_paginated("tasks", "id, title, project_id, priority, created_at, reminder_at, google_event_id", in_filter_col="status", in_filter_val=['todo', 'in_progress'])
+        active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at, reminder_at, google_event_id').not_.in_('status', ['done', 'cancelled']).execute()
+        active_tasks = active_tasks_res.data or []
 
-            # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
-            if dumps:
-                sort_prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
+        # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
+        if dumps:
+            sort_prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
 
-PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm that Danny's task is SECURED in his system.
+        PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
 
-Categorize each input into one of three types:
+        Categorize each input into one of three types:
 
-- TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track
-- NOTE: Ideas, insights, observations, learnings, or things worth remembering but not actionable
-- NOISE: Casual conversation, acknowledgments, confirmations, or low-value content
+        - TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track
+        - NOTE: Ideas, insights, observations, learnings, or things worth remembering but not actionable
+        - NOISE: Casual conversation, acknowledgments, confirmations, or low-value content
 
-Rhodey Rule: Be dismissive of NOISE. If it's low-value chatter, categorize it and keep the brief silent about it.
-If an input is 'Check with X,' categorize it as a TASK for Danny, never as something for the system to do.
+        Rhodey Rule: Be dismissive of NOISE. If it's low-value chatter, categorize it and keep the brief silent about it.
+        If an input is 'Check with X,' categorize it as a TASK for Danny, never as something for the system to do.
 
-Return ONLY a valid JSON array (no markdown, no explanation):
-[{{"id": {dumps[0]['id']}, "category": "TASK|NOTE|NOISE"}}, ...]
+        Return ONLY a valid JSON array (no markdown, no explanation):
+        [{{"id": {dumps[0]['id']}, "category": "TASK|NOTE|NOISE"}}, ...]
 
-Inputs:
-{json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
+        Inputs:
+        {json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
+            
+            try:
+                sort_response = gemini_client.models.generate_content(
+                    model="gemini-3.1-flash-lite-preview",
+                    contents=sort_prompt,
+                    config={'response_mime_type': 'application/json'}
+                )
+                sort_result = json.loads(sort_response.text)
                 
+                task_dump_ids = []
+                note_dump_ids = []
+                
+                for item in sort_result:
+                    dump_id = item.get('id')
+                    category = item.get('category', '').upper()
+                    
+                    if category == 'NOTE':
+                        dump_content = next((d['content'] for d in dumps if d['id'] == dump_id), None)
+                        if dump_content:
+                            embedding = get_embedding(dump_content)
+                            supabase.table('memories').insert({
+                                "content": dump_content,
+                                "memory_type": "note",
+                                "embedding": embedding
+                            }).execute()
+                            note_dump_ids.append(dump_id)
+                            print(f"📝 Note filed to memory: {dump_content[:50]}...")
+                        note_dump_ids.append(dump_id)
+                    
+                    elif category == 'NOISE':
+                        note_dump_ids.append(dump_id)
+                    
+                    elif category == 'TASK':
+                        task_dump_ids.append(dump_id)
+                
+                if note_dump_ids:
+                    supabase.table('raw_dumps').update({"is_processed": True}).in_('id', note_dump_ids).execute()
+                    print(f"🗃️ Staging Area: {len(task_dump_ids)} tasks, {len(note_dump_ids)} notes/noise")
+                
+                dumps = [d for d in dumps if d['id'] in task_dump_ids]
+            
+            except Exception as e:
+                print(f"Staging Area Sort error: {e}")
+
+        # 💡 Only silence the tool if BOTH new dumps AND open tasks are empty
+        if not dumps and not active_tasks:
+            return {"message": "Nothing to process, nothing to nag about. Silence is golden."}
+
+        print(f"🚀 PULSE START: Processing {len(dumps)} new dumps and {len(active_tasks)} active tasks.")
+
+        # Fetch supporting metadata
+        core_res = supabase.table('core_config').select('key, content').execute()
+        core = core_res.data or []
+
+        # Fetch business context from graph
+        graph_projects_res = supabase.table('graph_nodes').select('id, label, metadata').eq('type', 'project').execute()
+        graph_projects = graph_projects_res.data or []
+
+        projects = []
+        for gp in graph_projects:
+            metadata = gp.get('metadata', '{}')
+            if isinstance(metadata, str):
                 try:
-                    sort_response = gemini_client.models.generate_content(
-                        model="gemini-3.1-flash-lite-preview",
-                        contents=sort_prompt,
-                        config={'response_mime_type': 'application/json'}
-                    )
-                    sort_result = json.loads(sort_response.text)
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+            projects.append({
+                'id': gp['id'],
+                'name': gp['label'],
+                'org_tag': metadata.get('org_tag', 'INBOX'),
+                'description': metadata.get('description', ''),
+                'legacy_id': metadata.get('legacy_id')
+            })
+
+        projects_res = supabase.table('projects').select('id, name, org_tag').execute()
+        legacy_projects = projects_res.data or []
+
+        people_res = supabase.table('people').select('name, strategic_weight').execute()
+        people = people_res.data or []
+
+        # Fetch Active Missions for Context
+        missions_res = supabase.table('missions').select('id, title').eq('status', 'active').execute()
+        active_missions = missions_res.data or []
+        mission_names = [m['title'] for m in active_missions]
+
+        # --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist_offset)
+        day = now.isoweekday()  # Monday=1, Sunday=7
+        hour = now.hour
+
+        is_weekend = (day == 6 or day == 7)
+        is_monday_morning = (day == 1 and hour < 11)
+
+        if is_weekend:
+            briefing_mode = "⚪ CHORES & 💡 IDEAS (Weekend Rest)"
+            system_persona = "Focus ONLY on Home, Family, and Chores. Explicitly hide Work tasks. Be relaxed."
+        else:
+            if hour < 11:
+                briefing_mode = "Morning Status: We're cleared."
+                system_persona = "Cut through the noise and focus Danny on what moves the needle today. No coaching, no motivation—just what needs doing."
+            elif hour < 14:
+                briefing_mode = "Afternoon Check: Moving the needle."
+                system_persona = "Focused on the main effort. Keep Danny building toward the goal. Be direct."
+            elif hour < 18:
+                briefing_mode = "Closing the loop: Sign off."
+                system_persona = "Push Danny to close work tasks so he can transition to family. Log pending items. Be dry."
+            else:
+                briefing_mode = "Intel: Vaulted."
+                system_persona = "Quiet, simple, focused on clearing the mind for rest. Keep it minimal."
+
+        # --- 1.3 BANDWIDTH & BUFFER CHECK ---
+        is_overloaded = len(active_tasks) > 15
+
+        # --- 1.3.1 STRATEGIC TASK FILTERING (Robust Horizon Guard) ---
+        filtered_tasks = []
+        horizon_cutoff = now + timedelta(days=2)
+
+        for t in active_tasks:
+            raw_reminder = t.get('reminder_at')
+            
+            if raw_reminder:
+                try:
+                    # 🛡️ THE CLEANER: Replace space with 'T' and 'Z' with UTC offset
+                    clean_reminder = str(raw_reminder).replace(' ', 'T').replace('Z', '+00:00')
+                    task_date = datetime.fromisoformat(clean_reminder)
                     
-                    task_dump_ids = []
-                    note_dump_ids = []
+                    # 🛡️ TIMEZONE AWARENESS: Ensure we are comparing Apples to Apples (IST)
+                    if task_date.tzinfo is None:
+                        task_date = task_date.replace(tzinfo=ist_offset)
                     
-                    for item in sort_result:
-                        dump_id = item.get('id')
-                        category = item.get('category', '').upper()
-                        
-                        if category == 'NOTE':
-                            dump_content = next((d['content'] for d in dumps if d['id'] == dump_id), None)
-                            if dump_content:
-                                embedding = get_embedding(dump_content)
-                                supabase.table('memories').insert({
-                                    "content": dump_content,
-                                    "memory_type": "note",
-                                    "embedding": embedding
-                                }).execute()
-                                note_dump_ids.append(dump_id)
-                                print(f"📝 Note filed to memory: {dump_content[:50]}...")
-                            note_dump_ids.append(dump_id)
-                        
-                        elif category == 'NOISE':
-                            note_dump_ids.append(dump_id)
-                        
-                        elif category == 'TASK':
-                            task_dump_ids.append(dump_id)
-                    
-                    if note_dump_ids:
-                        supabase.table('raw_dumps').update({"is_processed": True}).in_('id', note_dump_ids).execute()
-                        print(f"🗃️ Staging Area: {len(task_dump_ids)} tasks, {len(note_dump_ids)} notes/noise")
-                    
-                    dumps = [d for d in dumps if d['id'] in task_dump_ids]
-                
+                    # 🛡️ THE HORIZON CHECK: If task is > 2 days away, SKIP IT.
+                    if task_date > horizon_cutoff:
+                        continue 
                 except Exception as e:
-                    print(f"Staging Area Sort error: {e}")
+                    # If it still fails, we log it but keep the task visible for safety
+                    print(f"⚠️ Horizon Guard bypassed for '{t.get('title')}': {e}")
 
-            # 💡 Only silence the tool if BOTH new dumps AND open tasks are empty
-            if not dumps and not active_tasks:
-                return {"message": "Nothing to process, nothing to nag about. Silence is golden."}
+            # --- Existing Category Logic ---
+            if t.get('priority') == 'urgent':
+                filtered_tasks.append(t)
+                continue
 
-            print(f"🚀 PULSE START: Processing {len(dumps)} new dumps and {len(active_tasks)} active tasks.")
-
-            # Fetch supporting metadata
-            core_res = supabase.table('core_config').select('key, content').execute()
-            core = core_res.data or []
-
-            # Fetch business context from graph
-            graph_projects_res = supabase.table('graph_nodes').select('id, label, metadata').eq('type', 'project').execute()
-            graph_projects = graph_projects_res.data or []
-
-            projects = []
-            for gp in graph_projects:
-                metadata = gp.get('metadata', '{}')
-                if isinstance(metadata, str):
-                    try:
-                        metadata = json.loads(metadata)
-                    except:
-                        metadata = {}
-                    projects.append({
-                        'id': gp['id'],
-                        'name': gp['label'],
-                        'org_tag': metadata.get('org_tag', 'INBOX'),
-                        'description': metadata.get('description', ''),
-                        'legacy_id': metadata.get('legacy_id')
-                    })
-
-            projects_res = supabase.table('projects').select('id, name, org_tag').execute()
-            legacy_projects = projects_res.data or []
-
-            people_res = supabase.table('people').select('name, strategic_weight').execute()
-            people = people_res.data or []
-
-            # Fetch Active Missions for Context
-            missions_res = supabase.table('missions').select('id, title').eq('status', 'active').execute()
-            active_missions = missions_res.data or []
-            mission_names = [m['title'] for m in active_missions]
-
-            # --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
-            ist_offset = timezone(timedelta(hours=5, minutes=30))
-            now = datetime.now(ist_offset)
-            day = now.isoweekday()  # Monday=1, Sunday=7
-            hour = now.hour
-
-            is_weekend = (day == 6 or day == 7)
-            is_monday_morning = (day == 1 and hour < 11)
+            project = next((p for p in projects if p.get('id') == t.get('project_id')), None)
+            o_tag = project.get('org_tag') if project else "INBOX"
 
             if is_weekend:
-                briefing_mode = "⚪ CHORES & 💡 IDEAS (Weekend Rest)"
-                system_persona = "Focus ONLY on Home, Family, and Chores. Explicitly hide Work tasks. Be relaxed."
-            else:
-                if hour < 11:
-                    briefing_mode = "Morning Status: We're cleared."
-                    system_persona = "Cut through the noise and focus Danny on what moves the needle today. No coaching, no motivation—just what needs doing."
-                elif hour < 14:
-                    briefing_mode = "Afternoon Check: Moving the needle."
-                    system_persona = "Focused on the main effort. Keep Danny building toward the goal. Be direct."
-                elif hour < 18:
-                    briefing_mode = "Closing the loop: Sign off."
-                    system_persona = "Push Danny to close work tasks so he can transition to family. Log pending items. Be dry."
-                else:
-                    briefing_mode = "Intel: Vaulted."
-                    system_persona = "Quiet, simple, focused on clearing the mind for rest. Keep it minimal."
-
-            # --- 1.3 BANDWIDTH & BUFFER CHECK ---
-            is_overloaded = len(active_tasks) > 15
-
-            # --- 1.3.1 STRATEGIC TASK FILTERING (Robust Horizon Guard) ---
-            filtered_tasks = []
-            horizon_cutoff = now + timedelta(days=2)
-
-            for t in active_tasks:
-                raw_reminder = t.get('reminder_at')
-                
-                if raw_reminder:
-                    try:
-                        # 🛡️ THE CLEANER: Replace space with 'T' and 'Z' with UTC offset
-                        clean_reminder = str(raw_reminder).replace(' ', 'T').replace('Z', '+00:00')
-                        task_date = datetime.fromisoformat(clean_reminder)
-                        
-                        # 🛡️ TIMEZONE AWARENESS: Ensure we are comparing Apples to Apples (IST)
-                        if task_date.tzinfo is None:
-                            task_date = task_date.replace(tzinfo=ist_offset)
-                        
-                        # 🛡️ THE HORIZON CHECK: If task is > 2 days away, SKIP IT.
-                        if task_date > horizon_cutoff:
-                            continue 
-                    except Exception as e:
-                        # If it still fails, we log it but keep the task visible for safety
-                        print(f"⚠️ Horizon Guard bypassed for '{t.get('title')}': {e}")
-
-                # --- Existing Category Logic ---
-                if t.get('priority') == 'urgent':
+                if o_tag in ['PERSONAL', 'CHURCH']:
                     filtered_tasks.append(t)
-                    continue
-
-                project = next((p for p in projects if p.get('id') == t.get('project_id')), None)
-                o_tag = project.get('org_tag') if project else "INBOX"
-
-                if is_weekend:
-                    if o_tag in ['PERSONAL', 'CHURCH']:
-                        filtered_tasks.append(t)
-                elif hour < 19:
-                    if o_tag in ['SOLVSTRAT', 'PRODUCT_LABS', 'CRAYON', 'INBOX']:
-                        filtered_tasks.append(t)
-                else:
-                    if o_tag in ['PERSONAL', 'CHURCH']:
-                        filtered_tasks.append(t)
-
-            # --- 1.4 CONTEXT COMPRESSION & PRUNING ---
-            # 🛡️ THE HORIZON GATE (Rule 2)
-            horizon_cutoff = now + timedelta(days=2)
-            # 🛡️ THE NAG GATE (Rule 1)
-            two_weeks_ago = now - timedelta(days=14)
-            
-            recent_tasks = []
-            for t in active_tasks:
-                try:
-                    # 🛡️ RULE 2: If the reminder is more than 48 hours away, HIDE IT FROM THE AI
-                    raw_remind = t.get('reminder_at')
-                    if raw_remind:
-                        clean_remind = str(raw_remind).replace(' ', 'T').replace('Z', '+00:00')
-                        remind_dt = datetime.fromisoformat(clean_remind)
-                        if remind_dt > horizon_cutoff:
-                            continue # Dawn (May 7) is skipped here!
-
-                    # 🛡️ RULE 1: Only show recently created tasks for background context
-                    created_dt = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00'))
-                    if created_dt > two_weeks_ago:
-                        recent_tasks.append(t)
-                except:
-                    recent_tasks.append(t) # Safety fallback
-
-            # This is the AI's "Visual Field"
-            universal_task_map = " | ".join([f"[ID:{t.get('id')}] {t.get('title')}" for t in recent_tasks])
-
-            # B. BUILD COMPRESSED LIST (For the Briefing Context)
-            # 🛡️ FIX: Defining 'compressed_tasks' so the prompt builder doesn't crash!
-            compressed_tasks_list = []
-            for t in filtered_tasks:
-                project = next((p for p in projects if p.get('id') == t.get('project_id')), None)
-                p_name = project.get('name') if project else "General"
-                o_tag = project.get('org_tag') if project else "INBOX"
-                compressed_tasks_list.append(f"[{o_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]")
-
-            compressed_tasks = " | ".join(compressed_tasks_list)
-
-            # --- 1.5 SEASON EXPIRY LOGIC ---
-            season_row = next((c for c in core if c.get('key') == 'current_season'), None)
-            season_config = season_row.get('content') if season_row else ''
-
-            expiry_match = re.search(r'\[EXPIRY:\s*(\d{4}-\d{2}-\d{2})\]', season_config)
-            system_context = "OPERATIONAL"
-            if expiry_match:
-                expiry_date_str = expiry_match.group(1)
-                expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                if now > expiry_date:
-                    system_context = "CRITICAL: Season Context EXPIRED."
-
-            # --- 🛡️ 1.6 THE NAG LOGIC (STAGNANT TASK GUARD) ---
-            overdue_tasks = []
-            for t in filtered_tasks:
-                try:
-                    raw_created = t.get('created_at')
-                    if raw_created:
-                        # Normalize and compare hours
-                        created_date = datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
-                        hours_old = (now - created_date).total_seconds() / 3600
-                        if t.get('priority') == 'urgent' and hours_old > 48:
-                            overdue_tasks.append(t.get('title'))
-                except Exception as e:
-                    print(f"⚠️ Nag Logic skipped for task '{t.get('title')}': {e}")
-
-            # --- 🕒 1.7 INPUT PREP ---
-            new_inputs_text = "\n---\n".join([d['content'] for d in dumps]) if dumps else "None"    
-
-            # --- 🧭 LAYER 3: SMART PATTERN CONTEXT (Last 30 Days) ---
-            # Look back 30 days so patterns can form over time, not just items
-            thirty_days_ago = (now - timedelta(days=30)).isoformat()
-
-            # --- 🧠 HIGH-RES HINDSIGHT RETRIEVAL (Hybrid Graph + Vector) ---
-            hindsight_context = "None"
-            graph_context = "None"
-            task_inputs = [d['content'] for d in dumps] if dumps else []
-            
-            # Graph-first: Search for primary entity in task inputs
-            if task_inputs:
-                combined_input = " ".join(task_inputs[:3])
-                graph_context = await hybrid_search_graph(combined_input[:100])
-            
-            if task_inputs or active_tasks:
-                hindsight_memories = await retrieve_hindsight_memories(task_inputs, active_tasks, top_k=5)
-                if hindsight_memories:
-                    memory_lines = []
-                    if graph_context:
-                        memory_lines.append(f"TACTICAL MAP:\n{graph_context}")
-                    
-                    # 🛡️ THE FIX: memories are already formatted as strings by the helper.
-                    # We just need to add them to our lines, not process them again.
-                    memory_lines.extend(hindsight_memories)
-                    
-                    hindsight_context = "\n\n".join(memory_lines)
-                    print(f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
-
-            all_recent_lib = fetch_all_paginated("resources", "url, category, title, summary, strategic_note, created_at")
-            recent_lib_data = [r for r in all_recent_lib if r.get('created_at', '') > thirty_days_ago]
-            recent_lib_data.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-            recent_lib_data = recent_lib_data[:50]
-
-            if recent_lib_data:
-                enriched_items = []
-                for r in recent_lib_data:
-                    note = r.get('strategic_note') or ""
-                    enriched_items.append(f"[{r['category']}] {r['title']} | {note}".strip())
-                pattern_context = " | ".join(enriched_items)
+            elif hour < 19:
+                if o_tag in ['SOLVSTRAT', 'PRODUCT_LABS', 'CRAYON', 'INBOX']:
+                    filtered_tasks.append(t)
             else:
-                pattern_context = "None"
-            
-            newly_enriched_context = "None"
-            if batch_enrich_results:
-                newly_enriched_lines = [f"[{r.get('category', 'LINK')}] {r.get('title', 'Unknown')} | {r.get('strategic_note', '')}" for r in batch_enrich_results]
-                newly_enriched_context = " | ".join(newly_enriched_lines)
-            
-            link_context = "None"
-            
-            # --- 2. THINK Phase ---
-            print('🤖 Building prompt...')
+                if o_tag in ['PERSONAL', 'CHURCH']:
+                    filtered_tasks.append(t)
 
-            # Build project context for AI
-            project_details = []
-            for p in projects:
-                desc = p.get('description', '')
-                detail = p['name']
-                if desc:
-                    detail += f" | {desc}"
-                project_details.append(detail)
+        # --- 1.4 CONTEXT COMPRESSION & PRUNING ---
+        # 🛡️ THE HORIZON GATE (Rule 2)
+        horizon_cutoff = now + timedelta(days=2)
+        # 🛡️ THE NAG GATE (Rule 1)
+        two_weeks_ago = now - timedelta(days=14)
+        
+        recent_tasks = []
+        for t in active_tasks:
+            try:
+                # 🛡️ RULE 2: If the reminder is more than 48 hours away, HIDE IT FROM THE AI
+                raw_remind = t.get('reminder_at')
+                if raw_remind:
+                    clean_remind = str(raw_remind).replace(' ', 'T').replace('Z', '+00:00')
+                    remind_dt = datetime.fromisoformat(clean_remind)
+                    if remind_dt > horizon_cutoff:
+                        continue # Dawn (May 7) is skipped here!
 
-            project_names = [p['name'] for p in projects]
-            people_names = [p['name'] for p in people]
-            compressed_tasks_final = compressed_tasks[:3000]  # Hard limit
-            new_inputs_text = "\n---\n".join([d['content'] for d in dumps])
-            new_input_summary = " | ".join([d['content'] for d in dumps[:5]])
-            current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
+                # 🛡️ RULE 1: Only show recently created tasks for background context
+                created_dt = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00'))
+                if created_dt > two_weeks_ago:
+                    recent_tasks.append(t)
+            except:
+                recent_tasks.append(t) # Safety fallback
 
-            prompt = f"""    
-            ROLE: Danny's Trusted Partner.
-            STRATEGIC CONTEXT: {season_config}
-            CURRENT PHASE: {briefing_mode}
-            CURRENT TIME: {current_time_str}
-            SYSTEM_LOAD: {'OVERLOADED' if is_overloaded else 'OPTIMAL'}
-            MONDAY_REENTRY: {'TRUE' if is_monday_morning else 'FALSE'}
-            STAGNANT URGENT_TASKS: {json.dumps(overdue_tasks)}
-            PERSONA GUIDELINE: {system_persona}
-            SYSTEM STATUS: {system_context}
+        # This is the AI's "Visual Field"
+        universal_task_map = " | ".join([f"[ID:{t.get('id')}] {t.get('title')}" for t in recent_tasks])
 
-            MANDATE: THE SILENCE PROTOCOL & HALLUCINATION GUARD 
-            - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
-            - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
-            - NEVER proactively invent tasks or ideas. ONLY track what is manually entered or already exists.
-            - If NEW INPUTS is "None" or empty, you MUST return completely empty arrays for `completed_task_ids`, `new_tasks`, `new_projects`, and `resources` [].
-            - NEVER "make up", guess, or generate example tasks.
-            - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
-            - ONLY track what is manually entered in NEW INPUTS.
+        # B. BUILD COMPRESSED LIST (For the Briefing Context)
+        # 🛡️ FIX: Defining 'compressed_tasks' so the prompt builder doesn't crash!
+        compressed_tasks_list = []
+        for t in filtered_tasks:
+            project = next((p for p in projects if p.get('id') == t.get('project_id')), None)
+            p_name = project.get('name') if project else "General"
+            o_tag = project.get('org_tag') if project else "INBOX"
+            compressed_tasks_list.append(f"[{o_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]")
 
-            HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
-            {hindsight_context}
+        compressed_tasks = " | ".join(compressed_tasks_list)
 
-            CONTEXT:
-            - IDENTITY: {json.dumps(core)}
-            - PROJECTS: {json.dumps(project_details)}
-            - PEOPLE: {json.dumps(people_names)}
-            - ACTIONABLE TASKS (DAY FILTERED): {compressed_tasks_final}
-            - ALL SYSTEM TASKS (FOR ID MATCHING): {universal_task_map[:3000]}
-            - RECENT LIBRARY PATTERNS: {pattern_context}
-            - NEWLY ENRICHED RESOURCES: {newly_enriched_context}
-            - ENRICHED WEB LINKS: {link_context}
-            - NEW INPUTS: {new_inputs_text}
+        # --- 1.5 SEASON EXPIRY LOGIC ---
+        season_row = next((c for c in core if c.get('key') == 'current_season'), None)
+        season_config = season_row.get('content') if season_row else ''
 
-            PROJECT ROUTING LOGIC
-            Use this hierarchy to assign NEW_TASKS or match COMPLETIONS:
-            1. DYNAMIC ROUTING: Use the 'business_entities' and 'current_season' definitions provided in the IDENTITY context above to assign NEW_TASKS to the matching project in the PROJECTS list.
-            2. REVENUE FLAG: Set `is_revenue_critical: true` for any tasks involving Sales, Pilots, or high-ticket revenue generation as defined in your entity map.
-            3. DEFAULT ROUTING: If a task explicitly mentions home, family, or faith, route to 'PERSONAL' or 'CHURCH'. For all other unmatched items, default to 'INBOX'.
-            4. PERSONAL: Match Sunju, kids, dogs, and home maintenance here.
-            5. CHURCH: 
-                - Note: All church-related activities MUST map to the project "Church".
-            6. MISSION OVERRIDE: If a resource fits an ACTIVE MISSION, prioritize the Mission name over the Project name. 
-            7. LINK FIDELITY: Every task derived from a URL MUST include the clickable URL in the title.
+        expiry_match = re.search(r'\[EXPIRY:\s*(\d{4}-\d{2}-\d{2})\]', season_config)
+        system_context = "OPERATIONAL"
+        if expiry_match:
+            expiry_date_str = expiry_match.group(1)
+            expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            if now > expiry_date:
+                system_context = "CRITICAL: Season Context EXPIRED."
 
-            NEW PROJECT CREATION CRITERIA:
-            1. Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned 
+        # --- 🛡️ 1.6 THE NAG LOGIC (STAGNANT TASK GUARD) ---
+        overdue_tasks = []
+        for t in filtered_tasks:
+            try:
+                raw_created = t.get('created_at')
+                if raw_created:
+                    # Normalize and compare hours
+                    created_date = datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
+                    hours_old = (now - created_date).total_seconds() / 3600
+                    if t.get('priority') == 'urgent' and hours_old > 48:
+                        overdue_tasks.append(t.get('title'))
+            except Exception as e:
+                print(f"⚠️ Nag Logic skipped for task '{t.get('title')}': {e}")
 
-            NEW: RESOURCE CAPTURE LOGIC
-            Identify any URLs in the NEW INPUTS. For each URL:
-            1. CATEGORIZE: Tag as GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL.
-            2. SUMMARIZE: Write a concise, 1-sentence description of the value.
-            3. PROJECT MATCH: If the link relates to an existing project (e.g., Crayon or Solvstrat), provide the project name.
-            4. Do NOT create a task for these. Just save them to the "resources" array.
-            5. STRICT MISSION MATCHING: 
-               - ONLY assign a `mission_id` if the resource is a direct "building block" for an ACTIVE MISSION. 
-               - If it is just a "cool tool" or "interesting read," you MUST leave `mission_id` as NULL.
-               - Do NOT force a match. It is better to have an unmapped resource than a wrongly mapped one.
+        # --- 🕒 1.7 INPUT PREP ---
+        new_inputs_text = "\n---\n".join([d['content'] for d in dumps]) if dumps else "None"    
 
-            STRATEGIC AUDIT INSTRUCTIONS
-            1. BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects. For every URL, attempt to match it to an EXISTING mission or project.
-            2. CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
-            3. PATTERN DETECTION: 
-              - Review RECENT LIBRARY PATTERNS.
-              - If you see 3+ links on a new topic (e.g., "YC Prep" or "Lead Gen"), you MAY suggest a new mission in the `new_missions` JSON array.
-              - NEVER dump unrelated links into an existing mission just because it's the only one open.
-            4. THE VAULT GATE: These updates go to the DATABASE only.
-            5. THE BRIEFING GATE: 
-                - You are STRICTLY FORBIDDEN from mentioning new resources or new missions in the briefing UNLESS Danny specifically used the word "Vault" or "Mission" in the NEW INPUTS.
-                - If those keywords are absent, categorize them in the background and keep the Telegram brief silent about them.
+        # --- 🧭 LAYER 3: SMART PATTERN CONTEXT (Last 30 Days) ---
+        # Look back 30 days so patterns can form over time, not just items
+        thirty_days_ago = (now - timedelta(days=30)).isoformat()
 
-             MISSION vs. INCUBATOR FRAMEWORK
-            1. MISSION ASSEMBLY: Evaluate every URL and Input against ACTIVE MISSIONS. 
-               - If a link provides a "component" (tool, code, strategy) for a mission, assign the "mission_name".
-            2. THE INCUBATOR AUDIT: If an input represents a high-potential standalone product idea NOT related to current goals:
-               - Tag it as project_name: "INCUBATOR".
-               - In the "strategic_note", evaluate its "Success DNA" (Market fit/Founder match).
-            3. SPARK DETECTION: If a link is a "Spark" (brand new project concept), create a log with entry_type: "SPARK".
-            4. AUTO-MISSION DETECTION: If 3+ items in NEW INPUTS or RECENT LIBRARY PATTERNS suggest a cohesive new goal (e.g., "Automate Solvstrat Lead Gen"), add it to the "new_missions" array.
+        # --- 🧠 HIGH-RES HINDSIGHT RETRIEVAL (Hybrid Graph + Vector) ---
+        hindsight_context = "None"
+        graph_context = "None"
+        task_inputs = [d['content'] for d in dumps] if dumps else []
+        
+        # Graph-first: Search for primary entity in task inputs
+        if task_inputs:
+            combined_input = " ".join(task_inputs[:3])
+            graph_context = await hybrid_search_graph(combined_input[:100])
+        
+        if task_inputs or active_tasks:
+            hindsight_memories = await retrieve_hindsight_memories(task_inputs, active_tasks, top_k=5)
+            if hindsight_memories:
+                memory_lines = []
+                if graph_context:
+                    memory_lines.append(f"TACTICAL MAP:\n{graph_context}")
+                
+                # 🛡️ THE FIX: memories are already formatted as strings by the helper.
+                # We just need to add them to our lines, not process them again.
+                memory_lines.extend(hindsight_memories)
+                
+                hindsight_context = "\n\n".join(memory_lines)
+                print(f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
 
-            INSTRUCTIONS:
-            1. STRICT DATA FIDELITY: You are strictly forbidden from inventing or hallucinating data to fill the JSON. If there is no explicit command in NEW INPUTS, do nothing.
-            2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "completed_task_ids", "new_projects", and "new_people" arrays MUST remain 100% empty [].
-            3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
-            4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
-            5. THE COMPASS NUDGE: If tasks in PERSONAL or CHURCH are >48hrs old, add a dry one-liner: "The board is green, but don't forget the home front. Check your personal list."
-            6. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
-                - If Danny says he finished or completed a task, mark it as done.
-                - If Danny describes a result that fulfills a task's objective (e.g., "The contract is signed" fulfills "Get contract signed"), mark it DONE.
-                - If Danny uses the past tense of a task's core action verb (e.g., "Mailed the check" fulfills "Mail the check"), mark it DONE.
-                - If the input describes the final step of a process (e.g., "App is on the store" fulfills "Submit app for review"), mark it DONE.
-                - DESTRUCTIVE ACTION GUARD: If Danny says "Cancel", "Ignore", "Drop", or "Forget" a task, you are STRICTLY FORBIDDEN from deleting it or marking it 'cancelled'.
-                - Instead, you MUST update its status to "pending_review". This acts as a manual approval gate so no critical task is destroyed by AI misinterpretation.
-                - If Danny says a task is "on hold," "waiting," or "deferred until [Date/Time]," do NOT mark it as cancelled.
-                - Instead, update the `reminder_at` field and keep the status as `todo`.
-                - Identify if a task is "Revenue Critical" (anything involving payments, quotes, or ₹30L velocity). Set `is_revenue_critical: true`.
-            6. 🕒 TIMEZONE LOCKDOWN (UTC-AT-REST):
-                - TIMEZONE LOCKDOWN (UTC-AT-REST): You must NEVER output a naive datetime. Danny operates in IST. When he specifies an exact time, you MUST output the exact IST time and append the strictly formatted offset (+05:30). The database will automatically intercept this and convert it to UTC at rest.
-                - FORMAT: "YYYY-MM-DDTHH:MM:SS+05:30".
-                - NAKED TASKS: If no exact time is specified, leave reminder_at as null. Do not guess the time.
-            7. DYNAMIC TASK MATCHING:
-                - Compare inputs against ALL SYSTEM TASKS.
-                - If Danny says "I'm done" or "Completed," mark the status as `done`.
-                - DURATION ASSIGNMENT: Assign `estimated_duration` based on task type:
-                  - 15 minutes for routine tasks (emails, quick replies, status updates)
-                  - 45 minutes for anything related to Pilots, Sales, or high-stakes Mission 10 items
-                  - Default to 15 minutes if unspecified
-            8. AUTO-ONBOARDING:
-                - If a new Client/Project is mentioned, add to "new_projects".
-                - If a new Person is mentioned, add to "new_people".
-            9. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
-            10. WEEKEND FILTER: If isWeekend is true ({is_weekend}), do NOT suggest or list Work tasks. Move work inputs to a 'Monday' reminder.
-            11. EXECUTIVE BRIEF FORMAT:
-                - HEADLINE RULE: Use exactly "{briefing_mode}".
-                - ICON RULES: 🔴 (Urgent), 🟡 (Important), ⚪ (Chores), 💡 (Ideas).
-                - SECTIONS: ✅ Done, 🚀 Work (Hide on weekends), 🏠 Home, 💡 Ideas (Only at night pulse).
-                - TONE: Match the PERSONA GUIDELINE. Be direct, simple, human. Talk like a friend who is also a high-level operator.
-                - TONE GUARD: NEVER use words like 'Operational', 'Vanguard', 'Strategic Momentum', 'Audit', 'Battlefield', 'Chief of Staff', 'Tactical', 'Executive Office'. Use simple, punchy sentences. NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'mission', 'ready for your review'.
-                - INTELLIGENT FILTERING: 
-                    - If mode is 🔴 Urgent: HIDE the 🏠 Home and 💡 Ideas sections. Focus strictly on 🚀 Work and ✅ Done.
-                    - If mode is 🟡 Important: Prioritize 🚀 Work.
-                    - If mode is 💡 Tonight's reflections: Prioritize the 💡 Ideas section and library insights.
-                - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
-                - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
-                - REVENUE BOLDING: Bold all tasks involving Sales, Pilots, or Payments using **task title**.
-            10. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
-            11. STRICT TASK SYNTAX: 
-                - Every single task listed in the briefing MUST follow this exact format: "- [ICON] [Task Title]". 
+        recent_lib = supabase.table('resources')\
+            .select('url, category, title, summary, strategic_note, created_at')\
+            .gt('created_at', thirty_days_ago)\
+            .order('created_at', desc=True)\
+            .limit(50)\
+            .execute()
+
+        if recent_lib.data:
+            enriched_items = []
+            for r in recent_lib.data:
+                note = r.get('strategic_note') or ""
+                enriched_items.append(f"[{r['category']}] {r['title']} | {note}".strip())
+            pattern_context = " | ".join(enriched_items)
+        else:
+            pattern_context = "None"
+        
+        newly_enriched_context = "None"
+        if batch_enrich_results:
+            newly_enriched_lines = [f"[{r.get('category', 'LINK')}] {r.get('title', 'Unknown')} | {r.get('strategic_note', '')}" for r in batch_enrich_results]
+            newly_enriched_context = " | ".join(newly_enriched_lines)
+        
+        link_context = "None"
+        
+        # --- 2. THINK Phase ---
+        print('🤖 Building prompt...')
+
+        # Build project context for AI
+        project_details = []
+        for p in projects:
+            desc = p.get('description', '')
+            detail = p['name']
+            if desc:
+                detail += f" | {desc}"
+            project_details.append(detail)
+
+        project_names = [p['name'] for p in projects]
+        people_names = [p['name'] for p in people]
+        compressed_tasks_final = compressed_tasks[:3000]  # Hard limit
+        new_inputs_text = "\n---\n".join([d['content'] for d in dumps])
+        new_input_summary = " | ".join([d['content'] for d in dumps[:5]])
+        current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
+
+        prompt = f"""    
+        ROLE: Danny's Trusted Partner.
+        STRATEGIC CONTEXT: {season_config}
+        CURRENT PHASE: {briefing_mode}
+        CURRENT TIME: {current_time_str}
+        SYSTEM_LOAD: {'OVERLOADED' if is_overloaded else 'OPTIMAL'}
+        MONDAY_REENTRY: {'TRUE' if is_monday_morning else 'FALSE'}
+        STAGNANT URGENT_TASKS: {json.dumps(overdue_tasks)}
+        PERSONA GUIDELINE: {system_persona}
+        SYSTEM STATUS: {system_context}
+
+        MANDATE: THE SILENCE PROTOCOL & HALLUCINATION GUARD 
+        - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
+        - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
+        - NEVER proactively invent tasks or ideas. ONLY track what is manually entered or already exists.
+        - If NEW INPUTS is "None" or empty, you MUST return completely empty arrays for `completed_task_ids`, `new_tasks`, `new_projects`, and `resources` [].
+        - NEVER "make up", guess, or generate example tasks.
+        - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
+        - ONLY track what is manually entered in NEW INPUTS.
+
+        HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
+        {hindsight_context}
+
+        CONTEXT:
+        - IDENTITY: {json.dumps(core)}
+        - PROJECTS: {json.dumps(project_details)}
+        - PEOPLE: {json.dumps(people_names)}
+        - ACTIONABLE TASKS (DAY FILTERED): {compressed_tasks_final}
+        - ALL SYSTEM TASKS (FOR ID MATCHING): {universal_task_map[:3000]}
+        - RECENT LIBRARY PATTERNS: {pattern_context}
+        - NEWLY ENRICHED RESOURCES: {newly_enriched_context}
+        - ENRICHED WEB LINKS: {link_context}
+        - NEW INPUTS: {new_inputs_text}
+
+        PROJECT ROUTING LOGIC
+        Use this hierarchy to assign NEW_TASKS or match COMPLETIONS:
+        1. DYNAMIC ROUTING: Use the 'business_entities' and 'current_season' definitions provided in the IDENTITY context above to assign NEW_TASKS to the matching project in the PROJECTS list.
+        2. REVENUE FLAG: Set `is_revenue_critical: true` for any tasks involving Sales, Pilots, or high-ticket revenue generation as defined in your entity map.
+        3. DEFAULT ROUTING: If a task explicitly mentions home, family, or faith, route to 'PERSONAL' or 'CHURCH'. For all other unmatched items, default to 'INBOX'.
+        4. PERSONAL: Match Sunju, kids, dogs, and home maintenance here.
+        5. CHURCH: 
+            - Note: All church-related activities MUST map to the project "Church".
+        6. MISSION OVERRIDE: If a resource fits an ACTIVE MISSION, prioritize the Mission name over the Project name. 
+        7. LINK FIDELITY: Every task derived from a URL MUST include the clickable URL in the title.
+
+        NEW PROJECT CREATION CRITERIA:
+        1. Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned 
+
+        NEW: RESOURCE CAPTURE LOGIC
+        Identify any URLs in the NEW INPUTS. For each URL:
+        1. CATEGORIZE: Tag as GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL.
+        2. SUMMARIZE: Write a concise, 1-sentence description of the value.
+        3. PROJECT MATCH: If the link relates to an existing project (e.g., Crayon or Solvstrat), provide the project name.
+        4. Do NOT create a task for these. Just save them to the "resources" array.
+        5. STRICT MISSION MATCHING: 
+           - ONLY assign a `mission_id` if the resource is a direct "building block" for an ACTIVE MISSION. 
+           - If it is just a "cool tool" or "interesting read," you MUST leave `mission_id` as NULL.
+           - Do NOT force a match. It is better to have an unmapped resource than a wrongly mapped one.
+
+        STRATEGIC AUDIT INSTRUCTIONS
+        1. BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects. For every URL, attempt to match it to an EXISTING mission or project.
+        2. CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
+        3. PATTERN DETECTION: 
+          - Review RECENT LIBRARY PATTERNS.
+          - If you see 3+ links on a new topic (e.g., "YC Prep" or "Lead Gen"), you MAY suggest a new mission in the `new_missions` JSON array.
+          - NEVER dump unrelated links into an existing mission just because it's the only one open.
+        4. THE VAULT GATE: These updates go to the DATABASE only.
+        5. THE BRIEFING GATE: 
+            - You are STRICTLY FORBIDDEN from mentioning new resources or new missions in the briefing UNLESS Danny specifically used the word "Vault" or "Mission" in the NEW INPUTS.
+            - If those keywords are absent, categorize them in the background and keep the Telegram brief silent about them.
+
+         MISSION vs. INCUBATOR FRAMEWORK
+        1. MISSION ASSEMBLY: Evaluate every URL and Input against ACTIVE MISSIONS. 
+           - If a link provides a "component" (tool, code, strategy) for a mission, assign the "mission_name".
+        2. THE INCUBATOR AUDIT: If an input represents a high-potential standalone product idea NOT related to current goals:
+           - Tag it as project_name: "INCUBATOR".
+           - In the "strategic_note", evaluate its "Success DNA" (Market fit/Founder match).
+        3. SPARK DETECTION: If a link is a "Spark" (brand new project concept), create a log with entry_type: "SPARK".
+        4. AUTO-MISSION DETECTION: If 3+ items in NEW INPUTS or RECENT LIBRARY PATTERNS suggest a cohesive new goal (e.g., "Automate Solvstrat Lead Gen"), add it to the "new_missions" array.
+
+        INSTRUCTIONS:
+        1. STRICT DATA FIDELITY: You are strictly forbidden from inventing or hallucinating data to fill the JSON. If there is no explicit command in NEW INPUTS, do nothing.
+        2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "completed_task_ids", "new_projects", and "new_people" arrays MUST remain 100% empty [].
+        3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
+        4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
+        5. THE COMPASS NUDGE: If tasks in PERSONAL or CHURCH are >48hrs old, add a dry one-liner: "The board is green, but don't forget the home front. Check your personal list."
+        6. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
+            - If Danny says he finished or completed a task, mark it as done.
+            - If Danny describes a result that fulfills a task's objective (e.g., "The contract is signed" fulfills "Get contract signed"), mark it DONE.
+            - If Danny uses the past tense of a task's core action verb (e.g., "Mailed the check" fulfills "Mail the check"), mark it DONE.
+            - If the input describes the final step of a process (e.g., "App is on the store" fulfills "Submit app for review"), mark it DONE.
+            - If Danny says "Cancel", "Ignore", "Forget", or "Not doing" a task, mark it as cancelled.
+            - If Danny indicates he is "skipping," "dropping," or "not doing" something, add the ID to "cancelled_task_ids".
+            - If Danny says a task is "on hold," "waiting," or "deferred until [Date/Time]," do NOT mark it as cancelled.
+            - Instead, update the `reminder_at` field and keep the status as `todo`.
+            - Identify if a task is "Revenue Critical" (anything involving payments, quotes, or ₹30L velocity). Set `is_revenue_critical: true`.
+        7. 🕒 HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30):
+            - When Danny mentions a time (e.g., "Friday 10am", "Tomorrow morning", "at 4pm"), you MUST convert this into a valid ISO-8601 timestamp.
+            - LOCAL TIMEZONE: Use Indian Standard Time (IST), which is UTC+05:30.
+            - If Danny specifies a DAY but NO TIME (e.g., "today"), output ONLY the date format: "YYYY-MM-DD". If and ONLY IF he specifies an EXACT TIME (e.g., "at 4pm"), output the full format: "YYYY-MM-DDTHH:MM:SS+05:30".
+            - TASK GROUPING: If Danny mentions multiple people for the same action (e.g., "Suriya and Siva"), extract it as ONE single task. Do not split them into multiple tasks.
+            - NAKED TASKS: If Danny does NOT explicitly mention a day, date, or time, you MUST set reminder_at to null. Do not guess 'today'.
+            - CURRENT REFERENCE: Use the system timestamp provided in the input to calculate relative dates (e.g., "Friday" relative to today).
+        8. DYNAMIC TASK MATCHING:
+            - Compare inputs against ALL SYSTEM TASKS.
+            - If Danny says "I'm done" or "Completed," mark the status as `done`.
+            - DURATION ASSIGNMENT: Assign `estimated_duration` based on task type:
+              - 15 minutes for routine tasks (emails, quick replies, status updates)
+              - 45 minutes for anything related to Pilots, Sales, or high-stakes Mission 10 items
+              - Default to 15 minutes if unspecified
+        9. AUTO-ONBOARDING:
+            - If a new Client/Project is mentioned, add to "new_projects".
+            - If a new Person is mentioned, add to "new_people".
+        10. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
+        11. WEEKEND FILTER: If isWeekend is true ({is_weekend}), do NOT suggest or list Work tasks. Move work inputs to a 'Monday' reminder.
+        12. EXECUTIVE BRIEF FORMAT:
+            - HEADLINE RULE: Use exactly "{briefing_mode}".
+            - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
+            - COMPASS TONE: Never say "Your faith score is X". Show, don't tell. If his faith score is high, open with aggressive forward momentum. If he is stressed or in turmoil, open by anchoring him with the core truth from his last [PRAYER] or Takeaway before listing tasks.
+            - ICON RULES: 🔴 (Urgent), 🟡 (Important), ⚪ (Chores), 💡 (Ideas).
+            - SECTIONS: ✅ Done, 🚀 Work (Hide on weekends), 🏠 Home, 💡 Ideas (Only at night pulse).
+            - TONE: Match the PERSONA GUIDELINE. Be direct, simple, human. Talk like a friend who is also a high-level operator.
+            - TONE GUARD: NEVER use words like 'Operational', 'Vanguard', 'Strategic Momentum', 'Audit', 'Battlefield', 'Chief of Staff', 'Tactical', 'Executive Office'. Use simple, punchy sentences. NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'mission', 'ready for your review'.
+            - INTELLIGENT FILTERING: 
+                - If mode is 🔴 Urgent: HIDE the 🏠 Home and 💡 Ideas sections. Focus strictly on 🚀 Work and ✅ Done.
+                - If mode is 🟡 Important: Prioritize 🚀 Work.
+                - If mode is 💡 Tonight's reflections: Prioritize the 💡 Ideas section and library insights.
+            - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
+            - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
+            - REVENUE BOLDING: Bold all tasks involving Sales, Pilots, or Payments using **task title**.
+        13. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
+        14. STRICT TASK SYNTAX: 
+            - Every single task listed in the briefing MUST follow this exact format: "- [ICON] [Task Title]". 
             - THE LINK RULE: If a task is derived from a URL in NEW INPUTS, you MUST embed that URL into the task title using Markdown: "- [ICON] [Action] using [Source Title](URL)".
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
         
-            OUTPUT JSON SCHEMA (WARNING: ONLY POPULATE ARRAYS IF EXPLICITLY COMMANDED IN NEW INPUTS. OTHERWISE RETURN []):
-            {{
-                "completed_task_ids": [
-                    // Example ONLY: {{ "id": 123, "status": "done" }}, {{ "id": 456, "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" }}
-                ],
-                "new_projects": [
-                    // Example ONLY: {{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }}
-                ],
-                "new_people": [
-                    // Example ONLY: {{ "name": "...", "role": "...", "strategic_weight": 9 }}
-                ],
-                "new_tasks": [
-                    // Example ONLY: {{ "title": "...", "project_name": "...", "priority": "urgent", "estimated_duration": 15, "reminder_at": "..." }}
-                ],
-                "resources": [
-                    // Example ONLY: {{ "url": "...", "title": "...", "summary": "...", "mission_name": "...", "project_name": "...", "strategic_note": "..." }}
-                ],
-                "logs": [],
-                "new_missions": [],
-                "briefing": "The formatted text string for Telegram."
-            }}
-            """
+        OUTPUT JSON SCHEMA (WARNING: ONLY POPULATE ARRAYS IF EXPLICITLY COMMANDED IN NEW INPUTS. OTHERWISE RETURN []):
+        {{
+            "completed_task_ids": [
+                // Example ONLY: {{ "id": 123, "status": "done" }}, {{ "id": 456, "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" }}
+            ],
+            "new_projects": [
+                // Example ONLY: {{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }}
+            ],
+            "new_people": [
+                // Example ONLY: {{ "name": "...", "role": "...", "strategic_weight": 9 }}
+            ],
+            "new_tasks": [
+                // Example ONLY: {{ "title": "...", "project_name": "...", "priority": "urgent", "estimated_duration": 15, "reminder_at": "..." }}
+            ],
+            "resources": [
+                // Example ONLY: {{ "url": "...", "title": "...", "summary": "...", "mission_name": "...", "project_name": "...", "strategic_note": "..." }}
+            ],
+            "logs": [],
+            "new_missions": [],
+            "briefing": "The formatted text string for Telegram."
+        }}
+        """
 
-            # --- AI GENERATION ---
-            # 🛡️ Step 1: Initialize variables to prevent "UnboundLocalError"
-            response_text = ""
-            ai_data = {
-                "briefing": f"⚠️ FALLBACK MODE\n\n{len(dumps)} new inputs:\n{new_input_summary[:200]}",
-                "new_tasks": [], "logs": [], "completed_task_ids": [], "new_projects": [], "new_people": [], "resources": [], "new_missions": []
-            }
+        # --- AI GENERATION ---
+        # 🛡️ Step 1: Initialize variables to prevent "UnboundLocalError"
+        response_text = ""
+        ai_data = {
+            "briefing": f"⚠️ FALLBACK MODE\n\n{len(dumps)} new inputs:\n{new_input_summary[:200]}",
+            "new_tasks": [], "logs": [], "completed_task_ids": [], "new_projects": [], "new_people": []
+        }
 
-            try:
-                # 🛡️ Step 2: The Modern Call with Pydantic Strict Schema Enforcement
-                pulse_config = types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=PulseOutput,
-                    temperature=0.2
-                )
-                
-                response = await call_gemini_with_retry(
-                    prompt=prompt,
-                    config=pulse_config
-                )
-                
-                # Parse structured output directly
-                if hasattr(response, 'parsed') and response.parsed is not None:
-                    ai_data = {
-                        "briefing": response.parsed.briefing,
-                        "completed_task_ids": [{"id": t.id, "status": t.status, "reminder_at": t.reminder_at} for t in response.parsed.completed_task_ids],
-                        "new_projects": [{"name": p.name, "importance": p.importance, "org_tag": p.org_tag} for p in response.parsed.new_projects],
-                        "new_people": [{"name": p.name, "role": p.role, "strategic_weight": p.strategic_weight} for p in response.parsed.new_people],
-                        "new_tasks": [{"title": t.title, "project_name": t.project_name, "priority": t.priority, "estimated_duration": t.estimated_duration, "reminder_at": t.reminder_at, "is_revenue_critical": t.is_revenue_critical} for t in response.parsed.new_tasks],
-                        "resources": [{"url": r.url, "title": r.title, "summary": r.summary, "mission_name": r.mission_name, "project_name": r.project_name, "strategic_note": r.strategic_note} for r in response.parsed.resources],
-                        "logs": [{"entry_type": l.entry_type, "content": l.content} for l in response.parsed.logs],
-                        "new_missions": response.parsed.new_missions
-                    }
-                    print("✅ AI Data Parsed Successfully (Structured Output):", list(ai_data.keys()))
-                    response_text = ""
-                else:
-                    response_text = response.text
-
-                # 🛡️ Step 3: Fallback JSON Extraction (only if no structured output)
-                if response_text:
-                    json_str = re.sub(r'^```json\n?', '', response_text)
-                    json_str = re.sub(r'\n?```$', '', json_str).strip()
-
-                    json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
-                    json_str = re.sub(r':\s*([}\]]|$)', r': ""\1', json_str)
-
-                    match = re.search(r'\{[\s\S]*\}', json_str)
-                    if match:
-                        json_str = match.group(0)
-
-                    ai_data = json.loads(json_str)
-                    print("✅ AI Data Parsed Successfully (JSON Fallback):", list(ai_data.keys()))
-
-            except Exception as e:
-                print(f"AI Execution or JSON Parse Error: {e}")
-                # The ai_data fallback is already set above, so the rest of the script won't crash
-
-            # --- 3. WRITE Phase (Database Updates) ---
-
-            tasks_service = get_tasks_service()
-            
-            # A. BATCH NEW PROJECTS (Deduplicated)
-            if ai_data.get('new_projects'):
-                valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH']
-                filtered_new_projects = []
-
-                for new_p in ai_data['new_projects']:
-                    p_name = new_p.get('name', 'Unnamed Project')
-                    p_tag = new_p.get('org_tag', 'INBOX')
-                    already_exists = any(
-                        p_name.lower() in existing_p['name'].lower() or
-                        existing_p['name'].lower() in p_name.lower()
-                        for existing_p in projects
-                    ) or any(
-                        p_name.lower() in lp['name'].lower() or
-                        lp['name'].lower() in p_name.lower()
-                        for lp in legacy_projects
-                    )
-                    if not already_exists:
-                        filtered_new_projects.append({
-                            "name": p_name,
-                            "org_tag": p_tag if p_tag in valid_tags else 'INBOX',
-                            "status": "active",
-                            "context": "personal" if p_tag in ['CHURCH', 'PERSONAL'] else "work"
-                        })
-
-                if filtered_new_projects:
-                    p_res = supabase.table('projects').insert(filtered_new_projects).execute()
-                    if p_res.data:
-                        projects.extend(p_res.data)
-                        print(f"✅ Created {len(p_res.data)} new entity projects.")
-
-            # B. BATCH NEW PEOPLE
-            if ai_data.get('new_people'):
-                supabase.table('people').insert(ai_data['new_people']).execute()
-
-            # C. BATCH TASK UPDATES (The Smart Rescheduler)
-            if ai_data.get('completed_task_ids'):
-                for item in ai_data['completed_task_ids']:
-                    target_id = item.get('id')
-                    item_status = item.get('status', 'done')
-                    raw_reminder = item.get('reminder_at')
-                    
-                    # 🛡️ RFC-3339 GUARD: Sanitize the timestamp immediately
-                    # This fixes the "Space" bug before Google ever sees it
-                    new_reminder = format_rfc3339(raw_reminder) if raw_reminder else None
-                    
-                    # 1. Fetch current IDs AND Status
-                    task_ref = supabase.table('tasks').select('status', 'google_task_id', 'google_event_id', 'title').eq('id', target_id).single().execute()
-                    
-                    # Extract data safely
-                    current_db_status = task_ref.data.get('status') if task_ref.data else None
-                    g_id = task_ref.data.get('google_task_id') if task_ref.data else None
-                    e_id = task_ref.data.get('google_event_id') if task_ref.data else None
-                    task_title = task_ref.data.get('title') if task_ref.data else "Untitled Task"
-
-                    # 🛑 THE LOCKDOWN: Block AI resurrection of finished tasks
-                    if current_db_status in ['done', 'cancelled']:
-                        print(f"🚫 Task {target_id} ('{task_title}') is already {current_db_status}. Skipping.")
-                        continue
-
-                    # 2. THE SMART CALENDAR SYNC (With Radar)
-                    if item_status in ['done', 'cancelled'] and e_id:
-                        delete_calendar_event(e_id)
-                        e_id = None
-                    elif new_reminder and 'T' in new_reminder:
-                        # 🛰️ RADAR: Check for conflict before moving the block
-                        conflict_name = check_conflict(new_reminder)
-                        if conflict_name:
-                            # 🛡️ Safety: Assignment ensures we don't crash if 'briefing' key is missing
-                            current_briefing = ai_data.get('briefing', "")
-                            ai_data['briefing'] = current_briefing + f"\n\n⚠️ **SNOOZE CONFLICT:** Tried moving '{task_title}' to {new_reminder.split('T')[1][:5]}, but you have '{conflict_name}' then."
-                        
-                        # Edit or create the block
-                        e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id)
-                    elif e_id:
-                        # Snooze to DATE-ONLY -> Remove existing block
-                        delete_calendar_event(e_id)
-                        e_id = None
-
-                    # 3. GOOGLE TASKS SYNC (Uses the same sanitized timestamp)
-                    if g_id:
-                        sync_to_google(tasks_service, title=task_title, task_id=g_id, status=item_status, due_at=new_reminder)
-
-                    # 4. SUPABASE UPDATE (Saves 'T' format and allows time removal)
-                    update_payload = {"status": item_status, "google_event_id": e_id}
-                    if item_status == 'done': 
-                        update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
-                    
-                    # REMOVE the 'if' here to allow clearing the time
-                    update_payload["reminder_at"] = new_reminder 
-
-                    supabase.table('tasks').update(update_payload).eq('id', target_id).execute()
-
-            # D. BATCH NEW TASKS (Checklist + Calendar Interruption + ID Tracking)
-            if ai_data.get('new_tasks'):
-                task_inserts = []
-
-                for task in ai_data['new_tasks']:
-                    # 1. High-Precision Project Matching Logic
-                    ai_target = (task.get('project_name') or "").lower()
-                    
-                    # 🛡️ STEP A: Try for an EXACT match first
-                    project_match = next((p for p in projects if ai_target == p['name'].lower()), None)
-                    
-                    # 🛡️ STEP B: Try legacy projects if not found
-                    if not project_match and ai_target.strip():
-                        project_match = next(
-                            (p for p in legacy_projects if ai_target == p['name'].lower()),
-                            None
-                        )
-                    
-                    # 🛡️ STEP C: Fuzzy match ONLY if ai_target isn't empty
-                    if not project_match and ai_target.strip():
-                        project_match = next(
-                            (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
-                            None
-                        )
-                    
-                    # 🛡️ STEP D: The Safety Net (Default to INBOX)
-                    if not project_match:
-                        project_match = next((p for p in projects if p.get('org_tag') == 'INBOX'), projects[0] if projects else None)
-
-                    if project_match:
-                        # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
-                        raw_time = task.get('reminder_at')
-                        sanitized_time = format_rfc3339(raw_time) if raw_time else None
-                        
-                        # 🔄 DE-CLASH LOGIC: Auto-stagger reminder_at by 15-min increments for same slot
-                        if raw_time and 'T' in str(raw_time) and sanitized_time:
-                            time_slot = sanitized_time.split('T')[0]
-                            existing_same_slot = [t for t in task_inserts if (t.get('reminder_at') or '').startswith(time_slot)]
-                            if existing_same_slot:
-                                stagger_count = len(existing_same_slot)
-                                original_time = datetime.fromisoformat(sanitized_time.replace('Z', '+00:00'))
-                                staggered_time = original_time + timedelta(minutes=15 * stagger_count)
-                                sanitized_time = staggered_time.strftime('%Y-%m-%dT%H:%M:%S+05:30')
-                                print(f"⏰ De-clash: Staggered '{task_title}' to {sanitized_time.split('T')[1][:5]}")
-                        
-                        g_id = None
-                        e_id = None
-                        task_title = task.get('title', 'Untitled Task')
-
-                        # 2. SYNC TO GOOGLE TASKS (The Checklist) - Only if time was extracted
-                        if sanitized_time:
-                            try:
-                                g_id = sync_to_google(
-                                    tasks_service,
-                                    title=task_title,
-                                    due_at=raw_time
-                                )
-                                if g_id: print(f"📡 Google Task Created: {task_title}")
-                            except Exception as e:
-                                print(f"⚠️ Google Tasks Sync failed for {task_title}: {e}")
-
-                        # 3. STRATEGIC GATE: SYNC TO CALENDAR (The Radar + Alarm)
-                        if raw_time and 'T' in str(raw_time) and sanitized_time:
-                            try:
-                                # 🛰️ RADAR: Check for clash
-                                conflict_name = check_conflict(sanitized_time)
-                                if conflict_name:
-                                    briefing = ai_data.get('briefing', "")
-                                    ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
-                                
-                                # Secure the block with dynamic duration
-                                duration_mins = task.get('estimated_duration', 15)
-                                e_id = sync_to_calendar(task_title, sanitized_time, duration_mins=duration_mins)
-                                if e_id: print(f"📅 Calendar block secured: {task_title} ({duration_mins}m)")
-                                
-                            except Exception as ce:
-                                print(f"⚠️ Calendar Sync failed for {task_title}: {ce}")
-
-                        # 4. BUILD SUPABASE PAYLOAD (Using the Sanitized Time)
-                        # Use legacy_id for tasks table since it expects integer project_id
-                        task_project_id = project_match.get('legacy_id')
-                        if not task_project_id:
-                            task_project_id = 1
-                        task_inserts.append({
-                            "title": task_title,
-                            "project_id": task_project_id,
-                            "priority": (task.get('priority') or 'important').lower(),
-                            "status": "todo",
-                            "estimated_minutes": task.get('estimated_duration', 15),
-                            "google_task_id": g_id,
-                            "google_event_id": e_id,
-                            "reminder_at": sanitized_time, # Store 'T' format in DB
-                            "is_revenue_critical": task.get('is_revenue_critical', False)
-                        })
-
-                if task_inserts:
-                    try:
-                        supabase.table('tasks').insert(task_inserts).execute()
-                        print(f"✅ Inserted {len(task_inserts)} new tasks.")
-                        
-                        # Conditional Update: Only mark raw_dumps as processed after successful task insertion
-                        if dumps:
-                            dump_ids = [d['id'] for d in dumps]
-                            supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
-                    except Exception as te:
-                        print(f"⚠️ Task insertion failed: {te}")
-                        # Safety Logic: Do NOT mark dumps as processed if task insertion failed
-
-            # G. CLEANUP & LOGS
-            if ai_data.get('logs'):
-                supabase.table('logs').insert(ai_data['logs']).execute()
-
-            briefing_text = ai_data.get('briefing', '')
-            if briefing_text:
-                briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
-                
-            # --- 4. SPEAK Phase ---
-            telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-            telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-
-            if telegram_chat_id and briefing_text:
-                url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
-                payload = {
-                    "chat_id": telegram_chat_id,
-                    "text": briefing_text,
-                    "parse_mode": "Markdown"
+        try:
+            # 🛡️ Step 2: The Modern Call (No 'GenerativeModel' needed)
+            response = await call_gemini_with_retry(
+                prompt=prompt,
+                model=BRIEFING_MODEL,
+                config={
+                    'response_mime_type': 'application/json',
+                    'response_schema': PulseOutput
                 }
-                async with httpx.AsyncClient() as tg_client:
-                    await tg_client.post(url, json=payload)
+            )
+            response_text = response.text
 
-            # --- 📝 AFTER-ACTION REPORT ---
-            if hour >= 20 or hour < 4:
-                await generate_after_action_report()
+            # 🛡️ Step 3: Precise Extraction
+            # We move this inside the primary try block so it only runs if we HAVE text
+            json_str = re.sub(r'^```json\n?', '', response_text)
+            json_str = re.sub(r'\n?```$', '', json_str).strip()
 
-            return {"success": True, "briefing": briefing_text}
+            # Sanitization (Trailing commas + empty values)
+            json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+            json_str = re.sub(r':\s*([}\]]|$)', r': ""\1', json_str)
+
+            match = re.search(r'\{[\s\S]*\}', json_str)
+            if match:
+                json_str = match.group(0)
+
+            ai_data = json.loads(json_str)
+            print("✅ AI Data Parsed Successfully:", list(ai_data.keys()))
 
         except Exception as e:
-            print(f"Pulse Engine Error: {e}")
-            import traceback
-            traceback.print_exc()
-            try:
-                error_url = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/sendMessage"
-                error_payload = {
-                    "chat_id": os.getenv("TELEGRAM_CHAT_ID"),
-                    "text": "🔴 **CRITICAL:** Pulse Engine failure. Check GitHub logs for the stack trace.",
-                    "parse_mode": "Markdown"
-                }
-                async with httpx.AsyncClient() as error_client:
-                    await error_client.post(error_url, json=error_payload)
-            except:
-                pass
-            raise
+            print(f"AI Execution or JSON Parse Error: {e}")
+            # The ai_data fallback is already set above, so the rest of the script won't crash
+
+        # --- 3. WRITE Phase (Database Updates) ---
+
+        tasks_service = get_tasks_service()
+        
+        # A. BATCH NEW PROJECTS (Deduplicated)
+        if ai_data.get('new_projects'):
+            valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH']
+            filtered_new_projects = []
+
+            for new_p in ai_data['new_projects']:
+                p_name = new_p.get('name', 'Unnamed Project')
+                p_tag = new_p.get('org_tag', 'INBOX')
+                already_exists = any(
+                    p_name.lower() in existing_p['name'].lower() or
+                    existing_p['name'].lower() in p_name.lower()
+                    for existing_p in projects
+                ) or any(
+                    p_name.lower() in lp['name'].lower() or
+                    lp['name'].lower() in p_name.lower()
+                    for lp in legacy_projects
+                )
+                if not already_exists:
+                    filtered_new_projects.append({
+                        "name": p_name,
+                        "org_tag": p_tag if p_tag in valid_tags else 'INBOX',
+                        "status": "active",
+                        "context": "personal" if p_tag in ['CHURCH', 'PERSONAL'] else "work"
+                    })
+
+            if filtered_new_projects:
+                p_res = supabase.table('projects').insert(filtered_new_projects).execute()
+                if p_res.data:
+                    projects.extend(p_res.data)
+                    print(f"✅ Created {len(p_res.data)} new entity projects.")
+
+        # B. BATCH NEW PEOPLE
+        if ai_data.get('new_people'):
+            supabase.table('people').insert(ai_data['new_people']).execute()
+
+        # C. BATCH TASK UPDATES (The Smart Rescheduler)
+        if ai_data.get('completed_task_ids'):
+            for item in ai_data['completed_task_ids']:
+                target_id = item.get('id')
+                item_status = item.get('status', 'done')
+                raw_reminder = item.get('reminder_at')
+                
+                # 🛡️ RFC-3339 GUARD: Sanitize the timestamp immediately
+                # This fixes the "Space" bug before Google ever sees it
+                new_reminder = format_rfc3339(raw_reminder) if raw_reminder else None
+                
+                # 1. Fetch current IDs AND Status
+                task_ref = supabase.table('tasks').select('status', 'google_task_id', 'google_event_id', 'title').eq('id', target_id).single().execute()
+                
+                # Extract data safely
+                current_db_status = task_ref.data.get('status') if task_ref.data else None
+                g_id = task_ref.data.get('google_task_id') if task_ref.data else None
+                e_id = task_ref.data.get('google_event_id') if task_ref.data else None
+                task_title = task_ref.data.get('title') if task_ref.data else "Untitled Task"
+
+                # 🛑 THE LOCKDOWN: Block AI resurrection of finished tasks
+                if current_db_status in ['done', 'cancelled']:
+                    print(f"🚫 Task {target_id} ('{task_title}') is already {current_db_status}. Skipping.")
+                    continue
+
+                # 2. THE SMART CALENDAR SYNC (With Radar)
+                if item_status in ['done', 'cancelled'] and e_id:
+                    delete_calendar_event(e_id)
+                    e_id = None
+                elif new_reminder and 'T' in new_reminder:
+                    # 🛰️ RADAR: Check for conflict before moving the block
+                    conflict_name = check_conflict(new_reminder)
+                    if conflict_name:
+                        # 🛡️ Safety: Assignment ensures we don't crash if 'briefing' key is missing
+                        current_briefing = ai_data.get('briefing', "")
+                        ai_data['briefing'] = current_briefing + f"\n\n⚠️ **SNOOZE CONFLICT:** Tried moving '{task_title}' to {new_reminder.split('T')[1][:5]}, but you have '{conflict_name}' then."
+                    
+                    # Edit or create the block
+                    e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id)
+                elif e_id:
+                    # Snooze to DATE-ONLY -> Remove existing block
+                    delete_calendar_event(e_id)
+                    e_id = None
+
+                # 3. GOOGLE TASKS SYNC (Uses the same sanitized timestamp)
+                if g_id:
+                    sync_to_google(tasks_service, title=task_title, task_id=g_id, status=item_status, due_at=new_reminder)
+
+                # 4. SUPABASE UPDATE (Saves 'T' format and allows time removal)
+                update_payload = {"status": item_status, "google_event_id": e_id}
+                if item_status == 'done': 
+                    update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
+                
+                # REMOVE the 'if' here to allow clearing the time
+                update_payload["reminder_at"] = new_reminder 
+
+                supabase.table('tasks').update(update_payload).eq('id', target_id).execute()
+
+        # D. BATCH NEW TASKS (Checklist + Calendar Interruption + ID Tracking)
+        if ai_data.get('new_tasks'):
+            task_inserts = []
+
+            for task in ai_data['new_tasks']:
+                # 1. High-Precision Project Matching Logic
+                ai_target = (task.get('project_name') or "").lower()
+                
+                # 🛡️ STEP A: Try for an EXACT match first
+                project_match = next((p for p in projects if ai_target == p['name'].lower()), None)
+                
+                # 🛡️ STEP B: Try legacy projects if not found
+                if not project_match and ai_target.strip():
+                    project_match = next(
+                        (p for p in legacy_projects if ai_target == p['name'].lower()),
+                        None
+                    )
+                
+                # 🛡️ STEP C: Fuzzy match ONLY if ai_target isn't empty
+                if not project_match and ai_target.strip():
+                    project_match = next(
+                        (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
+                        None
+                    )
+                
+                # 🛡️ STEP D: The Safety Net (Default to INBOX)
+                if not project_match:
+                    project_match = next((p for p in projects if p.get('org_tag') == 'INBOX'), projects[0] if projects else None)
+
+                if project_match:
+                    # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
+                    raw_time = task.get('reminder_at')
+                    sanitized_time = format_rfc3339(raw_time) if raw_time else None
+                    
+                    # 🔄 DE-CLASH LOGIC: Auto-stagger reminder_at by 15-min increments for same slot
+                    if raw_time and 'T' in str(raw_time) and sanitized_time:
+                        time_slot = sanitized_time.split('T')[0]
+                        existing_same_slot = [t for t in task_inserts if (t.get('reminder_at') or '').startswith(time_slot)]
+                        if existing_same_slot:
+                            stagger_count = len(existing_same_slot)
+                            original_time = datetime.fromisoformat(sanitized_time.replace('Z', '+00:00'))
+                            staggered_time = original_time + timedelta(minutes=15 * stagger_count)
+                            sanitized_time = staggered_time.strftime('%Y-%m-%dT%H:%M:%S+05:30')
+                            print(f"⏰ De-clash: Staggered '{task_title}' to {sanitized_time.split('T')[1][:5]}")
+                    
+                    g_id = None
+                    e_id = None
+                    task_title = task.get('title', 'Untitled Task')
+
+                    # 2. SYNC TO GOOGLE TASKS (The Checklist) - Only if time was extracted
+                    if sanitized_time:
+                        try:
+                            g_id = sync_to_google(
+                                tasks_service,
+                                title=task_title,
+                                due_at=raw_time
+                            )
+                            if g_id: print(f"📡 Google Task Created: {task_title}")
+                        except Exception as e:
+                            print(f"⚠️ Google Tasks Sync failed for {task_title}: {e}")
+
+                    # 3. STRATEGIC GATE: SYNC TO CALENDAR (The Radar + Alarm)
+                    if raw_time and 'T' in str(raw_time) and sanitized_time:
+                        try:
+                            # 🛰️ RADAR: Check for clash
+                            conflict_name = check_conflict(sanitized_time)
+                            if conflict_name:
+                                briefing = ai_data.get('briefing', "")
+                                ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
+                            
+                            # Secure the block with dynamic duration
+                            duration_mins = task.get('estimated_duration', 15)
+                            e_id = sync_to_calendar(task_title, sanitized_time, duration_mins=duration_mins)
+                            if e_id: print(f"📅 Calendar block secured: {task_title} ({duration_mins}m)")
+                            
+                        except Exception as ce:
+                            print(f"⚠️ Calendar Sync failed for {task_title}: {ce}")
+
+                    # 4. BUILD SUPABASE PAYLOAD (Using the Sanitized Time)
+                    # Use legacy_id for tasks table since it expects integer project_id
+                    # 🛡️ BigInt Guard: Force project_id to be an integer to prevent Supabase 22P02 errors
+                    try:
+                        # Attempt to use legacy_id or cast the current ID to an integer
+                        task_project_id = int(project_match.get('legacy_id') or project_match.get('id', 1))
+                    except (ValueError, TypeError):
+                        # If the ID is a UUID string (from the graph), fallback to Inbox (1)
+                        task_project_id = 1
+                    task_inserts.append({
+                        "title": task_title,
+                        "project_id": task_project_id,
+                        "priority": (task.get('priority') or 'important').lower(),
+                        "status": "todo",
+                        "estimated_minutes": task.get('estimated_duration', 15),
+                        "google_task_id": g_id,
+                        "google_event_id": e_id,
+                        "reminder_at": sanitized_time, # Store 'T' format in DB
+                        "is_revenue_critical": task.get('is_revenue_critical', False)
+                    })
+
+            if task_inserts:
+                try:
+                    supabase.table('tasks').insert(task_inserts).execute()
+                    print(f"✅ Inserted {len(task_inserts)} new tasks.")
+                    
+                    # Conditional Update: Only mark raw_dumps as processed after successful task insertion
+                    if dumps:
+                        dump_ids = [d['id'] for d in dumps]
+                        supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
+                except Exception as te:
+                    print(f"⚠️ Task insertion failed: {te}")
+                    # Safety Logic: Do NOT mark dumps as processed if task insertion failed
+
+        # G. CLEANUP & LOGS
+        if ai_data.get('logs'):
+            supabase.table('logs').insert(ai_data['logs']).execute()
+
+        briefing_text = ai_data.get('briefing', '')
+        if briefing_text:
+            briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
+            
+        # --- 4. SPEAK Phase ---
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+
+        if telegram_chat_id and briefing_text:
+            url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
+            payload = {
+                "chat_id": telegram_chat_id,
+                "text": briefing_text,
+                "parse_mode": "Markdown"
+            }
+            async with httpx.AsyncClient() as tg_client:
+                await tg_client.post(url, json=payload)
+
+        # --- 📝 AFTER-ACTION REPORT ---
+        if hour >= 20 or hour < 4:
+            await generate_after_action_report()
+
+        return {"success": True, "briefing": briefing_text}
 
     except Exception as e:
         print(f"Pulse Critical Error: {e}")
