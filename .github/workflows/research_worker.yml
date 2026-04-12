@@ -33,4 +33,4 @@ jobs:
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python core/research_agent.py
+        run: python core/skills/research_agent.py
