@@ -63,19 +63,6 @@ class PulseOutput(BaseModel):
     new_missions: List[str] = Field(default_factory=list)
     briefing: str
 
-# 2. Update the main Output to use these models instead of 'dict'
-class PulseOutput(BaseModel):
-    class Config: extra = "forbid"
-
-    completed_task_ids: List[CompletedTask] = Field(default_factory=list)
-    new_projects: List[NewProject] = Field(default_factory=list)
-    new_people: List[NewPerson] = Field(default_factory=list)
-    new_tasks: List[NewTask] = Field(default_factory=list)
-    resources: List[ResourceItem] = Field(default_factory=list)
-    logs: List[LogEntry] = Field(default_factory=list)
-    new_missions: List[str] = Field(default_factory=list)
-    briefing: str
-
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
     """Call Gemini with retry logic (3 retries, exponential backoff for 503 errors)."""
     if model is None:
