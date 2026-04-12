@@ -18,8 +18,9 @@ EMBEDDING_DIMENSION = 768
 BRIEFING_MODEL = "gemini-3-flash-preview"
 
 class NewTask(BaseModel):
+    # This block is mandatory for Gemini API compatibility
     class Config:
-        extra = "forbid" # 🛡️ This stops the 'additionalProperties' API crash
+        extra = "forbid" 
     
     title: str
     project_name: Optional[str] = None
@@ -29,8 +30,9 @@ class NewTask(BaseModel):
     is_revenue_critical: Optional[bool] = False
 
 class PulseOutput(BaseModel):
+    # This block is mandatory for Gemini API compatibility
     class Config:
-        extra = "forbid" 
+        extra = "forbid"
 
     completed_task_ids: List[dict] = Field(default_factory=list)
     new_projects: List[dict] = Field(default_factory=list)
