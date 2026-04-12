@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
@@ -132,12 +132,15 @@ def get_embedding(text: str) -> list:
 def parse_timestamp(ts: str) -> str:
     if not ts:
         return None
+    ist = timezone(timedelta(hours=5, minutes=30))
     try:
         dt = datetime.strptime(ts.strip(), "%d/%m/%Y %H:%M:%S")
+        dt = dt.replace(tzinfo=ist)
         return dt.isoformat()
     except:
         try:
             dt = datetime.strptime(ts.strip(), "%d/%m/%Y")
+            dt = dt.replace(tzinfo=ist)
             return dt.isoformat()
         except:
             return None

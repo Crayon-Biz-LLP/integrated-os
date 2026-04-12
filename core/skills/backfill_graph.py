@@ -22,10 +22,29 @@ BATCH_SIZE = 20
 MEMORY_TYPES = ["Prophecy", "Psalm", "Prayer", "Journal", "archive"]
 
 
+def fetch_all_paginated(table_name: str, select_str: str = "*", in_filter_col=None, in_filter_val=None):
+    all_rows = []
+    start = 0
+    page_size = 1000
+    while True:
+        query = supabase.table(table_name).select(select_str)
+        if in_filter_col and in_filter_val:
+            query = query.in_(in_filter_col, in_filter_val)
+        
+        res = query.range(start, start + page_size - 1).execute()
+        data = res.data or []
+        all_rows.extend(data)
+        
+        if len(data) < page_size:
+            break
+        start += page_size
+    return all_rows
+
+
 def fetch_memories():
-    existing_edges = supabase.table("graph_edges").select("metadata").execute()
+    existing_edges = fetch_all_paginated("graph_edges", "metadata")
     processed_memory_ids = set()
-    for row in existing_edges.data or []:
+    for row in existing_edges or []:
         try:
             meta = json.loads(row.get("metadata", "{}"))
             if meta.get("memory_id"):
@@ -33,18 +52,15 @@ def fetch_memories():
         except:
             pass
     
-    result = supabase.table("memories").select(
-        "id, content, memory_type, metadata, created_at"
-    ).in_("memory_type", MEMORY_TYPES).execute()
+    memories = fetch_all_paginated("memories", "id, content, memory_type, metadata, created_at", "memory_type", MEMORY_TYPES)
     
-    memories = [m for m in (result.data or []) if m["id"] not in processed_memory_ids]
+    memories = [m for m in (memories or []) if m["id"] not in processed_memory_ids]
     return memories
 
 
 def fetch_graph_entities():
-    # 🛡️ FIX: Remove the .in_("type") filter to see ALL existing nodes
-    result = supabase.table("graph_nodes").select("id, label").execute()
-    return {row["label"]: row["id"] for row in (result.data or [])}
+    nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata")
+    return {row["label"]: row["id"] for row in (nodes or [])}
 
 
 def synthesize_content(memory: dict) -> str:

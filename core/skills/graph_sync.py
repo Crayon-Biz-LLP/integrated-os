@@ -1,5 +1,6 @@
 import os
 import json
+import uuid
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -94,8 +95,8 @@ def sync_edges(graph: dict) -> int:
         except Exception as e:
             # Try with UUID format
             try:
-                edge["source_node_id"] = "node-" + str(hash(edge["source_node_id"]))[:8]
-                edge["target_node_id"] = "node-" + str(hash(edge["target_node_id"]))[:8]
+                edge["source_node_id"] = "node-" + str(uuid.uuid5(uuid.NAMESPACE_OID, str(edge["source_node_id"])))[:8]
+                edge["target_node_id"] = "node-" + str(uuid.uuid5(uuid.NAMESPACE_OID, str(edge["target_node_id"])))[:8]
                 supabase.table("graph_edges").upsert(
                     edge,
                     on_conflict="source_node_id_target_node_id"
