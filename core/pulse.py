@@ -1279,17 +1279,12 @@ async def process_pulse(auth_secret: str = None):
                     })
 
             if task_inserts:
-                try:
-                    supabase.table('tasks').insert(task_inserts).execute()
-                    print(f"✅ Inserted {len(task_inserts)} new tasks.")
-                    
-                    # Conditional Update: Only mark raw_dumps as processed after successful task insertion
-                    if dumps:
-                        dump_ids = [d['id'] for d in dumps]
-                        supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
-                except Exception as te:
-                    print(f"⚠️ Task insertion failed: {te}")
-                    # Safety Logic: Do NOT mark dumps as processed if task insertion failed
+                supabase.table('tasks').insert(task_inserts).execute()
+                print(f"✅ Inserted {len(task_inserts)} new tasks.")
+
+            if dumps:
+                dump_ids = [d['id'] for d in dumps]
+                supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
 
         # G. CLEANUP & LOGS
         if ai_data.get('logs'):
