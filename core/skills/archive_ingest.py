@@ -161,7 +161,7 @@ def ensure_node(label: str) -> str:
     resp = supabase.table("graph_nodes").insert({
         "label": label,
         "type": node_type,
-        "metadata": json.dumps({"source": "archive_ingest"})
+        "metadata": {"source": "archive_ingest"}
     }).execute()
     return resp.data[0]["id"] if resp.data else None
 
@@ -176,7 +176,7 @@ def create_edge(source_label: str, target_label: str, relationship: str, memory_
         "source_node_id": source_id,
         "target_node_id": target_id,
         "relationship": relationship,
-        "metadata": json.dumps({"memory_id": memory_id})
+        "metadata": {"memory_id": memory_id}
     }).execute()
 
 
@@ -316,7 +316,7 @@ def process_row(row) -> dict:
         "created_at": created_at,
         "content": content,
         "memory_type": entry_type,
-        "metadata": json.dumps(metadata)
+        "metadata": metadata
     }
 
 

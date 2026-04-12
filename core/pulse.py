@@ -1291,7 +1291,9 @@ Inputs:
 
                         # 4. BUILD SUPABASE PAYLOAD (Using the Sanitized Time)
                         # Use legacy_id for tasks table since it expects integer project_id
-                        task_project_id = project_match.get('legacy_id') or project_match.get('id')
+                        task_project_id = project_match.get('legacy_id')
+                        if not task_project_id:
+                            task_project_id = 1
                         task_inserts.append({
                             "title": task_title,
                             "project_id": task_project_id,
