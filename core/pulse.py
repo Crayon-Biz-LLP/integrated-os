@@ -1241,10 +1241,9 @@ async def process_pulse(auth_secret: str = None):
                         "priority": (task.get('priority') or 'important').lower(),
                         "status": "todo",
                         "estimated_minutes": task.get('estimated_duration', 15),
+                        "duration_mins": task.get('estimated_duration', 15),
                         "reminder_at": sanitized_time,
                         "is_revenue_critical": task.get('is_revenue_critical', False),
-                        "raw_time": raw_time,
-                        "duration_mins": task.get('estimated_duration', 15)
                     })
 
             # PHASE 1: Supabase Commit - Insert all tasks first, no side effects yet
@@ -1253,30 +1252,31 @@ async def process_pulse(auth_secret: str = None):
                 print(f"✅ Phase 1: Inserted {len(insert_res.data)} new tasks to Supabase.")
                 
                 # PHASE 2: Side-Effect Orchestration - Google Sync after DB success
-                for i, db_task in enumerate(insert_res.data):
+                for db_task in insert_res.data:
                     task_id = db_task['id']
                     task_title = db_task.get('title', 'Untitled Task')
-                    raw_time = task_inserts[i].get('raw_time')
+                    
+                    # Read directly from the DB's safe return data, NOT the local array
                     sanitized_time = db_task.get('reminder_at')
-                    duration_mins = task_inserts[i].get('duration_mins', 15)
+                    duration_mins = db_task.get('duration_mins') or 15
                     
                     g_id = None
                     e_id = None
 
-                    # 2a. SYNC TO GOOGLE TASKS (The Checklist)
+                    # 2a. SYNC TO GOOGLE TASKS
                     if sanitized_time:
                         try:
                             g_id = sync_to_google(
                                 tasks_service,
                                 title=task_title,
-                                due_at=raw_time
+                                due_at=sanitized_time # Feed the clean RFC-3339 time
                             )
                             if g_id: print(f"📡 Google Task Created: {task_title}")
                         except Exception as e:
                             print(f"⚠️ Google Tasks Sync failed for {task_title}: {e}")
 
-                    # 2b. STRATEGIC GATE: SYNC TO CALENDAR (The Radar + Alarm)
-                    if raw_time and 'T' in str(raw_time) and sanitized_time:
+                    # 2b. SYNC TO CALENDAR
+                    if sanitized_time and 'T' in sanitized_time:
                         try:
                             conflict_name = check_conflict(sanitized_time)
                             if conflict_name:
