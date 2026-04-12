@@ -13,7 +13,7 @@ supabase: Client = create_client(
 )
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-CLASSIFICATION_MODEL = "gemini-3.1-flash-lite"
+CLASSIFICATION_MODEL = "gemini-3.1-flash-lite-preview"
 
 
 async def send_telegram(chat_id: int, message_text: str):
