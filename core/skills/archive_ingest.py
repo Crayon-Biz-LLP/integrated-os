@@ -1,10 +1,12 @@
 import os
 import json
+import time
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from google import genai
 
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
@@ -64,20 +66,37 @@ def get_sheets_service():
 
 
 def fetch_sheet_data():
+    """Fetch all data from the Google Sheet with exponential backoff."""
     if not GOOGLE_SHEET_ID:
         raise ValueError("GOOGLE_SHEET_ID not set")
     
+    SHEET_NAME = 'Form responses 1'
+    range_name = f"{SHEET_NAME}!A:AI"
     service = get_sheets_service()
-    result = service.spreadsheets().values().get(
-        spreadsheetId=GOOGLE_SHEET_ID,
-        range='Form responses 1!A:AI'
-    ).execute()
     
-    values = result.get('values', [])
-    if not values:
-        return []
-    
-    return values[1:]
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            print(f"📡 Fetching data from Google Sheets (Attempt {attempt + 1})...")
+            result = service.spreadsheets().values().get(
+                spreadsheetId=GOOGLE_SHEET_ID,
+                range=range_name
+            ).execute()
+            values = result.get('values', [])
+            if not values:
+                return []
+            return values[1:]
+            
+        except HttpError as e:
+            if e.resp.status in [500, 503, 504] and attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"⚠️ Google service busy (503). Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            else:
+                print(f"❌ Permanent Sheets API Error: {e}")
+                raise
+    return []
 
 
 def synthesize_content(entry_type: str, row) -> str:
