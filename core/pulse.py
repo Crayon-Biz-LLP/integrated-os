@@ -163,8 +163,11 @@ async def hybrid_search_graph(query: str) -> str:
         return ""
 
 
-async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top_k: int = 5) -> list:
-    """High-Res Hindsight: Multi-signal vector search across tasks and inputs."""
+async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top_k: int = 5) -> tuple:
+    """High-Res Hindsight: Multi-signal vector search across tasks and inputs.
+    Returns tuple of (formatted_memories, latest_timestamp).
+    """
+    latest_timestamp = None
     try:
         search_queries = []
         
@@ -179,7 +182,7 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
                 search_queries.append((f"task:{title}", title))
         
         if not search_queries:
-            return []
+            return ([], None)
         
         async def fetch_memories_for_query(query_name: str, query_text: str):
             try:
@@ -213,11 +216,12 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
         top_memories = unique_memories[:top_k]
         
         if top_memories:
+            latest_timestamp = top_memories[0].get('created_at')
             formatted = [f"[{m.get('memory_type', 'memory').upper()}] {m.get('content', '')}" for m in top_memories]
-            return formatted
+            return (formatted, latest_timestamp)
     except Exception as e:
         print(f"High-Res Hindsight error: {e}")
-    return []
+    return ([], None)
 
 
 async def generate_after_action_report() -> str:
@@ -833,7 +837,14 @@ async def process_pulse(auth_secret: str = None):
             graph_context = await hybrid_search_graph(combined_input[:100])
         
         if task_inputs or active_tasks:
-            hindsight_memories = await retrieve_hindsight_memories(task_inputs, active_tasks, top_k=5)
+            hindsight_memories, latest_ts = await retrieve_hindsight_memories(task_inputs, active_tasks, top_k=5)
+            
+            is_hindsight_stale = False
+            if latest_ts:
+                last_seen = datetime.fromisoformat(latest_ts.replace('Z', '+00:00'))
+                if (now - last_seen).total_seconds() > (36 * 3600):
+                    is_hindsight_stale = True
+            
             if hindsight_memories:
                 memory_lines = []
                 if graph_context:
@@ -898,6 +909,7 @@ async def process_pulse(auth_secret: str = None):
         STAGNANT URGENT_TASKS: {json.dumps(overdue_tasks)}
         PERSONA GUIDELINE: {system_persona}
         SYSTEM STATUS: {system_context}
+        HINDSIGHT_STALE: {is_hindsight_stale}
 
         MANDATE: THE SILENCE PROTOCOL & HALLUCINATION GUARD 
         - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
@@ -1006,7 +1018,8 @@ async def process_pulse(auth_secret: str = None):
         12. EXECUTIVE BRIEF FORMAT:
             - HEADLINE RULE: Use exactly "{briefing_mode}".
             - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
-            - COMPASS TONE: Never say "Your faith score is X". Show, don't tell. If his faith score is high, open with aggressive forward momentum. If he is stressed or in turmoil, open by anchoring him with the core truth from his last [PRAYER] or Takeaway before listing tasks.
+            - COMPASS TONE: If HINDSIGHT_STALE is FALSE, weave the latest hindsight insights into a sharp, forward-leaning opening.
+              IF HINDSIGHT_STALE is TRUE: Do NOT repeat old insights. Instead, acknowledge the silence with a dry, one-sentence observation (e.g., 'The signal is quiet on the reflection front, Danny. Let's look at the board.') and move immediately to the tactical list.
             - ICON RULES: 🔴 (Urgent), 🟡 (Important), ⚪ (Chores), 💡 (Ideas).
             - SECTIONS: ✅ Done, 🚀 Work (Hide on weekends), 🏠 Home, 💡 Ideas (Only at night pulse).
             - TONE: Match the PERSONA GUIDELINE. Be direct, simple, human. Talk like a friend who is also a high-level operator.
