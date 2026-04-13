@@ -1033,7 +1033,9 @@ async def process_pulse(auth_secret: str = None):
             - REVENUE BOLDING: Bold all tasks involving Sales, Pilots, or Payments using **task title**.
         13. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
         14. STRICT TASK SYNTAX: 
-            - Every single task listed in the briefing MUST follow this exact format: "- [ICON] [Task Title]". 
+            - Every section header (🚀 Work, 🏠 Home, etc.) and every single task MUST occupy its own individual line.
+            - NEVER combine tasks into a paragraph. NEVER use hyphens or dashes as separators between tasks on the same line.
+            - Every task MUST start with a newline and follow this exact format: '- [ICON] [Task Title]'.
             - THE LINK RULE: If a task is derived from a URL in NEW INPUTS, you MUST embed that URL into the task title using Markdown: "- [ICON] [Action] using [Source Title](URL)".
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
         
