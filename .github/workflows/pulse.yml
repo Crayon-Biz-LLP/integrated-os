@@ -53,13 +53,3 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           PULSE_SECRET: ${{ secrets.PULSE_SECRET }}
         run: python core/pulse_cli.py
-
-      - name: "Step 4: Execute Autonomous Research Agent"
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
-        run: python core/research_agent.py
