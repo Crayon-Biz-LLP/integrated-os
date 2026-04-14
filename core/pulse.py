@@ -1345,11 +1345,14 @@ async def process_pulse(auth_secret: str = None):
         if ai_data.get('logs'):
             supabase.table('logs').insert(ai_data['logs']).execute()
 
+        # --- 4. SPEAK Phase ---
         briefing_text = ai_data.get('briefing', '')
         if briefing_text:
-            briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
+            # 🛡️ THE UNESCAPER: Convert literal \n back into actual line breaks
+            briefing_text = briefing_text.replace('\\n', '\n').replace('\\\\n', '\n')
             
-        # --- 4. SPEAK Phase ---
+            # Existing logic: Remove internal system IDs from the user-facing text
+            briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
