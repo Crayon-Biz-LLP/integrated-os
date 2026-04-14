@@ -1040,6 +1040,7 @@ async def process_pulse(auth_secret: str = None):
         14. STRICT TASK SYNTAX: 
             - Every section header (🚀 Work, 🏠 Home, etc.) and every single task MUST occupy its own individual line.
             - NEVER combine tasks into a paragraph. NEVER use hyphens or dashes as separators between tasks on the same line.
+            - **STRICT JSON RULE:** Do NOT use literal '\n' text characters. Use actual carriage returns (real newlines) within the briefing string.
             - Every task MUST start with a newline and follow this exact format: '- [ICON] [Task Title]'.
             - THE LINK RULE: If a task is derived from a URL in NEW INPUTS, you MUST embed that URL into the task title using Markdown: "- [ICON] [Action] using [Source Title](URL)".
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
@@ -1353,6 +1354,7 @@ async def process_pulse(auth_secret: str = None):
             
             # Existing logic: Remove internal system IDs from the user-facing text
             briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
+            
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
