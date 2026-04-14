@@ -64,12 +64,13 @@ class PulseOutput(BaseModel):
     briefing: str
 
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
-    """Call Gemini with retry logic (3 retries, exponential backoff for 503 errors)."""
     if model is None:
         model = BRIEFING_MODEL
     
     max_retries = 3
-    base_delay = 1
+    base_delay = 2
+
+    retryable_errors = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded']
     
     for attempt in range(max_retries):
         try:
@@ -88,14 +89,15 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
             return response
         except Exception as e:
             error_str = str(e).lower()
-            if '503' in error_str and attempt < max_retries - 1:
+
+            should_retry = any(err in error_str for err in retryable_errors)
+            if should_retry and attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt)
-                print(f"⚠️ Gemini 503 error, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
+                print(f"⚠️ API Hiccup ({error_str}), retrying in {delay}s...")
                 await asyncio.sleep(delay)
                 continue
             else:
                 raise
-
 
 def get_embedding(text: str) -> list:
     """Generate embedding for text using gemini-embedding-2-preview."""
