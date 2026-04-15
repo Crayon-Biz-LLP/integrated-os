@@ -1,68 +1,70 @@
 import asyncio
-import os
+import json
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 load_dotenv()
 from core.pulse import supabase, get_embedding, call_gemini_with_retry
 
-async def synthesize_master_page(entity_label: str):
-    # 1. RETRIEVE: Get all fragments related to this entity
-    # We search memories, logs, and resources for this specific label
-    fragments = supabase.table('memories').select('content') \
-        .or_(f"metadata->>entity.eq.{entity_label.upper()},content.ilike.%{entity_label}%") \
-        .execute()
-    raw_data = "\n---\n".join([f['content'] for f in fragments.data])
+async def run_batch_sweep():
+    # 1. GATHER TARGETS: Fetch active projects and define core pillars
+    active_res = supabase.table('projects').select('name').eq('is_active', True).execute()
+    core_missions = ["Solvstrat", "Qhord", "Church", "Canadian Project"]
+    entities = list(set([p['name'] for p in active_res.data] + core_missions))
+    
+    batch_payload = []
+    
+    # 2. COLLECT: Bundle fragments for every entity into one payload
+    print(f"📡 Gathering fragments for {len(entities)} entities...")
+    for entity in entities:
+        fragments = supabase.table('memories').select('content') \
+            .or_(f"metadata->>entity.eq.{entity.upper()},content.ilike.%{entity}%") \
+            .execute()
+        
+        if fragments.data:
+            content = "\n".join([f["content"] for f in fragments.data])
+            batch_payload.append({"entity": entity, "data": content})
 
-    if not raw_data:
+    if not batch_payload:
+        print("No data found to synthesize.")
         return
 
-    # 2. THINK: The Historian Prompt
+    # 3. CONSOLIDATE: Single "Grand Sweep" Prompt
     prompt = f"""
-    ROLE: You are the Senior Historian for Danny's OS. 
-    OBJECTIVE: Synthesize the following raw fragments into a 'Master Page' for the entity: {entity_label}.
+    ROLE: Senior Historian for Danny's OS.
+    OBJECTIVE: Synthesize high-fidelity Master Pages for {len(batch_payload)} distinct entities.
     
     RULES:
-    - THE REVENUE GUARD: Solvstrat is a SERVICE/CONSULTANCY entity (Focus: sales, leads, immediate cash flow). Qhord is a PRODUCT/GTM entity (Focus: June launch, beta users).
-    - ATTRIBUTION: Map all 'Client Wins' and 'Sales Pipelines' to Solvstrat unless Qhord is explicitly mentioned as the product sold.
-    - CLOSURE LOGIC: If 'Atna' is mentioned in the fragments, treat it as [LEGACY CONTEXT]. Do not list Atna conflicts as current 'Open Threads'.
-    - CONFLICT RESOLUTION: If fragments contradict, prioritize the one with the most recent timestamp or specific numbers (e.g., CAD 15k).
-    - NARRATIVE FOCUS: Don't just list bullets. Write a concise 'Current Strategic Standing'.
-    - PERSONA: Professional, architecture-first.
+    - THE REVENUE GUARD: Solvstrat = Service (Now/Leads/Sales). Qhord = Product (June GTM).
+    - ATTRIBUTION: Map client wins/pipelines to Solvstrat. Map beta/GTM milestones to Qhord.
+    - VERTICALITY: Use clean Markdown headers and bulleted lists.
+    - OUTPUT: Return a JSON object where keys are Entity Names and values are the synthesized Markdown content.
     
-    RAW FRAGMENTS:
-    {raw_data}
-    
-    OUTPUT FORMAT: Markdown. Use headers for 'Context', 'Latest Decisions', and 'Open Threads'.
+    DATA BUNDLE:
+    {json.dumps(batch_payload)}
     """
 
-    response = await call_gemini_with_retry(prompt=prompt, model="gemini-3-flash-preview")
-    synthesized_text = response.text
+    # 4. EXECUTE: Call Gemini (Using 3.1 Flash Lite for 500 RPD safety)
+    print("🧠 Synthesizing Master Pages in batch mode...")
+    response = await call_gemini_with_retry(
+        prompt=prompt,
+        model="gemini-3.1-flash-lite-preview",
+        config={'response_mime_type': 'application/json'}
+    )
+    
+    # Handle the potential JSON formatting from the LLM
+    clean_json = response.text.replace('```json', '').replace('```', '').strip()
+    results = json.loads(clean_json)
 
-    # 3. WRITE: Update the Canonical Page
-    embedding = get_embedding(synthesized_text)
-    supabase.table('canonical_pages').upsert({
-        "title": entity_label,
-        "content": synthesized_text,
-        "embedding": embedding,
-        "updated_at": "now()"
-    }, on_conflict='title').execute()
-
-    print(f"🧠 Master Page Synthesized: {entity_label}")
-
-async def sweep_all_active_entities():
-    # 🎯 TARGET THE SOURCE OF TRUTH
-    # Pull all projects that are currently marked as 'active' in your DB
-    active_projects = supabase.table('projects').select('name').eq('is_active', True).execute()
-    
-    # Also include your core high-level missions from config
-    core_missions = ["Solvstrat", "Qhord", "Crayon Biz", "Church"]
-    
-    # Combine them, ensuring no duplicates
-    entities_to_sync = list(set([p['name'] for p in active_projects.data] + core_missions))
-    
-    print(f"📡 Starting Dynamic Sweep for {len(entities_to_sync)} entities...")
-    
-    for entity in entities_to_sync:
-        await synthesize_master_page(entity)
+    # 5. COMMIT: Bulk update the Canonical Record in Supabase
+    for entity, markdown in results.items():
+        embedding = get_embedding(markdown)
+        supabase.table('canonical_pages').upsert({
+            "title": entity,
+            "content": markdown,
+            "embedding": embedding,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }, on_conflict='title').execute()
+        print(f"✅ Master Page Updated: {entity}")
 
 if __name__ == "__main__":
-    asyncio.run(sweep_all_active_entities())
+    asyncio.run(run_batch_sweep())
