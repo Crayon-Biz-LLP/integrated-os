@@ -901,6 +901,20 @@ async def process_pulse(auth_secret: str = None):
         new_input_summary = " | ".join([d['content'] for d in dumps[:5]])
         current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
 
+        # --- 🧭 LAYER 4: CANONICAL SYNTHESIS (The Master Pages) ---
+        master_page_context = ""
+        relevant_project_names = list(set([
+            next((p['name'] for p in projects if str(p.get('legacy_id')) == str(t.get('project_id'))), "General") 
+            for t in filtered_tasks
+        ]))
+
+        if relevant_project_names:
+            pages_res = supabase.table('canonical_pages').select('title, content').in_('title', relevant_project_names).execute()
+            if pages_res.data:
+                page_entries = [f"### MASTER PAGE: {p['title']}\n{p['content']}" for p in pages_res.data]
+                master_page_context = "\n\n".join(page_entries)
+                print(f"🧠 Canonical: Loaded {len(pages_res.data)} Master Pages for context.")
+
         prompt = f"""    
         ROLE: Danny's Trusted Partner.
         STRATEGIC CONTEXT: {season_config}
@@ -924,6 +938,9 @@ async def process_pulse(auth_secret: str = None):
 
         HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
         {hindsight_context}
+
+        CANONICAL STRATEGIC TRUTH (The synthesized 'Latest Version' of projects):
+        {master_page_context if master_page_context else "No Master Pages yet. Rely on raw context."}
 
         CONTEXT:
         - IDENTITY: {json.dumps(core)}
