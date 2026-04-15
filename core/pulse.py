@@ -1035,6 +1035,17 @@ async def process_pulse(auth_secret: str = None):
         10. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
         11. WEEKEND FILTER: If isWeekend is true ({is_weekend}), do NOT suggest or list Work tasks in the briefing. CRITICAL: Do NOT auto-assign naked work tasks to Monday. If a work task has no date, leave it as null.
         12. EXECUTIVE BRIEF FORMAT:
+
+            HARD CONSTRAINTS (Non-Negotiable):
+            - VERTICALITY MANDATE: You are STRICTLY FORBIDDEN from writing lists as sentences. Every icon (🔴, 🟡, ✅, 🚀) MUST start on a brand new line.
+            - SECTION HEADERS: Section headers (e.g., 🚀 Work, 🏠 Home) MUST be preceded by two newlines and followed by one newline.
+            - PERSONA OVERRIDE: Even in 'minimal' or 'night' modes, formatting must remain structured. Do not use '1.' or '2.' for sections; use the designated Headers.
+            - THE ARCHITECT'S RULE: You are strictly forbidden from grouping sections into paragraphs.
+            - NEWLINE MANDATE: Every icon (🔴, 🟡, ✅, 🚀) MUST be preceded by a carriage return.
+            - HEADER SPACING: Double-space before headers (e.g., \n\n🚀 Work) and single-space after them.
+            - NO NUMBERING: Use headers and icons only. Never use '1.' or '2.' to separate strategic points.
+            - TONAL GUARD: Keep the 'Intel: Vaulted' or 'Intel: Secured' style for the Night phase, but never sacrifice vertical layout.
+
             - HEADLINE RULE: Use exactly "{briefing_mode}".
             - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
             - COMPASS TONE: If HINDSIGHT_STALE is FALSE, weave the latest hindsight insights into a sharp, forward-leaning opening.
@@ -1368,8 +1379,8 @@ async def process_pulse(auth_secret: str = None):
         # --- 4. SPEAK Phase ---
         briefing_text = ai_data.get('briefing', '')
         if briefing_text:
-            # 🛡️ THE UNESCAPER: Convert literal \n back into actual line breaks
-            briefing_text = briefing_text.replace('\\n', '\n').replace('\\\\n', '\n')
+            # 🛡️ THE ARCHITECT'S REPAIR: Fix escaping and enforce list breaks
+            briefing_text = briefing_text.replace('\\n', '\n').replace('\\\\n', '\n').replace(' - ', '\n- ')
             
             # Existing logic: Remove internal system IDs from the user-facing text
             briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
