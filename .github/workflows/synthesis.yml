@@ -20,7 +20,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install supabase google-genai python-dotenv
+          pip install \
+            supabase \
+            google-genai \
+            google-api-python-client \
+            google-auth-httplib2 \
+            google-auth-oauthlib \
+            python-dotenv
 
       - name: Run Historian Sweep
         env:
