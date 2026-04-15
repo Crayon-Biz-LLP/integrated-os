@@ -1,4 +1,7 @@
 import asyncio
+import os
+from dotenv import load_dotenv
+load_dotenv()
 from core.pulse import supabase, get_embedding, call_gemini_with_retry
 
 async def synthesize_master_page(entity_label: str):
