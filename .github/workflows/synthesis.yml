@@ -1,0 +1,30 @@
+name: 🧠 Knowledge Synthesis Sweep
+
+on:
+  schedule:
+    - cron: '0 22 * * *' # Runs every night at 3:30 AM IST (22:00 UTC)
+  workflow_dispatch:      # Allows you to run it manually from GitHub
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4  # <-- FIXED: This is the correct action
+        with:
+          python-version: '3.11'
+          cache: 'pip'                # Speeds up future runs
+
+      - name: Install dependencies
+        run: |
+          pip install supabase google-generativeai python-dotenv
+
+      - name: Run Historian Sweep
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python -m core.skills.brain_synth
