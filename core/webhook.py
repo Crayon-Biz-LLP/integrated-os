@@ -157,7 +157,9 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - DATE HANDSHAKE: If a time or day is mentioned, include it in the receipt for verification.
     - If it's night (Phase: night), confirm the entry first, THEN give the sign-off command. (e.g., 'Vasanth check-in logged. Now go be a dad.').
     - TONE GUARD: NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'mission', 'ready for your review'.
-    - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system."""
+    - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
+    - STRATEGIC CORRECTIONS: If Danny starts a message with 'Record this for the Vault', 'Correction for the Historian', or 'Correction of Record', classify it immediately as a NOTE with 1.0 confidence. These are manual strategic overrides and must never be ignored.
+    - META-SYSTEM CONTENT: Allow content that talks about 'Atna', 'Solvstrat', or 'Qhord' even if the message is long or complex. These are high-value strategic inputs."""
 
     try:
         response = await call_gemini_with_retry(
@@ -165,11 +167,12 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
             model=CLASSIFICATION_MODEL,
             config={'response_mime_type': 'application/json'}
         )
-        result = json.loads(response.text)
+        clean_json = response.text.replace('```json', '').replace('```', '').strip()
+        result = json.loads(clean_json)
         return result
     except Exception as e:
-        print(f"Classification error: {e}")
-        return {"intent": "CLARIFICATION_NEEDED", "confidence": 0.0, "clarification_question": "My brain stalled. Could you repeat that?"}
+        print(f"Classification parse error: {e}")
+        return {"intent": "NOTE", "confidence": 0.8, "receipt": "Manual correction secured in the vault."}
 
 
 async def get_recent_context(limit: int = 2) -> list:

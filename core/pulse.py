@@ -904,7 +904,7 @@ async def process_pulse(auth_secret: str = None):
         # --- 🧭 LAYER 4: CANONICAL SYNTHESIS (The Master Pages) ---
         master_page_context = ""
         relevant_project_names = list(set([
-            next((p['name'] for p in projects if str(p.get('legacy_id')) == str(t.get('project_id'))), "General") 
+            next((p['name'] for p in projects if str(p.get('legacy_id')) == str(t.get('project_id')) and p.get('is_active', True)), "General") 
             for t in filtered_tasks
         ]))
 

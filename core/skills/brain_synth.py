@@ -7,7 +7,9 @@ from core.pulse import supabase, get_embedding, call_gemini_with_retry
 async def synthesize_master_page(entity_label: str):
     # 1. RETRIEVE: Get all fragments related to this entity
     # We search memories, logs, and resources for this specific label
-    fragments = supabase.table('memories').select('content').ilike('content', f'%{entity_label}%').execute()
+    fragments = supabase.table('memories').select('content') \
+        .or_(f"metadata->>entity.eq.{entity_label.upper()},content.ilike.%{entity_label}%") \
+        .execute()
     raw_data = "\n---\n".join([f['content'] for f in fragments.data])
 
     if not raw_data:
@@ -19,11 +21,12 @@ async def synthesize_master_page(entity_label: str):
     OBJECTIVE: Synthesize the following raw fragments into a 'Master Page' for the entity: {entity_label}.
     
     RULES:
+    - THE REVENUE GUARD: Solvstrat is a SERVICE/CONSULTANCY entity (Focus: sales, leads, immediate cash flow). Qhord is a PRODUCT/GTM entity (Focus: June launch, beta users).
+    - ATTRIBUTION: Map all 'Client Wins' and 'Sales Pipelines' to Solvstrat unless Qhord is explicitly mentioned as the product sold.
+    - CLOSURE LOGIC: If 'Atna' is mentioned in the fragments, treat it as [LEGACY CONTEXT]. Do not list Atna conflicts as current 'Open Threads'.
     - CONFLICT RESOLUTION: If fragments contradict, prioritize the one with the most recent timestamp or specific numbers (e.g., CAD 15k).
     - NARRATIVE FOCUS: Don't just list bullets. Write a concise 'Current Strategic Standing'.
-    - PERSONA: Professional, direct, architecture-first.
-    - STRICT ATTRIBUTION: If a fragment mentions multiple entities, only include it in the Master Page if this entity ({entity_label}) is clearly the primary subject of the action (e.g., a sale, a specific technical task).
-- REVENUE MAPPING: Ensure client wins and pipelines are mapped to the correct business entity. Solvstrat is the service firm; Qhord is the GTM product.
+    - PERSONA: Professional, architecture-first.
     
     RAW FRAGMENTS:
     {raw_data}
