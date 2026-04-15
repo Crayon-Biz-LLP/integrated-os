@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install supabase google-generativeai python-dotenv
+          pip install supabase google-genai python-dotenv
 
       - name: Run Historian Sweep
         env:
