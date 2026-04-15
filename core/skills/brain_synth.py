@@ -22,6 +22,8 @@ async def synthesize_master_page(entity_label: str):
     - CONFLICT RESOLUTION: If fragments contradict, prioritize the one with the most recent timestamp or specific numbers (e.g., CAD 15k).
     - NARRATIVE FOCUS: Don't just list bullets. Write a concise 'Current Strategic Standing'.
     - PERSONA: Professional, direct, architecture-first.
+    - STRICT ATTRIBUTION: If a fragment mentions multiple entities, only include it in the Master Page if this entity ({entity_label}) is clearly the primary subject of the action (e.g., a sale, a specific technical task).
+- REVENUE MAPPING: Ensure client wins and pipelines are mapped to the correct business entity. Solvstrat is the service firm; Qhord is the GTM product.
     
     RAW FRAGMENTS:
     {raw_data}
