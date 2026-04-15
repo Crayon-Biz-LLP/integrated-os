@@ -1062,7 +1062,7 @@ async def process_pulse(auth_secret: str = None):
             - INTELLIGENT FILTERING: 
                 - If mode is 🔴 Urgent: HIDE the 🏠 Home and 💡 Ideas sections. Focus strictly on 🚀 Work and ✅ Done.
                 - If mode is 🟡 Important: Prioritize 🚀 Work.
-                - - NIGHT MODE PRIORITIZATION (Intel: Vaulted):
+                - NIGHT MODE PRIORITIZATION (Intel: Vaulted):
                     - 1. ✅ Done: List this first. Danny needs to see the loops he closed today to clear his mind.
                     - 2. 🏠 Home: List this second. Prioritize family, pets, and chores to transition Danny into 'Dad' mode.
                     - 3. 🚀 Work: List only the top 2-3 most critical open loops for tomorrow. 
