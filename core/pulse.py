@@ -710,7 +710,7 @@ async def process_pulse(auth_secret: str = None):
                 system_persona = "Push Danny to close work tasks so he can transition to family. Log pending items. Be dry."
             else:
                 briefing_mode = "Intel: Vaulted."
-                system_persona = "Quiet, simple, focused on clearing the mind for rest. Keep it minimal."
+                system_persona = "Focus on closure and transition. Secure the board. Highlight what was ✅ Done today and what matters on the 🏠 Home front. Keep work loops minimal but visible. Maintain the 'Grid'—vertical sections are mandatory."
 
         # --- 1.3 BANDWIDTH & BUFFER CHECK ---
         is_overloaded = len(active_tasks) > 15
@@ -1062,7 +1062,11 @@ async def process_pulse(auth_secret: str = None):
             - INTELLIGENT FILTERING: 
                 - If mode is 🔴 Urgent: HIDE the 🏠 Home and 💡 Ideas sections. Focus strictly on 🚀 Work and ✅ Done.
                 - If mode is 🟡 Important: Prioritize 🚀 Work.
-                - If mode is 💡 Tonight's reflections: Prioritize the 💡 Ideas section and library insights.
+                - - NIGHT MODE PRIORITIZATION (Intel: Vaulted):
+                    - 1. ✅ Done: List this first. Danny needs to see the loops he closed today to clear his mind.
+                    - 2. 🏠 Home: List this second. Prioritize family, pets, and chores to transition Danny into 'Dad' mode.
+                    - 3. 🚀 Work: List only the top 2-3 most critical open loops for tomorrow. 
+                    - 4. 💡 Ideas: List any insights captured today to ensure they are 'secured' in the vault.
             - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
             - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
             - REVENUE BOLDING: Bold all tasks involving Sales, Pilots, or Payments using **task title**.
