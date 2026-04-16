@@ -296,10 +296,11 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             if item_type == 'TASK':
                 supabase.table('raw_dumps').insert([{
                     "content": content,
+                    "status": "pending",
                     "metadata": json.dumps({
                         "source": "multimodal", 
                         "mime_type": mime_type,
-                        "entity": item.get('entity') # 🚀 SAVE THE ENTITY FROM THE PHOTO/AUDIO
+                        "entity": item.get('entity')
                     })
                 }]).execute()
                 task_count += 1
@@ -349,10 +350,11 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
     try:
         supabase.table('raw_dumps').insert([{
             "content": text,
+            "status": "pending",
             "metadata": json.dumps({
                 "title": title, 
                 "time_context": time_context,
-                "entity": entity  # 🚀 THIS SAVES THE BUCKET
+                "entity": entity
             })
         }]).execute()
     except Exception as e:
@@ -545,6 +547,15 @@ KEYBOARD = {
 
 async def process_webhook(update: dict):
     try:
+        # 🛡️ THE DEDUPLICATION GATE
+        update_id = update.get('update_id')
+        if update_id:
+            try:
+                supabase.table('processed_updates').insert({"update_id": update_id}).execute()
+            except:
+                print(f"♻️ Telegram retry detected for update {update_id}. Skipping.")
+                return {"success": True, "message": "Already processed"}
+
         from datetime import datetime, timezone, timedelta
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist_offset)
@@ -668,7 +679,6 @@ async def process_webhook(update: dict):
             print(f"🧠 QUERY DETECTED: Routing to brain...")
             await interrogate_brain(text, chat_id)
         elif intent == 'NOTE' and confidence >= 0.6:
-            # 🚀 ADD THIS: Check if the note is a URL to route it to resources
             if text.startswith('http') or 'www.' in text:
                 supabase.table('resources').insert({
                     "url": text,
@@ -677,7 +687,15 @@ async def process_webhook(update: dict):
                 }).execute()
                 await send_telegram(chat_id, "🔖 Resource saved to Library.")
             else:
-                await handle_confident_note(text, chat_id, receipt)
+                supabase.table('raw_dumps').insert([{
+                    "content": text,
+                    "status": "pending",
+                    "metadata": json.dumps({
+                        "intent": "NOTE",
+                        "entity": classification.get('entity')
+                    })
+                }]).execute()
+                await send_telegram(chat_id, receipt or "Note secured.")
         elif intent == 'DELEGATE':
             supabase.table('agent_queue').insert({
                 "task": text,
@@ -687,7 +705,7 @@ async def process_webhook(update: dict):
             await send_telegram(chat_id, f"✓ {ack}")
         elif intent == 'NOISE':
             await handle_noise(chat_id)
-            supabase.table('raw_dumps').insert([{"content": text}]).execute()
+            supabase.table('raw_dumps').insert([{"content": text, "status": "pending"}]).execute()
         else:
             await handle_clarification(
                 text,
