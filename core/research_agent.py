@@ -28,6 +28,30 @@ async def send_telegram(chat_id: int, message_text: str):
         await client.post(url, json=payload)
 
 
+async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None):
+    max_retries = 3
+    base_delay = 1
+    retryable_errors = ['503', '504', '500', 'timeout', 'deadline exceeded']
+    for attempt in range(max_retries):
+        try:
+            response = gemini_client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=config or {}
+            )
+            return response
+        except Exception as e:
+            error_str = str(e).lower()
+            should_retry = any(err in error_str for err in retryable_errors)
+            if should_retry and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"Gemini retry {attempt+1}/3 in {delay}s: {e}")
+                await asyncio.sleep(delay)
+                continue
+            else:
+                raise
+
+
 async def run_agent():
     print("🕵️ Research Agent starting...")
 
@@ -69,9 +93,9 @@ async def run_agent():
 Web Search Results:
 {search_results}"""
 
-                response = gemini_client.models.generate_content(
-                    model=CLASSIFICATION_MODEL,
-                    contents=synthesis_prompt
+                response = await call_gemini_with_retry(
+                    prompt=synthesis_prompt,
+                    model=CLASSIFICATION_MODEL
                 )
 
                 dossier = response.text.strip()
@@ -84,7 +108,10 @@ Web Search Results:
                 telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
                 if telegram_chat_id:
                     task_snippet = task_text[:40] + "..." if len(task_text) > 40 else task_text
-                    await send_telegram(int(telegram_chat_id), f"✅ **Research Complete:** {task_snippet}\n\nThe dossier is in your staging area.")
+                    try:
+                        await send_telegram(int(telegram_chat_id), f"✅ **Research Complete:** {task_snippet}\n\nThe dossier is in your staging area.")
+                    except Exception as e:
+                        print(f"Telegram notify failed for task {task_id}: {e}")
 
                 supabase.table('agent_queue').update({
                     "status": "completed",

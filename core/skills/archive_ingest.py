@@ -51,6 +51,20 @@ MEMORY_TYPE_MAPPING = {
 }
 
 
+def with_retry(fn, retries=3, base_delay=1, label="operation"):
+    for attempt in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt < retries - 1:
+                wait = base_delay * (2 ** attempt)
+                print(f"{label} failed (attempt {attempt+1}/3), retrying in {wait}s... Error: {e}")
+                time.sleep(wait)
+            else:
+                print(f"{label} failed after 3 attempts: {e}")
+                raise e
+
+
 def get_google_creds():
     return Credentials(
         None,
@@ -172,16 +186,25 @@ def parse_timestamp(ts: str) -> str:
 
 
 def ensure_node(label: str) -> str:
-    existing = supabase.table("graph_nodes").select("id").eq("label", label).execute()
+    existing = with_retry(
+        lambda: supabase.table("graph_nodes").select("id").eq("label", label).execute(),
+        label="Node select"
+    )
     if existing.data:
         return existing.data[0]["id"]
     
     node_type = "person" if label in ["Sunju", "Jaden", "Jeffery", "The Boys"] else "organization" if label in ["Solvstrat", "Crayon", "Church"] else "concept"
-    resp = supabase.table("graph_nodes").insert({
-        "label": label,
-        "type": node_type,
-        "metadata": {"source": "archive_ingest"}
-    }).execute()
+    try:
+        resp = with_retry(
+            lambda: supabase.table("graph_nodes").insert({
+                "label": label,
+                "type": node_type,
+                "metadata": {"source": "archive_ingest"}
+            }).execute(),
+            label="Node insert"
+        )
+    except Exception:
+        return None
     return resp.data[0]["id"] if resp.data else None
 
 
@@ -191,12 +214,19 @@ def create_edge(source_label: str, target_label: str, relationship: str, memory_
     if not source_id or not target_id:
         return
     
-    supabase.table("graph_edges").insert({
-        "source_node_id": source_id,
-        "target_node_id": target_id,
-        "relationship": relationship,
-        "metadata": {"memory_id": memory_id}
-    }).execute()
+    try:
+        with_retry(
+            lambda: supabase.table("graph_edges").insert({
+                "source_node_id": source_id,
+                "target_node_id": target_id,
+                "relationship": relationship,
+                "metadata": {"memory_id": memory_id}
+            }).execute(),
+            label="Edge insert"
+        )
+    except Exception as e:
+        print(f"Edge insert error: {e}")
+        return
 
 
 def check_duplicate(timestamp: str) -> bool:
@@ -375,6 +405,10 @@ def run_ingest():
             skipped += 1
             continue
         
+        if not parsed["content"].strip():
+            skipped += 1
+            continue
+        
         embedding = get_embedding(parsed["content"])
         
         try:
@@ -389,7 +423,10 @@ def run_ingest():
             memory_id = result.data[0]["id"] if result.data else None
             
             if memory_id:
-                graphify(parsed["content"], memory_id)
+                if not embedding:
+                    print(f"Skipping graphify for row — embedding failed")
+                else:
+                    graphify(parsed["content"], memory_id)
             
             inserted += 1
             if inserted % 10 == 0:

@@ -35,10 +35,14 @@ def migrate_people():
             }
         })
 
-    supabase.table("graph_nodes").upsert(
-        node_records,
-        on_conflict="label"
-    ).execute()
+    try:
+        supabase.table("graph_nodes").upsert(
+            node_records,
+            on_conflict="label"
+        ).execute()
+    except Exception as e:
+        print(f"People migration upsert failed: {e}")
+        return 0
 
     return len(node_records)
 
@@ -75,9 +79,16 @@ def migrate_projects():
 
 
 def run_migration():
-    people_count = migrate_people()
-    projects_count = migrate_projects()
-
+    people_count = 0
+    projects_count = 0
+    try:
+        people_count = migrate_people()
+    except Exception as e:
+        print(f"migrate_people() failed: {e}")
+    try:
+        projects_count = migrate_projects()
+    except Exception as e:
+        print(f"migrate_projects() failed: {e}")
     total = people_count + projects_count
     print(f"\nMigration complete!")
     print(f"  People bridged: {people_count}")
