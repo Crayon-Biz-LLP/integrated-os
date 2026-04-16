@@ -562,6 +562,17 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
 async def process_pulse(auth_secret: str = None):
     try:
+        # 🛡️ THE ZOMBIE RECOVERY: Reset any dumps stuck in 'processing' for more than 10 mins
+        try:
+            ten_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            supabase.table('raw_dumps') \
+                .update({"status": "pending"}) \
+                .eq('status', 'processing') \
+                .lt('created_at', ten_mins_ago) \
+                .execute()
+        except Exception as e:
+            print(f"⚠️ Zombie Recovery skipped: {e}")
+
         # --- 1.1 SECURITY GATEKEEPER ---
         pulse_secret = os.getenv("PULSE_SECRET")
         if pulse_secret and auth_secret != pulse_secret:
@@ -574,9 +585,25 @@ async def process_pulse(auth_secret: str = None):
         # --- 0.1 BATCH ENRICHMENT (One Gemini call for all unenriched resources) ---
         batch_enrich_results = await batch_enrich_resources()
         
-        # --- 1. READ: Fetch everything needed for a full state briefing ---
-        dumps_res = supabase.table('raw_dumps').select('id, content').eq('is_processed', False).execute()
+        # --- 1. READ: Fetch and Lock ---
+        # 1.1 Fetch only 'pending' items
+        dumps_res = supabase.table('raw_dumps') \
+            .select('id, content') \
+            .eq('status', 'pending') \
+            .execute()
+
         dumps = dumps_res.data or []
+
+        if dumps:
+            dump_ids = [d['id'] for d in dumps]
+            
+            # 🔒 THE LOCK: Immediately claim these for processing
+            supabase.table('raw_dumps') \
+                .update({"status": "processing"}) \
+                .in_('id', dump_ids) \
+                .execute()
+            
+            print(f"🔒 Locked {len(dump_ids)} dumps for processing.")
 
         active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at, reminder_at, google_event_id').not_.in_('status', ['done', 'cancelled']).execute()
         active_tasks = active_tasks_res.data or []
@@ -615,10 +642,20 @@ async def process_pulse(auth_secret: str = None):
                 
                 for item in sort_result:
                     dump_id = item.get('id')
-                    category = item.get('category', '').upper()
+                    
+                    raw_dump = next((d for d in dumps if d['id'] == dump_id), {})
+                    
+                    metadata = {}
+                    try:
+                        if raw_dump.get('metadata'):
+                            metadata = json.loads(raw_dump['metadata'])
+                    except:
+                        pass
+                    
+                    category = (metadata.get('intent') or item.get('category', '')).upper()
                     
                     if category == 'NOTE':
-                        dump_content = next((d['content'] for d in dumps if d['id'] == dump_id), None)
+                        dump_content = raw_dump.get('content')
                         if dump_content:
                             embedding = get_embedding(dump_content)
                             supabase.table('memories').insert({
@@ -636,7 +673,7 @@ async def process_pulse(auth_secret: str = None):
                         task_dump_ids.append(dump_id)
                 
                 if note_dump_ids:
-                    supabase.table('raw_dumps').update({"is_processed": True}).in_('id', note_dump_ids).execute()
+                    supabase.table('raw_dumps').update({"status": "completed", "is_processed": True}).in_('id', note_dump_ids).execute()
                     print(f"🗃️ Staging Area: {len(task_dump_ids)} tasks, {len(note_dump_ids)} notes/noise")
                 
                 dumps = [d for d in dumps if d['id'] in task_dump_ids]
@@ -1429,11 +1466,14 @@ async def process_pulse(auth_secret: str = None):
         if hour >= 20 or hour < 4:
             await generate_after_action_report()
 
-        # PHASE 3: Processed Gate - Mark dumps as processed (only after ALL operations succeeded)
+        # --- PHASE 3: Processed Gate ---
         if dumps:
             dump_ids = [d['id'] for d in dumps]
-            supabase.table('raw_dumps').update({"is_processed": True}).in_('id', dump_ids).execute()
-            print(f"✅ Phase 3: Marked {len(dump_ids)} dumps as processed.")
+            supabase.table('raw_dumps').update({
+                "status": "completed",
+                "is_processed": True 
+            }).in_('id', dump_ids).execute()
+            print(f"✅ Phase 3: Marked {len(dump_ids)} dumps as completed.")
 
         return {"success": True, "briefing": briefing_text}
 

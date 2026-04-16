@@ -197,21 +197,29 @@ def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, me
         return node_id
 
     node_type = "concept"
-    new_id = str(uuid.uuid4())
 
     try:
-        resp = supabase.table("graph_nodes").insert({
-            "id": new_id,
-            "label": label,
-            "type": node_type,
-            "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
-        }).execute()
+        supabase.table("graph_nodes").upsert(
+            {"label": label, "type": node_type},
+            on_conflict="label",
+            ignore_duplicates=True
+        ).execute()
     except Exception as e:
-        print(f"Node creation failed for '{label}': {e}")
-        return new_id
+        print(f"Node upsert warning for '{label}': {e}")
 
-    node_id = resp.data[0]["id"] if resp.data else new_id
-    created_nodes[label] = node_id
+    try:
+        res = supabase.table("graph_nodes") \
+            .select("id") \
+            .eq("label", label) \
+            .single() \
+            .execute()
+        node_id = res.data["id"] if res.data else None
+    except Exception as e:
+        print(f"Node fetch failed for '{label}': {e}")
+        return None
+
+    if node_id:
+        created_nodes[label] = node_id
     return node_id
 
 def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
