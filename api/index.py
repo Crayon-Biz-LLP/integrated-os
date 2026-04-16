@@ -26,8 +26,12 @@ def health_check():
 @app.post("/api/webhook")
 async def webhook_route(request: Request):
     update = await request.json()
-    await process_webhook(update)
-    return {"success": True}
+    try:
+        await process_webhook(update)
+        return {"success": True}
+    except Exception as e:
+        print(f"Webhook route error: {e}")
+        raise HTTPException(status_code=500, detail="Internal processing error")
 
 # --- THE PULSE ENGINE (Routes to pulse.py) ---
 @app.post("/api/pulse")

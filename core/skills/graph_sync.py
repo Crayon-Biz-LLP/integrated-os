@@ -116,6 +116,12 @@ def vault_snapshot(graph: dict) -> str:
 
 
 def run_graph_sync():
+    if not os.path.exists(GRAPH_JSON_PATH):
+        print(f"⚠️ graph.json not found at {GRAPH_JSON_PATH}.")
+        print("This script requires a local graph.json export. If your graph now lives entirely in Supabase, this file is no longer needed and can be safely retired.")
+        print("Exiting gracefully — no changes made.")
+        return
+
     try:
         print(f"Loading graph from {GRAPH_JSON_PATH}...")
         graph = load_graph()

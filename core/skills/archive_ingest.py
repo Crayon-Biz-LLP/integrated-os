@@ -229,11 +229,23 @@ def create_edge(source_label: str, target_label: str, relationship: str, memory_
         return
 
 
-def check_duplicate(timestamp: str) -> bool:
-    if not timestamp:
+def check_duplicate(timestamp: str, content: str) -> bool:
+    if not timestamp or not content:
         return False
-    existing = supabase.table("memories").select("id").eq("created_at", timestamp).execute()
-    return len(existing.data) > 0
+    try:
+        content_snippet = content[:100].strip()
+        existing = supabase.table("memories").select("id") \
+            .eq("created_at", timestamp) \
+            .execute()
+        if existing.data:
+            return True
+        content_check = supabase.table("memories").select("id") \
+            .ilike("content", f"{content_snippet}%") \
+            .execute()
+        return len(content_check.data) > 0
+    except Exception as e:
+        print(f"Duplicate check failed: {e}")
+        return False
 
 
 def graphify(text: str, memory_id: str):
@@ -251,8 +263,6 @@ def graphify(text: str, memory_id: str):
     
     if "Danny" not in entities and any(e in text_lower for e in ["i ", "my ", "me ", "i'm", "i am"]):
         pass
-    
-    create_edge("Danny", "Danny", "authored", memory_id)
     
     for entity in entities:
         if entity == "Sunju":
@@ -401,7 +411,7 @@ def run_ingest():
             skipped += 1
             continue
         
-        if check_duplicate(parsed["created_at"]):
+        if check_duplicate(parsed["created_at"], parsed["content"]):
             skipped += 1
             continue
         

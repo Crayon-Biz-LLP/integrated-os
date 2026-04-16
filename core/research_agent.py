@@ -55,6 +55,13 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
 async def run_agent():
     print("🕵️ Research Agent starting...")
 
+    if not os.getenv("JINA_API_KEY"):
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if telegram_chat_id:
+            await send_telegram(int(telegram_chat_id), "⚠️ Research Agent: JINA_API_KEY is not set. Agent queue is stalled.")
+        print("ERROR: JINA_API_KEY not set. Aborting agent run.")
+        return
+
     try:
         res = supabase.table('agent_queue').select('*').eq('status', 'pending').execute()
         pending_items = res.data or []
