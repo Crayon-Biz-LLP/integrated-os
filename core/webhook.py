@@ -390,8 +390,6 @@ async def handle_clarification(text: str, question: str, chat_id: int, receipt: 
 async def hybrid_search_graph(query: str) -> str:
     """Graph-first search: Find primary entity and its connections."""
     try:
-        query_lower = query.lower()
-        
         nodes_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{query}%').limit(1).execute()
         
         if not nodes_res.data:
@@ -775,6 +773,9 @@ async def handle_command(text: str, chat_id: int):
             reply = "Understood. Offloading heavy intel to the remote server. Sit tight, the SITREP will arrive in about 60 seconds."
         else:
             reply = "⚠️ Could not trigger remote briefing. Try again or check system config."
+
+    else:
+        await send_telegram(chat_id, "⚠️ Unknown command. Type /help or tap the menu to see available commands.")
 
     await send_telegram(chat_id, reply)
     return {"success": True}

@@ -3,7 +3,54 @@ import json
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 load_dotenv()
-from core.pulse import supabase, get_embedding, call_gemini_with_retry
+import os
+from supabase import create_client, Client
+from google import genai
+
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+)
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+EMBEDDING_MODEL = "gemini-embedding-2-preview"
+EMBEDDING_DIMENSION = 768
+
+def get_embedding(text: str) -> list:
+    try:
+        result = gemini_client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            contents=text,
+            config={"output_dimensionality": EMBEDDING_DIMENSION}
+        )
+        return result.embeddings[0].values
+    except Exception as e:
+        print(f"Embedding error: {e}")
+        return []
+
+async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None):
+    import asyncio
+    max_retries = 3
+    base_delay = 2
+    retryable_errors = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded']
+    for attempt in range(max_retries):
+        try:
+            response = gemini_client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=config or {}
+            )
+            return response
+        except Exception as e:
+            error_str = str(e).lower()
+            should_retry = any(err in error_str for err in retryable_errors)
+            if should_retry and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"⚠️ Gemini retry ({error_str}), retrying in {delay}s...")
+                await asyncio.sleep(delay)
+                continue
+            else:
+                raise
 
 async def run_batch_sweep():
     try:

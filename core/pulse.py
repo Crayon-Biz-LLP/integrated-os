@@ -12,6 +12,12 @@ from google import genai
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL"), 
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+)
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIMENSION = 768
 
@@ -119,8 +125,6 @@ def get_embedding(text: str) -> list:
 async def hybrid_search_graph(query: str) -> str:
     """Graph-first search: Find primary entity and its connections."""
     try:
-        query_lower = query.lower()
-        
         nodes_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{query}%').limit(1).execute()
         
         if not nodes_res.data:
@@ -374,14 +378,6 @@ Resources:
         print(f"Batch enrichment error: {e}")
         return []
 
-
-# Initialize Clients
-# Use SERVICE_ROLE_KEY to bypass RLS for background processing
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"), 
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # --- 🛰️ LAYER 1: GOOGLE INTEGRATION HELPERS ---
 
