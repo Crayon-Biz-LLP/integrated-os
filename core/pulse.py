@@ -647,7 +647,6 @@ async def process_pulse(auth_secret: str = None):
                     metadata = {}
                     try:
                         if raw_dump.get('metadata'):
-                            import json
                             metadata = json.loads(raw_dump['metadata'])
                     except: pass
 
