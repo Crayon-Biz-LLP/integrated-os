@@ -642,16 +642,15 @@ async def process_pulse(auth_secret: str = None):
                 
                 for item in sort_result:
                     dump_id = item.get('id')
-                    
                     raw_dump = next((d for d in dumps if d['id'] == dump_id), {})
                     
                     metadata = {}
                     try:
                         if raw_dump.get('metadata'):
+                            import json
                             metadata = json.loads(raw_dump['metadata'])
-                    except:
-                        pass
-                    
+                    except: pass
+
                     category = (metadata.get('intent') or item.get('category', '')).upper()
                     
                     if category == 'NOTE':

@@ -307,14 +307,18 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                 print(f"📋 Task extracted: {content[:50]}...")
             
             elif item_type == 'NOTE':
-                embedding = get_embedding(content)
-                supabase.table('memories').insert({
+                supabase.table('raw_dumps').insert([{
                     "content": content,
-                    "memory_type": "note",
-                    "embedding": embedding
-                }).execute()
+                    "status": "pending",
+                    "metadata": json.dumps({
+                        "intent": "NOTE",
+                        "source": "multimodal",
+                        "mime_type": mime_type,
+                        "entity": item.get('entity')
+                    })
+                }]).execute()
                 note_count += 1
-                print(f"📝 Note vaulted: {content[:50]}...")
+                print(f"📝 Note staged: {content[:50]}...")
             
             elif item_type == 'DELEGATE':
                 supabase.table('agent_queue').insert({
@@ -547,14 +551,18 @@ KEYBOARD = {
 
 async def process_webhook(update: dict):
     try:
-        # 🛡️ THE DEDUPLICATION GATE
         update_id = update.get('update_id')
         if update_id:
             try:
                 supabase.table('processed_updates').insert({"update_id": update_id}).execute()
-            except:
-                print(f"♻️ Telegram retry detected for update {update_id}. Skipping.")
-                return {"success": True, "message": "Already processed"}
+            except Exception as e:
+                error_msg = str(e)
+                if "23505" in error_msg or "already exists" in error_msg.lower():
+                    print(f"♻️ Telegram retry detected for update {update_id}. Skipping.")
+                    return {"success": True, "message": "Already processed"}
+                else:
+                    print(f"⚠️ Deduplication check error: {error_msg}")
+                    pass
 
         from datetime import datetime, timezone, timedelta
         ist_offset = timezone(timedelta(hours=5, minutes=30))
