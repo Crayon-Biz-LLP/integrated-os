@@ -58,7 +58,7 @@ def fetch_memories():
     
     known_entities = fetch_known_entities()
 
-    raw_dumps = fetch_all_paginated("raw_dumps", "id, content, dump_type, created_at")
+    raw_dumps = fetch_all_paginated("raw_dumps", "id, content, created_at")
     qualifying_dumps = [
         {
             "id": d["id"],
