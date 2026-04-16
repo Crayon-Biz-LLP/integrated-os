@@ -55,13 +55,42 @@ def fetch_memories():
     memories = fetch_all_paginated("memories", "id, content, memory_type, metadata, created_at", "memory_type", MEMORY_TYPES)
     
     memories = [m for m in (memories or []) if m["id"] not in processed_memory_ids]
-    return memories
+    
+    known_entities = fetch_known_entities()
 
+    raw_dumps = fetch_all_paginated("raw_dumps", "id, content, dump_type, created_at")
+    qualifying_dumps = [
+        {
+            "id": d["id"],
+            "content": d.get("content", ""),
+            "memory_type": "raw_dump",
+            "metadata": {},
+            "created_at": d.get("created_at")
+        }
+        for d in (raw_dumps or [])
+        if d["id"] not in processed_memory_ids
+        and dump_contains_known_entity(d.get("content", ""), known_entities)
+    ]
+    memories = memories + qualifying_dumps
+
+    return memories
+    
 
 def fetch_graph_entities():
     nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata")
-    return {row["label"]: row["id"] for row in (nodes or [])}
+    return {row["label"]: {"id": row["id"], "type": row["type"]} for row in (nodes or [])}
 
+def fetch_known_entities() -> set:
+    nodes = fetch_all_paginated("graph_nodes", "label, type")
+    return {
+        row["label"].lower()
+        for row in (nodes or [])
+        if row["type"] in ("person", "organization", "project")
+    }
+
+def dump_contains_known_entity(content: str, known_entities: set) -> bool:
+    content_lower = content.lower()
+    return any(entity in content_lower for entity in known_entities)
 
 def synthesize_content(memory: dict) -> str:
     memory_type = memory.get("memory_type", "")
@@ -121,16 +150,12 @@ def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, me
         return created_nodes[label]
     
     if label in graph_entities:
-        node_id = graph_entities[label]
+        node_id = graph_entities[label]["id"]  # ← updated
         created_nodes[label] = node_id
         return node_id
     
-    # Standard mapping logic for types...
-    node_type = "person" if label in ["Sunju", "Jaden", "Jeffery", "The Boys", "Danny", "Jeremy"] else \
-                "organization" if label in ["Solvstrat", "Crayon", "Church", "Qhord"] else \
-                "project" if label in ["CashFlow+", "Integrated-OS", "Solvstrat", "Qhord"] else "concept"
+    node_type = "concept"  # default for truly new nodes
     
-    # 🛡️ THE FIX: Always provide a generated ID
     new_id = str(uuid.uuid4())
     resp = supabase.table("graph_nodes").upsert({
         "id": new_id,
@@ -139,7 +164,6 @@ def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, me
         "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
     }, on_conflict="label").execute()
     
-    # If a conflict occurred, the upsert returns the existing row's ID
     node_id = resp.data[0]["id"] if resp.data else new_id
     if node_id:
         created_nodes[label] = node_id
@@ -161,7 +185,7 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
             "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
         }
         
-        existing_id = graph_entities.get(label)
+        existing_id = graph_entities.get(label, {}).get("id")
         if existing_id:
             record["id"] = existing_id
         else:
@@ -221,7 +245,7 @@ def process_memory(memory: dict, graph_entities: dict) -> bool:
     for node in nodes:
         label = node.get("label", "")
         if label in graph_entities:
-            created_nodes[label] = graph_entities[label]
+            created_nodes[label] = graph_entities[label]["id"]
     
     upsert_nodes(nodes, graph_entities, memory_id)
     
