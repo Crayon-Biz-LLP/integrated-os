@@ -148,25 +148,24 @@ Rules:
 def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, memory_id: str = None) -> str:
     if label in created_nodes:
         return created_nodes[label]
-    
+
     if label in graph_entities:
-        node_id = graph_entities[label]["id"]  # ← updated
+        node_id = graph_entities[label]["id"]
         created_nodes[label] = node_id
         return node_id
-    
-    node_type = "concept"  # default for truly new nodes
-    
+
+    node_type = "concept"
     new_id = str(uuid.uuid4())
-    resp = supabase.table("graph_nodes").upsert({
+
+    resp = supabase.table("graph_nodes").insert({
         "id": new_id,
         "label": label,
         "type": node_type,
         "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
-    }, on_conflict="label").execute()
-    
+    }).execute()
+
     node_id = resp.data[0]["id"] if resp.data else new_id
-    if node_id:
-        created_nodes[label] = node_id
+    created_nodes[label] = node_id
     return node_id
 
 def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
@@ -246,8 +245,6 @@ def process_memory(memory: dict, graph_entities: dict) -> bool:
         label = node.get("label", "")
         if label in graph_entities:
             created_nodes[label] = graph_entities[label]["id"]
-    
-    upsert_nodes(nodes, graph_entities, memory_id)
     
     node_label_to_id = {}
     for node in nodes:
