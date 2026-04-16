@@ -193,12 +193,12 @@ def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
         if not source_id or not target_id:
             continue
         
-        supabase.table("graph_edges").insert({
+        supabase.table("graph_edges").upsert({
             "source_node_id": source_id,
             "target_node_id": target_id,
             "relationship": relationship,
             "metadata": json.dumps({"memory_id": memory_id})
-        }).execute()
+        }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
 
 
 def process_memory(memory: dict, graph_entities: dict) -> bool:
