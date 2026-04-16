@@ -698,15 +698,19 @@ async def process_pulse(auth_secret: str = None):
             briefing_mode = "⚪ CHORES & 💡 IDEAS (Weekend Rest)"
             system_persona = "Focus ONLY on Home, Family, and Chores. Explicitly hide Work tasks. Be relaxed."
         else:
-            if hour < 11:
+            # 🌅 MORNING: Extended to Noon to catch your first run
+            if hour < 12:
                 briefing_mode = "Morning Status: We're cleared."
                 system_persona = "Cut through the noise and focus Danny on what moves the needle today. No coaching, no motivation—just what needs doing."
-            elif hour < 14:
+            # ☀️ AFTERNOON: Focused execution window (Noon to 3:30 PM)
+            elif hour < 15 or (hour == 15 and now.minute < 30):
                 briefing_mode = "Afternoon Check: Moving the needle."
                 system_persona = "Focused on the main effort. Keep Danny building toward the goal. Be direct."
-            elif hour < 18:
+            # 🌇 CLOSING LOOP: Gear shift to family (3:30 PM to 6:30 PM)
+            elif hour < 19:
                 briefing_mode = "Closing the loop: Sign off."
                 system_persona = "Push Danny to close work tasks so he can transition to family. Log pending items. Be dry."
+            # 🌙 NIGHT: Secure the board (After 7:00 PM)
             else:
                 briefing_mode = "Intel: Vaulted."
                 system_persona = "Focus on closure and transition. Secure the board. Highlight what was ✅ Done today and what matters on the 🏠 Home front. Keep work loops minimal but visible. Maintain the 'Grid'—vertical sections are mandatory."
@@ -1049,6 +1053,12 @@ async def process_pulse(auth_secret: str = None):
             - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
             - COMPASS TONE: If HINDSIGHT_STALE is FALSE, weave the latest hindsight insights into a sharp, forward-leaning opening.
               IF HINDSIGHT_STALE is TRUE: Do NOT repeat old insights. Instead, acknowledge the silence with a dry, one-sentence observation (e.g., 'The signal is quiet on the reflection front, Danny. Let's look at the board.') and move immediately to the tactical list.
+            - COMPASS LENS (Temporal Variety):
+                - MORNING: Focus on the 'Delta'. What happened overnight? What is the single most important pivot for TODAY?
+                - AFTERNOON: Focus on 'Velocity'. Don't repeat the strategy; call out what is actually moving (or stalled) in the last 4 hours.
+                - NIGHT: Focus on 'Audit & Archive'. The opening should feel like a 'Door Closing.' Summarize the spiritual or mental cost of the day's effort.
+            - NO REPETITION: You are strictly forbidden from using the same phrasing (e.g., '100% bandwidth') in consecutive briefings. If the strategy hasn't changed, change the perspective.
+            - RECENCY BIAS: The first sentence of the brief MUST prioritize data from NEW INPUTS. Only use the Master Page context to provide the 'Why' behind the 'What'.
             - ICON RULES: 🔴 (Urgent), 🟡 (Important), ⚪ (Chores), 💡 (Ideas).
             - SECTIONS: 
                 ✅ Done: ONLY list tasks that were moved to "completed_task_ids" in this specific run. NEVER list items from HINDSIGHT_MEMORIES in this section.
@@ -1382,11 +1392,22 @@ async def process_pulse(auth_secret: str = None):
         # --- 4. SPEAK Phase ---
         briefing_text = ai_data.get('briefing', '')
         if briefing_text:
-            # 🛡️ THE ARCHITECT'S REPAIR: Fix escaping and enforce list breaks
+            # 🛡️ THE ARCHITECT'S FINAL REPAIR: Force double newlines before all section headers
+            # This ensures that even if the AI 'whispers', the grid stays intact.
+            headers = ['🚀 Work', '🏠 Home', '💡 Ideas', '✅ Done', '🛡️ WEEKEND RECON']
+            for header in headers:
+                if header in briefing_text:
+                    # Replace the header with a version that has breathing room above it
+                    briefing_text = briefing_text.replace(header, f"\n\n{header}\n")
+            
+            # 🛡️ Fix escaping and enforce list breaks
             briefing_text = briefing_text.replace('\\n', '\n').replace('\\\\n', '\n').replace(' - ', '\n- ')
             
             # Existing logic: Remove internal system IDs from the user-facing text
             briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
+            
+            # Final Clean: Remove any accidental triple-newlines created by the logic above
+            briefing_text = re.sub(r'\n{3,}', '\n\n', briefing_text)
             
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
