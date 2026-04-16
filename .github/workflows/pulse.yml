@@ -1,8 +1,8 @@
 name: Pulse Engine (Rhodey SITREP)
 on:
   schedule:
-    - cron: '30 3,6,10,13 * * 1-5' # Weekdays IST: 9AM, 12PM, 4PM, 7PM
-    - cron: '30 4,9 * * 0,6'       # Weekends IST: 10AM, 3PM
+    - cron: '0 2,7,11,14 * * 1-5' # Weekdays IST: 7:30AM, 12:30PM, 4:30PM, 7:30PM
+    - cron: '30 4,9 * * 0,6' # Weekends IST: 10AM, 3PM
   workflow_dispatch:
   repository_dispatch:
     types: [trigger_pulse]
