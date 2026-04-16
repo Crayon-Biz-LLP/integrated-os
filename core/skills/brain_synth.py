@@ -30,8 +30,8 @@ def get_embedding(text: str) -> list:
 
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None):
     import asyncio
-    max_retries = 3
-    base_delay = 2
+    max_retries = 5
+    base_delay = 15
     retryable_errors = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded']
     for attempt in range(max_retries):
         try:
