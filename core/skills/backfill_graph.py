@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import uuid
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -22,6 +23,20 @@ BATCH_SIZE = 20
 MEMORY_TYPES = ["Prophecy", "Psalm", "Prayer", "Journal", "archive"]
 
 
+def with_retry(fn, retries=3, base_delay=1, label="operation"):
+    for attempt in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt < retries - 1:
+                wait = base_delay * (2 ** attempt)
+                print(f"{label} failed (attempt {attempt+1}/3), retrying in {wait}s... Error: {e}")
+                time.sleep(wait)
+            else:
+                print(f"{label} failed after 3 attempts: {e}")
+                raise e
+
+
 def fetch_all_paginated(table_name: str, select_str: str = "*", in_filter_col=None, in_filter_val=None):
     all_rows = []
     start = 0
@@ -31,8 +46,15 @@ def fetch_all_paginated(table_name: str, select_str: str = "*", in_filter_col=No
         if in_filter_col and in_filter_val:
             query = query.in_(in_filter_col, in_filter_val)
         
-        res = query.range(start, start + page_size - 1).execute()
-        data = res.data or []
+        try:
+            res = with_retry(
+                lambda: query.range(start, start + page_size - 1).execute(),
+                label="Paginated fetch"
+            )
+            data = res.data or []
+        except Exception:
+            break
+        
         all_rows.extend(data)
         
         if len(data) < page_size:
@@ -116,6 +138,26 @@ def synthesize_content(memory: dict) -> str:
     return content
 
 
+def gemini_with_retry_sync(prompt: str, model: str, config: dict = None, retries: int = 3, base_delay: int = 2):
+    retryable_errors = ['503', '504', '500', 'timeout', 'deadline exceeded']
+    for attempt in range(retries):
+        try:
+            return gemini_client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=config or {}
+            )
+        except Exception as e:
+            error_str = str(e).lower()
+            should_retry = any(err in error_str for err in retryable_errors)
+            if should_retry and attempt < retries - 1:
+                wait = base_delay * (2 ** attempt)
+                print(f"Gemini retry {attempt+1}/{retries} in {wait}s: {e}")
+                time.sleep(wait)
+                continue
+            raise
+
+
 def extract_graph_elements(text: str, memory_id: str) -> dict:
     prompt = f"""Extract knowledge graph elements from this text.
 
@@ -132,9 +174,9 @@ Rules:
 - Include "authored" edge from "Danny" to indicate he wrote this memory"""
 
     try:
-        response = gemini_client.models.generate_content(
+        response = gemini_with_retry_sync(
+            prompt=prompt,
             model="gemini-3.1-flash-lite-preview",
-            contents=prompt,
             config={"response_mime_type": "application/json"}
         )
         
@@ -157,12 +199,16 @@ def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, me
     node_type = "concept"
     new_id = str(uuid.uuid4())
 
-    resp = supabase.table("graph_nodes").insert({
-        "id": new_id,
-        "label": label,
-        "type": node_type,
-        "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
-    }).execute()
+    try:
+        resp = supabase.table("graph_nodes").insert({
+            "id": new_id,
+            "label": label,
+            "type": node_type,
+            "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
+        }).execute()
+    except Exception as e:
+        print(f"Node creation failed for '{label}': {e}")
+        return new_id
 
     node_id = resp.data[0]["id"] if resp.data else new_id
     created_nodes[label] = node_id
@@ -216,12 +262,16 @@ def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
         if not source_id or not target_id:
             continue
         
-        supabase.table("graph_edges").upsert({
-            "source_node_id": source_id,
-            "target_node_id": target_id,
-            "relationship": relationship,
-            "metadata": json.dumps({"memory_id": memory_id})
-        }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
+        try:
+            supabase.table("graph_edges").upsert({
+                "source_node_id": source_id,
+                "target_node_id": target_id,
+                "relationship": relationship,
+                "metadata": json.dumps({"memory_id": memory_id})
+            }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
+        except Exception as e:
+            print(f"Edge insert failed ({source_label} -> {target_label}): {e}")
+            continue
 
 
 def process_memory(memory: dict, graph_entities: dict) -> bool:

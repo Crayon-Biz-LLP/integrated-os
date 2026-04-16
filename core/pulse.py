@@ -248,6 +248,8 @@ async def generate_after_action_report() -> str:
         
         if lesson and len(lesson) > 10:
             embedding = get_embedding(lesson)
+            if all(v == 0 for v in embedding):
+                print(f"Warning: zero-vector embedding for daily reflection — storing anyway")
             supabase.table('memories').insert({
                 "content": lesson,
                 "memory_type": "reflection",
@@ -332,9 +334,9 @@ Resources:
 {json.dumps(enrichment_data, indent=2)}"""
     
     try:
-        response = gemini_client.models.generate_content(
+        response = await call_gemini_with_retry(
+            prompt=prompt,
             model="gemini-3.1-flash-lite-preview",
-            contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
         parsed = json.loads(response.text)
@@ -354,6 +356,8 @@ Resources:
             strategic_note = item.get('strategic_note', '')
             embedding_text = f"{title}. {strategic_note}"
             embedding = get_embedding(embedding_text)
+            if all(v == 0 for v in embedding):
+                print(f"Warning: zero-vector embedding for daily reflection — storing anyway")
             
             supabase.table('resources').update({
                 "title": title,
@@ -603,9 +607,9 @@ async def process_pulse(auth_secret: str = None):
         {json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
             
             try:
-                sort_response = gemini_client.models.generate_content(
+                sort_response = await call_gemini_with_retry(
+                    prompt=sort_prompt,
                     model="gemini-3.1-flash-lite-preview",
-                    contents=sort_prompt,
                     config={'response_mime_type': 'application/json'}
                 )
                 sort_result = json.loads(sort_response.text)
@@ -628,7 +632,6 @@ async def process_pulse(auth_secret: str = None):
                             }).execute()
                             note_dump_ids.append(dump_id)
                             print(f"📝 Note filed to memory: {dump_content[:50]}...")
-                        note_dump_ids.append(dump_id)
                     
                     elif category == 'NOISE':
                         note_dump_ids.append(dump_id)
@@ -1399,8 +1402,11 @@ async def process_pulse(auth_secret: str = None):
                 "text": briefing_text,
                 "parse_mode": "Markdown"
             }
-            async with httpx.AsyncClient() as tg_client:
-                await tg_client.post(url, json=payload)
+            try:
+                async with httpx.AsyncClient() as tg_client:
+                    await tg_client.post(url, json=payload)
+            except Exception as e:
+                print(f"Telegram send failed: {e}")
 
         # --- 📝 AFTER-ACTION REPORT ---
         if hour >= 20 or hour < 4:

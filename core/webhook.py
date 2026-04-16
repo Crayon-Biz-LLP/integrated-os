@@ -81,7 +81,9 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
             return response
         except Exception as e:
             error_str = str(e).lower()
-            if '503' in error_str and attempt < max_retries - 1:
+            retryable_errors = ['503', '504', '500', 'timeout', 'deadline exceeded']
+            should_retry = any(err in error_str for err in retryable_errors)
+            if should_retry and attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt)
                 print(f"⚠️ Gemini 503 error, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
                 await asyncio.sleep(delay)
@@ -190,22 +192,25 @@ async def get_recent_context(limit: int = 2) -> list:
 
 async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
     """Download file from Telegram and return (bytes, mime_type)."""
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    
-    async with httpx.AsyncClient() as client:
-        file_info = await client.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}")
-        file_data = file_info.json()
+    try:
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         
-        if not file_data.get('ok'):
-            raise Exception(f"Telegram API error: {file_data}")
-        
-        file_path = file_data['result']['file_path']
-        mime_type = file_data['result'].get('mime_type', 'application/octet-stream')
-        
-        download_url = f"https://api.telegram.org/bot{bot_token}/file/{file_path}"
-        file_bytes = await client.get(download_url)
-        
-        return file_bytes.content, mime_type
+        async with httpx.AsyncClient() as client:
+            file_info = await client.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}")
+            file_data = file_info.json()
+            
+            if not file_data.get('ok'):
+                raise Exception(f"Telegram API error: {file_data}")
+            
+            file_path = file_data['result']['file_path']
+            mime_type = file_data['result'].get('mime_type', 'application/octet-stream')
+            
+            download_url = f"https://api.telegram.org/bot{bot_token}/file/{file_path}"
+            file_bytes = await client.get(download_url)
+            
+            return file_bytes.content, mime_type
+    except Exception as e:
+        raise Exception(f"Failed to download Telegram file {file_id}: {e}")
 
 
 async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int, ist_hour: int = None, core_json: str = "[]"):
@@ -341,14 +346,17 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
 
 # 1. Update your handle_confident_task signature to accept entity
 async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None):
-    supabase.table('raw_dumps').insert([{
-        "content": text,
-        "metadata": json.dumps({
-            "title": title, 
-            "time_context": time_context,
-            "entity": entity  # 🚀 THIS SAVES THE BUCKET
-        })
-    }]).execute()
+    try:
+        supabase.table('raw_dumps').insert([{
+            "content": text,
+            "metadata": json.dumps({
+                "title": title, 
+                "time_context": time_context,
+                "entity": entity  # 🚀 THIS SAVES THE BUCKET
+            })
+        }]).execute()
+    except Exception as e:
+        print(f"Failed to save task dump: {e}")
     
     ack = receipt or "Logged."
     await send_telegram(chat_id, f"{ack}")
@@ -356,11 +364,14 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
 
 async def handle_confident_note(text: str, chat_id: int, receipt: str = None):
     embedding = get_embedding(text)
-    supabase.table('memories').insert({
-        "content": text,
-        "memory_type": "note",
-        "embedding": embedding
-    }).execute()
+    try:
+        supabase.table('memories').insert({
+            "content": text,
+            "memory_type": "note",
+            "embedding": embedding
+        }).execute()
+    except Exception as e:
+        print(f"Failed to save note to memory: {e}")
     ack = receipt or "Note vaulted."
     await send_telegram(chat_id, f"{ack}")
 
@@ -517,8 +528,11 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
         }
         payload["disable_web_page_preview"] = True
     
-    async with httpx.AsyncClient() as client:
-        await client.post(url, json=payload)
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json=payload)
+    except Exception as e:
+        print(f"Telegram send failed to {chat_id}: {e}")
 
 
 KEYBOARD = {

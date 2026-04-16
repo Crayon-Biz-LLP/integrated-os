@@ -44,10 +44,14 @@ def sync_nodes(graph: dict) -> int:
             })
         })
 
-    supabase.table("graph_nodes").upsert(
-        node_records,
-        on_conflict="label"
-    ).execute()
+    try:
+        supabase.table("graph_nodes").upsert(
+            node_records,
+            on_conflict="label"
+        ).execute()
+    except Exception as e:
+        print(f"Node upsert error: {e}")
+        return 0
 
     return len(node_records)
 
@@ -57,25 +61,24 @@ def sync_edges(graph: dict) -> int:
     if not edges:
         return 0
 
-    # Get existing node labels to map source/target properly
-    nodes_res = supabase.table("graph_nodes").select("label").execute()
-    label_map = {n["label"]: n["label"] for n in nodes_res.data}  # Using label as identifier
+    nodes_res = supabase.table("graph_nodes").select("id, label").execute()
+    label_to_id = {node["label"]: node["id"] for node in nodes_res.data}
 
     edge_records = []
     for edge in edges:
-        # Convert source/target to labels
         src = str(edge.get("source", ""))
         tgt = str(edge.get("target", ""))
         
-        # If source/target are numeric IDs, try to find matching nodes by type
-        if src.isdigit() or ":" in src:
-            src = f"node_{src}"
-        if tgt.isdigit() or ":" in tgt:
-            tgt = f"node_{tgt}"
+        source_node_id = label_to_id.get(src)
+        target_node_id = label_to_id.get(tgt)
+        
+        if not source_node_id or not target_node_id:
+            print(f"Skipping edge: {src} -> {tgt} (node not found in DB)")
+            continue
         
         edge_records.append({
-            "source_node_id": src,
-            "target_node_id": tgt,
+            "source_node_id": source_node_id,
+            "target_node_id": target_node_id,
             "relationship": edge.get("relationship", ""),
             "weight": edge.get("confidence_score", 1.0),
             "metadata": json.dumps({
@@ -83,27 +86,13 @@ def sync_edges(graph: dict) -> int:
             })
         })
 
-    # Insert edges one by one to handle UUID issues
     inserted = 0
     for edge in edge_records:
-        try:
-            supabase.table("graph_edges").upsert(
-                edge,
-                on_conflict="source_node_id_target_node_id"
-            ).execute()
-            inserted += 1
-        except Exception as e:
-            # Try with UUID format
-            try:
-                edge["source_node_id"] = "node-" + str(uuid.uuid5(uuid.NAMESPACE_OID, str(edge["source_node_id"])))[:8]
-                edge["target_node_id"] = "node-" + str(uuid.uuid5(uuid.NAMESPACE_OID, str(edge["target_node_id"])))[:8]
-                supabase.table("graph_edges").upsert(
-                    edge,
-                    on_conflict="source_node_id_target_node_id"
-                ).execute()
-                inserted += 1
-            except:
-                pass
+        supabase.table("graph_edges").upsert(
+            edge,
+            on_conflict="source_node_id,relationship,target_node_id"
+        ).execute()
+        inserted += 1
 
     return inserted
 
@@ -115,9 +104,13 @@ def vault_snapshot(graph: dict) -> str:
         "synced_at": datetime.now(timezone(timedelta(hours=5, minutes=30))).isoformat()
     }
 
-    response = supabase.table("graph_vault").insert({
-        "graph_data": json.dumps(snapshot)
-    }).execute()
+    try:
+        response = supabase.table("graph_vault").insert({
+            "graph_data": json.dumps(snapshot)
+        }).execute()
+    except Exception as e:
+        print(f"Vault snapshot error: {e}")
+        return None
 
     return snapshot["synced_at"]
 
@@ -134,7 +127,10 @@ def run_graph_sync():
         print(f"Synced {edge_count} edges to graph_edges table.")
 
         synced_at = vault_snapshot(graph)
-        print(f"Vault snapshot stored at {synced_at}")
+        if synced_at is None:
+            print("Vault snapshot failed but sync completed.")
+        else:
+            print(f"Vault snapshot stored at {synced_at}")
 
         print("Graph sync completed successfully.")
 
