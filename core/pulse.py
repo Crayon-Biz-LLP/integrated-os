@@ -947,7 +947,8 @@ async def process_pulse(auth_secret: str = None):
         ]))
 
         if relevant_project_names:
-            pages_res = supabase.table('canonical_pages').select('title, content').in_('title', relevant_project_names).execute()
+            or_string = ",".join([f"title.ilike.{name}" for name in relevant_project_names])
+            pages_res = supabase.table('canonical_pages').select('title, content').or_(or_string).execute()
             if pages_res.data:
                 page_entries = [f"### MASTER PAGE: {p['title']}\n{p['content']}" for p in pages_res.data]
                 master_page_context = "\n\n".join(page_entries)
