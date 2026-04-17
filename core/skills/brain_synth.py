@@ -29,7 +29,6 @@ def get_embedding(text: str) -> list:
         return []
 
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None):
-    import asyncio
     max_retries = 5
     base_delay = 15
     retryable_errors = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded']
@@ -54,16 +53,16 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
 
 async def run_batch_sweep():
     try:
-        # 1. GATHER TARGETS: Fetch active projects and define core pillars
+        # 1. GATHER TARGETS
         active_res = supabase.table('projects') \
             .select('id, name') \
             .eq('is_active', True) \
             .eq('status', 'active') \
             .execute()
         entities = [(p['id'], p['name']) for p in active_res.data]
-        
+
         batch_payload = []
-        
+
         # Staleness check
         print(f"🔍 Checking canonical page freshness...")
         stale_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -73,60 +72,87 @@ async def run_batch_sweep():
             .execute()
         if stale_pages.data:
             print(f"⚠️ {len(stale_pages.data)} stale pages detected: {[p['title'] for p in stale_pages.data]}")
-        
-        # 2. COLLECT: Bundle fragments for every entity into one payload
+
+        # 2. COLLECT
         print(f"📡 Gathering fragments for {len(entities)} entities...")
         for project_id, entity_name in entities:
             try:
                 all_fragments = []
+                seen_hashes = set()
 
-                # memories — name match only
-                mem = supabase.table('memories').select('content') \
-                    .ilike('content', f'%{entity_name}%').execute()
-                if mem.data:
-                    all_fragments += [f"[MEMORY] {f['content']}" for f in mem.data]
+                def add_fragment(prefix: str, text: str):
+                    normalized = text.strip().lower()
+                    h = hash(normalized)
+                    if h not in seen_hashes and normalized:
+                        seen_hashes.add(h)
+                        all_fragments.append(f"[{prefix}] {text}")
 
-                # tasks — match by project_id first, then name
+                # Get entity embedding once — reuse for all semantic searches
+                entity_embedding = get_embedding(entity_name)
+
+                # memories — semantic search
+                if entity_embedding:
+                    mem = supabase.rpc('match_memories', {
+                        'query_embedding': entity_embedding,
+                        'match_threshold': 0.5,
+                        'match_count': 20
+                    }).execute()
+                    if mem.data:
+                        for f in mem.data:
+                            add_fragment("MEMORY", f['content'])
+
+                # tasks — project_id match (precise, no change needed)
                 tasks = supabase.table('tasks').select('title, status') \
                     .eq('project_id', project_id).execute()
                 if tasks.data:
-                    all_fragments += [f"[TASK/{t['status'].upper()}] {t['title']}" for t in tasks.data]
+                    for t in tasks.data:
+                        add_fragment(f"TASK/{t['status'].upper()}", t['title'])
 
-                # logs — name match
-                logs = supabase.table('logs').select('content') \
-                    .ilike('content', f'%{entity_name}%').execute()
-                if logs.data:
-                    all_fragments += [f"[LOG] {f['content']}" for f in logs.data]
+                # logs — semantic search
+                if entity_embedding:
+                    logs = supabase.rpc('match_logs', {
+                        'query_embedding': entity_embedding,
+                        'match_threshold': 0.5,
+                        'match_count': 20
+                    }).execute()
+                    if logs.data:
+                        for f in logs.data:
+                            add_fragment("LOG", f['content'])
 
-                # resources — name match
-                resources = supabase.table('resources').select('title, summary, strategic_note') \
-                    .ilike('title', f'%{entity_name}%').execute()
-                if resources.data:
-                    all_fragments += [f"[RESOURCE] {r['title']} — {r.get('summary', '')}" for r in resources.data]
+                # resources — semantic search
+                if entity_embedding:
+                    resources = supabase.rpc('match_resources', {
+                        'query_embedding': entity_embedding,
+                        'match_threshold': 0.5,
+                        'match_count': 10
+                    }).execute()
+                    if resources.data:
+                        for r in resources.data:
+                            add_fragment("RESOURCE", f"{r['title']} — {r.get('summary', '')}")
 
-                # raw_dumps — semantic vector search
-                entity_embedding = get_embedding(entity_name)
+                # raw_dumps — semantic search (threshold raised to 0.5)
                 if entity_embedding:
                     dumps = supabase.rpc('match_raw_dumps', {
                         'query_embedding': entity_embedding,
-                        'match_threshold': 0.4,
+                        'match_threshold': 0.5,
                         'match_count': 30
                     }).execute()
                     if dumps.data:
-                        all_fragments += [f"[DUMP] {d['content']}" for d in dumps.data]
+                        for d in dumps.data:
+                            add_fragment("DUMP", d['content'])
 
-                # people — name match only (no project_id column on this table)
+                # people — ilike (no embedding column on people table)
                 people = supabase.table('people').select('name, role, strategic_weight') \
                     .ilike('name', f'%{entity_name}%').execute()
                 if people.data:
-                    all_fragments += [f"[PERSON] {p['name']} — {p.get('role', 'Unknown role')}" \
-                        for p in people.data]
+                    for p in people.data:
+                        add_fragment("PERSON", f"{p['name']} — {p.get('role', 'Unknown role')}")
+
             except Exception as e:
                 print(f"Skipping {entity_name} — failed to fetch fragments: {e}")
                 continue
-            
+
             if all_fragments:
-                # Feed existing page back into synthesis
                 existing = supabase.table('canonical_pages') \
                     .select('id, content') \
                     .eq('project_id', project_id) \
@@ -148,7 +174,7 @@ async def run_batch_sweep():
             print("No data found to synthesize.")
             return
 
-        # 3. SYNTHESIZE: One call per entity
+        # 3. SYNTHESIZE
         print("🧠 Synthesizing Master Pages per entity...")
         results = {}
         for entry in batch_payload:
@@ -189,9 +215,8 @@ NEW FRAGMENTS:
                 print(f"  ❌ Gemini failed for {entity_name}: {e}")
                 continue
 
-        # 5. COMMIT: Validated write with quality checks
+        # 4. COMMIT
         for entity_name, markdown in results.items():
-            # Find matching payload entry
             payload_entry = next((p for p in batch_payload if p['entity'] == entity_name), None)
             if not payload_entry:
                 continue
@@ -200,13 +225,12 @@ NEW FRAGMENTS:
             existing_id = payload_entry.get('existing_id')
             existing_content = payload_entry.get('existing_page', '')
 
-            # VALIDATION GATE — never write a page shorter than existing
             if len(markdown) < 300:
                 print(f"⚠️ Skipping {entity_name} — output too sparse ({len(markdown)} chars)")
                 continue
 
             if existing_content and len(markdown) < len(existing_content) * 0.6:
-                print(f"⚠️ Skipping {entity_name} — output is significantly shorter than existing page. Possible bad run.")
+                print(f"⚠️ Skipping {entity_name} — output significantly shorter than existing page.")
                 continue
 
             embedding = get_embedding(markdown)

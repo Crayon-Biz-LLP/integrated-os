@@ -3,7 +3,7 @@ name: 🧠 Knowledge Synthesis Sweep
 on:
   schedule:
     - cron: '0 2 * * *' # Runs every night at 7:30 AM IST (02:00 UTC)
-  workflow_dispatch:      # Allows you to run it manually from GitHub
+  workflow_dispatch:
 
 jobs:
   sweep:
@@ -12,6 +12,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Validate secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ] || [ -z "$GEMINI_API_KEY" ]; then
+            echo "❌ One or more required secrets are missing or empty"
+            exit 1
+          fi
+          echo "✅ All secrets present"
 
       - name: Set up Python
         uses: actions/setup-python@v4
