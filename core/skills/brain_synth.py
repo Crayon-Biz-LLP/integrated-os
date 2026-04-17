@@ -103,6 +103,22 @@ async def run_batch_sweep():
                     .ilike('title', f'%{entity_name}%').execute()
                 if resources.data:
                     all_fragments += [f"[RESOURCE] {r['title']} — {r.get('summary', '')}" for r in resources.data]
+
+                # raw_dumps — full historical input stream
+                dumps = supabase.table('raw_dumps').select('content') \
+                    .ilike('content', f'%{entity_name}%').execute()
+                if dumps.data:
+                    all_fragments += [f"[DUMP] {d['content']}" for d in dumps.data]
+
+                # people — linked to this project
+                people = supabase.table('people').select('name, role, strategic_weight') \
+                    .eq('project_id', project_id).execute()
+                if not people.data:
+                    people = supabase.table('people').select('name, role, strategic_weight') \
+                        .ilike('name', f'%{entity_name}%').execute()
+                if people.data:
+                    all_fragments += [f"[PERSON] {p['name']} — {p.get('role', 'Unknown role')}" \
+                        for p in people.data]
             except Exception as e:
                 print(f"Skipping {entity_name} — failed to fetch fragments: {e}")
                 continue
