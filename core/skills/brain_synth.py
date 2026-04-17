@@ -110,12 +110,9 @@ async def run_batch_sweep():
                 if dumps.data:
                     all_fragments += [f"[DUMP] {d['content']}" for d in dumps.data]
 
-                # people — linked to this project
+                # people — name match only (no project_id column on this table)
                 people = supabase.table('people').select('name, role, strategic_weight') \
-                    .eq('project_id', project_id).execute()
-                if not people.data:
-                    people = supabase.table('people').select('name, role, strategic_weight') \
-                        .ilike('name', f'%{entity_name}%').execute()
+                    .ilike('name', f'%{entity_name}%').execute()
                 if people.data:
                     all_fragments += [f"[PERSON] {p['name']} — {p.get('role', 'Unknown role')}" \
                         for p in people.data]
