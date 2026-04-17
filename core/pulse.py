@@ -297,7 +297,7 @@ async def fetch_url_metadata(url: str):
 
 
 async def batch_enrich_resources():
-    unenriched = supabase.table('resources').select('id, url').is_('summary', None).execute()
+    unenriched = supabase.table('resources').select('id, url').is_('enriched_at', None).execute()
     if not unenriched.data:
         print("📚 No unenriched resources found.")
         return []
@@ -373,6 +373,28 @@ Resources:
             }).eq('id', item['id']).execute()
         
         print(f"✅ Batch enriched {len(parsed)} resources with embeddings.")
+
+        # MISSION RESOLVER: Link enriched resources to active missions by name
+        try:
+            missions_res = supabase.table('missions').select('id, title').eq('status', 'active').execute()
+            active_missions = missions_res.data or []
+
+            unlinked = supabase.table('resources').select('id, title, strategic_note').is_('mission_id', None).not_.is_('enriched_at', None).execute()
+
+            for resource in (unlinked.data or []):
+                resource_text = f"{resource.get('title', '')} {resource.get('strategic_note', '')}".lower()
+                for mission in active_missions:
+                    mission_keywords = mission['title'].lower().split()
+                    match_score = sum(1 for kw in mission_keywords if kw in resource_text)
+                    if match_score >= 2:
+                        supabase.table('resources').update({
+                            "mission_id": mission['id']
+                        }).eq('id', resource['id']).execute()
+                        print(f"🔗 Linked resource '{resource.get('title')}' → mission '{mission['title']}'")
+                        break
+        except Exception as e:
+            print(f"⚠️ Mission resolver error: {e}")
+
         return parsed
     except Exception as e:
         print(f"Batch enrichment error: {e}")
@@ -1424,6 +1446,19 @@ async def process_pulse(auth_secret: str = None):
         # G. CLEANUP & LOGS
         if ai_data.get('logs'):
             supabase.table('logs').insert(ai_data['logs']).execute()
+
+        # H. NEW MISSIONS
+        if ai_data.get('new_missions'):
+            for mission_title in ai_data['new_missions']:
+                if not mission_title or not isinstance(mission_title, str):
+                    continue
+                existing = supabase.table('missions').select('id').eq('title', mission_title).execute()
+                if not existing.data:
+                    supabase.table('missions').insert({
+                        "title": mission_title,
+                        "status": "active"
+                    }).execute()
+                    print(f"🎯 New mission created: {mission_title}")
 
         # --- 4. SPEAK Phase ---
         briefing_text = ai_data.get('briefing', '')
