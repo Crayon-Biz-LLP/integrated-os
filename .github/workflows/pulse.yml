@@ -1,8 +1,8 @@
 name: Pulse Engine (Rhodey SITREP)
 on:
   schedule:
-    - cron: '0 2,7,11,14 * * 1-5' # Weekdays IST: 7:30AM, 12:30PM, 4:30PM, 7:30PM
-    - cron: '30 4,9 * * 0,6' # Weekends IST: 10AM, 3PM
+    - cron: '0 2,7,11,14 * * 1-5'
+    - cron: '30 4,9 * * 0,6'
   workflow_dispatch:
   repository_dispatch:
     types: [trigger_pulse]
@@ -10,9 +10,26 @@ on:
 jobs:
   run-pulse:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+        run: |
+          for secret in "$SUPABASE_URL" "$SUPABASE_SERVICE_ROLE_KEY" "$GEMINI_API_KEY" "$TELEGRAM_BOT_TOKEN" "$GOOGLE_REFRESH_TOKEN"; do
+            if [ -z "$secret" ]; then
+              echo "❌ One or more required secrets are missing"
+              exit 1
+            fi
+          done
+          echo "✅ All secrets present"
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -53,3 +70,13 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           PULSE_SECRET: ${{ secrets.PULSE_SECRET }}
         run: python core/pulse_cli.py
+
+  notify_failure:
+    runs-on: ubuntu-latest
+    needs: run-pulse
+    if: failure()
+    steps:
+      - name: Notify on failure
+        run: |
+          echo "⚠️ Rhodey SITREP FAILED at $(date)"
+          echo "Check logs: https://github.com/Crayon-Biz-LLP/integrated-os/actions"
