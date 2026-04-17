@@ -9,4 +9,5 @@ client_secret.json
 get_token.py
 .DS_Store
 .env*.local
+__pycache__/repomix-output.xml
 __pycache__/
