@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 import os
@@ -55,43 +55,76 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
 async def run_batch_sweep():
     try:
         # 1. GATHER TARGETS: Fetch active projects and define core pillars
-        active_res = supabase.table('projects').select('name').eq('is_active', True).execute()
-        entities = list(set([p['name'] for p in active_res.data]))
+        active_res = supabase.table('projects') \
+            .select('id, name') \
+            .eq('is_active', True) \
+            .eq('status', 'active') \
+            .execute()
+        entities = [(p['id'], p['name']) for p in active_res.data]
         
         batch_payload = []
         
+        # Staleness check
+        print(f"🔍 Checking canonical page freshness...")
+        stale_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
+        stale_pages = supabase.table('canonical_pages') \
+            .select('title, last_synth_at') \
+            .lt('last_synth_at', stale_threshold.isoformat()) \
+            .execute()
+        if stale_pages.data:
+            print(f"⚠️ {len(stale_pages.data)} stale pages detected: {[p['title'] for p in stale_pages.data]}")
+        
         # 2. COLLECT: Bundle fragments for every entity into one payload
         print(f"📡 Gathering fragments for {len(entities)} entities...")
-        for entity in entities:
+        for project_id, entity_name in entities:
             try:
+                all_fragments = []
+
+                # memories — name match only
                 mem = supabase.table('memories').select('content') \
-                    .or_(f"metadata->>entity.eq.{entity.upper()},content.ilike.%{entity}%") \
-                    .execute()
-                
-                tasks = supabase.table('tasks').select('title, status, created_at') \
-                    .ilike('title', f'%{entity}%') \
-                    .limit(30).execute()
-                
-                logs = supabase.table('logs').select('content, created_at') \
-                    .ilike('content', f'%{entity}%') \
-                    .limit(20).execute()
-                
+                    .ilike('content', f'%{entity_name}%').execute()
+                if mem.data:
+                    all_fragments += [f"[MEMORY] {f['content']}" for f in mem.data]
+
+                # tasks — match by project_id first, then name
+                tasks = supabase.table('tasks').select('title, status') \
+                    .eq('project_id', project_id).execute()
+                if tasks.data:
+                    all_fragments += [f"[TASK/{t['status'].upper()}] {t['title']}" for t in tasks.data]
+
+                # logs — name match
+                logs = supabase.table('logs').select('content') \
+                    .ilike('content', f'%{entity_name}%').execute()
+                if logs.data:
+                    all_fragments += [f"[LOG] {f['content']}" for f in logs.data]
+
+                # resources — name match
                 resources = supabase.table('resources').select('title, summary, strategic_note') \
-                    .ilike('title', f'%{entity}%') \
-                    .limit(20).execute()
+                    .ilike('title', f'%{entity_name}%').execute()
+                if resources.data:
+                    all_fragments += [f"[RESOURCE] {r['title']} — {r.get('summary', '')}" for r in resources.data]
             except Exception as e:
-                print(f"Skipping {entity} — failed to fetch fragments: {e}")
+                print(f"Skipping {entity_name} — failed to fetch fragments: {e}")
                 continue
             
-            all_fragments = []
-            if mem.data: all_fragments += [f['content'] for f in mem.data]
-            if tasks.data: all_fragments += [f"TASK ({t['status']}): {t['title']}" for t in tasks.data]
-            if logs.data: all_fragments += [f['content'] for f in logs.data]
-            if resources.data: all_fragments += [f"RESOURCE: {r['title']} — {r.get('summary','')}" for r in resources.data]
-            
             if all_fragments:
-                content = "\n".join(all_fragments)
-                batch_payload.append({"entity": entity, "data": content})
+                # Feed existing page back into synthesis
+                existing = supabase.table('canonical_pages') \
+                    .select('id, content') \
+                    .eq('project_id', project_id) \
+                    .maybe_single().execute()
+
+                existing_content = existing.data['content'] if existing.data else None
+                existing_id = existing.data['id'] if existing.data else None
+
+                batch_payload.append({
+                    "entity": entity_name,
+                    "project_id": project_id,
+                    "existing_page": existing_content or "No existing page — create from scratch.",
+                    "new_fragments": all_fragments,
+                    "fragment_count": len(all_fragments),
+                    "existing_id": existing_id
+                })
 
         if not batch_payload:
             print("No data found to synthesize.")
@@ -99,18 +132,22 @@ async def run_batch_sweep():
 
         # 3. CONSOLIDATE: Single "Grand Sweep" Prompt
         prompt = f"""
-        ROLE: Senior Historian for Danny's OS.
-        OBJECTIVE: Synthesize high-fidelity Master Pages for {len(batch_payload)} distinct entities.
-        
-        RULES:
-        - THE REVENUE GUARD: Solvstrat = Service (Now/Leads/Sales). Qhord = Product (June GTM).
-        - ATTRIBUTION: Map client wins/pipelines to Solvstrat. Map beta/GTM milestones to Qhord.
-        - VERTICALITY: Use clean Markdown headers and bulleted lists.
-        - OUTPUT: Return a JSON object where keys are Entity Names and values are the synthesized Markdown content.
-        
-        DATA BUNDLE:
-        {json.dumps(batch_payload)}
-        """
+ROLE: Senior Historian and Knowledge Curator for Danny's OS.
+OBJECTIVE: Update {len(batch_payload)} Master Pages using an ACCUMULATION MODEL.
+
+RULES:
+- MERGE, DO NOT REPLACE. The existing page is ground truth. Never discard established facts.
+- ENRICH. Add new information from NEW FRAGMENTS that isn't already in the existing page.
+- CORRECT. If new fragments contradict the existing page, update with the newer information.
+- REVENUE GUARD: Solvstrat = Service (Leads/Sales/Clients). Qhord = Product (GTM/Beta).
+- ATTRIBUTION: Map client wins to Solvstrat. Map GTM milestones to Qhord.
+- SPARSE GUARD: Output MUST be at least 300 characters. If fragments are thin, preserve the existing page as-is.
+- FORMAT: Clean Markdown with headers and bullets.
+- OUTPUT: Return a JSON object where keys are entity names and values are the merged Markdown content.
+
+DATA BUNDLE:
+{json.dumps(batch_payload)}
+"""
 
         # 4. EXECUTE: Call Gemini (Using 3.1 Flash Lite for 500 RPD safety)
         print("🧠 Synthesizing Master Pages in batch mode...")
@@ -128,32 +165,51 @@ async def run_batch_sweep():
             print(f"Brain synth JSON parse failed: {e}\nRaw response: {clean_json[:200]}")
             return
 
-        # 5. COMMIT: Bulk update the Canonical Record in Supabase
-        for entity, markdown in results.items():
-            embedding = get_embedding(markdown)
-            if not embedding:
-                print(f"Warning: empty embedding for {entity}, storing without vector")
-            try:
-                normalized_title = entity.strip()
-                existing = supabase.table('canonical_pages').select('id').ilike('title', normalized_title).execute()
-                if existing.data:
-                    supabase.table('canonical_pages').update({
-                        "content": markdown,
-                        "embedding": embedding,
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    }).eq('id', existing.data[0]['id']).execute()
-                    print(f"✅ Master Page Updated: {entity}")
-                else:
-                    supabase.table('canonical_pages').insert({
-                        "title": normalized_title,
-                        "content": markdown,
-                        "embedding": embedding,
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    }).execute()
-                    print(f"✅ Master Page Created: {entity}")
-            except Exception as e:
-                print(f"Failed to update canonical page for {entity}: {e}")
+        # 5. COMMIT: Validated write with quality checks
+        for entity_name, markdown in results.items():
+            # Find matching payload entry
+            payload_entry = next((p for p in batch_payload if p['entity'] == entity_name), None)
+            if not payload_entry:
                 continue
+
+            project_id = payload_entry['project_id']
+            existing_id = payload_entry.get('existing_id')
+            existing_content = payload_entry.get('existing_page', '')
+
+            # VALIDATION GATE — never write a page shorter than existing
+            if len(markdown) < 300:
+                print(f"⚠️ Skipping {entity_name} — output too sparse ({len(markdown)} chars)")
+                continue
+
+            if existing_content and len(markdown) < len(existing_content) * 0.6:
+                print(f"⚠️ Skipping {entity_name} — output is significantly shorter than existing page. Possible bad run.")
+                continue
+
+            embedding = get_embedding(markdown)
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            if existing_id:
+                supabase.table('canonical_pages').update({
+                    "content": markdown,
+                    "embedding": embedding,
+                    "updated_at": now_iso,
+                    "source_count": payload_entry['fragment_count'],
+                    "last_synth_at": now_iso,
+                    "is_sparse": len(markdown) < 500
+                }).eq('id', existing_id).execute()
+                print(f"✅ Master Page Merged: {entity_name} ({payload_entry['fragment_count']} fragments)")
+            else:
+                supabase.table('canonical_pages').insert({
+                    "title": entity_name,
+                    "project_id": project_id,
+                    "content": markdown,
+                    "embedding": embedding,
+                    "updated_at": now_iso,
+                    "source_count": payload_entry['fragment_count'],
+                    "last_synth_at": now_iso,
+                    "is_sparse": len(markdown) < 500
+                }).execute()
+                print(f"✅ Master Page Created: {entity_name} ({payload_entry['fragment_count']} fragments)")
     except Exception as e:
         print(f"Brain sweep failed: {e}")
 
