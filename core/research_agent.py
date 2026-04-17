@@ -3,6 +3,8 @@ import json
 import asyncio
 import httpx
 from urllib.parse import quote
+from dotenv import load_dotenv
+load_dotenv()
 from supabase import create_client, Client
 from google import genai
 
@@ -14,6 +16,22 @@ supabase: Client = create_client(
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 CLASSIFICATION_MODEL = "gemini-3.1-flash-lite-preview"
+
+EMBEDDING_MODEL = "gemini-embedding-2-preview"
+EMBEDDING_DIMENSION = 768
+
+
+def get_embedding(text: str) -> list:
+    try:
+        result = gemini_client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            contents=text,
+            config={"output_dimensionality": EMBEDDING_DIMENSION}
+        )
+        return result.embeddings[0].values
+    except Exception as e:
+        print(f"Embedding error: {e}")
+        return []
 
 
 async def send_telegram(chat_id: int, message_text: str):
@@ -29,9 +47,9 @@ async def send_telegram(chat_id: int, message_text: str):
 
 
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None):
-    max_retries = 3
-    base_delay = 1
-    retryable_errors = ['503', '504', '500', 'timeout', 'deadline exceeded']
+    max_retries = 5
+    base_delay = 5
+    retryable_errors = ['503', '504', '500', 'disconnected', 'quota', 'timeout', 'deadline exceeded']
     for attempt in range(max_retries):
         try:
             response = gemini_client.models.generate_content(
@@ -107,9 +125,14 @@ Web Search Results:
 
                 dossier = response.text.strip()
 
+                content = f"RESEARCH DOSSIER: {task_text}\n\n{dossier}"
+                embedding = get_embedding(content)
+                if not embedding:
+                    embedding = None
                 supabase.table('raw_dumps').insert([{
-                    "content": f"RESEARCH DOSSIER: {task_text}\n\n{dossier}",
-                    "metadata": json.dumps({"source": "research_agent", "task_id": task_id})
+                    "content": content,
+                    "metadata": json.dumps({"source": "research_agent", "task_id": task_id}),
+                    "embedding": embedding
                 }]).execute()
 
                 telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
