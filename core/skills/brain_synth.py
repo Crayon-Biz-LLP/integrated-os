@@ -56,8 +56,7 @@ async def run_batch_sweep():
     try:
         # 1. GATHER TARGETS: Fetch active projects and define core pillars
         active_res = supabase.table('projects').select('name').eq('is_active', True).execute()
-        core_missions = ["Solvstrat", "Qhord", "Church", "Canadian Project"]
-        entities = list(set([p['name'] for p in active_res.data] + core_missions))
+        entities = list(set([p['name'] for p in active_res.data]))
         
         batch_payload = []
         
@@ -65,15 +64,33 @@ async def run_batch_sweep():
         print(f"📡 Gathering fragments for {len(entities)} entities...")
         for entity in entities:
             try:
-                fragments = supabase.table('memories').select('content') \
+                mem = supabase.table('memories').select('content') \
                     .or_(f"metadata->>entity.eq.{entity.upper()},content.ilike.%{entity}%") \
                     .execute()
+                
+                tasks = supabase.table('tasks').select('title, status, created_at') \
+                    .ilike('title', f'%{entity}%') \
+                    .limit(30).execute()
+                
+                logs = supabase.table('logs').select('content, created_at') \
+                    .ilike('content', f'%{entity}%') \
+                    .limit(20).execute()
+                
+                resources = supabase.table('resources').select('title, summary, strategic_note') \
+                    .ilike('title', f'%{entity}%') \
+                    .limit(20).execute()
             except Exception as e:
                 print(f"Skipping {entity} — failed to fetch fragments: {e}")
                 continue
             
-            if fragments.data:
-                content = "\n".join([f["content"] for f in fragments.data])
+            all_fragments = []
+            if mem.data: all_fragments += [f['content'] for f in mem.data]
+            if tasks.data: all_fragments += [f"TASK ({t['status']}): {t['title']}" for t in tasks.data]
+            if logs.data: all_fragments += [f['content'] for f in logs.data]
+            if resources.data: all_fragments += [f"RESOURCE: {r['title']} — {r.get('summary','')}" for r in resources.data]
+            
+            if all_fragments:
+                content = "\n".join(all_fragments)
                 batch_payload.append({"entity": entity, "data": content})
 
         if not batch_payload:
@@ -117,13 +134,23 @@ async def run_batch_sweep():
             if not embedding:
                 print(f"Warning: empty embedding for {entity}, storing without vector")
             try:
-                supabase.table('canonical_pages').upsert({
-                    "title": entity,
-                    "content": markdown,
-                    "embedding": embedding,
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                }, on_conflict='title').execute()
-                print(f"✅ Master Page Updated: {entity}")
+                normalized_title = entity.strip()
+                existing = supabase.table('canonical_pages').select('id').ilike('title', normalized_title).execute()
+                if existing.data:
+                    supabase.table('canonical_pages').update({
+                        "content": markdown,
+                        "embedding": embedding,
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }).eq('id', existing.data[0]['id']).execute()
+                    print(f"✅ Master Page Updated: {entity}")
+                else:
+                    supabase.table('canonical_pages').insert({
+                        "title": normalized_title,
+                        "content": markdown,
+                        "embedding": embedding,
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }).execute()
+                    print(f"✅ Master Page Created: {entity}")
             except Exception as e:
                 print(f"Failed to update canonical page for {entity}: {e}")
                 continue
