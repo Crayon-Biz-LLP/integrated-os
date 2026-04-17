@@ -125,10 +125,10 @@ async def run_batch_sweep():
                 existing = supabase.table('canonical_pages') \
                     .select('id, content') \
                     .eq('project_id', project_id) \
-                    .maybe_single().execute()
+                    .limit(1).execute()
 
-                existing_content = existing.data['content'] if existing.data else None
-                existing_id = existing.data['id'] if existing.data else None
+                existing_content = existing.data[0]["content"] if existing.data else None
+                existing_id = existing.data[0]["id"] if existing.data else None
 
                 batch_payload.append({
                     "entity": entity_name,
