@@ -143,10 +143,16 @@ async def run_batch_sweep():
             print("No data found to synthesize.")
             return
 
-        # 3. CONSOLIDATE: Single "Grand Sweep" Prompt
-        prompt = f"""
+        # 3. SYNTHESIZE: One call per entity
+        print("🧠 Synthesizing Master Pages per entity...")
+        results = {}
+        for entry in batch_payload:
+            entity_name = entry['entity']
+            print(f"  Processing {entity_name} ({entry['fragment_count']} fragments)...")
+
+            per_prompt = f"""
 ROLE: Senior Historian and Knowledge Curator for Danny's OS.
-OBJECTIVE: Update {len(batch_payload)} Master Pages using an ACCUMULATION MODEL.
+OBJECTIVE: Update the Master Page for {entity_name} using an ACCUMULATION MODEL.
 
 RULES:
 - MERGE, DO NOT REPLACE. The existing page is ground truth. Never discard established facts.
@@ -156,27 +162,27 @@ RULES:
 - ATTRIBUTION: Map client wins to Solvstrat. Map GTM milestones to Qhord.
 - SPARSE GUARD: Output MUST be at least 300 characters. If fragments are thin, preserve the existing page as-is.
 - FORMAT: Clean Markdown with headers and bullets.
-- OUTPUT: Return a JSON object where keys are entity names and values are the merged Markdown content.
+- OUTPUT: Return ONLY the raw Markdown string. No JSON wrapper.
 
-DATA BUNDLE:
-{json.dumps(batch_payload)}
+EXISTING PAGE:
+{entry['existing_page']}
+
+NEW FRAGMENTS:
+{json.dumps(entry['new_fragments'], indent=2)}
 """
-
-        # 4. EXECUTE: Call Gemini (Using 3.1 Flash Lite for 500 RPD safety)
-        print("🧠 Synthesizing Master Pages in batch mode...")
-        response = await call_gemini_with_retry(
-            prompt=prompt,
-            model="gemini-3.1-flash-lite-preview",
-            config={'response_mime_type': 'application/json'}
-        )
-        
-        # Handle the potential JSON formatting from the LLM
-        clean_json = response.text.replace('```json', '').replace('```', '').strip()
-        try:
-            results = json.loads(clean_json)
-        except Exception as e:
-            print(f"Brain synth JSON parse failed: {e}\nRaw response: {clean_json[:200]}")
-            return
+            try:
+                response = await call_gemini_with_retry(
+                    prompt=per_prompt,
+                    model="gemini-3.1-flash-lite-preview",
+                    config={'response_mime_type': 'text/plain'}
+                )
+                if response and response.text:
+                    results[entity_name] = response.text.strip()
+                else:
+                    print(f"  ⚠️ No response for {entity_name}, skipping.")
+            except Exception as e:
+                print(f"  ❌ Gemini failed for {entity_name}: {e}")
+                continue
 
         # 5. COMMIT: Validated write with quality checks
         for entity_name, markdown in results.items():
