@@ -104,11 +104,16 @@ async def run_batch_sweep():
                 if resources.data:
                     all_fragments += [f"[RESOURCE] {r['title']} — {r.get('summary', '')}" for r in resources.data]
 
-                # raw_dumps — full historical input stream
-                dumps = supabase.table('raw_dumps').select('content') \
-                    .ilike('content', f'%{entity_name}%').execute()
-                if dumps.data:
-                    all_fragments += [f"[DUMP] {d['content']}" for d in dumps.data]
+                # raw_dumps — semantic vector search
+                entity_embedding = get_embedding(entity_name)
+                if entity_embedding:
+                    dumps = supabase.rpc('match_raw_dumps', {
+                        'query_embedding': entity_embedding,
+                        'match_threshold': 0.4,
+                        'match_count': 30
+                    }).execute()
+                    if dumps.data:
+                        all_fragments += [f"[DUMP] {d['content']}" for d in dumps.data]
 
                 # people — name match only (no project_id column on this table)
                 people = supabase.table('people').select('name, role, strategic_weight') \
