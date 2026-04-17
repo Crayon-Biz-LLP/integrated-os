@@ -73,8 +73,8 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
     if model is None:
         model = BRIEFING_MODEL
     
-    max_retries = 3
-    base_delay = 2
+    max_retries = 5
+    base_delay = 10
 
     retryable_errors = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded']
     
@@ -616,7 +616,7 @@ async def process_pulse(auth_secret: str = None):
 
         Categorize each input into one of three types:
 
-        - TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track
+        - TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track. *** ALSO includes completion signals — if Danny says something "is sorted", "is done", "is booked", or uses past tense to describe finishing something, classify as TASK so the completion engine can process it. ***
         - NOTE: Ideas, insights, observations, learnings, or things worth remembering but not actionable
         - NOISE: Casual conversation, acknowledgments, confirmations, or low-value content
 
