@@ -11,3 +11,4 @@ get_token.py
 .env*.local
 __pycache__/repomix-output.xml
 __pycache__/
+repomix-output.xml
