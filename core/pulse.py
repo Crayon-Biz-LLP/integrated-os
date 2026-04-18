@@ -1076,8 +1076,8 @@ async def process_pulse(auth_secret: str = None):
         1. STRICT DATA FIDELITY: You are strictly forbidden from inventing or hallucinating data to fill the JSON. If there is no explicit command in NEW INPUTS, do nothing.
         2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "completed_task_ids", "new_projects", and "new_people" arrays MUST remain 100% empty [].
         3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
-        4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. Ask why these ₹30L velocity blockers are stalled.
-        5. THE COMPASS NUDGE: If tasks in PERSONAL or CHURCH are >48hrs old, add a dry one-liner: "The board is green, but don't forget the home front. Check your personal list."
+        4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. If the task is Work/Solvstrat related, frame it as a critical velocity blocker for the ₹30L recovery. If it is personal, keep the nag dry and simple.
+        5. THE COMPASS NUDGE: If tasks in PERSONAL or CHURCH are >48hrs old, weave a single dry sentence into THE COMPASS opening only — never as a bullet point in any section. Example tone: "Board is green, but the home front needs a look." NEVER add this as a list item.
         6. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
             - If Danny says he finished or completed a task, mark it as done.
             - If Danny describes a result that fulfills a task's objective (e.g., "The contract is signed" fulfills "Get contract signed"), mark it DONE.
@@ -1085,8 +1085,7 @@ async def process_pulse(auth_secret: str = None):
             - If the input describes the final step of a process (e.g., "App is on the store" fulfills "Submit app for review"), mark it DONE.
             - If Danny says "Cancel", "Ignore", "Forget", or "Not doing" a task, mark it as cancelled.
             - If Danny indicates he is "skipping," "dropping," or "not doing" something, add the ID to "cancelled_task_ids".
-            - If Danny says a task is "on hold," "waiting," or "deferred until [Date/Time]," do NOT mark it as cancelled.
-            - Instead, update the `reminder_at` field and keep the status as `todo`.
+            - If Danny says a task is "on hold," "waiting," or "deferred until [Date/Time]," do NOT mark it as cancelled. Instead, update the `reminder_at` field and keep the status as `todo`.
             - Identify if a task is "Revenue Critical" (anything involving payments, quotes, or ₹30L velocity). Set `is_revenue_critical: true`.
         7. 🕒 HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30):
             - When Danny mentions a time (e.g., "Friday 10am", "Tomorrow morning", "at 4pm"), you MUST convert this into a valid ISO-8601 timestamp.
@@ -1108,7 +1107,6 @@ async def process_pulse(auth_secret: str = None):
         10. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
         11. WEEKEND FILTER: If isWeekend is true ({is_weekend}), do NOT suggest or list Work tasks in the briefing. CRITICAL: Do NOT auto-assign naked work tasks to Monday. If a work task has no date, leave it as null.
         12. EXECUTIVE BRIEF FORMAT:
-
             HARD CONSTRAINTS (Non-Negotiable):
             - VERTICALITY MANDATE: You are STRICTLY FORBIDDEN from writing lists as sentences. Every icon (🔴, 🟡, ✅, 🚀) MUST start on a brand new line.
             - SECTION HEADERS: Section headers (e.g., 🚀 Work, 🏠 Home) MUST be preceded by two newlines and followed by one newline.
@@ -1119,7 +1117,7 @@ async def process_pulse(auth_secret: str = None):
             - NO NUMBERING: Use headers and icons only. Never use '1.' or '2.' to separate strategic points.
             - TONAL GUARD: Keep the 'Intel: Vaulted' or 'Intel: Secured' style for the Night phase, but never sacrifice vertical layout.
             - STRICT DATA FIDELITY FOR BRIEFING: You are STRICTLY FORBIDDEN from listing any task in ANY section (Work, Home, Chores, Ideas, or Done) that does not appear verbatim in the SYSTEM TASKS list provided below. Do NOT surface tasks from HINDSIGHT MEMORIES, Canonical Pages, or any other context into the briefing output. All context is for intelligence and routing only — NEVER for output.
-
+            - EMPTY SECTION SUPPRESSION: If a section (Work, Home, Done, Ideas) has absolutely zero items to list, you MUST completely omit that section header from the briefing. Never output 'None today' or 'Empty'. Silence is preferred.
             - HEADLINE RULE: Use exactly "{briefing_mode}".
             - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
             - COMPASS TONE: If HINDSIGHT_STALE is FALSE, weave the latest hindsight insights into a sharp, forward-leaning opening.
@@ -1158,7 +1156,11 @@ async def process_pulse(auth_secret: str = None):
             - Every task MUST start with a newline and follow this exact format: '- [ICON] [Task Title]'.
             - THE LINK RULE: If a task is derived from a URL in NEW INPUTS, you MUST embed that URL into the task title using Markdown: "- [ICON] [Action] using [Source Title](URL)".
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
-        
+        15. REVENUE IDENTIFICATION & FORMATTING:
+            - If a NEW INPUT is "Revenue Critical" (involves payments, quotes, or high-ticket items like the ₹30L recovery), set is_revenue_critical: true in the new_tasks array.
+            - Never apply this flag to completed tasks.
+            - For the briefing output, you MUST bold the titles of these specific tasks to ensure Danny sees them immediately.
+            
         OUTPUT JSON SCHEMA (WARNING: ONLY POPULATE ARRAYS IF EXPLICITLY COMMANDED IN NEW INPUTS. OTHERWISE RETURN []):
         {{
             "completed_task_ids": [
