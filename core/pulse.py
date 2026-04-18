@@ -69,6 +69,15 @@ class PulseOutput(BaseModel):
     new_missions: List[str] = Field(default_factory=list)
     briefing: str
 
+def normalize_mission_title(value: str) -> str:
+    """Normalize mission title for comparison: lowercase, strip, collapse punctuation."""
+    if not value or not isinstance(value, str):
+        return ""
+    normalized = value.lower().strip()
+    normalized = re.sub(r'[^a-z0-9]+', ' ', normalized)
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    return normalized
+
 async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
     if model is None:
         model = BRIEFING_MODEL
@@ -1448,17 +1457,123 @@ async def process_pulse(auth_secret: str = None):
             supabase.table('logs').insert(ai_data['logs']).execute()
 
         # H. NEW MISSIONS
+        missions_created_count = 0
         if ai_data.get('new_missions'):
+            # TITLE A0. BATCH NEW MISSIONS Deduplicated...
+            # Fetch existing mission titles for deduplication
+            existing_missions_res = supabase.table('missions').select('id, title').eq('status', 'active').execute()
+            existing_titles_normalized = {normalize_mission_title(m['title']): m for m in (existing_missions_res.data or [])}
+            run_dedup = set()
+
             for mission_title in ai_data['new_missions']:
                 if not mission_title or not isinstance(mission_title, str):
                     continue
-                existing = supabase.table('missions').select('id').eq('title', mission_title).execute()
-                if not existing.data:
-                    supabase.table('missions').insert({
-                        "title": mission_title,
-                        "status": "active"
-                    }).execute()
-                    print(f"🎯 New mission created: {mission_title}")
+                norm = normalize_mission_title(mission_title)
+                if not norm or norm in run_dedup:
+                    continue
+                if norm in existing_titles_normalized:
+                    run_dedup.add(norm)
+                    continue
+                # Insert new mission
+                ist_ts = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+                description = f"Auto-created by Pulse from recurring resource/input patterns on {ist_ts.strftime('%Y-%m-%d')}."
+                insert_res = supabase.table('missions').insert({
+                    "title": mission_title.strip(),
+                    "status": "active",
+                    "description": description
+                }).execute()
+                if insert_res.data:
+                    missions_created_count += 1
+                    run_dedup.add(norm)
+                    active_missions.append(insert_res.data[0])
+                    mission_names.append(mission_title.strip())
+                    print(f"🎯 Mission auto-created: {mission_title}")
+
+        if missions_created_count > 0:
+            print(f"✅ Created {missions_created_count} new missions this run.")
+
+        # TITLE A1. HISTORICAL RESOURCE MISSION BACKFILL...
+        # Only attempt backfill if there are active missions to map against
+        if active_missions:
+            try:
+                # Fetch resources with NULL mission_id that have metadata to classify
+                null_resources_res = supabase.table('resources').select(
+                    'id, url, title, summary, strategic_note, category'
+                ).is_('mission_id', None).execute()
+                null_resources = null_resources_res.data or []
+                if null_resources:
+                    # Build mission title->id map
+                    mission_map = {m['title']: m['id'] for m in active_missions}
+                    # Limit batch size for safety
+                    batch_size = min(75, len(null_resources))
+                    backfill_batch = null_resources[:batch_size]
+                    print(f"🔄 Backfilling {len(backfill_batch)} historical resources with missions...")
+
+                    # Build classifier prompt
+                    mission_list_str = "\n".join([f"- {m['title']}" for m in active_missions])
+                    resources_json = json.dumps([{
+                        "id": r['id'],
+                        "title": r.get('title', ''),
+                        "summary": r.get('summary', ''),
+                        "strategic_note": r.get('strategic_note', ''),
+                        "category": r.get('category', '')
+                    } for r in backfill_batch], indent=2)
+
+                    backfill_prompt = f"""You are a mission classifier. Classify each resource against the ACTIVE missions below.
+
+ACTIVE MISSIONS:
+{mission_list_str}
+
+STRICT RULES:
+- Only assign a mission if the resource is a DIRECT BUILDING BLOCK for that mission.
+- If it is a cool tool, general article, personal read, faith content, curiosity item, or interesting but non-core material, return mission_name: null.
+- Never force a match. Exact mission title only if assigning.
+- If ambiguous between two missions, return null.
+- If confidence is below 0.80, return null.
+- Better unmapped than wrongly mapped.
+
+Resources to classify:
+{resources_json}
+
+Return ONLY valid JSON array:
+[
+  {{"id": 1, "missionname": "...", "reason": "...", "confidence": 0.85}},
+  {{"id": 2, "missionname": null, "reason": "...", "confidence": 0.0}}
+]"""
+
+                    try:
+                        backfill_response = await call_gemini_with_retry(
+                            prompt=backfill_prompt,
+                            model="gemini-3.1-flash-lite-preview",
+                            config={'response_mime_type': 'application/json'}
+                        )
+                        backfill_result = json.loads(backfill_response.text)
+                        if not isinstance(backfill_result, list):
+                            print(f"⚠️ Backfill classifier returned non-list, skipping.")
+                            backfill_result = []
+
+                        backfilled_count = 0
+                        for item in backfill_result:
+                            res_id = item.get('id')
+                            missionname = item.get('missionname')
+                            confidence = item.get('confidence', 0.0)
+
+                            # Only update if: missionname is non-null, title exists in map, confidence >= 0.80
+                            if missionname and missionname in mission_map and confidence >= 0.80:
+                                mission_id = mission_map[missionname]
+                                supabase.table('resources').update({
+                                    "mission_id": mission_id
+                                }).eq('id', res_id).execute()
+                                backfilled_count += 1
+                                print(f"🔗 Backfilled resource {res_id} → mission '{missionname}' (conf: {confidence})")
+
+                        print(f"✅ Backfilled {backfilled_count}/{len(backfill_batch)} historical resources with missions.")
+
+                    except Exception as bc_err:
+                        print(f"⚠️ Resource backfill classification failed: {bc_err}")
+
+            except Exception as br_err:
+                print(f"⚠️ Resource backfill fetch error: {br_err}")
 
         # --- 4. SPEAK Phase ---
         briefing_text = ai_data.get('briefing', '')
