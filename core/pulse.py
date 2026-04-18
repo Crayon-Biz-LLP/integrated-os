@@ -232,7 +232,10 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
         
         if top_memories:
             latest_timestamp = top_memories[0].get('created_at')
-            formatted = [f"[{m.get('memory_type', 'memory').upper()}] {m.get('content', '')}" for m in top_memories]
+            formatted = [
+                f"[MEMORY CONTEXT ONLY — DO NOT LIST IN BRIEFING] {m.get('memory_type', '').upper()}: {m.get('content', '')}"
+                for m in top_memories
+            ]
             return (formatted, latest_timestamp)
     except Exception as e:
         print(f"High-Res Hindsight error: {e}")
@@ -919,7 +922,7 @@ async def process_pulse(auth_secret: str = None):
             if hindsight_memories:
                 memory_lines = []
                 if graph_context:
-                    memory_lines.append(f"TACTICAL MAP:\n{graph_context}")
+                    memory_lines.append(f"[GRAPH CONTEXT ONLY — DO NOT LIST IN BRIEFING]\nTACTICAL MAP:\n{graph_context}")
                 
                 # 🛡️ THE FIX: memories are already formatted as strings by the helper.
                 # We just need to add them to our lines, not process them again.
@@ -981,7 +984,7 @@ async def process_pulse(auth_secret: str = None):
             or_string = ",".join([f"title.ilike.{name}" for name in relevant_project_names])
             pages_res = supabase.table('canonical_pages').select('title, content').or_(or_string).execute()
             if pages_res.data:
-                page_entries = [f"### MASTER PAGE: {p['title']}\n{p['content']}" for p in pages_res.data]
+                page_entries = [f"[CANONICAL CONTEXT ONLY — DO NOT LIST IN BRIEFING]\n### MASTER PAGE: {p['title']}\n{p['content']}" for p in pages_res.data]
                 master_page_context = "\n\n".join(page_entries)
                 print(f"🧠 Canonical: Loaded {len(pages_res.data)} Master Pages for context.")
 
@@ -1115,6 +1118,7 @@ async def process_pulse(auth_secret: str = None):
             - HEADER SPACING: Double-space before headers (e.g., \n\n🚀 Work) and single-space after them.
             - NO NUMBERING: Use headers and icons only. Never use '1.' or '2.' to separate strategic points.
             - TONAL GUARD: Keep the 'Intel: Vaulted' or 'Intel: Secured' style for the Night phase, but never sacrifice vertical layout.
+            - STRICT DATA FIDELITY FOR BRIEFING: You are STRICTLY FORBIDDEN from listing any task in ANY section (Work, Home, Chores, Ideas, or Done) that does not appear verbatim in the SYSTEM TASKS list provided below. Do NOT surface tasks from HINDSIGHT MEMORIES, Canonical Pages, or any other context into the briefing output. All context is for intelligence and routing only — NEVER for output.
 
             - HEADLINE RULE: Use exactly "{briefing_mode}".
             - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
@@ -1131,7 +1135,7 @@ async def process_pulse(auth_secret: str = None):
                 ✅ Done: ONLY list tasks that were moved to "completed_task_ids" in this specific run. NEVER list items from HINDSIGHT_MEMORIES in this section.
                 🚀 Work: Active tasks from SYSTEM_TASKS only.
                 🏠 Home: Personal tasks only.
-                💡 Ideas: ONLY list items from HINDSIGHT_MEMORIES in this section.
+                💡 - Ideas: ONLY list items that appear in NEWLY ENRICHED RESOURCES or RECENT LIBRARY PATTERNS from this run. Never pull from Hindsight Memories or Canonical Pages.
             - MEMORY ISOLATION: HINDSIGHT_MEMORIES are for THE COMPASS (Opening Synthesis) ONLY. You are strictly forbidden from listing a memory as a bullet point in the task sections.
             - TONE: Match the PERSONA GUIDELINE. Be direct, simple, human. Talk like a friend who is also a high-level operator.
             - TONE GUARD: NEVER use words like 'Operational', 'Vanguard', 'Strategic Momentum', 'Audit', 'Battlefield', 'Chief of Staff', 'Tactical', 'Executive Office'. Use simple, punchy sentences. NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'mission', 'ready for your review'.
