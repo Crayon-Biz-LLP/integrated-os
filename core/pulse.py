@@ -996,18 +996,8 @@ async def process_pulse(auth_secret: str = None):
         SYSTEM_LOAD: {'OVERLOADED' if is_overloaded else 'OPTIMAL'}
         MONDAY_REENTRY: {'TRUE' if is_monday_morning else 'FALSE'}
         STAGNANT URGENT_TASKS: {json.dumps(overdue_tasks)}
-        PERSONA GUIDELINE: {system_persona}
         SYSTEM STATUS: {system_context}
         HINDSIGHT_STALE: {is_hindsight_stale}
-
-        MANDATE: THE SILENCE PROTOCOL & HALLUCINATION GUARD 
-        - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
-        - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
-        - NEVER proactively invent tasks or ideas. ONLY track what is manually entered or already exists.
-        - If NEW INPUTS is "None" or empty, you MUST return completely empty arrays for `completed_task_ids`, `new_tasks`, `new_projects`, and `resources` [].
-        - NEVER "make up", guess, or generate example tasks.
-        - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
-        - ONLY track what is manually entered in NEW INPUTS.
 
         HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
         {hindsight_context}
@@ -1026,87 +1016,7 @@ async def process_pulse(auth_secret: str = None):
         - ENRICHED WEB LINKS: {link_context}
         - NEW INPUTS: {new_inputs_text}
 
-        PROJECT ROUTING LOGIC
-        Use this hierarchy to assign NEW_TASKS or match COMPLETIONS:
-        1. DYNAMIC ROUTING: Use the 'business_entities' and 'current_season' definitions provided in the IDENTITY context above to assign NEW_TASKS to the matching project in the PROJECTS list.
-        2. REVENUE FLAG: Set `is_revenue_critical: true` for any tasks involving Sales, Pilots, or high-ticket revenue generation as defined in your entity map.
-        3. DEFAULT ROUTING: If a task explicitly mentions home, family, or faith, route to 'PERSONAL' or 'CHURCH'. For all other unmatched items, default to 'INBOX'.
-        4. PERSONAL: Match Sunju, kids, dogs, and home maintenance here.
-        5. CHURCH: 
-            - Note: All church-related activities MUST map to the project "Church".
-        6. MISSION OVERRIDE: If a resource fits an ACTIVE MISSION, prioritize the Mission name over the Project name. 
-        7. LINK FIDELITY: Every task derived from a URL MUST include the clickable URL in the title.
-
-        NEW PROJECT CREATION CRITERIA:
-        1. Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned 
-
-        NEW: RESOURCE CAPTURE LOGIC
-        Identify any URLs in the NEW INPUTS. For each URL:
-        1. CATEGORIZE: Tag as GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL.
-        2. SUMMARIZE: Write a concise, 1-sentence description of the value.
-        3. PROJECT MATCH: If the link relates to an existing project (e.g., Crayon or Solvstrat), provide the project name.
-        4. Do NOT create a task for these. Just save them to the "resources" array.
-        5. STRICT MISSION MATCHING: 
-           - ONLY assign a `mission_id` if the resource is a direct "building block" for an ACTIVE MISSION. 
-           - If it is just a "cool tool" or "interesting read," you MUST leave `mission_id` as NULL.
-           - Do NOT force a match. It is better to have an unmapped resource than a wrongly mapped one.
-
-        STRATEGIC AUDIT INSTRUCTIONS
-        1. BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects. For every URL, attempt to match it to an EXISTING mission or project.
-        2. CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
-        3. PATTERN DETECTION: 
-          - Review RECENT LIBRARY PATTERNS.
-          - If you see 3+ links on a new topic (e.g., "YC Prep" or "Lead Gen"), you MAY suggest a new mission in the `new_missions` JSON array.
-          - NEVER dump unrelated links into an existing mission just because it's the only one open.
-        4. THE VAULT GATE: These updates go to the DATABASE only.
-        5. THE BRIEFING GATE: 
-            - You are STRICTLY FORBIDDEN from mentioning new resources or new missions in the briefing UNLESS Danny specifically used the word "Vault" or "Mission" in the NEW INPUTS.
-            - If those keywords are absent, categorize them in the background and keep the Telegram brief silent about them.
-
-         MISSION vs. INCUBATOR FRAMEWORK
-        1. MISSION ASSEMBLY: Evaluate every URL and Input against ACTIVE MISSIONS. 
-           - If a link provides a "component" (tool, code, strategy) for a mission, assign the "mission_name".
-        2. THE INCUBATOR AUDIT: If an input represents a high-potential standalone product idea NOT related to current goals:
-           - Tag it as project_name: "INCUBATOR".
-           - In the "strategic_note", evaluate its "Success DNA" (Market fit/Founder match).
-        3. SPARK DETECTION: If a link is a "Spark" (brand new project concept), create a log with entry_type: "SPARK".
-        4. AUTO-MISSION DETECTION: If 3+ items in NEW INPUTS or RECENT LIBRARY PATTERNS suggest a cohesive new goal (e.g., "Automate Solvstrat Lead Gen"), add it to the "new_missions" array.
-
         INSTRUCTIONS:
-        1. STRICT DATA FIDELITY: You are strictly forbidden from inventing or hallucinating data to fill the JSON. If there is no explicit command in NEW INPUTS, do nothing.
-        2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "completed_task_ids", "new_projects", and "new_people" arrays MUST remain 100% empty [].
-        3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects. Use the ROUTING LOGIC to categorize completions and new tasks.
-        4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out. If the task is Work/Solvstrat related, frame it as a critical velocity blocker for the ₹30L recovery. If it is personal, keep the nag dry and simple.
-        5. THE COMPASS NUDGE: If tasks in PERSONAL or CHURCH are >48hrs old, weave a single dry sentence into THE COMPASS opening only — never as a bullet point in any section. Example tone: "Board is green, but the home front needs a look." NEVER add this as a list item.
-        6. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
-            - If Danny says he finished or completed a task, mark it as done.
-            - If Danny describes a result that fulfills a task's objective (e.g., "The contract is signed" fulfills "Get contract signed"), mark it DONE.
-            - If Danny uses the past tense of a task's core action verb (e.g., "Mailed the check" fulfills "Mail the check"), mark it DONE.
-            - If the input describes the final step of a process (e.g., "App is on the store" fulfills "Submit app for review"), mark it DONE.
-            - If Danny says "Cancel", "Ignore", "Forget", or "Not doing" a task, mark it as cancelled.
-            - If Danny indicates he is "skipping," "dropping," or "not doing" something, add the ID to "cancelled_task_ids".
-            - If Danny says a task is "on hold," "waiting," or "deferred until [Date/Time]," do NOT mark it as cancelled. Instead, update the `reminder_at` field and keep the status as `todo`.
-            - Identify if a task is "Revenue Critical" (anything involving payments, quotes, or ₹30L velocity). Set `is_revenue_critical: true`.
-        7. 🕒 HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30):
-            - When Danny mentions a time (e.g., "Friday 10am", "Tomorrow morning", "at 4pm"), you MUST convert this into a valid ISO-8601 timestamp.
-            - LOCAL TIMEZONE: Use Indian Standard Time (IST), which is UTC+05:30.
-            - If Danny specifies a DAY but NO TIME (e.g., "today"), output ONLY the date format: "YYYY-MM-DD". If and ONLY IF he specifies an EXACT TIME (e.g., "at 4pm"), output the full format: "YYYY-MM-DDTHH:MM:SS+05:30".
-            - TASK GROUPING: If Danny mentions multiple people for the same action (e.g., "Suriya and Siva"), extract it as ONE single task. Do not split them into multiple tasks.
-            - 🚫 NAKED TASKS: If the input has NO date and NO time (e.g., "Review Shield NDA"), you MUST return null for reminder_at. NEVER hallucinate or guess 'today' or 'tomorrow'. Leave it empty so it stays in the backlog.
-            - CURRENT REFERENCE: Use the system timestamp provided in the input to calculate relative dates (e.g., "Friday" relative to today).
-        8. DYNAMIC TASK MATCHING:
-            - Compare inputs against ALL SYSTEM TASKS.
-            - If Danny says "I'm done" or "Completed," mark the status as `done`.
-            - DURATION ASSIGNMENT: Assign `estimated_duration` based on task type:
-              - 15 minutes for routine tasks (emails, quick replies, status updates)
-              - 45 minutes for anything related to Pilots, Sales, or high-stakes Mission 10 items
-              - Default to 15 minutes if unspecified
-        9. AUTO-ONBOARDING:
-            - If a new Client/Project is mentioned, add to "new_projects".
-            - If a new Person is mentioned, add to "new_people".
-        10. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
-        11. WEEKEND FILTER: If isWeekend is true ({is_weekend}), do NOT suggest or list Work tasks in the briefing. CRITICAL: Do NOT auto-assign naked work tasks to Monday. If a work task has no date, leave it as null.
-        12. EXECUTIVE BRIEF FORMAT:
             HARD CONSTRAINTS (Non-Negotiable):
             - VERTICALITY MANDATE: You are STRICTLY FORBIDDEN from writing lists as sentences. Every icon (🔴, 🟡, ✅, 🚀) MUST start on a brand new line.
             - SECTION HEADERS: Section headers (e.g., 🚀 Work, 🏠 Home) MUST be preceded by two newlines and followed by one newline.
@@ -1184,6 +1094,68 @@ async def process_pulse(auth_secret: str = None):
         }}
         """
 
+        # --- BUILD SYSTEM INSTRUCTION ---
+        system_instruction_text = f"""{system_persona}
+
+            MANDATE — SILENCE PROTOCOL & HALLUCINATION GUARD:
+            - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
+            - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
+            - NEVER proactively invent tasks or ideas. ONLY track what is manually entered or already exists.
+            - If NEW INPUTS is "None" or empty, you MUST return completely empty arrays for `completed_task_ids`, `new_tasks`, `new_projects`, and `resources` [].
+            - NEVER "make up", guess, or generate example tasks.
+            - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
+            - ONLY track what is manually entered in NEW INPUTS.
+
+            PROJECT ROUTING LOGIC:
+            1. DYNAMIC ROUTING: Use the 'business_entities' and 'current_season' definitions provided in the IDENTITY context to assign NEW_TASKS to the matching project.
+            2. REVENUE FLAG: Set `is_revenue_critical: true` for any tasks involving Sales, Pilots, or high-ticket revenue generation.
+            3. DEFAULT ROUTING: If a task explicitly mentions home, family, or faith, route to 'PERSONAL' or 'CHURCH'. For all other unmatched items, default to 'INBOX'.
+            4. PERSONAL: Match Sunju, kids, dogs, and home maintenance here.
+            5. CHURCH: All church-related activities MUST map to the project "Church".
+            6. MISSION OVERRIDE: If a resource fits an ACTIVE MISSION, prioritize the Mission name over the Project name.
+            7. LINK FIDELITY: Every task derived from a URL MUST include the clickable URL in the title.
+
+            NEW PROJECT CREATION CRITERIA:
+            - Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned.
+
+            RESOURCE CAPTURE LOGIC:
+            - Identify any URLs in the NEW INPUTS. For each URL: CATEGORIZE (GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL), SUMMARIZE (1-sentence description), PROJECT MATCH (if relates to existing project).
+            - Do NOT create a task for URLs. Just save them to the "resources" array.
+            - STRICT MISSION MATCHING: ONLY assign a `mission_id` if the resource is a direct "building block" for an ACTIVE MISSION. If it is just a "cool tool" or "interesting read," leave `mission_id` as NULL.
+
+            STRATEGIC AUDIT INSTRUCTIONS:
+            - BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects.
+            - CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
+            - PATTERN DETECTION: If you see 3+ links on a new topic, you MAY suggest a new mission in the `new_missions` JSON array.
+            - THE VAULT GATE: These updates go to the DATABASE only.
+            - THE BRIEFING GATE: You are STRICTLY FORBIDDEN from mentioning new resources or new missions in the briefing UNLESS Danny specifically used the word "Vault" or "Mission" in the NEW INPUTS.
+
+            MISSION vs. INCUBATOR FRAMEWORK:
+            - MISSION ASSEMBLY: Evaluate every URL and Input against ACTIVE MISSIONS. If a link provides a "component" for a mission, assign the "mission_name".
+            - THE INCUBATOR AUDIT: If an input represents a high-potential standalone product idea NOT related to current goals, tag it as project_name: "INCUBATOR".
+            - SPARK DETECTION: If a link is a "Spark" (brand new project concept), create a log with entry_type: "SPARK".
+            - AUTO-MISSION DETECTION: If 3+ items suggest a cohesive new goal, add it to the "new_missions" array.
+
+            DYNAMIC TASK MATCHING:
+            - Compare inputs against ALL SYSTEM TASKS.
+            - If Danny says "I'm done" or "Completed," mark the status as `done`.
+            - DURATION ASSIGNMENT: Assign `estimated_duration` based on task type:
+            - 15 minutes for routine tasks (emails, quick replies, status updates)
+            - 45 minutes for anything related to Pilots, Sales, or high-stakes Mission 10 items
+            - Default to 15 minutes if unspecified
+
+            INSTRUCTIONS:
+            1. STRICT DATA FIDELITY: You are strictly forbidden from inventing or hallucinating data to fill the JSON. If there is no explicit command in NEW INPUTS, do nothing.
+            2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "completed_task_ids", "new_projects", and "new_people" arrays MUST remain 100% empty [].
+            3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects.
+            4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out.
+            5. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
+            6. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When Danny mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
+            7. AUTO-ONBOARDING: If a new Client/Project is mentioned, add to "new_projects". If a new Person is mentioned, add to "new_people".
+            8. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
+            9. WEEKEND FILTER: If isWeekend is true, do NOT suggest or list Work tasks in the briefing.
+            """
+
         # --- AI GENERATION ---
         # 🛡️ Step 1: Initialize variables to prevent "UnboundLocalError"
         response_text = ""
@@ -1199,7 +1171,8 @@ async def process_pulse(auth_secret: str = None):
                 model=BRIEFING_MODEL,
                 config={
                     'response_mime_type': 'application/json',
-                    'response_schema': PulseOutput
+                    'response_schema': PulseOutput,
+                    'system_instruction': system_instruction_text
                 }
             )
             response_text = response.text
