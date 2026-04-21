@@ -732,12 +732,16 @@ async def process_pulse(auth_secret: str = None):
 
         projects = []
         for gp in graph_projects:
-            metadata = gp.get('metadata', '{}')
-            if isinstance(metadata, str):
+            raw_meta = gp.get('metadata')
+            if isinstance(raw_meta, str):
                 try:
-                    metadata = json.loads(metadata)
+                    metadata = json.loads(raw_meta)
                 except:
                     metadata = {}
+            elif isinstance(raw_meta, dict):
+                metadata = raw_meta
+            else:
+                metadata = {}
             projects.append({
                 'id': gp['id'],
                 'name': gp['label'],
