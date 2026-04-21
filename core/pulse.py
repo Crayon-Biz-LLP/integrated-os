@@ -1249,12 +1249,13 @@ async def process_pulse(auth_secret: str = None):
                 
                 # 1. Fetch current IDs AND Status
                 task_ref = supabase.table('tasks').select('status', 'google_task_id', 'google_event_id', 'title').eq('id', target_id).single().execute()
-                
-                # Extract data safely
-                current_db_status = task_ref.data.get('status') if task_ref.data else None
-                g_id = task_ref.data.get('google_task_id') if task_ref.data else None
-                e_id = task_ref.data.get('google_event_id') if task_ref.data else None
-                task_title = task_ref.data.get('title') if task_ref.data else "Untitled Task"
+
+                # 🛡️ GUARD: Safely extract data - check BEFORE calling .get()
+                task_data = task_ref.data if task_ref.data else {}
+                current_db_status = task_data.get('status')
+                g_id = task_data.get('google_task_id')
+                e_id = task_data.get('google_event_id')
+                task_title = task_data.get('title', "Untitled Task")
 
                 # 🛑 THE LOCKDOWN: Block AI resurrection of finished tasks
                 if current_db_status in ['done', 'cancelled']:
@@ -1332,8 +1333,11 @@ async def process_pulse(auth_secret: str = None):
                 if not project_match:
                     project_match = next((p for p in projects if p.get('org_tag') == 'INBOX'), projects[0] if projects else None)
 
-                if project_match:
-                    # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
+                # 🛡️ GUARD: If project_match is still None, create a minimal fallback
+                if not project_match:
+                    project_match = {'id': 1, 'name': 'Inbox', 'org_tag': 'INBOX', 'legacy_id': 1}
+
+                # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
                     raw_time = task.get('reminder_at')
                     sanitized_time = format_rfc3339(raw_time) if raw_time else None
                     
@@ -1606,5 +1610,7 @@ Return ONLY valid JSON array:
         return {"success": True, "briefing": briefing_text}
 
     except Exception as e:
+        import traceback
         print(f"Pulse Critical Error: {e}")
+        traceback.print_exc()
         return {"error": str(e)}
