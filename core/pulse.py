@@ -676,8 +676,10 @@ async def process_pulse(auth_secret: str = None):
                 
                 for item in sort_result:
                     dump_id = item.get('id')
-                    raw_dump = next((d for d in dumps if d['id'] == dump_id), {})
-                    
+                    raw_dump = next((d for d in dumps if d['id'] == dump_id), None)
+                    if raw_dump is None:
+                        print(f"⚠️ Sorter: dump_id {dump_id} not found in dumps, skipping.")
+                        continue
                     metadata = {}
                     try:
                         if raw_dump.get('metadata'):
