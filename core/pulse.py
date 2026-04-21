@@ -718,13 +718,14 @@ async def process_pulse(auth_secret: str = None):
             return {"message": "Nothing to process, nothing to nag about. Silence is golden."}
 
         print(f"🚀 PULSE START: Processing {len(dumps)} new dumps and {len(active_tasks)} active tasks.")
+        print("📦 Step 1: Fetching metadata...")
 
         # Fetch supporting metadata
         core_res = supabase.table('core_config').select('key, content').execute()
         core = core_res.data or []
 
         # Fetch business context from graph
-        graph_projects_res = supabase.table('graph_nodes').select('id, label, metadata').eq('type', 'project').execute()
+        graph_projects_res = supabase.table('graph_nodes').select('id', 'label', 'metadata').eq('type', 'project').execute()
         graph_projects = graph_projects_res.data or []
 
         projects = []
@@ -743,12 +744,15 @@ async def process_pulse(auth_secret: str = None):
                 'legacy_id': metadata.get('legacy_id')
             })
 
+        print("📦 Step 2: Fetching projects...")
         projects_res = supabase.table('projects').select('id, name, org_tag').execute()
         legacy_projects = projects_res.data or []
 
+        print("📦 Step 3: Fetching people...")
         people_res = supabase.table('people').select('name, strategic_weight').execute()
         people = people_res.data or []
 
+        print("📦 Step 4: Fetching missions...")
         # Fetch Active Missions for Context
         missions_res = supabase.table('missions').select('id, title').eq('status', 'active').execute()
         active_missions = missions_res.data or []
@@ -954,6 +958,7 @@ async def process_pulse(auth_secret: str = None):
         
         link_context = "None"
         
+        print("📦 Step 5: Building context...")
         # --- 2. THINK Phase ---
         print('🤖 Building prompt...')
 
