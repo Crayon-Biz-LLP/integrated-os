@@ -56,8 +56,9 @@ def migrate_projects():
     count = 0
     for p in projects:
         # Map the project to the graph
+        p_name = p.get('name') or p.get('title', '')
         node_data = {
-            "label": p['name'], # This is the primary name for the graph
+            "label": p_name, # This is the primary name for the graph
             "type": "project",
             "metadata": {
                 "legacy_id": p['id'],
@@ -72,7 +73,7 @@ def migrate_projects():
             supabase.table('graph_nodes').upsert(node_data, on_conflict='label').execute()
             count += 1
         except Exception as e:
-            print(f"❌ Error bridging project {p['name']}: {e}")
+            print(f"❌ Error bridging project {p_name}: {e}")
 
     print(f"✅ Successfully bridged {count} projects into the graph.")
     return count
