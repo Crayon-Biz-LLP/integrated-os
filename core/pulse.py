@@ -255,8 +255,8 @@ async def generate_after_action_report() -> str:
         open_count = len(open_tasks_res.data) if open_tasks_res.data else 0
         
         prompt = f"""You are Danny's Rhodey. Provide a dry After-Action Report (AAR). 1-2 sentences max. Focus on loops closed vs. open.
-- Loops closed today: {completed_count}
-- Loops still open: {open_count}"""
+        - Loops closed today: {completed_count}
+        - Loops still open: {open_count}"""
         
         response = await call_gemini_with_retry(prompt=prompt)
         
@@ -1000,7 +1000,7 @@ async def process_pulse(auth_secret: str = None):
                 print(f"🧠 Canonical: Loaded {len(pages_res.data)} Master Pages for context.")
 
         prompt = f"""    
-        ROLE: Danny's Trusted Partner.
+        ROLE: Danny's Rhodey. You are his most trusted advisor — the one who cuts through the noise and tells him exactly where he stands. You have full situational awareness of his work, family, and faith. You don't coach, motivate, or perform. You speak plainly, like a friend who has been in the room the whole time. Your job is to give Danny a clear picture of the board so he can make his next move.
         STRATEGIC CONTEXT: {season_config}
         CURRENT PHASE: {briefing_mode}
         CURRENT TIME: {current_time_str}
