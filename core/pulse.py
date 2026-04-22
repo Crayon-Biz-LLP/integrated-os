@@ -331,23 +331,23 @@ async def batch_enrich_resources():
     
     prompt = f"""You are Danny's Trusted Partner. For each resource below, provide a strategic_note (one sentence on strategic value) and category.
 
-Categories: COMPETITOR, TECH_TOOL, LEAD_POTENTIAL, MARKET_TREND, CHURCH, PERSONAL
-Rules:
-- CHURCH or PERSONAL for family/home/faith topics
-- COMPETITOR for competitors to Qhord
-- TECH_TOOL for SaaS/dev/productivity tools
-- LEAD_POTENTIAL for potential clients/partners
-- MARKET_TREND for market patterns/industry shifts
-- Default: MARKET_TREND
+    Categories: COMPETITOR, TECH_TOOL, LEAD_POTENTIAL, MARKET_TREND, CHURCH, PERSONAL
+    Rules:
+    - CHURCH or PERSONAL for family/home/faith topics
+    - COMPETITOR for competitors to Qhord
+    - TECH_TOOL for SaaS/dev/productivity tools
+    - LEAD_POTENTIAL for potential clients/partners
+    - MARKET_TREND for market patterns/industry shifts
+    - Default: MARKET_TREND
 
-Return ONLY valid JSON array:
-[
-  {{"id": 1, "strategic_note": "...", "category": "..."}},
-  ...
-]
+    Return ONLY valid JSON array:
+    [
+    {{"id": 1, "strategic_note": "...", "category": "..."}},
+    ...
+    ]
 
-Resources:
-{json.dumps(enrichment_data, indent=2)}"""
+    Resources:
+    {json.dumps(enrichment_data, indent=2)}"""
     
     try:
         response = await call_gemini_with_retry(
@@ -646,23 +646,20 @@ async def process_pulse(auth_secret: str = None):
         if dumps:
             sort_prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
 
-        PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
+            PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
+            Categorize each input into one of three types:
+            - TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track.
+            - COMPLETION: Past tense signals — "finished", "done", "sorted", "checked", "confirmed", "spoke with", "met with", "called", "sent", "I have...", "I've..."
+            - NOTE: Ideas, insights, observations, learnings, or things worth remembering but not actionable
+            - NOISE: Casual conversation, acknowledgments, confirmations, or low-value content
+            Rhodey Rule: Be dismissive of NOISE. If it's low-value chatter, categorize it and keep the brief silent about it.
+            If an input is 'Check with X,' categorize it as a TASK for Danny, never as something for the system to do.
 
-        Categorize each input into one of three types:
+            Return ONLY a valid JSON array (no markdown, no explanation):
+            [{{"id": {dumps[0]['id']}, "category": "TASK|COMPLETION|NOTE|NOISE"}}, ...]
 
-        - TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track.
-        - COMPLETION: Past tense signals — "finished", "done", "sorted", "checked", "confirmed", "spoke with", "met with", "called", "sent", "I have...", "I've..."
-        - NOTE: Ideas, insights, observations, learnings, or things worth remembering but not actionable
-        - NOISE: Casual conversation, acknowledgments, confirmations, or low-value content
-
-        Rhodey Rule: Be dismissive of NOISE. If it's low-value chatter, categorize it and keep the brief silent about it.
-        If an input is 'Check with X,' categorize it as a TASK for Danny, never as something for the system to do.
-
-        Return ONLY a valid JSON array (no markdown, no explanation):
-        [{{"id": {dumps[0]['id']}, "category": "TASK|COMPLETION|NOTE|NOISE"}}, ...]
-
-        Inputs:
-        {json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
+            Inputs:
+            {json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
             
             try:
                 sort_response = await call_gemini_with_retry(
@@ -1075,15 +1072,15 @@ async def process_pulse(auth_secret: str = None):
             - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
             - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
             - REVENUE BOLDING: Bold all tasks involving Sales, Pilots, or Payments using **task title**.
-        13. MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
-        14. STRICT TASK SYNTAX: 
+            - MONDAY RULE: If MONDAY_REENTRY is TRUE, start with a "🛡️ WEEKEND RECON" section summarizing any work ideas dumped during the weekend.
+            - STRICT TASK SYNTAX: 
             - Every section header (🚀 Work, 🏠 Home, etc.) and every single task MUST occupy its own individual line.
             - NEVER combine tasks into a paragraph. NEVER use hyphens or dashes as separators between tasks on the same line.
             - **STRICT JSON RULE:** Do NOT use literal '\n' text characters. Use actual carriage returns (real newlines) within the briefing string.
             - Every task MUST start with a newline and follow this exact format: '- [ICON] [Task Title]'.
             - THE LINK RULE: If a task is derived from a URL in NEW INPUTS, you MUST embed that URL into the task title using Markdown: "- [ICON] [Action] using [Source Title](URL)".
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
-        15. REVENUE IDENTIFICATION & FORMATTING:
+            - REVENUE IDENTIFICATION & FORMATTING:
             - If a NEW INPUT is "Revenue Critical" (involves payments, quotes, or high-ticket items like the ₹30L recovery), set is_revenue_critical: true in the new_tasks array.
             - Never apply this flag to completed tasks.
             - For the briefing output, you MUST bold the titles of these specific tasks to ensure Danny sees them immediately.
@@ -1516,25 +1513,25 @@ async def process_pulse(auth_secret: str = None):
 
                     backfill_prompt = f"""You are a mission classifier. Classify each resource against the ACTIVE missions below.
 
-ACTIVE MISSIONS:
-{mission_list_str}
+                    ACTIVE MISSIONS:
+                    {mission_list_str}
 
-STRICT RULES:
-- Only assign a mission if the resource is a DIRECT BUILDING BLOCK for that mission.
-- If it is a cool tool, general article, personal read, faith content, curiosity item, or interesting but non-core material, return mission_name: null.
-- Never force a match. Exact mission title only if assigning.
-- If ambiguous between two missions, return null.
-- If confidence is below 0.80, return null.
-- Better unmapped than wrongly mapped.
+                    STRICT RULES:
+                    - Only assign a mission if the resource is a DIRECT BUILDING BLOCK for that mission.
+                    - If it is a cool tool, general article, personal read, faith content, curiosity item, or interesting but non-core material, return mission_name: null.
+                    - Never force a match. Exact mission title only if assigning.
+                    - If ambiguous between two missions, return null.
+                    - If confidence is below 0.80, return null.
+                    - Better unmapped than wrongly mapped.
 
-Resources to classify:
-{resources_json}
+                    Resources to classify:
+                    {resources_json}
 
-Return ONLY valid JSON array:
-[
-  {{"id": 1, "missionname": "...", "reason": "...", "confidence": 0.85}},
-  {{"id": 2, "missionname": null, "reason": "...", "confidence": 0.0}}
-]"""
+                    Return ONLY valid JSON array:
+                    [
+                    {{"id": 1, "missionname": "...", "reason": "...", "confidence": 0.85}},
+                    {{"id": 2, "missionname": null, "reason": "...", "confidence": 0.0}}
+                    ]"""
 
                     try:
                         backfill_response = await call_gemini_with_retry(
