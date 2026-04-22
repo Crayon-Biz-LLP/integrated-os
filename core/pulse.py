@@ -23,6 +23,99 @@ EMBEDDING_DIMENSION = 768
 
 BRIEFING_MODEL = "gemini-3-flash-preview"
 
+
+async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: int = None, task_description: str = None):
+    """
+    Add-on: Writes graph edges after a task is created.
+    Non-blocking. If this fails, the task is already saved — no rollback needed.
+    """
+    try:
+        task_node = supabase.table('graph_nodes') \
+            .select('id') \
+            .eq('type', 'task') \
+            .filter('metadata->>task_id', 'eq', str(task_id)) \
+            .maybe_single() \
+            .execute()
+
+        if task_node.data:
+            task_node_id = task_node.data['id']
+        else:
+            new_node = supabase.table('graph_nodes').insert({
+                "label": task_title,
+                "type": "task",
+                "metadata": {
+                    "source": "tasks_table",
+                    "task_id": task_id,
+                    "project_id": project_id
+                }
+            }).execute()
+            task_node_id = new_node.data[0]['id']
+
+        if project_id:
+            proj_node = supabase.table('graph_nodes') \
+                .select('id') \
+                .eq('type', 'project') \
+                .filter('metadata->>project_id', 'eq', str(project_id)) \
+                .maybe_single() \
+                .execute()
+
+            if proj_node.data:
+                existing = supabase.table('graph_edges') \
+                    .select('id') \
+                    .eq('source_node_id', task_node_id) \
+                    .eq('target_node_id', proj_node.data['id']) \
+                    .eq('relationship', 'BELONGS_TO') \
+                    .maybe_single() \
+                    .execute()
+
+                if not existing.data:
+                    supabase.table('graph_edges').insert({
+                        "source_node_id": task_node_id,
+                        "target_node_id": proj_node.data['id'],
+                        "relationship": "BELONGS_TO",
+                        "weight": 1.0,
+                        "metadata": {"source": "task_engine", "task_id": task_id}
+                    }).execute()
+
+        search_text = f"{task_title} {task_description or ''}".lower()
+
+        all_people = supabase.table('people').select('id, name').execute()
+        for person in (all_people.data or []):
+            if person['name'].lower() in search_text:
+                person_node = supabase.table('graph_nodes') \
+                    .select('id') \
+                    .eq('type', 'person') \
+                    .filter('metadata->>people_id', 'eq', str(person['id'])) \
+                    .maybe_single() \
+                    .execute()
+
+                if person_node.data:
+                    existing_edge = supabase.table('graph_edges') \
+                        .select('id') \
+                        .eq('source_node_id', task_node_id) \
+                        .eq('target_node_id', person_node.data['id']) \
+                        .eq('relationship', 'INVOLVES') \
+                        .maybe_single() \
+                        .execute()
+
+                    if not existing_edge.data:
+                        supabase.table('graph_edges').insert({
+                            "source_node_id": task_node_id,
+                            "target_node_id": person_node.data['id'],
+                            "relationship": "INVOLVES",
+                            "weight": 1.0,
+                            "metadata": {
+                                "source": "task_engine",
+                                "task_id": task_id,
+                                "matched_name": person['name']
+                            }
+                        }).execute()
+
+        print(f"🕸️ Graph edges written for task {task_id}: '{task_title}'")
+
+    except Exception as e:
+        print(f"⚠️ Graph edge write failed (non-critical): {e}")
+
 # 🛡️ CLEAN MODELS (Removed Config blocks to prevent API rejection)
 class CompletedTask(BaseModel):
     id: int
@@ -175,6 +268,87 @@ async def hybrid_search_graph(query: str) -> str:
     
     except Exception as e:
         print(f"Hybrid search error: {e}")
+        return ""
+
+
+async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
+    """
+    Add-on: Builds a graph-aware context string showing tasks grouped by person.
+    Used as supplementary intelligence in the briefing. Non-blocking.
+    """
+    try:
+        if not people or not active_tasks:
+            return ""
+
+        lines = []
+
+        for person in people:
+            person_name = person.get('name', '')
+            if not person_name:
+                continue
+
+            person_node = supabase.table('graph_nodes') \
+                .select('id') \
+                .eq('type', 'person') \
+                .ilike('label', person_name) \
+                .maybe_single() \
+                .execute()
+
+            if not person_node.data:
+                continue
+
+            person_node_id = person_node.data['id']
+
+            edges = supabase.table('graph_edges') \
+                .select('source_node_id') \
+                .eq('target_node_id', person_node_id) \
+                .eq('relationship', 'INVOLVES') \
+                .execute()
+
+            if not edges.data:
+                continue
+
+            task_node_ids = [e['source_node_id'] for e in edges.data]
+
+            task_nodes = supabase.table('graph_nodes') \
+                .select('label, metadata') \
+                .in_('id', task_node_ids) \
+                .eq('type', 'task') \
+                .execute()
+
+            if not task_nodes.data:
+                continue
+
+            graph_task_ids = set()
+            for tn in task_nodes.data:
+                meta = tn.get('metadata') or {}
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except:
+                        meta = {}
+                tid = meta.get('task_id')
+                if tid:
+                    graph_task_ids.add(int(tid))
+
+            active_task_map = {t['id']: t for t in active_tasks}
+            person_open_tasks = [
+                active_task_map[tid]
+                for tid in graph_task_ids
+                if tid in active_task_map
+            ]
+
+            if person_open_tasks:
+                task_titles = [f"  - {t.get('title', '')}" for t in person_open_tasks]
+                lines.append(f"{person_name}:\n" + "\n".join(task_titles))
+
+        if not lines:
+            return ""
+
+        return "GRAPH INTELLIGENCE — TASKS BY PERSON (for routing awareness only, do NOT list in briefing):\n" + "\n\n".join(lines)
+
+    except Exception as e:
+        print(f"⚠️ Graph task context fetch failed (non-critical): {e}")
         return ""
 
 
@@ -918,6 +1092,14 @@ async def process_pulse(auth_secret: str = None):
         hindsight_context = "None"
         graph_context = "None"
         task_inputs = [d['content'] for d in dumps] if dumps else []
+
+        # 🕸️ ADD-ON: Graph-aware person→task context (non-blocking)
+        people_res = supabase.table('people').select('id, name').execute()
+        people = people_res.data or []
+        if people and active_tasks:
+            graph_task_context = await fetch_graph_task_context(people, active_tasks)
+        else:
+            graph_task_context = ""
         
         # Graph-first: Search for primary entity in task inputs
         if task_inputs:
@@ -1016,6 +1198,8 @@ async def process_pulse(auth_secret: str = None):
 
         HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
         {hindsight_context}
+
+        GRAPH INTELLIGENCE {graph_task_context}
 
         CANONICAL STRATEGIC TRUTH (The synthesized 'Latest Version' of projects):
         {master_page_context if master_page_context else "No Master Pages yet. Rely on raw context."}
@@ -1396,11 +1580,20 @@ async def process_pulse(auth_secret: str = None):
             if task_inserts:
                 insert_res = supabase.table('tasks').insert(task_inserts).execute()
                 print(f"✅ Phase 1: Inserted {len(insert_res.data)} new tasks to Supabase.")
-                
+
                 # PHASE 2: Side-Effect Orchestration - Google Sync after DB success
                 for db_task in insert_res.data:
                     task_id = db_task['id']
                     task_title = db_task.get('title', 'Untitled Task')
+
+                    asyncio.create_task(
+                        write_graph_edges_for_task(
+                            task_id=task_id,
+                            task_title=task_title,
+                            project_id=db_task.get('project_id'),
+                            task_description=db_task.get('description')
+                        )
+                    )
                     
                     # Read directly from the DB's safe return data, NOT the local array
                     sanitized_time = db_task.get('reminder_at')
