@@ -671,6 +671,7 @@ async def process_pulse(auth_secret: str = None):
                 
                 task_dump_ids = []
                 note_dump_ids = []
+                completion_dump_ids = []
                 
                 for item in sort_result:
                     dump_id = item.get('id')
@@ -707,6 +708,7 @@ async def process_pulse(auth_secret: str = None):
                     
                     elif category == 'COMPLETION':
                         task_dump_ids.append(dump_id)
+                        completion_dump_ids.append(dump_id)
                 
                 if note_dump_ids:
                     supabase.table('raw_dumps').update({"status": "completed", "is_processed": True}).in_('id', note_dump_ids).execute()
@@ -1606,6 +1608,11 @@ async def process_pulse(auth_secret: str = None):
         # --- 📝 AFTER-ACTION REPORT ---
         if hour >= 20 or hour < 4:
             await generate_after_action_report()
+
+        # ✅ COMPLETION DUMP CLOSER — seal the raw dumps that were completion signals
+        if completion_dump_ids:
+            supabase.table('raw_dumps').update({"status": "completed", "is_processed": True}).in_('id', completion_dump_ids).execute()
+            print(f"✅ Sealed {len(completion_dump_ids)} completion dumps.")
 
         # --- PHASE 3: Processed Gate ---
         if dumps:
