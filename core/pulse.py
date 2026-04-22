@@ -686,7 +686,8 @@ async def process_pulse(auth_secret: str = None):
                             metadata = json.loads(raw_dump['metadata'])
                     except: pass
 
-                    category = (metadata.get('intent') or item.get('category', '')).upper()
+                    gemini_category = item.get('category', '').upper()
+                    category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE'] else metadata.get('intent', 'NOISE').upper()
                     
                     if category == 'NOTE':
                         dump_content = raw_dump.get('content')
