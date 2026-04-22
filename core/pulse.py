@@ -1046,6 +1046,7 @@ async def process_pulse(auth_secret: str = None):
             - COMPASS LENS (Temporal Variety):
                 - MORNING: Focus on the 'Delta'. What happened overnight? What is the single most important pivot for TODAY?
                 - AFTERNOON: Focus on 'Velocity'. Don't repeat the strategy; call out what is actually moving (or stalled) in the last 4 hours.
+                - CLOSING LOOP (3:30 PM–7 PM): Focus on 'Hand-off'. One dry sentence on the last work loop that closed or is closest to closing. Then stop. Do NOT reference canonical tools, resource lists, or vault items.
                 - NIGHT: Focus on 'Audit & Archive'. The opening should feel like a 'Door Closing.' Summarize the spiritual or mental cost of the day's effort.
             - NO REPETITION: You are strictly forbidden from using the same phrasing (e.g., '100% bandwidth') in consecutive briefings. If the strategy hasn't changed, change the perspective.
             - RECENCY BIAS: The first sentence of the brief MUST prioritize data from NEW INPUTS. Only use the Master Page context to provide the 'Why' behind the 'What'.
