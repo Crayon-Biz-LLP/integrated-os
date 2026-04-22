@@ -59,7 +59,7 @@ async def run_batch_sweep():
             .eq('is_active', True) \
             .eq('status', 'active') \
             .execute()
-        entities = [(p['id'], p['name']) for p in active_res.data]
+        entities = [(p['id'], p.get('name') or p.get('title', '')) for p in active_res.data]
 
         batch_payload = []
 
@@ -146,7 +146,7 @@ async def run_batch_sweep():
                     .ilike('name', f'%{entity_name}%').execute()
                 if people.data:
                     for p in people.data:
-                        add_fragment("PERSON", f"{p['name']} — {p.get('role', 'Unknown role')}")
+                        add_fragment("PERSON", f"{p.get('name', 'Unknown')} — {p.get('role', 'Unknown role')}")
 
             except Exception as e:
                 print(f"Skipping {entity_name} — failed to fetch fragments: {e}")
