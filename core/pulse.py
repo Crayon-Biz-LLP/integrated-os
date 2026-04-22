@@ -1195,7 +1195,6 @@ async def process_pulse(auth_secret: str = None):
 
             # Sanitization (Trailing commas + empty values)
             json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
-            json_str = re.sub(r':\s*([}\]]|$)', r': ""\1', json_str)
 
             match = re.search(r'\{[\s\S]*\}', json_str)
             if match:
