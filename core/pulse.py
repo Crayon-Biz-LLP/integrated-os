@@ -650,7 +650,8 @@ async def process_pulse(auth_secret: str = None):
 
         Categorize each input into one of three types:
 
-        - TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track. *** ALSO includes completion signals — if Danny says something "is sorted", "is done", "is booked", or uses past tense to describe finishing something, classify as TASK so the completion engine can process it. ***
+        - TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track.
+        - COMPLETION: Past tense signals — "finished", "done", "sorted", "checked", "confirmed", "spoke with", "met with", "called", "sent", "I have...", "I've..."
         - NOTE: Ideas, insights, observations, learnings, or things worth remembering but not actionable
         - NOISE: Casual conversation, acknowledgments, confirmations, or low-value content
 
@@ -658,7 +659,7 @@ async def process_pulse(auth_secret: str = None):
         If an input is 'Check with X,' categorize it as a TASK for Danny, never as something for the system to do.
 
         Return ONLY a valid JSON array (no markdown, no explanation):
-        [{{"id": {dumps[0]['id']}, "category": "TASK|NOTE|NOISE"}}, ...]
+        [{{"id": {dumps[0]['id']}, "category": "TASK|COMPLETION|NOTE|NOISE"}}, ...]
 
         Inputs:
         {json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
@@ -687,7 +688,7 @@ async def process_pulse(auth_secret: str = None):
                     except: pass
 
                     gemini_category = item.get('category', '').upper()
-                    category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE'] else metadata.get('intent', 'NOISE').upper()
+                    category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE', 'COMPLETION'] else metadata.get('intent', 'NOISE').upper()
                     
                     if category == 'NOTE':
                         dump_content = raw_dump.get('content')
@@ -705,6 +706,9 @@ async def process_pulse(auth_secret: str = None):
                         note_dump_ids.append(dump_id)
                     
                     elif category == 'TASK':
+                        task_dump_ids.append(dump_id)
+                    
+                    elif category == 'COMPLETION':
                         task_dump_ids.append(dump_id)
                 
                 if note_dump_ids:
