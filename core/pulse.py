@@ -352,7 +352,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         return ""
 
 
-async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top_k: int = 5) -> tuple:
+async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top_k: int = 5, entity_terms: list = None) -> tuple:
     """High-Res Hindsight: Multi-signal vector search across tasks and inputs.
     Returns tuple of (formatted_memories, latest_timestamp).
     """
@@ -369,6 +369,11 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
             title = t.get('title', '')
             if title:
                 search_queries.append((f"task:{title}", title))
+        
+        # Entity-seeded queries from graph traversal (if provided)
+        if entity_terms:
+            for term in entity_terms[:5]:  # cap at 5 to avoid token bloat
+                search_queries.append((f"entity:{term}", term))
         
         if not search_queries:
             return ([], None)
@@ -767,6 +772,38 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
         print(f"⚠️ Google Tasks API error: {e}")
         return None
 
+async def fetch_hybrid_graph_context(people: list, projects: list, task_inputs: list) -> str:
+    """Hybrid graph search using entity terms from people+projects, filtering by task_inputs."""
+    try:
+        entity_terms = [p['name'] for p in people] + [p['name'] for p in projects]
+        
+        if not entity_terms or not task_inputs:
+            return ""
+        
+        dump_text = " ".join(task_inputs).lower()
+        
+        matched_terms = [term for term in entity_terms if term.lower() in dump_text]
+        
+        query_terms = matched_terms if matched_terms else entity_terms[:8]
+        
+        results = await asyncio.gather(*[hybrid_search_graph(term) for term in query_terms])
+        
+        all_lines = []
+        for result in results:
+            if result:
+                all_lines.extend(result.split("\n"))
+        
+        if not all_lines:
+            return ""
+        
+        deduplicated = list(dict.fromkeys(all_lines))
+        return "GRAPH CONTEXT (routing awareness only — do NOT list in briefing):\n" + "\n".join(deduplicated)
+    
+    except Exception as e:
+        print(f"⚠️ Hybrid graph context fetch failed (non-critical): {e}")
+        return ""
+
+
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
 async def process_pulse(auth_secret: str = None):
     try:
@@ -1090,42 +1127,45 @@ async def process_pulse(auth_secret: str = None):
 
         # --- 🧠 HIGH-RES HINDSIGHT RETRIEVAL (Hybrid Graph + Vector) ---
         hindsight_context = "None"
-        graph_context = "None"
         task_inputs = [d['content'] for d in dumps] if dumps else []
 
         # 🕸️ ADD-ON: Graph-aware person→task context (non-blocking)
         people_res = supabase.table('people').select('id, name').execute()
         people = people_res.data or []
+        projects_res = supabase.table('graph_nodes').select('id', 'label').eq('type', 'project').execute()
+        projects = projects_res.data or []
         if people and active_tasks:
             graph_task_context = await fetch_graph_task_context(people, active_tasks)
         else:
             graph_task_context = ""
-        
-        # Graph-first: Search for primary entity in task inputs
-        if task_inputs:
-            combined_input = " ".join(task_inputs[:3])
-            graph_context = await hybrid_search_graph(combined_input[:100])
-        
-        if task_inputs or active_tasks:
-            hindsight_memories, latest_ts = await retrieve_hindsight_memories(task_inputs, active_tasks, top_k=5)
-            
-            is_hindsight_stale = False
-            if latest_ts:
-                last_seen = datetime.fromisoformat(latest_ts.replace('Z', '+00:00'))
-                if (now - last_seen).total_seconds() > (36 * 3600):
-                    is_hindsight_stale = True
-            
-            if hindsight_memories:
-                memory_lines = []
-                if graph_context:
-                    memory_lines.append(f"[GRAPH CONTEXT ONLY — DO NOT LIST IN BRIEFING]\nTACTICAL MAP:\n{graph_context}")
-                
-                # 🛡️ THE FIX: memories are already formatted as strings by the helper.
-                # We just need to add them to our lines, not process them again.
-                memory_lines.extend(hindsight_memories)
-                
-                hindsight_context = "\n\n".join(memory_lines)
-                print(f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
+
+        # --- 📦 HINDSIGHT: Graph-first, then vector ---
+        graph_context = await fetch_hybrid_graph_context(people, projects, task_inputs)
+
+        # Extract entity terms from people + projects for seeded vector search
+        all_entity_terms = [p['name'] for p in people] + [p['label'] for p in projects]
+
+        hindsight_memories, hindsight_timestamp = await retrieve_hindsight_memories(
+            task_inputs,
+            active_tasks,
+            entity_terms=all_entity_terms
+        )
+
+        memory_lines = []
+        if graph_context:
+            memory_lines.append(graph_context)
+        memory_lines.extend(hindsight_memories)
+        hindsight_block = "\n".join(memory_lines)
+
+        if hindsight_memories or graph_context:
+            hindsight_context = hindsight_block
+            print(f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
+
+        is_hindsight_stale = False
+        if hindsight_timestamp:
+            last_seen = datetime.fromisoformat(hindsight_timestamp.replace('Z', '+00:00'))
+            if (now - last_seen).total_seconds() > (36 * 3600):
+                is_hindsight_stale = True
 
         recent_lib = supabase.table('resources')\
             .select('url, category, title, summary, strategic_note, created_at')\
