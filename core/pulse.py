@@ -1354,48 +1354,44 @@ async def process_pulse(auth_secret: str = None):
                     project_match = {'id': 1, 'name': 'Inbox', 'org_tag': 'INBOX', 'legacy_id': 1}
 
                 # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
-                    raw_time = task.get('reminder_at')
-                    sanitized_time = format_rfc3339(raw_time) if raw_time else None
+                raw_time = task.get('reminder_at')
+                sanitized_time = format_rfc3339(raw_time) if raw_time else None
                     
-                    # 🔄 DE-CLASH LOGIC: Auto-stagger reminder_at by 15-min increments for same slot
-                    if raw_time and 'T' in str(raw_time) and sanitized_time:
-                        time_slot = sanitized_time.split('T')[0]
-                        existing_same_slot = [t for t in task_inserts if (t.get('reminder_at') or '').startswith(time_slot)]
-                        if existing_same_slot:
-                            stagger_count = len(existing_same_slot)
-                            original_time = datetime.fromisoformat(sanitized_time.replace('Z', '+00:00'))
-                            staggered_time = original_time + timedelta(minutes=15 * stagger_count)
-                            sanitized_time = staggered_time.strftime('%Y-%m-%dT%H:%M:%S+05:30')
-                            print(f"⏰ De-clash: Staggered '{task.get('title', 'Untitled Task')}' to {sanitized_time.split('T')[1][:5]}")
-                    
-                    task_title = task.get('title', 'Untitled Task')
-                    
-                    # Record if the user explicitly requested a time (presence of 'T')
-                    time_tracker[task_title] = bool(raw_time and 'T' in str(raw_time))
+                # 🔄 DE-CLASH LOGIC
+                if raw_time and 'T' in str(raw_time) and sanitized_time:
+                    time_slot = sanitized_time.split('T')[0]
+                    existing_same_slot = [t for t in task_inserts if (t.get('reminder_at') or '').startswith(time_slot)]
+                    if existing_same_slot:
+                        stagger_count = len(existing_same_slot)
+                        original_time = datetime.fromisoformat(sanitized_time.replace('Z', '+00:00'))
+                        staggered_time = original_time + timedelta(minutes=15 * stagger_count)
+                        sanitized_time = staggered_time.strftime('%Y-%m-%dT%H:%M:%S+05:30')
+                        print(f"⏰ De-clash: Staggered '{task.get('title', 'Untitled Task')}' to {sanitized_time.split('T')[1][:5]}")
 
-                    # 🛡️ BigInt Guard: Intelligently extract integer IDs depending on where the match came from
-                    task_project_id = actual_inbox_id # Default fallback
-                    if project_match:
-                        try:
-                            # 1. Try legacy_id (if the match came from the Graph nodes)
-                            if project_match.get('legacy_id'):
-                                task_project_id = int(project_match['legacy_id'])
-                            # 2. Try id (if the match came from legacy_projects, it will be numeric)
-                            elif str(project_match.get('id', '')).isdigit():
-                                task_project_id = int(project_match['id'])
-                        except (ValueError, TypeError):
-                            pass # Silently fallback to actual_inbox_id
-                    
-                    task_inserts.append({
-                        "title": task_title,
-                        "project_id": task_project_id,
-                        "priority": (task.get('priority') or 'important').lower(),
-                        "status": "todo",
-                        "estimated_minutes": task.get('estimated_duration', 15),
-                        "duration_mins": task.get('estimated_duration', 15),
-                        "reminder_at": sanitized_time,
-                        "is_revenue_critical": task.get('is_revenue_critical', False),
-                    })
+                task_title = task.get('title', 'Untitled Task')
+                time_tracker[task_title] = bool(raw_time and 'T' in str(raw_time))
+
+                # 🛡️ BigInt Guard
+                task_project_id = actual_inbox_id
+                if project_match:
+                    try:
+                        if project_match.get('legacy_id'):
+                            task_project_id = int(project_match['legacy_id'])
+                        elif str(project_match.get('id', '')).isdigit():
+                            task_project_id = int(project_match['id'])
+                    except (ValueError, TypeError):
+                        pass
+
+                task_inserts.append({
+                    "title": task_title,
+                    "project_id": task_project_id,
+                    "priority": (task.get('priority') or 'important').lower(),
+                    "status": "todo",
+                    "estimated_minutes": task.get('estimated_duration', 15),
+                    "duration_mins": task.get('estimated_duration', 15),
+                    "reminder_at": sanitized_time,
+                    "is_revenue_critical": task.get('is_revenue_critical', False),
+                })
 
             # PHASE 1: Supabase Commit - Insert all tasks first, no side effects yet
             if task_inserts:
