@@ -1197,14 +1197,16 @@ async def process_pulse(auth_secret: str = None):
         # Build project context for AI
         project_details = []
         for p in projects:
+            if 'name' not in p:
+                continue
             desc = p.get('description', '')
             detail = p['name']
             if desc:
                 detail += f" | {desc}"
             project_details.append(detail)
 
-        project_names = [p['name'] for p in projects]
-        people_names = [p['name'] for p in people]
+        project_names = [p['name'] for p in projects if 'name' in p]
+        people_names = [p['name'] for p in people if 'name' in p]
         compressed_tasks_final = compressed_tasks[:3000]  # Hard limit
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps])
         new_input_summary = " | ".join([d['content'] for d in dumps[:5]])
