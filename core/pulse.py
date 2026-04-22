@@ -622,7 +622,7 @@ async def process_pulse(auth_secret: str = None):
         # --- 1. READ: Fetch and Lock ---
         # 1.1 Fetch only 'pending' items
         dumps_res = supabase.table('raw_dumps') \
-            .select('id, content') \
+            .select('id, content, metadata') \
             .eq('status', 'pending') \
             .execute()
 
