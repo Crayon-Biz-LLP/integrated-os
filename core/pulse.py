@@ -854,6 +854,10 @@ async def process_pulse(auth_secret: str = None):
         active_tasks = active_tasks_res.data or []
 
         # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
+        task_dump_ids = []
+        note_dump_ids = []
+        completion_dump_ids = []
+        
         if dumps:
             sort_prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
 
@@ -879,10 +883,6 @@ async def process_pulse(auth_secret: str = None):
                     config={'response_mime_type': 'application/json'}
                 )
                 sort_result = json.loads(sort_response.text)
-                
-                task_dump_ids = []
-                note_dump_ids = []
-                completion_dump_ids = []
                 
                 for item in sort_result:
                     dump_id = item.get('id')
