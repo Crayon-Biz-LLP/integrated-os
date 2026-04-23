@@ -66,7 +66,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                 .maybe_single() \
                 .execute()
 
-            if proj_node.data:
+            if proj_node and proj_node.data:
                 existing = supabase.table('graph_edges') \
                     .select('id') \
                     .eq('source_node_id', task_node_id) \
@@ -93,19 +93,19 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                     .select('id') \
                     .eq('type', 'person') \
                     .filter('metadata->>people_id', 'eq', str(person['id'])) \
+.maybe_single() \
+                .execute()
+
+            if person_node and person_node.data:
+                existing_edge = supabase.table('graph_edges') \
+                    .select('id') \
+                    .eq('source_node_id', task_node_id) \
+                    .eq('target_node_id', person_node.data['id']) \
+                    .eq('relationship', 'INVOLVES') \
                     .maybe_single() \
                     .execute()
 
-                if person_node.data:
-                    existing_edge = supabase.table('graph_edges') \
-                        .select('id') \
-                        .eq('source_node_id', task_node_id) \
-                        .eq('target_node_id', person_node.data['id']) \
-                        .eq('relationship', 'INVOLVES') \
-                        .maybe_single() \
-                        .execute()
-
-                    if not existing_edge.data:
+                if not existing_edge.data:
                         supabase.table('graph_edges').insert({
                             "source_node_id": task_node_id,
                             "target_node_id": person_node.data['id'],
@@ -323,7 +323,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
                 .maybe_single() \
                 .execute()
 
-            if not person_node.data:
+            if person_node is None or not person_node.data:
                 continue
 
             person_node_id = person_node.data['id']
