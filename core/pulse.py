@@ -806,7 +806,7 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
 async def fetch_hybrid_graph_context(people: list, projects: list, task_inputs: list) -> str:
     """Hybrid graph search using entity terms from people+projects, filtering by task_inputs."""
     try:
-        entity_terms = [p['name'] for p in people] + [p['name'] for p in projects]
+        entity_terms = [p['name'] for p in people if p.get('name')] + [p.get('name') for p in projects if p.get('name')]
         
         if not entity_terms or not task_inputs:
             return ""
@@ -1229,12 +1229,14 @@ async def process_pulse(auth_secret: str = None):
         project_details = []
         for p in projects:
             desc = p.get('description', '')
-            detail = p['name']
+            detail = p.get('name', '')
+            if not detail:
+                continue
             if desc:
                 detail += f" | {desc}"
             project_details.append(detail)
 
-        project_names = [p['name'] for p in projects]
+        project_names = [p.get('name') for p in projects if p.get('name')]
         people_names = [p['name'] for p in people]
         compressed_tasks_final = compressed_tasks[:3000]  # Hard limit
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps])
@@ -1244,7 +1246,7 @@ async def process_pulse(auth_secret: str = None):
         # --- 🧭 LAYER 4: CANONICAL SYNTHESIS (The Master Pages) ---
         master_page_context = ""
         relevant_project_names = list(set([
-            next((p['name'] for p in projects if str(p.get('legacy_id')) == str(t.get('project_id')) and p.get('is_active', True)), "General") 
+            next((p.get('name') for p in projects if str(p.get('legacy_id')) == str(t.get('project_id')) and p.get('is_active', True)), "General") 
             for t in filtered_tasks
         ]))
 
