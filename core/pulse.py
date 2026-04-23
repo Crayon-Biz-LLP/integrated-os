@@ -52,14 +52,17 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
             task_node_id = new_node.data[0]['id']
 
         if project_id:
-            proj_node = supabase.table('graph_nodes') \
-                .select('id') \
-                .eq('type', 'project') \
-                .filter('metadata->>project_id', 'eq', str(project_id)) \
-                .maybe_single() \
-                .execute()
+            try:
+                proj_node = supabase.table('graph_nodes') \
+                    .select('id') \
+                    .eq('type', 'project') \
+                    .filter('metadata->>project_id', 'eq', str(project_id)) \
+                    .maybe_single() \
+                    .execute()
+            except Exception:
+                proj_node = None
 
-            if proj_node.data:
+            if proj_node and proj_node.data:
                 existing = supabase.table('graph_edges') \
                     .select('id') \
                     .eq('source_node_id', task_node_id) \
@@ -82,14 +85,17 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
         all_people = supabase.table('people').select('id, name').execute()
         for person in (all_people.data or []):
             if person['name'].lower() in search_text:
-                person_node = supabase.table('graph_nodes') \
-                    .select('id') \
-                    .eq('type', 'person') \
-                    .filter('metadata->>people_id', 'eq', str(person['id'])) \
-                    .maybe_single() \
-                    .execute()
+                try:
+                    person_node = supabase.table('graph_nodes') \
+                        .select('id') \
+                        .eq('type', 'person') \
+                        .filter('metadata->>people_id', 'eq', str(person['id'])) \
+                        .maybe_single() \
+                        .execute()
+                except Exception:
+                    person_node = None
 
-                if person_node.data:
+                if person_node and person_node.data:
                     existing_edge = supabase.table('graph_edges') \
                         .select('id') \
                         .eq('source_node_id', task_node_id) \
@@ -577,7 +583,7 @@ async def batch_enrich_resources():
                 for mission in active_missions:
                     mission_keywords = mission['title'].lower().split()
                     match_score = sum(1 for kw in mission_keywords if kw in resource_text)
-                    if match_score >= 2:
+                    if match_score >= 1:
                         supabase.table('resources').update({
                             "mission_id": mission['id']
                         }).eq('id', resource['id']).execute()
