@@ -116,6 +116,28 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
     except Exception as e:
         print(f"⚠️ Graph edge write failed (non-critical): {e}")
 
+
+async def write_outcome_memory(task_title: str, project_name: str = None):
+    """
+    Writes a type:outcome memory when a task is completed.
+    Non-blocking. Mirrors the same pattern as reflection writes in AAR.
+    """
+    try:
+        label = f"Completed: {task_title}"
+        if project_name:
+            label += f" on {project_name}"
+        
+        embedding = get_embedding(label)
+        supabase.table('memories').insert({
+            "content": label,
+            "memory_type": "outcome",
+            "embedding": embedding
+        }).execute()
+        print(f"🧠 Outcome memory written: {label}")
+    except Exception as e:
+        print(f"⚠️ Outcome memory write failed (non-critical): {e}")
+
+
 # 🛡️ CLEAN MODELS (Removed Config blocks to prevent API rejection)
 class CompletedTask(BaseModel):
     id: int
@@ -627,6 +649,15 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                         'status': 'done',
                         'completed_at': datetime.now(timezone.utc).isoformat()
                     }).eq('id', task_id).execute()
+                    
+                    # 🧠 Outcome memory with project context — fire as background task
+                    proj_res = supabase_client.table('tasks').select('project_id').eq('id', task_id).execute()
+                    proj_name = None
+                    if proj_res.data and proj_res.data[0].get('project_id'):
+                        proj_id = proj_res.data[0]['project_id']
+                        proj_lookup = supabase_client.table('projects').select('name').eq('id', proj_id).maybe_single().execute()
+                        proj_name = proj_lookup.data['name'] if proj_lookup.data else None
+                    asyncio.create_task(write_outcome_memory(title, proj_name))
                     
                     print(f"✅ Synced from Google: '{title}' (ID: {task_id})")
                     synced_count += 1
@@ -1533,6 +1564,15 @@ async def process_pulse(auth_secret: str = None):
                 update_payload["reminder_at"] = new_reminder 
 
                 supabase.table('tasks').update(update_payload).eq('id', target_id).execute()
+                
+                # 🧠 Outcome memory with project context
+                if item_status == 'done':
+                    proj_name = None
+                    proj_id = task_data.get('project_id')
+                    if proj_id:
+                        proj_lookup = supabase.table('projects').select('name').eq('id', proj_id).maybe_single().execute()
+                        proj_name = proj_lookup.data['name'] if proj_lookup.data else None
+                    await write_outcome_memory(task_title, proj_name)
 
         # D. BATCH NEW TASKS (Checklist + Calendar Interruption + ID Tracking)
         if ai_data.get('new_tasks'):
