@@ -812,6 +812,12 @@ async def fetch_hybrid_graph_context(people: list, projects: list, task_inputs: 
 
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
 async def process_pulse(auth_secret: str = None):
+    # Insert pulse run row
+    run_res = supabase.table('pulse_runs').insert({
+        'status': 'running'
+    }).execute()
+    pulse_run_id = run_res.data[0]['id']
+
     try:
         # 🛡️ THE ZOMBIE RECOVERY: Reset any dumps stuck in 'processing' for more than 10 mins
         try:
@@ -827,6 +833,12 @@ async def process_pulse(auth_secret: str = None):
         # --- 1.1 SECURITY GATEKEEPER ---
         pulse_secret = os.getenv("PULSE_SECRET")
         if pulse_secret and auth_secret != pulse_secret:
+            supabase.table('pulse_runs').update({
+                'status': 'completed',
+                'completed_at': datetime.now(timezone.utc).isoformat(),
+                'dumps_processed': 0,
+                'tasks_created': 0
+            }).eq('id', pulse_run_id).execute()
             return {"error": "Unauthorized manual trigger.", "status": 401}
 
         # --- 0. GOOGLE→SUPABASE SYNC (After auth check) ---
@@ -938,6 +950,12 @@ async def process_pulse(auth_secret: str = None):
 
         # 💡 Only silence the tool if BOTH new dumps AND open tasks are empty
         if not dumps and not active_tasks:
+            supabase.table('pulse_runs').update({
+                'status': 'completed',
+                'completed_at': datetime.now(timezone.utc).isoformat(),
+                'dumps_processed': 0,
+                'tasks_created': 0
+            }).eq('id', pulse_run_id).execute()
             return {"message": "Nothing to process, nothing to nag about. Silence is golden."}
 
         print(f"🚀 PULSE START: Processing {len(dumps)} new dumps and {len(active_tasks)} active tasks.")
@@ -1870,10 +1888,20 @@ async def process_pulse(auth_secret: str = None):
             }).in_('id', dump_ids).execute()
             print(f"✅ Phase 3: Marked {len(dump_ids)} dumps as completed.")
 
+        # Mark run as completed
+        supabase.table('pulse_runs').update({
+            'status': 'completed',
+            'completed_at': datetime.now(timezone.utc).isoformat(),
+            'dumps_processed': len(dumps) if dumps else 0,
+            'tasks_created': len(created_task_ids) if 'created_task_ids' in dir() else 0
+        }).eq('id', pulse_run_id).execute()
+
         return {"success": True, "briefing": briefing_text}
 
     except Exception as e:
-        import traceback
-        print(f"Pulse Critical Error: {e}")
-        traceback.print_exc()
-        return {"error": str(e)}
+        supabase.table('pulse_runs').update({
+            'status': 'failed',
+            'failed_at': datetime.now(timezone.utc).isoformat(),
+            'error_message': str(e)[:500]
+        }).eq('id', pulse_run_id).execute()
+        raise
