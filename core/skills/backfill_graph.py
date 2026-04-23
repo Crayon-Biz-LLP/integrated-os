@@ -360,7 +360,7 @@ def backfill_orphaned_tasks():
     """Backfills graph nodes + edges for tasks with no corresponding graph_nodes entry."""
     print("\n🔄 Task backfill: Checking for orphaned tasks...")
     
-    all_tasks = fetch_all_paginated("tasks", "id, title, project_id, description, status")
+    all_tasks = fetch_all_paginated("tasks", "id, title, project_id, status")
     if not all_tasks:
         print("No tasks found.")
         return
@@ -444,7 +444,7 @@ def backfill_orphaned_tasks():
                 except Exception as e:
                     print(f"⚠️ BELONGS_TO edge failed for task {task_id}: {e}")
         
-        search_text = f"{task_title} {task.get('description', '') or ''}".lower()
+        search_text = task_title.lower()
         
         for pid, pname in person_id_to_name.items():
             if pname.lower() in search_text:
