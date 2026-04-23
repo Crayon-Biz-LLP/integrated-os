@@ -24,6 +24,13 @@ EMBEDDING_DIMENSION = 768
 BRIEFING_MODEL = "gemini-3-flash-preview"
 
 
+def get_project_name(project: dict) -> str:
+    """Normalize project object — handles both DB rows (name) and graph_nodes rows (label)."""
+    if not isinstance(project, dict):
+        return ""
+    return (project.get("name") or project.get("label") or "").strip()
+
+
 async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: int = None, task_description: str = None):
     """
     Add-on: Writes graph edges after a task is created.
@@ -1482,12 +1489,12 @@ async def process_pulse(auth_secret: str = None):
                 p_name = new_p.get('name', 'Unnamed Project')
                 p_tag = new_p.get('org_tag', 'INBOX')
                 already_exists = any(
-                    p_name.lower() in existing_p['name'].lower() or
-                    existing_p['name'].lower() in p_name.lower()
+                    p_name.lower() in get_project_name(existing_p).lower() or
+                    get_project_name(existing_p).lower() in p_name.lower()
                     for existing_p in projects
                 ) or any(
-                    p_name.lower() in lp['name'].lower() or
-                    lp['name'].lower() in p_name.lower()
+                    p_name.lower() in get_project_name(lp).lower() or
+                    get_project_name(lp).lower() in p_name.lower()
                     for lp in legacy_projects
                 )
                 if not already_exists:
@@ -1594,19 +1601,19 @@ async def process_pulse(auth_secret: str = None):
                 ai_target = (task.get('project_name') or "").lower()
                 
                 # 🛡️ STEP A: Try for an EXACT match first
-                project_match = next((p for p in projects if ai_target == p['name'].lower()), None)
+                project_match = next((p for p in projects if ai_target == get_project_name(p).lower()), None)
                 
                 # 🛡️ STEP B: Try legacy projects if not found
                 if not project_match and ai_target.strip():
                     project_match = next(
-                        (p for p in legacy_projects if ai_target == p['name'].lower()),
+                        (p for p in legacy_projects if ai_target == get_project_name(p).lower()),
                         None
                     )
                 
                 # 🛡️ STEP C: Fuzzy match ONLY if ai_target isn't empty
                 if not project_match and ai_target.strip():
                     project_match = next(
-                        (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
+                        (p for p in projects if ai_target in get_project_name(p).lower() or get_project_name(p).lower() in ai_target),
                         None
                     )
                 

@@ -262,7 +262,7 @@ def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
     for edge in edges:
         source_label = edge.get("source", "")
         target_label = edge.get("target", "")
-        relationship = edge.get("relationship", "relates_to")
+        relationship = edge.get("relationship", "relates_to").upper()
         
         source_id = node_label_to_id.get(source_label)
         target_id = node_label_to_id.get(target_label)
