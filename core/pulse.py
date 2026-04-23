@@ -31,6 +31,44 @@ def get_project_name(project: dict) -> str:
     return (project.get("name") or project.get("label") or "").strip()
 
 
+def build_routing_context(legacy_projects: list) -> str:
+    """
+    Dynamically builds project routing instructions from the DB.
+    No hardcoded client names — new projects auto-register on next Pulse run.
+    """
+    lines = []
+
+    id_to_name = {p['id']: p['name'] for p in legacy_projects}
+
+    sorted_projects = sorted(
+        legacy_projects,
+        key=lambda p: (0 if p.get('parent_project_id') else 1, p.get('name', ''))
+    )
+
+    for p in sorted_projects:
+        if p.get('status') not in ('active',):
+            continue
+
+        name = p.get('name', '').strip()
+        if not name:
+            continue
+
+        parent_id = p.get('parent_project_id')
+        parent_name = id_to_name.get(parent_id) if parent_id else None
+        parent_str = f" [child of {parent_name}]" if parent_name else ""
+
+        desc = (p.get('description') or '').strip()
+        detail = f"{name}{parent_str} | {desc}"
+
+        keywords = p.get('keywords') or []
+        if keywords:
+            detail += f" | Keywords: {', '.join(keywords)}"
+
+        lines.append(detail)
+
+    return '\n'.join(f'  - {line}' for line in lines)
+
+
 async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: int = None, task_description: str = None):
     """
     Add-on: Writes graph edges after a task is created.
@@ -134,7 +172,7 @@ async def write_outcome_memory(task_title: str, project_name: str = None):
         if project_name:
             label += f" on {project_name}"
         
-        embedding = get_embedding(label)
+        embedding = await asyncio.to_thread(get_embedding, label)
         supabase.table('memories').insert({
             "content": label,
             "memory_type": "outcome",
@@ -155,6 +193,9 @@ class NewProject(BaseModel):
     name: str
     importance: Optional[int] = 5
     org_tag: Optional[str] = "INBOX"
+    description: Optional[str] = None
+    keywords: Optional[List[str]] = Field(default_factory=list)
+    parent_project_name: Optional[str] = None
 
 class NewPerson(BaseModel):
     name: str
@@ -471,7 +512,7 @@ async def generate_after_action_report() -> str:
         lesson = response.text.strip()
         
         if lesson and len(lesson) > 10:
-            embedding = get_embedding(lesson)
+            embedding = await asyncio.to_thread(get_embedding, lesson)
             if all(v == 0 for v in embedding):
                 print(f"Warning: zero-vector embedding for daily reflection — storing anyway")
             supabase.table('memories').insert({
@@ -579,7 +620,7 @@ async def batch_enrich_resources():
             title = item.get('title', '')
             strategic_note = item.get('strategic_note', '')
             embedding_text = f"{title}. {strategic_note}"
-            embedding = get_embedding(embedding_text)
+            embedding = await asyncio.to_thread(get_embedding, embedding_text)
             if all(v == 0 for v in embedding):
                 print(f"Warning: zero-vector embedding for daily reflection — storing anyway")
             
@@ -810,10 +851,10 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
         print(f"⚠️ Google Tasks API error: {e}")
         return None
 
-async def fetch_hybrid_graph_context(people: list, projects: list, task_inputs: list) -> str:
+async def fetch_hybrid_graph_context(people: list, graph_node_projects: list, task_inputs: list) -> str:
     """Hybrid graph search using entity terms from people+projects, filtering by task_inputs."""
     try:
-        entity_terms = [p['name'] for p in people if p.get('name')] + [p.get('name') for p in projects if p.get('name')]
+        entity_terms = [p['name'] for p in people if p.get('name')] + [p.get('name') for p in graph_node_projects if p.get('name')]
         
         if not entity_terms or not task_inputs:
             return ""
@@ -942,7 +983,7 @@ async def process_pulse(auth_secret: str = None):
                     if category == 'NOTE':
                         dump_content = raw_dump.get('content')
                         if dump_content:
-                            embedding = get_embedding(dump_content)
+                            embedding = await asyncio.to_thread(get_embedding, dump_content)
                             supabase.table('memories').insert({
                                 "content": dump_content,
                                 "memory_type": "note",
@@ -1006,7 +1047,10 @@ async def process_pulse(auth_secret: str = None):
             })
 
         print("📦 Step 2: Fetching projects...")
-        projects_res = supabase.table('projects').select('id, name, org_tag').execute()
+        projects_res = supabase.table('projects') \
+            .select('id, name, org_tag, description, parent_project_id, status, keywords') \
+            .eq('is_active', True) \
+            .execute()
         legacy_projects = projects_res.data or []
 
         print("📦 Step 3: Fetching people...")
@@ -1081,7 +1125,7 @@ async def process_pulse(auth_secret: str = None):
                 filtered_tasks.append(t)
                 continue
 
-            project = next((p for p in projects if p.get('id') == t.get('project_id')), None)
+            project = next((p for p in legacy_projects if p.get('id') == t.get('project_id')), None)
             o_tag = project.get('org_tag') if project else "INBOX"
 
             if is_weekend:
@@ -1125,7 +1169,7 @@ async def process_pulse(auth_secret: str = None):
         # 🛡️ FIX: Defining 'compressed_tasks' so the prompt builder doesn't crash!
         compressed_tasks_list = []
         for t in filtered_tasks:
-            project = next((p for p in projects if p.get('id') == t.get('project_id')), None)
+            project = next((p for p in legacy_projects if p.get('id') == t.get('project_id')), None)
             p_name = project.get('name') if project else "General"
             o_tag = project.get('org_tag') if project else "INBOX"
             compressed_tasks_list.append(f"[{o_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]")
@@ -1173,17 +1217,17 @@ async def process_pulse(auth_secret: str = None):
         people_res = supabase.table('people').select('id, name').execute()
         people = people_res.data or []
         projects_res = supabase.table('graph_nodes').select('id', 'label').eq('type', 'project').execute()
-        projects = projects_res.data or []
+        graph_node_projects = projects_res.data or []
         if people and active_tasks:
             graph_task_context = await fetch_graph_task_context(people, active_tasks)
         else:
             graph_task_context = ""
 
         # --- 📦 HINDSIGHT: Graph-first, then vector ---
-        graph_context = await fetch_hybrid_graph_context(people, projects, task_inputs)
+        graph_context = await fetch_hybrid_graph_context(people, graph_node_projects, task_inputs)
 
         # Extract entity terms from people + projects for seeded vector search
-        all_entity_terms = [p['name'] for p in people] + [p['label'] for p in projects]
+        all_entity_terms = [p['name'] for p in people] + [p['label'] for p in graph_node_projects]
 
         hindsight_memories, hindsight_timestamp = await retrieve_hindsight_memories(
             task_inputs,
@@ -1234,18 +1278,9 @@ async def process_pulse(auth_secret: str = None):
         # --- 2. THINK Phase ---
         print('🤖 Building prompt...')
 
-        # Build project context for AI
-        project_details = []
-        for p in projects:
-            desc = p.get('description', '')
-            detail = p.get('name', '')
-            if not detail:
-                continue
-            if desc:
-                detail += f" | {desc}"
-            project_details.append(detail)
+        project_details = build_routing_context(legacy_projects)
 
-        project_names = [p.get('name') for p in projects if p.get('name')]
+        project_names = [p.get('name') for p in legacy_projects if p.get('name')]
         people_names = [p['name'] for p in people]
         compressed_tasks_final = compressed_tasks[:3000]  # Hard limit
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps])
@@ -1255,7 +1290,7 @@ async def process_pulse(auth_secret: str = None):
         # --- 🧭 LAYER 4: CANONICAL SYNTHESIS (The Master Pages) ---
         master_page_context = ""
         relevant_project_names = list(set([
-            next((p.get('name') for p in projects if str(p.get('legacy_id')) == str(t.get('project_id')) and p.get('is_active', True)), "General") 
+            next((p.get('name') for p in legacy_projects if p.get('id') == t.get('project_id') and p.get('status') == 'active'), "General")
             for t in filtered_tasks
         ]))
 
@@ -1288,7 +1323,8 @@ async def process_pulse(auth_secret: str = None):
 
         CONTEXT:
         - IDENTITY: {json.dumps(core)}
-        - PROJECTS: {json.dumps(project_details)}
+        - PROJECTS:
+        {project_details}
         - PEOPLE: {json.dumps(people_names)}
         - ACTIONABLE TASKS (DAY FILTERED): {compressed_tasks_final}
         - ALL SYSTEM TASKS (FOR ID MATCHING): {universal_task_map[:3000]}
@@ -1389,16 +1425,26 @@ async def process_pulse(auth_secret: str = None):
             - ONLY track what is manually entered in NEW INPUTS.
 
             PROJECT ROUTING LOGIC:
-            1. DYNAMIC ROUTING: Use the 'business_entities' and 'current_season' definitions provided in the IDENTITY context to assign NEW_TASKS to the matching project.
-            2. REVENUE FLAG: Set `is_revenue_critical: true` for any tasks involving Sales, Pilots, or high-ticket revenue generation.
-            3. DEFAULT ROUTING: If a task explicitly mentions home, family, or faith, route to 'PERSONAL' or 'CHURCH'. For all other unmatched items, default to 'INBOX'.
-            4. PERSONAL: Match Sunju, kids, dogs, and home maintenance here.
-            5. CHURCH: All church-related activities MUST map to the project "Church".
-            6. MISSION OVERRIDE: If a resource fits an ACTIVE MISSION, prioritize the Mission name over the Project name.
-            7. LINK FIDELITY: Every task derived from a URL MUST include the clickable URL in the title.
+            Match each task to the MOST SPECIFIC active project using the list below.
+            Sub-projects always win over parent projects when there is any match.
+            Only use "Inbox" if the task is truly personal admin with no project match.
+            Never default client or business work to Inbox.
+
+            Active projects (sub-projects listed first):
+            {build_routing_context(legacy_projects)}
+
+            Routing rules:
+            1. Use project name EXACTLY as shown in quotes above.
+            2. If a task mentions a keyword, person, or topic from a project's description/keywords, use that project.
+            3. Sub-projects (those marked "sub-project of X") are always more specific — prefer them.
+            4. For new projects you don't recognise from the list, default to the parent project (e.g. "Solvstrat") not Inbox.
 
             NEW PROJECT CREATION CRITERIA:
             - Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned.
+            - Always populate "description" with a one-sentence summary of the project's purpose.
+            - Always populate "keywords" with an array of names, abbreviations, and topics related to the project.
+            - If the new project is a client of Solvstrat, set "parent_project_name": "Solvstrat".
+            - Set org_tag to "SOLVSTRAT" for client work, "PERSONAL" for personal, "CHURCH" for faith.
 
             RESOURCE CAPTURE LOGIC:
             - Identify any URLs in the NEW INPUTS. For each URL: CATEGORIZE (GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL), SUMMARIZE (1-sentence description), PROJECT MATCH (if relates to existing project).
@@ -1484,7 +1530,7 @@ async def process_pulse(auth_secret: str = None):
         
         # A. BATCH NEW PROJECTS (Deduplicated)
         if ai_data.get('new_projects'):
-            valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH']
+            valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH', 'FAMILY', 'QHORD']
             filtered_new_projects = []
 
             for new_p in ai_data['new_projects']:
@@ -1500,16 +1546,34 @@ async def process_pulse(auth_secret: str = None):
                     for lp in legacy_projects
                 )
                 if not already_exists:
+                    p_description = new_p.get('description')
+                    if not p_description:
+                        print(f"⚠️ New project '{p_name}' created without description — routing may be imprecise.")
+
                     filtered_new_projects.append({
                         "name": p_name,
                         "org_tag": p_tag if p_tag in valid_tags else 'INBOX',
                         "status": "active",
-                        "context": "personal" if p_tag in ['CHURCH', 'PERSONAL'] else "work"
+                        "context": "personal" if p_tag in ['CHURCH', 'PERSONAL'] else "work",
+                        "is_active": True,
+                        "description": p_description,
+                        "keywords": new_p.get('keywords', []),
                     })
 
             if filtered_new_projects:
                 p_res = supabase.table('projects').insert(filtered_new_projects).execute()
                 if p_res.data:
+                    for new_proj in p_res.data:
+                        supabase.table('graph_nodes').insert({
+                            "label": new_proj.get('name'),
+                            "type": "project",
+                            "metadata": {
+                                "source": "pulse_auto",
+                                "project_id": str(new_proj.get('id')),
+                                "org_tag": new_proj.get('org_tag'),
+                            }
+                        }).execute()
+                    legacy_projects.extend(p_res.data)
                     projects.extend(p_res.data)
                     print(f"✅ Created {len(p_res.data)} new entity projects.")
 
@@ -1592,40 +1656,79 @@ async def process_pulse(auth_secret: str = None):
             # PHASE 0: Time Tracker - Track explicit times from AI
             time_tracker = {}
 
-            # PHASE 0: Dynamic Inbox Discovery - Ensure we grab an INTEGER, not a graph UUID
+            # PHASE 0: Inbox Discovery - Two-stage fallback from graph nodes → legacy projects
+            inbox_from_graph = next(
+                (p.get('legacy_id') for p in projects
+                 if p.get('org_tag') == 'INBOX' and p.get('legacy_id') is not None),
+                None
+            )
+
+            inbox_from_legacy = next(
+                (p.get('id') for p in legacy_projects
+                 if p.get('org_tag') == 'INBOX' and p.get('status') == 'active'),
+                1
+            )
+
             try:
-                actual_inbox_id = int(next((p.get('legacy_id') for p in projects if p.get('org_tag') == 'INBOX' and p.get('legacy_id') is not None), 1))
+                actual_inbox_id = int(inbox_from_graph or inbox_from_legacy)
             except (ValueError, TypeError):
                 actual_inbox_id = 1
 
-            for task in ai_data['new_tasks']:
-                # 1. High-Precision Project Matching Logic
-                ai_target = (task.get('project_name') or "").lower()
-                
-                # 🛡️ STEP A: Try for an EXACT match first
-                project_match = next((p for p in projects if ai_target == get_project_name(p).lower()), None)
-                
-                # 🛡️ STEP B: Try legacy projects if not found
-                if not project_match and ai_target.strip():
-                    project_match = next(
-                        (p for p in legacy_projects if ai_target == get_project_name(p).lower()),
-                        None
-                    )
-                
-                # 🛡️ STEP C: Fuzzy match ONLY if ai_target isn't empty
-                if not project_match and ai_target.strip():
-                    project_match = next(
-                        (p for p in projects if ai_target in get_project_name(p).lower() or get_project_name(p).lower() in ai_target),
-                        None
-                    )
-                
-                # 🛡️ STEP D: The Safety Net (Default to INBOX)
-                if not project_match:
-                    project_match = next((p for p in projects if p.get('org_tag') == 'INBOX'), projects[0] if projects else None)
+            print(f"⚠️ Inbox resolution: actual_inbox_id = {actual_inbox_id} (source: {'graph' if inbox_from_graph else 'legacy'})")
 
-                # 🛡️ GUARD: If project_match is still None, create a minimal fallback
-                if not project_match:
-                    project_match = {'id': 1, 'name': 'Inbox', 'org_tag': 'INBOX', 'legacy_id': 1}
+            for task in ai_data['new_tasks']:
+                ai_target = (task.get('project_name') or '').lower().strip()
+                task_project_id = actual_inbox_id
+
+                if ai_target:
+                    matched = None
+
+                    matched = next(
+                        (p for p in legacy_projects if p.get('name', '').lower() == ai_target),
+                        None
+                    )
+
+                    if not matched:
+                        for p in legacy_projects:
+                            kws = [k.lower() for k in (p.get('keywords') or [])]
+                            if any(kw in ai_target or ai_target in kw for kw in kws):
+                                matched = p
+                                break
+
+                    if not matched:
+                        for p in legacy_projects:
+                            desc = (p.get('description') or '').lower()
+                            if ai_target in desc or any(word in desc for word in ai_target.split() if len(word) > 3):
+                                matched = p
+                                break
+
+                    if not matched:
+                        matched = next(
+                            (p for p in legacy_projects
+                             if ai_target in p.get('name', '').lower()
+                             or p.get('name', '').lower() in ai_target),
+                            None
+                        )
+
+                    if not matched:
+                        gn_match = next(
+                            (p for p in graph_node_projects if ai_target in get_project_name(p).lower()
+                             or get_project_name(p).lower() in ai_target),
+                            None
+                        )
+                        if gn_match:
+                            try:
+                                task_project_id = int(
+                                    gn_match.get('legacy_id') or gn_match.get('id') or actual_inbox_id
+                                )
+                            except (ValueError, TypeError):
+                                pass
+
+                    if matched:
+                        try:
+                            task_project_id = int(matched.get('id') or actual_inbox_id)
+                        except (ValueError, TypeError):
+                            pass
 
                 # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
                 raw_time = task.get('reminder_at')
@@ -1644,17 +1747,6 @@ async def process_pulse(auth_secret: str = None):
 
                 task_title = task.get('title', 'Untitled Task')
                 time_tracker[task_title] = bool(raw_time and 'T' in str(raw_time))
-
-                # 🛡️ BigInt Guard
-                task_project_id = actual_inbox_id
-                if project_match:
-                    try:
-                        if project_match.get('legacy_id'):
-                            task_project_id = int(project_match['legacy_id'])
-                        elif str(project_match.get('id', '')).isdigit():
-                            task_project_id = int(project_match['id'])
-                    except (ValueError, TypeError):
-                        pass
 
                 task_inserts.append({
                     "title": task_title,
