@@ -877,6 +877,8 @@ async def process_pulse(auth_secret: str = None):
 
         dumps = dumps_res.data or []
 
+        completion_dump_ids = []
+        
         if dumps:
             dump_ids = [d['id'] for d in dumps]
             
@@ -1867,6 +1869,9 @@ async def process_pulse(auth_secret: str = None):
             
             # Existing logic: Remove internal system IDs from the user-facing text
             briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
+            
+            # Strip bare task ID references in natural language (e.g. "117 is the last loop")
+            briefing_text = re.sub(r'\b(\d{2,})\s+(?:is the|task|loop|item|#|ref|id)\b', r'\1', briefing_text, flags=re.IGNORECASE)
             
             # Final Clean: Remove any accidental triple-newlines created by the logic above
             briefing_text = re.sub(r'\n{3,}', '\n\n', briefing_text)
