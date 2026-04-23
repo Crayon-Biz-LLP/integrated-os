@@ -352,6 +352,141 @@ def run_backfill():
         print(f"Completed batch {batch_num}")
     
     print(f"Backfill complete! Processed: {processed}, Skipped: {failed}")
+    
+    backfill_orphaned_tasks()
+
+
+def backfill_orphaned_tasks():
+    """Backfills graph nodes + edges for tasks with no corresponding graph_nodes entry."""
+    print("\n🔄 Task backfill: Checking for orphaned tasks...")
+    
+    all_tasks = fetch_all_paginated("tasks", "id, title, project_id, description, status")
+    if not all_tasks:
+        print("No tasks found.")
+        return
+    
+    existing_task_nodes = fetch_all_paginated("graph_nodes", "id, metadata", in_filter_col="type", in_filter_val=["task"])
+    task_node_task_ids = set()
+    for node in (existing_task_nodes or []):
+        meta = node.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except:
+                meta = {}
+        tid = meta.get("task_id")
+        if tid:
+            task_node_task_ids.add(int(tid))
+    
+    orphaned_tasks = [t for t in all_tasks if t["id"] not in task_node_task_ids]
+    print(f"Found {len(orphaned_tasks)} orphaned tasks (no graph node).")
+    
+    if not orphaned_tasks:
+        return
+    
+    all_people = fetch_all_paginated("people", "id, name")
+    all_projects = fetch_all_paginated("projects", "id, name")
+    
+    project_id_to_name = {p["id"]: p["name"] for p in all_projects}
+    person_id_to_name = {p["id"]: p["name"] for p in all_people}
+    
+    count = 0
+    for task in orphaned_tasks:
+        task_id = task["id"]
+        task_title = task.get("title", "Untitled")
+        project_id = task.get("project_id")
+        
+        meta = {}
+        if project_id:
+            meta["project_id"] = project_id
+        
+        try:
+            new_node = supabase.table("graph_nodes").insert({
+                "label": task_title,
+                "type": "task",
+                "metadata": json.dumps({"source": "tasks_table", "task_id": task_id, **meta})
+            }).execute()
+            task_node_id = new_node.data[0]["id"]
+        except Exception as e:
+            print(f"⚠️ Failed to create node for task {task_id}: {e}")
+            continue
+        
+        if project_id:
+            try:
+                proj_node = supabase.table("graph_nodes") \
+                    .select("id") \
+                    .eq("type", "project") \
+                    .filter("metadata->>project_id", "eq", str(project_id)) \
+                    .maybe_single() \
+                    .execute()
+            except Exception:
+                proj_node = None
+            
+            if proj_node and proj_node.data:
+                proj_node_id = proj_node.data["id"]
+                try:
+                    existing = supabase.table("graph_edges") \
+                        .select("id") \
+                        .eq("source_node_id", task_node_id) \
+                        .eq("target_node_id", proj_node_id) \
+                        .eq("relationship", "BELONGS_TO") \
+                        .maybe_single() \
+                        .execute()
+                    
+                    if not existing.data:
+                        supabase.table("graph_edges").insert({
+                            "source_node_id": task_node_id,
+                            "target_node_id": proj_node_id,
+                            "relationship": "BELONGS_TO",
+                            "weight": 1.0,
+                            "metadata": json.dumps({"source": "task_engine", "task_id": task_id})
+                        }).execute()
+                except Exception as e:
+                    print(f"⚠️ BELONGS_TO edge failed for task {task_id}: {e}")
+        
+        search_text = f"{task_title} {task.get('description', '') or ''}".lower()
+        
+        for pid, pname in person_id_to_name.items():
+            if pname.lower() in search_text:
+                try:
+                    person_node = supabase.table("graph_nodes") \
+                        .select("id") \
+                        .eq("type", "person") \
+                        .filter("metadata->>people_id", "eq", str(pid)) \
+                        .maybe_single() \
+                        .execute()
+                except Exception:
+                    person_node = None
+                
+                if person_node and person_node.data:
+                    person_node_id = person_node.data["id"]
+                    try:
+                        existing_edge = supabase.table("graph_edges") \
+                            .select("id") \
+                            .eq("source_node_id", task_node_id) \
+                            .eq("target_node_id", person_node_id) \
+                            .eq("relationship", "INVOLVES") \
+                            .maybe_single() \
+                            .execute()
+                        
+                        if not existing_edge.data:
+                            supabase.table("graph_edges").insert({
+                                "source_node_id": task_node_id,
+                                "target_node_id": person_node_id,
+                                "relationship": "INVOLVES",
+                                "weight": 1.0,
+                                "metadata": json.dumps({
+                                    "source": "task_engine",
+                                    "task_id": task_id,
+                                    "matched_name": pname
+                                })
+                            }).execute()
+                    except Exception as e:
+                        print(f"⚠️ INVOLVES edge failed for task {task_id}: {e}")
+        
+        count += 1
+    
+    print(f"✅ Task backfill complete: {count} tasks processed.")
 
 
 if __name__ == "__main__":
