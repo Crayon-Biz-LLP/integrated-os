@@ -400,13 +400,19 @@ def backfill_orphaned_tasks():
         if project_id:
             meta["project_id"] = project_id
         
+        # Use upsert to handle duplicate labels gracefully
         try:
-            new_node = supabase.table("graph_nodes").insert({
+            supabase.table("graph_nodes").upsert({
                 "label": task_title,
                 "type": "task",
                 "metadata": json.dumps({"source": "tasks_table", "task_id": task_id, **meta})
-            }).execute()
-            task_node_id = new_node.data[0]["id"]
+            }, on_conflict="label").execute()
+            # Fetch the node (existing or newly created)
+            node_res = supabase.table("graph_nodes").select("id").eq("label", task_title).maybe_single().execute()
+            if not node_res or not node_res.data:
+                print(f"⚠️ Failed to get node for task {task_id}")
+                continue
+            task_node_id = node_res.data["id"]
         except Exception as e:
             print(f"⚠️ Failed to create node for task {task_id}: {e}")
             continue
@@ -422,7 +428,8 @@ def backfill_orphaned_tasks():
             except Exception:
                 proj_node = None
             
-            if proj_node and proj_node.data:
+            # Guard: check both proj_node exists AND has data
+            if proj_node is not None and proj_node.data is not None:
                 proj_node_id = proj_node.data["id"]
                 try:
                     existing = supabase.table("graph_edges") \
