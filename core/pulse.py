@@ -52,17 +52,14 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
             task_node_id = new_node.data[0]['id']
 
         if project_id:
-            try:
-                proj_node = supabase.table('graph_nodes') \
-                    .select('id') \
-                    .eq('type', 'project') \
-                    .filter('metadata->>project_id', 'eq', str(project_id)) \
-                    .maybe_single() \
-                    .execute()
-            except Exception:
-                proj_node = None
+            proj_node = supabase.table('graph_nodes') \
+                .select('id') \
+                .eq('type', 'project') \
+                .filter('metadata->>project_id', 'eq', str(project_id)) \
+                .maybe_single() \
+                .execute()
 
-            if proj_node and proj_node.data:
+            if proj_node.data:
                 existing = supabase.table('graph_edges') \
                     .select('id') \
                     .eq('source_node_id', task_node_id) \
@@ -85,17 +82,14 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
         all_people = supabase.table('people').select('id, name').execute()
         for person in (all_people.data or []):
             if person['name'].lower() in search_text:
-                try:
-                    person_node = supabase.table('graph_nodes') \
-                        .select('id') \
-                        .eq('type', 'person') \
-                        .filter('metadata->>people_id', 'eq', str(person['id'])) \
-                        .maybe_single() \
-                        .execute()
-                except Exception:
-                    person_node = None
+                person_node = supabase.table('graph_nodes') \
+                    .select('id') \
+                    .eq('type', 'person') \
+                    .filter('metadata->>people_id', 'eq', str(person['id'])) \
+                    .maybe_single() \
+                    .execute()
 
-                if person_node and person_node.data:
+                if person_node.data:
                     existing_edge = supabase.table('graph_edges') \
                         .select('id') \
                         .eq('source_node_id', task_node_id) \
@@ -583,7 +577,7 @@ async def batch_enrich_resources():
                 for mission in active_missions:
                     mission_keywords = mission['title'].lower().split()
                     match_score = sum(1 for kw in mission_keywords if kw in resource_text)
-                    if match_score >= 1:
+                    if match_score >= 2:
                         supabase.table('resources').update({
                             "mission_id": mission['id']
                         }).eq('id', resource['id']).execute()
@@ -781,7 +775,7 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
 async def fetch_hybrid_graph_context(people: list, projects: list, task_inputs: list) -> str:
     """Hybrid graph search using entity terms from people+projects, filtering by task_inputs."""
     try:
-        entity_terms = [p.get('name', p.get('title', '')) for p in people] + [p.get('name', p.get('title', '')) for p in projects]
+        entity_terms = [p['name'] for p in people] + [p['name'] for p in projects]
         
         if not entity_terms or not task_inputs:
             return ""
@@ -812,12 +806,6 @@ async def fetch_hybrid_graph_context(people: list, projects: list, task_inputs: 
 
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
 async def process_pulse(auth_secret: str = None):
-    # Insert pulse run row
-    run_res = supabase.table('pulse_runs').insert({
-        'status': 'running'
-    }).execute()
-    pulse_run_id = run_res.data[0]['id']
-
     try:
         # 🛡️ THE ZOMBIE RECOVERY: Reset any dumps stuck in 'processing' for more than 10 mins
         try:
@@ -833,12 +821,6 @@ async def process_pulse(auth_secret: str = None):
         # --- 1.1 SECURITY GATEKEEPER ---
         pulse_secret = os.getenv("PULSE_SECRET")
         if pulse_secret and auth_secret != pulse_secret:
-            supabase.table('pulse_runs').update({
-                'status': 'completed',
-                'completed_at': datetime.now(timezone.utc).isoformat(),
-                'dumps_processed': 0,
-                'tasks_created': 0
-            }).eq('id', pulse_run_id).execute()
             return {"error": "Unauthorized manual trigger.", "status": 401}
 
         # --- 0. GOOGLE→SUPABASE SYNC (After auth check) ---
@@ -872,10 +854,6 @@ async def process_pulse(auth_secret: str = None):
         active_tasks = active_tasks_res.data or []
 
         # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
-        task_dump_ids = []
-        note_dump_ids = []
-        completion_dump_ids = []
-        
         if dumps:
             sort_prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
 
@@ -901,6 +879,10 @@ async def process_pulse(auth_secret: str = None):
                     config={'response_mime_type': 'application/json'}
                 )
                 sort_result = json.loads(sort_response.text)
+                
+                task_dump_ids = []
+                note_dump_ids = []
+                completion_dump_ids = []
                 
                 for item in sort_result:
                     dump_id = item.get('id')
@@ -950,12 +932,6 @@ async def process_pulse(auth_secret: str = None):
 
         # 💡 Only silence the tool if BOTH new dumps AND open tasks are empty
         if not dumps and not active_tasks:
-            supabase.table('pulse_runs').update({
-                'status': 'completed',
-                'completed_at': datetime.now(timezone.utc).isoformat(),
-                'dumps_processed': 0,
-                'tasks_created': 0
-            }).eq('id', pulse_run_id).execute()
             return {"message": "Nothing to process, nothing to nag about. Silence is golden."}
 
         print(f"🚀 PULSE START: Processing {len(dumps)} new dumps and {len(active_tasks)} active tasks.")
@@ -992,11 +968,6 @@ async def process_pulse(auth_secret: str = None):
         print("📦 Step 2: Fetching projects...")
         projects_res = supabase.table('projects').select('id, name, org_tag').execute()
         legacy_projects = projects_res.data or []
-        
-        # Normalize: allow both 'name' and 'title' fields
-        for p in legacy_projects:
-            if 'name' not in p and 'title' in p:
-                p['name'] = p['title']
 
         print("📦 Step 3: Fetching people...")
         people_res = supabase.table('people').select('name, strategic_weight').execute()
@@ -1172,7 +1143,7 @@ async def process_pulse(auth_secret: str = None):
         graph_context = await fetch_hybrid_graph_context(people, projects, task_inputs)
 
         # Extract entity terms from people + projects for seeded vector search
-        all_entity_terms = [p.get('name', '') for p in people] + [p.get('label', p.get('name', p.get('title', ''))) for p in projects]
+        all_entity_terms = [p['name'] for p in people] + [p['label'] for p in projects]
 
         hindsight_memories, hindsight_timestamp = await retrieve_hindsight_memories(
             task_inputs,
@@ -1226,17 +1197,14 @@ async def process_pulse(auth_secret: str = None):
         # Build project context for AI
         project_details = []
         for p in projects:
-            pname = p.get('name') or p.get('title')
-            if not pname:
-                continue
             desc = p.get('description', '')
-            detail = pname
+            detail = p['name']
             if desc:
                 detail += f" | {desc}"
             project_details.append(detail)
 
-        project_names = [p.get('name') or p.get('title') for p in projects if p.get('name') or p.get('title')]
-        people_names = [p.get('name') for p in people if p.get('name')]
+        project_names = [p['name'] for p in projects]
+        people_names = [p['name'] for p in people]
         compressed_tasks_final = compressed_tasks[:3000]  # Hard limit
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps])
         new_input_summary = " | ".join([d['content'] for d in dumps[:5]])
@@ -1245,7 +1213,7 @@ async def process_pulse(auth_secret: str = None):
         # --- 🧭 LAYER 4: CANONICAL SYNTHESIS (The Master Pages) ---
         master_page_context = ""
         relevant_project_names = list(set([
-            next(((p.get('name') or p.get('title', 'General')) for p in projects if str(p.get('legacy_id')) == str(t.get('project_id')) and p.get('is_active', True)), "General") 
+            next((p['name'] for p in projects if str(p.get('legacy_id')) == str(t.get('project_id')) and p.get('is_active', True)), "General") 
             for t in filtered_tasks
         ]))
 
@@ -1481,12 +1449,12 @@ async def process_pulse(auth_secret: str = None):
                 p_name = new_p.get('name', 'Unnamed Project')
                 p_tag = new_p.get('org_tag', 'INBOX')
                 already_exists = any(
-                    p_name.lower() in (existing_p.get('name') or '').lower() or
-                    (existing_p.get('name') or '').lower() in p_name.lower()
+                    p_name.lower() in existing_p['name'].lower() or
+                    existing_p['name'].lower() in p_name.lower()
                     for existing_p in projects
                 ) or any(
-                    p_name.lower() in (lp.get('name') or '').lower() or
-                    (lp.get('name') or '').lower() in p_name.lower()
+                    p_name.lower() in lp['name'].lower() or
+                    lp['name'].lower() in p_name.lower()
                     for lp in legacy_projects
                 )
                 if not already_exists:
@@ -1584,19 +1552,19 @@ async def process_pulse(auth_secret: str = None):
                 ai_target = (task.get('project_name') or "").lower()
                 
                 # 🛡️ STEP A: Try for an EXACT match first
-                project_match = next((p for p in projects if ai_target == (p.get('name') or p.get('title') or '').lower()), None)
+                project_match = next((p for p in projects if ai_target == p['name'].lower()), None)
                 
                 # 🛡️ STEP B: Try legacy projects if not found
                 if not project_match and ai_target.strip():
                     project_match = next(
-                        (p for p in legacy_projects if ai_target == (p.get('name') or p.get('title') or '').lower()),
+                        (p for p in legacy_projects if ai_target == p['name'].lower()),
                         None
                     )
                 
                 # 🛡️ STEP C: Fuzzy match ONLY if ai_target isn't empty
                 if not project_match and ai_target.strip():
                     project_match = next(
-                        (p for p in projects if ai_target in (p.get('name') or p.get('title') or '').lower() or (p.get('name') or p.get('title') or '').lower() in ai_target),
+                        (p for p in projects if ai_target in p['name'].lower() or p['name'].lower() in ai_target),
                         None
                     )
                 
@@ -1888,20 +1856,10 @@ async def process_pulse(auth_secret: str = None):
             }).in_('id', dump_ids).execute()
             print(f"✅ Phase 3: Marked {len(dump_ids)} dumps as completed.")
 
-        # Mark run as completed
-        supabase.table('pulse_runs').update({
-            'status': 'completed',
-            'completed_at': datetime.now(timezone.utc).isoformat(),
-            'dumps_processed': len(dumps) if dumps else 0,
-            'tasks_created': len(created_task_ids) if 'created_task_ids' in dir() else 0
-        }).eq('id', pulse_run_id).execute()
-
         return {"success": True, "briefing": briefing_text}
 
     except Exception as e:
-        supabase.table('pulse_runs').update({
-            'status': 'failed',
-            'failed_at': datetime.now(timezone.utc).isoformat(),
-            'error_message': str(e)[:500]
-        }).eq('id', pulse_run_id).execute()
-        raise
+        import traceback
+        print(f"Pulse Critical Error: {e}")
+        traceback.print_exc()
+        return {"error": str(e)}
