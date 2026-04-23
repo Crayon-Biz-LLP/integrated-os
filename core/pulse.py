@@ -192,7 +192,8 @@ class CompletedTask(BaseModel):
 class NewProject(BaseModel):
     name: str
     importance: Optional[int] = 5
-    org_tag: Optional[str] = "INBOX"
+    org_tag: Optional[str] = "SOLVSTRAT"
+    context: Optional[str] = "work"
     description: Optional[str] = None
     keywords: Optional[List[str]] = Field(default_factory=list)
     parent_project_name: Optional[str] = None
@@ -1437,14 +1438,40 @@ async def process_pulse(auth_secret: str = None):
             1. Use project name EXACTLY as shown in quotes above.
             2. If a task mentions a keyword, person, or topic from a project's description/keywords, use that project.
             3. Sub-projects (those marked "sub-project of X") are always more specific — prefer them.
-            4. For new projects you don't recognise from the list, default to the parent project (e.g. "Solvstrat") not Inbox.
+            4. For new projects you don't recognise from the list:
+               - If it's client/tech work → use "Solvstrat" as the project_name.
+               - If it's Qhord-related → use "Qhord".
+               - If it's church/faith → use "Church".
+               - If it's family/home → use "Family & Home".
+               - NEVER use "Inbox" for business tasks.
 
             NEW PROJECT CREATION CRITERIA:
-            - Only add to "new_projects" if a COMPLETELY UNKNOWN client or organization is mentioned.
+            - Only add to "new_projects" if a COMPLETELY UNKNOWN client, product, or organization is mentioned that does not already exist in the active project list above.
             - Always populate "description" with a one-sentence summary of the project's purpose.
-            - Always populate "keywords" with an array of names, abbreviations, and topics related to the project.
-            - If the new project is a client of Solvstrat, set "parent_project_name": "Solvstrat".
-            - Set org_tag to "SOLVSTRAT" for client work, "PERSONAL" for personal, "CHURCH" for faith.
+            - Always populate "keywords" with an array of relevant names, abbreviations, companies, and topics.
+            - Always populate "context" using the rules below.
+
+            ORG_TAG & CONTEXT ROUTING (MANDATORY — never leave as INBOX):
+            Danny's world has 5 domains. Route every new project into exactly one:
+
+              SOLVSTRAT  | context: work     | Tech services company. Client projects, delivery, and anything involving product development, software builds, APIs, or technical consulting. Clients include: Shield Identity, GRB, Himanshu, Canadian project, Johan, Zoho projects, and any new client who hires Solvstrat for tech work. → If a new client/project is Solvstrat work, set org_tag: "SOLVSTRAT", parent_project_name: "Solvstrat"
+
+              QHORD      | context: work     | Danny's own GTM product company. Anything related to building, marketing, or selling Qhord as a standalone product. → Set org_tag: "QHORD", parent_project_name: "Qhord"
+
+              CHURCH     | context: personal | Ministry, sermons, church service, faith-based activities, volunteering, and community outreach. → Set org_tag: "CHURCH", parent_project_name: "Church"
+
+              FAMILY    | context: personal | Home, kids, spouse (Sunju), house maintenance, school, family events, domestic tasks. → Set org_tag: "FAMILY", parent_project_name: "Family & Home"
+
+              PERSONAL   | context: personal | Danny's individual pursuits — health, finance, personal admin, hobbies, investments, gadgets, learning, anything that is about Danny himself. → Set org_tag: "PERSONAL"
+
+              ROUTING RULES (apply in order):
+              1. Does the input mention a client paying Solvstrat for tech/product work? → SOLVSTRAT
+              2. Does the input mention Qhord product development or GTM? → QHORD
+              3. Does the input mention church, ministry, sermon, or faith service? → CHURCH
+              4. Does the input mention home, kids, Sunju, or family? → FAMILY
+              5. Is it about Danny personally (health, finance, personal admin)? → PERSONAL
+              6. Default for anything business/work that doesn't fit 1-2: → SOLVSTRAT
+              7. NEVER default to INBOX for business or client work.
 
             RESOURCE CAPTURE LOGIC:
             - Identify any URLs in the NEW INPUTS. For each URL: CATEGORIZE (GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL), SUMMARIZE (1-sentence description), PROJECT MATCH (if relates to existing project).
@@ -1531,11 +1558,21 @@ async def process_pulse(auth_secret: str = None):
         # A. BATCH NEW PROJECTS (Deduplicated)
         if ai_data.get('new_projects'):
             valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH', 'FAMILY', 'QHORD']
+
+            CONTEXT_MAP = {
+                'CHURCH':       'personal',
+                'PERSONAL':     'personal',
+                'FAMILY':       'personal',
+                'SOLVSTRAT':    'work',
+                'QHORD':        'work',
+                'PRODUCT_LABS': 'work',
+                'CRAYON':       'work',
+            }
             filtered_new_projects = []
 
             for new_p in ai_data['new_projects']:
                 p_name = new_p.get('name', 'Unnamed Project')
-                p_tag = new_p.get('org_tag', 'INBOX')
+                p_tag = new_p.get('org_tag', 'SOLVSTRAT')
                 already_exists = any(
                     p_name.lower() in get_project_name(existing_p).lower() or
                     get_project_name(existing_p).lower() in p_name.lower()
@@ -1552,15 +1589,17 @@ async def process_pulse(auth_secret: str = None):
 
                     filtered_new_projects.append({
                         "name": p_name,
-                        "org_tag": p_tag if p_tag in valid_tags else 'INBOX',
+                        "org_tag": p_tag if p_tag in valid_tags else 'SOLVSTRAT',
                         "status": "active",
-                        "context": "personal" if p_tag in ['CHURCH', 'PERSONAL'] else "work",
+                        "context": CONTEXT_MAP.get(p_tag, 'work'),
                         "is_active": True,
                         "description": p_description,
                         "keywords": new_p.get('keywords', []),
+                        "parent_project_name": new_p.get('parent_project_name'),
                     })
 
             if filtered_new_projects:
+                parent_name_map = {p['name']: p.pop('parent_project_name', None) for p in filtered_new_projects}
                 p_res = supabase.table('projects').insert(filtered_new_projects).execute()
                 if p_res.data:
                     for new_proj in p_res.data:
@@ -1574,6 +1613,20 @@ async def process_pulse(auth_secret: str = None):
                             }
                         }).execute()
                     legacy_projects.extend(p_res.data)
+
+                    for new_p_db in p_res.data:
+                        parent_name = parent_name_map.get(new_p_db.get('name'))
+                        if parent_name:
+                            parent_match = next(
+                                (p for p in legacy_projects
+                                 if p.get('name', '').lower() == parent_name.lower()),
+                                None
+                            )
+                            if parent_match and parent_match.get('id') != new_p_db.get('id'):
+                                supabase.table('projects').update({
+                                    "parent_project_id": parent_match['id']
+                                }).eq('id', new_p_db['id']).execute()
+                                print(f"🔗 Linked '{new_p_db['name']}' → parent '{parent_match['name']}' (id: {parent_match['id']})")
                     projects.extend(p_res.data)
                     print(f"✅ Created {len(p_res.data)} new entity projects.")
 
@@ -1729,6 +1782,28 @@ async def process_pulse(auth_secret: str = None):
                             task_project_id = int(matched.get('id') or actual_inbox_id)
                         except (ValueError, TypeError):
                             pass
+                    else:
+                        name_match = next(
+                            (p for p in legacy_projects 
+                             if p.get('status') == 'active' and
+                             any(word in (p.get('name', '').lower()) 
+                                 for word in ai_target.lower().split() if len(word) > 3)),
+                            None
+                        )
+                        if name_match:
+                            task_project_id = int(name_match['id'])
+                            print(f"⚠️ Task '{task.get('title')}' fuzzy-matched to '{name_match['name']}' (ai_target: '{ai_target}')")
+                        else:
+                            work_hints = ['client', 'nda', 'pilot', 'send', 'check', 'follow', 'call', 'meeting', 'project']
+                            is_work_context = any(hint in ai_target.lower() for hint in work_hints)
+                            if is_work_context:
+                                solvstrat_fallback = next(
+                                    (p for p in legacy_projects if p.get('org_tag') == 'SOLVSTRAT' and not p.get('parent_project_id')),
+                                    None
+                                )
+                                if solvstrat_fallback:
+                                    task_project_id = solvstrat_fallback['id']
+                                    print(f"⚠️ Task '{task.get('title')}' fell back to Solvstrat (no match for '{ai_target}')")
 
                 # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
                 raw_time = task.get('reminder_at')
