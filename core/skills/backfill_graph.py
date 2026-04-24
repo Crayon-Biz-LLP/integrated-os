@@ -158,6 +158,111 @@ def gemini_with_retry_sync(prompt: str, model: str, config: dict = None, retries
             raise
 
 
+# ── EMBEDDING BACKFILL ──────────────────────────────────────────────────────
+
+def get_embedding(text: str) -> list | None:
+    """Generate a 768-dim embedding via Gemini for a given text string."""
+    if not text or not text.strip():
+        return None
+    try:
+        result = with_retry(
+            lambda: gemini_client.models.embed_content(
+                model="gemini-embedding-2-preview",
+                contents=text,
+                config={"task_type": "RETRIEVAL_DOCUMENT", "output_dimensionality": 768}
+            ),
+            retries=3,
+            base_delay=2,
+            label="Gemini embedding"
+        )
+        if result and result.embeddings:
+            return result.embeddings[0].values
+        return None
+    except Exception as e:
+        print(f"Embedding failed: {e}")
+        return None
+
+
+def backfill_embeddings():
+    """
+    Finds all rows in `memories` where embedding IS NULL,
+    generates embeddings via Gemini, and patches them back.
+    """
+    print("\n🔍 Embedding backfill: fetching memories with missing embeddings...")
+
+    all_rows = []
+    start = 0
+    page_size = 500
+
+    while True:
+        try:
+            res = with_retry(
+                lambda: supabase.table("memories")
+                    .select("id, content, memory_type, metadata")
+                    .in_("memory_type", MEMORY_TYPES)
+                    .is_("embedding", "null")
+                    .range(start, start + page_size - 1)
+                    .execute(),
+                label="Fetch missing embeddings"
+            )
+            data = res.data or []
+        except Exception as e:
+            print(f"Failed to fetch missing-embedding rows: {e}")
+            break
+
+        all_rows.extend(data)
+        if len(data) < page_size:
+            break
+        start += page_size
+
+    total = len(all_rows)
+    print(f"Found {total} memories with missing embeddings.\n")
+
+    if total == 0:
+        print("✅ No missing embeddings — all caught up!")
+        return
+
+    success = 0
+    failed = 0
+
+    for i, row in enumerate(all_rows):
+        memory_id = row["id"]
+        content = synthesize_content(row)
+
+        if not content.strip():
+            print(f"  [{i+1}/{total}] Skipping {memory_id} — empty content.")
+            failed += 1
+            continue
+
+        embedding = get_embedding(content)
+
+        if not embedding:
+            print(f"  [{i+1}/{total}] ❌ Embedding failed for {memory_id}")
+            failed += 1
+            continue
+
+        try:
+            with_retry(
+                lambda: supabase.table("memories")
+                    .update({"embedding": embedding})
+                    .eq("id", memory_id)
+                    .execute(),
+                label=f"Update embedding for {memory_id}"
+            )
+            print(f"  [{i+1}/{total}] ✅ Patched embedding for {memory_id} ({row['memory_type']})")
+            success += 1
+        except Exception as e:
+            print(f"  [{i+1}/{total}] ❌ DB update failed for {memory_id}: {e}")
+            failed += 1
+
+        # Small delay to stay within Gemini rate limits
+        time.sleep(0.3)
+
+    print(f"\n🏁 Embedding backfill complete! ✅ Success: {success}  ❌ Failed: {failed}")
+
+# ── END EMBEDDING BACKFILL ──────────────────────────────────────────────────
+
+
 def extract_graph_elements(text: str, memory_id: str) -> dict:
     prompt = f"""Extract knowledge graph elements from this text.
 
@@ -231,7 +336,6 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         label = node.get("label", "")
         node_type = node.get("type", "concept")
         
-        # Start the record with all known data
         record = {
             "label": label,
             "type": node_type,
@@ -242,8 +346,6 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         if existing_id:
             record["id"] = existing_id
         else:
-            # 🛡️ THE FIX: Generate a UUID for new nodes here.
-            # This ensures the batch never contains 'null' IDs.
             record["id"] = str(uuid.uuid4())
             
         node_records.append(record)
@@ -322,9 +424,13 @@ def process_memory(memory: dict, graph_entities: dict) -> bool:
 
 
 def run_backfill():
-    print("Fetching memories...")
+    # ── Step 1: Patch missing embeddings first ──────────────────────────────
+    backfill_embeddings()
+
+    # ── Step 2: Backfill graph edges ────────────────────────────────────────
+    print("\n🔗 Graph backfill: fetching memories for graph edges...")
     memories = fetch_memories()
-    print(f"Found {len(memories)} memories")
+    print(f"Found {len(memories)} memories to process for graph edges.")
     
     print("Building graph entities lookup...")
     graph_entities = fetch_graph_entities()
@@ -351,7 +457,7 @@ def run_backfill():
         
         print(f"Completed batch {batch_num}")
     
-    print(f"Backfill complete! Processed: {processed}, Skipped: {failed}")
+    print(f"Graph backfill complete! Processed: {processed}, Skipped: {failed}")
     
     backfill_orphaned_tasks()
 
@@ -400,14 +506,12 @@ def backfill_orphaned_tasks():
         if project_id:
             meta["project_id"] = project_id
         
-        # Use upsert to handle duplicate labels gracefully
         try:
             supabase.table("graph_nodes").upsert({
                 "label": task_title,
                 "type": "task",
                 "metadata": json.dumps({"source": "tasks_table", "task_id": task_id, **meta})
             }, on_conflict="label").execute()
-            # Fetch the node (existing or newly created)
             node_res = supabase.table("graph_nodes").select("id").eq("label", task_title).maybe_single().execute()
             if not node_res or not node_res.data:
                 print(f"⚠️ Failed to get node for task {task_id}")
@@ -428,7 +532,6 @@ def backfill_orphaned_tasks():
             except Exception:
                 proj_node = None
             
-            # Guard: check both proj_node exists AND has data
             if proj_node is not None and proj_node.data is not None:
                 proj_node_id = proj_node.data["id"]
                 try:
