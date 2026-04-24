@@ -1613,6 +1613,17 @@ async def process_pulse(auth_secret: str = None):
                 p_res = supabase.table('projects').insert(filtered_new_projects).execute()
                 if p_res.data:
                     for new_proj in p_res.data:
+                        existing_node = (
+                            supabase.table('graph_nodes')
+                            .select('id')
+                            .eq('type', 'project')
+                            .ilike('label', new_proj.get('name'))
+                            .maybe_single()
+                            .execute()
+                        )
+                        if existing_node.data:
+                            print(f"⚠️ Graph node for '{new_proj.get('name')}' already exists, skipping insert.")
+                            continue
                         supabase.table('graph_nodes').insert({
                             "label": new_proj.get('name'),
                             "type": "project",

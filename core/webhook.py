@@ -746,14 +746,25 @@ async def handle_command(text: str, chat_id: int):
                 reply = "🚀 No active missions. Type `/mission [Goal]` to start hunting."
         else:
             try:
-                supabase.table('graph_nodes').insert({
-                    "label": params,
-                    "type": "mission",
-                    "metadata": json.dumps({"status": "active", "origin": "webhook_command"})
-                }).execute()
-                reply = f"🚀 **MISSION DECLARED:** {params}\n\nI am now hunting for components and 'Sparks' related to this goal."
-            except:
-                reply = "❌ Database Error creating mission."
+                existing_mission = (
+                    supabase.table('graph_nodes')
+                    .select('id')
+                    .eq('type', 'mission')
+                    .ilike('label', params)
+                    .maybe_single()
+                    .execute()
+                )
+                if existing_mission.data:
+                    reply = f"⚠️ Mission '{params}' already exists. Type `/mission [different goal]` to start a new one."
+                else:
+                    supabase.table('graph_nodes').insert({
+                        "label": params,
+                        "type": "mission",
+                        "metadata": json.dumps({"status": "active", "origin": "webhook_command"})
+                    }).execute()
+                    reply = f"🚀 **MISSION DECLARED:** {params}\n\nI am now hunting for components and 'Sparks' related to this goal."
+            except Exception as e:
+                reply = f"❌ Error: {str(e)}"
 
     elif text in ['/library', '📚 Library']:
         lib_res = supabase.table('resources').select('title, url, category').order('created_at', desc=True).limit(10).execute()
