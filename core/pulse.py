@@ -1613,26 +1613,37 @@ async def process_pulse(auth_secret: str = None):
                 p_res = supabase.table('projects').insert(filtered_new_projects).execute()
                 if p_res.data:
                     for new_proj in p_res.data:
+                        project_name = new_proj.get('name')
+                        node_metadata = {
+                            "source": "pulse_auto",
+                            "project_id": str(new_proj.get('id')),
+                            "org_tag": new_proj.get('org_tag'),
+                        }
                         existing_node = (
                             supabase.table('graph_nodes')
-                            .select('id')
-                            .eq('type', 'project')
-                            .ilike('label', new_proj.get('name'))
+                            .select('id', 'type')
+                            .ilike('label', project_name)
                             .maybe_single()
                             .execute()
                         )
                         if existing_node.data:
-                            print(f"⚠️ Graph node for '{new_proj.get('name')}' already exists, skipping insert.")
-                            continue
-                        supabase.table('graph_nodes').insert({
-                            "label": new_proj.get('name'),
-                            "type": "project",
-                            "metadata": {
-                                "source": "pulse_auto",
-                                "project_id": str(new_proj.get('id')),
-                                "org_tag": new_proj.get('org_tag'),
-                            }
-                        }).execute()
+                            if existing_node.data['type'] != 'project':
+                                supabase.table('graph_nodes').update({
+                                    'type': 'project',
+                                    'metadata': node_metadata
+                                }).eq('id', existing_node.data['id']).execute()
+                                print(f"⬆️ Upgraded node '{project_name}' from {existing_node.data['type']} → project")
+                            else:
+                                print(f"⚠️ Project node '{project_name}' already exists, updating metadata.")
+                                supabase.table('graph_nodes').update({
+                                    'metadata': node_metadata
+                                }).eq('id', existing_node.data['id']).execute()
+                        else:
+                            supabase.table('graph_nodes').insert({
+                                "label": project_name,
+                                "type": "project",
+                                "metadata": node_metadata
+                            }).execute()
                     legacy_projects.extend(p_res.data)
                     projects.extend(p_res.data)
                     print(f"✅ Created {len(p_res.data)} new entity projects.")
