@@ -1595,11 +1595,21 @@ async def process_pulse(auth_secret: str = None):
                         "is_active": True,
                         "description": p_description,
                         "keywords": new_p.get('keywords', []),
-                        "parent_project_name": new_p.get('parent_project_name'),
                     })
 
+                    resolved_parent_id = None
+                    parent_name = new_p.get('parent_project_name', '').lower().strip()
+                    if parent_name:
+                        parent_match = next(
+                            (p for p in legacy_projects if p.get('name', '').lower() == parent_name),
+                            None
+                        )
+                        if parent_match:
+                            resolved_parent_id = parent_match['id']
+                            filtered_new_projects[-1]['parent_project_id'] = resolved_parent_id
+                            print(f"🔗 Will link '{p_name}' → parent '{parent_match['name']}' (id: {resolved_parent_id})")
+
             if filtered_new_projects:
-                parent_name_map = {p['name']: p.pop('parent_project_name', None) for p in filtered_new_projects}
                 p_res = supabase.table('projects').insert(filtered_new_projects).execute()
                 if p_res.data:
                     for new_proj in p_res.data:
@@ -1613,20 +1623,6 @@ async def process_pulse(auth_secret: str = None):
                             }
                         }).execute()
                     legacy_projects.extend(p_res.data)
-
-                    for new_p_db in p_res.data:
-                        parent_name = parent_name_map.get(new_p_db.get('name'))
-                        if parent_name:
-                            parent_match = next(
-                                (p for p in legacy_projects
-                                 if p.get('name', '').lower() == parent_name.lower()),
-                                None
-                            )
-                            if parent_match and parent_match.get('id') != new_p_db.get('id'):
-                                supabase.table('projects').update({
-                                    "parent_project_id": parent_match['id']
-                                }).eq('id', new_p_db['id']).execute()
-                                print(f"🔗 Linked '{new_p_db['name']}' → parent '{parent_match['name']}' (id: {parent_match['id']})")
                     projects.extend(p_res.data)
                     print(f"✅ Created {len(p_res.data)} new entity projects.")
 
