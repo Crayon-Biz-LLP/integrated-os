@@ -4,10 +4,24 @@
             "maxDuration": 60
         }
     },
+    "builds": [
+        {
+            "src": "frontend/package.json",
+            "use": "@vercel/next"
+        },
+        {
+            "src": "api/index.py",
+            "use": "@vercel/python"
+        }
+    ],
     "rewrites": [
         {
-            "source": "/(.*)",
+            "source": "/api/:path*",
             "destination": "/api/index.py"
+        },
+        {
+            "source": "/(.*)",
+            "destination": "/frontend/$1"
         }
     ]
 }
