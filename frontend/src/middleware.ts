@@ -1,29 +1,16 @@
 import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 
-const AUTHORIZED_EMAIL = 'danielyashwant@gmail.com';
-
-export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const code = url.searchParams.get('code');
-
-  if (!code) {
-    return NextResponse.redirect(new URL('/login?error=auth_failed', url.origin));
-  }
-
-  const response = NextResponse.redirect(new URL('/dashboard/tasks', url.origin));
+export async function middleware(request: NextRequest) {
+  const response = NextResponse.next();
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll() {
-          return request.headers.get('cookie')?.split(';').map((c) => {
-            const [name, ...rest] = c.trim().split('=');
-            return { name, value: rest.join('=') };
-          }) ?? [];
-        },
+        getAll() { return request.cookies.getAll(); },
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value, options }) =>
             response.cookies.set(name, value, options)
@@ -33,20 +20,23 @@ export async function GET(request: Request) {
     }
   );
 
-  const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
-  if (sessionError) {
-    return NextResponse.redirect(new URL('/login?error=auth_failed', url.origin));
+  const { data: { user } } = await supabase.auth.getUser();
+
+  const isProtected = request.nextUrl.pathname.startsWith('/dashboard');
+  const isAuthRoute = request.nextUrl.pathname.startsWith('/login') ||
+                      request.nextUrl.pathname.startsWith('/auth');
+
+  if (isProtected && !user) {
+    return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  if (userError || !user) {
-    return NextResponse.redirect(new URL('/login?error=auth_failed', url.origin));
-  }
-
-  if (user.email !== AUTHORIZED_EMAIL) {
-    await supabase.auth.signOut();
-    return NextResponse.redirect(new URL('/login?error=unauthorized', url.origin));
+  if (isAuthRoute && user && !request.nextUrl.pathname.startsWith('/auth')) {
+    return NextResponse.redirect(new URL('/dashboard/tasks', request.url));
   }
 
   return response;
 }
+
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+};
