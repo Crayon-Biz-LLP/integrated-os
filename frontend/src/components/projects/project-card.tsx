@@ -24,25 +24,22 @@ const contextLabels: Record<string, string> = {
   admin: 'Admin',
 };
 
-function getRelativeTime(dateStr: string | null): string {
+function formatSinceDate(dateStr: string | null): string {
   if (!dateStr) return '';
   const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Yesterday';
-  if (diffDays < 7) return `${diffDays}d ago`;
-  if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
-  if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`;
-  return `${Math.floor(diffDays / 365)}y ago`;
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    year: 'numeric',
+  });
 }
 
 export function ProjectCard({ project, onClick }: ProjectCardProps) {
   const isArchived = project.status === 'archived';
   const orgTagBadge = project.org_tag ? orgTagColors[project.org_tag] : '';
   const contextLabel = contextLabels[project.context] || project.context;
+  const keywords = project.keywords || [];
+  const displayKeywords = keywords.slice(0, 5);
+  const extraKeywords = keywords.length > 5 ? keywords.length - 5 : 0;
 
   return (
     <div
@@ -61,7 +58,7 @@ export function ProjectCard({ project, onClick }: ProjectCardProps) {
             </h3>
             {project.parent_project_name && (
               <p className="text-xs text-muted-foreground mt-0.5">
-                Sub-project of {project.parent_project_name}
+                ↳ Parent: {project.parent_project_name}
               </p>
             )}
           </div>
@@ -76,6 +73,19 @@ export function ProjectCard({ project, onClick }: ProjectCardProps) {
           <p className="text-xs text-muted-foreground line-clamp-2">
             {project.description}
           </p>
+        )}
+
+        {displayKeywords.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 mt-1">
+            {displayKeywords.map((keyword, i) => (
+              <Badge key={i} variant="secondary" className="text-[10px] py-0 px-1.5">
+                {keyword}
+              </Badge>
+            ))}
+            {extraKeywords > 0 && (
+              <span className="text-[10px] text-muted-foreground">+{extraKeywords} more</span>
+            )}
+          </div>
         )}
 
         <div className="flex flex-wrap items-center gap-2 mt-1">
@@ -98,13 +108,13 @@ export function ProjectCard({ project, onClick }: ProjectCardProps) {
                 {project.open_task_count} open task{project.open_task_count !== 1 ? 's' : ''}
               </span>
             ) : (
-              <span className="text-muted-foreground">No open tasks</span>
+              <span className="text-muted-foreground">Idle</span>
             )}
           </span>
           {project.created_at && (
             <span className="text-xs text-muted-foreground flex items-center gap-1">
               <Calendar className="h-3 w-3" />
-              {getRelativeTime(project.created_at)}
+              Since {formatSinceDate(project.created_at)}
             </span>
           )}
         </div>

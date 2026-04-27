@@ -13,7 +13,7 @@ const defaultFilters: ProjectFilters = {
   search: '',
   orgTag: 'all',
   context: 'all',
-  status: 'all',
+  status: 'active',
 };
 
 export default function Page() {

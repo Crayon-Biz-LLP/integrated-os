@@ -11,7 +11,7 @@ interface ProjectsFiltersProps {
 }
 
 const orgTags = [
-  { value: 'all', label: 'All Areas' },
+  { value: 'all', label: 'All' },
   { value: 'SOLVSTRAT', label: 'SOLVSTRAT' },
   { value: 'CHURCH', label: 'CHURCH' },
   { value: 'PERSONAL', label: 'PERSONAL' },
@@ -21,16 +21,16 @@ const orgTags = [
 ];
 
 const contexts = [
-  { value: 'all', label: 'All Context' },
+  { value: 'all', label: 'All' },
   { value: 'work', label: 'Work' },
   { value: 'personal', label: 'Personal' },
   { value: 'admin', label: 'Admin' },
 ];
 
 const statuses = [
-  { value: 'all', label: 'All Status' },
   { value: 'active', label: 'Active' },
   { value: 'archived', label: 'Archived' },
+  { value: 'all', label: 'All' },
 ];
 
 export function ProjectsFilters({ filters, onFiltersChange }: ProjectsFiltersProps) {

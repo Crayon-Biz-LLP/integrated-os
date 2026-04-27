@@ -26,7 +26,7 @@ export async function GET() {
   const { data: tasks, error: tasksError } = await supabase
     .from("tasks")
     .select("id, project_id")
-    .not("status", "in", '("done","cancelled")');
+    .in("status", ["todo", "in_progress", "blocked"]);
 
   if (tasksError) {
     return NextResponse.json({ error: tasksError.message }, { status: 500 });
