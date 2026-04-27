@@ -20,7 +20,7 @@ export function PeopleGrid({ people, loading, onPersonClick }: PeopleGridProps) 
     );
   }
 
-  if (people.length === 0) {
+  if (!people || people.length === 0) {
     return (
       <div className="rounded-lg border border-dashed p-8 text-center">
         <p className="text-sm text-muted-foreground">No people found</p>

@@ -24,10 +24,14 @@ export default function PeoplePage() {
 
   useEffect(() => {
     setLoading(true);
-    fetchPeople(filters).then((data) => {
-      setPeople(data);
-      setLoading(false);
-    });
+    fetchPeople(filters)
+      .then((data) => {
+        setPeople(Array.isArray(data) ? data : []);
+        setLoading(false);
+      })
+      .catch(() => {
+        setLoading(false);
+      });
   }, [filters]);
 
   const handlePersonClick = (person: Person) => {
