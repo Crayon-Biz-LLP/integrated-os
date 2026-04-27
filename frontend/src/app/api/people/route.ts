@@ -30,9 +30,9 @@ export async function GET(req: NextRequest) {
   }
 
   // Compute active_task_count for each person
-  let result = (people ?? []).map((person: any) => {
-    const active_task_count = (openTasks ?? []).filter((task: any) =>
-      task.title.toLowerCase().includes(person.name.toLowerCase())
+  let result = (people || []).map((person: any) => {
+    const active_task_count = (openTasks || []).filter((task: any) =>
+      task.title?.toLowerCase().includes(person.name.toLowerCase())
     ).length;
 
     return {
