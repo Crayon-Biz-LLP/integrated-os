@@ -1,6 +1,7 @@
 'use client';
 
 import { Task } from '@/lib/tasks/types';
+import { stripMarkdown } from '@/lib/utils/strip-markdown';
 import {
   Sheet,
   SheetContent,
@@ -57,7 +58,7 @@ export function TaskDetailSheet({ task, open, onOpenChange, onChangeProjectClick
 
         <div className="mt-6 space-y-4">
           <div>
-            <h3 className="text-lg font-semibold leading-tight">{task.title}</h3>
+            <h3 className="text-lg font-semibold leading-tight">{stripMarkdown(task.title)}</h3>
           </div>
 
           <Separator />

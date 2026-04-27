@@ -33,7 +33,7 @@ export function ProjectsStats() {
   if (!stats) return null;
 
   const statCards = [
-    { label: 'Active', value: stats.totalActive, color: 'text-foreground' },
+    { label: 'Active Projects', value: stats.totalActive, color: 'text-foreground' },
     { label: 'Archived', value: stats.totalArchived, color: 'text-muted-foreground' },
     { label: 'Open Tasks', value: stats.totalOpenTasks, color: 'text-blue-600' },
     { label: 'Idle Projects', value: stats.idleProjects, color: 'text-amber-600' },

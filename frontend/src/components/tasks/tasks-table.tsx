@@ -1,6 +1,7 @@
 'use client';
 
 import { Task } from '@/lib/tasks/types';
+import { stripMarkdown } from '@/lib/utils/strip-markdown';
 import {
   Table,
   TableBody,
@@ -99,7 +100,7 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick }: TasksTa
               >
                 <TableCell className="font-medium">
                   <span className={isOverdue(task) ? 'text-red-600 font-semibold' : ''}>
-                    {task.title}
+                    {stripMarkdown(task.title)}
                   </span>
                 </TableCell>
                 <TableCell>
