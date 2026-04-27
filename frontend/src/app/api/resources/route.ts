@@ -30,13 +30,7 @@ export async function GET(req: NextRequest) {
       category,
       mission_id,
       created_at,
-      enriched_at,
-      missions:missions!resources_mission_id_fkey (
-        id,
-        title,
-        status,
-        description
-      )
+      enriched_at
     `);
 
   if (search) {
@@ -75,10 +69,11 @@ export async function GET(req: NextRequest) {
   const { data, error } = await query;
 
   if (error) {
+    console.error("Error fetching resources:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const resources = (data ?? []).map((r: any) => ({
+  const resources: any[] = (data ?? []).map((r: any) => ({
     id: r.id,
     url: r.url,
     title: r.title,
@@ -88,11 +83,33 @@ export async function GET(req: NextRequest) {
     mission_id: r.mission_id,
     created_at: r.created_at,
     enriched_at: r.enriched_at,
-    mission_title: Array.isArray(r.missions) ? r.missions[0]?.title ?? null : r.missions?.title ?? null,
-    mission_status: Array.isArray(r.missions) ? r.missions[0]?.status ?? null : r.missions?.status ?? null,
-    mission_description: Array.isArray(r.missions) ? r.missions[0]?.description ?? null : r.missions?.description ?? null,
     hostname: getHostname(r.url),
+    mission_title: null,
+    mission_status: null,
+    mission_description: null,
   }));
+
+  const missionIds = [...new Set(resources.map(r => r.mission_id).filter(Boolean))];
+  
+  if (missionIds.length > 0) {
+    const { data: missionsData } = await supabase
+      .from("missions")
+      .select("id, title, status, description")
+      .in("id", missionIds);
+    
+    const missionsMap: Record<number, any> = {};
+    for (const m of (missionsData ?? [])) {
+      missionsMap[m.id] = m;
+    }
+
+    for (const r of resources) {
+      if (r.mission_id && missionsMap[r.mission_id]) {
+        r.mission_title = missionsMap[r.mission_id].title;
+        r.mission_status = missionsMap[r.mission_id].status;
+        r.mission_description = missionsMap[r.mission_id].description;
+      }
+    }
+  }
 
   return NextResponse.json(resources);
 }

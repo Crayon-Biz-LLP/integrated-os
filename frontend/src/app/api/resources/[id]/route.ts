@@ -28,13 +28,7 @@ export async function GET(
       category,
       mission_id,
       created_at,
-      enriched_at,
-      missions:missions!resources_mission_id_fkey (
-        id,
-        title,
-        status,
-        description
-      )
+      enriched_at
     `)
     .eq("id", Number(id))
     .single();
@@ -43,8 +37,7 @@ export async function GET(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const missionsData = Array.isArray(data.missions) ? data.missions[0] : data.missions;
-  const resource = {
+  const resource: any = {
     id: data.id,
     url: data.url,
     title: data.title,
@@ -54,11 +47,25 @@ export async function GET(
     mission_id: data.mission_id,
     created_at: data.created_at,
     enriched_at: data.enriched_at,
-    mission_title: missionsData?.title ?? null,
-    mission_status: missionsData?.status ?? null,
-    mission_description: missionsData?.description ?? null,
     hostname: getHostname(data.url),
+    mission_title: null,
+    mission_status: null,
+    mission_description: null,
   };
+
+  if (data.mission_id) {
+    const { data: missionData } = await supabase
+      .from("missions")
+      .select("id, title, status, description")
+      .eq("id", data.mission_id)
+      .single();
+    
+    if (missionData) {
+      resource.mission_title = missionData.title;
+      resource.mission_status = missionData.status;
+      resource.mission_description = missionData.description;
+    }
+  }
 
   return NextResponse.json(resource);
 }

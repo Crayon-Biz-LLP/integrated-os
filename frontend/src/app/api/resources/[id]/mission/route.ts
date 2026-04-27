@@ -13,20 +13,11 @@ export async function PATCH(
     .from("resources")
     .update({ mission_id: mission_id || null })
     .eq("id", Number(id))
-    .select(`
-      id,
-      url,
-      title,
-      summary,
-      strategic_note,
-      category,
-      mission_id,
-      created_at,
-      enriched_at
-    `)
+    .select()
     .single();
 
   if (error) {
+    console.error("Error updating resource mission:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
