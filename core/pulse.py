@@ -3,6 +3,8 @@ import json
 import re
 import asyncio
 import httpx
+import time
+import random
 from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from google.oauth2.credentials import Credentials
@@ -11,6 +13,19 @@ from googleapiclient.discovery_cache import base
 from google import genai
 from pydantic import BaseModel, Field
 from typing import List, Optional
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
+PULSE_ENABLE_OPENROUTER_FALLBACK = os.getenv("PULSE_ENABLE_OPENROUTER_FALLBACK", "true").lower() == "true"
+PULSE_HTTP_REFERER = os.getenv("PULSE_HTTP_REFERER", "http://localhost:8000")
+PULSE_APP_NAME = os.getenv("PULSE_APP_NAME", "Pulse")
+
+GEMMA_FALLBACK_MODEL = "gemma-4-31b-it"
+GEMMA_SPEED_MODEL = "gemma-4-26b-a4b-it"
+OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+
+RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
+NON_RETRYABLE_ERRORS = ['401', '403', '400', 'invalid']
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
@@ -22,6 +37,9 @@ EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIMENSION = 768
 
 BRIEFING_MODEL = "gemini-3-flash-preview"
+
+RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
+NON_RETRYABLE_ERRORS = ['401', '403', '400', 'invalid']
 
 
 def get_project_name(project: dict) -> str:
@@ -249,8 +267,6 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
     max_retries = 5
     base_delay = 10
 
-    retryable_errors = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded']
-    
     for attempt in range(max_retries):
         try:
             if contents is not None:
@@ -269,7 +285,7 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
         except Exception as e:
             error_str = str(e).lower()
 
-            should_retry = any(err in error_str for err in retryable_errors)
+            should_retry = any(err in error_str for err in RETRYABLE_ERRORS)
             if should_retry and attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt)
                 print(f"⚠️ API Hiccup ({error_str}), retrying in {delay}s...")
@@ -277,6 +293,203 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
                 continue
             else:
                 raise
+
+
+class SimpleResponse:
+    """Simple response wrapper for OpenRouter responses."""
+    def __init__(self, text: str):
+        self.text = text
+
+
+def _jitter(delay: float) -> float:
+    """Add jitter to delay: +/- 25%"""
+    return delay * (0.75 + random.random() * 0.5)
+
+
+def parse_json_response(response_text: str) -> any:
+    """Robust JSON parsing with extraction fallback."""
+    if not response_text:
+        raise ValueError("Empty response")
+    
+    text = response_text.strip()
+    
+    text = re.sub(r'^```json\n?', '', text)
+    text = re.sub(r'\n?```$', '', text).strip()
+    
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    
+    match = re.search(r'\{[\s\S]*\}|\[[\s\S]*\]', text)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+    
+    raise ValueError(f"Could not parse JSON from response: {text[:100]}...")
+
+
+async def call_llm_with_fallback(
+    prompt: str,
+    model: str = None,
+    config: dict = None,
+    contents=None,
+    is_critical: bool = True,
+    require_json: bool = False
+):
+    """
+    Multi-provider LLM call with fallback chain.
+    
+    Provider chain:
+    1. Primary: Gemini (gemini-3-flash-preview)
+    2. Fallback: Gemma (gemma-4-31b-it) 
+    3. Fallback: OpenRouter (nvidia/nemotron-3-super-120b-a12b:free)
+    
+    Args:
+        prompt: The prompt to send
+        model: Override primary model (default: BRIEFING_MODEL)
+        config: Generation config (temperature, system instruction, etc.)
+        contents: Multi-modal contents instead of text prompt
+        is_critical: If false, use faster fallback for non-critical ops
+        require_json: If true, ensure JSON output parsing
+    
+    Returns:
+        Response object with .text attribute
+    
+    Raises:
+        Exception if all providers fail
+    """
+    if model is None:
+        model = BRIEFING_MODEL
+    
+    max_retries_per_provider = 2 if is_critical else 1
+    base_delay = 8 if is_critical else 4
+    
+    providers = [
+        {
+            "provider": "gemini",
+            "model": model,
+            "fn": lambda p, c, cfg: gemini_client.models.generate_content(
+                model=model,
+                contents=c if c else p,
+                config=cfg or {}
+            )
+        },
+        {
+            "provider": "gemma",
+            "model": GEMMA_FALLBACK_MODEL,
+            "fn": lambda p, c, cfg: gemini_client.models.generate_content(
+                model=GEMMA_FALLBACK_MODEL,
+                contents=c if c else p,
+                config=cfg or {}
+            )
+        },
+    ]
+    
+    if PULSE_ENABLE_OPENROUTER_FALLBACK and OPENROUTER_API_KEY:
+        providers.append({
+            "provider": "openrouter",
+            "model": OPENROUTER_MODEL,
+            "fn": lambda p, c, cfg: _call_openrouter(p, cfg or {})
+        })
+    
+    last_error = None
+    
+    for provider_idx, prov in enumerate(providers):
+        start_time = time.time()
+        provider_name = prov["provider"]
+        model_name = prov["model"]
+        
+        for attempt in range(max_retries_per_provider):
+            try:
+                response = prov["fn"](prompt, contents, config)
+                elapsed = time.time() - start_time
+                
+                if hasattr(response, 'text'):
+                    response_text = response.text
+                else:
+                    response_text = str(response)
+                
+                if require_json:
+                    try:
+                        parsed = parse_json_response(response_text)
+                    except ValueError as pe:
+                        print(f"⚠️ LLM parse failed provider={provider_name} model={model_name}: {pe}")
+                        if provider_idx == len(providers) - 1:
+                            raise
+                        continue
+                
+                print(f"✓ LLM success provider={provider_name} model={model_name} elapsed={elapsed:.1f}s")
+                return response
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                elapsed = time.time() - start_time
+                
+                is_retryable = any(err in error_str for err in RETRYABLE_ERRORS)
+                is_non_retryable = any(err in error_str for err in NON_RETRYABLE_ERRORS)
+                
+                if is_non_retryable:
+                    print(f"✗ LLM non-retryable error provider={provider_name}: {e}")
+                    raise
+                
+                if is_retryable and attempt < max_retries_per_provider - 1:
+                    delay = _jitter(base_delay * (2 ** attempt))
+                    print(f"⚠️ LLM retry provider={provider_name} model={model_name} attempt={attempt+1} delay={delay:.0f}s error={error_str[:50]}")
+                    await asyncio.sleep(delay)
+                    continue
+                
+                print(f"⚠️ LLM provider failed provider={provider_name} model={model_name}: {error_str[:80]}")
+                last_error = e
+                break
+        
+        if provider_idx < len(providers) - 1:
+            print(f"🔄 LLM fallback -> {providers[provider_idx + 1]['provider']}")
+    
+    raise last_error or Exception("All LLM providers failed")
+
+
+async def _call_openrouter(prompt: str, config: dict) -> any:
+    """Call OpenRouter API."""
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": PULSE_HTTP_REFERER,
+        "X-Title": PULSE_APP_NAME
+    }
+    
+    system_instruction = config.get('system_instruction') if config else None
+    temperature = config.get('temperature', 0.7)
+    response_mime_type = config.get('response_mime_type')
+    
+    messages = []
+    if system_instruction:
+        messages.append({"role": "system", "content": system_instruction})
+    messages.append({"role": "user", "content": prompt})
+    
+    body = {
+        "model": OPENROUTER_MODEL,
+        "messages": messages,
+        "temperature": temperature
+    }
+    
+    if response_mime_type == "application/json":
+        body["response_format"] = {"type": "json_object"}
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(OPENROUTER_BASE_URL, json=body, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if 'choices' in data and len(data['choices']) > 0:
+            return SimpleResponse(text=data['choices'][0]['message']['content'])
+        
+        return SimpleResponse(text=data.get('content', '') or json.dumps(data))
+
 
 def get_embedding(text: str) -> list:
     """Generate embedding for text using gemini-embedding-2-preview."""
@@ -508,7 +721,11 @@ async def generate_after_action_report() -> str:
         - Loops closed today: {completed_count}
         - Loops still open: {open_count}"""
         
-        response = await call_gemini_with_retry(prompt=prompt)
+        response = await call_llm_with_fallback(
+            prompt=prompt,
+            is_critical=False,
+            require_json=False
+        )
         
         lesson = response.text.strip()
         
@@ -600,12 +817,14 @@ async def batch_enrich_resources():
     {json.dumps(enrichment_data, indent=2)}"""
     
     try:
-        response = await call_gemini_with_retry(
+        response = await call_llm_with_fallback(
             prompt=prompt,
             model="gemini-3.1-flash-lite-preview",
-            config={'response_mime_type': 'application/json'}
+            config={'response_mime_type': 'application/json'},
+            is_critical=False,
+            require_json=True
         )
-        parsed = json.loads(response.text)
+        parsed = parse_json_response(response.text)
         
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         enriched_at = datetime.now(ist_offset).isoformat()
@@ -955,12 +1174,14 @@ async def process_pulse(auth_secret: str = None):
             {json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
             
             try:
-                sort_response = await call_gemini_with_retry(
+                sort_response = await call_llm_with_fallback(
                     prompt=sort_prompt,
                     model="gemini-3.1-flash-lite-preview",
-                    config={'response_mime_type': 'application/json'}
+                    config={'response_mime_type': 'application/json'},
+                    is_critical=False,
+                    require_json=True
                 )
-                sort_result = json.loads(sort_response.text)
+                sort_result = parse_json_response(sort_response.text)
                 
                 task_dump_ids = []
                 note_dump_ids = []
@@ -1520,15 +1741,17 @@ async def process_pulse(auth_secret: str = None):
         }
 
         try:
-            # 🛡️ Step 2: The Modern Call (No 'GenerativeModel' needed)
-            response = await call_gemini_with_retry(
+            # 🛡️ Step 2: The Modern Call with fallback
+            response = await call_llm_with_fallback(
                 prompt=prompt,
                 model=BRIEFING_MODEL,
                 config={
                     'response_mime_type': 'application/json',
                     'response_schema': PulseOutput,
                     'system_instruction': system_instruction_text
-                }
+                },
+                is_critical=True,
+                require_json=True
             )
             response_text = response.text
 
@@ -2005,12 +2228,14 @@ async def process_pulse(auth_secret: str = None):
                     ]"""
 
                     try:
-                        backfill_response = await call_gemini_with_retry(
+                        backfill_response = await call_llm_with_fallback(
                             prompt=backfill_prompt,
                             model="gemini-3.1-flash-lite-preview",
-                            config={'response_mime_type': 'application/json'}
+                            config={'response_mime_type': 'application/json'},
+                            is_critical=False,
+                            require_json=True
                         )
-                        backfill_result = json.loads(backfill_response.text)
+                        backfill_result = parse_json_response(backfill_response.text)
                         if not isinstance(backfill_result, list):
                             print(f"⚠️ Backfill classifier returned non-list, skipping.")
                             backfill_result = []
