@@ -5,6 +5,9 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return NextResponse.json({ error: 'Missing Supabase environment variables' }, { status: 500 });
+  }
   try {
     const { id } = await params;
     const { mission_id } = await req.json();
