@@ -1,6 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
+interface ProjectRow {
+  id: number;
+  name: string;
+  status: string;
+  context: string;
+  description: string | null;
+  created_at: string | null;
+  org_tag: string | null;
+  is_active: boolean;
+  parent_project_id: number | null;
+  keywords: string[] | null;
+  parent: { id: number; name: string } | null;
+}
+
+interface EnrichedProject extends ProjectRow {
+  parent_project_name: string | null;
+  open_task_count: number;
+  keywords: string[];
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const supabase = await createServerSupabaseClient();
@@ -38,11 +58,11 @@ export async function GET(req: NextRequest) {
     }
   });
 
-  let projects = (fallbackData ?? []).map((p: Record<string, unknown>) => ({
+  let projects: EnrichedProject[] = (fallbackData ?? []).map((p: ProjectRow) => ({
     ...p,
-    parent_project_name: (p.parent as { name?: string } | null)?.name ?? null,
-    open_task_count: taskCountMap[p.id as number] || 0,
-    keywords: (p.keywords ?? []) as string[],
+    parent_project_name: p.parent?.name ?? null,
+    open_task_count: taskCountMap[p.id] || 0,
+    keywords: p.keywords ?? [],
   }));
 
   if (search) {

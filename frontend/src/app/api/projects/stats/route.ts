@@ -1,6 +1,17 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
+interface ProjectRow {
+  id: number;
+  status: string;
+  is_active: boolean;
+}
+
+interface TaskRow {
+  id: number;
+  project_id: number | null;
+}
+
 export async function GET() {
   const supabase = await createServerSupabaseClient();
 
@@ -14,38 +25,34 @@ export async function GET() {
 
   const { data: tasks, error: tasksError } = await supabase
     .from("tasks")
-    .select("id")
+    .select("id, project_id")
     .not("status", "in", '("done","cancelled")');
 
   if (tasksError) {
     return NextResponse.json({ error: tasksError.message }, { status: 500 });
   }
 
-  const totalActive = (projects ?? []).filter(
+  const projectsList = (projects ?? []) as ProjectRow[];
+  const tasksList = (tasks ?? []) as TaskRow[];
+
+  const totalActive = projectsList.filter(
     (p) => p.is_active === true && p.status === "active"
   ).length;
 
-  const totalArchived = (projects ?? []).filter(
+  const totalArchived = projectsList.filter(
     (p) => p.status === "archived"
   ).length;
 
-  const totalOpenTasks = (tasks ?? []).length;
+  const totalOpenTasks = tasksList.length;
 
   const activeProjectIds = new Set(
-    (projects ?? [])
+    projectsList
       .filter((p) => p.is_active === true && p.status === "active")
       .map((p) => p.id)
   );
 
-  const taskCountByProject: Record<number, number> = {};
-  (tasks ?? []).forEach((t) => {
-    if (t.id) {
-      taskCountByProject[t.id] = (taskCountByProject[t.id] || 0) + 1;
-    }
-  });
-
   const idleProjects = Array.from(activeProjectIds).filter((id) => {
-    const count = (tasks ?? []).filter((t) => t.project_id === id).length;
+    const count = tasksList.filter((t) => t.project_id === id).length;
     return count === 0;
   }).length;
 
