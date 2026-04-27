@@ -16,6 +16,7 @@ export async function GET() {
     .order("title", { ascending: true });
 
   if (error) {
+    console.error("Error fetching missions:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

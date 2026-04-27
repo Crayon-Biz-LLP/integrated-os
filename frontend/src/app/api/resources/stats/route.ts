@@ -9,6 +9,7 @@ export async function GET() {
     .select("id, mission_id, created_at");
 
   if (error) {
+    console.error("Error fetching resources stats:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

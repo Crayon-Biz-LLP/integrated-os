@@ -21,6 +21,7 @@ export default function ResourcesPage() {
   const [resources, setResources] = useState<Resource[]>([]);
   const [missions, setMissions] = useState<ResourceMission[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedResource, setSelectedResource] = useState<Resource | null>(null);
   const [relatedResources, setRelatedResources] = useState<Resource[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -39,6 +40,7 @@ export default function ResourcesPage() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [resourcesData, missionsData] = await Promise.all([
         fetchResources(filters),
@@ -46,8 +48,9 @@ export default function ResourcesPage() {
       ]);
       setResources(resourcesData);
       setMissions(missionsData);
-    } catch (error) {
-      console.error('Failed to load resources:', error);
+    } catch (err: any) {
+      console.error('Failed to load resources:', err);
+      setError(err.message || 'Failed to load resources');
     } finally {
       setLoading(false);
     }
@@ -88,8 +91,9 @@ export default function ResourcesPage() {
           setRelatedResources([]);
         }
       }
-    } catch (error) {
-      console.error('Failed to update mission:', error);
+    } catch (err: any) {
+      console.error('Failed to update mission:', err);
+      alert('Failed to update mission: ' + (err.message || 'Unknown error'));
     }
   };
 
@@ -97,6 +101,12 @@ export default function ResourcesPage() {
     <div className="flex flex-col gap-6 p-8">
       <ResourcesHeader />
       <ResourcesStats />
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700 text-sm">
+          Error: {error}
+        </div>
+      )}
 
       <div className="flex flex-col gap-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">

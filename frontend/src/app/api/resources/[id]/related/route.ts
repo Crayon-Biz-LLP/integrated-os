@@ -38,13 +38,7 @@ export async function GET(
       category,
       mission_id,
       created_at,
-      enriched_at,
-      missions:missions!resources_mission_id_fkey (
-        id,
-        title,
-        status,
-        description
-      )
+      enriched_at
     `)
     .eq("mission_id", resource.mission_id)
     .neq("id", Number(id))
@@ -54,24 +48,18 @@ export async function GET(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const related = (data ?? []).map((r: any) => {
-    const missionsData = Array.isArray(r.missions) ? r.missions[0] : r.missions;
-    return {
-      id: r.id,
-      url: r.url,
-      title: r.title,
-      summary: r.summary,
-      strategic_note: r.strategic_note,
-      category: r.category,
-      mission_id: r.mission_id,
-      created_at: r.created_at,
-      enriched_at: r.enriched_at,
-      mission_title: missionsData?.title ?? null,
-      mission_status: missionsData?.status ?? null,
-      mission_description: missionsData?.description ?? null,
-      hostname: getHostname(r.url),
-    };
-  });
+  const related = (data ?? []).map((r: any) => ({
+    id: r.id,
+    url: r.url,
+    title: r.title,
+    summary: r.summary,
+    strategic_note: r.strategic_note,
+    category: r.category,
+    mission_id: r.mission_id,
+    created_at: r.created_at,
+    enriched_at: r.enriched_at,
+    hostname: getHostname(r.url),
+  }));
 
   return NextResponse.json(related);
 }
