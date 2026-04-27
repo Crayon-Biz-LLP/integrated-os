@@ -11,6 +11,9 @@ function getHostname(url: string | null): string | null {
 }
 
 export async function GET(req: NextRequest) {
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return NextResponse.json({ error: 'Missing Supabase environment variables' }, { status: 500 });
+  }
   try {
     const { searchParams } = new URL(req.url);
     const supabase = await createServerSupabaseClient();
