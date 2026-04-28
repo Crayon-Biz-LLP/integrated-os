@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, Suspense } from 'react';
+import { useEffect, useState, useCallback, Suspense, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { BookOpen, Loader2, AlertCircle, FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -59,6 +59,7 @@ function MemoriesContent() {
   const [contentError, setContentError] = useState<string | null>(null);
 
   const selectedId = searchParams.get('page');
+  const hasAutoSelected = useRef(false);
 
   const loadPages = useCallback(async () => {
     setPagesLoading(true);
@@ -66,7 +67,8 @@ function MemoriesContent() {
     try {
       const data = await fetchPagesList();
       setPages(data);
-      if (data.length > 0 && !selectedId) {
+      if (data.length > 0 && !hasAutoSelected.current) {
+        hasAutoSelected.current = true;
         router.replace(`/dashboard/memories?page=${data[0].id}`);
       }
     } catch (e: unknown) {
@@ -74,7 +76,7 @@ function MemoriesContent() {
     } finally {
       setPagesLoading(false);
     }
-  }, [selectedId, router]);
+  }, [router]);
 
   const loadPageContent = useCallback(async (id: number) => {
     setContentLoading(true);
@@ -97,10 +99,8 @@ function MemoriesContent() {
   useEffect(() => {
     if (selectedId) {
       loadPageContent(Number(selectedId));
-    } else if (pages.length > 0 && !selectedId) {
-      router.replace(`/dashboard/memories?page=${pages[0].id}`);
     }
-  }, [selectedId, pages, loadPageContent, router]);
+  }, [selectedId, loadPageContent]);
 
   const handleSelectPage = (id: number) => {
     router.push(`/dashboard/memories?page=${id}`);
