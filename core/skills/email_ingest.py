@@ -6,6 +6,7 @@ import re
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+from core.constants import EmailStatus
 
 load_dotenv()
 load_dotenv('.env.local')
@@ -195,6 +196,9 @@ Return ONLY valid JSON:
 
 async def process_email(msg_data: dict, gmail_service) -> tuple:
     msg_id = msg_data['id']
+    sender_name = None
+    sender_email = None
+    subject = None
 
     try:
         existing = supabase.table('emails').select('id').eq('message_id', msg_id).maybe_single().execute()
@@ -237,8 +241,8 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
                 "sender_email": sender_email,
                 "subject": subject,
                 "received_at": received_at,
-                "classification": "ignored",
-                "status": "ignored"
+                "classification": EmailStatus.IGNORED,
+                "status": EmailStatus.IGNORED
             }).execute()
             print(f"⏭️ [ignored] {subject} | From: {sender_email}")
             return ('ignored', subject)
@@ -253,7 +257,7 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
             "body_summary": body[:500],
             "received_at": received_at,
             "classification": classification,
-            "status": "new" if classification == "actionable" else None,
+            "status": EmailStatus.NEW if classification == "actionable" else None,
             "linked_person_id": None,
             "linked_project_id": None
         }
@@ -323,14 +327,16 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
             supabase.table('emails').insert({
                 "message_id": msg_id,
                 "source": "gmail",
-                "classification": "error",
-                "status": "error",
-                "subject": "processing_error",
+                "sender": sender_name or "unknown",
+                "sender_email": sender_email or "unknown",
+                "classification": EmailStatus.ERROR,
+                "status": EmailStatus.ERROR,
+                "subject": subject or "processing_error",
                 "received_at": datetime.now(timezone.utc).isoformat()
             }).execute()
         except Exception as insert_err:
             print(f"⚠️ Failed to insert error record: {insert_err}")
-        return ('error', str(e))
+        return (EmailStatus.ERROR, str(e))
 
 
 async def main():
@@ -340,8 +346,8 @@ async def main():
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     after_timestamp = int(cutoff.timestamp())
-    query = f'to:me -from:noreply -from:no-reply -label:promotions -label:updates -label:spam after:{after_timestamp}'
-    result = gmail_service.users().messages().list(userId='me', q=query, maxResults=20).execute()
+    query = f'(label:inbox OR label:"Completed/Ashraya") after:{after_timestamp}'
+    result = gmail_service.users().messages().list(userId='me', q=query, maxResults=50).execute()
     messages = result.get('messages', [])
 
     if not messages:
@@ -357,14 +363,17 @@ async def main():
     results = []
 
     for msg in messages:
+        if not msg:
+            print("⚠️ Skipping None message data")
+            continue
         try:
             status, detail = await process_email(msg, gmail_service)
             if status == 'skipped':
                 skipped += 1
-            elif status == 'ignored':
+            elif status == EmailStatus.IGNORED:
                 ignored += 1
                 processed += 1
-            elif status == 'error':
+            elif status == EmailStatus.ERROR:
                 processed += 1
             else:
                 processed += 1
