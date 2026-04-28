@@ -1,8 +1,8 @@
 import { createClient } from '@/lib/supabase';
 import { CanonicalPage, CanonicalPageListItem } from './types';
 
-const PAGE_LIST_COLUMNS = 'id,title,project_id,source_count,last_synth_at,updated_at,is_sparse';
-const PAGE_DETAIL_COLUMNS = 'id,title,content,project_id,source_count,last_synth_at,updated_at,is_sparse';
+const PAGE_LIST_COLUMNS = 'id,title,project_id,source_count,last_synth_at,updated_at,is_sparse,category';
+const PAGE_DETAIL_COLUMNS = 'id,title,content,project_id,source_count,last_synth_at,updated_at,is_sparse,category';
 
 export async function fetchPagesList(): Promise<CanonicalPageListItem[]> {
   const supabase = createClient();
