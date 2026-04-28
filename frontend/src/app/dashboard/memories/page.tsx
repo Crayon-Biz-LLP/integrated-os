@@ -1,13 +1,16 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useEffect, useState, useCallback, Suspense, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { BookOpen, Loader2, AlertCircle, FileText, Search } from 'lucide-react';
+import { BookOpen, Loader2, AlertCircle, FileText, Search, X, GitFork, Network } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { fetchPagesList, fetchPageById } from '@/lib/memories/api';
-import { CanonicalPage, CanonicalPageListItem } from '@/lib/memories/types';
+import { fetchPagesList, fetchPageById, fetchNodesByPageId, fetchEdgesByPageId } from '@/lib/memories/api';
+import { CanonicalPage, CanonicalPageListItem, GraphNode, GraphEdge } from '@/lib/memories/types';
+
+const EgoGraph = dynamic(() => import('@/components/memories/EgoGraph'), { ssr: false });
 
 function formatRelativeTime(dateStr: string | null): string {
   if (!dateStr) return '';
@@ -66,6 +69,11 @@ function MemoriesContent() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
+  const [nodes, setNodes] = useState<GraphNode[]>([]);
+  const [nodesLoading, setNodesLoading] = useState(false);
+  const [edges, setEdges] = useState<GraphEdge[]>([]);
+  const [graphOpen, setGraphOpen] = useState(false);
+
   const categories = Array.from(
     new Set(pages.map(p => p.category).filter((c): c is string => !!c))
   );
@@ -94,12 +102,31 @@ function MemoriesContent() {
   const loadPageContent = useCallback(async (id: number) => {
     setContentLoading(true);
     setContentError(null);
+    setNodes([]);
+    setEdges([]);
+    setNodesLoading(true);
     try {
       const data = await fetchPageById(id);
       setSelectedPage(data);
+      try {
+        const nodesData = await fetchNodesByPageId(id);
+        setNodes(nodesData);
+        try {
+          const edgesData = await fetchEdgesByPageId(id);
+          setEdges(edgesData);
+        } catch {
+          setEdges([]);
+        }
+      } catch {
+        setNodes([]);
+        setEdges([]);
+      } finally {
+        setNodesLoading(false);
+      }
     } catch (e: unknown) {
       setContentError(e instanceof Error ? e.message : 'Failed to load page');
       setSelectedPage(null);
+      setNodesLoading(false);
     } finally {
       setContentLoading(false);
     }
@@ -159,6 +186,10 @@ function MemoriesContent() {
             <BookOpen className="h-4 w-4 text-muted-foreground" />
             <h2 className="text-sm font-semibold">Memories</h2>
             <span className="ml-auto text-xs text-muted-foreground">{filtered.length}</span>
+            <a href="/dashboard/memories/graph" className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center gap-1">
+              <Network className="h-3 w-3" />
+              Graph View
+            </a>
           </div>
 
           <div className="px-3 py-2">
@@ -251,50 +282,92 @@ function MemoriesContent() {
               </>
             )}
           </div>
-        </aside>
+         </aside>
 
-        {/* Main Panel */}
-        <main className="flex-1 overflow-y-auto bg-background">
-          {contentLoading && <ContentSkeleton />}
-          {contentError && (
-            <div className="p-6 text-sm text-red-400 flex items-center gap-2">
-              <AlertCircle className="h-4 w-4" />
-              {contentError}
-            </div>
-          )}
-          {!contentLoading && !contentError && selectedPage && (
-            <div className="p-6 max-w-3xl">
-              <h1 className="text-2xl font-bold">{selectedPage.title}</h1>
-              <div className="flex items-center gap-3 mt-3 flex-wrap">
-                {selectedPage.source_count != null && (
-                  <span className="inline-flex items-center gap-1 text-xs bg-zinc-800 text-zinc-300 px-2.5 py-1 rounded-full">
-                    <FileText className="h-3 w-3" />
-                    {selectedPage.source_count} sources
-                  </span>
-                )}
-                {selectedPage.category && (
-                  <span className="text-xs bg-zinc-800 text-zinc-400 px-2.5 py-1 rounded-full">
-                    {selectedPage.category}
-                  </span>
-                )}
-                <span className="text-xs bg-zinc-800 text-zinc-400 px-2.5 py-1 rounded-full">
-                  {selectedPage.is_sparse ? 'Sparse' : 'Full'}
-                </span>
-                {selectedPage.last_synth_at && (
-                  <span className="text-xs text-muted-foreground">
-                    Synthed {new Date(selectedPage.last_synth_at).toLocaleDateString('en-GB', {
-                      day: 'numeric', month: 'short', year: 'numeric',
-                      hour: '2-digit', minute: '2-digit'
-                    })}
-                  </span>
-                )}
-                {selectedPage.project_id && (
-                  <span className="text-xs text-muted-foreground">
-                    Project #{selectedPage.project_id}
-                  </span>
-                )}
-              </div>
-              <div className="mt-6 border-t border-zinc-800 pt-6">
+         {/* Main Panel */}
+         <main className="flex-1 overflow-y-auto bg-background min-w-0">
+           {contentLoading && <ContentSkeleton />}
+           {contentError && (
+             <div className="p-6 text-sm text-red-400 flex items-center gap-2">
+               <AlertCircle className="h-4 w-4" />
+               {contentError}
+             </div>
+           )}
+           {!contentLoading && !contentError && selectedPage && (
+             <div className="p-6 max-w-3xl">
+               <h1 className="text-2xl font-bold">{selectedPage.title}</h1>
+               <div className="flex items-center gap-3 mt-3 flex-wrap">
+                 {selectedPage.source_count != null && (
+                   <span className="inline-flex items-center gap-1 text-xs bg-zinc-800 text-zinc-300 px-2.5 py-1 rounded-full">
+                     <FileText className="h-3 w-3" />
+                     {selectedPage.source_count} sources
+                   </span>
+                 )}
+                 {selectedPage.category && (
+                   <span className="text-xs bg-zinc-800 text-zinc-400 px-2.5 py-1 rounded-full">
+                     {selectedPage.category}
+                   </span>
+                 )}
+                 <span className="text-xs bg-zinc-800 text-zinc-400 px-2.5 py-1 rounded-full">
+                   {selectedPage.is_sparse ? 'Sparse' : 'Full'}
+                 </span>
+                 {selectedPage.last_synth_at && (
+                   <span className="text-xs text-muted-foreground">
+                     Synthed {new Date(selectedPage.last_synth_at).toLocaleDateString('en-GB', {
+                       day: 'numeric', month: 'short', year: 'numeric',
+                       hour: '2-digit', minute: '2-digit'
+                     })}
+                   </span>
+                 )}
+                 {selectedPage.project_id && (
+                   <span className="text-xs text-muted-foreground">
+                     Project #{selectedPage.project_id}
+                   </span>
+                 )}
+                 {nodes.length > 0 && (
+                   <button
+                     onClick={() => setGraphOpen(!graphOpen)}
+                     className="text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1 border border-zinc-700 rounded-md px-2.5 py-1 ml-2"
+                   >
+                     <GitFork className="h-3 w-3" />
+                     {graphOpen ? 'Hide Graph' : 'Show Graph'}
+                   </button>
+                 )}
+               </div>
+               {(nodes.length > 0 || nodesLoading) && (
+                 <div className="mt-4">
+                   <span className="text-xs text-zinc-500 uppercase tracking-wide">Linked Entities</span>
+                   <div className="flex flex-wrap gap-1.5 mt-2">
+                     {nodesLoading ? (
+                       [...Array(3)].map((_, i) => (
+                         <div key={i} className="h-5 w-16 rounded-full bg-zinc-800 animate-pulse" />
+                       ))
+                     ) : (
+                       nodes.map((node) => {
+                         const colorClasses: Record<string, string> = {
+                           person: 'bg-blue-500/15 text-blue-300 border border-blue-500/30',
+                           organization: 'bg-teal-500/15 text-teal-300 border border-teal-500/30',
+                           project: 'bg-violet-500/15 text-violet-300 border border-violet-500/30',
+                           mission: 'bg-purple-500/15 text-purple-300 border border-purple-500/30',
+                           task: 'bg-amber-500/15 text-amber-300 border border-amber-500/30',
+                           concept: 'bg-zinc-500/15 text-zinc-300 border border-zinc-500/30',
+                           emotional_state: 'bg-rose-500/15 text-rose-300 border border-rose-500/30',
+                         };
+                         const cls = colorClasses[node.type] || 'bg-zinc-700/40 text-zinc-400 border border-zinc-600/30';
+                         return (
+                           <span
+                             key={node.id}
+                             className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${cls}`}
+                           >
+                             {node.label}
+                           </span>
+                         );
+                       })
+                     )}
+                   </div>
+                 </div>
+               )}
+               <div className="mt-6 border-t border-zinc-800 pt-6">
                 {selectedPage.content ? (
                   <div className="text-sm leading-relaxed text-zinc-300 markdown-body">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -317,8 +390,24 @@ function MemoriesContent() {
               </div>
             </div>
           )}
-        </main>
-      </div>
+         </main>
+         {graphOpen && nodes.length > 0 && (
+           <aside className="hidden lg:flex w-80 flex-col border-l border-zinc-800 bg-zinc-900/50">
+             <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+               <span className="text-sm font-semibold">Entity Graph</span>
+               <button onClick={() => setGraphOpen(false)} className="text-zinc-500 hover:text-zinc-300">
+                 <X className="h-4 w-4" />
+               </button>
+             </div>
+             <div className="flex-1 flex items-start justify-center pt-4 overflow-hidden">
+               <EgoGraph nodes={nodes} edges={edges} width={300} height={320} />
+             </div>
+             <div className="px-4 pb-4 text-xs text-zinc-500 text-center">
+               {nodes.length} entities · {edges.length} relationships
+             </div>
+           </aside>
+         )}
+       </div>
     </>
   );
 }
