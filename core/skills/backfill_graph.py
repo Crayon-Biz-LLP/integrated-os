@@ -281,7 +281,7 @@ Rules:
     try:
         response = gemini_with_retry_sync(
             prompt=prompt,
-            model="gemini-2.0-flash-lite",
+            model="gemini-3.1-flash-lite-preview",
             config={"response_mime_type": "application/json"}
         )
         
