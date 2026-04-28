@@ -173,10 +173,12 @@ def decode_html_body(payload: dict) -> str:
     return ""
 
 
-async def classify_email(sender: str, subject: str, body: str) -> dict:
+async def classify_email(sender: str, subject: str, body: str, to_header: str = '', cc_header: str = '') -> dict:
     prompt = f"""Danny is a founder-operator. Classify this email strictly. He receives emails in India (Chennai). His name is Danny or Yashwant Daniel.
 
 Sender: {sender}
+To: {to_header}
+CC: {cc_header}
 Subject: {subject}
 Body:
 {body[:800]}
@@ -206,7 +208,7 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
     try:
         existing = supabase.table('emails').select('id').eq('message_id', msg_id).maybe_single().execute()
         if existing is not None and existing.data:
-            return ('skipped', msg_data.get('snippet', '')[:50])
+            return (EmailStatus.IGNORED, msg_data.get('snippet', '')[:50])
     except Exception as e:
         print(f"⚠️ Dedup check failed for {msg_id}: {e}")
 
@@ -218,6 +220,8 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
         sender_header = headers.get('from', '')
         sender_name, sender_email = extract_email_address(sender_header)
         subject = headers.get('subject', '(No Subject)')
+        to_header = headers.get('to', '')
+        cc_header = headers.get('cc', '')
         received_at_raw = headers.get('date', '')
         try:
             received_at = parsedate_to_datetime(received_at_raw).isoformat()
@@ -232,7 +236,7 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
         if any(p in sender_email.lower() for p in NOREPLY_PATTERNS):
             classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
         else:
-            classification_data = await classify_email(sender_header, subject, body)
+            classification_data = await classify_email(sender_header, subject, body, to_header, cc_header)
         classification = classification_data.get('classification', 'ignored')
 
         if classification == 'ignored':
@@ -248,7 +252,7 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
                 "status": EmailStatus.IGNORED
             }).execute()
             print(f"⏭️ [ignored] {subject} | From: {sender_email}")
-            return ('ignored', subject)
+            return (EmailStatus.IGNORED, subject)
 
         email_row = {
             "message_id": msg_id,
@@ -266,7 +270,8 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
         }
 
         if classification == 'fyi':
-            supabase.table('emails').insert(email_row).execute()
+            insert_res = supabase.table('emails').insert(email_row).execute()
+            email_id = insert_res.data[0]['id']
             print(f"✅ [fyi] {subject} | From: {sender_email}")
 
         elif classification == 'actionable':
@@ -383,7 +388,6 @@ async def main():
                 skipped += 1
             elif status == EmailStatus.IGNORED:
                 ignored += 1
-                processed += 1
             elif status == EmailStatus.ERROR:
                 processed += 1
             else:
