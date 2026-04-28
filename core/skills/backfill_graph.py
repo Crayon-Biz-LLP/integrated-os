@@ -20,7 +20,7 @@ supabase: Client = create_client(supabase_url, supabase_key)
 gemini_client = genai.Client(api_key=gemini_api_key)
 
 BATCH_SIZE = 20
-MEMORY_TYPES = ["Prophecy", "Psalm", "Prayer", "Journal", "archive"]
+MEMORY_TYPES = ["Prophecy", "Psalm", "Prayer", "Journal", "archive", "canonical_page"]
 
 
 def with_retry(fn, retries=3, base_delay=1, label="operation"):
@@ -281,7 +281,7 @@ Rules:
     try:
         response = gemini_with_retry_sync(
             prompt=prompt,
-            model="gemini-3.1-flash-lite-preview",
+            model="gemini-2.0-flash-lite",
             config={"response_mime_type": "application/json"}
         )
         
