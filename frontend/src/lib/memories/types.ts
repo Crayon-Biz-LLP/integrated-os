@@ -7,6 +7,7 @@ export interface CanonicalPage {
   last_synth_at: string | null;
   updated_at: string | null;
   is_sparse: boolean | null;
+  category: string | null;
 }
 
 export interface CanonicalPageListItem {
@@ -17,4 +18,5 @@ export interface CanonicalPageListItem {
   last_synth_at: string | null;
   updated_at: string | null;
   is_sparse: boolean | null;
+  category: string | null;
 }
