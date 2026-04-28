@@ -5,6 +5,10 @@ import base64
 import re
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+
+load_dotenv()
+load_dotenv('.env.local')
 from supabase import create_client, Client
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -225,6 +229,7 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
             supabase.table('emails').insert({
                 "message_id": msg_id,
                 "thread_id": full_msg.get('threadId', ''),
+                "source": "gmail",
                 "sender": sender_name,
                 "sender_email": sender_email,
                 "subject": subject,
@@ -281,6 +286,9 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
             email_row['linked_project_id'] = linked_project_id
 
             insert_res = supabase.table('emails').insert(email_row).execute()
+            if not insert_res.data:
+                print(f"⚠️ Email insert returned no data for {subject}")
+                return ('error', 'insert returned no data')
             email_id = insert_res.data[0]['id']
 
             suggested_task = classification_data.get('suggested_task')
@@ -311,9 +319,11 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
         try:
             supabase.table('emails').insert({
                 "message_id": msg_id,
+                "source": "gmail",
                 "classification": "error",
                 "status": "error",
-                "subject": "processing_error"
+                "subject": "processing_error",
+                "received_at": datetime.now(timezone.utc).isoformat()
             }).execute()
         except Exception as insert_err:
             print(f"⚠️ Failed to insert error record: {insert_err}")
