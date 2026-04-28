@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { BookOpen, Loader2, AlertCircle, FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -46,7 +46,7 @@ function ContentSkeleton() {
   );
 }
 
-export default function Page() {
+function MemoriesContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -218,5 +218,13 @@ export default function Page() {
         )}
       </main>
     </div>
+  );
+}
+
+export default function MemoriesPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-muted-foreground">Loading...</div>}>
+      <MemoriesContent />
+    </Suspense>
   );
 }
