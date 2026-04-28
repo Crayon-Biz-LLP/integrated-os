@@ -1495,6 +1495,23 @@ async def process_pulse(auth_secret: str = None):
             newly_enriched_context = " | ".join(newly_enriched_lines)
         
         link_context = "None"
+
+        # Fetch email-suggested tasks not yet shown in brief
+        pending_email_tasks_res = supabase.table('email_pending_tasks')\
+            .select('id, suggested_title, suggested_project, email_id')\
+            .eq('shown_in_brief', False)\
+            .is_('danny_decision', None)\
+            .execute()
+
+        pending_email_tasks = pending_email_tasks_res.data or []
+
+        # Mark them as shown so they don't repeat in next brief
+        if pending_email_tasks:
+            ids = [r['id'] for r in pending_email_tasks]
+            supabase.table('email_pending_tasks')\
+                .update({'shown_in_brief': True})\
+                .in_('id', ids)\
+                .execute()
         
         print("📦 Step 5: Building context...")
         # --- 2. THINK Phase ---
@@ -1554,6 +1571,8 @@ async def process_pulse(auth_secret: str = None):
         - NEWLY ENRICHED RESOURCES: {newly_enriched_context}
         - ENRICHED WEB LINKS: {link_context}
         - NEW INPUTS: {new_inputs_text}
+        - 📧 EMAIL-SUGGESTED TASKS (surface these in the brief under a section called "📧 Inbox" — Danny decides whether to create them as tasks, do not auto-create):
+        {chr(10).join(f"- {t['suggested_title']} (Project: {t.get('suggested_project') or 'Unknown'})" for t in pending_email_tasks) if pending_email_tasks else "None"}
 
         INSTRUCTIONS:
             HARD CONSTRAINTS (Non-Negotiable):
@@ -1609,9 +1628,10 @@ async def process_pulse(auth_secret: str = None):
             - REVENUE IDENTIFICATION & FORMATTING:
             - If a NEW INPUT is "Revenue Critical" (involves payments, quotes, or high-ticket items like the ₹30L recovery), set is_revenue_critical: true in the new_tasks array.
             - Never apply this flag to completed tasks.
-            - For the briefing output, you MUST bold the titles of these specific tasks to ensure Danny sees them immediately.
-            
-        OUTPUT JSON SCHEMA (WARNING: ONLY POPULATE ARRAYS IF EXPLICITLY COMMANDED IN NEW INPUTS. OTHERWISE RETURN []):
+             - For the briefing output, you MUST bold the titles of these specific tasks to ensure Danny sees them immediately.
+             - INBOX SECTION: If EMAIL-SUGGESTED TASKS has items, include a "📧 Inbox" section in the briefing listing each one. Format as: "- 📧 Task suggestion. Reply to confirm or ignore." Never auto-add these to newtasks.
+             
+         OUTPUT JSON SCHEMA (WARNING: ONLY POPULATE ARRAYS IF EXPLICITLY COMMANDED IN NEW INPUTS. OTHERWISE RETURN []):
         {{
             "completed_task_ids": [
                 // Example ONLY: {{ "id": 123, "status": "done" }}, {{ "id": 456, "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" }}
