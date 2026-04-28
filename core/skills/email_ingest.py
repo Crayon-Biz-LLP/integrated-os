@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import asyncio
 import base64
@@ -6,6 +7,8 @@ import re
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from core.constants import EmailStatus
 
 load_dotenv()
