@@ -3,6 +3,7 @@ import json
 import asyncio
 import base64
 import re
+from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from google.oauth2.credentials import Credentials
@@ -20,6 +21,7 @@ EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIMENSION = 768
 
 RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
+NOREPLY_PATTERNS = ['noreply', 'no-reply', 'donotreply', 'mailer-daemon', 'bounce', 'notifications@', 'automated@']
 
 
 class MemoryCache(base.Cache):
@@ -113,7 +115,7 @@ Body:
 {body[:1000]}"""
 
     try:
-        response = await call_gemini_with_retry(prompt, model="gemini-2.0-flash")
+        response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite-preview")
         return response.text.strip()
     except Exception as e:
         print(f"⚠️ Draft generation failed: {e}")
@@ -144,6 +146,25 @@ def decode_body(payload: dict) -> str:
     return body
 
 
+def decode_html_body(payload: dict) -> str:
+    if 'parts' in payload:
+        for part in payload['parts']:
+            if part.get('mimeType') == 'text/html':
+                data = part.get('body', {}).get('data', '')
+                if data:
+                    return base64.urlsafe_b64decode(data + '=' * (-len(data) % 4)).decode('utf-8', errors='ignore')
+            elif 'parts' in part:
+                result = decode_html_body(part)
+                if result:
+                    return result
+    else:
+        if payload.get('mimeType') == 'text/html':
+            data = payload.get('body', {}).get('data', '')
+            if data:
+                return base64.urlsafe_b64decode(data + '=' * (-len(data) % 4)).decode('utf-8', errors='ignore')
+    return ""
+
+
 async def classify_email(sender: str, subject: str, body: str) -> dict:
     prompt = f"""Danny is a founder-operator. Classify this email strictly. He receives emails in India (Chennai). His name is Danny or Yashwant Daniel.
 
@@ -161,7 +182,7 @@ Return ONLY valid JSON:
 {{"classification": "ignored|fyi|actionable", "summary": "2 sentences max, plain English", "suggested_task": "one line or null", "needs_draft": true/false, "linked_person_name": "name or null", "linked_project_name": "project name or null"}}"""
 
     try:
-        response = await call_gemini_with_retry(prompt, model="gemini-2.0-flash-lite")
+        response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite-preview")
         return parse_json_response(response.text)
     except Exception as e:
         print(f"⚠️ Classification failed: {e}")
@@ -183,14 +204,34 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
         sender_header = headers.get('from', '')
         sender_name, sender_email = extract_email_address(sender_header)
         subject = headers.get('subject', '(No Subject)')
-        received_at = headers.get('date', '')
+        received_at_raw = headers.get('date', '')
+        try:
+            received_at = parsedate_to_datetime(received_at_raw).isoformat()
+        except Exception:
+            received_at = datetime.now(timezone.utc).isoformat()
 
         body = decode_body(payload)[:1500]
+        if not body.strip():
+            html_body = decode_html_body(payload)
+            body = re.sub(r'<[^>]+>', ' ', html_body).strip()[:1500]
 
-        classification_data = await classify_email(sender_header, subject, body)
+        if any(p in sender_email.lower() for p in NOREPLY_PATTERNS):
+            classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
+        else:
+            classification_data = await classify_email(sender_header, subject, body)
         classification = classification_data.get('classification', 'ignored')
 
         if classification == 'ignored':
+            supabase.table('emails').insert({
+                "message_id": msg_id,
+                "thread_id": full_msg.get('threadId', ''),
+                "sender": sender_name,
+                "sender_email": sender_email,
+                "subject": subject,
+                "received_at": received_at,
+                "classification": "ignored",
+                "status": "ignored"
+            }).execute()
             print(f"⏭️ [ignored] {subject} | From: {sender_email}")
             return ('ignored', subject)
 
@@ -267,6 +308,15 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
 
     except Exception as e:
         print(f"❌ Error processing email {msg_id}: {e}")
+        try:
+            supabase.table('emails').insert({
+                "message_id": msg_id,
+                "classification": "error",
+                "status": "error",
+                "subject": "processing_error"
+            }).execute()
+        except Exception as insert_err:
+            print(f"⚠️ Failed to insert error record: {insert_err}")
         return ('error', str(e))
 
 
@@ -275,7 +325,9 @@ async def main():
 
     gmail_service = build('gmail', 'v1', credentials=get_google_creds(), cache=MemoryCache())
 
-    query = 'to:me -from:noreply -from:no-reply -label:promotions -label:updates -label:spam'
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    after_timestamp = int(cutoff.timestamp())
+    query = f'to:me -from:noreply -from:no-reply -label:promotions -label:updates -label:spam after:{after_timestamp}'
     result = gmail_service.users().messages().list(userId='me', q=query, maxResults=20).execute()
     messages = result.get('messages', [])
 
