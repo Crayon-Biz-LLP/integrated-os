@@ -260,7 +260,7 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
             "body_summary": body[:500],
             "received_at": received_at,
             "classification": classification,
-            "status": EmailStatus.NEW if classification == "actionable" else None,
+            "status": EmailStatus.NEW if classification == "actionable" else EmailStatus.PROCESSED,
             "linked_person_id": None,
             "linked_project_id": None
         }
@@ -268,14 +268,6 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
         if classification == 'fyi':
             supabase.table('emails').insert(email_row).execute()
             print(f"✅ [fyi] {subject} | From: {sender_email}")
-
-            memory_content = f"FYI Email from {sender_name}: {classification_data.get('summary', '')}"
-            embedding = await asyncio.to_thread(get_embedding, memory_content)
-            supabase.table('memories').insert({
-                "content": memory_content,
-                "memory_type": "email_fyi",
-                "embedding": embedding
-            }).execute()
 
         elif classification == 'actionable':
             linked_person_id = None
@@ -319,6 +311,15 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
                         "draft_body": draft_body,
                         "status": "pending"
                     }).execute()
+
+            if suggested_task or classification_data.get('needs_draft'):
+                memory_content = f"Email from {sender_name} ({sender_email}): {classification_data.get('summary', '')}"
+                embedding = await asyncio.to_thread(get_embedding, memory_content)
+                supabase.table('memories').insert({
+                    "content": memory_content,
+                    "memory_type": "email_actioned",
+                    "embedding": embedding
+                }).execute()
 
             print(f"✅ [actionable] {subject} | From: {sender_email}")
 
