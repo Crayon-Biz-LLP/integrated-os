@@ -30,7 +30,7 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python core/skills/email_ingest.py
+        run: python -m core.skills.email_ingest
 
   notify_failure:
     runs-on: ubuntu-latest
