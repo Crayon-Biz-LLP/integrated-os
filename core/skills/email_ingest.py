@@ -202,10 +202,10 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
 
     try:
         existing = supabase.table('emails').select('id').eq('message_id', msg_id).maybe_single().execute()
-        if existing and existing.data:
+        if existing is not None and existing.data:
             return ('skipped', msg_data.get('snippet', '')[:50])
     except Exception as e:
-        print(f"⚠️ Error checking existing email {msg_id}: {e}")
+        print(f"⚠️ Dedup check failed for {msg_id}: {e}")
 
     try:
         full_msg = gmail_service.users().messages().get(userId='me', id=msg_id, format='full').execute()
@@ -361,11 +361,18 @@ async def main():
     ignored = 0
     skipped = 0
     results = []
+    seen_ids = set()
 
     for msg in messages:
         if not msg:
             print("⚠️ Skipping None message data")
             continue
+        msg_id = msg.get('id')
+        if msg_id in seen_ids:
+            print(f"⚠️ Duplicate msg_id in batch: {msg_id}, skipping")
+            skipped += 1
+            continue
+        seen_ids.add(msg_id)
         try:
             status, detail = await process_email(msg, gmail_service)
             if status == 'skipped':
