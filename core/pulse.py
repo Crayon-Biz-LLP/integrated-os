@@ -2348,7 +2348,6 @@ async def process_pulse(auth_secret: str = None):
             shown_ids = []
             try:
                 # Auto-expire tasks older than 7 days
-                from datetime import timezone, timedelta
                 cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
                 supabase.table('email_pending_tasks')\
                     .update({'danny_decision': 'expired'})\
