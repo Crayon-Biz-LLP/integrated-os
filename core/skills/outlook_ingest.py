@@ -113,10 +113,12 @@ Body:
         print(f"Draft generation failed: {e}")
         return ""
 
-async def classify_email(sender: str, subject: str, body: str) -> dict:
+async def classify_email(sender: str, subject: str, body: str, to_header: str = '', cc_header: str = '') -> dict:
     prompt = f"""Danny is a founder-operator. He uses this Outlook mailbox for work (Crayon, client work, Solvstrat, Product Labs, business vendors, team). Classify this email strictly. He receives emails in India (Chennai). His name is Danny or Yashwant Daniel.
 
 Sender: {sender}
+To: {to_header}
+CC: {cc_header}
 Subject: {subject}
 Body:
 {body[:800]}
@@ -143,7 +145,7 @@ def fetch_outlook_messages(limit=25):
     url = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
     params = {
         "$top": limit,
-        "$select": "id,subject,receivedDateTime,from,bodyPreview,conversationId,isRead,hasAttachments,internetMessageId",
+        "$select": "id,subject,receivedDateTime,from,bodyPreview,conversationId,isRead,hasAttachments,internetMessageId,toRecipients,ccRecipients",
         "$orderby": "receivedDateTime DESC"
     }
 
@@ -167,6 +169,11 @@ def normalize_outlook_message(msg):
     sender_email = email_address.get("address", "unknown")
     sender_name = email_address.get("name") or sender_email
 
+    to_recipients = msg.get("toRecipients", [])
+    cc_recipients = msg.get("ccRecipients", [])
+    to_header = ", ".join(r.get("emailAddress", {}).get("address", "") for r in to_recipients if r.get("emailAddress", {}).get("address"))
+    cc_header = ", ".join(r.get("emailAddress", {}).get("address", "") for r in cc_recipients if r.get("emailAddress", {}).get("address"))
+
     return {
         "source": "outlook",
         "message_id": msg.get("id"),
@@ -179,6 +186,8 @@ def normalize_outlook_message(msg):
         "received_at": msg.get("receivedDateTime"),
         "is_read": msg.get("isRead", False),
         "has_attachments": msg.get("hasAttachments", False),
+        "to_header": to_header,
+        "cc_header": cc_header,
     }
 
 async def ingest_outlook_messages(limit=25):
@@ -204,7 +213,7 @@ async def ingest_outlook_messages(limit=25):
 
         try:
             existing = supabase.table('emails').select('id').eq('message_id', msg_id).maybe_single().execute()
-            if existing is not None and existing.data:
+            if existing is not None and getattr(existing, 'data', None):
                 skipped += 1
                 continue
         except Exception as e:
@@ -215,104 +224,129 @@ async def ingest_outlook_messages(limit=25):
         sender_email = normalized["sender_email"]
         subject = normalized["subject"]
         body = normalized["body_summary"]
+        to_header = normalized.get("to_header", "")
+        cc_header = normalized.get("cc_header", "")
 
-        if any(p in sender_email.lower() for p in NOREPLY_PATTERNS):
-            classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
-        else:
-            classification_data = await classify_email(sender, subject, body)
+        try:
+            if any(p in sender_email.lower() for p in NOREPLY_PATTERNS):
+                classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
+            else:
+                classification_data = await classify_email(sender, subject, body, to_header, cc_header)
 
-        classification = classification_data.get("classification", "ignored")
+            classification = classification_data.get("classification", "ignored")
 
-        if classification == "ignored":
-            supabase.table('emails').insert({
+            if classification == "ignored":
+                supabase.table('emails').insert({
+                    "message_id": msg_id,
+                    "thread_id": normalized["thread_id"],
+                    "source": "outlook",
+                    "sender": sender,
+                    "sender_email": sender_email,
+                    "subject": subject,
+                    "received_at": normalized["received_at"],
+                    "classification": EmailStatus.IGNORED,
+                    "status": EmailStatus.IGNORED
+                }).execute()
+                print(f"⏭️ [ignored] {subject} | From: {sender_email}")
+                ignored += 1
+                continue
+
+            email_row = {
                 "message_id": msg_id,
                 "thread_id": normalized["thread_id"],
                 "source": "outlook",
                 "sender": sender,
                 "sender_email": sender_email,
                 "subject": subject,
+                "body_summary": body[:500],
                 "received_at": normalized["received_at"],
-                "classification": EmailStatus.IGNORED,
-                "status": EmailStatus.IGNORED
-            }).execute()
-            print(f"[ignored] {subject} | From: {sender_email}")
-            ignored += 1
-            continue
+                "classification": classification,
+                "status": EmailStatus.NEW if classification == "actionable" else EmailStatus.PROCESSED,
+                "linked_person_id": None,
+                "linked_project_id": None
+            }
 
-        email_row = {
-            "message_id": msg_id,
-            "thread_id": normalized["thread_id"],
-            "source": "outlook",
-            "sender": sender,
-            "sender_email": sender_email,
-            "subject": subject,
-            "body_summary": body[:500],
-            "received_at": normalized["received_at"],
-            "classification": classification,
-            "status": EmailStatus.NEW if classification == "actionable" else EmailStatus.PROCESSED,
-            "linked_person_id": None,
-            "linked_project_id": None
-        }
+            if classification == "fyi":
+                insert_res = supabase.table('emails').insert(email_row).execute()
+                print(f"✅ [fyi] {subject} | From: {sender_email}")
+                processed += 1
 
-        if classification == "fyi":
-            insert_res = supabase.table('emails').insert(email_row).execute()
-            print(f"[fyi] {subject} | From: {sender_email}")
-            processed += 1
+            elif classification == "actionable":
+                linked_person_id = None
+                linked_person_name = classification_data.get("linked_person_name")
+                if linked_person_name:
+                    person_res = supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').maybe_single().execute()
+                    if getattr(person_res, 'data', None):
+                        linked_person_id = person_res.data['id']
 
-        elif classification == "actionable":
-            linked_person_id = None
-            linked_person_name = classification_data.get("linked_person_name")
-            if linked_person_name:
-                person_res = supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').maybe_single().execute()
-                if person_res.data:
-                    linked_person_id = person_res.data['id']
+                linked_project_id = None
+                linked_project_name = classification_data.get("linked_project_name")
+                if linked_project_name:
+                    project_res = supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').maybe_single().execute()
+                    if getattr(project_res, 'data', None):
+                        linked_project_id = project_res.data['id']
 
-            linked_project_id = None
-            linked_project_name = classification_data.get("linked_project_name")
-            if linked_project_name:
-                project_res = supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').maybe_single().execute()
-                if project_res.data:
-                    linked_project_id = project_res.data['id']
+                email_row['linked_person_id'] = linked_person_id
+                email_row['linked_project_id'] = linked_project_id
 
-            email_row['linked_person_id'] = linked_person_id
-            email_row['linked_project_id'] = linked_project_id
+                insert_res = supabase.table('emails').insert(email_row).execute()
+                if not getattr(insert_res, 'data', None):
+                    print(f"⚠️ Email insert returned no data for {subject}")
+                    continue
+                email_id = insert_res.data[0]['id']
 
-            insert_res = supabase.table('emails').insert(email_row).execute()
-            if not insert_res.data:
-                print(f"Email insert returned no data for {subject}")
-                continue
-            email_id = insert_res.data[0]['id']
-
-            suggested_task = classification_data.get("suggested_task")
-            if suggested_task:
-                supabase.table('email_pending_tasks').insert({
-                    "email_id": email_id,
-                    "suggested_title": suggested_task,
-                    "suggested_project": classification_data.get("linked_project_name"),
-                    "shown_in_brief": False,
-                    "danny_decision": None
-                }).execute()
-
-            if classification_data.get("needs_draft"):
-                draft_body = await generate_draft(sender, subject, body)
-                if draft_body:
-                    supabase.table('email_drafts').insert({
+                suggested_task = classification_data.get("suggested_task")
+                if suggested_task:
+                    supabase.table('email_pending_tasks').insert({
                         "email_id": email_id,
-                        "draft_body": draft_body,
-                        "status": "pending"
+                        "suggested_title": suggested_task,
+                        "suggested_project": classification_data.get("linked_project_name"),
+                        "shown_in_brief": False,
+                        "danny_decision": None
                     }).execute()
 
-            if suggested_task or classification_data.get("needs_draft"):
-                memory_content = f"Email from {sender} ({sender_email}): {classification_data.get('summary', '')}"
-                embedding = await asyncio.to_thread(get_embedding, memory_content)
-                supabase.table('memories').insert({
-                    "content": memory_content,
-                    "memory_type": "email_actioned",
-                    "embedding": embedding
-                }).execute()
+                if classification_data.get("needs_draft"):
+                    draft_body = await generate_draft(sender, subject, body)
+                    if draft_body:
+                        supabase.table('email_drafts').insert({
+                            "email_id": email_id,
+                            "draft_body": draft_body,
+                            "status": "pending"
+                        }).execute()
 
-            print(f"[actionable] {subject} | From: {sender_email}")
-            processed += 1
+                if suggested_task or classification_data.get("needs_draft"):
+                    memory_content = f"Email from {sender} ({sender_email}): {classification_data.get('summary', '')}"
+                    embedding = await asyncio.to_thread(get_embedding, memory_content)
+                    supabase.table('memories').insert({
+                        "content": memory_content,
+                        "memory_type": "email_actioned",
+                        "embedding": embedding
+                    }).execute()
+
+                print(f"✅ [actionable] {subject} | From: {sender_email}")
+                processed += 1
+
+        except Exception as e:
+            print(f"❌ Error processing Outlook message {msg_id}: {e}")
+            try:
+                try:
+                    res = supabase.table('emails').insert({
+                        "message_id": msg_id,
+                        "source": "outlook",
+                        "sender": (sender or "unknown"),
+                        "sender_email": (sender_email or "unknown"),
+                        "classification": EmailStatus.ERROR,
+                        "status": EmailStatus.ERROR,
+                        "subject": (subject or "processing_error"),
+                        "received_at": (normalized.get("received_at") if normalized else None) or datetime.now(timezone.utc).isoformat()
+                    }).execute()
+                    if res is None:
+                        print(f"⚠️ Error row insert returned None for {msg_id}")
+                except Exception as insert_err:
+                    print(f"⚠️ Failed to insert error record for {msg_id}: {insert_err}")
+            except Exception:
+                pass
+            continue
 
     print(f"Outlook ingest complete. {processed} processed, {ignored} ignored, {skipped} skipped (duplicates).")
     return {"processed": processed, "ignored": ignored, "skipped": skipped}
