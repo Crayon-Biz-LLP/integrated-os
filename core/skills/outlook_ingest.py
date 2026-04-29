@@ -20,6 +20,29 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
+
+def is_already_in_tasks_table(title: str) -> bool:
+    """Check if a similar task already exists in the tasks table."""
+    try:
+        keywords = [w for w in title.lower().split() if len(w) > 4]
+        if not keywords:
+            return False
+        for kw in keywords[:3]:
+            result = supabase.table('tasks')\
+                .select('id')\
+                .ilike('title', f'%{kw}%')\
+                .not_.in_('status', ['done', 'cancelled'])\
+                .limit(1)\
+                .execute()
+            if result.data:
+                print(f"⚠️  Duplicate guard: suggestion '{title}' matches "
+                      f"existing task (keyword: '{kw}'). Dropping suggestion.")
+                return True
+        return False
+    except Exception as e:
+        print(f"Duplicate guard check failed (failing open): {e}")
+        return False  # Fail open — never block suggestion creation on DB error
+
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
@@ -299,13 +322,15 @@ async def ingest_outlook_messages(limit=25):
 
                 suggested_task = classification_data.get("suggested_task")
                 if suggested_task:
-                    supabase.table('email_pending_tasks').insert({
-                        "email_id": email_id,
-                        "suggested_title": suggested_task,
-                        "suggested_project": classification_data.get("linked_project_name"),
-                        "shown_in_brief": False,
-                        "danny_decision": None
-                    }).execute()
+                    suggested_title = suggested_task or ''
+                    if not is_already_in_tasks_table(suggested_title):
+                        supabase.table('email_pending_tasks').insert({
+                            "email_id": email_id,
+                            "suggested_title": suggested_task,
+                            "suggested_project": classification_data.get("linked_project_name"),
+                            "shown_in_brief": False,
+                            "danny_decision": None
+                        }).execute()
 
                 if classification_data.get("needs_draft"):
                     draft_body = await generate_draft(sender, subject, body)

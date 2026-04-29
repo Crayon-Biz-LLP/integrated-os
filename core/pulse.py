@@ -31,6 +31,28 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
+
+def is_already_in_email_queue(title: str) -> bool:
+    """Check if a task title already has a pending suggestion in email_pending_tasks."""
+    try:
+        keywords = [w for w in title.lower().split() if len(w) > 4]
+        if not keywords:
+            return False
+        for kw in keywords[:3]:
+            result = supabase.table('email_pending_tasks')\
+                .select('id')\
+                .ilike('suggested_title', f'%{kw}%')\
+                .is_('danny_decision', 'null')\
+                .limit(1)\
+                .execute()
+            if result.data:
+                print(f"⚠️  Duplicate guard: '{title}' matches pending email task (keyword: '{kw}'). Skipping.")
+                return True
+        return False
+    except Exception as e:
+        print(f"Duplicate guard check failed: {e}")
+        return False  # Fail open — don't block task creation if check errors
+
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
@@ -1991,6 +2013,12 @@ async def process_pulse(auth_secret: str = None):
             print(f"⚠️ Inbox resolution: actual_inbox_id = {actual_inbox_id} (source: {'graph' if inbox_from_graph else 'legacy'})")
 
             for task in ai_data['new_tasks']:
+                task_title = task.get('title', 'Untitled Task')
+
+                # Cross-pipeline duplicate guard
+                if is_already_in_email_queue(task_title):
+                    continue  # Skip — email ingest already flagged this for approval
+
                 ai_target = (task.get('project_name') or '').lower().strip()
                 task_project_id = actual_inbox_id
 
@@ -2081,7 +2109,6 @@ async def process_pulse(auth_secret: str = None):
                         sanitized_time = staggered_time.strftime('%Y-%m-%dT%H:%M:%S+05:30')
                         print(f"⏰ De-clash: Staggered '{task.get('title', 'Untitled Task')}' to {sanitized_time.split('T')[1][:5]}")
 
-                task_title = task.get('title', 'Untitled Task')
                 time_tracker[task_title] = bool(raw_time and 'T' in str(raw_time))
 
                 task_inserts.append({
