@@ -12,3 +12,4 @@ get_token.py
 __pycache__/repomix-output.xml
 __pycache__/
 repomix-output.xml
+outlook_tokens.json
