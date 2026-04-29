@@ -24,27 +24,35 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
 
-def is_already_in_tasks_table(title: str) -> bool:
-    """Check if a similar task already exists in the tasks table."""
+def build_active_task_keyword_set() -> set:
+    """Fetch all active task titles ONCE and extract keywords into a set."""
     try:
-        keywords = [w for w in title.lower().split() if len(w) > 4]
-        if not keywords:
-            return False
-        for kw in keywords[:3]:
-            result = supabase.table('tasks')\
-                .select('id')\
-                .ilike('title', f'%{kw}%')\
-                .not_.in_('status', ['done', 'cancelled'])\
-                .limit(1)\
-                .execute()
-            if result.data:
-                print(f"⚠️  Duplicate guard: suggestion '{title}' matches "
-                      f"existing task (keyword: '{kw}'). Dropping suggestion.")
-                return True
-        return False
+        result = supabase.table('tasks')\
+            .select('title')\
+            .not_.in_('status', ['done', 'cancelled'])\
+            .execute()
+        keywords = set()
+        for row in (result.data or []):
+            title = row.get('title', '')
+            for word in title.lower().split():
+                if len(word) > 4:
+                    keywords.add(word)
+        return keywords
     except Exception as e:
-        print(f"Duplicate guard check failed (failing open): {e}")
-        return False  # Fail open — never block suggestion creation on DB error
+        print(f"⚠️ Failed to build task keyword set (failing open): {e}")
+        return set()
+
+
+def is_duplicate_task(title: str, active_keywords: set) -> bool:
+    """In-memory dedup check. Zero DB calls."""
+    if not active_keywords:
+        return False
+    words = [w for w in title.lower().split() if len(w) > 4]
+    for kw in words[:3]:
+        if kw in active_keywords:
+            print(f"⚠️  Duplicate guard: '{title}' matches existing task (keyword: '{kw}'). Dropping.")
+            return True
+    return False
 
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
@@ -222,7 +230,7 @@ Return ONLY valid JSON:
         return {"classification": "ignored", "summary": "Classification failed", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
 
 
-async def process_email(msg_data: dict, gmail_service) -> tuple:
+async def process_email(msg_data: dict, gmail_service, active_task_keywords: set) -> tuple:
     msg_id = msg_data['id']
     sender_name = None
     sender_email = None
@@ -324,7 +332,7 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
             suggested_task = classification_data.get('suggested_task')
             if suggested_task:
                 suggested_title = suggested_task or ''
-                if not is_already_in_tasks_table(suggested_title):
+                if not is_duplicate_task(suggested_title, active_task_keywords):
                     supabase.table('email_pending_tasks').insert({
                         "email_id": email_id,
                         "suggested_title": suggested_task,
@@ -374,9 +382,13 @@ async def process_email(msg_data: dict, gmail_service) -> tuple:
 
 
 async def main():
-    print(f"📧 Email ingest started at {datetime.now(timezone(timedelta(hours=5, minutes=30)))}")
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    print("📧 Email ingest started at " + str(now_ist))
 
     gmail_service = build('gmail', 'v1', credentials=get_google_creds(), cache=MemoryCache())
+
+    active_task_keywords = build_active_task_keyword_set()
+    print(f"🧠 Loaded {len(active_task_keywords)} active task keywords for dedup.")
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     after_timestamp = int(cutoff.timestamp())
@@ -408,7 +420,7 @@ async def main():
             continue
         seen_ids.add(msg_id)
         try:
-            status, detail = await process_email(msg, gmail_service)
+            status, detail = await process_email(msg, gmail_service, active_task_keywords)
             if status == 'skipped':
                 skipped += 1
             elif status == EmailStatus.IGNORED:

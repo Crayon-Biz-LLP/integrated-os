@@ -60,9 +60,6 @@ EMBEDDING_DIMENSION = 768
 
 BRIEFING_MODEL = "gemini-3-flash-preview"
 
-RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
-NON_RETRYABLE_ERRORS = ['401', '403', '400', 'invalid']
-
 
 def get_project_name(project: dict) -> str:
     """Normalize project object — handles both DB rows (name) and graph_nodes rows (label)."""
@@ -171,19 +168,19 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                     .select('id') \
                     .eq('type', 'person') \
                     .filter('metadata->>people_id', 'eq', str(person['id'])) \
-.maybe_single() \
-                .execute()
-
-            if person_node and person_node.data:
-                existing_edge = supabase.table('graph_edges') \
-                    .select('id') \
-                    .eq('source_node_id', task_node_id) \
-                    .eq('target_node_id', person_node.data['id']) \
-                    .eq('relationship', 'INVOLVES') \
                     .maybe_single() \
                     .execute()
 
-                if not existing_edge.data:
+                if person_node and person_node.data:
+                    existing_edge = supabase.table('graph_edges') \
+                        .select('id') \
+                        .eq('source_node_id', task_node_id) \
+                        .eq('target_node_id', person_node.data['id']) \
+                        .eq('relationship', 'INVOLVES') \
+                        .maybe_single() \
+                        .execute()
+
+                    if not existing_edge.data:
                         supabase.table('graph_edges').insert({
                             "source_node_id": task_node_id,
                             "target_node_id": person_node.data['id'],
@@ -907,7 +904,8 @@ async def batch_enrich_resources():
 # --- 🛰️ LAYER 1: GOOGLE INTEGRATION HELPERS ---
 
 def sync_completed_tasks_from_google(supabase_client, tasks_service):
-    """Pulls completed status from Google Tasks and updates Supabase."""
+    """Pulls completed status from Google Tasks and updates Supabase. Returns list of (title, proj_name) for completed tasks."""
+    completed = []
     try:
         result = supabase_client.table('tasks')\
             .select('id, title, google_task_id, status')\
@@ -918,7 +916,7 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
         tasks_to_sync = result.data or []
         if not tasks_to_sync:
             print("📋 No Google Tasks to sync.")
-            return
+            return completed
         
         print(f"🔍 Checking {len(tasks_to_sync)} tasks against Google Tasks...")
         
@@ -940,14 +938,14 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                         'completed_at': datetime.now(timezone.utc).isoformat()
                     }).eq('id', task_id).execute()
                     
-                    # 🧠 Outcome memory with project context — fire as background task
+                    # 🧠 Collect for outcome memory — caller will fire as background tasks
                     proj_res = supabase_client.table('tasks').select('project_id').eq('id', task_id).execute()
                     proj_name = None
                     if proj_res.data and proj_res.data[0].get('project_id'):
                         proj_id = proj_res.data[0]['project_id']
                         proj_lookup = supabase_client.table('projects').select('name').eq('id', proj_id).maybe_single().execute()
                         proj_name = proj_lookup.data['name'] if proj_lookup.data else None
-                    asyncio.create_task(write_outcome_memory(title, proj_name))
+                    completed.append((title, proj_name))
                     
                     print(f"✅ Synced from Google: '{title}' (ID: {task_id})")
                     synced_count += 1
@@ -962,6 +960,8 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
         
     except Exception as e:
         print(f"❌ sync_completed_tasks_from_google failed: {e}")
+    
+    return completed
 
 def get_google_creds():
     """Unified credential handshake for all Google services."""
@@ -1146,7 +1146,9 @@ async def process_pulse(auth_secret: str = None):
 
         # --- 0. GOOGLE→SUPABASE SYNC (After auth check) ---
         tasks_service = get_tasks_service()
-        sync_completed_tasks_from_google(supabase, tasks_service)
+        completed_from_google = sync_completed_tasks_from_google(supabase, tasks_service)
+        for title, proj_name in (completed_from_google or []):
+            asyncio.create_task(write_outcome_memory(title, proj_name))
         
         # --- 0.1 BATCH ENRICHMENT (One Gemini call for all unenriched resources) ---
         batch_enrich_results = await batch_enrich_resources()
@@ -1293,7 +1295,7 @@ async def process_pulse(auth_secret: str = None):
         print("📦 Step 2: Fetching projects...")
         projects_res = supabase.table('projects') \
             .select('id, name, org_tag, description, parent_project_id, status, keywords') \
-            .eq('is_active', True) \
+            .eq('status', 'active') \
             .execute()
         legacy_projects = projects_res.data or []
 
@@ -1527,14 +1529,6 @@ async def process_pulse(auth_secret: str = None):
 
         pending_email_tasks = pending_email_tasks_res.data or []
 
-        # Mark them as shown so they don't repeat in next brief
-        if pending_email_tasks:
-            ids = [r['id'] for r in pending_email_tasks]
-            supabase.table('email_pending_tasks')\
-                .update({'shown_in_brief': True})\
-                .in_('id', ids)\
-                .execute()
-        
         print("📦 Step 5: Building context...")
         # --- 2. THINK Phase ---
         print('🤖 Building prompt...')
@@ -1556,7 +1550,7 @@ async def process_pulse(auth_secret: str = None):
         ]))
 
         if relevant_project_names:
-            or_string = ",".join([f"title.ilike.{name}" for name in relevant_project_names])
+            or_string = ",".join([f"title.ilike.%{name}%" for name in relevant_project_names])
             pages_res = supabase.table('canonical_pages').select('title, content').or_(or_string).execute()
             if pages_res.data:
                 page_entries = [f"[CANONICAL CONTEXT ONLY — DO NOT LIST IN BRIEFING]\n### MASTER PAGE: {p['title']}\n{p['content']}" for p in pages_res.data]
@@ -1988,6 +1982,7 @@ async def process_pulse(auth_secret: str = None):
         # D. BATCH NEW TASKS (Checklist + Calendar Interruption + ID Tracking)
         if ai_data.get('new_tasks'):
             task_inserts = []
+            explicit_times = []
             
             # PHASE 0: Time Tracker - Track explicit times from AI
             time_tracker = {}
@@ -2109,7 +2104,7 @@ async def process_pulse(auth_secret: str = None):
                         sanitized_time = staggered_time.strftime('%Y-%m-%dT%H:%M:%S+05:30')
                         print(f"⏰ De-clash: Staggered '{task.get('title', 'Untitled Task')}' to {sanitized_time.split('T')[1][:5]}")
 
-                time_tracker[task_title] = bool(raw_time and 'T' in str(raw_time))
+                explicit_time = bool(raw_time and 'T' in str(raw_time))
 
                 task_inserts.append({
                     "title": task_title,
@@ -2121,17 +2116,16 @@ async def process_pulse(auth_secret: str = None):
                     "reminder_at": sanitized_time,
                     "is_revenue_critical": task.get('is_revenue_critical', False),
                 })
-
-            # PHASE 1: Supabase Commit - Insert all tasks first, no side effects yet
+                explicit_times.append(explicit_time)
             if task_inserts:
                 insert_res = supabase.table('tasks').insert(task_inserts).execute()
                 print(f"✅ Phase 1: Inserted {len(insert_res.data)} new tasks to Supabase.")
 
                 # PHASE 2: Side-Effect Orchestration - Google Sync after DB success
-                for db_task in insert_res.data:
+                for db_task, expl_time in zip(insert_res.data, explicit_times):
                     task_id = db_task['id']
                     task_title = db_task.get('title', 'Untitled Task')
-
+                    
                     asyncio.create_task(
                         write_graph_edges_for_task(
                             task_id=task_id,
@@ -2145,8 +2139,8 @@ async def process_pulse(auth_secret: str = None):
                     sanitized_time = db_task.get('reminder_at')
                     duration_mins = db_task.get('duration_mins') or 15
                     
-                    # Look up the true intent from Phase 1
-                    explicit_time = time_tracker.get(task_title, False)
+                    # Use explicit_time from zip (avoids title collision)
+                    explicit_time = expl_time
                     
                     g_id = None
                     e_id = None
@@ -2312,6 +2306,7 @@ async def process_pulse(auth_secret: str = None):
 
         # --- 4. SPEAK Phase ---
         briefing_text = ai_data.get('briefing', '')
+        shown_ids = []
         if briefing_text:
             # 🛡️ THE ARCHITECT'S FINAL REPAIR: Force double newlines before all section headers
             # This ensures that even if the AI 'whispers', the grid stays intact.
@@ -2320,22 +2315,64 @@ async def process_pulse(auth_secret: str = None):
                 if header in briefing_text:
                     # Replace the header with a version that has breathing room above it
                     briefing_text = briefing_text.replace(header, f"\n\n{header}\n")
-            
+
             # 🛡️ Fix escaping and enforce list breaks
             briefing_text = briefing_text.replace('\\n', '\n').replace('\\\\n', '\n').replace(' - ', '\n- ')
-            
+
             # Existing logic: Remove internal system IDs from the user-facing text
             briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
-            
+
             # Strip bare task ID references in natural language (e.g. "117 is the last loop")
             briefing_text = re.sub(r'\b(\d{2,})\s+(?:is the|task|loop|item|#|ref|id)\b', r'\1', briefing_text, flags=re.IGNORECASE)
-            
+
             # Final Clean: Remove any accidental triple-newlines created by the logic above
             briefing_text = re.sub(r'\n{3,}', '\n\n', briefing_text)
-            
+
+            # 📨 EMAIL DECISIONS SECTION — Surface pending email tasks for Danny's approval
+            shown_ids = []
+            try:
+                # Auto-expire tasks older than 7 days
+                from datetime import timezone, timedelta
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+                supabase.table('email_pending_tasks')\
+                    .update({'danny_decision': 'expired'})\
+                    .is_('danny_decision', 'null')\
+                    .lt('created_at', cutoff)\
+                    .execute()
+
+                pending_decisions = supabase.table('email_pending_tasks')\
+                    .select('id, suggested_title, suggested_project, created_at')\
+                    .is_('danny_decision', 'null')\
+                    .order('created_at', desc=False)\
+                    .limit(5)\
+                    .execute()
+                if pending_decisions.data:
+                    lines = ["\n\n📨 EMAIL DECISIONS NEEDED (" + str(len(pending_decisions.data)) + ")"]
+                    shown_ids = []
+                    for row in pending_decisions.data:
+                        shortcode = str(row['id'])[-4:]
+                        project_label = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
+                        try:
+                            created = datetime.fromisoformat(row['created_at'].replace('Z', '+00:00'))
+                            age_days = (datetime.now(timezone.utc) - created).days
+                            age_str = f"{age_days}d ago" if age_days > 0 else "today"
+                        except Exception:
+                            age_str = ""
+                        lines.append(f"[{shortcode}] {row['suggested_title']}{project_label} — {age_str}")
+                        shown_ids.append(row['id'])
+                    lines.append("Reply with shortcode + intent to act:")
+                    lines.append('"a3f1 yes" → create task · "a3f1 drop" → dismiss')
+                    if briefing_text:
+                        briefing_text += "\n".join(lines)
+                    else:
+                        briefing_text = "\n".join(lines)
+            except Exception as ed_err:
+                print(f"⚠️ Email decisions section failed: {ed_err}")
+
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
+        send_success = False
         if telegram_chat_id and briefing_text:
             url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
             payload = {
@@ -2346,8 +2383,21 @@ async def process_pulse(auth_secret: str = None):
             try:
                 async with httpx.AsyncClient() as tg_client:
                     await tg_client.post(url, json=payload)
+                send_success = True
             except Exception as e:
                 print(f"Telegram send failed: {e}")
+
+        # Mark shown_in_brief only AFTER confirmed Telegram send
+        if send_success and shown_ids:
+            try:
+                supabase.table('email_pending_tasks')\
+                    .update({'shown_in_brief': True})\
+                    .in_('id', shown_ids)\
+                    .execute()
+            except Exception as e:
+                print(f"⚠️ shown_in_brief update failed: {e}")
+        elif shown_ids:
+            print("⚠️ Telegram send failed — shown_in_brief NOT updated. Will retry at next pulse.")
 
         # --- 📝 AFTER-ACTION REPORT ---
         if hour >= 20 or hour < 4:

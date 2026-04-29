@@ -11,6 +11,29 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
+
+def is_already_in_tasks_table(title: str) -> bool:
+    """Check if a similar task already exists in the tasks table."""
+    try:
+        keywords = [w for w in title.lower().split() if len(w) > 5]
+        if not keywords:
+            return False
+        for kw in keywords[:3]:
+            result = supabase.table('tasks')\
+                .select('id')\
+                .ilike('title', f'%{kw}%')\
+                .not_.in_('status', ['done', 'cancelled'])\
+                .limit(1)\
+                .execute()
+            if result.data:
+                print(f"⚠️  Duplicate guard: suggestion '{title}' matches "
+                      f"existing task (keyword: '{kw}'). Dropping suggestion.")
+                return True
+        return False
+    except Exception as e:
+        print(f"Duplicate guard check failed (failing open): {e}")
+        return False  # Fail open — never block suggestion creation on DB error
+
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
@@ -537,8 +560,10 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
     try:
         async with httpx.AsyncClient() as client:
             await client.post(url, json=payload)
+        return True
     except Exception as e:
         print(f"Telegram send failed to {chat_id}: {e}")
+        return False
 
 
 KEYBOARD = {
@@ -647,6 +672,96 @@ async def process_webhook(update: dict):
                     return {"success": True}
             
             return {"success": True}
+        
+        # 📨 SHORTCODE REPLY HANDLER — must run before classify_intent()
+        import re as _re
+        _approve_match = _re.match(r'^([a-f0-9]{4})\s+(yes|approve|do it|yep|add it)$', text.strip(), _re.IGNORECASE)
+        _reject_match = _re.match(r'^([a-f0-9]{4})\s+(drop|no|reject|skip|dismiss)$', text.strip(), _re.IGNORECASE)
+        
+        if _approve_match or _reject_match:
+            try:
+                _shortcode = (_approve_match or _reject_match).group(1)
+                _is_approve = bool(_approve_match)
+                
+                # Shortcode = last 4 chars of UUID. Collision possible at scale — limit(1) takes first match.
+                _row_res = supabase.table('email_pending_tasks')\
+                    .select('*')\
+                    .ilike('id::text', f'%{_shortcode}')\
+                    .is_('danny_decision', 'null')\
+                    .limit(1)\
+                    .maybe_single()\
+                    .execute()
+                
+                if not _row_res.data:
+                    # Check if this shortcode exists but was already decided
+                    decided = supabase.table('email_pending_tasks')\
+                        .select('id, danny_decision')\
+                        .ilike('id::text', f'%{_shortcode}')\
+                        .not_.is_('danny_decision', 'null')\
+                        .limit(1)\
+                        .maybe_single()\
+                        .execute()
+                    if decided.data:
+                        reply = f"⚠️ [{_shortcode}] was already {decided.data['danny_decision']}. Use /ep to see what's still pending."
+                    else:
+                        reply = f"⚠️ No task found matching [{_shortcode}]. Use /ep to see pending tasks."
+                    await send_telegram(chat_id, reply)
+                    return {"success": True}
+                
+                _row = _row_res.data
+                _suggested_title = _row.get('suggested_title', '')
+                _suggested_project = _row.get('suggested_project')
+                _email_id = _row.get('email_id')
+                
+                if _is_approve:
+                    # Set danny_decision FIRST to prevent double-processing on retries
+                    supabase.table('email_pending_tasks')\
+                        .update({'danny_decision': 'approved'})\
+                        .eq('id', _row['id'])\
+                        .execute()
+                    
+                    # Check for duplicate in tasks table
+                    if is_already_in_tasks_table(_suggested_title):
+                        await send_telegram(chat_id, f"⚠️ A similar task already exists on your board: [{_suggested_title}]")
+                        return {"success": True}
+                    
+                    # Resolve project_id
+                    _project_id = None
+                    if _suggested_project:
+                        _proj_res = supabase.table('projects')\
+                            .select('id')\
+                            .ilike('name', f'%{_suggested_project}%')\
+                            .maybe_single()\
+                            .execute()
+                        if _proj_res.data:
+                            _project_id = _proj_res.data['id']
+                    
+                    # Insert into tasks
+                    supabase.table('tasks').insert({
+                        "title": _suggested_title,
+                        "status": "todo",
+                        "priority": "medium",
+                        "source": "email",
+                        "email_id": _email_id,
+                        "project_id": _project_id
+                    }).execute()
+                    
+                    await send_telegram(chat_id, f"✅ Task created: {_suggested_title}")
+                
+                else:
+                    # Reject flow
+                    supabase.table('email_pending_tasks')\
+                        .update({'danny_decision': 'rejected'})\
+                        .eq('id', _row['id'])\
+                        .execute()
+                    await send_telegram(chat_id, f"⏭️ Dropped: {_suggested_title}")
+                
+                return {"success": True}
+            
+            except Exception as _sc_err:
+                print(f"⚠️ Shortcode handler error: {_sc_err}")
+                await send_telegram(chat_id, "⚠️ Something went wrong. Try again or use /ep to retry.")
+                return {"success": True}
         
         context = await get_recent_context(limit=2)
         classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json)
@@ -813,6 +928,27 @@ async def handle_command(text: str, chat_id: int):
         else:
             reply = "⚠️ Could not trigger remote briefing. Try again or check system config."
 
+    elif text in ['/ep']:
+        try:
+            pending = supabase.table('email_pending_tasks')\
+                .select('id, suggested_title, suggested_project')\
+                .is_('danny_decision', 'null')\
+                .order('created_at', desc=False)\
+                .limit(10)\
+                .execute()
+            if pending.data:
+                lines = [f"📨 Pending email tasks ({len(pending.data)}):"]
+                for row in pending.data:
+                    shortcode = str(row['id'])[-4:]
+                    project = row.get('suggested_project') or 'Unknown'
+                    lines.append(f"[{shortcode}] {row['suggested_title']} — {project}")
+                lines.append('"a3f1 yes" to approve · "a3f1 drop" to reject')
+                reply = "\n\n".join(lines)
+            else:
+                reply = "✅ No pending email decisions. Inbox is clean."
+        except Exception as ep_err:
+            reply = f"⚠️ Error fetching pending emails: {ep_err}"
+    
     else:
         await send_telegram(chat_id, "⚠️ Unknown command. Type /help or tap the menu to see available commands.")
 
