@@ -253,17 +253,25 @@ async def ingest_outlook_messages(limit=25):
         except Exception as e:
             print(f"Dedup check failed for {msg_id}: {e}")
 
-        normalized = normalize_outlook_message(msg)
-        sender = normalized["sender"]
-        sender_email = normalized["sender_email"]
-        subject = normalized["subject"]
-        body = normalized["body_summary"]
-        if not body or len(body.strip()) < 10:
-            body = f"[No body preview available — classify based on subject only. Subject: {subject}]"
-        to_header = normalized.get("to_header", "")
-        cc_header = normalized.get("cc_header", "")
+        # Initialize variables for error handler
+        normalized = None
+        sender = "unknown"
+        sender_email = "unknown"
+        subject = "processing_error"
+        body = ""
+        to_header = ""
+        cc_header = ""
 
         try:
+            normalized = normalize_outlook_message(msg)
+            sender = normalized["sender"]
+            sender_email = normalized["sender_email"]
+            subject = normalized["subject"]
+            body = normalized["body_summary"]
+            if not body or len(body.strip()) < 10:
+                body = f"[No body preview available — classify based on subject only. Subject: {subject}]"
+            to_header = normalized.get("to_header", "")
+            cc_header = normalized.get("cc_header", "")
             if any(p in sender_email.lower() for p in NOREPLY_PATTERNS):
                 classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
             else:
@@ -304,6 +312,9 @@ async def ingest_outlook_messages(limit=25):
 
             if classification == "fyi":
                 insert_res = supabase.table('emails').insert(email_row).execute()
+                if not getattr(insert_res, 'data', None):
+                    print(f"⚠️ Email insert returned no data for {subject}")
+                    continue
                 print(f"✅ [fyi] {subject} | From: {sender_email}")
                 processed += 1
 
@@ -367,23 +378,20 @@ async def ingest_outlook_messages(limit=25):
         except Exception as e:
             print(f"❌ Error processing Outlook message {msg_id}: {e}")
             try:
-                try:
-                    res = supabase.table('emails').insert({
-                        "message_id": msg_id,
-                        "source": "outlook",
-                        "sender": (sender or "unknown"),
-                        "sender_email": (sender_email or "unknown"),
-                        "classification": EmailStatus.ERROR,
-                        "status": EmailStatus.ERROR,
-                        "subject": (subject or "processing_error"),
-                        "received_at": (normalized.get("received_at") if normalized else None) or datetime.now(timezone.utc).isoformat()
-                    }).execute()
-                    if res is None:
-                        print(f"⚠️ Error row insert returned None for {msg_id}")
-                except Exception as insert_err:
-                    print(f"⚠️ Failed to insert error record for {msg_id}: {insert_err}")
-            except Exception:
-                pass
+                res = supabase.table('emails').insert({
+                    "message_id": msg_id,
+                    "source": "outlook",
+                    "sender": (sender or "unknown"),
+                    "sender_email": (sender_email or "unknown"),
+                    "classification": EmailStatus.ERROR,
+                    "status": EmailStatus.ERROR,
+                    "subject": (subject or "processing_error"),
+                    "received_at": (normalized.get("received_at") if normalized else None) or datetime.now(timezone.utc).isoformat()
+                }).execute()
+                if res is None:
+                    print(f"⚠️ Error row insert returned None for {msg_id}")
+            except Exception as insert_err:
+                print(f"⚠️ Failed to insert error record for {msg_id}: {insert_err}")
             continue
 
     print(f"Outlook ingest complete. {processed} processed, {ignored} ignored, {skipped} skipped (duplicates).")
