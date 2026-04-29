@@ -1154,10 +1154,12 @@ async def process_pulse(auth_secret: str = None):
         pulse_secret = os.getenv("PULSE_SECRET")
         if pulse_secret and auth_secret != pulse_secret:
             return {"error": "Unauthorized manual trigger.", "status": 401}
+        if not pulse_secret:
+            print("⚠️ Warning: PULSE_SECRET not set. Auth check bypassed.")
 
         # --- 0. GOOGLE→SUPABASE SYNC (After auth check) ---
         tasks_service = get_tasks_service()
-        completed_from_google = sync_completed_tasks_from_google(supabase, tasks_service)
+        completed_from_google = await asyncio.to_thread(sync_completed_tasks_from_google, supabase, tasks_service)
         for title, proj_name in (completed_from_google or []):
             asyncio.create_task(write_outcome_memory(title, proj_name))
         
@@ -2156,14 +2158,17 @@ async def process_pulse(auth_secret: str = None):
                     g_id = None
                     e_id = None
 
-                    # 2a. SYNC TO GOOGLE TASKS
+                    # 2a. SYNC TO GOOGLE TASKS (run in thread to avoid blocking)
                     if sanitized_time:
                         try:
-                            g_id = sync_to_google(
+                            g_id = await asyncio.to_thread(
+                                sync_to_google,
                                 tasks_service,
-                                title=task_title,
-                                due_at=sanitized_time,
-                                explicit_time=explicit_time
+                                task_title,
+                                sanitized_time,
+                                None,
+                                None,
+                                explicit_time
                             )
                             if g_id: print(f"📡 Google Task Created: {task_title}")
                         except Exception as e:
@@ -2172,12 +2177,12 @@ async def process_pulse(auth_secret: str = None):
                     # 2b. STRATEGIC GATE: SYNC TO CALENDAR (Only runs if explicit time was given)
                     if sanitized_time and explicit_time:
                         try:
-                            conflict_name = check_conflict(sanitized_time)
+                            conflict_name = await asyncio.to_thread(check_conflict, sanitized_time)
                             if conflict_name:
                                 briefing = ai_data.get('briefing', "")
                                 ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
                             
-                            e_id = sync_to_calendar(task_title, sanitized_time, duration_mins=duration_mins)
+                            e_id = await asyncio.to_thread(sync_to_calendar, task_title, sanitized_time, duration_mins)
                             if e_id: print(f"🔥 Calendar block secured: {task_title} ({duration_mins}m)")
                         except Exception as ce:
                             print(f"⚠️ Calendar Sync failed for {task_title}: {ce}")

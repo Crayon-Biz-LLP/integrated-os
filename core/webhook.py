@@ -3,6 +3,7 @@ import os
 import json
 import asyncio
 import httpx
+import re
 from supabase import create_client, Client
 from datetime import datetime, timezone, timedelta
 from google import genai
@@ -831,7 +832,6 @@ async def process_webhook(update: dict):
             await send_telegram(chat_id, f"✓ {ack}")
         elif intent == 'NOISE':
             await handle_noise(chat_id)
-            supabase.table('raw_dumps').insert([{"content": text, "status": "pending"}]).execute()
         else:
             await handle_clarification(
                 text,
@@ -914,7 +914,8 @@ async def handle_command(text: str, chat_id: int):
                     reply = "❌ Database Error"
 
     elif text in ['/urgent', '🔴 Urgent']:
-        now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        now_iso = now_ist.strftime('%Y-%m-%dT%H:%M:%S+05:30')
         fire_res = supabase.table('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}").limit(1).execute()
         if fire_res.data:
             fire = fire_res.data[0]
