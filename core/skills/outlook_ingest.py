@@ -378,7 +378,7 @@ async def ingest_outlook_messages(limit=25):
         except Exception as e:
             print(f"❌ Error processing Outlook message {msg_id}: {e}")
             try:
-                res = supabase.table('emails').insert({
+                supabase.table('emails').insert({
                     "message_id": msg_id,
                     "source": "outlook",
                     "sender": (sender or "unknown"),
@@ -388,8 +388,6 @@ async def ingest_outlook_messages(limit=25):
                     "subject": (subject or "processing_error"),
                     "received_at": (normalized.get("received_at") if normalized else None) or datetime.now(timezone.utc).isoformat()
                 }).execute()
-                if res is None:
-                    print(f"⚠️ Error row insert returned None for {msg_id}")
             except Exception as insert_err:
                 print(f"⚠️ Failed to insert error record for {msg_id}: {insert_err}")
             continue
