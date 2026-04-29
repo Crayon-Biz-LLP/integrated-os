@@ -224,6 +224,8 @@ async def ingest_outlook_messages(limit=25):
         sender_email = normalized["sender_email"]
         subject = normalized["subject"]
         body = normalized["body_summary"]
+        if not body or len(body.strip()) < 10:
+            body = f"[No body preview available — classify based on subject only. Subject: {subject}]"
         to_header = normalized.get("to_header", "")
         cc_header = normalized.get("cc_header", "")
 
