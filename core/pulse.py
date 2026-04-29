@@ -33,12 +33,13 @@ supabase: Client = create_client(
 )
 
 def is_already_in_email_queue(title: str) -> bool:
-    """Check if a task title already has a pending suggestion in email_pending_tasks."""
+    """Check if a task title already exists in email_pending_tasks or tasks table."""
     try:
         keywords = [w for w in title.lower().split() if len(w) > 4]
         if not keywords:
             return False
         for kw in keywords[:3]:
+            # Check pending queue
             result = supabase.table('email_pending_tasks')\
                 .select('id')\
                 .ilike('suggested_title', f'%{kw}%')\
@@ -47,6 +48,16 @@ def is_already_in_email_queue(title: str) -> bool:
                 .execute()
             if result.data:
                 print(f"⚠️  Duplicate guard: '{title}' matches pending email task (keyword: '{kw}'). Skipping.")
+                return True
+            # Check active tasks on board
+            result = supabase.table('tasks')\
+                .select('id')\
+                .ilike('title', f'%{kw}%')\
+                .not_.in_('status', ['done', 'cancelled'])\
+                .limit(1)\
+                .execute()
+            if result.data:
+                print(f"⚠️  Duplicate guard: '{title}' matches existing task on board (keyword: '{kw}'). Skipping.")
                 return True
         return False
     except Exception as e:
@@ -88,6 +99,7 @@ def build_routing_context(legacy_projects: list) -> str:
 
         name = p.get('name', '').strip()
         if not name:
+            print(f"⚠️ Project ID {p.get('id')} has no name, skipping routing context entry.")
             continue
 
         parent_id = p.get('parent_project_id')
@@ -939,10 +951,9 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                     }).eq('id', task_id).execute()
                     
                     # 🧠 Collect for outcome memory — caller will fire as background tasks
-                    proj_res = supabase_client.table('tasks').select('project_id').eq('id', task_id).execute()
                     proj_name = None
-                    if proj_res.data and proj_res.data[0].get('project_id'):
-                        proj_id = proj_res.data[0]['project_id']
+                    proj_id = task.get('project_id')
+                    if proj_id:
                         proj_lookup = supabase_client.table('projects').select('name').eq('id', proj_id).maybe_single().execute()
                         proj_name = proj_lookup.data['name'] if proj_lookup.data else None
                     completed.append((title, proj_name))
