@@ -302,7 +302,9 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
 
         if classification == 'fyi':
             insert_res = supabase.table('emails').insert(email_row).execute()
-            email_id = insert_res.data[0]['id']
+            if not insert_res.data:
+                print(f"⚠️ Email insert returned no data for {subject}")
+                return ('error', 'insert returned no data')
             print(f"✅ [fyi] {subject} | From: {sender_email}")
 
         elif classification == 'actionable':
@@ -421,9 +423,7 @@ async def main():
         seen_ids.add(msg_id)
         try:
             status, detail = await process_email(msg, gmail_service, active_task_keywords)
-            if status == 'skipped':
-                skipped += 1
-            elif status == EmailStatus.IGNORED:
+            if status == EmailStatus.IGNORED:
                 ignored += 1
             elif status == EmailStatus.ERROR:
                 processed += 1
