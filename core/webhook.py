@@ -15,7 +15,7 @@ supabase: Client = create_client(
 def is_already_in_tasks_table(title: str) -> bool:
     """Check if a similar task already exists in the tasks table."""
     try:
-        keywords = [w for w in title.lower().split() if len(w) > 5]
+        keywords = [w for w in title.lower().split() if len(w) > 4]
         if not keywords:
             return False
         for kw in keywords[:3]:
@@ -132,7 +132,6 @@ def get_embedding(text: str) -> list:
 
 
 async def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]") -> dict:
-    from datetime import datetime, timezone, timedelta
     ist_offset = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist_offset)
     current_hour = ist_hour if ist_hour is not None else now.hour
@@ -239,7 +238,6 @@ async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
 
 async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int, ist_hour: int = None, core_json: str = "[]"):
     """Process audio, image, or document content and extract tasks and insights."""
-    from datetime import datetime, timezone, timedelta
     ist_offset = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist_offset)
     current_hour = ist_hour if ist_hour is not None else now.hour
@@ -394,7 +392,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
 
 
 async def handle_confident_note(text: str, chat_id: int, receipt: str = None):
-    embedding = get_embedding(text)
+    embedding = await asyncio.to_thread(get_embedding, text)
     try:
         supabase.table('memories').insert({
             "content": text,
@@ -591,7 +589,6 @@ async def process_webhook(update: dict):
                     print(f"⚠️ Deduplication check error: {error_msg}")
                     pass
 
-        from datetime import datetime, timezone, timedelta
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist_offset)
 
@@ -714,16 +711,20 @@ async def process_webhook(update: dict):
                 _email_id = _row.get('email_id')
                 
                 if _is_approve:
-                    # Set danny_decision FIRST to prevent double-processing on retries
+                    # Check for duplicate in tasks table FIRST before setting decision
+                    if is_already_in_tasks_table(_suggested_title):
+                        supabase.table('email_pending_tasks')\
+                            .update({'danny_decision': 'skipped'})\
+                            .eq('id', _row['id'])\
+                            .execute()
+                        await send_telegram(chat_id, f"⚠️ A similar task already exists on your board: [{_suggested_title}]")
+                        return {"success": True}
+
+                    # Set danny_decision after duplicate check passes
                     supabase.table('email_pending_tasks')\
                         .update({'danny_decision': 'approved'})\
                         .eq('id', _row['id'])\
                         .execute()
-                    
-                    # Check for duplicate in tasks table
-                    if is_already_in_tasks_table(_suggested_title):
-                        await send_telegram(chat_id, f"⚠️ A similar task already exists on your board: [{_suggested_title}]")
-                        return {"success": True}
                     
                     # Resolve project_id
                     _project_id = None
@@ -913,7 +914,7 @@ async def handle_command(text: str, chat_id: int):
                     reply = "❌ Database Error"
 
     elif text in ['/urgent', '🔴 Urgent']:
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         fire_res = supabase.table('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}").limit(1).execute()
         if fire_res.data:
             fire = fire_res.data[0]
