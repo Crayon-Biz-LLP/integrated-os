@@ -709,6 +709,7 @@ async def process_webhook(update: dict):
                 _row = _row_res.data
                 _suggested_title = _row.get('suggested_title', '')
                 _suggested_project = _row.get('suggested_project')
+                _suggested_project_id = _row.get('suggested_project_id')
                 _email_id = _row.get('email_id')
                 
                 if _is_approve:
@@ -727,9 +728,9 @@ async def process_webhook(update: dict):
                         .eq('id', _row['id'])\
                         .execute()
                     
-                    # Resolve project_id
-                    _project_id = None
-                    if _suggested_project:
+                    # Use suggested_project_id if available, otherwise fall back to lookup
+                    _project_id = _suggested_project_id
+                    if not _project_id and _suggested_project:
                         _proj_res = supabase.table('projects')\
                             .select('id')\
                             .ilike('name', f'%{_suggested_project}%')\
@@ -966,7 +967,7 @@ async def handle_command(text: str, chat_id: int):
     elif text in ['/ep']:
         try:
             pending = supabase.table('email_pending_tasks')\
-                .select('id, suggested_title, suggested_project')\
+                .select('id, suggested_title, suggested_project, suggested_project_id, project_confidence')\
                 .is_('danny_decision', 'null')\
                 .order('created_at', desc=False)\
                 .limit(10)\
@@ -975,7 +976,9 @@ async def handle_command(text: str, chat_id: int):
                 lines = [f"📨 Pending email tasks ({len(pending.data)}):"]
                 for row in pending.data:
                     project = row.get('suggested_project') or 'Unknown'
-                    lines.append(f"[{row['id']}] {row['suggested_title'][:60]} — {project}")
+                    conf = row.get('project_confidence')
+                    conf_str = f" ({conf:.0%})" if conf else ""
+                    lines.append(f"[{row['id']}] {row['suggested_title'][:60]} — {project}{conf_str}")
                 lines.append('"[id] yes" to approve · "[id] drop" to reject')
                 reply = "\n\n".join(lines)
             else:
