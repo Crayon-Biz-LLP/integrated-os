@@ -463,14 +463,14 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
             linked_person_name = classification_data.get('linked_person_name')
             if linked_person_name:
                 person_res = supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').maybe_single().execute()
-                if person_res.data:
+                if getattr(person_res, 'data', None):
                     linked_person_id = person_res.data['id']
             
             linked_project_id = None
             linked_project_name = classification_data.get('linked_project_name')
             if linked_project_name:
                 project_res = supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').maybe_single().execute()
-                if project_res.data:
+                if getattr(project_res, 'data', None):
                     linked_project_id = project_res.data['id']
             
             email_row['linked_person_id'] = linked_person_id
