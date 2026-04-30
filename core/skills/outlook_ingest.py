@@ -440,7 +440,7 @@ async def ingest_outlook_messages(limit=25):
                             "suggested_title": suggested_task,
                             "suggested_project": linked_project_name,
                             "suggested_project_id": project_suggestion.get("suggested_project_id"),
-                            "project_confidence": 0.8 if linked_project_name else None,
+                            "project_confidence": project_suggestion.get("project_confidence"),
                             "project_mapping_reason": f"AI classification linked_project_name: {linked_project_name}" if linked_project_name else None,
                             "shown_in_brief": False,
                             "danny_decision": None,
