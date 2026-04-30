@@ -13,23 +13,47 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
 
+def normalize_title(title: str) -> str:
+    """Normalize title for comparison: lowercase, strip punctuation, collapse whitespace."""
+    import re
+    # Lowercase
+    normalized = title.lower()
+    # Strip punctuation (keep alphanumeric and spaces)
+    normalized = re.sub(r'[^a-z0-9\s]', '', normalized)
+    # Collapse repeated whitespace
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    return normalized
+
+
 def is_already_in_tasks_table(title: str) -> bool:
-    """Check if a similar task already exists in the tasks table."""
+    """Check if a similar task already exists in the tasks table.
+    Uses strict matching: normalized exact match or extremely high similarity.
+    Fails open on errors."""
     try:
-        keywords = [w for w in title.lower().split() if len(w) > 4]
-        if not keywords:
+        # First, try exact normalized match
+        normalized_title = normalize_title(title)
+        if not normalized_title:
             return False
-        for kw in keywords[:3]:
-            result = supabase.table('tasks')\
-                .select('id')\
-                .ilike('title', f'%{kw}%')\
-                .not_.in_('status', ['done', 'cancelled'])\
-                .limit(1)\
-                .execute()
-            if result.data:
-                print(f"⚠️  Duplicate guard: suggestion '{title}' matches "
-                      f"existing task (keyword: '{kw}'). Dropping suggestion.")
+        
+        # Fetch active tasks for comparison
+        result = supabase.table('tasks')\
+            .select('id, title')\
+            .not_.in_('status', ['done', 'cancelled'])\
+            .execute()
+        
+        if not result.data:
+            return False
+        
+        # Check for exact normalized match
+        for task in result.data:
+            existing_title = task.get('title', '')
+            if normalize_title(existing_title) == normalized_title:
+                print(f"⚠️ Duplicate guard: '{title}' matches "
+                      f"existing task (id: {task['id']}, title: '{existing_title}'). "
+                      f"Skipping.")
                 return True
+        
+        # No exact match found
         return False
     except Exception as e:
         print(f"Duplicate guard check failed (failing open): {e}")
@@ -722,71 +746,33 @@ async def process_webhook(update: dict):
                         await send_telegram(chat_id, f"⚠️ A similar task already exists on your board: [{_suggested_title}]")
                         return {"success": True}
 
-                    # Use suggested_project_id if available, otherwise fall back to lookup
-                    _project_id = _suggested_project_id
-                    if not _project_id and _suggested_project:
-                        _proj_res = supabase.table('projects')\
-                            .select('id')\
-                            .ilike('name', f'%{_suggested_project}%')\
-                            .limit(1)\
-                            .execute()
-                        if _proj_res.data:
-                            _project_id = _proj_res.data[0]['id']
-                    
-                    # Insert into tasks FIRST (before updating danny_decision)
+                    # Insert into raw_dumps FIRST (let Pulse handle enrichment + project mapping)
                     try:
-                        supabase.table('tasks').insert({
-                            "title": _suggested_title,
-                            "status": "todo",
-                            "priority": "medium",
+                        supabase.table('raw_dumps').insert([{
+                            "content": _suggested_title,
                             "source": "email",
-                            "email_id": _email_id,
-                            "project_id": _project_id
-                        }).execute()
+                            "status": "pending",
+                            "metadata": json.dumps({
+                                "email_id": _email_id,
+                                "is_human_sender": _row.get('is_human_sender', False)
+                            })
+                        }]).execute()
                     except Exception as _insert_err:
-                        await send_telegram(chat_id, f"⚠️ Task creation failed. Decision not recorded — you can retry with [{_row['id']}] yes.")
+                        await send_telegram(chat_id, f"⚠️ Task staging failed. Decision not recorded — you can retry with [{_row['id']}] yes.")
                         raise _insert_err
                     
-                    # Only update danny_decision after successful task insert
+                    # Only update danny_decision after successful raw_dumps insert
                     supabase.table('email_pending_tasks')\
                         .update({'danny_decision': 'approved'})\
                         .eq('id', _row['id'])\
                         .execute()
                     
-                    # Write relationship_note memory on approval if human sender
-                    try:
-                        _email_row = supabase.table('emails')\
-                            .select('sender, sender_email, body_summary')\
-                            .eq('id', _email_id)\
-                            .maybe_single()\
-                            .execute()
-                        _pending_row = supabase.table('email_pending_tasks')\
-                            .select('is_human_sender')\
-                            .eq('id', _row['id'])\
-                            .maybe_single()\
-                            .execute()
-                        
-                        if (_email_row.data and 
-                            _pending_row.data and 
-                            _pending_row.data.get('is_human_sender')):
-                            _mem_content = (
-                                f"{_email_row.data.get('sender')} "
-                                f"({_email_row.data.get('sender_email')}): "
-                                f"{_email_row.data.get('body_summary', '')[:300]}. "
-                                f"Task created: {_suggested_title}"
-                            )
-                            from google import genai as _genai
-                            _emb = get_embedding(_mem_content)
-                            supabase.table('memories').insert({
-                                "content": _mem_content,
-                                "memory_type": "relationship_note",
-                                "embedding": _emb
-                            }).execute()
-                            print(f"🧠 [relationship_note] Approval memory saved: {_suggested_title}")
-                    except Exception as _mem_err:
-                        print(f"⚠️ Memory write on approval failed (non-blocking): {_mem_err}")
+                    await send_telegram(chat_id, f"✅ Task staged: {_suggested_title}")
+                    print(f"✅ Staged to raw_dumps: {_suggested_title}")
                     
-                    await send_telegram(chat_id, f"✅ Task created: {_suggested_title}")
+                    # Note: Memory write removed - should only happen after Pulse creates final task.
+                    # Pulse should check metadata.is_human_sender to write relationship_note memory
+                    # when it creates the final task from this raw_dump.
                 
                 else:
                     # Reject flow
@@ -971,7 +957,7 @@ async def handle_command(text: str, chat_id: int):
     elif text in ['/ep']:
         try:
             pending = supabase.table('email_pending_tasks')\
-                .select('id, suggested_title, suggested_project, suggested_project_id, project_confidence')\
+                .select('id, suggested_title, suggested_project')\
                 .is_('danny_decision', 'null')\
                 .order('created_at', desc=False)\
                 .limit(10)\
@@ -980,9 +966,7 @@ async def handle_command(text: str, chat_id: int):
                 lines = [f"📨 Pending email tasks ({len(pending.data)}):"]
                 for row in pending.data:
                     project = row.get('suggested_project') or 'Unknown'
-                    conf = row.get('project_confidence')
-                    conf_str = f" ({conf:.0%})" if conf else ""
-                    lines.append(f"[{row['id']}] {row['suggested_title'][:60]} — {project}{conf_str}")
+                    lines.append(f"[{row['id']}] {row['suggested_title'][:60]} — {project}")
                 lines.append('"[id] yes" to approve · "[id] drop" to reject')
                 reply = "\n\n".join(lines)
             else:
