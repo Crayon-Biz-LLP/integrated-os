@@ -673,18 +673,18 @@ async def process_webhook(update: dict):
         
         # 📨 SHORTCODE REPLY HANDLER — must run before classify_intent()
         import re as _re
-        _approve_match = _re.match(r'^([a-f0-9]{4})\s+(yes|approve|do it|yep|add it)$', text.strip(), _re.IGNORECASE)
-        _reject_match = _re.match(r'^([a-f0-9]{4})\s+(drop|no|reject|skip|dismiss)$', text.strip(), _re.IGNORECASE)
+        _approve_match = _re.match(r'^(\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), _re.IGNORECASE)
+        _reject_match = _re.match(r'^(\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), _re.IGNORECASE)
         
         if _approve_match or _reject_match:
             try:
                 _shortcode = (_approve_match or _reject_match).group(1)
                 _is_approve = bool(_approve_match)
                 
-                # Shortcode = last 4 chars of UUID. Collision possible at scale — limit(1) takes first match.
+                # Shortcode = integer ID
                 _row_res = supabase.table('email_pending_tasks')\
                     .select('*')\
-                    .ilike('id::text', f'%{_shortcode}')\
+                    .eq('id', int(_shortcode))\
                     .is_('danny_decision', 'null')\
                     .limit(1)\
                     .maybe_single()\
@@ -694,7 +694,7 @@ async def process_webhook(update: dict):
                     # Check if this shortcode exists but was already decided
                     decided = supabase.table('email_pending_tasks')\
                         .select('id, danny_decision')\
-                        .ilike('id::text', f'%{_shortcode}')\
+                        .eq('id', int(_shortcode))\
                         .not_.is_('danny_decision', 'null')\
                         .limit(1)\
                         .maybe_single()\
@@ -974,10 +974,9 @@ async def handle_command(text: str, chat_id: int):
             if pending.data:
                 lines = [f"📨 Pending email tasks ({len(pending.data)}):"]
                 for row in pending.data:
-                    shortcode = str(row['id'])[-4:]
                     project = row.get('suggested_project') or 'Unknown'
-                    lines.append(f"[{shortcode}] {row['suggested_title']} — {project}")
-                lines.append('"a3f1 yes" to approve · "a3f1 drop" to reject')
+                    lines.append(f"[{row['id']}] {row['suggested_title'][:60]} — {project}")
+                lines.append('"[id] yes" to approve · "[id] drop" to reject')
                 reply = "\n\n".join(lines)
             else:
                 reply = "✅ No pending email decisions. Inbox is clean."
