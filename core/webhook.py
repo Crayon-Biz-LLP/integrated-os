@@ -752,7 +752,7 @@ async def process_webhook(update: dict):
                             "content": _suggested_title,
                             "source": "email",
                             "status": "pending",
-                            "metadata": json.dumps({
+                            "metadata": ({
                                 "email_id": _email_id,
                                 "is_human_sender": _row.get('is_human_sender', False)
                             })
