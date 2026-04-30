@@ -1535,7 +1535,7 @@ async def process_pulse(auth_secret: str = None):
 
         # Fetch email-suggested tasks not yet shown in brief
         pending_email_tasks_res = supabase.table('email_pending_tasks')\
-            .select('id, suggested_title, suggested_project, suggested_project_id, project_confidence, project_mapping_reason, email_id')\
+            .select('id, suggested_title, suggested_project, email_id')\
             .eq('shown_in_brief', False)\
             .is_('danny_decision', None)\
             .execute()
@@ -2356,7 +2356,7 @@ async def process_pulse(auth_secret: str = None):
                     .execute()
 
                 pending_decisions = supabase.table('email_pending_tasks')\
-                    .select('id, suggested_title, suggested_project, suggested_project_id, project_confidence, created_at')\
+                    .select('id, suggested_title, suggested_project, created_at')\
                     .is_('danny_decision', 'null')\
                     .order('created_at', desc=False)\
                     .limit(5)\

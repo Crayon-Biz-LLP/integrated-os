@@ -15,7 +15,6 @@ load_dotenv('.env.local')
 from supabase import create_client, Client
 from google import genai
 import requests
-from core.skills.project_routing import suggest_project_for_task
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -433,15 +432,10 @@ async def ingest_outlook_messages(limit=25):
                 if suggested_task:
                     suggested_title = suggested_task or ''
                     if not is_duplicate_task(suggested_title, active_task_keywords):
-                        # Get project suggestion using shared helper
-                        project_suggestion = suggest_project_for_task(linked_project_name)
                         supabase.table('email_pending_tasks').insert({
                             "email_id": email_id,
                             "suggested_title": suggested_task,
                             "suggested_project": linked_project_name,
-                            "suggested_project_id": project_suggestion.get("suggested_project_id"),
-                            "project_confidence": project_suggestion.get("project_confidence"),
-                            "project_mapping_reason": f"AI classification linked_project_name: {linked_project_name}" if linked_project_name else None,
                             "shown_in_brief": False,
                             "danny_decision": None,
                             "is_human_sender": is_human
