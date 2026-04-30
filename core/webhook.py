@@ -722,32 +722,36 @@ async def process_webhook(update: dict):
                         await send_telegram(chat_id, f"⚠️ A similar task already exists on your board: [{_suggested_title}]")
                         return {"success": True}
 
-                    # Set danny_decision after duplicate check passes
-                    supabase.table('email_pending_tasks')\
-                        .update({'danny_decision': 'approved'})\
-                        .eq('id', _row['id'])\
-                        .execute()
-                    
                     # Use suggested_project_id if available, otherwise fall back to lookup
                     _project_id = _suggested_project_id
                     if not _project_id and _suggested_project:
                         _proj_res = supabase.table('projects')\
                             .select('id')\
                             .ilike('name', f'%{_suggested_project}%')\
-                            .maybe_single()\
+                            .limit(1)\
                             .execute()
                         if _proj_res.data:
-                            _project_id = _proj_res.data['id']
+                            _project_id = _proj_res.data[0]['id']
                     
-                    # Insert into tasks
-                    supabase.table('tasks').insert({
-                        "title": _suggested_title,
-                        "status": "todo",
-                        "priority": "medium",
-                        "source": "email",
-                        "email_id": _email_id,
-                        "project_id": _project_id
-                    }).execute()
+                    # Insert into tasks FIRST (before updating danny_decision)
+                    try:
+                        supabase.table('tasks').insert({
+                            "title": _suggested_title,
+                            "status": "todo",
+                            "priority": "medium",
+                            "source": "email",
+                            "email_id": _email_id,
+                            "project_id": _project_id
+                        }).execute()
+                    except Exception as _insert_err:
+                        await send_telegram(chat_id, f"⚠️ Task creation failed. Decision not recorded — you can retry with [{_row['id']}] yes.")
+                        raise _insert_err
+                    
+                    # Only update danny_decision after successful task insert
+                    supabase.table('email_pending_tasks')\
+                        .update({'danny_decision': 'approved'})\
+                        .eq('id', _row['id'])\
+                        .execute()
                     
                     # Write relationship_note memory on approval if human sender
                     try:
