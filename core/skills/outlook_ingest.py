@@ -84,7 +84,7 @@ def get_embedding(text: str) -> list:
         print(f"Embedding error: {e}")
         return [0] * EMBEDDING_DIMENSION
 
-async def call_gemini_with_retry(prompt: str, model: str):
+async def call_gemini_with_retry(prompt: str, model: str, config: dict = None):
     max_retries = 3
     base_delay = 5
 
@@ -92,7 +92,8 @@ async def call_gemini_with_retry(prompt: str, model: str):
         try:
             response = gemini_client.models.generate_content(
                 model=model,
-                contents=prompt
+                contents=prompt,
+                config=config or {}
             )
             return response
         except Exception as e:

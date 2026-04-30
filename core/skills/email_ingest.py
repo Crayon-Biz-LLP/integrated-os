@@ -98,7 +98,7 @@ def get_embedding(text: str) -> list:
         return [0] * EMBEDDING_DIMENSION
 
 
-async def call_gemini_with_retry(prompt: str, model: str):
+async def call_gemini_with_retry(prompt: str, model: str, config: dict = None):
     max_retries = 3
     base_delay = 5
 
@@ -106,7 +106,8 @@ async def call_gemini_with_retry(prompt: str, model: str):
         try:
             response = gemini_client.models.generate_content(
                 model=model,
-                contents=prompt
+                contents=prompt,
+                config=config or {}
             )
             return response
         except Exception as e:
@@ -388,6 +389,18 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
             if not insert_res.data:
                 print(f"⚠️ Email insert returned no data for {subject}")
                 return ('error', 'insert returned no data')
+            
+            # Write relationship_note if human sender with memory value
+            is_human = classification_data.get('is_human_sender', False)
+            has_memory = classification_data.get('has_memory_value', False)
+            if is_human and has_memory:
+                await write_relationship_note(
+                    sender_name, 
+                    sender_email, 
+                    subject, 
+                    classification_data.get('summary', '')
+                )
+            
             print(f"✅ [fyi] {subject} | From: {sender_email}")
 
         elif classification == 'actionable':
@@ -397,27 +410,26 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
                 person_res = supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').maybe_single().execute()
                 if person_res.data:
                     linked_person_id = person_res.data['id']
-
+            
             linked_project_id = None
             linked_project_name = classification_data.get('linked_project_name')
             if linked_project_name:
                 project_res = supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').maybe_single().execute()
                 if project_res.data:
                     linked_project_id = project_res.data['id']
-
+            
             email_row['linked_person_id'] = linked_person_id
             email_row['linked_project_id'] = linked_project_id
-
+            
             insert_res = supabase.table('emails').insert(email_row).execute()
             if not insert_res.data:
                 print(f"⚠️ Email insert returned no data for {subject}")
                 return ('error', 'insert returned no data')
             email_id = insert_res.data[0]['id']
-
+            
             suggested_task = classification_data.get('suggested_task')
             is_human = classification_data.get('is_human_sender', False)
-            has_memory = classification_data.get('has_memory_value', False)
-
+            
             if suggested_task:
                 suggested_title = suggested_task or ''
                 if not is_duplicate_task(suggested_title, active_task_keywords):
@@ -427,22 +439,18 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
                         "suggested_project": classification_data.get('linked_project_name'),
                         "shown_in_brief": False,
                         "danny_decision": None,
-                            "is_human_sender": is_human
-                        }).execute()
-
-                if classification_data.get('needs_draft'):
-                    draft_body = await generate_draft(sender_name, subject, body)
-                    if draft_body:
-                        supabase.table('email_drafts').insert({
-                            "email_id": email_id,
-                            "draft_body": draft_body,
-                            "status": "pending"
-                        }).execute()
-
-                # FYI path: write relationship_note if human sender with memory value
-                if classification == 'fyi' and is_human and has_memory:
-                    await write_relationship_note(sender_name, sender_email, subject, classification_data.get('summary', ''))
-
+                        "is_human_sender": is_human
+                    }).execute()
+            
+            if classification_data.get('needs_draft'):
+                draft_body = await generate_draft(sender_name, subject, body)
+                if draft_body:
+                    supabase.table('email_drafts').insert({
+                        "email_id": email_id,
+                        "draft_body": draft_body,
+                        "status": "pending"
+                    }).execute()
+            
             print(f"✅ [actionable] {subject} | From: {sender_email}")
 
         return (classification, subject)
