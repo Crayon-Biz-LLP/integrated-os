@@ -748,6 +748,39 @@ async def process_webhook(update: dict):
                         "project_id": _project_id
                     }).execute()
                     
+                    # Write relationship_note memory on approval if human sender
+                    try:
+                        _email_row = supabase.table('emails')\
+                            .select('sender, sender_email, body_summary')\
+                            .eq('id', _email_id)\
+                            .maybe_single()\
+                            .execute()
+                        _pending_row = supabase.table('email_pending_tasks')\
+                            .select('is_human_sender')\
+                            .eq('id', _row['id'])\
+                            .maybe_single()\
+                            .execute()
+                        
+                        if (_email_row.data and 
+                            _pending_row.data and 
+                            _pending_row.data.get('is_human_sender')):
+                            _mem_content = (
+                                f"{_email_row.data.get('sender')} "
+                                f"({_email_row.data.get('sender_email')}): "
+                                f"{_email_row.data.get('body_summary', '')[:300]}. "
+                                f"Task created: {_suggested_title}"
+                            )
+                            from google import genai as _genai
+                            _emb = get_embedding(_mem_content)
+                            supabase.table('memories').insert({
+                                "content": _mem_content,
+                                "memory_type": "relationship_note",
+                                "embedding": _emb
+                            }).execute()
+                            print(f"🧠 [relationship_note] Approval memory saved: {_suggested_title}")
+                    except Exception as _mem_err:
+                        print(f"⚠️ Memory write on approval failed (non-blocking): {_mem_err}")
+                    
                     await send_telegram(chat_id, f"✅ Task created: {_suggested_title}")
                 
                 else:

@@ -161,6 +161,30 @@ Body:
         return ""
 
 
+async def write_relationship_note(sender_name: str, sender_email: str, subject: str, summary: str):
+    """Write a synthesized relationship note to memories table."""
+    prompt = f"""Synthesize a brief relationship note based on this email interaction. Focus on: who sent it, what was communicated, why it matters for Danny's relationship knowledge graph. NOT a raw summary.
+
+Sender: {sender_name} ({sender_email})
+Subject: {subject}
+Summary: {summary}
+
+Output ONLY a concise 1-2 sentence note about the relationship context."""
+    
+    try:
+        response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite-preview")
+        note_content = response.text.strip()
+        embedding = await asyncio.to_thread(get_embedding, note_content)
+        supabase.table('memories').insert({
+            "content": note_content,
+            "memory_type": "relationship_note",
+            "embedding": embedding
+        }).execute()
+        print(f"🧠 Relationship note written for {sender_name}")
+    except Exception as e:
+        print(f"⚠️ Relationship note write failed: {e}")
+
+
 def extract_email_address(sender_header: str) -> tuple:
     match = re.search(r'<(.+?)>', sender_header)
     if match:
@@ -205,30 +229,89 @@ def decode_html_body(payload: dict) -> str:
 
 
 async def classify_email(sender: str, subject: str, body: str, to_header: str = '', cc_header: str = '') -> dict:
-    prompt = f"""Danny is a founder-operator. Classify this email strictly. He receives emails in India (Chennai). His name is Danny or Yashwant Daniel.
+    prompt = f"""You are classifying an email for Danny (Yashwant Daniel), founder of Crayon, Chennai, India.
+
+MAILBOX CONTEXT: This is Danny's PERSONAL Gmail inbox. It is scoped strictly to two labels:
+- inbox: personal correspondence, family, church-related work
+- Completed/Ashraya: Ashraya is a church ministry Danny leads
+
+This mailbox does NOT receive Crayon business emails, client work, or vendor communications. Those go to his Outlook work inbox.
+
+What legitimately arrives here:
+- Personal contacts: family, friends, personal relationships
+- Church contacts: pastors, ministry team, Ashraya volunteers, church admin, event coordination
+- Personal finances: CA, personal banking, insurance (human-sent, not automated alerts)
+- Government correspondence: direct human responses from officials (not automated portal emails)
+- Personal vendors: doctor, school, personal services
 
 Sender: {sender}
 To: {to_header}
 CC: {cc_header}
 Subject: {subject}
 Body:
-{body[:800]}
+{body[:1000]}
 
-Classify as one of:
-- ignored: newsletters, automated alerts, no-reply senders, bulk mail, OTP/verification codes, promotional offers, forwards with FW: prefix, mailing list mail
-- fyi: Danny is CC'd or BCC'd, or the email is informational and requires zero action from him
-- actionable: directly addressed to Danny (To: field), requires a response, decision, or creates an obligation
+─── CLASSIFICATION RULES ───
 
-Return ONLY valid JSON:
-{{"classification": "ignored|fyi|actionable", "summary": "2 sentences max, plain English", "suggested_task": "one line or null", "needs_draft": true/false, "linked_person_name": "name or null", "linked_project_name": "project name or null"}}"""
+CLASSIFY AS "ignored" IF ANY of these are true:
+- Sender contains: noreply, no-reply, donotreply, mailer-daemon, bounce, notifications@, automated@, alert@, update@
+- It is an OTP, verification code, payment alert, bank notification, delivery update, or booking confirmation
+- It is from a SaaS platform, e-commerce site, or any automated system
+- It is a newsletter, promotional offer, or bulk mail
+- Subject starts with FW: or Fwd: with no new content added
+
+CLASSIFY AS "fyi" IF:
+- Danny is in CC or BCC (not primary To: recipient)
+- A real person is sharing information — a church update, ministry report, or personal FYI — where no response is expected or needed
+
+CLASSIFY AS "actionable" IF:
+- Addressed directly To: Danny
+- From a real individual (family, friend, church member, ministry volunteer, pastor, personal contact)
+- Requires Danny to respond, decide, coordinate, approve, or take an action
+- Church coordination, Ashraya ministry tasks, personal obligations, and family matters all qualify
+
+─── OUTPUT RULES ───
+
+suggested_task:
+- Verb-first, specific action (e.g., "Confirm attendance for Ashraya prayer meeting with Elder Thomas", "Call Amma about Sunday lunch plan")
+- NULL if fyi or ignored
+- NULL if action cannot be stated specifically
+
+needs_draft:
+- true ONLY if Danny needs to write a reply
+- false if the task is a call, meeting, or offline action
+
+is_human_sender:
+- true if sender is a real individual person
+- false for any automated system, platform, or bulk sender
+
+has_memory_value:
+- true if the email contains a decision, commitment, ministry update, relationship context, or information worth remembering weeks later
+- false for transactional or routine correspondence
+- Can only be true if is_human_sender is also true
+
+Return ONLY valid JSON, NO markdown, NO explanation:
+{{
+  "classification": "ignored|fyi|actionable",
+  "summary": "2 sentences max. Who sent it, what they want or shared.",
+  "suggested_task": "verb-first task or null",
+  "needs_draft": true or false,
+  "linked_person_name": "full name if identifiable, else null",
+  "linked_project_name": "project or ministry name if mentioned, else null",
+  "is_human_sender": true or false,
+  "has_memory_value": true or false
+}}"""
 
     try:
-        response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite-preview")
-        return parse_json_response(response.text)
+        response = await call_gemini_with_retry(
+            prompt,
+            model="gemini-2.0-flash-lite",
+            config={"response_mime_type": "application/json"}
+        )
+        return json.loads(response.text)
     except Exception as e:
         print(f"⚠️ Classification failed: {e}")
-        return {"classification": "ignored", "summary": "Classification failed", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
-
+        return {"classification": "ignored", "summary": "Classification failed", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None, "is_human_sender": False, "has_memory_value": False}
 
 async def process_email(msg_data: dict, gmail_service, active_task_keywords: set) -> tuple:
     msg_id = msg_data['id']
@@ -332,6 +415,9 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
             email_id = insert_res.data[0]['id']
 
             suggested_task = classification_data.get('suggested_task')
+            is_human = classification_data.get('is_human_sender', False)
+            has_memory = classification_data.get('has_memory_value', False)
+
             if suggested_task:
                 suggested_title = suggested_task or ''
                 if not is_duplicate_task(suggested_title, active_task_keywords):
@@ -340,26 +426,22 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
                         "suggested_title": suggested_task,
                         "suggested_project": classification_data.get('linked_project_name'),
                         "shown_in_brief": False,
-                        "danny_decision": None
-                    }).execute()
+                        "danny_decision": None,
+                            "is_human_sender": is_human
+                        }).execute()
 
-            if classification_data.get('needs_draft'):
-                draft_body = await generate_draft(sender_name, subject, body)
-                if draft_body:
-                    supabase.table('email_drafts').insert({
-                        "email_id": email_id,
-                        "draft_body": draft_body,
-                        "status": "pending"
-                    }).execute()
+                if classification_data.get('needs_draft'):
+                    draft_body = await generate_draft(sender_name, subject, body)
+                    if draft_body:
+                        supabase.table('email_drafts').insert({
+                            "email_id": email_id,
+                            "draft_body": draft_body,
+                            "status": "pending"
+                        }).execute()
 
-            if suggested_task or classification_data.get('needs_draft'):
-                memory_content = f"Email from {sender_name} ({sender_email}): {classification_data.get('summary', '')}"
-                embedding = await asyncio.to_thread(get_embedding, memory_content)
-                supabase.table('memories').insert({
-                    "content": memory_content,
-                    "memory_type": "email_actioned",
-                    "embedding": embedding
-                }).execute()
+                # FYI path: write relationship_note if human sender with memory value
+                if classification == 'fyi' and is_human and has_memory:
+                    await write_relationship_note(sender_name, sender_email, subject, classification_data.get('summary', ''))
 
             print(f"✅ [actionable] {subject} | From: {sender_email}")
 
