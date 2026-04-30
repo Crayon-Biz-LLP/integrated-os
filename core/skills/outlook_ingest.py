@@ -57,7 +57,14 @@ EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIMENSION = 768
 
 RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
-NOREPLY_PATTERNS = ['noreply', 'no-reply', 'donotreply', 'mailer-daemon', 'bounce', 'notifications@', 'automated@']
+NOREPLY_PATTERNS = [
+    'noreply', 'no-reply', 'donotreply', 'mailer-daemon',
+    'bounce', 'notifications@', 'automated@',
+    # Government portals and financial utilities
+    'nesl.co.in', 'incometax.gov', 'gst.gov', 'mca.gov',
+    'estatement@', 'alerts@', 'statement@', 'update@',
+    'do-not-reply', 'donotreply'
+]
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 ENV_LOCAL = BASE_DIR / ".env.local"

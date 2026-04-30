@@ -60,7 +60,14 @@ EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIMENSION = 768
 
 RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
-NOREPLY_PATTERNS = ['noreply', 'no-reply', 'donotreply', 'mailer-daemon', 'bounce', 'notifications@', 'automated@']
+NOREPLY_PATTERNS = [
+    'noreply', 'no-reply', 'donotreply', 'mailer-daemon',
+    'bounce', 'notifications@', 'automated@',
+    # Government portals and financial utilities
+    'nesl.co.in', 'incometax.gov', 'gst.gov', 'mca.gov',
+    'estatement@', 'alerts@', 'statement@', 'update@',
+    'do-not-reply', 'donotreply'
+]
 
 
 class MemoryCache(base.Cache):
@@ -200,13 +207,37 @@ def decode_body(payload: dict) -> str:
             if part.get('mimeType') == 'text/plain':
                 data = part.get('body', {}).get('data', '')
                 if data:
-                    body += base64.urlsafe_b64decode(data + '=' * (-len(data) % 4)).decode('utf-8', errors='ignore')
+                    try:
+                        cleaned = data.replace('\n', '').replace('\r', '').replace(' ', '')
+                        body += base64.urlsafe_b64decode(
+                            cleaned + '=' * (-len(cleaned) % 4)
+                        ).decode('utf-8', errors='ignore')
+                    except Exception:
+                        try:
+                            import base64 as _b64
+                            body += _b64.b64decode(
+                                data + '=' * (-len(data) % 4)
+                            ).decode('utf-8', errors='ignore')
+                        except Exception:
+                            pass
             elif 'parts' in part:
                 body += decode_body(part)
     else:
         data = payload.get('body', {}).get('data', '')
         if data:
-            body += base64.urlsafe_b64decode(data + '=' * (-len(data) % 4)).decode('utf-8', errors='ignore')
+            try:
+                cleaned = data.replace('\n', '').replace('\r', '').replace(' ', '')
+                body += base64.urlsafe_b64decode(
+                    cleaned + '=' * (-len(cleaned) % 4)
+                ).decode('utf-8', errors='ignore')
+            except Exception:
+                try:
+                    import base64 as _b64
+                    body += _b64.b64decode(
+                        data + '=' * (-len(data) % 4)
+                    ).decode('utf-8', errors='ignore')
+                except Exception:
+                    pass
     return body
 
 
@@ -216,7 +247,19 @@ def decode_html_body(payload: dict) -> str:
             if part.get('mimeType') == 'text/html':
                 data = part.get('body', {}).get('data', '')
                 if data:
-                    return base64.urlsafe_b64decode(data + '=' * (-len(data) % 4)).decode('utf-8', errors='ignore')
+                    try:
+                        cleaned = data.replace('\n', '').replace('\r', '').replace(' ', '')
+                        return base64.urlsafe_b64decode(
+                            cleaned + '=' * (-len(cleaned) % 4)
+                        ).decode('utf-8', errors='ignore')
+                    except Exception:
+                        try:
+                            import base64 as _b64
+                            return _b64.b64decode(
+                                data + '=' * (-len(data) % 4)
+                            ).decode('utf-8', errors='ignore')
+                        except Exception:
+                            pass
             elif 'parts' in part:
                 result = decode_html_body(part)
                 if result:
@@ -225,7 +268,19 @@ def decode_html_body(payload: dict) -> str:
         if payload.get('mimeType') == 'text/html':
             data = payload.get('body', {}).get('data', '')
             if data:
-                return base64.urlsafe_b64decode(data + '=' * (-len(data) % 4)).decode('utf-8', errors='ignore')
+                try:
+                    cleaned = data.replace('\n', '').replace('\r', '').replace(' ', '')
+                    return base64.urlsafe_b64decode(
+                        cleaned + '=' * (-len(cleaned) % 4)
+                    ).decode('utf-8', errors='ignore')
+                except Exception:
+                    try:
+                        import base64 as _b64
+                        return _b64.b64decode(
+                            data + '=' * (-len(data) % 4)
+                        ).decode('utf-8', errors='ignore')
+                    except Exception:
+                        pass
     return ""
 
 
