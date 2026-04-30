@@ -144,30 +144,91 @@ Body:
         print(f"Draft generation failed: {e}")
         return ""
 
+
+
+
 async def classify_email(sender: str, subject: str, body: str, to_header: str = '', cc_header: str = '') -> dict:
-    prompt = f"""Danny is a founder-operator. He uses this Outlook mailbox for work (Crayon, client work, Solvstrat, Product Labs, business vendors, team). Classify this email strictly. He receives emails in India (Chennai). His name is Danny or Yashwant Daniel.
+    prompt = f"""You are classifying an email for Danny (Yashwant Daniel), founder of Crayon, Chennai, India.
+
+MAILBOX CONTEXT: This is Danny's WORK Outlook inbox. It receives exclusively work-related emails. Personal and church emails do NOT arrive here.
+
+What legitimately arrives here:
+- Clients: briefs, feedback, approvals, project questions
+- Vendors: quotes, invoices (human-sent), delivery confirmations requiring action
+- Team: employees, contractors, freelancers, collaborators
+- Business partners: legal, CA, compliance, banking (human-sent)
+- Business entities: Crayon, Solvstrat, Product Labs, Qhord.
 
 Sender: {sender}
 To: {to_header}
 CC: {cc_header}
 Subject: {subject}
 Body:
-{body[:800]}
+{body[:1000]}
 
-Classify as one of:
-- ignored: newsletters, automated alerts, no-reply senders, bulk mail, OTP/verification codes, promotional offers, forwards with FW: prefix, mailing list mail
-- fyi: Danny is CC'd or BCC'd, or the email is informational and requires zero action from him
-- actionable: directly addressed to Danny, requires a response, decision, or creates an obligation (work email bias: vendor/client/team responses, approvals, scheduling, task follow-ups are actionable)
+─── CLASSIFICATION RULES ───
 
-Return ONLY valid JSON:
-{{"classification": "ignored|fyi|actionable", "summary": "2 sentences max, plain English", "suggested_task": "one line or null", "needs_draft": true/false, "linked_person_name": "name or null", "linked_project_name": "project name or null"}}"""
+CLASSIFY AS "ignored" IF ANY of these are true:
+- Sender contains: noreply, no-reply, donotreply, mailer-daemon, bounce, notifications@, automated@, alert@
+- It is an automated SaaS notification (GitHub, Notion, Slack, Stripe, Razorpay, Jira, Trello, any platform digest)
+- It is a newsletter, promotional offer, or cold outreach sales email
+- Subject starts with FW: or Fwd: with no new content added
+- It is a payment receipt, invoice auto-confirmation, or automated billing notification
+
+CLASSIFY AS "fyi" IF:
+- Danny is in CC or BCC
+- A team member or partner is sharing a status update, report, or information that needs no response
+- It is a human-sent update where no action is required from Danny specifically
+
+CLASSIFY AS "actionable" IF:
+- Addressed directly To: Danny
+- From a real individual (client, vendor, team member, CA, lawyer, partner, contractor)
+- Requires Danny to respond, approve, review, decide, schedule, or fulfill a business obligation
+- Bias toward actionable for client and vendor emails — when in doubt, surface it
+
+─── OUTPUT RULES ───
+
+suggested_task:
+- Verb-first, specific (e.g., "Send revised proposal to Ananya at TechCorp", "Approve Siva's leave request", "Reply to CA Suresh with Q1 financials")
+- NULL if fyi or ignored
+- NULL if action is too vague to state specifically
+
+needs_draft:
+- true ONLY if Danny needs to write a reply
+- false for offline tasks (call, review doc, internal action)
+
+is_human_sender:
+- true if sender is a real individual person
+- false for any automated system, platform, or bulk sender
+
+has_memory_value:
+- true if email contains a decision, project update, confirmed terms, client commitment, or business context worth remembering weeks later
+- false for transactional or routine notifications
+- Can only be true if is_human_sender is also true
+
+Return ONLY valid JSON, NO markdown, NO explanation:
+{{
+  "classification": "ignored|fyi|actionable",
+  "summary": "2 sentences max. Who sent it, what they want or shared.",
+  "suggested_task": "verb-first task or null",
+  "needs_draft": true or false,
+  "linked_person_name": "full name if identifiable, else null",
+  "linked_project_name": "project or company name if mentioned, else null",
+  "is_human_sender": true or false,
+  "has_memory_value": true or false
+}}"""
 
     try:
-        response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite-preview")
-        return parse_json_response(response.text)
+        response = await call_gemini_with_retry(
+            prompt,
+            model="gemini-2.0-flash-lite",
+            config={"response_mime_type": "application/json"}
+        )
+        return json.loads(response.text)
     except Exception as e:
         print(f"Classification failed: {e}")
-        return {"classification": "ignored", "summary": "Classification failed", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
+        return {"classification": "ignored", "summary": "Classification failed", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None, "is_human_sender": False, "has_memory_value": False}
+
 
 def fetch_outlook_messages(limit=25):
     access_token = get_access_token()
@@ -315,6 +376,21 @@ async def ingest_outlook_messages(limit=25):
                 if not getattr(insert_res, 'data', None):
                     print(f"⚠️ Email insert returned no data for {subject}")
                     continue
+                
+                # FYI path: write relationship_note if human sender with memory value
+                is_human = classification_data.get("is_human_sender", False)
+                has_memory = classification_data.get("has_memory_value", False)
+                if is_human and has_memory:
+                    _summary = classification_data.get("summary", "")
+                    _mem_content = f"{sender} ({sender_email}): {_summary}"
+                    _emb = get_embedding(_mem_content)
+                    supabase.table('memories').insert({
+                        "content": _mem_content,
+                        "memory_type": "relationship_note",
+                        "embedding": _emb
+                    }).execute()
+                    print(f"🧠 [relationship_note] FYI memory saved for {sender_email}")
+                
                 print(f"✅ [fyi] {subject} | From: {sender_email}")
                 processed += 1
 
@@ -325,24 +401,26 @@ async def ingest_outlook_messages(limit=25):
                     person_res = supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').maybe_single().execute()
                     if getattr(person_res, 'data', None):
                         linked_person_id = person_res.data['id']
-
+                
                 linked_project_id = None
                 linked_project_name = classification_data.get("linked_project_name")
                 if linked_project_name:
                     project_res = supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').maybe_single().execute()
                     if getattr(project_res, 'data', None):
                         linked_project_id = project_res.data['id']
-
+                
                 email_row['linked_person_id'] = linked_person_id
                 email_row['linked_project_id'] = linked_project_id
-
+                
                 insert_res = supabase.table('emails').insert(email_row).execute()
                 if not getattr(insert_res, 'data', None):
                     print(f"⚠️ Email insert returned no data for {subject}")
                     continue
                 email_id = insert_res.data[0]['id']
-
+                
                 suggested_task = classification_data.get("suggested_task")
+                is_human = classification_data.get("is_human_sender", False)
+                
                 if suggested_task:
                     suggested_title = suggested_task or ''
                     if not is_duplicate_task(suggested_title, active_task_keywords):
@@ -351,9 +429,10 @@ async def ingest_outlook_messages(limit=25):
                             "suggested_title": suggested_task,
                             "suggested_project": classification_data.get("linked_project_name"),
                             "shown_in_brief": False,
-                            "danny_decision": None
+                            "danny_decision": None,
+                            "is_human_sender": is_human
                         }).execute()
-
+                
                 if classification_data.get("needs_draft"):
                     draft_body = await generate_draft(sender, subject, body)
                     if draft_body:
@@ -362,16 +441,7 @@ async def ingest_outlook_messages(limit=25):
                             "draft_body": draft_body,
                             "status": "pending"
                         }).execute()
-
-                if suggested_task or classification_data.get("needs_draft"):
-                    memory_content = f"Email from {sender} ({sender_email}): {classification_data.get('summary', '')}"
-                    embedding = await asyncio.to_thread(get_embedding, memory_content)
-                    supabase.table('memories').insert({
-                        "content": memory_content,
-                        "memory_type": "email_actioned",
-                        "embedding": embedding
-                    }).execute()
-
+                
                 print(f"✅ [actionable] {subject} | From: {sender_email}")
                 processed += 1
 

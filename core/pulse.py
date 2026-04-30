@@ -2362,21 +2362,14 @@ async def process_pulse(auth_secret: str = None):
                     .limit(5)\
                     .execute()
                 if pending_decisions.data:
-                    lines = ["\n\n📨 EMAIL DECISIONS NEEDED (" + str(len(pending_decisions.data)) + ")"]
+                    lines = ["\n\n📨 EMAIL DECISIONS (" + str(len(pending_decisions.data)) + ") — reply [code] yes/drop"]
                     shown_ids = []
                     for row in pending_decisions.data:
                         shortcode = str(row['id'])[-4:]
                         project_label = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
-                        try:
-                            created = datetime.fromisoformat(row['created_at'].replace('Z', '+00:00'))
-                            age_days = (datetime.now(timezone.utc) - created).days
-                            age_str = f"{age_days}d ago" if age_days > 0 else "today"
-                        except Exception:
-                            age_str = ""
-                        lines.append(f"[{shortcode}] {row['suggested_title']}{project_label} — {age_str}")
+                        title = row['suggested_title'][:60]
+                        lines.append(f"[{shortcode}] {title}{project_label}")
                         shown_ids.append(row['id'])
-                    lines.append("Reply with shortcode + intent to act:")
-                    lines.append('"a3f1 yes" → create task · "a3f1 drop" → dismiss')
                     if briefing_text:
                         briefing_text += "\n".join(lines)
                     else:
