@@ -92,9 +92,9 @@ export default function DashboardLayout({
   return (
     <div className="min-h-screen bg-background">
       {/* Desktop Sidebar */}
-      <aside className="hidden lg:fixed lg:inset-y-0 lg:z-50 lg:flex lg:w-64 lg:flex-col lg:bg-zinc-900 lg:text-zinc-100">
+      <aside className="hidden lg:fixed lg:inset-y-0 lg:z-50 lg:flex lg:w-64 lg:flex-col lg:bg-sidebar lg:text-sidebar-foreground">
         {/* Logo */}
-        <div className="flex h-16 items-center gap-2 border-b border-zinc-800 px-6">
+        <div className="flex h-16 items-center gap-2 border-b border-sidebar-border px-6">
           <Cpu className="h-5 w-5 text-primary" />
           <span className="text-lg font-bold">Rhodey OS</span>
         </div>
@@ -107,14 +107,14 @@ export default function DashboardLayout({
         </nav>
 
         {/* User Info & Logout */}
-        <div className="border-t border-zinc-800 p-4">
+        <div className="border-t border-sidebar-border p-4">
           {userEmail && (
-            <p className="mb-2 truncate text-xs text-zinc-400">{userEmail}</p>
+            <p className="mb-2 truncate text-xs text-sidebar-foreground/60">{userEmail}</p>
           )}
           <Button
             variant="ghost"
             onClick={handleLogout}
-            className="w-full justify-start gap-2 px-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+            className="w-full justify-start gap-2 px-2 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
           >
             <LogOut className="h-4 w-4" />
             Logout
