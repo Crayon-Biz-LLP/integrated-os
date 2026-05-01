@@ -352,6 +352,68 @@ Use for section breaks within sheets and cards. Use `--border` color only.
 
 ---
 
+## Component Patterns
+
+These are utility classes defined in globals.css that apply consistent 
+visual treatment across all modules. Every AI agent must use these 
+classes instead of writing raw equivalent Tailwind strings.
+
+**card-premium**
+Utility class for all lifted surface cards in Rhodey OS.
+Applies: white background, 1px border at oklch(0.92), box-shadow 
+(card-level depth), border-radius lg, and hover lift (translateY -1px 
+with shadow-raised on hover).
+Use on: every KPI stat card, project card, person card, resource card, 
+and draft card.
+Do not compose this manually with raw shadow/border/bg classes.
+Note: This supplements the shadcn Card component — use card-premium 
+as the outer wrapper className in place of the Card primitive 
+when building list-item cards and KPI tiles.
+
+**stat-number**
+Utility class for KPI numbers in stat cards.
+Applies: 2.25rem size, font-weight 700, tabular-nums, letter-spacing tight.
+Color rules (always add a color class alongside stat-number):
+- Default / neutral metric → text-foreground
+- Primary / actionable metric → text-primary (teal)
+- Warning / overdue / idle → text-amber-500
+- Error / destructive / failed → text-destructive
+- Success / completed → text-primary
+
+**section-label**
+Utility class for all secondary category labels, table column headers, 
+and module group headings.
+Applies: 0.65rem size, uppercase, letter-spacing 0.1em, text-muted-foreground.
+Use on: all <th> cells in tables, mission/group section headings, 
+"Linked Entities" labels, and any metadata category header.
+
+**Active nav item pattern**
+Active sidebar nav links must use border-l-2 border-primary pl-[10px].
+This is the teal left-stripe pattern established in layout.tsx.
+Never revert to bg-only active states (bg-accent without the left border).
+Inactive items use pl-3 to maintain alignment.
+
+**Badge color system**
+All classification and status badges across all modules must use 
+these exact token combinations. No module may define its own 
+alternative badge colors.
+
+| Type | Background | Text | Border |
+|---|---|---|---|
+| actionable | bg-primary/10 | text-primary | border-primary/20 |
+| fyi | bg-blue-500/10 | text-blue-600 | border-blue-500/20 |
+| ignored | bg-muted | text-muted-foreground | border-border |
+| pending | bg-amber-500/10 | text-amber-600 | border-amber-500/20 |
+| destructive | bg-destructive/10 | text-destructive | border-destructive/20 |
+| active / in-progress | bg-primary/10 | text-primary | border-primary/20 |
+| idle / paused | bg-amber-500/10 | text-amber-600 | border-amber-500/20 |
+| done / completed | bg-muted | text-muted-foreground | border-border |
+
+All badges must include: text-xs px-2 py-0.5 rounded-full font-medium 
+border alongside the color classes above.
+
+---
+
 ## Module components — existing patterns
 
 ### Emails module

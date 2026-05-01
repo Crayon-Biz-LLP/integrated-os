@@ -33,10 +33,10 @@ export function ProjectsStats() {
   if (!stats) return null;
 
   const statCards = [
-    { label: 'Active Projects', value: stats.totalActive, color: 'text-foreground' },
-    { label: 'Archived', value: stats.totalArchived, color: 'text-muted-foreground' },
-    { label: 'Open Tasks', value: stats.totalOpenTasks, color: 'text-blue-600' },
-    { label: 'Idle Projects', value: stats.idleProjects, color: 'text-amber-600' },
+    { label: 'Total Projects', value: stats.totalActive + stats.totalArchived, color: 'text-foreground' },
+    { label: 'Active Projects', value: stats.totalActive, color: 'text-primary' },
+    { label: 'Open Tasks', value: stats.totalOpenTasks, color: 'text-primary' },
+    { label: 'Idle Projects', value: stats.idleProjects, color: 'text-amber-500' },
   ];
 
   return (
@@ -44,10 +44,10 @@ export function ProjectsStats() {
       {statCards.map((stat) => (
         <div
           key={stat.label}
-          className="rounded-lg border bg-card p-3"
+          className="card-premium p-5 flex flex-col gap-1"
         >
-          <p className="text-xs text-muted-foreground">{stat.label}</p>
-          <p className={`text-2xl font-semibold ${stat.color}`}>{stat.value}</p>
+          <p className="section-label">{stat.label}</p>
+          <p className={`stat-number ${stat.color}`}>{stat.value}</p>
         </div>
       ))}
     </div>

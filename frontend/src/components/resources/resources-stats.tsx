@@ -33,10 +33,10 @@ export function ResourcesStats() {
   if (!stats) return null;
 
   const statCards = [
-    { label: 'Total Resources', value: stats.totalResources, color: 'text-foreground' },
-    { label: 'Active Missions With Resources', value: stats.activeMissionsWithResources, color: 'text-blue-600' },
-    { label: 'Unmapped Resources', value: stats.unmappedResources, color: 'text-amber-600' },
-    { label: 'Added in Last 30 Days', value: stats.recentResources, color: 'text-green-600' },
+    { label: 'Total Resources', value: stats.totalResources, colorClass: 'text-foreground' },
+    { label: 'Active Missions With Resources', value: stats.activeMissionsWithResources, colorClass: 'text-primary' },
+    { label: 'Unmapped Resources', value: stats.unmappedResources, colorClass: 'text-foreground' },
+    { label: 'Added in Last 30 Days', value: stats.recentResources, colorClass: 'text-primary' },
   ];
 
   return (
@@ -44,10 +44,10 @@ export function ResourcesStats() {
       {statCards.map((stat) => (
         <div
           key={stat.label}
-          className="rounded-lg border bg-card p-3"
+          className="card-premium p-5 flex flex-col gap-1"
         >
-          <p className="text-xs text-muted-foreground">{stat.label}</p>
-          <p className={`text-2xl font-semibold ${stat.color}`}>{stat.value}</p>
+          <p className="section-label">{stat.label}</p>
+          <p className={`stat-number ${stat.colorClass}`}>{stat.value}</p>
         </div>
       ))}
     </div>

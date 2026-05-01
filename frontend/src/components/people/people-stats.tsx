@@ -35,15 +35,19 @@ export function PeopleStats() {
     { label: 'Recently Added', value: stats.recentlyAdded, icon: Clock },
   ];
 
-  return (
+   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
       {items.map((item) => (
-        <div key={item.label} className="rounded-lg border bg-card p-3">
+        <div key={item.label} className="card-premium p-5 flex flex-col gap-1">
           <div className="flex items-center gap-2">
             <item.icon className="h-4 w-4 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">{item.label}</span>
+            <span className="section-label">{item.label}</span>
           </div>
-          <p className="mt-1 text-xl font-semibold">{item.value}</p>
+          <p className={`stat-number ${
+            item.label === 'High Priority' ? 'text-amber-500' :
+            item.label === 'With Open Tasks' ? 'text-primary' :
+            'text-foreground'
+          }`}>{item.value}</p>
         </div>
       ))}
     </div>

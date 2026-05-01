@@ -57,17 +57,17 @@ export function ProjectsGrid({ projects, onProjectClick }: ProjectsGridProps) {
   return (
     <div className="space-y-8">
       {sortedGroups.map(([groupKey, groupProjects]) => (
-        <div key={groupKey}>
-          <div className="flex items-center gap-3 mb-4">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              {groupLabels[groupKey] || groupKey}
-            </h2>
-            <Separator className="flex-1" />
-            <span className="text-xs text-muted-foreground">
-              {groupProjects.length} project{groupProjects.length !== 1 ? 's' : ''}
-            </span>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div key={groupKey}>
+            <div className="section-label pt-6 pb-2">
+              <div className="flex items-center gap-3">
+                <h2>{groupLabels[groupKey] || groupKey}</h2>
+                <Separator className="flex-1" />
+                <span className="text-xs text-muted-foreground/60 italic">
+                  {groupProjects.length} project{groupProjects.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             {groupProjects.map((project) => (
               <ProjectCard
                 key={project.id}

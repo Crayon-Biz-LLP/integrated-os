@@ -11,24 +11,26 @@ interface ResourcesViewToggleProps {
 export function ResourcesViewToggle({ view, setView }: ResourcesViewToggleProps) {
   return (
     <div className="flex items-center gap-1">
-      <Button
-        variant={view === 'mission' ? 'default' : 'outline'}
-        size="sm"
+      <button
         onClick={() => setView('mission')}
-        className="gap-2"
+        className={view === 'mission' 
+          ? "bg-primary text-primary-foreground text-xs px-3 py-1.5 rounded-md font-medium transition-all" 
+          : "text-muted-foreground text-xs px-3 py-1.5 rounded-md hover:bg-muted hover:text-foreground transition-all duration-150"
+        }
       >
-        <LayoutGrid className="h-4 w-4" />
+        <LayoutGrid className="h-4 w-4 inline mr-1" />
         Mission View
-      </Button>
-      <Button
-        variant={view === 'library' ? 'default' : 'outline'}
-        size="sm"
+      </button>
+      <button
         onClick={() => setView('library')}
-        className="gap-2"
+        className={view === 'library' 
+          ? "bg-primary text-primary-foreground text-xs px-3 py-1.5 rounded-md font-medium transition-all" 
+          : "text-muted-foreground text-xs px-3 py-1.5 rounded-md hover:bg-muted hover:text-foreground transition-all duration-150"
+        }
       >
-        <List className="h-4 w-4" />
+        <List className="h-4 w-4 inline mr-1" />
         Library View
-      </Button>
+      </button>
     </div>
   );
 }

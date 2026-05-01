@@ -39,13 +39,13 @@ export function ResourcesFilters({
             placeholder="Search resources..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
+            className="w-full rounded-lg border border-border bg-background px-4 py-2 text-sm placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-all duration-150 pl-9"
           />
         </div>
         <select
           value={sort}
           onChange={(e) => setSort(e.target.value)}
-          className="h-10 rounded-lg border bg-background px-2.5 text-sm"
+          className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
           <option value="newest">Newest</option>
           <option value="oldest">Oldest</option>
@@ -59,7 +59,7 @@ export function ResourcesFilters({
         <select
           value={mission}
           onChange={(e) => setMission(e.target.value)}
-          className="h-8 rounded-lg border bg-background px-2.5 text-xs"
+          className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
           <option value="all">All Missions</option>
           <option value="unmapped">Unmapped</option>
@@ -73,7 +73,7 @@ export function ResourcesFilters({
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value)}
-          className="h-8 rounded-lg border bg-background px-2.5 text-xs"
+          className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
           <option value="all">All Categories</option>
           {categories.map((c) => (

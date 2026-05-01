@@ -89,11 +89,26 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
     return task.reminder_at || task.deadline || null;
   };
 
+  const getWeightDisplayClass = (weight: number | null): string => {
+    const base = 'text-sm font-bold tabular-nums';
+    if (!weight) return `${base} text-muted-foreground`;
+    if (weight >= 8) return `${base} text-primary`;
+    if (weight >= 5) return `${base} text-amber-500`;
+    return `${base} text-muted-foreground`;
+  };
+
+  const getPriorityBadgeClass = (priority: string): string => {
+    if (priority === 'high' || priority === 'urgent') {
+      return 'text-xs bg-amber-500/10 text-amber-600 border border-amber-500/20 px-2 py-0.5 rounded-full font-medium';
+    }
+    return 'text-xs bg-muted text-muted-foreground border border-border px-2 py-0.5 rounded-full';
+  };
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
         <SheetHeader>
-          <SheetTitle className="text-base">Person Details</SheetTitle>
+          <SheetTitle className="text-lg font-semibold tracking-tight">Person Details</SheetTitle>
         </SheetHeader>
 
         <div className="mt-6 space-y-6">
@@ -102,12 +117,12 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
             <h3 className="text-sm font-medium text-muted-foreground">Profile</h3>
 
             <div>
-              <label className="text-xs text-muted-foreground">Name</label>
-              <p className="text-sm font-medium mt-1">{person.name}</p>
+              <label className="section-label mb-1">Name</label>
+              <p className="text-sm text-foreground">{person.name}</p>
             </div>
 
             <div>
-              <label className="text-xs text-muted-foreground">Role</label>
+              <label className="section-label mb-1">Role</label>
               <Input
                 value={role}
                 onChange={(e) => { setRole(e.target.value); setHasChanges(true); }}
@@ -117,7 +132,7 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
             </div>
 
             <div>
-              <label className="text-xs text-muted-foreground">Strategic Weight (1-10)</label>
+              <label className="section-label mb-1">Strategic Weight (1-10)</label>
               <div className="flex items-center gap-3 mt-1">
                 <Input
                   type="number"
@@ -127,13 +142,13 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
                   onChange={(e) => { setStrategicWeight(Number(e.target.value)); setHasChanges(true); }}
                   className="w-20"
                 />
-                <span className="text-xs text-muted-foreground">/ 10</span>
+                <span className={`${getWeightDisplayClass(strategicWeight)}`}>/ 10</span>
               </div>
             </div>
 
             <div>
-              <label className="text-xs text-muted-foreground">Added</label>
-              <p className="text-sm mt-1">{formatDate(person.created_at)}</p>
+              <label className="section-label mb-1">Added</label>
+              <p className="text-sm text-foreground">{formatDate(person.created_at)}</p>
             </div>
 
             {hasChanges && (
@@ -162,22 +177,22 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
             )}
 
             {!tasksLoading && tasks.length > 0 && (
-              <div className="space-y-2">
+              <div className="space-y-0">
                 {sortedTasks.map((task) => (
-                  <div key={task.id} className="rounded-lg border p-3 text-sm">
+                  <div key={task.id} className="text-sm border-b border-border/40 py-2 hover:bg-muted/30 transition-colors">
                     <p className="font-medium leading-tight">{stripMarkdown(task.title)}</p>
                     <div className="flex items-center gap-2 mt-2">
-                      <Badge variant="secondary" className="text-xs">
+                      <span className={`text-xs ${task.status === 'done' ? 'bg-muted text-muted-foreground' : 'bg-primary/10 text-primary'} border border-border px-2 py-0.5 rounded-full font-medium`}>
                         {task.status}
-                      </Badge>
-                      <Badge variant="outline" className="text-xs">
+                      </span>
+                      <span className={getPriorityBadgeClass(task.priority)}>
                         {task.priority}
-                      </Badge>
+                      </span>
                       {task.project_name && (
                         <span className="text-xs text-muted-foreground">{task.project_name}</span>
                       )}
                       {getDueDate(task) && (
-                        <span className="text-xs text-muted-foreground ml-auto">
+                        <span className="text-xs text-muted-foreground/60 font-mono ml-auto">
                           {formatDate(getDueDate(task))}
                         </span>
                       )}
