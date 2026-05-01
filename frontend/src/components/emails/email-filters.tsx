@@ -23,14 +23,14 @@ export function EmailFilters({ filters, onFiltersChange }: EmailFiltersProps) {
           placeholder="Search subject, sender..."
           value={filters.search}
           onChange={(e) => updateFilter('search', e.target.value)}
-          className="pl-10"
+          className="w-full rounded-lg border border-border bg-background px-4 py-2 text-sm placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-all duration-150"
         />
       </div>
       <Select
         value={filters.classification}
         onValueChange={(v) => updateFilter('classification', v as EmailClassification | 'all')}
       >
-        <SelectTrigger className="w-[180px]">
+        <SelectTrigger className="w-[180px] rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground">
           <SelectValue placeholder="Classification" />
         </SelectTrigger>
         <SelectContent>
@@ -44,7 +44,7 @@ export function EmailFilters({ filters, onFiltersChange }: EmailFiltersProps) {
         value={filters.source}
         onValueChange={(v) => updateFilter('source', v as EmailSource | 'all')}
       >
-        <SelectTrigger className="w-[180px]">
+        <SelectTrigger className="w-[180px] rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground">
           <SelectValue placeholder="Source" />
         </SelectTrigger>
         <SelectContent>

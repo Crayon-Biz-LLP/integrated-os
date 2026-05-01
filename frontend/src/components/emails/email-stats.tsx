@@ -9,11 +9,11 @@ import { cn } from '@/lib/utils';
 import { Inbox, Tag, Mail, AlertTriangle, FileEdit } from 'lucide-react';
 
 const STAT_CONFIG = [
-  { key: 'total', label: 'Total Emails', icon: Inbox, color: 'text-zinc-400' },
-  { key: 'actionable', label: 'Actionable', icon: Tag, color: 'text-amber-500' },
-  { key: 'fyi', label: 'FYI', icon: Mail, color: 'text-blue-500' },
-  { key: 'pending_tasks', label: 'Pending Decisions', icon: AlertTriangle, color: 'text-orange-500' },
-  { key: 'pending_drafts', label: 'Drafts Awaiting', icon: FileEdit, color: 'text-purple-500' },
+  { key: 'total', label: 'Total Emails', icon: Inbox, color: 'text-foreground' },
+  { key: 'actionable', label: 'Actionable', icon: Tag, color: 'text-primary' },
+  { key: 'fyi', label: 'FYI', icon: Mail, color: 'text-blue-600' },
+  { key: 'pending_tasks', label: 'Pending Decisions', icon: AlertTriangle, color: 'text-amber-500' },
+  { key: 'pending_drafts', label: 'Drafts Awaiting', icon: FileEdit, color: 'text-purple-600' },
 ] as const;
 
 export function EmailStats() {
@@ -39,15 +39,13 @@ export function EmailStats() {
   return (
     <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
       {STAT_CONFIG.map(({ key, label, icon: Icon, color }) => (
-        <Card key={key}>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">{label}</CardTitle>
+        <div key={key} className="card-premium p-5 flex flex-col gap-1">
+          <div className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <p className="section-label">{label}</p>
             <Icon className={cn('h-4 w-4', color)} />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats?.[key] || 0}</div>
-          </CardContent>
-        </Card>
+          </div>
+          <div className={`stat-number ${color}`}>{stats?.[key] || 0}</div>
+        </div>
       ))}
     </div>
   );

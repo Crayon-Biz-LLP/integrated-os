@@ -93,28 +93,27 @@ export function DraftsList({ drafts: initialDrafts, loading }: DraftsListProps) 
   return (
     <div className="space-y-4">
       {error && (
-        <div className="rounded-md bg-red-500/20 border border-red-500/30 p-3 text-sm text-red-400">
+        <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3 text-sm text-destructive">
           {error}
         </div>
       )}
       {drafts.map((draft) => (
-        <Card key={draft.id}>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base font-semibold">
-                To: {draft.email?.sender || draft.email?.sender_email}
-              </CardTitle>
-              <Badge variant="outline" className="text-xs capitalize">
-                <Globe className="h-3 w-3 mr-1" />
-                {draft.email?.source}
-              </Badge>
+        <div key={draft.id} className="card-premium p-4 flex flex-col gap-2 cursor-pointer">
+            <div className="pb-2">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium tracking-tight">
+                  To: {draft.email?.sender || draft.email?.sender_email}
+                </div>
+                <span className="text-xs bg-muted/60 text-muted-foreground px-2 py-0.5 rounded font-mono">
+                  <Globe className="h-3 w-3 mr-1" />
+                  {draft.email?.source}
+                </span>
+              </div>
+              <div className="text-sm text-muted-foreground/80">
+                Re: {draft.email?.subject}
+              </div>
             </div>
-            <div className="text-sm text-muted-foreground">
-              Re: {draft.email?.subject}
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="border rounded-md p-3 mb-4 max-h-48 overflow-y-auto text-sm">
+            <div className="border border-border/40 rounded-md p-3 mb-4 max-h-48 overflow-y-auto text-sm">
               {editingId === draft.id ? (
                 <Textarea
                   value={editBody}
@@ -122,7 +121,7 @@ export function DraftsList({ drafts: initialDrafts, loading }: DraftsListProps) 
                   className="font-mono text-sm min-h-[100px]"
                 />
               ) : (
-                <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                <div className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground/80">
                   {draft.draft_body}
                 </div>
               )}
@@ -146,7 +145,7 @@ export function DraftsList({ drafts: initialDrafts, loading }: DraftsListProps) 
             <div className="flex gap-2">
               <Button
                 size="sm"
-                className="bg-green-600 hover:bg-green-700"
+                className="bg-primary hover:bg-primary/90"
                 onClick={() => handleSend(draft.id)}
                 disabled={sendingId === draft.id}
               >
@@ -160,7 +159,7 @@ export function DraftsList({ drafts: initialDrafts, loading }: DraftsListProps) 
               <Button
                 size="sm"
                 variant="ghost"
-                className="text-red-400 hover:bg-red-500/20"
+                className="text-destructive hover:bg-destructive/10"
                 onClick={() => handleReject(draft.id)}
                 disabled={sendingId === draft.id}
               >
@@ -168,8 +167,8 @@ export function DraftsList({ drafts: initialDrafts, loading }: DraftsListProps) 
                 Reject
               </Button>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       ))}
     </div>
   );

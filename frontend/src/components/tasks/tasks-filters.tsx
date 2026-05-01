@@ -52,14 +52,14 @@ export function TasksFilters({ filters, onFiltersChange }: TasksFiltersProps) {
             placeholder="Search tasks..."
             value={filters.search || ''}
             onChange={(e) => handleFilterChange('search', e.target.value)}
-            className="pl-9"
+            className="w-full rounded-lg border border-border bg-background px-4 py-2 text-sm placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-all duration-150"
           />
         </div>
 
         <select
           value={filters.status || 'all'}
           onChange={(e) => handleFilterChange('status', e.target.value)}
-          className="h-8 rounded-lg border bg-background px-2.5 text-sm"
+          className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
           <option value="all">All Status</option>
           <option value="todo">Todo</option>
@@ -72,7 +72,7 @@ export function TasksFilters({ filters, onFiltersChange }: TasksFiltersProps) {
         <select
           value={filters.priority || 'all'}
           onChange={(e) => handleFilterChange('priority', e.target.value)}
-          className="h-8 rounded-lg border bg-background px-2.5 text-sm"
+          className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
           <option value="all">All Priority</option>
           <option value="low">Low</option>
@@ -84,7 +84,7 @@ export function TasksFilters({ filters, onFiltersChange }: TasksFiltersProps) {
         <select
           value={filters.projectId || 'all'}
           onChange={(e) => handleFilterChange('projectId', e.target.value)}
-          className="h-8 rounded-lg border bg-background px-2.5 text-sm"
+          className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
           <option value="all">All Projects</option>
           {projects.map((p) => (
@@ -97,7 +97,7 @@ export function TasksFilters({ filters, onFiltersChange }: TasksFiltersProps) {
         <select
           value={filters.dueWindow || 'all'}
           onChange={(e) => handleFilterChange('dueWindow', e.target.value)}
-          className="h-8 rounded-lg border bg-background px-2.5 text-sm"
+          className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
           <option value="all">All Dates</option>
           <option value="today">Due Today</option>

@@ -32,9 +32,9 @@ export function TasksStats() {
 
   const statCards = [
     { label: 'Open', value: stats.open, color: 'text-foreground' },
-    { label: 'Due Today', value: stats.dueToday, color: 'text-amber-600' },
-    { label: 'Overdue', value: stats.overdue, color: 'text-red-600' },
-    { label: 'Completed', value: stats.completedRecently, color: 'text-green-600' },
+    { label: 'Due Today', value: stats.dueToday, color: 'text-amber-500' },
+    { label: 'Overdue', value: stats.overdue, color: 'text-destructive' },
+    { label: 'Completed', value: stats.completedRecently, color: 'text-primary' },
   ];
 
   return (
@@ -42,10 +42,10 @@ export function TasksStats() {
       {statCards.map((stat) => (
         <div
           key={stat.label}
-          className="rounded-lg border bg-card p-3"
+          className="card-premium p-5 flex flex-col gap-1"
         >
-          <p className="text-xs text-muted-foreground">{stat.label}</p>
-          <p className={`text-2xl font-semibold ${stat.color}`}>{stat.value}</p>
+          <p className="section-label">{stat.label}</p>
+          <p className={`stat-number ${stat.color}`}>{stat.value}</p>
         </div>
       ))}
     </div>
