@@ -47,7 +47,7 @@ export function EmailDetailSheet({ open, onOpenChange, email }: EmailDetailSheet
             <div className="flex items-center gap-2 text-sm">
               <Tag className="h-4 w-4 text-muted-foreground" />
               <span className="font-medium">Classification:</span>
-              <Badge variant="outline" className={cn('text-xs', CLASSIFICATION_CONFIG[email.classification].className)}>
+              <Badge variant="outline" className={cn('text-xs', (CLASSIFICATION_CONFIG as Record<string, { className: string }>)[email.classification]?.className || '')}>
                 {email.classification}
               </Badge>
             </div>
