@@ -114,7 +114,7 @@ export function DraftsList({ drafts: initialDrafts, loading }: DraftsListProps) 
             </div>
           </CardHeader>
           <CardContent>
-            <div className="border rounded-md p-3 mb-4 max-h-48 overflow-y-auto font-mono text-sm">
+            <div className="border rounded-md p-3 mb-4 max-h-48 overflow-y-auto text-sm">
               {editingId === draft.id ? (
                 <Textarea
                   value={editBody}
@@ -122,7 +122,9 @@ export function DraftsList({ drafts: initialDrafts, loading }: DraftsListProps) 
                   className="font-mono text-sm min-h-[100px]"
                 />
               ) : (
-                <pre className="whitespace-pre-wrap">{draft.draft_body}</pre>
+                <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                  {draft.draft_body}
+                </div>
               )}
             </div>
             {editingId === draft.id ? (
