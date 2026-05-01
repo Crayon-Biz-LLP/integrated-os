@@ -14,9 +14,9 @@ export async function fetchEmails(filters: EmailFilters): Promise<Email[]> {
     .select(`
       id,
       subject,
-      sender_name,
-      sender_email,
-      body_preview,
+       sender,
+       sender_email,
+       body_summary,
       classification,
       source,
       received_at,
@@ -35,7 +35,7 @@ export async function fetchEmails(filters: EmailFilters): Promise<Email[]> {
     query = query.eq('source', filters.source);
   }
   if (filters.search) {
-    query = query.or(`subject.ilike.%${filters.search}%,sender_email.ilike.%${filters.search}%,sender_name.ilike.%${filters.search}%`);
+    query = query.or(`subject.ilike.%${filters.search}%,sender_email.ilike.%${filters.search}%,sender.ilike.%${filters.search}%`);
   }
 
   const { data, error } = await query;
@@ -74,7 +74,7 @@ export async function fetchPendingTasks(): Promise<EmailPendingTask[]> {
     .from('email_pending_tasks')
     .select(`
       *,
-      email:emails(subject, sender_email, sender_name)
+       email:emails(subject, sender_email, sender)
     `)
     .is('danny_decision', null)
     .order('created_at', { ascending: false });
@@ -99,7 +99,7 @@ export async function fetchPendingDrafts(): Promise<EmailDraft[]> {
     .from('email_drafts')
     .select(`
       *,
-      email:emails(subject, sender_email, sender_name, source)
+       email:emails(subject, sender_email, sender, source)
     `)
     .eq('status', 'pending')
     .order('created_at', { ascending: false });

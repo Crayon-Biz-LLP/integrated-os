@@ -88,7 +88,7 @@ export function PendingTasksList({ tasks: initialTasks, loading }: PendingTasksL
           </CardHeader>
           <CardContent>
             <div className="text-sm text-muted-foreground mb-4">
-              From: {task.email?.sender_name || task.email?.sender_email} · Re: {task.email?.subject}
+              From: {task.email?.sender || task.email?.sender_email} · Re: {task.email?.subject}
             </div>
             <div className="flex gap-2">
               <Button

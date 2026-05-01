@@ -6,9 +6,9 @@ export type TaskDecision = 'yes' | 'no' | 'expired' | null;
 export interface Email {
   id: number;
   subject: string;
-  sender_name: string | null;
+  sender: string | null;
   sender_email: string;
-  body_preview: string | null;
+  body_summary: string | null;
   classification: EmailClassification;
   source: EmailSource;
   received_at: string;
@@ -29,7 +29,7 @@ export interface EmailPendingTask {
   email?: {
     subject: string;
     sender_email: string;
-    sender_name: string | null;
+    sender: string | null;
   } | null;
 }
 
@@ -42,7 +42,7 @@ export interface EmailDraft {
   email?: {
     subject: string;
     sender_email: string;
-    sender_name: string | null;
+    sender: string | null;
     source: EmailSource;
   } | null;
 }
