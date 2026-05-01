@@ -618,6 +618,12 @@ async def send_draft_reply(draft_id: int) -> tuple:
             return (False, "Draft not found or already processed.")
         draft = draft_res.data
 
+        # Strip Subject line from draft_body if present (defensive fix for old drafts)
+        body = draft.get('draft_body', '')
+        if body.startswith('Subject:'):
+            lines = body.split('\n')
+            draft['draft_body'] = '\n'.join(lines[1:]).lstrip('\n')
+
         if not draft.get('emails'):
             return (False, "Associated email not found.")
 
