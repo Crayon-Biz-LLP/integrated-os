@@ -57,11 +57,22 @@ export function EmailsInboxTable({ emails, loading, onEmailClick }: EmailsInboxT
             </TableRow>
           </TableHeader>
           <TableBody>
-            {[...Array(5)].map((_, i) => (
+            {[...Array(6)].map((_, i) => (
               <TableRow key={i}>
-                {[...Array(6)].map((_, j) => (
-                  <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
-                ))}
+                <TableCell>
+                  <div className="flex items-center gap-2">
+                    <Skeleton className="h-4 w-4 rounded-full" />
+                    <div className="space-y-1">
+                      <Skeleton className="h-4 w-[140px]" />
+                      <Skeleton className="h-3 w-[100px]" />
+                    </div>
+                  </div>
+                </TableCell>
+                <TableCell><Skeleton className="h-4 w-[200px]" /></TableCell>
+                <TableCell><Skeleton className="h-5 w-[80px] rounded-4xl" /></TableCell>
+                <TableCell><Skeleton className="h-5 w-[60px] rounded-4xl" /></TableCell>
+                <TableCell><Skeleton className="h-5 w-[90px] rounded-4xl" /></TableCell>
+                <TableCell><Skeleton className="h-4 w-[80px]" /></TableCell>
               </TableRow>
             ))}
           </TableBody>
