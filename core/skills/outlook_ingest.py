@@ -1,3 +1,4 @@
+import random
 import os
 import sys
 import json
@@ -94,6 +95,7 @@ def get_embedding(text: str) -> list:
 async def call_gemini_with_retry(prompt: str, model: str, config: dict = None):
     max_retries = 3
     base_delay = 5
+    non_retryable = ['401', '403', '400', 'invalid api key', 'permission denied']
 
     for attempt in range(max_retries):
         try:
@@ -105,11 +107,14 @@ async def call_gemini_with_retry(prompt: str, model: str, config: dict = None):
             return response
         except Exception as e:
             error_str = str(e).lower()
+            if any(err in error_str for err in non_retryable):
+                raise
             should_retry = any(err in error_str for err in RETRYABLE_ERRORS)
             if should_retry and attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt)
-                print(f"API Hiccup ({error_str}), retrying in {delay}s...")
-                await asyncio.sleep(delay)
+                jittered = delay * (0.75 + random.random() * 0.5)
+                print(f"⚠️ API Hiccup ({error_str[:50]}), retrying in {jittered:.0f}s...")
+                await asyncio.sleep(jittered)
                 continue
             else:
                 raise
@@ -442,6 +447,17 @@ async def ingest_outlook_messages(limit=25):
                             "danny_decision": None,
                             "is_human_sender": is_human
                         }).execute()
+                
+                if is_human and classification_data.get("has_memory_value"):
+                    _summary = classification_data.get("summary", "")
+                    _mem_content = f"{sender} ({sender_email}): {_summary}"
+                    _emb = get_embedding(_mem_content)
+                    supabase.table('memories').insert({
+                        "content": _mem_content,
+                        "memory_type": "relationship_note",
+                        "embedding": _emb
+                    }).execute()
+                    print(f"🧠 [relationship_note] Actionable memory saved for {sender_email}")
                 
                 if classification_data.get("needs_draft"):
                     draft_body = await generate_draft(sender, subject, body)
