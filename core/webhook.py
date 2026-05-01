@@ -605,11 +605,11 @@ def get_gmail_service():
     return build('gmail', 'v1', credentials=creds, cache=None)
 
 
-def send_draft_reply(draft_id: int, gmail_service) -> tuple:
-    """Send an approved draft via Gmail. Returns (success: bool, error: str|None)."""
+async def send_draft_reply(draft_id: int) -> tuple:
+    """Send an approved draft via Gmail or Outlook based on email source. Returns (success: bool, error: str|None)."""
     try:
         draft_res = supabase.table('email_drafts')\
-            .select('id, email_id, draft_body, status')\
+            .select('id, email_id, draft_body, status, emails(sender_email, thread_id, source, subject)')\
             .eq('id', draft_id)\
             .eq('status', 'pending')\
             .maybe_single()\
@@ -618,14 +618,17 @@ def send_draft_reply(draft_id: int, gmail_service) -> tuple:
             return (False, "Draft not found or already processed.")
         draft = draft_res.data
 
-        email_res = supabase.table('emails')\
-            .select('id, subject, sender_email, sender, thread_id')\
-            .eq('id', draft['email_id'])\
-            .maybe_single()\
-            .execute()
-        if not email_res or not email_res.data:
+        if not draft.get('emails'):
             return (False, "Associated email not found.")
-        email = email_res.data
+
+        source = draft['emails'].get('source', 'gmail')
+
+        if source == 'outlook':
+            return await send_outlook_draft(draft)
+
+        # Gmail send logic
+        gmail_service = get_gmail_service()
+        email = draft['emails']
 
         msg = MIMEText(draft['draft_body'])
         msg['To'] = email['sender_email']
@@ -647,7 +650,73 @@ def send_draft_reply(draft_id: int, gmail_service) -> tuple:
         return (True, None)
 
     except Exception as e:
-        print(f"Gmail send error for draft {draft_id}: {e}")
+        print(f"Draft send error for draft {draft_id}: {e}")
+        return (False, str(e))
+
+
+async def send_outlook_draft(draft: dict) -> tuple:
+    """Send an approved draft via Outlook Graph API. Returns (success: bool, error: str|None)."""
+    try:
+        email = draft['emails']
+        to_email = email['sender_email']
+        subject = email['subject']
+        body = draft['draft_body']
+
+        access_token = os.getenv("OUTLOOK_ACCESS_TOKEN")
+        if not access_token:
+            from core.skills.outlook_token_helper import refresh_outlook_token
+            result = refresh_outlook_token(write_back=True)
+            access_token = result["access_token"]
+
+        payload = {
+            "message": {
+                "subject": f"Re: {subject}",
+                "body": {"contentType": "Text", "content": body},
+                "toRecipients": [{"emailAddress": {"address": to_email}}]
+            },
+            "saveToSentItems": True
+        }
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                "https://graph.microsoft.com/v1.0/me/sendMail",
+                json=payload,
+                headers=headers
+            )
+
+            if response.status_code == 202:
+                supabase.table('email_drafts')\
+                    .update({'status': 'approved'})\
+                    .eq('id', draft['id'])\
+                    .execute()
+                return (True, None)
+
+            if response.status_code == 401:
+                from core.skills.outlook_token_helper import refresh_outlook_token
+                result = refresh_outlook_token(write_back=True)
+                access_token = result["access_token"]
+                headers["Authorization"] = f"Bearer {access_token}"
+                response = await client.post(
+                    "https://graph.microsoft.com/v1.0/me/sendMail",
+                    json=payload,
+                    headers=headers
+                )
+                if response.status_code == 202:
+                    supabase.table('email_drafts')\
+                        .update({'status': 'approved'})\
+                        .eq('id', draft['id'])\
+                        .execute()
+                    return (True, None)
+
+            raise Exception(f"HTTP {response.status_code}: {response.text}")
+
+    except Exception as e:
+        print(f"Outlook send error for draft {draft['id']}: {e}")
         return (False, str(e))
 
 
@@ -672,7 +741,7 @@ async def handle_ed_command(text: str, chat_id: int):
             emails_map = {}
             if email_ids:
                 emails_res = supabase.table('emails')\
-                    .select('id, subject, sender_email, sender')\
+                    .select('id, subject, sender_email, sender, source')\
                     .in_('id', email_ids)\
                     .execute()
                 emails_map = {e['id']: e for e in (emails_res.data or [])}
@@ -680,7 +749,7 @@ async def handle_ed_command(text: str, chat_id: int):
             lines = ["📝 *Pending Draft(s)* — Review below:\n"]
             for d in drafts:
                 email = emails_map.get(d.get('email_id'), {})
-                sender = email.get('sender_name') or email.get('sender_email', '')
+                sender = email.get('sender') or email.get('sender_email', '')
                 email_addr = email.get('sender_email', '')
                 subject = email.get('subject', '(No Subject)')
                 body = d.get('draft_body', '')
@@ -705,8 +774,7 @@ async def handle_ed_command(text: str, chat_id: int):
     if approve_match:
         draft_id = int(approve_match.group(1))
         try:
-            gmail_service = get_gmail_service()
-            success, error = send_draft_reply(draft_id, gmail_service)
+            success, error = await send_draft_reply(draft_id)
             if success:
                 draft_res = supabase.table('email_drafts')\
                     .select('email_id')\
@@ -771,7 +839,7 @@ async def handle_ed_command(text: str, chat_id: int):
                 return
 
             email_res = supabase.table('emails')\
-                .select('subject, sender_email, sender_name')\
+                .select('subject, sender_email, sender')\
                 .eq('id', draft_res.data['email_id'])\
                 .maybe_single().execute()
             if not email_res or not email_res.data:
@@ -781,7 +849,7 @@ async def handle_ed_command(text: str, chat_id: int):
             e = email_res.data
             await send_telegram(chat_id,
                 f"📝 *Draft {draft_id}* — Pending Approval\n"
-                f"📧 *To:* {e.get('sender_name', '')} <{e.get('sender_email', '')}>\n"
+                f"📧 *To:* {e.get('sender') or e.get('sender_email', '')} <{e.get('sender_email', '')}>\n"
                 f"📌 *Re:* {e.get('subject', '(No Subject)')}\n\n"
                 f"{new_body}\n\n"
                 f"Draft updated. Reply `ed approve {draft_id}` to send."
