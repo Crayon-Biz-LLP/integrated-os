@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 # Updated imports: Pulling from your new 'core' module
-from core.webhook import process_webhook
+from core.webhook import process_webhook, send_draft_reply
 from core.pulse import process_pulse
 
 app = FastAPI(title="Integrated-OS")
@@ -47,3 +47,13 @@ async def pulse_route_post(request: Request):
         raise HTTPException(status_code=result.get("status", 500), detail=result["error"])
         
     return {"success": True, "briefing": result.get("briefing")}
+
+# --- SEND DRAFT REPLY (Routes to webhook.py) ---
+@app.post("/api/send-draft")
+async def send_draft_route(request: Request):
+    body = await request.json()
+    draft_id = body.get("draft_id")
+    if not draft_id:
+        raise HTTPException(status_code=400, detail="draft_id required")
+    success, error = await send_draft_reply(draft_id)
+    return {"success": success, "error": error}

@@ -109,7 +109,7 @@ export async function fetchPendingDrafts(): Promise<EmailDraft[]> {
 }
 
 export async function approveDraft(id: number): Promise<{ success: boolean; error?: string }> {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/send-draft`, {
+  const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/send-draft`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draft_id: id }),
