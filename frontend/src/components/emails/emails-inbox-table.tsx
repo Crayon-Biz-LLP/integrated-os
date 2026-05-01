@@ -57,7 +57,7 @@ export function EmailsInboxTable({ emails, loading, onEmailClick }: EmailsInboxT
             </TableRow>
           </TableHeader>
           <TableBody>
-            {...Array(6)].map((_, i) => (
+            {[1,2,3,4,5,6].map((_, i) => (
               <TableRow key={i} className="border-b border-border/40">
                 <TableCell>
                   <div className="flex items-center gap-2">
