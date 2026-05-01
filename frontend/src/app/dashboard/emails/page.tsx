@@ -9,13 +9,13 @@ import { PendingTasksList } from '@/components/emails/pending-tasks-list';
 import { DraftsList } from '@/components/emails/drafts-list';
 import { EmailDetailSheet } from '@/components/emails/email-detail-sheet';
 import { fetchEmails, fetchPendingTasks, fetchPendingDrafts, fetchEmailStats } from '@/lib/emails/api';
-import type { Email, EmailFilters, EmailPendingTask, EmailDraft, EmailStats as EmailStatsData } from '@/lib/emails/types';
+import type { Email, EmailFilters as EmailFiltersType, EmailPendingTask, EmailDraft, EmailStats as EmailStatsData } from '@/lib/emails/types';
 
 export default function EmailsPage() {
   const [activeTab, setActiveTab] = useState<'inbox' | 'pending' | 'drafts'>('inbox');
   const [emails, setEmails] = useState<Email[]>([]);
   const [emailsLoading, setEmailsLoading] = useState(true);
-  const [emailFilters, setEmailFilters] = useState<EmailFilters>({
+  const [emailFilters, setEmailFilters] = useState<EmailFiltersType>({
     classification: 'all',
     source: 'all',
     search: '',
