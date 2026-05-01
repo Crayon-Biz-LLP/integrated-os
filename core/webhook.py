@@ -632,7 +632,7 @@ async def send_draft_reply(draft_id: int) -> tuple:
 
         msg = MIMEText(draft['draft_body'])
         msg['To'] = email['sender_email']
-        msg['From'] = 'daniel@crayonbiz.com'
+        msg['From'] = os.getenv('GMAIL_SENDER_EMAIL', '')
         msg['Subject'] = f"Re: {email['subject']}"
         msg['In-Reply-To'] = email['thread_id']
         msg['References'] = email['thread_id']
