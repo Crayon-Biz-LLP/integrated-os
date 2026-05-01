@@ -358,16 +358,12 @@ Return ONLY valid JSON, NO markdown, NO explanation:
   "has_memory_value": true or false
 }}"""
 
-    try:
-        response = await call_gemini_with_retry(
-            prompt,
-            model="gemini-3.1-flash-lite-preview",
-            config={"response_mime_type": "application/json"}
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        print(f"⚠️ Classification failed: {e}")
-        return {"classification": "ignored", "summary": "Classification failed", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None, "is_human_sender": False, "has_memory_value": False}
+    response = await call_gemini_with_retry(
+        prompt,
+        model="gemini-3.1-flash-lite-preview",
+        config={"response_mime_type": "application/json"}
+    )
+    return json.loads(response.text)
 
 async def process_email(msg_data: dict, gmail_service, active_task_keywords: set) -> tuple:
     msg_id = msg_data['id']
@@ -406,7 +402,11 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
         if any(p in sender_email.lower() for p in NOREPLY_PATTERNS):
             classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
         else:
-            classification_data = await classify_email(sender_header, subject, body, to_header, cc_header)
+            try:
+                classification_data = await classify_email(sender_header, subject, body, to_header, cc_header)
+            except Exception as classify_err:
+                print(f"⏭️ [skipped - classification error] {subject} | Will retry on next run")
+                return ("skipped_api_error", subject)
         classification = classification_data.get('classification', 'ignored')
 
         if classification == 'ignored':
@@ -553,6 +553,7 @@ async def main():
     processed = 0
     ignored = 0
     skipped = 0
+    skipped_api_error = 0
     results = []
     seen_ids = set()
 
@@ -572,13 +573,15 @@ async def main():
                 ignored += 1
             elif status == EmailStatus.ERROR:
                 processed += 1
+            elif status == "skipped_api_error":
+                skipped_api_error += 1
             else:
                 processed += 1
             results.append((status, detail))
         except Exception as e:
             print(f"❌ Fatal error processing message: {e}")
 
-    print(f"Email ingest complete. {processed} processed, {ignored} ignored, {skipped} skipped (duplicates).")
+    print(f"Email ingest complete. {processed} processed, {ignored} ignored, {skipped} skipped (duplicates), {skipped_api_error} skipped (api error).")
 
 
 if __name__ == "__main__":

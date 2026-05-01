@@ -226,16 +226,12 @@ Return ONLY valid JSON, NO markdown, NO explanation:
   "has_memory_value": true or false
 }}"""
 
-    try:
-        response = await call_gemini_with_retry(
-            prompt,
-            model="gemini-3.1-flash-lite-preview",
-            config={"response_mime_type": "application/json"}
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        print(f"Classification failed: {e}")
-        return {"classification": "ignored", "summary": "Classification failed", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None, "is_human_sender": False, "has_memory_value": False}
+    response = await call_gemini_with_retry(
+        prompt,
+        model="gemini-3.1-flash-lite-preview",
+        config={"response_mime_type": "application/json"}
+    )
+    return json.loads(response.text)
 
 
 def fetch_outlook_messages(limit=25):
@@ -302,6 +298,7 @@ async def ingest_outlook_messages(limit=25):
     processed = 0
     ignored = 0
     skipped = 0
+    skipped_api_error = 0
     seen_ids = set()
 
     for msg in messages:
@@ -344,7 +341,12 @@ async def ingest_outlook_messages(limit=25):
             if any(p in sender_email.lower() for p in NOREPLY_PATTERNS):
                 classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
             else:
-                classification_data = await classify_email(sender, subject, body, to_header, cc_header)
+                try:
+                    classification_data = await classify_email(sender, subject, body, to_header, cc_header)
+                except Exception as classify_err:
+                    print(f"⏭️ [skipped - classification error] {subject} | Will retry on next run")
+                    skipped_api_error += 1
+                    continue
 
             classification = classification_data.get("classification", "ignored")
 
@@ -470,8 +472,8 @@ async def ingest_outlook_messages(limit=25):
                 print(f"⚠️ Failed to insert error record for {msg_id}: {insert_err}")
             continue
 
-    print(f"Outlook ingest complete. {processed} processed, {ignored} ignored, {skipped} skipped (duplicates).")
-    return {"processed": processed, "ignored": ignored, "skipped": skipped}
+    print(f"Outlook ingest complete. {processed} processed, {ignored} ignored, {skipped} skipped (duplicates), {skipped_api_error} skipped (api error).")
+    return {"processed": processed, "ignored": ignored, "skipped": skipped, "skipped_api_error": skipped_api_error}
 
 async def main():
     print(f"Outlook ingest started at {datetime.now(timezone(timedelta(hours=5, minutes=30)))}")
