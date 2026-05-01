@@ -20,20 +20,25 @@ interface TasksTableProps {
   onChangeProjectClick: (task: Task) => void;
 }
 
-const statusVariants: Record<string, 'default' | 'secondary' | 'outline' | 'destructive'> = {
-  todo: 'default',
-  in_progress: 'secondary',
-  done: 'outline',
-  blocked: 'destructive',
-  cancelled: 'outline',
-};
+  const statusVariants: Record<string, 'default' | 'secondary' | 'outline' | 'destructive'> = {
+    todo: 'default',
+    in_progress: 'secondary',
+    done: 'outline',
+    blocked: 'destructive',
+    cancelled: 'outline',
+  };
 
-const priorityColors: Record<string, string> = {
-  low: 'text-muted-foreground',
-  medium: 'text-amber-600',
-  high: 'text-orange-600',
-  urgent: 'text-red-600',
-};
+  const statusClasses: Record<string, string> = {
+    todo: 'bg-primary text-primary-foreground text-xs px-2.5 py-0.5 rounded-full font-medium',
+    done: 'bg-muted text-muted-foreground text-xs px-2.5 py-0.5 rounded-full font-medium border border-border',
+  };
+
+  const priorityColors: Record<string, string> = {
+    low: 'text-muted-foreground text-xs',
+    medium: 'text-muted-foreground text-xs',
+    high: 'text-muted-foreground text-xs',
+    urgent: 'text-destructive text-xs font-semibold',
+  };
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '-';
@@ -72,16 +77,16 @@ function isOverdue(task: Task): boolean {
 
 export function TasksTable({ tasks, onTaskClick, onChangeProjectClick }: TasksTableProps) {
   return (
-    <div className="rounded-lg border overflow-hidden">
+    <div className="card-premium overflow-hidden">
       <Table>
-        <TableHeader className="bg-muted/20">
+        <TableHeader className="bg-muted/40 border-b border-border">
           <TableRow>
-            <TableHead className="w-[40%]">Task</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Priority</TableHead>
-            <TableHead>Project</TableHead>
-            <TableHead>Due</TableHead>
-            <TableHead className="w-10"></TableHead>
+            <TableHead className="section-label py-3 px-4 text-left w-[40%]">Task</TableHead>
+            <TableHead className="section-label py-3 px-4 text-left">Status</TableHead>
+            <TableHead className="section-label py-3 px-4 text-left">Priority</TableHead>
+            <TableHead className="section-label py-3 px-4 text-left">Project</TableHead>
+            <TableHead className="section-label py-3 px-4 text-left">Due</TableHead>
+            <TableHead className="section-label py-3 px-4 text-left w-10"></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -95,7 +100,7 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick }: TasksTa
             tasks.map((task) => (
               <TableRow
                 key={task.id}
-                className="cursor-pointer hover:bg-muted/30"
+                className="border-b border-border/50 transition-all duration-150 hover:bg-primary/3 cursor-pointer"
                 onClick={() => onTaskClick(task)}
               >
                 <TableCell className="font-medium">
@@ -104,9 +109,9 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick }: TasksTa
                   </span>
                 </TableCell>
                 <TableCell>
-                  <Badge variant={statusVariants[task.status]} className="capitalize">
+                  <span className={statusClasses[task.status] || 'text-xs capitalize'}>
                     {task.status.replace('_', ' ')}
-                  </Badge>
+                  </span>
                 </TableCell>
                 <TableCell>
                   <span className={`text-xs font-medium ${priorityColors[task.priority]}`}>
@@ -114,10 +119,10 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick }: TasksTa
                   </span>
                 </TableCell>
                 <TableCell>
-                  <span className="text-sm text-muted-foreground">{task.project_name}</span>
+                  <span className="text-sm text-muted-foreground/70">{task.project_name}</span>
                 </TableCell>
                 <TableCell>
-                  <span className={isOverdue(task) ? 'text-red-600 text-sm font-medium' : 'text-sm text-muted-foreground'}>
+                  <span className={isOverdue(task) ? 'text-destructive text-xs font-medium' : 'text-xs text-muted-foreground/60 font-mono'}>
                     {formatDate(getDueDate(task))}
                   </span>
                 </TableCell>

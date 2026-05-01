@@ -26,9 +26,9 @@ export function EmailTabs({
     <Tabs value={activeTab} onValueChange={(v) => onTabChange(v as typeof activeTab)} className="mb-6">
       <TabsList>
         {tabs.map(({ key, label, count }) => (
-          <TabsTrigger key={key} value={key} className="flex items-center gap-2">
+          <TabsTrigger key={key} value={key} className={activeTab === key ? "border-b-2 border-primary text-foreground font-medium flex items-center gap-2" : "text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2"}>
             {label}
-            <Badge variant="secondary" className="ml-1">{count}</Badge>
+            <span className="bg-primary/10 text-primary text-xs px-1.5 py-0.5 rounded-full font-semibold ml-1">{count}</span>
           </TabsTrigger>
         ))}
       </TabsList>
