@@ -40,7 +40,7 @@ export async function fetchEmails(filters: EmailFilters): Promise<Email[]> {
 
   const { data, error } = await query;
   if (error) throw error;
-  return data || [];
+  return (data || []) as unknown as Email[];
 }
 
 export async function fetchEmailStats(): Promise<EmailStats> {
