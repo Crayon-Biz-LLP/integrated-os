@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useToast } from '@/hooks/use-toast';
+import { toast } from 'sonner';
 import type { EmailDraft } from '@/lib/emails/types';
 import { approveDraft, rejectDraft, updateDraftBody } from '@/lib/emails/api';
 import { Loader2, Send, X, Edit, Globe } from 'lucide-react';
@@ -22,7 +22,6 @@ export function DraftsList({ drafts: initialDrafts, loading }: DraftsListProps) 
   const [editBody, setEditBody] = useState('');
   const [sendingId, setSendingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { toast } = useToast();
 
   useEffect(() => {
     setDrafts(initialDrafts);
@@ -60,8 +59,7 @@ export function DraftsList({ drafts: initialDrafts, loading }: DraftsListProps) 
       if (res.success) {
         const draft = drafts.find((d) => d.id === id);
         setDrafts((prev) => prev.filter((d) => d.id !== id));
-        toast({
-          title: 'Draft sent',
+        toast.success('Draft sent', {
           description: `Sent via ${draft?.email?.source === 'gmail' ? 'Gmail' : 'Outlook'}`,
         });
       } else {
