@@ -4,9 +4,14 @@ import json
 import asyncio
 import httpx
 import re
+import base64
+from email.mime.text import MIMEText
 from supabase import create_client, Client
 from datetime import datetime, timezone, timedelta
 from google import genai
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.discovery_cache import base
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
@@ -589,6 +594,206 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
         return False
 
 
+def get_gmail_service():
+    creds = Credentials(
+        None,
+        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
+        client_id=os.getenv("GOOGLE_CLIENT_ID"),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+        token_uri="https://oauth2.googleapis.com/token"
+    )
+    return build('gmail', 'v1', credentials=creds, cache=None)
+
+
+def send_draft_reply(draft_id: int, gmail_service) -> tuple:
+    """Send an approved draft via Gmail. Returns (success: bool, error: str|None)."""
+    try:
+        draft_res = supabase.table('email_drafts')\
+            .select('id, email_id, draft_body, status')\
+            .eq('id', draft_id)\
+            .eq('status', 'pending')\
+            .maybe_single()\
+            .execute()
+        if not draft_res or not draft_res.data:
+            return (False, "Draft not found or already processed.")
+        draft = draft_res.data
+
+        email_res = supabase.table('emails')\
+            .select('id, subject, sender_email, sender_name, thread_id')\
+            .eq('id', draft['email_id'])\
+            .maybe_single()\
+            .execute()
+        if not email_res or not email_res.data:
+            return (False, "Associated email not found.")
+        email = email_res.data
+
+        msg = MIMEText(draft['draft_body'])
+        msg['To'] = email['sender_email']
+        msg['From'] = 'daniel@crayonbiz.com'
+        msg['Subject'] = f"Re: {email['subject']}"
+        msg['In-Reply-To'] = email['thread_id']
+        msg['References'] = email['thread_id']
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+        send_body = {'raw': raw, 'threadId': email['thread_id']}
+
+        gmail_service.users().messages().send(userId='me', body=send_body).execute()
+
+        supabase.table('email_drafts')\
+            .update({'status': 'approved'})\
+            .eq('id', draft_id)\
+            .execute()
+
+        return (True, None)
+
+    except Exception as e:
+        print(f"Gmail send error for draft {draft_id}: {e}")
+        return (False, str(e))
+
+
+async def handle_ed_command(text: str, chat_id: int):
+    """Handle /ed, ed approve, ed reject, ed edit commands."""
+    import re as _re
+
+    # /ed — list pending drafts
+    if text.strip() == '/ed':
+        try:
+            drafts_res = supabase.table('email_drafts')\
+                .select('id, draft_body, status, email_id')\
+                .eq('status', 'pending')\
+                .order('created_at', desc=False)\
+                .execute()
+            drafts = drafts_res.data or []
+            if not drafts:
+                await send_telegram(chat_id, "✅ No pending drafts.")
+                return
+
+            email_ids = [d['email_id'] for d in drafts if d.get('email_id')]
+            emails_map = {}
+            if email_ids:
+                emails_res = supabase.table('emails')\
+                    .select('id, subject, sender_email, sender_name')\
+                    .in_('id', email_ids)\
+                    .execute()
+                emails_map = {e['id']: e for e in (emails_res.data or [])}
+
+            lines = ["📝 *Pending Draft(s)* — Review below:\n"]
+            for d in drafts:
+                email = emails_map.get(d.get('email_id'), {})
+                sender = email.get('sender_name') or email.get('sender_email', '')
+                email_addr = email.get('sender_email', '')
+                subject = email.get('subject', '(No Subject)')
+                body = d.get('draft_body', '')
+                lines.append(
+                    f"📝 *Draft {d['id']}* — Pending Approval\n"
+                    f"📧 *To:* {sender} <{email_addr}>\n"
+                    f"📌 *Re:* {subject}\n\n"
+                    f"{body}\n\n"
+                    f"Reply with:\n"
+                    f"• `ed approve {d['id']}` — Send this draft\n"
+                    f"• `ed reject {d['id']}` — Discard\n"
+                    f"• `ed edit {d['id']} <new text>` — Replace and re-show\n"
+                )
+            await send_telegram(chat_id, "\n---\n".join(lines))
+        except Exception as e:
+            print(f"/ed list error: {e}")
+            await send_telegram(chat_id, f"⚠️ Failed to fetch pending drafts: {e}")
+        return
+
+    # ed approve {id}
+    approve_match = _re.match(r'^ed\s+approve\s+(\d+)$', text.strip(), _re.IGNORECASE)
+    if approve_match:
+        draft_id = int(approve_match.group(1))
+        try:
+            gmail_service = get_gmail_service()
+            success, error = send_draft_reply(draft_id, gmail_service)
+            if success:
+                draft_res = supabase.table('email_drafts')\
+                    .select('email_id')\
+                    .eq('id', draft_id)\
+                    .maybe_single().execute()
+                if draft_res and draft_res.data and draft_res.data.get('email_id'):
+                    email_res = supabase.table('emails')\
+                        .select('sender_email')\
+                        .eq('id', draft_res.data['email_id'])\
+                        .maybe_single().execute()
+                    addr = email_res.data.get('sender_email', '') if email_res and email_res.data else ''
+                else:
+                    addr = ''
+                await send_telegram(chat_id, f"✅ Draft [{draft_id}] sent to {addr}.")
+            else:
+                await send_telegram(chat_id, f"❌ Failed to send draft [{draft_id}]. Error: {error}")
+        except Exception as e:
+            print(f"ed approve error: {e}")
+            await send_telegram(chat_id, f"❌ Failed to send draft [{draft_id}]. Error: {e}")
+        return
+
+    # ed reject {id}
+    reject_match = _re.match(r'^ed\s+reject\s+(\d+)$', text.strip(), _re.IGNORECASE)
+    if reject_match:
+        draft_id = int(reject_match.group(1))
+        try:
+            res = supabase.table('email_drafts')\
+                .update({'status': 'rejected'})\
+                .eq('id', draft_id)\
+                .eq('status', 'pending')\
+                .execute()
+            if res.data:
+                await send_telegram(chat_id, f"🗑️ Draft [{draft_id}] rejected and discarded.")
+            else:
+                await send_telegram(chat_id, f"⚠️ Draft [{draft_id}] not found or already processed.")
+        except Exception as e:
+            print(f"ed reject error: {e}")
+            await send_telegram(chat_id, f"⚠️ Failed to reject draft [{draft_id}]: {e}")
+        return
+
+    # ed edit {id} <new text>
+    edit_match = _re.match(r'^ed\s+edit\s+(\d+)\s+(.+)$', text.strip(), _re.IGNORECASE | _re.DOTALL)
+    if edit_match:
+        draft_id = int(edit_match.group(1))
+        new_body = edit_match.group(2).strip()
+        try:
+            upd = supabase.table('email_drafts')\
+                .update({'draft_body': new_body})\
+                .eq('id', draft_id)\
+                .eq('status', 'pending')\
+                .execute()
+            if not upd.data:
+                await send_telegram(chat_id, f"⚠️ Draft [{draft_id}] not found or already processed.")
+                return
+
+            draft_res = supabase.table('email_drafts')\
+                .select('email_id')\
+                .eq('id', draft_id)\
+                .maybe_single().execute()
+            if not draft_res or not draft_res.data or not draft_res.data.get('email_id'):
+                await send_telegram(chat_id, f"✅ Draft [{draft_id}] updated.")
+                return
+
+            email_res = supabase.table('emails')\
+                .select('subject, sender_email, sender_name')\
+                .eq('id', draft_res.data['email_id'])\
+                .maybe_single().execute()
+            if not email_res or not email_res.data:
+                await send_telegram(chat_id, f"✅ Draft [{draft_id}] updated.")
+                return
+
+            e = email_res.data
+            await send_telegram(chat_id,
+                f"📝 *Draft {draft_id}* — Pending Approval\n"
+                f"📧 *To:* {e.get('sender_name', '')} <{e.get('sender_email', '')}>\n"
+                f"📌 *Re:* {e.get('subject', '(No Subject)')}\n\n"
+                f"{new_body}\n\n"
+                f"Draft updated. Reply `ed approve {draft_id}` to send."
+            )
+        except Exception as e:
+            print(f"ed edit error: {e}")
+            await send_telegram(chat_id, f"⚠️ Failed to edit draft [{draft_id}]: {e}")
+        return
+
+    await send_telegram(chat_id, "⚠️ Unknown /ed command. Use: `/ed`, `ed approve {id}`, `ed reject {id}`, `ed edit {id} <text>`")
+
+
 KEYBOARD = {
     "keyboard": [
         [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
@@ -775,11 +980,22 @@ async def process_webhook(update: dict):
                     # when it creates the final task from this raw_dump.
                 
                 else:
-                    # Reject flow
+                    # Reject flow — also clean up orphan draft if one exists
                     supabase.table('email_pending_tasks')\
                         .update({'danny_decision': 'rejected'})\
                         .eq('id', _row['id'])\
                         .execute()
+
+                    # Orphan cleanup: reject any pending draft linked to this email
+                    try:
+                        supabase.table('email_drafts')\
+                            .update({'status': 'rejected'})\
+                            .eq('email_id', _email_id)\
+                            .eq('status', 'pending')\
+                            .execute()
+                    except Exception:
+                        pass  # silent cleanup — don't block the reject flow
+
                     await send_telegram(chat_id, f"⏭️ Dropped: {_suggested_title}")
                 
                 return {"success": True}
@@ -788,6 +1004,11 @@ async def process_webhook(update: dict):
                 print(f"⚠️ Shortcode handler error: {_sc_err}")
                 await send_telegram(chat_id, "⚠️ Something went wrong. Try again or use /ep to retry.")
                 return {"success": True}
+
+        # 📝 /ed DRAFT APPROVAL HANDLER — must run before classify_intent()
+        if text.strip().startswith('ed '):
+            await handle_ed_command(text, chat_id)
+            return {"success": True}
         
         context = await get_recent_context(limit=2)
         classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json)
@@ -973,7 +1194,13 @@ async def handle_command(text: str, chat_id: int):
                 reply = "✅ No pending email decisions. Inbox is clean."
         except Exception as ep_err:
             reply = f"⚠️ Error fetching pending emails: {ep_err}"
-    
+        await send_telegram(chat_id, reply)
+        return {"success": True}
+
+    elif text.startswith('/ed'):
+        await handle_ed_command(text, chat_id)
+        return {"success": True}
+
     else:
         await send_telegram(chat_id, "⚠️ Unknown command. Type /help or tap the menu to see available commands.")
 

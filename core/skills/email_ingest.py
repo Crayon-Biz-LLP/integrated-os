@@ -334,8 +334,11 @@ suggested_task:
 - NULL if action cannot be stated specifically
 
 needs_draft:
-- true ONLY if Danny needs to write a reply
-- false if the task is a call, meeting, or offline action
+- true if Danny needs to write a reply
+- true if is_human_sender = true AND the sender is waiting for acknowledgement,
+  confirmation, or an update — even if the task itself is an offline action
+- false ONLY if the task is a call, meeting, or internal action where 
+  the sender has no expectation of a response
 
 is_human_sender:
 - true if sender is a real individual person
