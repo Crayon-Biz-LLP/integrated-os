@@ -60,8 +60,8 @@ export default function Page() {
   return (
     <div className="p-4 md:p-6">
       <div className="mb-6">
-        <h1 className="text-2xl font-semibold">Tasks</h1>
-        <p className="text-muted-foreground mt-1">Track progress across active work</p>
+        <h1 className="text-2xl font-bold tracking-tight">Tasks</h1>
+        <p className="text-sm text-muted-foreground/70 mt-0.5">Track progress across active work</p>
       </div>
 
       <TasksStats />

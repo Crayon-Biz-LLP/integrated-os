@@ -77,10 +77,10 @@ export default function DashboardLayout({
         href={item.href}
         onClick={onClick}
         className={cn(
-          'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+          'flex items-center gap-3 rounded-lg py-2 text-sm font-medium transition-colors',
           isActive
-            ? 'bg-accent text-accent-foreground'
-            : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+            ? 'bg-sidebar-accent text-sidebar-accent-foreground border-l-2 border-primary pl-[10px]'
+            : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground pl-3'
         )}
       >
         <Icon className="h-5 w-5" />
@@ -94,9 +94,10 @@ export default function DashboardLayout({
       {/* Desktop Sidebar */}
       <aside className="hidden lg:fixed lg:inset-y-0 lg:z-50 lg:flex lg:w-64 lg:flex-col lg:bg-sidebar lg:text-sidebar-foreground">
         {/* Logo */}
-        <div className="flex h-16 items-center gap-2 border-b border-sidebar-border px-6">
-          <Cpu className="h-5 w-5 text-primary" />
-          <span className="text-lg font-bold">Rhodey OS</span>
+        <div className="relative flex h-16 items-center gap-2 border-b border-sidebar-border px-6">
+          <div className="absolute inset-0 bg-gradient-to-br from-primary/8 via-transparent to-transparent pointer-events-none" />
+          <Cpu className="relative h-5 w-5 text-primary drop-shadow-[0_0_6px_oklch(0.55_0.10_192/0.6)]" />
+          <span className="relative text-lg font-bold tracking-tight text-sidebar-foreground">Rhodey OS</span>
         </div>
 
         {/* Nav Links */}
@@ -109,12 +110,12 @@ export default function DashboardLayout({
         {/* User Info & Logout */}
         <div className="border-t border-sidebar-border p-4">
           {userEmail && (
-            <p className="mb-2 truncate text-xs text-sidebar-foreground/60">{userEmail}</p>
+            <p className="mb-2 truncate text-xs text-sidebar-foreground/40 font-mono">{userEmail}</p>
           )}
           <Button
             variant="ghost"
             onClick={handleLogout}
-            className="w-full justify-start gap-2 px-2 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+            className="w-full justify-start gap-2 px-2 text-xs text-sidebar-foreground/40 hover:bg-sidebar-accent hover:text-sidebar-foreground"
           >
             <LogOut className="h-4 w-4" />
             Logout
