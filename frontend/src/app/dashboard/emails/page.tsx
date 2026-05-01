@@ -78,8 +78,8 @@ export default function EmailsPage() {
 
   return (
     <div className="p-4 md:p-6">
-      <h1 className="text-2xl font-semibold">Emails</h1>
-      <p className="text-muted-foreground">Ingested from Gmail and Outlook</p>
+      <h1 className="text-2xl font-bold tracking-tight">Emails</h1>
+      <p className="text-sm text-muted-foreground/70 mt-0.5">Ingested from Gmail and Outlook</p>
       <EmailStats />
       <EmailTabs
         activeTab={activeTab}

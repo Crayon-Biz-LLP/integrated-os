@@ -150,12 +150,14 @@ function MemoriesContent() {
     <>
       <div className="flex h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)]">
         {/* Left Sidebar */}
-        <aside className="hidden md:flex w-72 flex-col border-r border-border bg-muted/30">
-          <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-            <BookOpen className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">Memories</h2>
-            <span className="ml-auto text-xs text-muted-foreground">{filtered.length}</span>
-            <a href="/dashboard/memories/graph" className="text-xs text-muted-foreground/70 hover:text-foreground/80 flex items-center gap-1">
+        <aside className="hidden md:flex w-72 flex-col border-r border-border/60 bg-muted/20 backdrop-blur-sm">
+          <div className="flex items-center gap-2 border-b border-border/60 px-4 py-3 bg-background/60">
+            <BookOpen className="h-4 w-4 text-primary" />
+            <h2 className="text-sm font-semibold tracking-tight">Memories</h2>
+            <span className="ml-auto text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full font-semibold tabular-nums">
+              {filtered.length}
+            </span>
+            <a href="/dashboard/memories/graph" className="text-xs text-muted-foreground/60 hover:text-primary flex items-center gap-1 transition-colors duration-150">
               <Network className="h-3 w-3" />
               Graph View
             </a>
@@ -169,7 +171,7 @@ function MemoriesContent() {
                 placeholder="Search memories..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-lg border border-border bg-muted/60 py-2 pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring"
+                className="w-full rounded-lg border border-border/60 bg-background py-2 pl-8 pr-3 text-sm placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-all duration-150"
               />
             </div>
           </div>
@@ -227,15 +229,15 @@ function MemoriesContent() {
                       <button
                         key={page.id}
                         onClick={() => handleSelectPage(page.id)}
-                        className={cn(
-                          'w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors',
+                         className={cn(
+                          'w-full text-left text-sm transition-colors',
                           isActive
-                            ? 'bg-accent text-accent-foreground'
-                            : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                            ? 'bg-primary/10 text-foreground border-l-2 border-primary pl-[10px] rounded-r-lg transition-all duration-150'
+                            : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground pl-3 rounded-lg transition-all duration-150'
                         )}
                       >
                         <div className="font-medium truncate">{page.title}</div>
-                        <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground/70">
+                         <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground/50 font-mono">
                           {page.source_count != null && (
                             <span>{page.source_count} sources</span>
                           )}
@@ -264,39 +266,39 @@ function MemoriesContent() {
            )}
            {!contentLoading && !contentError && selectedPage && (
              <div className="p-6 max-w-3xl">
-               <h1 className="text-2xl font-bold">{selectedPage.title}</h1>
+                <h1 className="text-2xl font-bold tracking-tight">{selectedPage.title}</h1>
                <div className="flex items-center gap-3 mt-3 flex-wrap">
                  {selectedPage.source_count != null && (
-                   <span className="inline-flex items-center gap-1 text-xs bg-muted text-foreground/80 px-2.5 py-1 rounded-full">
-                     <FileText className="h-3 w-3" />
-                     {selectedPage.source_count} sources
-                   </span>
+                    <span className="inline-flex items-center gap-1 text-xs bg-primary/10 text-primary px-2.5 py-1 rounded-full font-medium border border-primary/20">
+                      <FileText className="h-3 w-3" />
+                      {selectedPage.source_count} sources
+                    </span>
                  )}
-                 {selectedPage.category && (
-                   <span className="text-xs bg-muted text-muted-foreground px-2.5 py-1 rounded-full">
-                     {selectedPage.category}
-                   </span>
-                 )}
-                 <span className="text-xs bg-muted text-muted-foreground px-2.5 py-1 rounded-full">
-                   {selectedPage.is_sparse ? 'Sparse' : 'Full'}
-                 </span>
-                 {selectedPage.last_synth_at && (
-                   <span className="text-xs text-muted-foreground">
-                     Synthed {new Date(selectedPage.last_synth_at).toLocaleDateString('en-GB', {
-                       day: 'numeric', month: 'short', year: 'numeric',
-                       hour: '2-digit', minute: '2-digit'
-                     })}
-                   </span>
-                 )}
-                 {selectedPage.project_id && (
-                   <span className="text-xs text-muted-foreground">
-                     Project #{selectedPage.project_id}
-                   </span>
-                 )}
+                  {selectedPage.category && (
+                    <span className="text-xs bg-muted text-muted-foreground/80 px-2.5 py-1 rounded-full border border-border/60 font-medium">
+                      {selectedPage.category}
+                    </span>
+                  )}
+                  <span className="text-xs bg-muted text-muted-foreground/80 px-2.5 py-1 rounded-full border border-border/60">
+                    {selectedPage.is_sparse ? 'Sparse' : 'Full'}
+                  </span>
+                  {selectedPage.last_synth_at && (
+                    <span className="text-xs text-muted-foreground/50 font-mono">
+                      Synthed {new Date(selectedPage.last_synth_at).toLocaleDateString('en-GB', {
+                        day: 'numeric', month: 'short', year: 'numeric',
+                        hour: '2-digit', minute: '2-digit'
+                      })}
+                    </span>
+                  )}
+                  {selectedPage.project_id && (
+                    <span className="text-xs text-muted-foreground/50 font-mono">
+                      Project #{selectedPage.project_id}
+                    </span>
+                  )}
                  {nodes.length > 0 && (
                    <button
                      onClick={() => setGraphOpen(!graphOpen)}
-                     className="text-xs text-muted-foreground hover:text-foreground/90 flex items-center gap-1 border border-border rounded-md px-2.5 py-1 ml-2"
+                      className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1 border border-border rounded-md px-2.5 py-1 ml-2 hover:border-primary/40 transition-all duration-150"
                    >
                      <GitFork className="h-3 w-3" />
                      {graphOpen ? 'Hide Graph' : 'Show Graph'}
@@ -305,7 +307,7 @@ function MemoriesContent() {
                </div>
                {(nodes.length > 0 || nodesLoading) && (
                  <div className="mt-4">
-                   <span className="text-xs text-muted-foreground/70 uppercase tracking-wide">Linked Entities</span>
+                    <span className="section-label">Linked Entities</span>
                    <div className="flex flex-wrap gap-1.5 mt-2">
                      {nodesLoading ? (
                        [...Array(3)].map((_, i) => (
@@ -313,16 +315,16 @@ function MemoriesContent() {
                        ))
                      ) : (
                        nodes.map((node) => {
-                         const colorClasses: Record<string, string> = {
-                           person: 'bg-blue-500/15 text-blue-300 border border-blue-500/30',
-                           organization: 'bg-teal-500/15 text-teal-300 border border-teal-500/30',
-                           project: 'bg-violet-500/15 text-violet-300 border border-violet-500/30',
-                           mission: 'bg-purple-500/15 text-purple-300 border border-purple-500/30',
-                           task: 'bg-amber-500/15 text-amber-300 border border-amber-500/30',
-                           concept: 'bg-zinc-500/15 text-foreground/80 border border-zinc-500/30',
-                           emotional_state: 'bg-rose-500/15 text-rose-300 border border-rose-500/30',
-                         };
-                         const cls = colorClasses[node.type] || 'bg-accent/30 text-muted-foreground border border-zinc-600/30';
+                          const colorClasses: Record<string, string> = {
+                            person: 'bg-blue-500/10 text-blue-600 border border-blue-500/20',
+                            organization: 'bg-primary/10 text-primary border border-primary/20',
+                            project: 'bg-violet-500/10 text-violet-600 border border-violet-500/20',
+                            mission: 'bg-purple-500/10 text-purple-600 border border-purple-500/20',
+                            task: 'bg-amber-500/10 text-amber-600 border border-amber-500/20',
+                            concept: 'bg-muted text-muted-foreground border border-border',
+                            emotional_state: 'bg-rose-500/10 text-rose-600 border border-rose-500/20',
+                          };
+                          const cls = colorClasses[node.type] || 'bg-muted text-muted-foreground border border-border';
                          return (
                            <span
                              key={node.id}
@@ -336,9 +338,9 @@ function MemoriesContent() {
                    </div>
                  </div>
                )}
-               <div className="mt-6 border-t border-border pt-6">
+                <div className="mt-6 border-t border-border/40 pt-6">
                 {selectedPage.content ? (
-                  <div className="prose prose-sm max-w-none dark:prose-invert">
+                   <div className="prose prose-sm max-w-none prose-headings:font-semibold prose-headings:tracking-tight prose-h2:text-base prose-h3:text-sm prose-p:text-muted-foreground prose-p:leading-relaxed prose-strong:text-foreground prose-li:text-muted-foreground prose-code:text-primary prose-code:bg-primary/8 prose-code:rounded prose-code:px-1">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {selectedPage.content}
                     </ReactMarkdown>
@@ -361,17 +363,17 @@ function MemoriesContent() {
           )}
          </main>
          {graphOpen && nodes.length > 0 && (
-           <aside className="hidden lg:flex w-80 flex-col border-l border-border bg-muted/30">
-             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-               <span className="text-sm font-semibold">Entity Graph</span>
-               <button onClick={() => setGraphOpen(false)} className="text-muted-foreground/70 hover:text-foreground/80">
+            <aside className="hidden lg:flex w-80 flex-col border-l border-border/60 bg-muted/20">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 bg-background/60">
+                <span className="text-sm font-semibold">Entity Graph</span>
+                <button onClick={() => setGraphOpen(false)} className="text-muted-foreground/60 hover:text-primary">
                  <X className="h-4 w-4" />
                </button>
              </div>
              <div className="flex-1 flex items-start justify-center pt-4 overflow-hidden">
                <EgoGraph nodes={nodes} edges={edges} width={300} height={320} />
              </div>
-             <div className="px-4 pb-4 text-xs text-muted-foreground/70 text-center">
+              <div className="px-4 pb-4 text-xs text-muted-foreground/50 text-center font-mono">
                {nodes.length} entities · {edges.length} relationships
              </div>
            </aside>

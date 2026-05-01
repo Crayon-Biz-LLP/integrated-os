@@ -13,12 +13,12 @@ interface EgoGraphProps {
 
 const colorMap: Record<string, string> = {
   person: '#3b82f6',
-  organization: '#14b8a6',
-  project: '#8b5cf6',
-  mission: '#a855f7',
-  task: '#f59e0b',
-  concept: '#71717a',
-  emotional_state: '#f43f5e',
+  organization: '#0d9488',
+  project: '#7c3aed',
+  mission: '#9333ea',
+  task: '#d97706',
+  concept: '#6b7280',
+  emotional_state: '#e11d48',
 };
 
 interface SimNode extends d3.SimulationNodeDatum {
@@ -82,7 +82,7 @@ export default function EgoGraph({ nodes, edges, width = 320, height = 280 }: Eg
         .attr('y1', s.y!)
         .attr('x2', t.x!)
         .attr('y2', t.y!)
-        .attr('stroke', '#3f3f46')
+        .attr('stroke', '#e4e4e7')
         .attr('stroke-width', 1.5);
 
       const midX = ((s.x! + t.x!) / 2);
@@ -93,7 +93,7 @@ export default function EgoGraph({ nodes, edges, width = 320, height = 280 }: Eg
         .attr('x', midX)
         .attr('y', midY)
         .attr('font-size', 8)
-        .attr('fill', '#71717a')
+        .attr('fill', '#a1a1aa')
         .attr('text-anchor', 'middle')
         .text(label);
     });
@@ -108,7 +108,7 @@ export default function EgoGraph({ nodes, edges, width = 320, height = 280 }: Eg
         .attr('cy', node.y!)
         .attr('r', 10)
         .attr('fill', fill)
-        .attr('stroke', '#18181b')
+        .attr('stroke', '#ffffff')
         .attr('stroke-width', 1.5);
 
       const label = node.label.length > 14 ? node.label.slice(0, 14) + '...' : node.label;
@@ -117,7 +117,7 @@ export default function EgoGraph({ nodes, edges, width = 320, height = 280 }: Eg
         .attr('x', node.x!)
         .attr('y', node.y! + 20)
         .attr('font-size', 9)
-        .attr('fill', '#d4d4d8')
+        .attr('fill', '#3f3f46')
         .attr('text-anchor', 'middle')
         .text(label);
     });
