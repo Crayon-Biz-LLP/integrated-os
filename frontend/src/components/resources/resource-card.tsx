@@ -12,12 +12,12 @@ interface ResourceCardProps {
 }
 
 const categoryColors: Record<string, string> = {
-  TECHTOOL: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-  COMPETITOR: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
-  LEADPOTENTIAL: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
-  MARKETTREND: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
-  CHURCH: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-  PERSONAL: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+  TECHTOOL: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
+  COMPETITOR: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
+  LEADPOTENTIAL: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
+  MARKETTREND: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
+  CHURCH: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
+  PERSONAL: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
 };
 
 function formatDate(dateStr: string | null): string {
@@ -32,19 +32,19 @@ function getDisplayTitle(resource: Resource): string {
 
 export function ResourceCard({ resource, onClick, showMissionBadge = false }: ResourceCardProps) {
   const isUnmapped = !resource.mission_id;
-  const categoryColor = resource.category ? (categoryColors[resource.category] || 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300') : '';
+  const categoryColor = resource.category ? (categoryColors[resource.category] || 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase') : '';
 
   return (
     <div
       className={cn(
-        "rounded-lg border bg-card p-3 cursor-pointer transition-all hover:border-muted-foreground/30 hover:bg-muted/20",
+        "card-premium p-4 flex flex-col gap-2 cursor-pointer group",
         isUnmapped && "opacity-70"
       )}
       onClick={() => onClick(resource)}
     >
       <div className="flex flex-col gap-1.5">
         <div className="flex items-start justify-between gap-2">
-          <h3 className="text-sm font-medium leading-tight line-clamp-2 flex-1">
+          <h3 className="font-semibold text-sm leading-snug tracking-tight group-hover:text-primary transition-colors duration-150 line-clamp-2 flex-1">
             {getDisplayTitle(resource)}
           </h3>
           {resource.url && (
@@ -61,13 +61,13 @@ export function ResourceCard({ resource, onClick, showMissionBadge = false }: Re
         </div>
 
         {resource.category && (
-          <Badge variant="secondary" className={`text-[10px] py-0 px-1.5 w-fit ${categoryColor}`}>
+          <span className={`w-fit ${categoryColor}`}>
             {resource.category}
-          </Badge>
+          </span>
         )}
 
         {resource.summary && (
-          <p className="text-xs text-muted-foreground line-clamp-2">
+          <p className="text-xs text-muted-foreground/70 line-clamp-2 leading-relaxed">
             {resource.summary}
           </p>
         )}
@@ -80,15 +80,15 @@ export function ResourceCard({ resource, onClick, showMissionBadge = false }: Re
 
         <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-border/50">
           {showMissionBadge && (
-            <Badge variant="outline" className="text-[10px]">
+            <span className="text-xs bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded font-semibold tracking-wide uppercase">
               {resource.mission_title || 'Unmapped'}
-            </Badge>
+            </span>
           )}
           {resource.hostname && !showMissionBadge && (
-            <span className="text-[10px] text-muted-foreground">{resource.hostname}</span>
+            <span className="text-xs text-muted-foreground/60 font-mono truncate">{resource.hostname}</span>
           )}
           {resource.created_at && (
-            <span className="text-[10px] text-muted-foreground ml-auto">
+            <span className="text-xs text-muted-foreground/50 font-mono ml-auto">
               {formatDate(resource.created_at)}
             </span>
           )}

@@ -43,17 +43,13 @@ export function ProjectCard({ project, onClick }: ProjectCardProps) {
 
   return (
     <div
-      className={`
-        rounded-lg border bg-card p-4 cursor-pointer transition-all
-        hover:border-muted-foreground/30 hover:bg-muted/20
-        ${isArchived ? 'opacity-60' : ''}
-      `}
+      className="card-premium p-5 flex flex-col gap-3 cursor-pointer group"
       onClick={() => onClick(project)}
     >
       <div className="flex flex-col gap-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <h3 className="font-semibold text-sm leading-tight truncate">
+            <h3 className="font-semibold text-base tracking-tight group-hover:text-primary transition-colors duration-150 truncate">
               {project.name}
             </h3>
             {project.parent_project_name && (
@@ -62,15 +58,15 @@ export function ProjectCard({ project, onClick }: ProjectCardProps) {
               </p>
             )}
           </div>
-          {isArchived && (
-            <Badge variant="outline" className="text-xs shrink-0">
-              Archived
-            </Badge>
-          )}
+        {isArchived && (
+          <span className="text-xs bg-muted text-muted-foreground border border-border px-2 py-0.5 rounded-full font-medium">
+            Archived
+          </span>
+        )}
         </div>
 
         {project.description && (
-          <p className="text-xs text-muted-foreground line-clamp-2">
+          <p className="text-sm text-muted-foreground/80 leading-relaxed line-clamp-2 mt-1">
             {project.description}
           </p>
         )}
@@ -78,37 +74,30 @@ export function ProjectCard({ project, onClick }: ProjectCardProps) {
         {displayKeywords.length > 0 && (
           <div className="flex flex-wrap items-center gap-1 mt-1">
             {displayKeywords.map((keyword, i) => (
-              <Badge key={i} variant="secondary" className="text-[10px] py-0 px-1.5">
+              <span key={i} className="text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-medium">
                 {keyword}
-              </Badge>
+              </span>
             ))}
             {extraKeywords > 0 && (
-              <span className="text-[10px] text-muted-foreground">+{extraKeywords} more</span>
+              <span className="text-xs text-muted-foreground/60">+{extraKeywords} more</span>
             )}
           </div>
         )}
 
         <div className="flex flex-wrap items-center gap-2 mt-1">
-          {project.org_tag && (
-            <span
-              className={`text-xs px-2 py-0.5 rounded-md font-medium ${orgTagBadge}`}
-            >
-              {project.org_tag}
-            </span>
-          )}
-          <span className="text-xs text-muted-foreground">
+          <span className="text-xs text-muted-foreground/70">
             {contextLabel}
           </span>
         </div>
 
         <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/50">
-          <span className="text-xs">
+          <span className={`text-xs text-muted-foreground/60 font-mono ${project.open_task_count > 0 ? 'text-primary font-medium' : ''}`}>
             {project.open_task_count > 0 ? (
-              <span className="text-foreground font-medium">
+              <span>
                 {project.open_task_count} open task{project.open_task_count !== 1 ? 's' : ''}
               </span>
             ) : (
-              <span className="text-muted-foreground">Idle</span>
+              <span>Idle</span>
             )}
           </span>
           {project.created_at && (

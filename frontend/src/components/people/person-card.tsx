@@ -9,11 +9,11 @@ interface PersonCardProps {
 }
 
 function getWeightColor(weight: number | null): string {
-  if (!weight) return 'text-muted-foreground';
-  if (weight >= 9) return 'text-amber-600 dark:text-amber-500';
-  if (weight >= 7) return 'text-blue-600 dark:text-blue-500';
-  if (weight >= 4) return 'text-muted-foreground';
-  return 'text-muted-foreground/60';
+  const base = 'text-sm font-bold tabular-nums';
+  if (!weight) return `${base} text-muted-foreground`;
+  if (weight >= 8) return `${base} text-primary`;
+  if (weight >= 5) return `${base} text-amber-500`;
+  return `${base} text-muted-foreground`;
 }
 
 function getWeightBadge(weight: number | null): string {
@@ -22,10 +22,7 @@ function getWeightBadge(weight: number | null): string {
 }
 
 function getCardClass(weight: number | null, activeTaskCount: number): string {
-  const base = 'rounded-lg border bg-card p-4 cursor-pointer transition-all hover:border-muted-foreground/30 hover:bg-muted/20';
-  if (!weight || weight < 4) return `${base} opacity-70`;
-  if (weight >= 9) return `${base} border-amber-200/50 dark:border-amber-800/30 bg-amber-50/30 dark:bg-amber-950/10`;
-  return base;
+  return 'card-premium p-4 flex flex-col gap-2 cursor-pointer group';
 }
 
 function formatDate(dateStr: string | null): string {
@@ -47,18 +44,18 @@ export function PersonCard({ person, onClick }: PersonCardProps) {
     <div className={cardClass} onClick={() => onClick(person)}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <h3 className="font-semibold truncate">{person.name}</h3>
+          <h3 className="font-semibold text-base tracking-tight group-hover:text-primary transition-colors duration-150 truncate">{person.name}</h3>
           {person.role && (
-            <p className="text-xs text-muted-foreground mt-0.5 truncate">{person.role}</p>
+            <p className="text-xs text-muted-foreground/70 mt-0.5 truncate">{person.role}</p>
           )}
         </div>
-        <div className={`text-xs font-medium ${weightColor} shrink-0`}>
+        <div className={`${weightColor} shrink-0`}>
           {getWeightBadge(person.strategic_weight)}
         </div>
       </div>
 
       <div className="flex items-center gap-3 mt-3 text-xs text-muted-foreground">
-        <span className={person.active_task_count > 0 ? 'text-foreground' : ''}>
+        <span className={person.active_task_count > 0 ? 'text-xs text-primary font-medium font-mono' : 'text-xs text-muted-foreground/50 font-mono'}>
           {person.active_task_count} active task{person.active_task_count !== 1 ? 's' : ''}
         </span>
         <span className="flex items-center gap-1">

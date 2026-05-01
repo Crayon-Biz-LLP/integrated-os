@@ -44,15 +44,15 @@ export function ResourcesMissionGroups({ resources, missions, onResourceClick }:
         return (
           <div key={mission.id}>
             <div className="flex items-center gap-2 mb-3">
-              <h3 className="text-sm font-semibold">{mission.title}</h3>
+              <h3 className="section-label pt-6 pb-1">{mission.title}</h3>
               {mission.description && (
-                <span className="text-xs text-muted-foreground">
+                <span className="text-xs text-muted-foreground/60 italic mb-3">
                   — {mission.description}
                 </span>
               )}
-              <Badge variant="secondary" className="text-[10px] ml-auto">
+              <span className="text-xs bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded font-semibold tracking-wide uppercase ml-auto">
                 {missionResources.length} resource{missionResources.length !== 1 ? 's' : ''}
-              </Badge>
+              </span>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
               {missionResources.map((resource) => (
@@ -70,10 +70,10 @@ export function ResourcesMissionGroups({ resources, missions, onResourceClick }:
       {unmappedResources.length > 0 && (
         <div>
           <div className="flex items-center gap-2 mb-3">
-            <h3 className="text-sm font-semibold text-muted-foreground">Unmapped</h3>
-            <Badge variant="outline" className="text-[10px] ml-auto">
+            <h3 className="section-label pt-6 pb-1 text-muted-foreground">Unmapped</h3>
+            <span className="text-xs bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded font-semibold tracking-wide uppercase ml-auto">
               {unmappedResources.length} resource{unmappedResources.length !== 1 ? 's' : ''}
-            </Badge>
+            </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
             {unmappedResources.map((resource) => (

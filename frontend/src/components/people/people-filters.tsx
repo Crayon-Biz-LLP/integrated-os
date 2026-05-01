@@ -42,13 +42,13 @@ export function PeopleFilters({ filters, onFiltersChange }: PeopleFiltersProps) 
             placeholder="Search by name or role..."
             value={filters.search || ''}
             onChange={(e) => handleFilterChange('search', e.target.value)}
-            className="pl-9"
+            className="w-full rounded-lg border border-border bg-background px-4 py-2 text-sm placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-all duration-150 pl-9"
           />
         </div>
         <select
           value={filters.tier || 'all'}
           onChange={(e) => handleFilterChange('tier', e.target.value)}
-          className="h-8 rounded-lg border bg-background px-2.5 text-sm"
+          className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
           {tierOptions.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -57,7 +57,7 @@ export function PeopleFilters({ filters, onFiltersChange }: PeopleFiltersProps) 
         <select
           value={filters.sort || 'strategic_weight'}
           onChange={(e) => handleFilterChange('sort', e.target.value)}
-          className="h-8 rounded-lg border bg-background px-2.5 text-sm"
+          className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
           {sortOptions.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>

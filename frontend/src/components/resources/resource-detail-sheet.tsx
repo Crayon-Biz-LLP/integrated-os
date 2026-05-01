@@ -64,11 +64,15 @@ export function ResourceDetailSheet({
     ? (categoryColors[resource.category] || 'bg-gray-100 text-gray-700') 
     : '';
 
+  const categoryBadgeClass = resource.category 
+    ? (categoryColors[resource.category] || 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase') 
+    : '';
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
         <SheetHeader>
-          <SheetTitle className="text-base">Resource Details</SheetTitle>
+          <SheetTitle className="text-lg font-semibold tracking-tight">Resource Details</SheetTitle>
         </SheetHeader>
 
         <div className="mt-6 space-y-4">
@@ -83,28 +87,28 @@ export function ResourceDetailSheet({
           <div className="space-y-3 text-sm">
             {resource.category && (
               <div>
-                <p className="text-muted-foreground mb-1">Category</p>
-                <Badge className={`text-xs ${categoryColor}`}>
+                <p className="section-label mb-1">Category</p>
+                <span className={categoryBadgeClass}>
                   {resource.category}
-                </Badge>
+                </span>
               </div>
             )}
 
             <div>
-              <p className="text-muted-foreground mb-1">Mission</p>
-              <Badge variant="outline" className="text-xs">
+              <p className="section-label mb-1">Mission</p>
+              <span className="text-xs bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded font-semibold tracking-wide uppercase">
                 {resource.mission_title || 'Unmapped'}
-              </Badge>
+              </span>
             </div>
 
             {resource.url && (
               <div>
-                <p className="text-muted-foreground mb-1">URL</p>
+                <p className="section-label mb-1">URL</p>
                 <a
                   href={resource.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                  className="text-xs text-muted-foreground/60 font-mono flex items-center gap-1 hover:underline"
                 >
                   {getHostname(resource.url)}
                   <ExternalLink className="h-3 w-3" />
@@ -114,27 +118,27 @@ export function ResourceDetailSheet({
 
             {resource.summary && (
               <div>
-                <p className="text-muted-foreground mb-1">Summary</p>
-                <p className="text-sm">{resource.summary}</p>
+                <p className="section-label mb-1">Summary</p>
+                <p className="text-sm text-muted-foreground/80 leading-relaxed">{resource.summary}</p>
               </div>
             )}
 
             {resource.strategic_note && (
               <div>
-                <p className="text-muted-foreground mb-1">Strategic Note</p>
-                <p className="text-sm text-muted-foreground italic">{resource.strategic_note}</p>
+                <p className="section-label mb-1">Strategic Note</p>
+                <p className="text-sm text-muted-foreground/80 leading-relaxed italic">{resource.strategic_note}</p>
               </div>
             )}
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <p className="text-muted-foreground mb-1">Created</p>
-                <span className="text-xs">{formatDateTime(resource.created_at)}</span>
+                <p className="section-label mb-1">Created</p>
+                <span className="text-xs text-muted-foreground/50 font-mono">{formatDateTime(resource.created_at)}</span>
               </div>
               {resource.enriched_at && (
                 <div>
-                  <p className="text-muted-foreground mb-1">Enriched</p>
-                  <span className="text-xs">{formatDateTime(resource.enriched_at)}</span>
+                  <p className="section-label mb-1">Enriched</p>
+                  <span className="text-xs text-muted-foreground/50 font-mono">{formatDateTime(resource.enriched_at)}</span>
                 </div>
               )}
             </div>
@@ -142,13 +146,13 @@ export function ResourceDetailSheet({
 
           <Separator />
 
-          <div>
-            <p className="text-muted-foreground mb-2 text-sm">Assign Mission</p>
-            <select
-              value={resource.mission_id ? String(resource.mission_id) : 'unmapped'}
-              onChange={(e) => onMissionChange(resource.id, e.target.value === 'unmapped' ? null : Number(e.target.value))}
-              className="h-9 w-full rounded-lg border bg-background px-2.5 text-sm"
-            >
+           <div>
+             <p className="section-label mb-2">Assign Mission</p>
+             <select
+               value={resource.mission_id ? String(resource.mission_id) : 'unmapped'}
+               onChange={(e) => onMissionChange(resource.id, e.target.value === 'unmapped' ? null : Number(e.target.value))}
+               className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground w-full"
+             >
               <option value="unmapped">Unmapped</option>
               {missions.map((m) => (
                 <option key={m.id} value={String(m.id)}>
@@ -162,34 +166,34 @@ export function ResourceDetailSheet({
             <>
               <Separator />
               <div>
-                <p className="text-muted-foreground mb-2 text-sm">Mission Context</p>
-                <p className="text-sm font-medium">{resource.mission_title}</p>
+                <p className="section-label mb-2">Mission Context</p>
+                <p className="text-sm text-foreground">{resource.mission_title}</p>
                 {resource.mission_description && (
-                  <p className="text-xs text-muted-foreground mt-1">{resource.mission_description}</p>
+                  <p className="text-xs text-muted-foreground/60 italic mb-3 mt-1">{resource.mission_description}</p>
                 )}
-                <Badge variant="outline" className="text-[10px] mt-2">
+                <span className="text-xs bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded font-semibold tracking-wide uppercase">
                   Status: {resource.mission_status || 'unknown'}
-                </Badge>
+                </span>
               </div>
 
               {relatedResources && relatedResources.length > 0 && (
                 <>
                   <Separator />
                   <div>
-                    <p className="text-muted-foreground mb-2 text-sm">
-                      Related Resources ({relatedResources.length})
-                    </p>
-                    <div className="space-y-2">
-                      {relatedResources.slice(0, 5).map((r) => (
-                        <div key={r.id} className="text-xs p-2 rounded border">
-                          <p className="font-medium line-clamp-1">{r.title || getHostname(r.url) || 'Untitled'}</p>
-                          {r.category && (
-                            <Badge className={`text-[9px] mt-1 ${categoryColors[r.category] || ''}`}>
-                              {r.category}
-                            </Badge>
-                          )}
-                        </div>
-                      ))}
+                     <p className="section-label mb-2">
+                       Related Resources ({relatedResources.length})
+                     </p>
+                     <div className="space-y-0">
+                       {relatedResources.slice(0, 5).map((r) => (
+                         <div key={r.id} className="text-sm border-b border-border/40 py-2 hover:bg-muted/30 transition-colors">
+                           <p className="font-medium line-clamp-1">{r.title || getHostname(r.url) || 'Untitled'}</p>
+                           {r.category && (
+                             <span className={`${categoryColors[r.category] || 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase'}`}>
+                               {r.category}
+                             </span>
+                           )}
+                         </div>
+                       ))}
                     </div>
                   </div>
                 </>
@@ -200,7 +204,7 @@ export function ResourceDetailSheet({
           {!resource.mission_id && (
             <>
               <Separator />
-              <p className="text-xs text-muted-foreground italic">
+              <p className="text-xs text-muted-foreground/80 leading-relaxed italic">
                 This resource is not currently attached to an active mission
               </p>
             </>
