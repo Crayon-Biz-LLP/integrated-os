@@ -619,7 +619,7 @@ def send_draft_reply(draft_id: int, gmail_service) -> tuple:
         draft = draft_res.data
 
         email_res = supabase.table('emails')\
-            .select('id, subject, sender_email, sender_name, thread_id')\
+            .select('id, subject, sender_email, sender, thread_id')\
             .eq('id', draft['email_id'])\
             .maybe_single()\
             .execute()
@@ -672,7 +672,7 @@ async def handle_ed_command(text: str, chat_id: int):
             emails_map = {}
             if email_ids:
                 emails_res = supabase.table('emails')\
-                    .select('id, subject, sender_email, sender_name')\
+                    .select('id, subject, sender_email, sender')\
                     .in_('id', email_ids)\
                     .execute()
                 emails_map = {e['id']: e for e in (emails_res.data or [])}
