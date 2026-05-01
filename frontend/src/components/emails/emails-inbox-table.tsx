@@ -92,8 +92,8 @@ export function EmailsInboxTable({ emails, loading, onEmailClick }: EmailsInboxT
                 <div className="flex items-center gap-2">
                   <User className="h-4 w-4 text-muted-foreground" />
                   <div>
-                    <div className="text-sm font-medium">{email.sender_name || email.sender_email}</div>
-                    {email.sender_name && <div className="text-xs text-muted-foreground">{email.sender_email}</div>}
+<div className="text-sm font-medium">{email.sender || email.sender_email}</div>
+                     {email.sender && <div className="text-xs text-muted-foreground">{email.sender_email}</div>}
                   </div>
                 </div>
               </TableCell>

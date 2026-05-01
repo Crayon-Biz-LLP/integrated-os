@@ -36,8 +36,8 @@ export function EmailDetailSheet({ open, onOpenChange, email }: EmailDetailSheet
             <div className="flex items-center gap-2 text-sm">
               <User className="h-4 w-4 text-muted-foreground" />
               <span className="font-medium">From:</span>
-              <span>{email.sender_name || email.sender_email}</span>
-              {email.sender_name && <span className="text-muted-foreground">({email.sender_email})</span>}
+<span>{email.sender || email.sender_email}</span>
+               {email.sender && <span className="text-muted-foreground">({email.sender_email})</span>}
             </div>
             <div className="flex items-center gap-2 text-sm">
               <Mail className="h-4 w-4 text-muted-foreground" />
@@ -73,7 +73,7 @@ export function EmailDetailSheet({ open, onOpenChange, email }: EmailDetailSheet
           </div>
           <div className="border-t pt-4">
             <pre className="whitespace-pre-wrap text-sm text-muted-foreground max-h-[400px] overflow-y-auto">
-              {email.body_preview || 'No preview available.'}
+              {email.body_summary || 'No preview available.'}
             </pre>
           </div>
         </div>

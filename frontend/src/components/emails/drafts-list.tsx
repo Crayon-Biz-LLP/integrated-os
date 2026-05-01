@@ -102,7 +102,7 @@ export function DraftsList({ drafts: initialDrafts, loading }: DraftsListProps) 
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base font-semibold">
-                To: {draft.email?.sender_name || draft.email?.sender_email}
+                To: {draft.email?.sender || draft.email?.sender_email}
               </CardTitle>
               <Badge variant="outline" className="text-xs capitalize">
                 <Globe className="h-3 w-3 mr-1" />
