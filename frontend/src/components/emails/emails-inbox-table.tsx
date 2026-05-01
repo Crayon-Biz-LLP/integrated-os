@@ -21,11 +21,17 @@ const CLASSIFICATION_CONFIG = {
 } as const;
 
 export function EmailsInboxTable({ emails, loading, onEmailClick }: EmailsInboxTableProps) {
-  const renderClassification = (classification: Email['classification']) => (
-    <Badge variant="outline" className={cn('text-xs', CLASSIFICATION_CONFIG[classification].className)}>
-      {classification}
-    </Badge>
-  );
+  const renderClassification = (classification: Email['classification']) => {
+    const config = CLASSIFICATION_CONFIG[classification as keyof typeof CLASSIFICATION_CONFIG];
+    if (!config) {
+      return <Badge variant="outline" className="text-xs">Unknown</Badge>;
+    }
+    return (
+      <Badge variant="outline" className={cn('text-xs', config.className)}>
+        {classification}
+      </Badge>
+    );
+  };
 
   const renderSource = (source: Email['source']) => (
     <Badge variant="outline" className="text-xs capitalize">{source}</Badge>
