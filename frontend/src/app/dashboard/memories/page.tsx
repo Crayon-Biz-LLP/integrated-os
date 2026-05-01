@@ -28,7 +28,7 @@ function SidebarSkeleton() {
   return (
     <div className="space-y-1 p-2">
       {[...Array(5)].map((_, i) => (
-        <div key={i} className="h-12 rounded-lg bg-zinc-800/50 animate-pulse" />
+        <div key={i} className="h-12 rounded-lg bg-muted/50 animate-pulse" />
       ))}
     </div>
   );
@@ -37,14 +37,14 @@ function SidebarSkeleton() {
 function ContentSkeleton() {
   return (
     <div className="p-6 space-y-4">
-      <div className="h-8 w-64 rounded bg-zinc-800/50 animate-pulse" />
+      <div className="h-8 w-64 rounded bg-muted/50 animate-pulse" />
       <div className="flex gap-2">
-        <div className="h-5 w-20 rounded bg-zinc-800/50 animate-pulse" />
-        <div className="h-5 w-32 rounded bg-zinc-800/50 animate-pulse" />
+        <div className="h-5 w-20 rounded bg-muted/50 animate-pulse" />
+        <div className="h-5 w-32 rounded bg-muted/50 animate-pulse" />
       </div>
       <div className="space-y-2 mt-6">
         {[...Array(8)].map((_, i) => (
-          <div key={i} className="h-4 w-full rounded bg-zinc-800/50 animate-pulse" />
+          <div key={i} className="h-4 w-full rounded bg-muted/50 animate-pulse" />
         ))}
       </div>
     </div>
@@ -148,45 +148,14 @@ function MemoriesContent() {
 
   return (
     <>
-      <style jsx global>{`
-        .markdown-body h2 {
-          font-size: 1.25rem;
-          font-weight: 600;
-          margin-top: 1.5rem;
-          margin-bottom: 0.75rem;
-          padding-bottom: 0.5rem;
-          border-bottom: 1px solid rgb(63, 63, 70);
-        }
-        .markdown-body h3 {
-          font-size: 1.1rem;
-          font-weight: 600;
-          margin-top: 1.25rem;
-          margin-bottom: 0.5rem;
-        }
-        .markdown-body ul, .markdown-body ol {
-          padding-left: 1.5rem;
-          margin: 0.75rem 0;
-        }
-        .markdown-body ul { list-style-type: disc; }
-        .markdown-body ol { list-style-type: decimal; }
-        .markdown-body li { margin: 0.25rem 0; }
-        .markdown-body strong { font-weight: 600; color: rgb(244, 244, 245); }
-        .markdown-body p { margin: 0.75rem 0; }
-        .markdown-body code {
-          background: rgb(39, 39, 42);
-          padding: 0.125rem 0.375rem;
-          border-radius: 0.25rem;
-          font-size: 0.875rem;
-        }
-      `}</style>
       <div className="flex h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)]">
         {/* Left Sidebar */}
-        <aside className="hidden md:flex w-72 flex-col border-r border-zinc-800 bg-zinc-900/50">
-          <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3">
+        <aside className="hidden md:flex w-72 flex-col border-r border-border bg-muted/30">
+          <div className="flex items-center gap-2 border-b border-border px-4 py-3">
             <BookOpen className="h-4 w-4 text-muted-foreground" />
             <h2 className="text-sm font-semibold">Memories</h2>
             <span className="ml-auto text-xs text-muted-foreground">{filtered.length}</span>
-            <a href="/dashboard/memories/graph" className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center gap-1">
+            <a href="/dashboard/memories/graph" className="text-xs text-muted-foreground/70 hover:text-foreground/80 flex items-center gap-1">
               <Network className="h-3 w-3" />
               Graph View
             </a>
@@ -194,13 +163,13 @@ function MemoriesContent() {
 
           <div className="px-3 py-2">
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/70" />
               <input
                 type="text"
                 placeholder="Search memories..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-lg border border-zinc-700 bg-zinc-800/60 py-2 pl-8 pr-3 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-600"
+                className="w-full rounded-lg border border-border bg-muted/60 py-2 pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring"
               />
             </div>
           </div>
@@ -211,8 +180,8 @@ function MemoriesContent() {
                 onClick={() => setSelectedCategory(null)}
                 className={`text-xs whitespace-nowrap rounded-full px-2.5 py-1 ${
                   selectedCategory === null
-                    ? 'bg-zinc-700 text-zinc-100'
-                    : 'bg-transparent text-zinc-500 hover:text-zinc-300'
+                    ? 'bg-accent text-foreground'
+                    : 'bg-transparent text-muted-foreground/70 hover:text-foreground/80'
                 }`}
               >
                 All
@@ -223,8 +192,8 @@ function MemoriesContent() {
                   onClick={() => setSelectedCategory(cat)}
                   className={`text-xs whitespace-nowrap rounded-full px-2.5 py-1 ${
                     selectedCategory === cat
-                      ? 'bg-zinc-700 text-zinc-100'
-                      : 'bg-transparent text-zinc-500 hover:text-zinc-300'
+                      ? 'bg-accent text-foreground'
+                      : 'bg-transparent text-muted-foreground/70 hover:text-foreground/80'
                   }`}
                 >
                   {cat}
@@ -249,7 +218,7 @@ function MemoriesContent() {
             {!pagesLoading && !pagesError && (
               <>
                 {filtered.length === 0 && searchQuery && (
-                  <div className="p-4 text-sm text-zinc-500 text-center">No results</div>
+                  <div className="p-4 text-sm text-muted-foreground/70 text-center">No results</div>
                 )}
                 <div className="space-y-0.5 p-2">
                   {filtered.map((page) => {
@@ -262,11 +231,11 @@ function MemoriesContent() {
                           'w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors',
                           isActive
                             ? 'bg-accent text-accent-foreground'
-                            : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-100'
+                            : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
                         )}
                       >
                         <div className="font-medium truncate">{page.title}</div>
-                        <div className="flex items-center gap-2 mt-0.5 text-xs text-zinc-500">
+                        <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground/70">
                           {page.source_count != null && (
                             <span>{page.source_count} sources</span>
                           )}
@@ -298,17 +267,17 @@ function MemoriesContent() {
                <h1 className="text-2xl font-bold">{selectedPage.title}</h1>
                <div className="flex items-center gap-3 mt-3 flex-wrap">
                  {selectedPage.source_count != null && (
-                   <span className="inline-flex items-center gap-1 text-xs bg-zinc-800 text-zinc-300 px-2.5 py-1 rounded-full">
+                   <span className="inline-flex items-center gap-1 text-xs bg-muted text-foreground/80 px-2.5 py-1 rounded-full">
                      <FileText className="h-3 w-3" />
                      {selectedPage.source_count} sources
                    </span>
                  )}
                  {selectedPage.category && (
-                   <span className="text-xs bg-zinc-800 text-zinc-400 px-2.5 py-1 rounded-full">
+                   <span className="text-xs bg-muted text-muted-foreground px-2.5 py-1 rounded-full">
                      {selectedPage.category}
                    </span>
                  )}
-                 <span className="text-xs bg-zinc-800 text-zinc-400 px-2.5 py-1 rounded-full">
+                 <span className="text-xs bg-muted text-muted-foreground px-2.5 py-1 rounded-full">
                    {selectedPage.is_sparse ? 'Sparse' : 'Full'}
                  </span>
                  {selectedPage.last_synth_at && (
@@ -327,7 +296,7 @@ function MemoriesContent() {
                  {nodes.length > 0 && (
                    <button
                      onClick={() => setGraphOpen(!graphOpen)}
-                     className="text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1 border border-zinc-700 rounded-md px-2.5 py-1 ml-2"
+                     className="text-xs text-muted-foreground hover:text-foreground/90 flex items-center gap-1 border border-border rounded-md px-2.5 py-1 ml-2"
                    >
                      <GitFork className="h-3 w-3" />
                      {graphOpen ? 'Hide Graph' : 'Show Graph'}
@@ -336,11 +305,11 @@ function MemoriesContent() {
                </div>
                {(nodes.length > 0 || nodesLoading) && (
                  <div className="mt-4">
-                   <span className="text-xs text-zinc-500 uppercase tracking-wide">Linked Entities</span>
+                   <span className="text-xs text-muted-foreground/70 uppercase tracking-wide">Linked Entities</span>
                    <div className="flex flex-wrap gap-1.5 mt-2">
                      {nodesLoading ? (
                        [...Array(3)].map((_, i) => (
-                         <div key={i} className="h-5 w-16 rounded-full bg-zinc-800 animate-pulse" />
+                         <div key={i} className="h-5 w-16 rounded-full bg-muted animate-pulse" />
                        ))
                      ) : (
                        nodes.map((node) => {
@@ -350,10 +319,10 @@ function MemoriesContent() {
                            project: 'bg-violet-500/15 text-violet-300 border border-violet-500/30',
                            mission: 'bg-purple-500/15 text-purple-300 border border-purple-500/30',
                            task: 'bg-amber-500/15 text-amber-300 border border-amber-500/30',
-                           concept: 'bg-zinc-500/15 text-zinc-300 border border-zinc-500/30',
+                           concept: 'bg-zinc-500/15 text-foreground/80 border border-zinc-500/30',
                            emotional_state: 'bg-rose-500/15 text-rose-300 border border-rose-500/30',
                          };
-                         const cls = colorClasses[node.type] || 'bg-zinc-700/40 text-zinc-400 border border-zinc-600/30';
+                         const cls = colorClasses[node.type] || 'bg-accent/30 text-muted-foreground border border-zinc-600/30';
                          return (
                            <span
                              key={node.id}
@@ -367,9 +336,9 @@ function MemoriesContent() {
                    </div>
                  </div>
                )}
-               <div className="mt-6 border-t border-zinc-800 pt-6">
+               <div className="mt-6 border-t border-border pt-6">
                 {selectedPage.content ? (
-                  <div className="text-sm leading-relaxed text-zinc-300 markdown-body">
+                  <div className="prose prose-sm max-w-none dark:prose-invert">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {selectedPage.content}
                     </ReactMarkdown>
@@ -385,24 +354,24 @@ function MemoriesContent() {
           {!contentLoading && !contentError && !selectedPage && !pagesLoading && (
             <div className="flex items-center justify-center h-full text-muted-foreground">
               <div className="text-center">
-                <BookOpen className="h-12 w-12 mx-auto mb-3 text-zinc-700" />
+                <BookOpen className="h-12 w-12 mx-auto mb-3 text-muted-foreground" />
                 <p>Select a memory from the sidebar</p>
               </div>
             </div>
           )}
          </main>
          {graphOpen && nodes.length > 0 && (
-           <aside className="hidden lg:flex w-80 flex-col border-l border-zinc-800 bg-zinc-900/50">
-             <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+           <aside className="hidden lg:flex w-80 flex-col border-l border-border bg-muted/30">
+             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
                <span className="text-sm font-semibold">Entity Graph</span>
-               <button onClick={() => setGraphOpen(false)} className="text-zinc-500 hover:text-zinc-300">
+               <button onClick={() => setGraphOpen(false)} className="text-muted-foreground/70 hover:text-foreground/80">
                  <X className="h-4 w-4" />
                </button>
              </div>
              <div className="flex-1 flex items-start justify-center pt-4 overflow-hidden">
                <EgoGraph nodes={nodes} edges={edges} width={300} height={320} />
              </div>
-             <div className="px-4 pb-4 text-xs text-zinc-500 text-center">
+             <div className="px-4 pb-4 text-xs text-muted-foreground/70 text-center">
                {nodes.length} entities · {edges.length} relationships
              </div>
            </aside>
