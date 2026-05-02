@@ -1495,7 +1495,30 @@ async def process_pulse(auth_secret: str = None):
             except Exception as e:
                 print(f"⚠️ Nag Logic skipped for task '{t.get('title')}': {e}")
 
-        # --- 🕒 1.7 INPUT PREP ---
+        # --- 🕒 1.7 STALE TASK ALERT ---
+        sevendays_ago = (now - timedelta(days=7)).isoformat()
+        stale_tasks = [
+            t for t in active_tasks
+            if t.get('status') == 'todo'
+            and t.get('created_at', '') < sevendays_ago
+            and t.get('title') not in overdue_tasks
+        ]
+        stale_tasks = sorted(stale_tasks, key=lambda t: t.get('created_at', ''))[:5]
+
+        if stale_tasks:
+            stale_lines = []
+            for t in stale_tasks:
+                try:
+                    created = datetime.fromisoformat(t.get('created_at', '').replace('Z', '+00:00'))
+                    days_old = (now - created).days
+                    stale_lines.append(f"- {t.get('title', '')} (stale {days_old}d)")
+                except Exception:
+                    pass
+            stale_context = "\n".join(stale_lines)
+        else:
+            stale_context = None
+
+        # --- 🕒 1.8 INPUT PREP ---
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps]) if dumps else "None"    
 
         # --- 🧭 LAYER 3: SMART PATTERN CONTEXT (Last 30 Days) ---
@@ -1621,6 +1644,7 @@ async def process_pulse(auth_secret: str = None):
         SYSTEM_LOAD: {'OVERLOADED' if is_overloaded else 'OPTIMAL'}
         MONDAY_REENTRY: {'TRUE' if is_monday_morning else 'FALSE'}
         STAGNANT URGENT_TASKS: {json.dumps(overdue_tasks)}
+        STALE_TASKS: {stale_context}
         SYSTEM STATUS: {system_context}
         HINDSIGHT_STALE: {is_hindsight_stale}
 
@@ -1701,7 +1725,8 @@ async def process_pulse(auth_secret: str = None):
             - If a NEW INPUT is "Revenue Critical" (involves payments, quotes, or high-ticket items like the ₹30L recovery), set is_revenue_critical: true in the new_tasks array.
             - Never apply this flag to completed tasks.
              - For the briefing output, you MUST bold the titles of these specific tasks to ensure Danny sees them immediately.
-             - INBOX SECTION: If EMAIL-SUGGESTED TASKS has items, include a "📧 Inbox" section in the briefing listing each one. Format as: "- 📧 Task suggestion. Reply to confirm or ignore." Never auto-add these to newtasks.
+                - INBOX SECTION: If EMAIL-SUGGESTED TASKS has items, include a "📧 Inbox" section in the briefing listing each one. Format as: "- 📧 Task suggestion. Reply to confirm or ignore." Never auto-add these to newtasks.
+                - STALE TASKS: If STALE_TASKS has items, include a short ⏳ Stale Loops section listing them with day count. Max 5. Cap with '...and X more stalled' if over 5.
              
          OUTPUT JSON SCHEMA (WARNING: ONLY POPULATE ARRAYS IF EXPLICITLY COMMANDED IN NEW INPUTS. OTHERWISE RETURN []):
         {{
@@ -1817,11 +1842,12 @@ async def process_pulse(auth_secret: str = None):
             2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "completed_task_ids", "new_projects", and "new_people" arrays MUST remain 100% empty [].
             3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects.
             4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out.
-            5. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
-            6. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When Danny mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
-            7. AUTO-ONBOARDING: If a new Client/Project is mentioned, add to "new_projects". If a new Person is mentioned, add to "new_people".
-            8. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
-            9. WEEKEND FILTER: If isWeekend is true, do NOT suggest or list Work tasks in the briefing.
+            5. STALE LOOPS: If STALE_TASKS exists, always include the ⏳ Stale Loops section — never suppress it regardless of mode.
+            6. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
+            7. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When Danny mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
+            8. AUTO-ONBOARDING: If a new Client/Project is mentioned, add to "new_projects". If a new Person is mentioned, add to "new_people".
+            9. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
+            10. WEEKEND FILTER: If isWeekend is true, do NOT suggest or list Work tasks in the briefing.
             """
 
         # --- AI GENERATION ---
