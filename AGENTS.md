@@ -1,45 +1,45 @@
 # Integrated-OS Agent Guide
 
 ## Project Overview
-FastAPI-based executive command system deployed on Vercel. Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, and sends AI-generated briefings via Telegram.
+FastAPI-based executive command system deployed as Vercel serverless functions (Python 3.11, matches CI). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 
 ## Key Commands
 
 ### Local Development
 ```bash
 pip install -r requirements.txt
-pip install uvicorn
+pip install uvicorn  # Not in requirements.txt
 uvicorn api.index:app --reload --port 8000
 ```
 
+### Pulse CLI (Local)
+```bash
+python core/pulse_cli.py  # Requires PULSE_SECRET, Supabase, Gemini, Telegram vars
+```
+
 ### Deployment
-Vercel auto-deploys from main branch. All routes in `vercel.json`:
-- `/` → `index.html`
-- `/(.*)` → `api/index.py`
+Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `vercel.json`). Serverless function timeout: 60s.
 
 ## Architecture
 
 ### Entry Points
-- `api/index.py:26` - POST `/api/webhook` - Telegram message intake
-- `api/index.py:33` - POST `/api/pulse` - Scheduled briefing engine
+- `api/index.py:29` - POST `/api/webhook` - Telegram message intake
+- `api/index.py:44` - POST `/api/pulse` - Scheduled briefing engine
+- `core/pulse_cli.py` - CLI entry for pulse (used in CI)
 
 ### Core Modules
-- `core/webhook.py` - Telegram command handling, raw dump capture
-- `core/pulse.py` - AI briefing generation, task management, calendar sync
+- `core/webhook.py` - Telegram command handling, raw dump capture, message classification
+- `core/pulse.py` - AI briefing generation, task management, calendar sync. `format_rfc3339()` at line 1024
+- `core/research_agent.py` - Research and embedding tasks
+- `core/skills/` - Ingest (email, archive) and graph sync scripts (run via CI)
 
 ### Database (Supabase)
-- `tasks` - Task management
-- `raw_dumps` - Telegram message queue
-- `projects` - Project/org routing (SOLVSTRAT, PRODUCT_LABS, CRAYON, PERSONAL, CHURCH)
-- `resources` - Saved links/library
-- `missions` - Strategic goals
-- `people` - Contacts
-- `core_config` - Season context
+- Uses `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)
+- Tables: `tasks`, `raw_dumps`, `projects`, `resources`, `missions`, `people`, `core_config`
 
 ### External Integrations
-- Google Calendar API (event blocks)
-- Google Tasks API (checklist)
-- Gemini AI (`gemini-3-flash-preview`)
+- **Gemini AI**: Briefing (`gemini-3-flash-preview`), Classification (`gemini-3.1-flash-lite-preview`), Embeddings (`gemini-embedding-2-preview`)
+- Google Calendar API (event blocks), Google Tasks API (checklist)
 - Telegram Bot API
 
 ## Project Routing Tags
@@ -55,16 +55,15 @@ Vercel auto-deploys from main branch. All routes in `vercel.json`:
 
 ### Time Handling
 - All timestamps use **IST (UTC+05:30)**
-- Use `format_rfc3339()` in `core/pulse.py:35` to sanitize times
+- Use `format_rfc3339()` in `core/pulse.py:1024` to sanitize times
 - Format: `YYYY-MM-DDTHH:MM:SS+05:30`
 
 ### Security
-- Telegram webhook validates `TELEGRAM_CHAT_ID`
-- Pulse endpoint validates `PULSE_SECRET` header
-- Supabase uses `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)
+- Pulse endpoints validate `PULSE_SECRET` (header `x-pulse-secret`) and HMAC `X-Rhodey-Signature`
+- Supabase uses service role key (bypasses RLS)
 
-### Pulse Cron Schedule (UTC)
-- Weekdays: `30 3,6,10,13 * * 1-5` (9AM, 12PM, 4PM, 7PM IST)
+### Pulse Cron Schedule (UTC, matches `.github/workflows/pulse.yml`)
+- Weekdays: `0 2,7,11,14 * * 1-5` (7:30AM, 12:30PM, 4:30PM, 7:30PM IST)
 - Weekends: `30 4,9 * * 0,6` (10AM, 3PM IST)
 
 ### AI Briefing Rules
@@ -84,8 +83,10 @@ PULSE_SECRET
 GOOGLE_REFRESH_TOKEN
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
+GOOGLE_SHEET_ID  # Used in archive ingest and pulse
 ```
 
 ## Testing
-- GitHub Actions: `workflow_dispatch` in `.github/workflows/pulse.yml` for manual trigger
-- Local: Send POST to `/api/pulse` with header `x-pulse-secret`
+- CI: GitHub Actions (`workflow_dispatch` in `.github/workflows/pulse.yml`)
+- Local: Send POST to `/api/pulse` with header `x-pulse-secret: <PULSE_SECRET>`
+- No linters/typecheckers configured; skip lint/typecheck steps
