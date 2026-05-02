@@ -2,7 +2,8 @@
 import os
 import hmac
 import hashlib
-from fastapi import FastAPI, Request, HTTPException, JSONResponse
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Updated imports: Pulling from your new 'core' module
