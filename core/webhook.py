@@ -609,7 +609,8 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
             "keyboard": [
                 [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
                 [{"text": "🚀 Mission"}, {"text": "📚 Library"}],
-                [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}]
+                [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}],
+                [{"text": "📊 Status"}]
             ],
             "resize_keyboard": True,
             "persistent": True
@@ -909,7 +910,8 @@ KEYBOARD = {
     "keyboard": [
         [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
         [{"text": "🚀 Mission"}, {"text": "📚 Library"}],
-        [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}]
+        [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}],
+        [{"text": "📊 Status"}]
     ],
     "resize_keyboard": True,
     "persistent": True
@@ -1139,7 +1141,7 @@ async def process_webhook(update: dict):
         
         print(f"🎯 Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
 
-        if text.startswith('/') or text in ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library']:
+        if text.startswith('/') or text in ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library', '📊 Status']:
             return await handle_command(text, chat_id)
 
         if text.startswith('N:') or text.startswith('Note:'):
@@ -1205,6 +1207,91 @@ async def process_webhook(update: dict):
     except Exception as e:
         print(f"Webhook Error: {e}")
         return {"error": str(e), "status": 500}
+
+
+async def handle_status_command(chat_id: int):
+    """Pure DB snapshot. No LLM. No Pulse trigger."""
+    try:
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist_offset)
+        stale_cutoff = (now - timedelta(days=7)).isoformat()
+
+        # Urgent tasks
+        urgent_res = supabase.table('tasks')\
+            .select('id', count='exact')\
+            .eq('priority', 'urgent')\
+            .in_('status', ['todo', 'in_progress'])\
+            .execute()
+        urgent_count = urgent_res.count or 0
+
+        # Important tasks
+        important_res = supabase.table('tasks')\
+            .select('id', count='exact')\
+            .eq('priority', 'important')\
+            .in_('status', ['todo', 'in_progress'])\
+            .execute()
+        important_count = important_res.count or 0
+
+        # Stale tasks (no update in 7+ days, still open)
+        stale_res = supabase.table('tasks')\
+            .select('id', count='exact')\
+            .in_('status', ['todo', 'in_progress'])\
+            .lt('updated_at', stale_cutoff)\
+            .execute()
+        stale_count = stale_res.count or 0
+
+        # Pending email decisions
+        pending_email_res = supabase.table('email_pending_tasks')\
+            .select('id', count='exact')\
+            .is_('danny_decision', 'null')\
+            .execute()
+        pending_email_count = pending_email_res.count or 0
+
+        # Pending drafts
+        pending_drafts_res = supabase.table('email_drafts')\
+            .select('id', count='exact')\
+            .eq('status', 'pending')\
+            .execute()
+        pending_drafts_count = pending_drafts_res.count or 0
+
+        # Unprocessed raw dumps
+        raw_dumps_res = supabase.table('raw_dumps')\
+            .select('id', count='exact')\
+            .eq('status', 'pending')\
+            .execute()
+        raw_dumps_count = raw_dumps_res.count or 0
+
+        # Agent queue (pending research tasks)
+        agent_res = supabase.table('agent_queue')\
+            .select('id', count='exact')\
+            .eq('status', 'pending')\
+            .execute()
+        agent_count = agent_res.count or 0
+
+        lines = ["*BOARD STATUS*\n"]
+
+        lines.append(f"🔴 Urgent: {urgent_count} task{'s' if urgent_count != 1 else ''}")
+        lines.append(f"🟡 Important: {important_count} task{'s' if important_count != 1 else ''}")
+
+        stale_flag = " ⚠️" if stale_count >= 3 else ""
+        lines.append(f"⏳ Stale (7d+): {stale_count} task{'s' if stale_count != 1 else ''}{stale_flag}")
+
+        lines.append(f"\n📨 Pending email decisions: {pending_email_count}")
+        lines.append(f"📝 Pending drafts: {pending_drafts_count}")
+
+        if raw_dumps_count > 0:
+            lines.append(f"📥 Unprocessed captures: {raw_dumps_count}")
+        if agent_count > 0:
+            lines.append(f"🕵️ Research queue: {agent_count}")
+
+        timestamp = now.strftime("%d %b, %I:%M %p")
+        lines.append(f"\n_As of {timestamp} IST_")
+
+        await send_telegram(chat_id, "\n".join(lines))
+
+    except Exception as e:
+        print(f"/status error: {e}")
+        await send_telegram(chat_id, f"⚠️ Status check failed: {e}")
 
 
 async def handle_command(text: str, chat_id: int):
@@ -1289,6 +1376,10 @@ async def handle_command(text: str, chat_id: int):
             reply = "Understood. Offloading heavy intel to the remote server. Sit tight, the SITREP will arrive in about 60 seconds."
         else:
             reply = "⚠️ Could not trigger remote briefing. Try again or check system config."
+
+    elif text in ['/status', '📊 Status']:
+        await handle_status_command(chat_id)
+        return {"success": True}
 
     elif text in ['/ep']:
         try:
