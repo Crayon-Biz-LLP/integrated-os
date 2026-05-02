@@ -374,7 +374,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             
             elif item_type == 'DELEGATE':
                 supabase.table('agent_queue').insert({
-                    "task": content,
+                    "query": content,
                     "status": "pending",
                     "metadata": json.dumps({"source": "multimodal", "mime_type": mime_type})
                 }).execute()
@@ -500,7 +500,7 @@ async def interrogate_brain(query: str, chat_id: int):
         
         tactical_map = await hybrid_search_graph(query)
         
-        embedding = get_embedding(query)
+        embedding = await asyncio.to_thread(get_embedding, query)
         
         memories_res = supabase.rpc(
             'match_memories',
@@ -511,6 +511,37 @@ async def interrogate_brain(query: str, chat_id: int):
             }
         ).execute()
         memories = memories_res.data if memories_res.data else []
+
+        # TODO: If match_canonical_pages RPC does not exist yet in Supabase,
+        # create it mirroring the match_memories pattern for canonical_pages table.
+        combined_results = []
+        for m in (memories or []):
+            combined_results.append({
+                "content": m.get('content', ''),
+                "source": m.get('memory_type', 'memory').upper(),
+                "link": m.get('url') or '',
+                "similarity": m.get('similarity', 0)
+            })
+
+        try:
+            canonical_res = supabase.rpc('match_canonical_pages', {
+                'query_embedding': embedding,
+                'match_count': 3,
+                'match_threshold': 0.65
+            }).execute()
+            canonical_hits = canonical_res.data or []
+            for hit in canonical_hits:
+                combined_results.append({
+                    "content": f"[CANONICAL] {hit.get('title', '')}: {hit.get('content', '')[:300]}",
+                    "source": "CANONICAL",
+                    "link": '',
+                    "similarity": hit.get('similarity', 0)
+                })
+        except Exception as canon_err:
+            print(f"Canonical pages search failed (RPC may not exist): {canon_err}")
+
+        # Sort by similarity descending
+        combined_results.sort(key=lambda x: x.get('similarity', 0), reverse=True)
         
         try:
             resources_res = supabase.table('resources').select('title, url, category, content').execute()
@@ -523,10 +554,10 @@ async def interrogate_brain(query: str, chat_id: int):
         if tactical_map:
             all_context.append(f"TACTICAL MAP:\n{tactical_map}")
         
-        for m in memories:
-            source = m.get('memory_type', 'memory').upper()
-            content = m.get('content', '')
-            link = m.get('url') or ''
+        for item in combined_results:
+            source = item.get('source', 'memory').upper()
+            content = item.get('content', '')
+            link = item.get('link', '')
             all_context.append(f"[{source}] {content}" + (f" | Link: {link}" if link else ""))
         
         for r in resources[:3]:
@@ -646,12 +677,18 @@ async def send_draft_reply(draft_id: int) -> tuple:
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
         send_body = {'raw': raw, 'threadId': email['thread_id']}
 
-        gmail_service.users().messages().send(userId='me', body=send_body).execute()
-
+        # Update status to 'sent' BEFORE Gmail API call to prevent double-send
         supabase.table('email_drafts')\
-            .update({'status': 'approved'})\
+            .update({'status': 'sent'})\
             .eq('id', draft_id)\
             .execute()
+
+        try:
+            gmail_service.users().messages().send(userId='me', body=send_body).execute()
+        except Exception as gmail_error:
+            print(f"Gmail send failed for draft {draft_id}: {gmail_error}")
+            print("Status remains 'sent' to prevent double-send attempts.")
+            return (False, str(gmail_error))
 
         return (True, None)
 
@@ -688,6 +725,12 @@ async def send_outlook_draft(draft: dict) -> tuple:
             "Content-Type": "application/json"
         }
 
+        # Update status to 'sent' BEFORE Outlook API call to prevent double-send
+        supabase.table('email_drafts')\
+            .update({'status': 'sent'})\
+            .eq('id', draft['id'])\
+            .execute()
+
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
                 "https://graph.microsoft.com/v1.0/me/sendMail",
@@ -696,10 +739,6 @@ async def send_outlook_draft(draft: dict) -> tuple:
             )
 
             if response.status_code == 202:
-                supabase.table('email_drafts')\
-                    .update({'status': 'approved'})\
-                    .eq('id', draft['id'])\
-                    .execute()
                 return (True, None)
 
             if response.status_code == 401:
@@ -713,13 +752,11 @@ async def send_outlook_draft(draft: dict) -> tuple:
                     headers=headers
                 )
                 if response.status_code == 202:
-                    supabase.table('email_drafts')\
-                        .update({'status': 'approved'})\
-                        .eq('id', draft['id'])\
-                        .execute()
                     return (True, None)
 
-            raise Exception(f"HTTP {response.status_code}: {response.text}")
+            print(f"Outlook send failed for draft {draft['id']}: HTTP {response.status_code}: {response.text}")
+            print("Status remains 'sent' to prevent double-send attempts.")
+            return (False, f"HTTP {response.status_code}: {response.text}")
 
     except Exception as e:
         print(f"Outlook send error for draft {draft['id']}: {e}")
@@ -884,6 +921,9 @@ async def process_webhook(update: dict):
         if update_id:
             try:
                 supabase.table('processed_updates').insert({"update_id": update_id}).execute()
+                # Cleanup: delete update IDs older than 72 hours
+                cutoff = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+                supabase.table('processed_updates').delete().lt('created_at', cutoff).execute()
             except Exception as e:
                 error_msg = str(e)
                 if "23505" in error_msg or "already exists" in error_msg.lower():
@@ -1084,6 +1124,13 @@ async def process_webhook(update: dict):
             await handle_ed_command(text, chat_id)
             return {"success": True}
         
+        # ? prefix shortcut — handle as QUERY directly, skip classify_intent()
+        if text.startswith('?'):
+            query = text[1:].strip()
+            if query:
+                await interrogate_brain(query, chat_id)
+                return {"success": True}
+        
         context = await get_recent_context(limit=2)
         classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json)
         
@@ -1091,12 +1138,6 @@ async def process_webhook(update: dict):
         confidence = classification.get('confidence', 0.5)
         
         print(f"🎯 Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
-
-        if text.startswith('?'):
-            query = text[1:].strip()
-            if query:
-                await interrogate_brain(query, chat_id)
-                return {"success": True}
 
         if text.startswith('/') or text in ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library']:
             return await handle_command(text, chat_id)
@@ -1144,7 +1185,7 @@ async def process_webhook(update: dict):
                 await send_telegram(chat_id, receipt or "Note secured.")
         elif intent == 'DELEGATE':
             supabase.table('agent_queue').insert({
-                "task": text,
+                "query": text,
                 "status": "pending"
             }).execute()
             ack = receipt or "The intern is on it. I'll ping you when the research is ready."
