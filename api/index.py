@@ -1,6 +1,8 @@
 # api/index.py
 import os
-from fastapi import FastAPI, Request, HTTPException
+import hmac
+import hashlib
+from fastapi import FastAPI, Request, HTTPException, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Updated imports: Pulling from your new 'core' module
@@ -33,9 +35,21 @@ async def webhook_route(request: Request):
         print(f"Webhook route error: {e}")
         raise HTTPException(status_code=500, detail="Internal processing error")
 
+def verify_hmac(payload: bytes, signature: str, secret: str) -> bool:
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
 # --- THE PULSE ENGINE (Routes to pulse.py) ---
 @app.post("/api/pulse")
 async def pulse_route_post(request: Request):
+    # HMAC-SHA256 verification for Pulse trigger requests
+    raw_body = await request.body()
+    sig_header = request.headers.get('X-Rhodey-Signature', '')
+    
+    pulse_secret = os.getenv("PULSE_SECRET")
+    if not verify_hmac(raw_body, sig_header, pulse_secret):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
     # Extracts the secret from the GitHub Actions cron header
     secret = request.headers.get("x-pulse-secret")
     

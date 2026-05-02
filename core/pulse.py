@@ -5,6 +5,7 @@ import asyncio
 import httpx
 import time
 import random
+import hashlib
 from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from google.oauth2.credentials import Credentials
@@ -59,6 +60,18 @@ def is_already_in_email_queue(title: str) -> bool:
             if result.data:
                 print(f"⚠️  Duplicate guard: '{title}' matches existing task on board (keyword: '{kw}'). Skipping.")
                 return True
+        
+        # Secondary: Semantic embedding check (high threshold to avoid false positives)
+        embedding = get_embedding(title)
+        similarity_res = supabase.rpc('match_memories', {
+            'query_embedding': embedding,
+            'match_count': 1,
+            'match_threshold': 0.88
+        }).execute()
+        if similarity_res.data:
+            print(f"⚠️ Semantic duplicate guard: '{title}' is semantically similar to an existing memory. Skipping.")
+            return True
+        
         return False
     except Exception as e:
         print(f"Duplicate guard check failed: {e}")
@@ -118,7 +131,7 @@ def build_routing_context(legacy_projects: list) -> str:
     return '\n'.join(f'  - {line}' for line in lines)
 
 
-async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: int = None, task_description: str = None):
+async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: int = None, task_description: str = None, people_cache=None):
     """
     Add-on: Writes graph edges after a task is created.
     Non-blocking. If this fails, the task is already saved — no rollback needed.
@@ -173,8 +186,13 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
 
         search_text = f"{task_title} {task_description or ''}".lower()
 
-        all_people = supabase.table('people').select('id, name').execute()
-        for person in (all_people.data or []):
+        # Use cache if provided, otherwise fetch
+        if people_cache is not None:
+            all_people = people_cache
+        else:
+            all_people = supabase.table('people').select('id, name').execute().data or []
+
+        for person in (all_people or []):
             if person['name'].lower() in search_text:
                 person_node = supabase.table('graph_nodes') \
                     .select('id') \
@@ -544,6 +562,21 @@ async def hybrid_search_graph(query: str) -> str:
     try:
         nodes_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{query}%').limit(1).execute()
         
+        # TODO: If match_graph_nodes RPC does not exist yet in Supabase,
+        # create it mirroring the match_memories pattern for graph_nodes table.
+        if not nodes_res.data:
+            try:
+                query_embedding = await asyncio.to_thread(get_embedding, query)
+                vector_res = supabase.rpc('match_graph_nodes', {
+                    'query_embedding': query_embedding,
+                    'match_count': 1,
+                    'match_threshold': 0.65
+                }).execute()
+                if vector_res.data:
+                    nodes_res = vector_res
+            except Exception as vector_err:
+                print(f"Vector fallback search failed (RPC may not exist): {vector_err}")
+        
         if not nodes_res.data:
             return ""
         
@@ -740,7 +773,7 @@ async def generate_after_action_report() -> str:
     """Generate an After-Action Report on the day's activities and save to memories."""
     try:
         now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         
         completed_tasks_res = supabase.table('tasks').select('title').eq('status', 'done').gte('completed_at', today_start).execute()
         completed_count = len(completed_tasks_res.data) if completed_tasks_res.data else 0
@@ -1138,6 +1171,7 @@ async def fetch_hybrid_graph_context(people: list, graph_node_projects: list, ta
 
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
 async def process_pulse(auth_secret: str = None):
+    error_log = []
     try:
         # 🛡️ THE ZOMBIE RECOVERY: Reset any dumps stuck in 'processing' for more than 10 mins
         try:
@@ -1161,7 +1195,7 @@ async def process_pulse(auth_secret: str = None):
         tasks_service = get_tasks_service()
         completed_from_google = await asyncio.to_thread(sync_completed_tasks_from_google, supabase, tasks_service)
         for title, proj_name in (completed_from_google or []):
-            asyncio.create_task(write_outcome_memory(title, proj_name))
+            await write_outcome_memory(title, proj_name)
         
         # --- 0.1 BATCH ENRICHMENT (One Gemini call for all unenriched resources) ---
         batch_enrich_results = await batch_enrich_resources()
@@ -1550,7 +1584,16 @@ async def process_pulse(auth_secret: str = None):
 
         project_names = [p.get('name') for p in legacy_projects if p.get('name')]
         people_names = [p['name'] for p in people]
-        compressed_tasks_final = compressed_tasks[:3000]  # Hard limit
+        # Task-boundary-safe truncation: split on ' | ' delimiter and accumulate complete tasks
+        parts = compressed_tasks.split(' | ')
+        safe_parts = []
+        running_len = 0
+        for part in parts:
+            if running_len + len(part) + 3 > 3000:
+                break
+            safe_parts.append(part)
+            running_len += len(part) + 3
+        compressed_tasks_final = ' | '.join(safe_parts)
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps])
         new_input_summary = " | ".join([d['content'] for d in dumps[:5]])
         current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
@@ -1825,8 +1868,6 @@ async def process_pulse(auth_secret: str = None):
 
         # --- 3. WRITE Phase (Database Updates) ---
 
-        tasks_service = get_tasks_service()
-        
         # A. BATCH NEW PROJECTS (Deduplicated)
         if ai_data.get('new_projects'):
             valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH', 'FAMILY', 'QHORD']
@@ -1922,7 +1963,14 @@ async def process_pulse(auth_secret: str = None):
 
         # B. BATCH NEW PEOPLE
         if ai_data.get('new_people'):
-            supabase.table('people').insert(ai_data['new_people']).execute()
+            existing_people_res = supabase.table('people').select('name').execute()
+            existing_names = {p['name'].lower().strip() for p in (existing_people_res.data or [])}
+            deduped_people = [
+                p for p in ai_data['new_people']
+                if p.get('name', '').lower().strip() not in existing_names
+            ]
+            if deduped_people:
+                supabase.table('people').insert(deduped_people).execute()
 
         # C. BATCH TASK UPDATES (The Smart Rescheduler)
         if ai_data.get('completed_task_ids'):
@@ -1930,6 +1978,9 @@ async def process_pulse(auth_secret: str = None):
                 target_id = item.get('id')
                 item_status = item.get('status', 'done')
                 raw_reminder = item.get('reminder_at')
+                
+                # Record whether original input had explicit time before format_rfc3339() normalizes it
+                was_explicit_time = bool(raw_reminder and 'T' in str(raw_reminder))
                 
                 # 🛡️ RFC-3339 GUARD: Sanitize the timestamp immediately
                 # This fixes the "Space" bug before Google ever sees it
@@ -1954,9 +2005,9 @@ async def process_pulse(auth_secret: str = None):
                 if item_status in ['done', 'cancelled'] and e_id:
                     delete_calendar_event(e_id)
                     e_id = None
-                elif new_reminder and 'T' in new_reminder:
+                elif new_reminder and was_explicit_time:
                     # 🛰️ RADAR: Check for conflict before moving the block
-                    conflict_name = check_conflict(new_reminder)
+                    conflict_name = await asyncio.to_thread(check_conflict, new_reminder)
                     if conflict_name:
                         # 🛡️ Safety: Assignment ensures we don't crash if 'briefing' key is missing
                         current_briefing = ai_data.get('briefing', "")
@@ -1971,7 +2022,11 @@ async def process_pulse(auth_secret: str = None):
 
                 # 3. GOOGLE TASKS SYNC (Uses the same sanitized timestamp)
                 if g_id:
-                    sync_to_google(tasks_service, title=task_title, task_id=g_id, status=item_status, due_at=new_reminder)
+                    try:
+                        sync_to_google(tasks_service, title=task_title, task_id=g_id, status=item_status, due_at=new_reminder)
+                    except Exception as g_err:
+                        print(f"⚠️ Google Tasks sync failed for '{task_title}': {g_err}")
+                        error_log.append(f"Google Tasks sync failed for: '{task_title}'")
 
                 # 4. SUPABASE UPDATE (Saves 'T' format and allows time removal)
                 update_payload = {"status": item_status, "google_event_id": e_id}
@@ -2101,6 +2156,8 @@ async def process_pulse(auth_secret: str = None):
                                 if solvstrat_fallback:
                                     task_project_id = solvstrat_fallback['id']
                                     print(f"⚠️ Task '{task.get('title')}' fell back to Solvstrat (no match for '{ai_target}')")
+                            else:
+                                error_log.append(f"Task routing failed for: '{task.get('title')}'")
 
                 # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
                 raw_time = task.get('reminder_at')
@@ -2119,6 +2176,18 @@ async def process_pulse(auth_secret: str = None):
 
                 explicit_time = bool(raw_time and 'T' in str(raw_time))
 
+                # Idempotency guard using content hash
+                dedup_key = hashlib.md5(
+                    f"{task_title.lower().strip()}:{task_project_id}".encode()
+                ).hexdigest()[:16]
+                existing = supabase.table('tasks').select('id') \
+                    .eq('dedup_key', dedup_key) \
+                    .not_.in_('status', ['done', 'cancelled']) \
+                    .limit(1).execute()
+                if existing.data:
+                    print(f"⚠️ Idempotency guard: '{task_title}' already exists. Skipping.")
+                    continue
+
                 task_inserts.append({
                     "title": task_title,
                     "project_id": task_project_id,
@@ -2128,6 +2197,7 @@ async def process_pulse(auth_secret: str = None):
                     "duration_mins": task.get('estimated_duration', 15),
                     "reminder_at": sanitized_time,
                     "is_revenue_critical": task.get('is_revenue_critical', False),
+                    "dedup_key": dedup_key,
                 })
                 explicit_times.append(explicit_time)
             if task_inserts:
@@ -2144,7 +2214,8 @@ async def process_pulse(auth_secret: str = None):
                             task_id=task_id,
                             task_title=task_title,
                             project_id=db_task.get('project_id'),
-                            task_description=db_task.get('description')
+                            task_description=db_task.get('description'),
+                            people_cache=people
                         )
                     )
                     
@@ -2173,6 +2244,7 @@ async def process_pulse(auth_secret: str = None):
                             if g_id: print(f"📡 Google Task Created: {task_title}")
                         except Exception as e:
                             print(f"⚠️ Google Tasks Sync failed: {e}")
+                            error_log.append(f"Google Tasks sync failed for: '{task_title}'")
 
                     # 2b. STRATEGIC GATE: SYNC TO CALENDAR (Only runs if explicit time was given)
                     if sanitized_time and explicit_time:
@@ -2186,6 +2258,7 @@ async def process_pulse(auth_secret: str = None):
                             if e_id: print(f"🔥 Calendar block secured: {task_title} ({duration_mins}m)")
                         except Exception as ce:
                             print(f"⚠️ Calendar Sync failed for {task_title}: {ce}")
+                            error_log.append(f"Calendar sync failed for: '{task_title}'")
 
                     # 2c. Store Google IDs back to Supabase
                     if g_id or e_id:
@@ -2377,6 +2450,10 @@ async def process_pulse(auth_secret: str = None):
             except Exception as ed_err:
                 print(f"⚠️ Email decisions section failed: {ed_err}")
 
+        # Append error summary to briefing if any failures occurred
+        if error_log:
+            briefing_text += "\n\n⚠️ " + str(len(error_log)) + " item(s) need attention — check logs."
+        
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
