@@ -173,7 +173,19 @@ async def run_batch_sweep():
         if not batch_payload:
             print("No data found to synthesize.")
             return
-
+        
+        # Notify start via Telegram
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if telegram_chat_id and telegram_bot_token:
+            try:
+                import httpx
+                url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
+                payload = {"chat_id": int(telegram_chat_id), "text": f"🧠 *Synthesizing {len(batch_payload)} Master Pages...*", "parse_mode": "Markdown"}
+                httpx.post(url, json=payload, timeout=10)
+            except:
+                pass
+        
         # 3. SYNTHESIZE
         print("🧠 Synthesizing Master Pages per entity...")
         results = {}
@@ -220,46 +232,62 @@ NEW FRAGMENTS:
             payload_entry = next((p for p in batch_payload if p['entity'] == entity_name), None)
             if not payload_entry:
                 continue
-
+            
             project_id = payload_entry['project_id']
             existing_id = payload_entry.get('existing_id')
             existing_content = payload_entry.get('existing_page', '')
-
+            
             if len(markdown) < 300:
                 print(f"⚠️ Skipping {entity_name} — output too sparse ({len(markdown)} chars)")
                 continue
-
+            
             if existing_content and len(markdown) < len(existing_content) * 0.6:
                 print(f"⚠️ Skipping {entity_name} — output significantly shorter than existing page.")
                 continue
-
+            
             embedding = get_embedding(markdown)
             now_iso = datetime.now(timezone.utc).isoformat()
+            
+            try:
+                if existing_id:
+                    supabase.table('canonical_pages').update({
+                        "content": markdown,
+                        "embedding": embedding,
+                        "updated_at": now_iso,
+                        "source_count": payload_entry['fragment_count'],
+                        "last_synth_at": now_iso,
+                        "is_sparse": len(markdown) < 500
+                    }).eq('id', existing_id).execute()
+                    print(f"✅ Master Page Merged: {entity_name} ({payload_entry['fragment_count']} fragments)")
+                else:
+                    supabase.table('canonical_pages').insert({
+                        "title": entity_name,
+                        "project_id": project_id,
+                        "content": markdown,
+                        "embedding": embedding,
+                        "updated_at": now_iso,
+                        "source_count": payload_entry['fragment_count'],
+                        "last_synth_at": now_iso,
+                        "is_sparse": len(markdown) < 500
+                    }).execute()
+                    print(f"✅ Master Page Created: {entity_name} ({payload_entry['fragment_count']} fragments)")
+            except Exception as e:
+                print(f"  ❌ DB commit failed for {entity_name}: {e}")
+                continue
 
-            if existing_id:
-                supabase.table('canonical_pages').update({
-                    "content": markdown,
-                    "embedding": embedding,
-                    "updated_at": now_iso,
-                    "source_count": payload_entry['fragment_count'],
-                    "last_synth_at": now_iso,
-                    "is_sparse": len(markdown) < 500
-                }).eq('id', existing_id).execute()
-                print(f"✅ Master Page Merged: {entity_name} ({payload_entry['fragment_count']} fragments)")
-            else:
-                supabase.table('canonical_pages').insert({
-                    "title": entity_name,
-                    "project_id": project_id,
-                    "content": markdown,
-                    "embedding": embedding,
-                    "updated_at": now_iso,
-                    "source_count": payload_entry['fragment_count'],
-                    "last_synth_at": now_iso,
-                    "is_sparse": len(markdown) < 500
-                }).execute()
-                print(f"✅ Master Page Created: {entity_name} ({payload_entry['fragment_count']} fragments)")
     except Exception as e:
         print(f"Brain sweep failed: {e}")
+        # Notify failure via Telegram
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if telegram_chat_id and telegram_bot_token:
+            try:
+                import httpx
+                url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
+                payload = {"chat_id": int(telegram_chat_id), "text": f"⚠️ Brain Synthesizer failed: {str(e)[:100]}", "parse_mode": "Markdown"}
+                httpx.post(url, json=payload, timeout=10)
+            except:
+                pass
 
 if __name__ == "__main__":
     asyncio.run(run_batch_sweep())
