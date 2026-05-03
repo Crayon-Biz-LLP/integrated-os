@@ -1598,6 +1598,109 @@ async def check_pipeline_health() -> str:
     except Exception as e:
         return f"⚠️ Health check failed: {e}"
 
+
+# --- 🗃️ FAILED QUEUE MANAGEMENT ---
+async def add_to_failed_queue(source_table: str, source_id: str, operation: str, error_message: str):
+    """Add a failed operation to the retry queue."""
+    try:
+        supabase.table('failed_queue').insert({
+            "source_table": source_table,
+            "source_id": str(source_id),
+            "operation": operation,
+            "error_message": error_message[:500] if error_message else None,
+        }).execute()
+        print(f"🗃️ Added to failed_queue: {source_table}:{source_id} ({operation})")
+    except Exception as e:
+        print(f"⚠️ Failed to add to failed_queue: {e}")
+
+
+async def retry_failed_operations(max_retries: int = 5):
+    """Retry operations in the failed_queue with exponential backoff."""
+    try:
+        # Fetch items that haven't exceeded max retries
+        failed_items = supabase.table('failed_queue') \
+            .select('*') \
+            .lt('retry_count', max_retries) \
+            .order('created_at', desc=False) \
+            .limit(20) \
+            .execute()
+        
+        if not failed_items.data:
+            return "✅ No failed items to retry."
+        
+        print(f"🔄 Retrying {len(failed_items.data)} failed operations...")
+        retried = 0
+        failed_again = 0
+        
+        for item in failed_items.data:
+            queue_id = item['id']
+            source_table = item['source_table']
+            source_id = item['source_id']
+            operation = item['operation']
+            
+            try:
+                if operation == 'embedding' and source_table == 'memories':
+                    # Retry embedding generation
+                    mem_res = supabase.table('memories') \
+                        .select('id, content') \
+                        .eq('id', int(source_id)) \
+                        .maybe_single() \
+                        .execute()
+                    
+                    if mem_res and mem_res.data:
+                        embedding = await asyncio.to_thread(get_embedding, mem_res.data['content'])
+                        if embedding and any(embedding):
+                            supabase.table('memories') \
+                                .update({
+                                    "embedding": embedding,
+                                    "embedding_status": "success"
+                                }) \
+                                .eq('id', int(source_id)) \
+                                .execute()
+                            
+                            # Remove from failed queue on success
+                            supabase.table('failed_queue') \
+                                .delete() \
+                                .eq('id', queue_id) \
+                                .execute()
+                            retried += 1
+                        else:
+                            raise Exception("Embedding generation returned zero vector")
+                
+                elif operation == 'memory_insert':
+                    # Would need the original content - skip for now
+                    print(f"   ⚠️ Cannot retry memory_insert without original content: {queue_id}")
+                    continue
+                
+                # Update retry count
+                supabase.table('failed_queue') \
+                    .update({
+                        "retry_count": item['retry_count'] + 1,
+                        "last_retry_at": datetime.now(timezone.utc).isoformat()
+                    }) \
+                    .eq('id', queue_id) \
+                    .execute()
+            
+            except Exception as e:
+                # Update retry count and last_retry_at
+                try:
+                    supabase.table('failed_queue') \
+                        .update({
+                            "retry_count": item['retry_count'] + 1,
+                            "last_retry_at": datetime.now(timezone.utc).isoformat(),
+                            "error_message": str(e)[:500]
+                        }) \
+                        .eq('id', queue_id) \
+                        .execute()
+                except:
+                    pass
+                failed_again += 1
+        
+        return f"🔄 Retry complete: ✅ {retried} succeeded, ❌ {failed_again} still failing"
+    
+    except Exception as e:
+        return f"⚠️ Retry process failed: {e}"
+
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
 async def process_pulse(auth_secret: str = None):
     error_log = []
@@ -1713,14 +1816,22 @@ async def process_pulse(auth_secret: str = None):
                         if dump_content:
                             embedding = await asyncio.to_thread(get_embedding, dump_content)
                             status = 'success' if embedding and any(embedding) else 'failed'
-                            supabase.table('memories').insert({
-                                "content": dump_content,
-                                "memory_type": "note",
-                                "embedding": embedding,
-                                "embedding_status": status
-                            }).execute()
-                            note_dump_ids.append(dump_id)
-                            print(f"📝 Note filed to memory: {dump_content[:50]}...")
+                            try:
+                                result = supabase.table('memories').insert({
+                                    "content": dump_content,
+                                    "memory_type": "note",
+                                    "embedding": embedding,
+                                    "embedding_status": status
+                                }).execute()
+                                if result.data:  # Only add to note_dump_ids if insert succeeded
+                                    note_dump_ids.append(dump_id)
+                                    print(f"📝 Note filed to memory: {dump_content[:50]}...")
+                                else:
+                                    raise Exception("Insert returned no data")
+                            except Exception as e:
+                                # Add to failed_queue for retry
+                                await add_to_failed_queue('memories', str(dump_id), 'memory_insert', str(e))
+                                print(f"⚠️ Note insert failed: {e}")
                     
                     elif category == 'NOISE':
                         note_dump_ids.append(dump_id)
