@@ -423,11 +423,13 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
 
 async def handle_confident_note(text: str, chat_id: int, receipt: str = None):
     embedding = await asyncio.to_thread(get_embedding, text)
+    status = 'success' if embedding and any(embedding) else 'failed'
     try:
         supabase.table('memories').insert({
             "content": text,
             "memory_type": "note",
-            "embedding": embedding
+            "embedding": embedding,
+            "embedding_status": status
         }).execute()
     except Exception as e:
         print(f"Failed to save note to memory: {e}")
