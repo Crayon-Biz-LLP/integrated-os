@@ -35,7 +35,9 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 
 ### Database (Supabase)
 - Uses `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)
-- Tables: `tasks`, `raw_dumps`, `projects`, `resources`, `missions`, `people`, `core_config`
+- Tables: `tasks`, `raw_dumps`, `memories`, `graph_nodes`, `graph_edges`, `projects`, `resources`, `missions`, `people`, `core_config`
+- **Note**: `raw_dumps` does NOT store embeddings - only `memories` table has embeddings
+- `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter)
 
 ### External Integrations
 - **Gemini AI**: Briefing (`gemini-3-flash-preview`), Classification (`gemini-3.1-flash-lite-preview`), Embeddings (`gemini-embedding-2-preview`)
@@ -84,6 +86,10 @@ GOOGLE_REFRESH_TOKEN
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 GOOGLE_SHEET_ID  # Used in archive ingest and pulse
+OPENROUTER_API_KEY  # Fallback for LLM calls (backfill_graph, pulse)
+OPENROUTER_BASE_URL  # Default: https://openrouter.ai/api/v1/chat/completions
+PULSE_HTTP_REFERER  # Default: http://localhost:8000
+PULSE_APP_NAME  # Default: Pulse
 ```
 
 ## Testing
