@@ -240,10 +240,12 @@ async def write_outcome_memory(task_title: str, project_name: str = None):
             label += f" on {project_name}"
         
         embedding = await asyncio.to_thread(get_embedding, label)
+        status = 'success' if embedding and any(embedding) else 'failed'
         supabase.table('memories').insert({
             "content": label,
             "memory_type": "outcome",
-            "embedding": embedding
+            "embedding": embedding,
+            "embedding_status": status
         }).execute()
         print(f"🧠 Outcome memory written: {label}")
     except Exception as e:
@@ -1062,12 +1064,14 @@ async def generate_after_action_report() -> str:
         
         if lesson and len(lesson) > 10:
             embedding = await asyncio.to_thread(get_embedding, lesson)
-            if all(v == 0 for v in embedding):
-                print(f"Warning: zero-vector embedding for daily reflection — storing anyway")
+            status = 'success' if embedding and any(embedding) else 'failed'
+            if status == 'failed':
+                print(f"Warning: zero-vector embedding for daily reflection — storing with failed status")
             supabase.table('memories').insert({
                 "content": lesson,
                 "memory_type": "reflection",
-                "embedding": embedding
+                "embedding": embedding,
+                "embedding_status": status
             }).execute()
             print(f"📝 Daily Reflection saved: {lesson[:50]}...")
             return lesson
@@ -1531,6 +1535,69 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         print(f"⚠️ Graph task context fetch failed (non-critical): {e}")
         return ""
 
+# --- 🏥 HEARTBEAT / HEALTH CHECK ---
+async def update_heartbeat():
+    """Update the last successful Pulse run timestamp."""
+    try:
+        supabase.table('core_config').upsert({
+            "key": "pulse_last_success",
+            "content": datetime.now(timezone.utc).isoformat()
+        }, on_conflict="key").execute()
+        print("💓 Heartbeat updated.")
+    except Exception as e:
+        print(f"⚠️ Heartbeat update failed: {e}")
+
+async def check_pipeline_health() -> str:
+    """
+    Returns a health report of the memory pipeline.
+    Checks: pending dumps, null embeddings, failed items.
+    """
+    lines = []
+    try:
+        # Check for stuck dumps (pending > 2 hours)
+        two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        stuck_res = supabase.table('raw_dumps') \
+            .select('id', count='exact') \
+            .eq('status', 'pending') \
+            .lt('created_at', two_hours_ago) \
+            .execute()
+        stuck_count = stuck_res.count or 0
+        if stuck_count > 0:
+            lines.append(f"⚠️ {stuck_count} raw_dumps stuck in 'pending' > 2h")
+        
+        # Check for null embeddings in recent memories
+        seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        null_emb_res = supabase.table('memories') \
+            .select('id', count='exact') \
+            .is_('embedding', 'null') \
+            .gte('created_at', seven_days_ago) \
+            .execute()
+        null_emb_count = null_emb_res.count or 0
+        if null_emb_count > 0:
+            lines.append(f"⚠️ {null_emb_count} memories with NULL embeddings (last 7 days)")
+        
+        # Check last Pulse success
+        last_run_res = supabase.table('core_config') \
+            .select('content') \
+            .eq('key', 'pulse_last_success') \
+            .maybe_single() \
+            .execute()
+        if last_run_res and last_run_res.data:
+            last_run = datetime.fromisoformat(last_run_res.data['content'])
+            hours_ago = (datetime.now(timezone.utc) - last_run).total_seconds() / 3600
+            if hours_ago > 24:
+                lines.append(f"⚠️ Pulse hasn't run in {hours_ago:.1f} hours!")
+            else:
+                lines.append(f"✅ Pulse last ran {hours_ago:.1f} hours ago")
+        else:
+            lines.append("⚠️ No Pulse heartbeat found")
+        
+        if not lines:
+            return "✅ Pipeline health: All clear!"
+        return "PIPELINE HEALTH REPORT:\n" + "\n".join(lines)
+    except Exception as e:
+        return f"⚠️ Health check failed: {e}"
+
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
 async def process_pulse(auth_secret: str = None):
     error_log = []
@@ -1558,6 +1625,11 @@ async def process_pulse(auth_secret: str = None):
         completed_from_google = await asyncio.to_thread(sync_completed_tasks_from_google, supabase, tasks_service)
         for title, proj_name in (completed_from_google or []):
             await write_outcome_memory(title, proj_name)
+        
+        # --- 0.1 HEARTBEAT & HEALTH CHECK ---
+        await update_heartbeat()
+        health_report = await check_pipeline_health()
+        print(health_report)
         
         # --- 0.1 BATCH ENRICHMENT (One Gemini call for all unenriched resources) ---
         batch_enrich_results = await batch_enrich_resources()
@@ -1630,7 +1702,8 @@ async def process_pulse(auth_secret: str = None):
                     try:
                         if raw_dump.get('metadata'):
                             metadata = json.loads(raw_dump['metadata'])
-                    except: pass
+                    except Exception as e:
+                        print(f"⚠️ Metadata parse error for dump {dump_id}: {e}")
 
                     gemini_category = item.get('category', '').upper()
                     category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE', 'COMPLETION'] else metadata.get('intent', 'NOISE').upper()
@@ -1639,10 +1712,12 @@ async def process_pulse(auth_secret: str = None):
                         dump_content = raw_dump.get('content')
                         if dump_content:
                             embedding = await asyncio.to_thread(get_embedding, dump_content)
+                            status = 'success' if embedding and any(embedding) else 'failed'
                             supabase.table('memories').insert({
                                 "content": dump_content,
                                 "memory_type": "note",
-                                "embedding": embedding
+                                "embedding": embedding,
+                                "embedding_status": status
                             }).execute()
                             note_dump_ids.append(dump_id)
                             print(f"📝 Note filed to memory: {dump_content[:50]}...")

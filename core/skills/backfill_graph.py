@@ -225,10 +225,10 @@ def fetch_memories():
                 # Normalize: treat as int for comparison with memories.id
                 try:
                     processed_memory_ids.add(int(meta["memory_id"]))
-                except (ValueError, TypeError):
-                    pass
-        except:
-            pass
+                except (ValueError, TypeError) as e:
+                    print(f"⚠️ memory_id parse error: {e}")
+        except Exception as e:
+            print(f"⚠️ Metadata processing error: {e}")
     
     memories = fetch_all_paginated("memories", "id, content, memory_type, metadata, created_at", "memory_type", MEMORY_TYPES)
     
@@ -406,7 +406,7 @@ def backfill_embeddings():
         try:
             with_retry(
                 lambda: supabase.table("memories")
-                    .update({"embedding": embedding})
+                    .update({"embedding": embedding, "embedding_status": "success"})
                     .eq("id", memory_id)
                     .execute(),
                 label=f"Update embedding for {memory_id}"
@@ -414,6 +414,11 @@ def backfill_embeddings():
             print(f"  [{i+1}/{total}] ✅ Patched embedding for {memory_id} ({row['memory_type']})")
             success += 1
         except Exception as e:
+            # Mark as failed
+            try:
+                supabase.table("memories").update({"embedding_status": "failed"}).eq("id", memory_id).execute()
+            except:
+                pass
             print(f"  [{i+1}/{total}] ❌ DB update failed for {memory_id}: {e}")
             failed += 1
 
