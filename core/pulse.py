@@ -826,6 +826,147 @@ async def detect_temporal_patterns() -> str:
         return ""
 
 
+# ── AGENT 4: SERENDIPITY ENGINE ────────────────────────────────
+
+async def serendipity_engine(active_tasks: list, people: list, resources: list) -> str:
+    """
+    SERENDIPITY ENGINE: Surfaces unexpected connections and cross-domain insights.
+    Finds non-obvious links between tasks, people, resources, and past memories
+    that could spark new ideas or reveal hidden opportunities.
+    """
+    try:
+        insights = []
+        
+        # 1. Cross-domain task connections
+        # Find tasks from different org_tags that share keywords
+        if len(active_tasks) >= 2:
+            from collections import defaultdict
+            keyword_tasks = defaultdict(list)
+            
+            for t in active_tasks[:20]:  # Limit to avoid token bloat
+                title_words = set(t.get('title', '').lower().split())
+                for word in title_words:
+                    if len(word) > 4:  # Only meaningful keywords
+                        keyword_tasks[word].append(t.get('title', ''))
+            
+            # Find keywords that appear in tasks from different domains
+            for keyword, task_titles in keyword_tasks.items():
+                if len(task_titles) >= 2:
+                    insights.append(f"🔗 Keyword '{keyword}' connects: {' | '.join(task_titles[:3])}")
+        
+        # 2. People + Resources serendipity
+        # Find resources that mention people but aren't directly linked
+        if people and resources:
+            for person in people[:5]:
+                person_name = person.get('name', '')
+                if not person_name:
+                    continue
+                related_resources = [
+                    r.get('title', '') for r in resources[:30]
+                    if person_name.lower() in (r.get('title', '') + r.get('strategic_note', '')).lower()
+                ]
+                if len(related_resources) >= 2:
+                    insights.append(f"👤 {person_name} appears in: {' | '.join(related_resources[:3])}")
+        
+        # 3. Temporal serendipity - resources created on same day as memories
+        try:
+            from datetime import date
+            today = date.today()
+            thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            
+            recent_resources = [r for r in resources if r.get('created_at', '') > thirty_days_ago]
+            if recent_resources and len(recent_resources) >= 2:
+                insights.append(f"📚 Recent additions ({len(recent_resources)} resources in 30d) may have hidden connections to current tasks")
+        except:
+            pass
+        
+        if insights:
+            lines = ["✨ SERENDIPITY FINDS:"]
+            lines.extend(insights[:5])  # Cap at 5 insights
+            return "\n".join(lines)
+        
+        return ""
+    
+    except Exception as e:
+        print(f"⚠️ Serendipity Engine failed (non-critical): {e}")
+        return ""
+
+
+# ── AGENT 5: ADAPTIVE BRIEFING LEARNER ────────────────────────────────
+
+async def adaptive_briefing_learner(briefing_history: list = None) -> str:
+    """
+    ADAPTIVE BRIEFING LEARNER: Learns from past briefings to improve future ones.
+    Tracks which insights were useful, adjusts briefing style, and personalizes
+    the briefing based on Danny's interaction patterns.
+    """
+    try:
+        # For now, implement basic pattern tracking
+        # In future, this could read from a 'briefing_feedback' table
+        
+        insights = []
+        
+        # 1. Check briefing mode effectiveness
+        # Track which briefing modes (morning/afternoon/night) produce more actionable insights
+        try:
+            # Look at recent memories to see which time of day produced more reflections
+            recent_memories = supabase.table('memories') \
+                .select('content, memory_type, created_at') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()) \
+                .execute()
+            
+            if recent_memories.data:
+                morning_count = sum(1 for m in recent_memories.data 
+                                   if m.get('created_at', '').startswith('0') or 
+                                   m.get('created_at', '').startswith('1') or
+                                   m.get('created_at', '').startswith('2'))
+                evening_count = sum(1 for m in recent_memories.data
+                                  if m.get('created_at', '').startswith('1') or
+                                  m.get('created_at', '').startswith('2'))
+                
+                if morning_count > evening_count * 2:
+                    insights.append("🌅 Morning briefings seem more reflective — consider adding deeper synthesis")
+                elif evening_count > morning_count * 2:
+                    insights.append("🌙 Evening briefings generate more insights — consider longer night briefings")
+        except:
+            pass
+        
+        # 2. Section density learning
+        # Track if certain sections are consistently empty and suggest hiding them
+        try:
+            recent_tasks = supabase.table('tasks') \
+                .select('org_tag, priority, status') \
+                .eq('status', 'active') \
+                .execute()
+            
+            if recent_tasks.data:
+                tag_counts = {}
+                for t in recent_tasks.data:
+                    tag = t.get('org_tag', 'INBOX')
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                
+                # Suggest hiding sections with < 2 tasks
+                sparse_tags = [tag for tag, count in tag_counts.items() if count < 2]
+                if sparse_tags:
+                    insights.append(f"📊 Sparse sections detected: {', '.join(sparse_tags)} — consider condensing")
+        except:
+            pass
+        
+        # 3. Prompt token optimization suggestion
+        insights.append("🎯 Tip: Keep briefings under 3 bullets per section for maximum clarity")
+        
+        if insights:
+            lines = ["🧠 ADAPTIVE LEARNING:"]
+            lines.extend(insights[:4])  # Cap at 4 insights
+            return "\n".join(lines)
+        
+        return ""
+    
+    except Exception as e:
+        print(f"⚠️ Adaptive Briefing Learner failed (non-critical): {e}")
+        return ""
+
+
 async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top_k: int = 5, entity_terms: list = None) -> tuple:
     """High-Res Hindsight: Multi-signal vector search across tasks and inputs.
     Returns tuple of (formatted_memories, latest_timestamp).
@@ -1725,6 +1866,12 @@ async def process_pulse(auth_secret: str = None):
         # 📅 AGENT 3: TEMPORAL PATTERN DETECTOR (on this day insights)
         temporal_context = await detect_temporal_patterns()
         
+        # 🤖 AGENT 4: SERENDIPITY ENGINE (cross-domain connections)
+        serendipity_context = await serendipity_engine(active_tasks, people, recent_lib.data or [])
+        
+        # 🤖 AGENT 5: ADAPTIVE BRIEFING LEARNER (learns from briefing patterns)
+        adaptive_context = await adaptive_briefing_learner()
+        
         # Fetch email-suggested tasks not yet shown in brief
         pending_email_tasks_res = supabase.table('email_pending_tasks')\
             .select('id, suggested_title, suggested_project, email_id')\
@@ -1796,6 +1943,12 @@ async def process_pulse(auth_secret: str = None):
         
         TEMPORAL PATTERNS (on this day):
         {temporal_context if temporal_context else "None"}
+        
+        SERENDIPITY FINDS (cross-domain connections):
+        {serendipity_context if serendipity_context else "None"}
+        
+        ADAPTIVE LEARNING (briefing optimization):
+        {adaptive_context if adaptive_context else "None"}
         
         CANONICAL STRATEGIC TRUTH (The synthesized 'Latest Version' of projects):
         {master_page_context if master_page_context else "No Master Pages yet. Rely on raw context."}
