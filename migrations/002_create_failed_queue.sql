@@ -1,5 +1,5 @@
 -- Migration: Create failed_queue table for Phase-2 hardening
--- Tracks failed operations for retry with exponential backoff
+-- Tracks failed operations for retry with exponential backoff.
 
 CREATE TABLE IF NOT EXISTS failed_queue (
     id BIGSERIAL PRIMARY KEY,
@@ -15,12 +15,16 @@ CREATE TABLE IF NOT EXISTS failed_queue (
 
 -- Index for efficient polling (find items that need retry)
 CREATE INDEX IF NOT EXISTS idx_failed_queue_retry 
-ON failed_queue(retry_count, last_retry_at) 
-WHERE last_retry_at IS NULL OR last_retry_at < NOW() - INTERVAL '1 hour';
+ON failed_queue(retry_count, last_retry_at);
 
 -- Index for cleanup (old failed items)
 CREATE INDEX IF NOT EXISTS idx_failed_queue_created 
 ON failed_queue(created_at);
+
+-- Index for items that need immediate retry (last_retry_at IS NULL)
+CREATE INDEX IF NOT EXISTS idx_failed_queue_null_retry 
+ON failed_queue(created_at) 
+WHERE last_retry_at IS NULL;
 
 -- Add comment for documentation
 COMMENT ON TABLE failed_queue IS 'Stores failed operations for retry with exponential backoff. Part of Phase-2 hardening.';
