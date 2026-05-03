@@ -2,6 +2,7 @@ import os
 import json
 import time
 import uuid
+import httpx
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from google import genai
@@ -13,16 +14,164 @@ supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 
+# OpenRouter config (matching pulse.py)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
+PULSE_HTTP_REFERER = os.getenv("PULSE_HTTP_REFERER", "http://localhost:8000")
+PULSE_APP_NAME = os.getenv("PULSE_APP_NAME", "Pulse")
+GEMMA_FALLBACK_MODEL = "gemma-4-31b-it"
+OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+
 if not supabase_url or not supabase_key:
     raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
 
 supabase: Client = create_client(supabase_url, supabase_key)
 gemini_client = genai.Client(api_key=gemini_api_key)
 
+RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit', '429']
+NON_RETRYABLE_ERRORS = ['401', '403', '400', 'invalid']
+
+
+def call_llm_with_fallback_sync(
+    prompt: str,
+    model: str = None,
+    config: dict = None,
+    is_critical: bool = True,
+    require_json: bool = False
+):
+    """
+    Synchronous multi-provider LLM call with fallback chain.
+    Provider chain:
+    1. Primary: Gemini (gemini-3.1-flash-lite-preview)
+    2. Fallback: Gemma (gemma-4-31b-it)
+    3. Fallback: OpenRouter (nvidia/nemotron-3-super-120b-a12b:free)
+    """
+    if model is None:
+        model = "gemini-3.1-flash-lite-preview"
+    
+    max_retries_per_provider = 2 if is_critical else 1
+    base_delay = 8 if is_critical else 4
+    
+    def _call_gemini(p, cfg):
+        return gemini_client.models.generate_content(
+            model=model,
+            contents=p,
+            config=cfg or {}
+        )
+    
+    def _call_gemma(p, cfg):
+        return gemini_client.models.generate_content(
+            model=GEMMA_FALLBACK_MODEL,
+            contents=p,
+            config=cfg or {}
+        )
+    
+    def _call_openrouter(p, cfg):
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": PULSE_HTTP_REFERER,
+            "X-Title": PULSE_APP_NAME
+        }
+        system_instruction = cfg.get('system_instruction') if cfg else None
+        temperature = cfg.get('temperature', 0.7) if cfg else 0.7
+        
+        messages = []
+        if system_instruction:
+            messages.append({"role": "system", "content": system_instruction})
+        messages.append({"role": "user", "content": prompt})
+        
+        body = {
+            "model": OPENROUTER_MODEL,
+            "messages": messages,
+            "temperature": temperature
+        }
+        
+        if cfg and cfg.get('response_mime_type') == "application/json":
+            body["response_format"] = {"type": "json_object"}
+        
+        resp = httpx.post(OPENROUTER_BASE_URL, json=body, headers=headers, timeout=60.0)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        class SimpleResponse:
+            def __init__(self, text):
+                self.text = text
+        
+        if 'choices' in data and len(data['choices']) > 0:
+            return SimpleResponse(data['choices'][0]['message']['content'])
+        return SimpleResponse(data.get('content', '') or json.dumps(data))
+    
+    providers = [
+        {"provider": "gemini", "model": model, "fn": _call_gemini},
+        {"provider": "gemma", "model": GEMMA_FALLBACK_MODEL, "fn": _call_gemma},
+    ]
+    
+    if OPENROUTER_API_KEY:
+        providers.append({
+            "provider": "openrouter",
+            "model": OPENROUTER_MODEL,
+            "fn": _call_openrouter
+        })
+    
+    last_error = None
+    
+    for provider_idx, prov in enumerate(providers):
+        provider_name = prov["provider"]
+        model_name = prov["model"]
+        
+        for attempt in range(max_retries_per_provider):
+            try:
+                response = prov["fn"](prompt, config)
+                
+                if hasattr(response, 'text'):
+                    response_text = response.text
+                else:
+                    response_text = str(response)
+                
+                if require_json:
+                    try:
+                        if response_text.strip().startswith('{') or response_text.strip().startswith('['):
+                            json.loads(response_text)
+                    except ValueError as pe:
+                        print(f"⚠️ LLM JSON parse failed provider={provider_name}: {pe}")
+                        if provider_idx == len(providers) - 1:
+                            raise
+                        continue
+                
+                print(f"✓ LLM success provider={provider_name} model={model_name}")
+                return response
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                
+                is_retryable = any(err in error_str for err in RETRYABLE_ERRORS)
+                is_non_retryable = any(err in error_str for err in NON_RETRYABLE_ERRORS)
+                
+                if is_non_retryable:
+                    print(f"✗ LLM non-retryable error provider={provider_name}: {e}")
+                    raise
+                
+                if is_retryable and attempt < max_retries_per_provider - 1:
+                    delay = base_delay * (2 ** attempt)
+                    print(f"⚠️ LLM retry provider={provider_name} attempt={attempt+1} delay={delay:.0f}s error={error_str[:50]}")
+                    time.sleep(delay)
+                    continue
+                
+                print(f"⚠️ LLM provider failed provider={provider_name} model={model_name}: {error_str[:80]}")
+                last_error = e
+                break
+        
+        if provider_idx < len(providers) - 1:
+            print(f"🔄 LLM fallback -> {providers[provider_idx + 1]['provider']}")
+    
+    raise last_error or Exception("All LLM providers failed")
+
 BATCH_SIZE = 50  # Process more memories per batch
 MEMORY_TYPES = [
     "Prophecy", "Psalm", "Prayer", "Journal", "Sermon",
-    "archive", "canonical_page", "note", "outcome", "reflection"
+    "archive", "canonical_page", "note", "outcome", "reflection",
+    "relationship_note"
 ]
 
 
@@ -73,13 +222,19 @@ def fetch_memories():
         try:
             meta = json.loads(row.get("metadata", "{}"))
             if meta.get("memory_id"):
-                processed_memory_ids.add(meta["memory_id"])
+                # Normalize: treat as int for comparison with memories.id
+                try:
+                    processed_memory_ids.add(int(meta["memory_id"]))
+                except (ValueError, TypeError):
+                    pass
         except:
             pass
     
     memories = fetch_all_paginated("memories", "id, content, memory_type, metadata, created_at", "memory_type", MEMORY_TYPES)
     
+    # Filter to only unprocessed memories (fix int/string type mismatch)
     memories = [m for m in (memories or []) if m["id"] not in processed_memory_ids]
+    print(f"  (Skipping {len(processed_memory_ids)} already-processed memories)")
     
     known_entities = fetch_known_entities()
 
@@ -155,23 +310,14 @@ def synthesize_content(memory: dict) -> str:
 
 
 def gemini_with_retry_sync(prompt: str, model: str, config: dict = None, retries: int = 3, base_delay: int = 2):
-    retryable_errors = ['503', '504', '500', 'timeout', 'deadline exceeded']
-    for attempt in range(retries):
-        try:
-            return gemini_client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=config or {}
-            )
-        except Exception as e:
-            error_str = str(e).lower()
-            should_retry = any(err in error_str for err in retryable_errors)
-            if should_retry and attempt < retries - 1:
-                wait = base_delay * (2 ** attempt)
-                print(f"Gemini retry {attempt+1}/{retries} in {wait}s: {e}")
-                time.sleep(wait)
-                continue
-            raise
+    """Legacy wrapper - delegates to call_llm_with_fallback_sync."""
+    return call_llm_with_fallback_sync(
+        prompt=prompt,
+        model=model,
+        config=config,
+        is_critical=False,
+        require_json=(config or {}).get('response_mime_type') == 'application/json'
+    )
 
 
 # ── EMBEDDING BACKFILL ──────────────────────────────────────────────────────
@@ -281,31 +427,42 @@ def backfill_embeddings():
 
 def extract_graph_elements(text: str, memory_id: str) -> dict:
     prompt = f"""Extract knowledge graph elements from this text.
-
+    
 Return a JSON object with:
-- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"emotional_state"}}
+- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"emotional_state"|"concept"}}
 - "edges": array of objects with {{"source": string, "target": string, "relationship": string}}
-
+    
 Text: {text}
-
+    
 Rules:
-- Extract People (names), Organizations, Projects, Emotional States as nodes
+- Extract People (names), Organizations, Projects, Emotional States, Concepts as nodes
 - Create edges for relationships between nodes
-- Use clear, simple relationship types (e.g., "relates_to", "parent_of", "works_at", "belongs_to", "authored")
-- Include "authored" edge from "Danny" to indicate he wrote this memory"""
-
+- Use UPPERCASE relationship types: "RELATES_TO", "PARENT_OF", "WORKS_AT", "BELONGS_TO", "AUTHORED", "INTRODUCED", "VENDOR_TO", "DISCUSSED_WITH"
+- Include "AUTHORED" edge from "Danny" to indicate he wrote this memory
+- If no clear graph elements, return empty arrays"""
+    
     try:
-        response = gemini_with_retry_sync(
+        response = call_llm_with_fallback_sync(
             prompt=prompt,
             model="gemini-3.1-flash-lite-preview",
-            config={"response_mime_type": "application/json"}
+            config={"response_mime_type": "application/json"},
+            is_critical=False,
+            require_json=True
         )
         
         if hasattr(response, 'text') and response.text:
-            return json.loads(response.text)
-        return {"nodes": [], "edges": []}
+            result = json.loads(response.text)
+            if isinstance(result, dict) and ('nodes' in result or 'edges' in result):
+                print(f"    Extracted {len(result.get('nodes', []))} nodes, {len(result.get('edges', []))} edges from memory {memory_id}")
+                return result
+            else:
+                print(f"    ⚠️ Invalid response format from memory {memory_id}: {str(result)[:100]}")
+                return {"nodes": [], "edges": []}
+        else:
+            print(f"    ⚠️ Empty response for memory {memory_id}")
+            return {"nodes": [], "edges": []}
     except Exception as e:
-        print(f"Graph extraction error: {e}")
+        print(f"    ❌ Graph extraction failed for memory {memory_id}: {e}")
         return {"nodes": [], "edges": []}
 
 def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, memory_id: str = None) -> str:
@@ -460,7 +617,7 @@ def run_backfill():
         batch_num = i // BATCH_SIZE + 1
         print(f"Processing batch {batch_num} ({len(batch)} memories)...")
         
-        for memory in batch:
+        for idx, memory in enumerate(batch):
             try:
                 success = process_memory(memory, graph_entities)
                 if success:
@@ -470,6 +627,10 @@ def run_backfill():
             except Exception as e:
                 print(f"Error processing memory {memory['id']}: {e}")
                 failed += 1
+            
+            # Rate limit: 4s delay between API calls to stay under 15 req/min
+            if idx < len(batch) - 1:
+                time.sleep(4)
         
         print(f"Completed batch {batch_num}")
     

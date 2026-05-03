@@ -1436,6 +1436,101 @@ async def fetch_hybrid_graph_context(people: list, graph_node_projects: list, ta
         return ""
 
 
+async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
+    """
+    Fetches graph edges connecting people to active tasks.
+    Returns formatted context showing who is involved in which tasks.
+    """
+    try:
+        if not people or not active_tasks:
+            return ""
+        
+        lines = []
+        task_map = {t['id']: t for t in active_tasks}
+        
+        # Get all person nodes
+        people_ids = {p['id']: p['name'] for p in people}
+        person_nodes = supabase.table('graph_nodes') \
+            .select('id, label, metadata') \
+            .eq('type', 'person') \
+            .execute()
+        
+        # Build node_id → person_name map
+        node_to_person = {}
+        for node in (person_nodes.data or []):
+            meta = node.get('metadata', {})
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except:
+                    continue
+            people_id = meta.get('people_id')
+            if people_id and int(people_id) in people_ids:
+                node_to_person[node['id']] = people_ids[int(people_id)]
+        
+        # Find INVOLVES edges linking person nodes to task nodes
+        task_nodes = supabase.table('graph_nodes') \
+            .select('id, metadata') \
+            .eq('type', 'task') \
+            .execute()
+        
+        task_node_ids = []
+        task_node_map = {}  # node_id → task_id
+        for node in (task_nodes.data or []):
+            meta = node.get('metadata', {})
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except:
+                    continue
+            task_id = meta.get('task_id')
+            if task_id and int(task_id) in task_map:
+                task_node_ids.append(node['id'])
+                task_node_map[node['id']] = int(task_id)
+        
+        if not task_node_ids or not node_to_person:
+            return ""
+        
+        # Get INVOLVES edges
+        edges_res = supabase.table('graph_edges') \
+            .select('source_node_id, target_node_id, relationship') \
+            .in_('relationship', ['INVOLVES', 'MANAGES', 'ASSIGNED_TO']) \
+            .execute()
+        
+        context_lines = []
+        seen = set()
+        
+        for edge in (edges_res.data or []):
+            source = edge.get('source_node_id')
+            target = edge.get('target_node_id')
+            rel = edge.get('relationship')
+            
+            # Check if this connects a person to a task
+            person_name = None
+            task_id = None
+            
+            if source in node_to_person and target in task_node_map:
+                person_name = node_to_person[source]
+                task_id = task_node_map[target]
+            elif target in node_to_person and source in task_node_map:
+                person_name = node_to_person[target]
+                task_id = task_node_map[source]
+            
+            if person_name and task_id and task_id in task_map:
+                task_title = task_map[task_id]['title']
+                key = f"{person_name}:{task_id}"
+                if key not in seen:
+                    seen.add(key)
+                    context_lines.append(f"[{person_name}] --{rel}--> [{task_title}]")
+        
+        if context_lines:
+            return "GRAPH TASK CONTEXT:\n" + "\n".join(context_lines[:10])  # Cap at 10
+        return ""
+    
+    except Exception as e:
+        print(f"⚠️ Graph task context fetch failed (non-critical): {e}")
+        return ""
+
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
 async def process_pulse(auth_secret: str = None):
     error_log = []
