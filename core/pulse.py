@@ -615,88 +615,214 @@ async def hybrid_search_graph(query: str) -> str:
         return ""
     
     except Exception as e:
-        print(f"Hybrid search error: {e}")
+        print(f"⚠️ Graph task context fetch failed (non-critical): {e}")
+        return ""
+    
+
+# ── AGENT 1: DEPENDENCY AGENT ──────────────────────────────────────────────
+
+async def check_task_dependencies(active_tasks: list) -> str:
+    """
+    DEPENDENCY AGENT: Uses graph_edges to detect when a task (B) has an uncompleted
+    dependency on another task (A). Flags blockers before Danny starts work.
+    """
+    try:
+        if not active_tasks:
+            return ""
+        
+        lines = []
+        blocked_tasks = []
+        
+        # Build task_id → task map
+        task_map = {t['id']: t for t in active_tasks}
+        
+        for task in active_tasks:
+            task_id = task.get('id')
+            task_title = task.get('title', '')
+            
+            # Get the graph node for this task
+            task_node_res = supabase.table('graph_nodes') \
+                .select('id') \
+                .eq('type', 'task') \
+                .filter('metadata->>task_id', 'eq', str(task_id)) \
+                .maybe_single() \
+                .execute()
+            
+            if not task_node_res or not task_node_res.data:
+                continue
+            
+            task_node_id = task_node_res.data['id']
+            
+            # Find edges where this task DEPENDS_ON another task
+            dep_edges = supabase.table('graph_edges') \
+                .select('source_node_id, target_node_id, relationship, metadata') \
+                .eq('source_node_id', task_node_id) \
+                .execute()
+            
+            for edge in (dep_edges.data or []):
+                relationship = edge.get('relationship', '').upper()
+                # Look for dependency relationships
+                if relationship in ['DEPENDS_ON', 'BLOCKED_BY', 'REQUIRES']:
+                    target_id = edge.get('target_node_id')
+                    
+                    # Find the target node's task_id from metadata
+                    target_node_res = supabase.table('graph_nodes') \
+                        .select('id, label, metadata') \
+                        .eq('id', target_id) \
+                        .maybe_single() \
+                        .execute()
+                    
+                    if target_node_res and target_node_res.data:
+                        meta = target_node_res.data.get('metadata', {})
+                        if isinstance(meta, str):
+                            try:
+                                meta = json.loads(meta)
+                            except:
+                                meta = {}
+                        dep_task_id = meta.get('task_id')
+                        
+                        if dep_task_id and int(dep_task_id) in task_map:
+                            dep_task = task_map[int(dep_task_id)]
+                            dep_status = dep_task.get('status', '')
+                            
+                            if dep_status not in ['done', 'cancelled']:
+                                blocked_tasks.append({
+                                    'task': task_title,
+                                    'depends_on': dep_task.get('title', ''),
+                                    'dep_status': dep_status
+                                })
+        
+        if blocked_tasks:
+            lines.append("⚠️ DEPENDENCY ALERTS (from graph_edges):")
+            for b in blocked_tasks[:5]:  # Cap at 5
+                lines.append(f"  - {b['task']} BLOCKED by '{b['depends_on']}' (status: {b['dep_status']})")
+            return "\n".join(lines)
+        
+        return ""
+    
+    except Exception as e:
+        print(f"⚠️ Dependency Agent failed (non-critical): {e}")
         return ""
 
 
-async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
+# ── AGENT 2: SOCIAL GRAPH OPTIMIZER ───────────────────────────────────────
+
+async def analyze_communication_patterns(people: list) -> str:
     """
-    Add-on: Builds a graph-aware context string showing tasks grouped by person.
-    Used as supplementary intelligence in the briefing. Non-blocking.
+    SOCIAL GRAPH OPTIMIZER: Analyzes people + graph_edges to suggest communication
+    batching and identify over/under-communicated relationships.
     """
     try:
-        if not people or not active_tasks:
+        if not people:
             return ""
-
+        
         lines = []
-
+        comm_suggestions = []
+        
         for person in people:
             person_name = person.get('name', '')
-            if not person_name:
+            person_id = person.get('id')
+            strategic_weight = person.get('strategic_weight', 5)
+            
+            if not person_name or not person_id:
                 continue
-
-            person_node = supabase.table('graph_nodes') \
+            
+            # Get person node
+            person_node_res = supabase.table('graph_nodes') \
                 .select('id') \
                 .eq('type', 'person') \
-                .ilike('label', person_name) \
+                .filter('metadata->>people_id', 'eq', str(person_id)) \
                 .maybe_single() \
                 .execute()
-
-            if person_node is None or not person_node.data:
+            
+            if not person_node_res or not person_node_res.data:
                 continue
-
-            person_node_id = person_node.data['id']
-
-            edges = supabase.table('graph_edges') \
-                .select('source_node_id') \
-                .eq('target_node_id', person_node_id) \
+            
+            person_node_id = person_node_res.data['id']
+            
+            # Count INVOLVES edges (task involvements)
+            involves_edges = supabase.table('graph_edges') \
+                .select('source_node_id, target_node_id') \
                 .eq('relationship', 'INVOLVES') \
+                .or_(f'source_node_id.eq.{person_node_id},target_node_id.eq.{person_node_id}') \
                 .execute()
-
-            if not edges.data:
-                continue
-
-            task_node_ids = [e['source_node_id'] for e in edges.data]
-
-            task_nodes = supabase.table('graph_nodes') \
-                .select('label, metadata') \
-                .in_('id', task_node_ids) \
-                .eq('type', 'task') \
-                .execute()
-
-            if not task_nodes.data:
-                continue
-
-            graph_task_ids = set()
-            for tn in task_nodes.data:
-                meta = tn.get('metadata') or {}
-                if isinstance(meta, str):
-                    try:
-                        meta = json.loads(meta)
-                    except:
-                        meta = {}
-                tid = meta.get('task_id')
-                if tid:
-                    graph_task_ids.add(int(tid))
-
-            active_task_map = {t['id']: t for t in active_tasks}
-            person_open_tasks = [
-                active_task_map[tid]
-                for tid in graph_task_ids
-                if tid in active_task_map
-            ]
-
-            if person_open_tasks:
-                task_titles = [f"  - {t.get('title', '')}" for t in person_open_tasks]
-                lines.append(f"{person_name}:\n" + "\n".join(task_titles))
-
-        if not lines:
-            return ""
-
-        return "GRAPH INTELLIGENCE — TASKS BY PERSON (for routing awareness only, do NOT list in briefing):\n" + "\n\n".join(lines)
-
+            
+            task_count = len(involves_edges.data or [])
+            
+            # Get recent email count for this person
+            email_count = 0
+            try:
+                email_res = supabase.table('emails') \
+                    .select('id', count='exact') \
+                    .or_(f'sender.ilike.%{person_name}%,linked_person_id.eq.{person_id}') \
+                    .execute()
+                email_count = email_res.count or 0
+            except:
+                pass
+            
+            # High-strategic person with low communication = suggestion
+            if strategic_weight >= 7 and email_count < 3 and task_count < 3:
+                comm_suggestions.append(f"  - {person_name}: Low communication (emails: {email_count}, tasks: {task_count}). Consider a sync.")
+            elif strategic_weight >= 5 and email_count == 0 and task_count > 0:
+                comm_suggestions.append(f"  - {person_name}: Has {task_count} tasks but no recent emails. May need update.")
+        
+        if comm_suggestions:
+            lines.append("👥 SOCIAL GRAPH INSIGHTS:")
+            lines.extend(comm_suggestions[:5])  # Cap at 5
+            return "\n".join(lines)
+        
+        return ""
+    
     except Exception as e:
-        print(f"⚠️ Graph task context fetch failed (non-critical): {e}")
+        print(f"⚠️ Social Graph Optimizer failed (non-critical): {e}")
+        return ""
+
+
+# ── AGENT 3: TEMPORAL PATTERN DETECTOR ────────────────────────────────
+
+async def detect_temporal_patterns() -> str:
+    """
+    TEMPORAL PATTERN DETECTOR: Surfaces 'On this day' insights from memories
+    and detects seasonal patterns in productivity/mood.
+    """
+    try:
+        from datetime import date
+        
+        today = date.today()
+        today_str = today.strftime("%B %d")
+        
+        # Search memories from same month/day in previous years
+        memories_res = supabase.table('memories') \
+            .select('content, memory_type, created_at') \
+            .or_(f"created_at.ilike.%{today.month:02}-{today.day:02}%") \
+            .order('created_at', desc=True) \
+            .limit(10) \
+            .execute()
+        
+        if not memories_res.data:
+            return ""
+        
+        lines = [f"📅 TEMPORAL PATTERNS (On this day {today_str}):"]
+        seen = set()
+        
+        for m in memories_res.data:
+            content = m.get('content', '')[:100]
+            mem_type = m.get('memory_type', '')
+            created = m.get('created_at', '')[:4]  # Just the year
+            
+            if content in seen:
+                continue
+            seen.add(content)
+            
+            lines.append(f"  - {created}: [{mem_type.upper()}] {content}...")
+        
+        if len(lines) > 1:
+            return "\n".join(lines[:6])  # Cap at 5 memories + header
+        
+        return ""
+    
+    except Exception as e:
+        print(f"⚠️ Temporal Pattern Detector failed (non-critical): {e}")
         return ""
 
 
@@ -1589,7 +1715,16 @@ async def process_pulse(auth_secret: str = None):
             newly_enriched_context = " | ".join(newly_enriched_lines)
         
         link_context = "None"
-
+        
+        # 🤖 AGENT 1: DEPENDENCY AGENT (uses graph_edges for task dependencies)
+        dependency_context = await check_task_dependencies(active_tasks)
+        
+        # 👥 AGENT 2: SOCIAL GRAPH OPTIMIZER (communication patterns)
+        social_graph_context = await analyze_communication_patterns(people)
+        
+        # 📅 AGENT 3: TEMPORAL PATTERN DETECTOR (on this day insights)
+        temporal_context = await detect_temporal_patterns()
+        
         # Fetch email-suggested tasks not yet shown in brief
         pending_email_tasks_res = supabase.table('email_pending_tasks')\
             .select('id, suggested_title, suggested_project, email_id')\
@@ -1650,9 +1785,18 @@ async def process_pulse(auth_secret: str = None):
 
         HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
         {hindsight_context}
-
+        
         GRAPH INTELLIGENCE {graph_task_context}
-
+        
+        DEPENDENCY ALERTS (from graph_edges):
+        {dependency_context if dependency_context else "None"}
+        
+        SOCIAL GRAPH INSIGHTS (communication patterns):
+        {social_graph_context if social_graph_context else "None"}
+        
+        TEMPORAL PATTERNS (on this day):
+        {temporal_context if temporal_context else "None"}
+        
         CANONICAL STRATEGIC TRUTH (The synthesized 'Latest Version' of projects):
         {master_page_context if master_page_context else "No Master Pages yet. Rely on raw context."}
 

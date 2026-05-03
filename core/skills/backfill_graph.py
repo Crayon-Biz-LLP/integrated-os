@@ -19,8 +19,11 @@ if not supabase_url or not supabase_key:
 supabase: Client = create_client(supabase_url, supabase_key)
 gemini_client = genai.Client(api_key=gemini_api_key)
 
-BATCH_SIZE = 20
-MEMORY_TYPES = ["Prophecy", "Psalm", "Prayer", "Journal", "archive", "canonical_page"]
+BATCH_SIZE = 50  # Process more memories per batch
+MEMORY_TYPES = [
+    "Prophecy", "Psalm", "Prayer", "Journal", "Sermon",
+    "archive", "canonical_page", "note", "outcome", "reflection"
+]
 
 
 def with_retry(fn, retries=3, base_delay=1, label="operation"):
@@ -80,19 +83,32 @@ def fetch_memories():
     
     known_entities = fetch_known_entities()
 
-    raw_dumps = fetch_all_paginated("raw_dumps", "id, content, created_at")
-    qualifying_dumps = [
-        {
-            "id": d["id"],
-            "content": d.get("content", ""),
-            "memory_type": "raw_dump",
-            "metadata": {},
-            "created_at": d.get("created_at")
-        }
-        for d in (raw_dumps or [])
-        if d["id"] not in processed_memory_ids
-        and dump_contains_known_entity(d.get("content", ""), known_entities)
-    ]
+    raw_dumps = fetch_all_paginated("raw_dumps", "id, content, created_at, metadata")
+    qualifying_dumps = []
+    for d in (raw_dumps or []):
+        if d["id"] in processed_memory_ids:
+            continue
+        content = d.get("content", "")
+        raw_meta = d.get("metadata")
+        meta = {}
+        if isinstance(raw_meta, str):
+            try:
+                meta = json.loads(raw_meta)
+            except:
+                meta = {}
+        elif isinstance(raw_meta, dict):
+            meta = raw_meta
+        # Include if it has NOTE intent OR contains known entity
+        is_note = meta.get("intent") == "NOTE"
+        has_entity = dump_contains_known_entity(content, known_entities)
+        if is_note or has_entity:
+            qualifying_dumps.append({
+                "id": d["id"],
+                "content": content,
+                "memory_type": "raw_dump",
+                "metadata": meta,
+                "created_at": d.get("created_at")
+            })
     memories = memories + qualifying_dumps
 
     return memories
@@ -458,7 +474,21 @@ def run_backfill():
         print(f"Completed batch {batch_num}")
     
     print(f"Graph backfill complete! Processed: {processed}, Skipped: {failed}")
-    
+
+    # Notify on failure via Telegram
+    if failed > 0:
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if telegram_chat_id and telegram_bot_token:
+            try:
+                import httpx
+                message = f"⚠️ Graph Backfill: {failed} items failed. Check GitHub Actions logs."
+                url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
+                payload = {"chat_id": int(telegram_chat_id), "text": message, "parse_mode": "Markdown"}
+                httpx.post(url, json=payload, timeout=10)
+            except Exception as e:
+                print(f"Telegram notify failed: {e}")
+
     backfill_orphaned_tasks()
 
 
