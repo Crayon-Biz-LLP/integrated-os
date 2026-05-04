@@ -962,14 +962,37 @@ def prune_memories(supabase):
     
     pruned = 0
     for mem in old_memories.data:
-        # Check if memory is referenced in graph_edges
+        # Check if memory is referenced in graph_edges via node metadata
+        # Nodes store memory_id in their metadata
+        nodes = supabase.table("graph_nodes") \
+            .select("id") \
+            .filter("metadata", "cs", f'"memory_id": "{mem["id"]}"') \
+            .execute()
+        
+        if not nodes.data:
+            # No graph node references this memory, safe to prune
+            try:
+                supabase.table("memories").update({
+                    "metadata": json.dumps({
+                        **json.loads(mem.get("metadata", "{}")),
+                        "pruned": True,
+                        "pruned_at": datetime.now().isoformat()
+                    })
+                }).eq("id", mem["id"]).execute()
+                pruned += 1
+            except Exception as e:
+                warning("backfill_graph", f"Pruning failed for {mem['id']}: {e}")
+            continue
+        
+        # Check if any of these nodes are referenced in edges
+        node_ids = [n["id"] for n in nodes.data]
         edges = supabase.table("graph_edges") \
             .select("id") \
-            .eq("source_node_id", mem["id"]) \
+            .in_("source_node_id", node_ids) \
             .execute()
         
         if not edges.data:
-            # Not connected to graph, safe to prune
+            # Nodes not connected to graph, safe to prune
             try:
                 supabase.table("memories").update({
                     "metadata": json.dumps({

@@ -12,7 +12,22 @@ from google import genai
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
-from audit_logger import audit_log_sync
+
+# Import audit_logger (with robust path handling for Vercel)
+try:
+    from audit_logger import audit_log_sync
+except ImportError:
+    try:
+        # Try as core.audit_logger (for Vercel deployment)
+        from core.audit_logger import audit_log_sync
+    except ImportError:
+        # Fallback: define local version
+        def audit_log_sync(service, level, message, metadata=None):
+            print(f"[{level}] {service}: {message}")
+        import sys
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
 
 # Import versioned_update from pulse (with robust path handling for vercel)
 try:
