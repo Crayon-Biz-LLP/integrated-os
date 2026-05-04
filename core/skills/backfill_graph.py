@@ -966,7 +966,7 @@ def prune_memories(supabase):
         # Nodes store memory_id in their metadata
         nodes = supabase.table("graph_nodes") \
             .select("id") \
-            .filter("metadata", "cs", f'"memory_id": "{mem["id"]}"') \
+            .filter("metadata", "cs", json.dumps({"memory_id": str(mem["id"])})) \
             .execute()
         
         if not nodes.data:
