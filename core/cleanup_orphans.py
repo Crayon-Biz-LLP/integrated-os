@@ -33,11 +33,11 @@ def cleanup_orphan_graph_edges():
     """Remove graph_edges pointing to non-existent nodes."""
     print("🔍 Checking for orphaned graph_edges...")
     
-    # Fetch all valid node IDs
+    # With CASCADE foreign keys, this should now be rare
+    # But keeping as safety net
     nodes = supabase.table("graph_nodes").select("id").execute()
     valid_node_ids = {n["id"] for n in (nodes.data or [])}
     
-    # Fetch all edges
     edges = supabase.table("graph_edges").select("id, source_node_id, target_node_id").execute()
     
     orphan_edges = []
@@ -46,8 +46,11 @@ def cleanup_orphan_graph_edges():
             orphan_edges.append(edge["id"])
     
     if orphan_edges:
-        print(f"  Found {len(orphan_edges)} orphaned edges")
+        print(f"  Found {len(orphan_edges)} orphaned edges (THIS SHOULD BE RARE WITH CASCADE)")
         if "--dry-run" not in sys.argv:
+            # Log before delete for investigation
+            for eid in orphan_edges:
+                audit_log_sync("cleanup", "WARNING", f"Orphaned edge found: {eid}")
             supabase.table("graph_edges").delete().in_("id", orphan_edges).execute()
             print(f"  ✅ Deleted {len(orphan_edges)} orphaned edges")
     else:
@@ -109,16 +112,16 @@ def cleanup_orphan_memories():
 
 
 def cleanup_orphan_raw_dumps():
-    """Remove raw_dumps with no associated data."""
+    """Remove raw_dumps older than 90 days (aligned with memories pruning window)."""
     print("🔍 Checking for orphaned raw_dumps...")
     
-    # Delete completed raw_dumps older than 7 days
-    sevendays_ago = (datetime.now()).isoformat()
+    # Delete old raw_dumps (90 days to align with memories pruning)
+    ninety_days_ago = (datetime.now() - timedelta(days=90)).isoformat()
     
     old_dumps = supabase.table("raw_dumps") \
         .select("id") \
         .eq("status", "completed") \
-        .lt("created_at", sevendays_ago) \
+        .lt("created_at", ninety_days_ago) \
         .execute()
     
     if old_dumps.data:

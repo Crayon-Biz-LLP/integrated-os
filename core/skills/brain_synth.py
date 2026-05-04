@@ -67,11 +67,16 @@ async def run_batch_sweep():
         print(f"🔍 Checking canonical page freshness...")
         stale_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
         stale_pages = supabase.table('canonical_pages') \
-            .select('title, last_synth_at') \
+            .select('title, last_synth_at, project_id') \
             .lt('last_synth_at', stale_threshold.isoformat()) \
             .execute()
         if stale_pages.data:
             print(f"⚠️ {len(stale_pages.data)} stale pages detected: {[p['title'] for p in stale_pages.data]}")
+            # Mark stale pages for re-synthesis by adding to batch_payload
+            for p in stale_pages.data:
+                # Check if already in entities list
+                if not any(e[0] == p.get('project_id') for e in entities):
+                    entities.append((p.get('project_id'), p['title']))
 
         # 2. COLLECT
         print(f"📡 Gathering fragments for {len(entities)} entities...")

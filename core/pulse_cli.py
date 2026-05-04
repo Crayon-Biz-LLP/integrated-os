@@ -29,8 +29,8 @@ from audit_logger import info, warning, error
 
 
 def cleanup_raw_dumps():
-    """Remove raw_dumps older than 30 days"""
-    info("pulse_cli", "Starting raw_dumps cleanup (30+ days)")
+    """Remove raw_dumps older than 90 days (aligned with memories pruning window)"""
+    info("pulse_cli", "Starting raw_dumps cleanup (90+ days)")
     
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -41,15 +41,15 @@ def cleanup_raw_dumps():
     
     supabase = create_client(supabase_url, supabase_key)
     
-    # Calculate cutoff date (30 days ago)
-    cutoff = (datetime.now() - timedelta(days=30)).isoformat()
+    # Calculate cutoff date (90 days ago)
+    cutoff = (datetime.now() - timedelta(days=90)).isoformat()
     
     # Delete old raw_dumps
     result = supabase.table("raw_dumps").delete().lt("created_at", cutoff).execute()
     count = len(result.data) if result.data else 0
     
-    info("pulse_cli", f"Cleaned up {count} raw_dumps older than 30 days")
-    print(f"✓ Cleaned up {count} raw_dumps older than 30 days")
+    info("pulse_cli", f"Cleaned up {count} raw_dumps older than 90 days")
+    print(f"✓ Cleaned up {count} raw_dumps older than 90 days")
 
 
 def compact_memories():

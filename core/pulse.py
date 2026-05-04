@@ -638,6 +638,70 @@ def get_embedding(text: str) -> list:
         audit_log_sync("pulse", "ERROR", f"Embedding error: {e}")
         return [0] * EMBEDDING_DIMENSION
 
+
+async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -> str:
+    """
+    Retrieve recent memories semantically related to today's tasks.
+    Uses task titles to query match_memories RPC for relevant past insights.
+    """
+    if not tasks:
+        return ""
+    
+    # Collect unique project contexts
+    project_ids = list(set([
+        t.get('project_id') for t in tasks 
+        if t.get('project_id') and t.get('status') not in ['done', 'cancelled']
+    ]))
+    
+    if not project_ids:
+        return ""
+    
+    # Build query from task titles
+    query_text = " ".join([
+        t.get('title', '') for t in tasks[:5]  # Top 5 tasks
+        if t.get('title')
+    ])
+    
+    if not query_text.strip():
+        return ""
+    
+    try:
+        # Generate embedding for the query
+        query_embedding = await asyncio.to_thread(get_embedding, query_text)
+        
+        if not query_embedding or all(v == 0 for v in query_embedding):
+            return ""
+        
+        # Semantic search for relevant memories (last 30 days)
+        from datetime import timedelta
+        thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        
+        memories_res = supabase.rpc('match_memories', {
+            'query_embedding': query_embedding,
+            'match_threshold': 0.7,
+            'match_count': max_memories,
+            'filter': {'created_at': {'gte': thirty_days_ago}}  # Last 30 days
+        }).execute()
+        
+        if not memories_res.data:
+            return ""
+        
+        # Format memories for briefing context
+        memory_entries = []
+        for m in memories_res.data:
+            memory_type = m.get('memory_type', 'note')
+            content = m.get('content', '')[:200]  # Truncate to 200 chars
+            memory_entries.append(f"[{memory_type.upper()}] {content}")
+        
+        result = "\n".join(memory_entries)
+        print(f"🧠 Retrieved {len(memories_res.data)} relevant memories for briefing")
+        return result
+        
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"Recent memories retrieval failed: {e}")
+        return ""
+
+
 async def hybrid_search_graph(query: str) -> str:
     """Graph-first search: Find primary entity and its connections."""
     try:
@@ -1283,10 +1347,17 @@ async def batch_enrich_resources():
                     mission_keywords = mission['title'].lower().split()
                     match_score = sum(1 for kw in mission_keywords if kw in resource_text)
                     if match_score >= 2:
-                        supabase.table('resources').update({
-                            "mission_id": mission['id']
-                        }).eq('id', resource['id']).execute()
-                        print(f"🔗 Linked resource '{resource.get('title')}' → mission '{mission['title']}'")
+                        # Use versioned_update for mission linking (creates history)
+                        versioned_update(
+                            table_name='resources',
+                            record_id=resource['id'],
+                            update_data={"mission_id": mission['id']},
+                            user_id=None,
+                            change_source='pulse_mission_resolver',
+                            change_reason=f"Linked to mission: {mission['title']}"
+                        )
+                        audit_log_sync("pulse", "INFO", 
+                            f"🔗 Linked resource '{resource.get('title')}' → mission '{mission['title']}'")
                         break
         except Exception as e:
             audit_log_sync("pulse", "WARNING", f"⚠️ Mission resolver error: {e}")
@@ -1648,12 +1719,14 @@ async def update_heartbeat():
 async def check_pipeline_health() -> str:
     """
     Returns a health report of the memory pipeline.
-    Checks: pending dumps, null embeddings, failed items.
+    Checks: pending/processing dumps, null embeddings, failed items.
     """
     lines = []
     try:
         # Check for stuck dumps (pending > 2 hours)
         two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        
+        # Check pending dumps
         stuck_res = supabase.table('raw_dumps') \
             .select('id', count='exact') \
             .eq('status', 'pending') \
@@ -1662,6 +1735,32 @@ async def check_pipeline_health() -> str:
         stuck_count = stuck_res.count or 0
         if stuck_count > 0:
             lines.append(f"⚠️ {stuck_count} raw_dumps stuck in 'pending' > 2h")
+        
+        # Check processing dumps (stuck > 10 minutes)
+        ten_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        processing_res = supabase.table('raw_dumps') \
+            .select('id', count='exact') \
+            .eq('status', 'processing') \
+            .lt('created_at', ten_mins_ago) \
+            .execute()
+        processing_count = processing_res.count or 0
+        if processing_count > 0:
+            lines.append(f"⚠️ {processing_count} raw_dumps stuck in 'processing' > 10min")
+            # Send Telegram alert
+            try:
+                telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+                if telegram_chat_id and telegram_bot_token:
+                    import httpx
+                    url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
+                    payload = {
+                        "chat_id": int(telegram_chat_id),
+                        "text": f"⚠️ HEALTH ALERT: {processing_count} raw_dumps stuck in 'processing' > 10min",
+                        "parse_mode": "Markdown"
+                    }
+                    httpx.post(url, json=payload, timeout=10)
+            except Exception as alert_e:
+                audit_log_sync("pulse", "WARNING", f"Failed to send Telegram alert: {alert_e}")
         
         # Check for null embeddings in recent memories
         seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
@@ -2283,6 +2382,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         
         link_context = "None"
         
+        # 🧠 RECENT MEMORIES (semantic search based on today's tasks)
+        recent_memories_context = await get_recent_memories_for_briefing(filtered_tasks)
+        
         # 🤖 AGENT 1: DEPENDENCY AGENT (uses graph_edges for task dependencies)
         dependency_context = await check_task_dependencies(active_tasks)
         
@@ -2355,7 +2457,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         STALE_TASKS: {stale_context}
         SYSTEM STATUS: {system_context}
         HINDSIGHT_STALE: {is_hindsight_stale}
-
+        
+        RECENT MEMORIES (semantically related to today's tasks):
+        {recent_memories_context if recent_memories_context else "None"}
+        
         HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
         {hindsight_context}
         
@@ -2795,7 +2900,15 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 # REMOVE the 'if' here to allow clearing the time
                 update_payload["reminder_at"] = new_reminder 
 
-                supabase.table('tasks').update(update_payload).eq('id', target_id).execute()
+                # Use versioned_update for task status changes (creates history)
+                versioned_update(
+                    table_name='tasks',
+                    record_id=target_id,
+                    update_data=update_payload,
+                    user_id=None,
+                    change_source='pulse_task_update',
+                    change_reason=f"Status: {item_status}, reminder: {new_reminder}"
+                )
                 
                 # 🧠 Outcome memory with project context
                 if item_status == 'done':
@@ -3044,8 +3157,22 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                             update_payload = {}
                             if g_id: update_payload['google_task_id'] = g_id
                             if e_id: update_payload['google_event_id'] = e_id
-                            supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
-                            print(f"🔄 Updated task {task_id} with Google IDs. (fallback)")
+                            # Still use versioned_update in fallback (with minimal data)
+                            try:
+                                versioned_update(
+                                    table_name='tasks',
+                                    record_id=task_id,
+                                    update_data=update_payload,
+                                    user_id=None,
+                                    change_source='pulse_google_sync',
+                                    change_reason='Google ID sync (fallback from versioning error)'
+                                )
+                            except Exception as ve2:
+                                # Last resort: direct update
+                                supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
+                                audit_log_sync("pulse", "WARNING", 
+                                    f"🔄 Direct update for task {task_id} (versioning failed twice)")
+                            audit_log_sync("pulse", "INFO", f"🔄 Updated task {task_id} with Google IDs. (fallback)")
 
         # G. CLEANUP & LOGS
         if ai_data.get('logs'):
