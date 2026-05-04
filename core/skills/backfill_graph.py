@@ -9,7 +9,10 @@ from dotenv import load_dotenv
 from google import genai
 
 # Add parent directory for importing from pulse.py
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# __file__ = .../core/skills/backfill_graph.py
+# We need to add .../core/ to path so `import pulse` works
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 
 # Import add_to_failed_queue from pulse.py
 try:
