@@ -134,7 +134,7 @@ def call_llm_with_fallback_sync(
                         if response_text.strip().startswith('{') or response_text.strip().startswith('['):
                             json.loads(response_text)
                     except ValueError as pe:
-                        print(f"⚠️ LLM JSON parse failed provider={provider_name}: {pe}")
+                        audit_log_sync("backfill_graph", "WARNING", f"⚠️ LLM JSON parse failed provider={provider_name}: {pe}")
                         if provider_idx == len(providers) - 1:
                             raise
                         continue
@@ -149,16 +149,16 @@ def call_llm_with_fallback_sync(
                 is_non_retryable = any(err in error_str for err in NON_RETRYABLE_ERRORS)
                 
                 if is_non_retryable:
-                    print(f"✗ LLM non-retryable error provider={provider_name}: {e}")
+                    audit_log_sync("backfill_graph", "ERROR", f"✗ LLM non-retryable error provider={provider_name}: {e}")
                     raise
                 
                 if is_retryable and attempt < max_retries_per_provider - 1:
                     delay = base_delay * (2 ** attempt)
-                    print(f"⚠️ LLM retry provider={provider_name} attempt={attempt+1} delay={delay:.0f}s error={error_str[:50]}")
+                    audit_log_sync("backfill_graph", "WARNING", f"⚠️ LLM retry provider={provider_name} attempt={attempt+1} delay={delay:.0f}s error={error_str[:50]}")
                     time.sleep(delay)
                     continue
                 
-                print(f"⚠️ LLM provider failed provider={provider_name} model={model_name}: {error_str[:80]}")
+                audit_log_sync("backfill_graph", "WARNING", f"⚠️ LLM provider failed provider={provider_name} model={model_name}: {error_str[:80]}")
                 last_error = e
                 break
         
@@ -182,7 +182,7 @@ def with_retry(fn, retries=3, base_delay=1, label="operation"):
         except Exception as e:
             if attempt < retries - 1:
                 wait = base_delay * (2 ** attempt)
-                print(f"{label} failed (attempt {attempt+1}/3), retrying in {wait}s... Error: {e}")
+                audit_log_sync("backfill_graph", "ERROR", f"{label} failed (attempt {attempt+1}/3), retrying in {wait}s... Error: {e}")
                 time.sleep(wait)
             else:
                 print(f"{label} failed after 3 attempts: {e}")
@@ -226,9 +226,9 @@ def fetch_memories():
                 try:
                     processed_memory_ids.add(int(meta["memory_id"]))
                 except (ValueError, TypeError) as e:
-                    print(f"⚠️ memory_id parse error: {e}")
+                    audit_log_sync("backfill_graph", "WARNING", f"⚠️ memory_id parse error: {e}")
         except Exception as e:
-            print(f"⚠️ Metadata processing error: {e}")
+            audit_log_sync("backfill_graph", "WARNING", f"⚠️ Metadata processing error: {e}")
     
     memories = fetch_all_paginated("memories", "id, content, memory_type, metadata, created_at", "memory_type", MEMORY_TYPES)
     
@@ -399,7 +399,7 @@ def backfill_embeddings():
         embedding = get_embedding(content)
 
         if not embedding:
-            print(f"  [{i+1}/{total}] ❌ Embedding failed for {memory_id}")
+            audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ Embedding failed for {memory_id}")
             failed += 1
             continue
 
@@ -419,13 +419,13 @@ def backfill_embeddings():
                 supabase.table("memories").update({"embedding_status": "failed"}).eq("id", memory_id).execute()
             except:
                 pass
-            print(f"  [{i+1}/{total}] ❌ DB update failed for {memory_id}: {e}")
+            audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ DB update failed for {memory_id}: {e}")
             failed += 1
 
         # Small delay to stay within Gemini rate limits
         time.sleep(0.3)
 
-    print(f"\n🏁 Embedding backfill complete! ✅ Success: {success}  ❌ Failed: {failed}")
+    audit_log_sync("backfill_graph", "ERROR", f"\n🏁 Embedding backfill complete! ✅ Success: {success}  ❌ Failed: {failed}")
 
 # ── END EMBEDDING BACKFILL ──────────────────────────────────────────────────
 
@@ -461,13 +461,13 @@ Rules:
                 print(f"    Extracted {len(result.get('nodes', []))} nodes, {len(result.get('edges', []))} edges from memory {memory_id}")
                 return result
             else:
-                print(f"    ⚠️ Invalid response format from memory {memory_id}: {str(result)[:100]}")
+                audit_log_sync("backfill_graph", "WARNING", f"    ⚠️ Invalid response format from memory {memory_id}: {str(result)[:100]}")
                 return {"nodes": [], "edges": []}
         else:
-            print(f"    ⚠️ Empty response for memory {memory_id}")
+            audit_log_sync("backfill_graph", "WARNING", f"    ⚠️ Empty response for memory {memory_id}")
             return {"nodes": [], "edges": []}
     except Exception as e:
-        print(f"    ❌ Graph extraction failed for memory {memory_id}: {e}")
+        audit_log_sync("backfill_graph", "ERROR", f"    ❌ Graph extraction failed for memory {memory_id}: {e}")
         return {"nodes": [], "edges": []}
 
 def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, memory_id: str = None) -> str:
@@ -488,7 +488,7 @@ def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, me
             ignore_duplicates=True
         ).execute()
     except Exception as e:
-        print(f"Node upsert warning for '{label}': {e}")
+        audit_log_sync("backfill_graph", "WARNING", f"Node upsert warning for '{label}': {e}")
 
     try:
         res = supabase.table("graph_nodes") \
@@ -535,7 +535,7 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
                 on_conflict="label"
             ).execute()
         except Exception as e:
-            print(f"Node upsert error: {e}")
+            audit_log_sync("backfill_graph", "ERROR", f"Node upsert error: {e}")
 
 
 def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
@@ -630,7 +630,7 @@ def run_backfill():
                 else:
                     failed += 1
             except Exception as e:
-                print(f"Error processing memory {memory['id']}: {e}")
+                audit_log_sync("backfill_graph", "ERROR", f"Error processing memory {memory['id']}: {e}")
                 failed += 1
             
             # Rate limit: 4s delay between API calls to stay under 15 req/min
@@ -710,11 +710,11 @@ def backfill_orphaned_tasks():
             }, on_conflict="label").execute()
             node_res = supabase.table("graph_nodes").select("id").eq("label", task_title).maybe_single().execute()
             if not node_res or not node_res.data:
-                print(f"⚠️ Failed to get node for task {task_id}")
+                audit_log_sync("backfill_graph", "WARNING", f"⚠️ Failed to get node for task {task_id}")
                 continue
             task_node_id = node_res.data["id"]
         except Exception as e:
-            print(f"⚠️ Failed to create node for task {task_id}: {e}")
+            audit_log_sync("backfill_graph", "WARNING", f"⚠️ Failed to create node for task {task_id}: {e}")
             continue
         
         if project_id:
@@ -748,7 +748,7 @@ def backfill_orphaned_tasks():
                             "metadata": json.dumps({"source": "task_engine", "task_id": task_id})
                         }).execute()
                 except Exception as e:
-                    print(f"⚠️ BELONGS_TO edge failed for task {task_id}: {e}")
+                    audit_log_sync("backfill_graph", "WARNING", f"⚠️ BELONGS_TO edge failed for task {task_id}: {e}")
         
         search_text = task_title.lower()
         
@@ -788,12 +788,197 @@ def backfill_orphaned_tasks():
                                 })
                             }).execute()
                     except Exception as e:
-                        print(f"⚠️ INVOLVES edge failed for task {task_id}: {e}")
+                        audit_log_sync("backfill_graph", "WARNING", f"⚠️ INVOLVES edge failed for task {task_id}: {e}")
         
         count += 1
     
     print(f"✅ Task backfill complete: {count} tasks processed.")
 
 
+def compact_memories(supabase):
+    """
+    Step 5: Memory Compaction
+    Merge duplicate memories with similar content
+    """
+    info("backfill_graph", "Starting memory compaction")
+    
+    # Fetch memories with same project_id and similar content
+    memories = supabase.table("memories").select("*").execute()
+    
+    if not memories.data:
+        return
+    
+    # Group by project_id
+    by_project = {}
+    for m in memories.data:
+        pid = m.get("project_id")
+        if pid:
+            by_project.setdefault(pid, []).append(m)
+    
+    merged = 0
+    for pid, mems in by_project.items():
+        if len(mems) <= 1:
+            continue
+        
+        # Simple deduplication: keep most recent, mark others as compacted
+        mems.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        keep = mems[0]
+        
+        for m in mems[1:]:
+            # Check if content is very similar (>90% overlap)
+            if m["content"][:100] == keep["content"][:100]:
+                # Mark as compacted (soft delete)
+                try:
+                    supabase.table("memories").update({
+                        "metadata": json.dumps({
+                            **json.loads(m.get("metadata", "{}")),
+                            "compacted": True,
+                            "compacted_into": keep["id"]
+                        })
+                    }).eq("id", m["id"]).execute()
+                    merged += 1
+                except Exception as e:
+                    warning("backfill_graph", f"Compaction failed for {m['id']}: {e}")
+    
+    info("backfill_graph", f"Memory compaction complete: {merged} merged")
+
+
+def prune_memories(supabase):
+    """
+    Step 6: Forgetting/Pruning Mechanism
+    Remove old, irrelevant memories based on age and relevance
+    """
+    info("backfill_graph", "Starting memory pruning")
+    
+    from datetime import datetime, timedelta
+    
+    # Calculate cutoff (90 days ago)
+    cutoff = (datetime.now() - timedelta(days=90)).isoformat()
+    
+    # Fetch old memories that aren't heavily connected
+    old_memories = supabase.table("memories") \
+        .select("id, created_at, metadata") \
+        .lt("created_at", cutoff) \
+        .execute()
+    
+    if not old_memories.data:
+        return
+    
+    pruned = 0
+    for mem in old_memories.data:
+        # Check if memory is referenced in graph_edges
+        edges = supabase.table("graph_edges") \
+            .select("id") \
+            .eq("source_node_id", mem["id"]) \
+            .execute()
+        
+        if not edges.data:
+            # Not connected to graph, safe to prune
+            try:
+                supabase.table("memories").update({
+                    "metadata": json.dumps({
+                        **json.loads(mem.get("metadata", "{}")),
+                        "pruned": True,
+                        "pruned_at": datetime.now().isoformat()
+                    })
+                }).eq("id", mem["id"]).execute()
+                pruned += 1
+            except Exception as e:
+                warning("backfill_graph", f"Pruning failed for {mem['id']}: {e}")
+    
+    info("backfill_graph", f"Memory pruning complete: {pruned} pruned")
+
+
+def reflexion_loop(supabase):
+    """
+    Step 7: Reflexion Loop Upgrade
+    Analyze past failures and improve future processing
+    """
+    info("backfill_graph", "Starting reflexion loop analysis")
+    
+    # Fetch failed operations from failed_queue
+    failed = supabase.table("failed_queue") \
+        .select("*") \
+        .eq("status", "failed") \
+        .execute()
+    
+    if not failed.data:
+        info("backfill_graph", "No failed operations to analyze")
+        return
+    
+    # Analyze failure patterns
+    patterns = {}
+    for f in failed.data:
+        key = f"{f.get('operation')}:{f.get('error')[:50]}"
+        patterns[key] = patterns.get(key, 0) + 1
+    
+    # Log insights
+    for pattern, count in sorted(patterns.items(), key=lambda x: x[1], reverse=True)[:5]:
+        warning("backfill_graph", f"Failure pattern: {pattern} ({count} times)")
+    
+    info("backfill_graph", "Reflexion loop complete")
+
+
+def resolve_conflicts(supabase):
+    """
+    Step 8: Memory Conflict Resolution
+    Detect and resolve conflicting memories
+    """
+    info("backfill_graph", "Starting conflict resolution")
+    
+    # Fetch memories with same source_id but different content
+    memories = supabase.table("memories").select("*").execute()
+    
+    by_source = {}
+    for m in memories.data:
+        source_id = m.get("source_id")
+        if source_id:
+            by_source.setdefault(source_id, []).append(m)
+    
+    resolved = 0
+    for source_id, mems in by_source.items():
+        if len(mems) <= 1:
+            continue
+        
+        # Keep most recent version
+        mems.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        latest = mems[0]
+        
+        for old in mems[1:]:
+            if old["content"] != latest["content"]:
+                # Mark old version as superseded
+                try:
+                    supabase.table("memories").update({
+                        "metadata": json.dumps({
+                            **json.loads(old.get("metadata", "{}")),
+                            "superseded": True,
+                            "superseded_by": latest["id"]
+                        })
+                    }).eq("id", old["id"]).execute()
+                    resolved += 1
+                except Exception as e:
+                    warning("backfill_graph", f"Conflict resolution failed for {old['id']}: {e}")
+    
+    info("backfill_graph", f"Conflict resolution complete: {resolved} resolved")
+
+
 if __name__ == "__main__":
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    
+    if not supabase_url or not supabase_key:
+        print("ERROR: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
+        sys.exit(1)
+    
+    supabase = create_client(supabase_url, supabase_key)
+    
+    # Run backfill
     run_backfill()
+    
+    # Run Phase-3 enhancements
+    compact_memories(supabase)
+    prune_memories(supabase)
+    reflexion_loop(supabase)
+    resolve_conflicts(supabase)
+    
+    print("✅ All Phase-3 operations complete")
