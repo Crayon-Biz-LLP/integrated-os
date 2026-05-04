@@ -3,9 +3,23 @@ import json
 import time
 import uuid
 import httpx
+import sys
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from google import genai
+
+# Add parent directory for importing from pulse.py
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import add_to_failed_queue from pulse.py
+try:
+    from pulse import add_to_failed_queue
+except ImportError:
+    # Fallback: define a local version if import fails
+    async def add_to_failed_queue(source_table: str, source_id: str, operation: str, error_message: str):
+        print(f"Failed queue: {source_table}:{source_id} - {error_message}")
+        return
+
 
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
 load_dotenv(dotenv_path)
@@ -419,6 +433,23 @@ def backfill_embeddings():
                 supabase.table("memories").update({"embedding_status": "failed"}).eq("id", memory_id).execute()
             except:
                 pass
+            
+            # Add to failed queue for retry (use sync version)
+            try:
+                # Since backfill_graph.py is sync, we need to handle the async function
+                import asyncio
+                if asyncio.get_event_loop().is_running():
+                    asyncio.create_task(
+                        add_to_failed_queue("memories", str(memory_id), "embedding_backfill", str(e))
+                    )
+                else:
+                    # Run in new event loop
+                    asyncio.run(
+                        add_to_failed_queue("memories", str(memory_id), "embedding_backfill", str(e))
+                    )
+            except Exception as qe:
+                audit_log_sync("backfill_graph", "WARNING", f"Failed to add to queue: {qe}")
+            
             audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ DB update failed for {memory_id}: {e}")
             failed += 1
 
@@ -470,39 +501,54 @@ Rules:
         audit_log_sync("backfill_graph", "ERROR", f"    ❌ Graph extraction failed for memory {memory_id}: {e}")
         return {"nodes": [], "edges": []}
 
-def get_or_create_node(label: str, graph_entities: dict, created_nodes: dict, memory_id: str = None) -> str:
+def get_or_create_node(label: str, node_type: str, graph_entities: dict, created_nodes: dict, memory_id: str = None) -> str:
+    """
+    Get or create a graph node with proper type handling.
+    If node exists, updates its type to match the latest extracted type.
+    """
     if label in created_nodes:
         return created_nodes[label]
-
+    
+    # Check if already in graph_entities (DB cache)
     if label in graph_entities:
         node_id = graph_entities[label]["id"]
+        # Update type if different
+        existing_type = graph_entities[label].get("type", "concept")
+        if existing_type != node_type:
+            try:
+                supabase.table("graph_nodes").update({"type": node_type}).eq("id", node_id).execute()
+                graph_entities[label]["type"] = node_type
+                audit_log_sync("backfill_graph", "INFO", 
+                    f"Updated node '{label}' type: {existing_type} → {node_type}")
+            except Exception as e:
+                audit_log_sync("backfill_graph", "WARNING", f"Node type update failed for '{label}': {e}")
         created_nodes[label] = node_id
         return node_id
-
-    node_type = "concept"
-
+    
+    # Node doesn't exist - create it
     try:
-        supabase.table("graph_nodes").upsert(
-            {"label": label, "type": node_type},
-            on_conflict="label",
-            ignore_duplicates=True
+        result = supabase.table("graph_nodes").upsert(
+            {"label": label, "type": node_type, "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})},
+            on_conflict="label"
         ).execute()
+        
+        if result.data:
+            node_id = result.data[0]["id"]
+        else:
+            # Fetch the created/updated node
+            res = supabase.table("graph_nodes") \
+                .select("id") \
+                .eq("label", label) \
+                .single() \
+                .execute()
+            node_id = res.data["id"] if res.data else None
     except Exception as e:
-        audit_log_sync("backfill_graph", "WARNING", f"Node upsert warning for '{label}': {e}")
-
-    try:
-        res = supabase.table("graph_nodes") \
-            .select("id") \
-            .eq("label", label) \
-            .single() \
-            .execute()
-        node_id = res.data["id"] if res.data else None
-    except Exception as e:
-        print(f"Node fetch failed for '{label}': {e}")
+        audit_log_sync("backfill_graph", "WARNING", f"Node upsert failed for '{label}': {e}")
         return None
-
+    
     if node_id:
         created_nodes[label] = node_id
+        graph_entities[label] = {"id": node_id, "type": node_type}
     return node_id
 
 def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
@@ -514,15 +560,21 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         label = node.get("label", "")
         node_type = node.get("type", "concept")
         
+        existing = graph_entities.get(label, {})
+        existing_id = existing.get("id")
+        existing_type = existing.get("type", "concept")
+        
         record = {
             "label": label,
-            "type": node_type,
+            "type": node_type,  # Always use latest extracted type
             "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
         }
         
-        existing_id = graph_entities.get(label, {}).get("id")
         if existing_id:
             record["id"] = existing_id
+            # If type changed, update it
+            if existing_type != node_type:
+                record["type"] = node_type
         else:
             record["id"] = str(uuid.uuid4())
             
@@ -534,11 +586,18 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
                 node_records,
                 on_conflict="label"
             ).execute()
+            # Update local cache
+            for node in node_records:
+                graph_entities[node["label"]] = {"id": node["id"], "type": node["type"]}
         except Exception as e:
             audit_log_sync("backfill_graph", "ERROR", f"Node upsert error: {e}")
 
 
 def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
+    """Insert edges with validation - skip if source/target node doesn't exist."""
+    valid_edges = 0
+    orphaned = 0
+    
     for edge in edges:
         source_label = edge.get("source", "")
         target_label = edge.get("target", "")
@@ -547,9 +606,27 @@ def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
         source_id = node_label_to_id.get(source_label)
         target_id = node_label_to_id.get(target_label)
         
+        # VALIDATION: Skip if nodes don't exist in DB
         if not source_id or not target_id:
+            audit_log_sync("backfill_graph", "WARNING", 
+                f"Skipping edge {source_label}->{target_label}: missing node ID")
+            orphaned += 1
             continue
         
+        # Additional validation: Check if nodes actually exist in DB
+        try:
+            source_check = supabase.table("graph_nodes").select("id").eq("id", source_id).execute()
+            target_check = supabase.table("graph_nodes").select("id").eq("id", target_id).execute()
+            
+            if not source_check.data or not target_check.data:
+                audit_log_sync("backfill_graph", "WARNING", 
+                    f"Skipping edge: node doesn't exist in DB")
+                orphaned += 1
+                continue
+        except Exception as ve:
+            audit_log_sync("backfill_graph", "WARNING", f"Node validation failed: {ve}")
+            continue
+            
         try:
             supabase.table("graph_edges").upsert({
                 "source_node_id": source_id,
@@ -587,12 +664,13 @@ def process_memory(memory: dict, graph_entities: dict) -> bool:
     node_label_to_id = {}
     for node in nodes:
         label = node.get("label", "")
-        node_id = get_or_create_node(label, graph_entities, created_nodes, memory_id)
+        node_type = node.get("type", "concept")
+        node_id = get_or_create_node(label, node_type, graph_entities, created_nodes, memory_id)
         if node_id:
             node_label_to_id[label] = node_id
     
     if not node_label_to_id:
-        danny_id = get_or_create_node("Danny", graph_entities, created_nodes)
+        danny_id = get_or_create_node("Danny", "person", graph_entities, created_nodes, memory_id)
         if danny_id:
             node_label_to_id["Danny"] = danny_id
     
