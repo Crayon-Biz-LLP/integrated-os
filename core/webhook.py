@@ -13,6 +13,11 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
 
+# Import versioned_update from pulse
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pulse import versioned_update
+
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -105,7 +110,7 @@ async def trigger_github_pulse() -> bool:
                 return False
                 
     except Exception as e:
-        print(f"ERROR triggering GitHub pulse: {e}")
+        audit_log_sync("webhook", "ERROR", f"ERROR triggering GitHub pulse: {e}")
         return False
 
 
@@ -138,7 +143,7 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
             should_retry = any(err in error_str for err in retryable_errors)
             if should_retry and attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt)
-                print(f"⚠️ Gemini 503 error, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
+                audit_log_sync("webhook", "WARNING", f"⚠️ Gemini 503 error, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
                 await asyncio.sleep(delay)
                 continue
             else:
@@ -157,7 +162,7 @@ def get_embedding(text: str) -> list:
         )
         return result.embeddings[0].values
     except Exception as e:
-        print(f"Embedding error: {e}")
+        audit_log_sync("webhook", "ERROR", f"Embedding error: {e}")
         return [0] * EMBEDDING_DIMENSION
 
 
@@ -226,7 +231,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         result = json.loads(clean_json)
         return result
     except Exception as e:
-        print(f"Classification parse error: {e}")
+        audit_log_sync("webhook", "ERROR", f"Classification parse error: {e}")
         return {"intent": "NOTE", "confidence": 0.8, "receipt": "Manual correction secured in the vault."}
 
 
@@ -395,7 +400,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
         return {"tasks": task_count, "notes": note_count}
     
     except Exception as e:
-        print(f"Multimodal processing error: {e}")
+        audit_log_sync("webhook", "ERROR", f"Multimodal processing error: {e}")
         ack = "Something went wrong. Try sending as text."
         await send_telegram(chat_id, f"⚠️ {ack}")
         return {"tasks": 0, "notes": 0}
@@ -491,7 +496,7 @@ async def hybrid_search_graph(query: str) -> str:
         return ""
     
     except Exception as e:
-        print(f"Hybrid search error: {e}")
+        audit_log_sync("webhook", "ERROR", f"Hybrid search error: {e}")
         return ""
 
 
@@ -590,7 +595,7 @@ Provide a clear, concise answer. Format with Markdown. If referencing a specific
         await send_telegram(chat_id, f"🧠 *Brain Interrogation:*\n\n{answer}")
         
     except Exception as e:
-        print(f"Interrogation error: {e}")
+        audit_log_sync("webhook", "ERROR", f"Interrogation error: {e}")
         await send_telegram(chat_id, "⚠️ *Search failed.*\n\n_Try again._")
 
 
@@ -681,22 +686,20 @@ async def send_draft_reply(draft_id: int) -> tuple:
         send_body = {'raw': raw, 'threadId': email['thread_id']}
 
         # Update status to 'sent' BEFORE Gmail API call to prevent double-send
-        supabase.table('email_drafts')\
-            .update({'status': 'sent'})\
-            .eq('id', draft_id)\
-            .execute()
+        # Use versioned update for email_drafts
+        versioned_update('email_drafts', draft_id, {'status': 'sent'})
 
         try:
             gmail_service.users().messages().send(userId='me', body=send_body).execute()
         except Exception as gmail_error:
-            print(f"Gmail send failed for draft {draft_id}: {gmail_error}")
+            audit_log_sync("webhook", "ERROR", f"Gmail send failed for draft {draft_id}: {gmail_error}")
             print("Status remains 'sent' to prevent double-send attempts.")
             return (False, str(gmail_error))
 
         return (True, None)
 
     except Exception as e:
-        print(f"Draft send error for draft {draft_id}: {e}")
+        audit_log_sync("webhook", "ERROR", f"Draft send error for draft {draft_id}: {e}")
         return (False, str(e))
 
 
@@ -729,10 +732,8 @@ async def send_outlook_draft(draft: dict) -> tuple:
         }
 
         # Update status to 'sent' BEFORE Outlook API call to prevent double-send
-        supabase.table('email_drafts')\
-            .update({'status': 'sent'})\
-            .eq('id', draft['id'])\
-            .execute()
+        # Use versioned update for email_drafts
+        versioned_update('email_drafts', draft['id'], {'status': 'sent'})
 
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
@@ -762,7 +763,7 @@ async def send_outlook_draft(draft: dict) -> tuple:
             return (False, f"HTTP {response.status_code}: {response.text}")
 
     except Exception as e:
-        print(f"Outlook send error for draft {draft['id']}: {e}")
+        audit_log_sync("webhook", "ERROR", f"Outlook send error for draft {draft['id']}: {e}")
         return (False, str(e))
 
 
@@ -811,7 +812,7 @@ async def handle_ed_command(text: str, chat_id: int):
                 )
             await send_telegram(chat_id, "\n---\n".join(lines))
         except Exception as e:
-            print(f"/ed list error: {e}")
+            audit_log_sync("webhook", "ERROR", f"/ed list error: {e}")
             await send_telegram(chat_id, f"⚠️ Failed to fetch pending drafts: {e}")
         return
 
@@ -838,7 +839,7 @@ async def handle_ed_command(text: str, chat_id: int):
             else:
                 await send_telegram(chat_id, f"❌ Failed to send draft [{draft_id}]. Error: {error}")
         except Exception as e:
-            print(f"ed approve error: {e}")
+            audit_log_sync("webhook", "ERROR", f"ed approve error: {e}")
             await send_telegram(chat_id, f"❌ Failed to send draft [{draft_id}]. Error: {e}")
         return
 
@@ -857,7 +858,7 @@ async def handle_ed_command(text: str, chat_id: int):
             else:
                 await send_telegram(chat_id, f"⚠️ Draft [{draft_id}] not found or already processed.")
         except Exception as e:
-            print(f"ed reject error: {e}")
+            audit_log_sync("webhook", "ERROR", f"ed reject error: {e}")
             await send_telegram(chat_id, f"⚠️ Failed to reject draft [{draft_id}]: {e}")
         return
 
@@ -901,7 +902,7 @@ async def handle_ed_command(text: str, chat_id: int):
                 f"Draft updated. Reply `ed approve {draft_id}` to send."
             )
         except Exception as e:
-            print(f"ed edit error: {e}")
+            audit_log_sync("webhook", "ERROR", f"ed edit error: {e}")
             await send_telegram(chat_id, f"⚠️ Failed to edit draft [{draft_id}]: {e}")
         return
 
@@ -934,7 +935,7 @@ async def process_webhook(update: dict):
                     print(f"♻️ Telegram retry detected for update {update_id}. Skipping.")
                     return {"success": True, "message": "Already processed"}
                 else:
-                    print(f"⚠️ Deduplication check error: {error_msg}")
+                    audit_log_sync("webhook", "WARNING", f"⚠️ Deduplication check error: {error_msg}")
                     pass
 
         ist_offset = timezone(timedelta(hours=5, minutes=30))
@@ -1062,10 +1063,8 @@ async def process_webhook(update: dict):
                 if _is_approve:
                     # Check for duplicate in tasks table FIRST before setting decision
                     if is_already_in_tasks_table(_suggested_title):
-                        supabase.table('email_pending_tasks')\
-                            .update({'danny_decision': 'skipped'})\
-                            .eq('id', _row['id'])\
-                            .execute()
+                        # Use versioned update for email_pending_tasks
+                        versioned_update('email_pending_tasks', _row['id'], {'danny_decision': 'skipped'})
                         await send_telegram(chat_id, f"⚠️ A similar task already exists on your board: [{_suggested_title}]")
                         return {"success": True}
 
@@ -1085,10 +1084,8 @@ async def process_webhook(update: dict):
                         raise _insert_err
                     
                     # Only update danny_decision after successful raw_dumps insert
-                    supabase.table('email_pending_tasks')\
-                        .update({'danny_decision': 'approved'})\
-                        .eq('id', _row['id'])\
-                        .execute()
+                        # Use versioned update for email_pending_tasks
+                        versioned_update('email_pending_tasks', _row['id'], {'danny_decision': 'approved'})
                     
                     await send_telegram(chat_id, f"✅ Task staged: {_suggested_title}")
                     print(f"✅ Staged to raw_dumps: {_suggested_title}")
@@ -1099,18 +1096,13 @@ async def process_webhook(update: dict):
                 
                 else:
                     # Reject flow — also clean up orphan draft if one exists
-                    supabase.table('email_pending_tasks')\
-                        .update({'danny_decision': 'rejected'})\
-                        .eq('id', _row['id'])\
-                        .execute()
-
+                    # Use versioned_update for email_pending_tasks
+                    versioned_update('email_pending_tasks', _row['id'], {'danny_decision': 'rejected'})
+                    
                     # Orphan cleanup: reject any pending draft linked to this email
                     try:
-                        supabase.table('email_drafts')\
-                            .update({'status': 'rejected'})\
-                            .eq('email_id', _email_id)\
-                            .eq('status', 'pending')\
-                            .execute()
+                        # Use versioned_update for email_drafts
+                        versioned_update('email_drafts', _row['id'], {'danny_decision': 'skipped'})
                     except Exception:
                         pass  # silent cleanup — don't block the reject flow
 
@@ -1119,7 +1111,7 @@ async def process_webhook(update: dict):
                 return {"success": True}
             
             except Exception as _sc_err:
-                print(f"⚠️ Shortcode handler error: {_sc_err}")
+                audit_log_sync("webhook", "WARNING", f"⚠️ Shortcode handler error: {_sc_err}")
                 await send_telegram(chat_id, "⚠️ Something went wrong. Try again or use /ep to retry.")
                 return {"success": True}
 
@@ -1207,7 +1199,7 @@ async def process_webhook(update: dict):
         return {"success": True}
 
     except Exception as e:
-        print(f"Webhook Error: {e}")
+        audit_log_sync("webhook", "ERROR", f"Webhook Error: {e}")
         return {"error": str(e), "status": 500}
 
 
@@ -1292,7 +1284,7 @@ async def handle_status_command(chat_id: int):
         await send_telegram(chat_id, "\n".join(lines))
 
     except Exception as e:
-        print(f"/status error: {e}")
+        audit_log_sync("webhook", "ERROR", f"/status error: {e}")
         await send_telegram(chat_id, f"⚠️ Status check failed: {e}")
 
 

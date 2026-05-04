@@ -15,6 +15,67 @@ from google import genai
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
+# Import audit logger
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+from audit_logger import info, warning, error, critical, audit_log_sync
+
+# Import temporal lineage
+from temporal_lineage import (
+    create_versioned_memory,
+    create_versioned_task,
+    create_versioned_project,
+    get_memory_history,
+    detect_drift,
+    get_state_at_time
+)
+
+
+def versioned_update(table_name: str, record_id: int, update_data: dict):
+    """
+    Update a record using versioned insert pattern.
+    Marks old record as is_current=FALSE, inserts new version.
+    
+    Args:
+        table_name: 'tasks', 'memories', 'projects', 'resources'
+        record_id: ID of record to update
+        update_data: Fields to update
+    """
+    try:
+        # Get current record
+        current = supabase.table(table_name).select('*').eq('id', record_id).execute()
+        if not current.data:
+            audit_log_sync("pulse", "WARNING", f"Record {record_id} not found in {table_name}")
+            return False
+        
+        old_record = current.data[0]
+        
+        # Mark old as not current
+        supabase.table(table_name).update({"is_current": False}).eq('id', record_id).execute()
+        
+        # Prepare new version
+        new_record = {
+            **{k: v for k, v in old_record.items() 
+               if k not in ['id', 'created_at', 'version', 'is_current', 'supersedes_id']},
+            **update_data,
+            'is_current': True
+        }
+        
+        # Get next version number
+        old_version = old_record.get('version', 0) or 0
+        new_record['version'] = old_version + 1
+        new_record['supersedes_id'] = record_id
+        
+        # Insert new version
+        result = supabase.table(table_name).insert(new_record).execute()
+        return bool(result.data)
+        
+    except Exception as e:
+        # Fallback to regular update
+        audit_log_sync("pulse", "WARNING", f"Versioned update failed for {table_name}:{record_id}, falling back to update: {e}")
+        supabase.table(table_name).update(update_data).eq('id', record_id).execute()
+        return True
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
 PULSE_ENABLE_OPENROUTER_FALLBACK = os.getenv("PULSE_ENABLE_OPENROUTER_FALLBACK", "true").lower() == "true"
@@ -48,7 +109,7 @@ def is_already_in_email_queue(title: str) -> bool:
                 .limit(1)\
                 .execute()
             if result.data:
-                print(f"⚠️  Duplicate guard: '{title}' matches pending email task (keyword: '{kw}'). Skipping.")
+                audit_log_sync("pulse", "WARNING", f"⚠️  Duplicate guard: '{title}' matches pending email task (keyword: '{kw}'). Skipping.")
                 return True
             # Check active tasks on board
             result = supabase.table('tasks')\
@@ -58,7 +119,7 @@ def is_already_in_email_queue(title: str) -> bool:
                 .limit(1)\
                 .execute()
             if result.data:
-                print(f"⚠️  Duplicate guard: '{title}' matches existing task on board (keyword: '{kw}'). Skipping.")
+                audit_log_sync("pulse", "WARNING", f"⚠️  Duplicate guard: '{title}' matches existing task on board (keyword: '{kw}'). Skipping.")
                 return True
         
         # Secondary: Semantic embedding check (high threshold to avoid false positives)
@@ -69,7 +130,7 @@ def is_already_in_email_queue(title: str) -> bool:
             'match_threshold': 0.88
         }).execute()
         if similarity_res.data:
-            print(f"⚠️ Semantic duplicate guard: '{title}' is semantically similar to an existing memory. Skipping.")
+            audit_log_sync("pulse", "WARNING", f"⚠️ Semantic duplicate guard: '{title}' is semantically similar to an existing memory. Skipping.")
             return True
         
         return False
@@ -112,7 +173,7 @@ def build_routing_context(legacy_projects: list) -> str:
 
         name = p.get('name', '').strip()
         if not name:
-            print(f"⚠️ Project ID {p.get('id')} has no name, skipping routing context entry.")
+            audit_log_sync("pulse", "WARNING", f"⚠️ Project ID {p.get('id')} has no name, skipping routing context entry.")
             continue
 
         parent_id = p.get('parent_project_id')
@@ -226,7 +287,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
         print(f"🕸️ Graph edges written for task {task_id}: '{task_title}'")
 
     except Exception as e:
-        print(f"⚠️ Graph edge write failed (non-critical): {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Graph edge write failed (non-critical): {e}")
 
 
 async def write_outcome_memory(task_title: str, project_name: str = None):
@@ -249,7 +310,7 @@ async def write_outcome_memory(task_title: str, project_name: str = None):
         }).execute()
         print(f"🧠 Outcome memory written: {label}")
     except Exception as e:
-        print(f"⚠️ Outcome memory write failed (non-critical): {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Outcome memory write failed (non-critical): {e}")
 
 
 # 🛡️ CLEAN MODELS (Removed Config blocks to prevent API rejection)
@@ -339,7 +400,7 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
             should_retry = any(err in error_str for err in RETRYABLE_ERRORS)
             if should_retry and attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt)
-                print(f"⚠️ API Hiccup ({error_str}), retrying in {delay}s...")
+                audit_log_sync("pulse", "WARNING", f"⚠️ API Hiccup ({error_str}), retrying in {delay}s...")
                 await asyncio.sleep(delay)
                 continue
             else:
@@ -460,6 +521,24 @@ async def call_llm_with_fallback(
                 response = prov["fn"](prompt, contents, config)
                 elapsed = time.time() - start_time
                 
+                # Log to model_registry
+                try:
+                    input_tokens = len(prompt) // 4 if prompt else 0  # Rough estimate
+                    output_tokens = 0
+                    if hasattr(response, 'text'):
+                        output_tokens = len(response.text) // 4
+                    
+                    supabase.table('model_registry').insert({
+                        "model_name": model_name,
+                        "provider": provider_name,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "latency_ms": int(elapsed * 1000),
+                        "success": True
+                    }).execute()
+                except Exception as log_err:
+                    pass  # Don't fail main flow if logging fails
+                
                 if hasattr(response, 'text'):
                     response_text = response.text
                 else:
@@ -469,7 +548,7 @@ async def call_llm_with_fallback(
                     try:
                         parsed = parse_json_response(response_text)
                     except ValueError as pe:
-                        print(f"⚠️ LLM parse failed provider={provider_name} model={model_name}: {pe}")
+                        audit_log_sync("pulse", "WARNING", f"⚠️ LLM parse failed provider={provider_name} model={model_name}: {pe}")
                         if provider_idx == len(providers) - 1:
                             raise
                         continue
@@ -485,16 +564,16 @@ async def call_llm_with_fallback(
                 is_non_retryable = any(err in error_str for err in NON_RETRYABLE_ERRORS)
                 
                 if is_non_retryable:
-                    print(f"✗ LLM non-retryable error provider={provider_name}: {e}")
+                    audit_log_sync("pulse", "ERROR", f"✗ LLM non-retryable error provider={provider_name}: {e}")
                     raise
                 
                 if is_retryable and attempt < max_retries_per_provider - 1:
                     delay = _jitter(base_delay * (2 ** attempt))
-                    print(f"⚠️ LLM retry provider={provider_name} model={model_name} attempt={attempt+1} delay={delay:.0f}s error={error_str[:50]}")
+                    audit_log_sync("pulse", "WARNING", f"⚠️ LLM retry provider={provider_name} model={model_name} attempt={attempt+1} delay={delay:.0f}s error={error_str[:50]}")
                     await asyncio.sleep(delay)
                     continue
                 
-                print(f"⚠️ LLM provider failed provider={provider_name} model={model_name}: {error_str[:80]}")
+                audit_log_sync("pulse", "WARNING", f"⚠️ LLM provider failed provider={provider_name} model={model_name}: {error_str[:80]}")
                 last_error = e
                 break
         
@@ -556,7 +635,7 @@ def get_embedding(text: str) -> list:
         return result.embeddings[0].values
     except Exception as e:
         # Fallback to zero-vector on error to prevent total system crash
-        print(f"Embedding error: {e}")
+        audit_log_sync("pulse", "ERROR", f"Embedding error: {e}")
         return [0] * EMBEDDING_DIMENSION
 
 async def hybrid_search_graph(query: str) -> str:
@@ -617,7 +696,7 @@ async def hybrid_search_graph(query: str) -> str:
         return ""
     
     except Exception as e:
-        print(f"⚠️ Graph task context fetch failed (non-critical): {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Graph task context fetch failed (non-critical): {e}")
         return ""
     
 
@@ -703,7 +782,7 @@ async def check_task_dependencies(active_tasks: list) -> str:
         return ""
     
     except Exception as e:
-        print(f"⚠️ Dependency Agent failed (non-critical): {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Dependency Agent failed (non-critical): {e}")
         return ""
 
 
@@ -776,7 +855,7 @@ async def analyze_communication_patterns(people: list) -> str:
         return ""
     
     except Exception as e:
-        print(f"⚠️ Social Graph Optimizer failed (non-critical): {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Social Graph Optimizer failed (non-critical): {e}")
         return ""
 
 
@@ -824,7 +903,7 @@ async def detect_temporal_patterns() -> str:
         return ""
     
     except Exception as e:
-        print(f"⚠️ Temporal Pattern Detector failed (non-critical): {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Temporal Pattern Detector failed (non-critical): {e}")
         return ""
 
 
@@ -890,7 +969,7 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list) 
         return ""
     
     except Exception as e:
-        print(f"⚠️ Serendipity Engine failed (non-critical): {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Serendipity Engine failed (non-critical): {e}")
         return ""
 
 
@@ -965,7 +1044,7 @@ async def adaptive_briefing_learner(briefing_history: list = None) -> str:
         return ""
     
     except Exception as e:
-        print(f"⚠️ Adaptive Briefing Learner failed (non-critical): {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Adaptive Briefing Learner failed (non-critical): {e}")
         return ""
 
 
@@ -1009,7 +1088,7 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
                 ).execute()
                 return res.data if res.data else []
             except Exception as e:
-                print(f"Hindsight query error ({query_name}): {e}")
+                audit_log_sync("pulse", "ERROR", f"Hindsight query error ({query_name}): {e}")
                 return []
         
         all_results = await asyncio.gather(*[fetch_memories_for_query(name, text) for name, text in search_queries])
@@ -1034,7 +1113,7 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
             ]
             return (formatted, latest_timestamp)
     except Exception as e:
-        print(f"High-Res Hindsight error: {e}")
+        audit_log_sync("pulse", "ERROR", f"High-Res Hindsight error: {e}")
     return ([], None)
 
 
@@ -1066,7 +1145,7 @@ async def generate_after_action_report() -> str:
             embedding = await asyncio.to_thread(get_embedding, lesson)
             status = 'success' if embedding and any(embedding) else 'failed'
             if status == 'failed':
-                print(f"Warning: zero-vector embedding for daily reflection — storing with failed status")
+                audit_log_sync("pulse", "WARNING", f"Warning: zero-vector embedding for daily reflection — storing with failed status")
             supabase.table('memories').insert({
                 "content": lesson,
                 "memory_type": "reflection",
@@ -1076,7 +1155,7 @@ async def generate_after_action_report() -> str:
             print(f"📝 Daily Reflection saved: {lesson[:50]}...")
             return lesson
     except Exception as e:
-        print(f"Daily reflection error: {e}")
+        audit_log_sync("pulse", "ERROR", f"Daily reflection error: {e}")
     return ""
 
 
@@ -1106,7 +1185,7 @@ async def fetch_url_metadata(url: str):
                 description = desc_match.group(1).strip() if desc_match else ""
                 return {"title": title, "description": description}
     except Exception as e:
-        print(f"Scraper error for {url}: {e}")
+        audit_log_sync("pulse", "ERROR", f"Scraper error for {url}: {e}")
     return {"title": "Unknown", "description": ""}
 
 
@@ -1177,16 +1256,17 @@ async def batch_enrich_resources():
             embedding_text = f"{title}. {strategic_note}"
             embedding = await asyncio.to_thread(get_embedding, embedding_text)
             if all(v == 0 for v in embedding):
-                print(f"Warning: zero-vector embedding for daily reflection — storing anyway")
+                audit_log_sync("pulse", "WARNING", f"Warning: zero-vector embedding for daily reflection — storing anyway")
             
-            supabase.table('resources').update({
+            # Versioned update for resources
+            versioned_update('resources', item['id'], {
                 "title": title,
                 "summary": item.get('description'),
                 "strategic_note": strategic_note,
                 "category": item.get('category', 'MARKET_TREND'),
                 "enriched_at": enriched_at,
                 "embedding": embedding
-            }).eq('id', item['id']).execute()
+            })
         
         print(f"✅ Batch enriched {len(parsed)} resources with embeddings.")
 
@@ -1209,11 +1289,11 @@ async def batch_enrich_resources():
                         print(f"🔗 Linked resource '{resource.get('title')}' → mission '{mission['title']}'")
                         break
         except Exception as e:
-            print(f"⚠️ Mission resolver error: {e}")
+            audit_log_sync("pulse", "WARNING", f"⚠️ Mission resolver error: {e}")
 
         return parsed
     except Exception as e:
-        print(f"Batch enrichment error: {e}")
+        audit_log_sync("pulse", "ERROR", f"Batch enrichment error: {e}")
         return []
 
 
@@ -1249,10 +1329,28 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                 ).execute()
                 
                 if google_task.get('status') == 'completed':
-                    supabase_client.table('tasks').update({
-                        'status': 'done',
-                        'completed_at': datetime.now(timezone.utc).isoformat()
-                    }).eq('id', task_id).execute()
+                    # Versioned insert for task completion
+                    try:
+                        current = supabase.table('tasks').select('*').eq('id', task_id).execute()
+                        if current.data:
+                            old_task = current.data[0]
+                            new_payload = {
+                                **{k: v for k, v in old_task.items() if k not in ['id', 'created_at', 'version', 'is_current', 'supersedes_id']},
+                                'status': 'done',
+                                'completed_at': datetime.now(timezone.utc).isoformat()
+                            }
+                            create_versioned_task(
+                                title=new_payload.get('title'),
+                                project_id=new_payload.get('project_id'),
+                                old_task_id=task_id,
+                                **new_payload
+                            )
+                    except Exception as ve:
+                        # Fallback to versioned update
+                        versioned_update('tasks', task_id, {
+                            'status': 'done',
+                            'completed_at': datetime.now(timezone.utc).isoformat()
+                        })
                     
                     # 🧠 Collect for outcome memory — caller will fire as background tasks
                     proj_name = None
@@ -1267,14 +1365,14 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                     
             except Exception as e:
                 if 'notFound' in str(e):
-                    print(f"⚠️ Google Task {google_task_id} not found, skipping.")
+                    audit_log_sync("pulse", "WARNING", f"⚠️ Google Task {google_task_id} not found, skipping.")
                 else:
-                    print(f"⚠️ Error checking Google Task {google_task_id}: {e}")
+                    audit_log_sync("pulse", "WARNING", f"⚠️ Error checking Google Task {google_task_id}: {e}")
         
         print(f"📊 Google→Supabase Sync complete: {synced_count}/{len(tasks_to_sync)} tasks marked done.")
         
     except Exception as e:
-        print(f"❌ sync_completed_tasks_from_google failed: {e}")
+        audit_log_sync("pulse", "ERROR", f"❌ sync_completed_tasks_from_google failed: {e}")
     
     return completed
 
@@ -1322,7 +1420,7 @@ def check_conflict(start_iso):
         events = events_res.get('items', [])
         return events[0].get('summary') if events else None
     except Exception as e:
-        print(f"⚠️ Conflict check failed: {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Conflict check failed: {e}")
         return None
 
 def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
@@ -1354,9 +1452,9 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
     except Exception as e:
         # Fallback logic: If the event_id was invalid, try creating fresh
         if event_id: 
-            print(f"⚠️ Event ID {event_id} invalid. Attempting fresh creation...")
+            audit_log_sync("pulse", "WARNING", f"⚠️ Event ID {event_id} invalid. Attempting fresh creation...")
             return sync_to_calendar(title, start_iso, event_id=None)
-        print(f"❌ CRITICAL: Calendar sync failed: {e}")
+        audit_log_sync("pulse", "ERROR", f"❌ CRITICAL: Calendar sync failed: {e}")
         return None
 
 def delete_calendar_event(event_id):
@@ -1368,7 +1466,7 @@ def delete_calendar_event(event_id):
         print(f"🗑️ SUCCESS: Calendar event {event_id} removed.")
     except Exception as e:
         # Don't use 'pass'—keep the warning so you know if the grid is dirty
-        print(f"⚠️ Note: Calendar delete failed (likely already gone).")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Note: Calendar delete failed (likely already gone).")
 
 def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo', explicit_time=False):
     """Checklist Manager: Handles task sync with RFC-3339 guard."""
@@ -1405,7 +1503,7 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
             res = service.tasks().insert(tasklist='@default', body=body).execute()
         return res['id']
     except Exception as e:
-        print(f"⚠️ Google Tasks API error: {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Google Tasks API error: {e}")
         return None
 
 async def fetch_hybrid_graph_context(people: list, graph_node_projects: list, task_inputs: list) -> str:
@@ -1436,7 +1534,7 @@ async def fetch_hybrid_graph_context(people: list, graph_node_projects: list, ta
         return "GRAPH CONTEXT (routing awareness only — do NOT list in briefing):\n" + "\n".join(deduplicated)
     
     except Exception as e:
-        print(f"⚠️ Hybrid graph context fetch failed (non-critical): {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Hybrid graph context fetch failed (non-critical): {e}")
         return ""
 
 
@@ -1532,7 +1630,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         return ""
     
     except Exception as e:
-        print(f"⚠️ Graph task context fetch failed (non-critical): {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Graph task context fetch failed (non-critical): {e}")
         return ""
 
 # --- 🏥 HEARTBEAT / HEALTH CHECK ---
@@ -1545,7 +1643,7 @@ async def update_heartbeat():
         }, on_conflict="key").execute()
         print("💓 Heartbeat updated.")
     except Exception as e:
-        print(f"⚠️ Heartbeat update failed: {e}")
+        error("pulse", f"Heartbeat update failed: {e}", format_error(e))
 
 async def check_pipeline_health() -> str:
     """
@@ -1611,7 +1709,7 @@ async def add_to_failed_queue(source_table: str, source_id: str, operation: str,
         }).execute()
         print(f"🗃️ Added to failed_queue: {source_table}:{source_id} ({operation})")
     except Exception as e:
-        print(f"⚠️ Failed to add to failed_queue: {e}")
+        audit_log_sync("pulse", "WARNING", f"⚠️ Failed to add to failed_queue: {e}")
 
 
 async def retry_failed_operations(max_retries: int = 5):
@@ -1650,13 +1748,11 @@ async def retry_failed_operations(max_retries: int = 5):
                     if mem_res and mem_res.data:
                         embedding = await asyncio.to_thread(get_embedding, mem_res.data['content'])
                         if embedding and any(embedding):
-                            supabase.table('memories') \
-                                .update({
-                                    "embedding": embedding,
-                                    "embedding_status": "success"
-                                }) \
-                                .eq('id', int(source_id)) \
-                                .execute()
+                            # Versioned update for memories
+                            versioned_update('memories', int(source_id), {
+                                "embedding": embedding,
+                                "embedding_status": "success"
+                            })
                             
                             # Remove from failed queue on success
                             supabase.table('failed_queue') \
@@ -1669,10 +1765,10 @@ async def retry_failed_operations(max_retries: int = 5):
                 
                 elif operation == 'memory_insert':
                     # Would need the original content - skip for now
-                    print(f"   ⚠️ Cannot retry memory_insert without original content: {queue_id}")
+                    audit_log_sync("pulse", "WARNING", f"   ⚠️ Cannot retry memory_insert without original content: {queue_id}")
                     continue
                 
-                # Update retry count
+                # Update retry count (metadata update, no versioning needed)
                 supabase.table('failed_queue') \
                     .update({
                         "retry_count": item['retry_count'] + 1,
@@ -1702,9 +1798,31 @@ async def retry_failed_operations(max_retries: int = 5):
         return f"⚠️ Retry process failed: {e}"
 
 # 🔴 FIX #1: Security Gatekeeper — auth_secret replaces the unused is_manual_trigger bool
-async def process_pulse(auth_secret: str = None):
+async def process_pulse(auth_secret: str = None, request_id: str = None):
+    """
+    Process pulse with optional request_id for idempotency.
+    
+    Args:
+        auth_secret: Pulse secret for auth
+        request_id: Unique ID for idempotency (prevents duplicate processing)
+    """
     error_log = []
     try:
+        # 🛡️ IDEMPOTENCY CHECK: If request_id provided, check if already processed
+        # NOTE: Uses metadata->>request_id (JSONB) - works even without dedicated column
+        if request_id:
+            # Always use metadata->>request_id (JSONB) for idempotency
+            # This works whether or not the dedicated column exists
+            existing = supabase.table('raw_dumps') \
+                .select('id, status') \
+                .eq('metadata->>request_id', request_id) \
+                .limit(1) \
+                .execute()
+            
+            if existing.data:
+                info("pulse", f"Idempotency: request_id {request_id} already processed")
+                return {"success": True, "idempotent": True, "message": "Already processed"}
+        
         # 🛡️ THE ZOMBIE RECOVERY: Reset any dumps stuck in 'processing' for more than 10 mins
         try:
             ten_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
@@ -1714,14 +1832,14 @@ async def process_pulse(auth_secret: str = None):
                 .lt('created_at', ten_mins_ago) \
                 .execute()
         except Exception as e:
-            print(f"⚠️ Zombie Recovery skipped: {e}")
+            error("pulse", f"Zombie Recovery skipped: {e}", format_error(e))
 
         # --- 1.1 SECURITY GATEKEEPER ---
         pulse_secret = os.getenv("PULSE_SECRET")
         if pulse_secret and auth_secret != pulse_secret:
             return {"error": "Unauthorized manual trigger.", "status": 401}
         if not pulse_secret:
-            print("⚠️ Warning: PULSE_SECRET not set. Auth check bypassed.")
+            warning("pulse", "PULSE_SECRET not set. Auth check bypassed.")
 
         # --- 0. GOOGLE→SUPABASE SYNC (After auth check) ---
         tasks_service = get_tasks_service()
@@ -1752,6 +1870,20 @@ async def process_pulse(auth_secret: str = None):
             dump_ids = [d['id'] for d in dumps]
             
             # 🔒 THE LOCK: Immediately claim these for processing
+            update_data = {"status": "processing"}
+            if request_id:
+                # Store request_id in metadata for idempotency
+                for d in dumps:
+                    try:
+                        meta = json.loads(d.get('metadata', '{}') or '{}')
+                        meta['request_id'] = request_id
+                        supabase.table('raw_dumps') \
+                            .update({"metadata": json.dumps(meta)}) \
+                            .eq('id', d['id']) \
+                            .execute()
+                    except:
+                        pass
+            
             supabase.table('raw_dumps') \
                 .update({"status": "processing"}) \
                 .in_('id', dump_ids) \
@@ -1799,14 +1931,14 @@ async def process_pulse(auth_secret: str = None):
                     dump_id = item.get('id')
                     raw_dump = next((d for d in dumps if d['id'] == dump_id), None)
                     if raw_dump is None:
-                        print(f"⚠️ Sorter: dump_id {dump_id} not found in dumps, skipping.")
+                        audit_log_sync("pulse", "WARNING", f"⚠️ Sorter: dump_id {dump_id} not found in dumps, skipping.")
                         continue
                     metadata = {}
                     try:
                         if raw_dump.get('metadata'):
                             metadata = json.loads(raw_dump['metadata'])
                     except Exception as e:
-                        print(f"⚠️ Metadata parse error for dump {dump_id}: {e}")
+                        audit_log_sync("pulse", "WARNING", f"⚠️ Metadata parse error for dump {dump_id}: {e}")
 
                     gemini_category = item.get('category', '').upper()
                     category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE', 'COMPLETION'] else metadata.get('intent', 'NOISE').upper()
@@ -1831,7 +1963,7 @@ async def process_pulse(auth_secret: str = None):
                             except Exception as e:
                                 # Add to failed_queue for retry
                                 await add_to_failed_queue('memories', str(dump_id), 'memory_insert', str(e))
-                                print(f"⚠️ Note insert failed: {e}")
+                                audit_log_sync("pulse", "WARNING", f"⚠️ Note insert failed: {e}")
                     
                     elif category == 'NOISE':
                         note_dump_ids.append(dump_id)
@@ -1850,7 +1982,7 @@ async def process_pulse(auth_secret: str = None):
                 dumps = [d for d in dumps if d['id'] in task_dump_ids]
             
             except Exception as e:
-                print(f"Staging Area Sort error: {e}")
+                audit_log_sync("pulse", "ERROR", f"Staging Area Sort error: {e}")
 
         # 💡 Only silence the tool if BOTH new dumps AND open tasks are empty
         if not dumps and not active_tasks:
@@ -1959,7 +2091,7 @@ async def process_pulse(auth_secret: str = None):
                         continue 
                 except Exception as e:
                     # If it still fails, we log it but keep the task visible for safety
-                    print(f"⚠️ Horizon Guard bypassed for '{t.get('title')}': {e}")
+                    audit_log_sync("pulse", "WARNING", f"⚠️ Horizon Guard bypassed for '{t.get('title')}': {e}")
 
             # --- Existing Category Logic ---
             if t.get('priority') == 'urgent':
@@ -2041,7 +2173,7 @@ async def process_pulse(auth_secret: str = None):
                     if t.get('priority') == 'urgent' and hours_old > 48:
                         overdue_tasks.append(t.get('title'))
             except Exception as e:
-                print(f"⚠️ Nag Logic skipped for task '{t.get('title')}': {e}")
+                audit_log_sync("pulse", "WARNING", f"⚠️ Nag Logic skipped for task '{t.get('title')}': {e}")
 
         # --- 🕒 1.7 STALE TASK ALERT ---
         sevendays_ago = (now - timedelta(days=7)).isoformat()
@@ -2068,7 +2200,20 @@ async def process_pulse(auth_secret: str = None):
 
         # --- 🕒 1.8 INPUT PREP ---
         new_inputs_text = "\n---\n".join([d['content'] for d in dumps]) if dumps else "None"    
-
+        
+        # --- 🧠 DRIFT DETECTION (Temporal Lineage) ---
+        drift_alerts = []
+        for proj in (legacy_projects or []):
+            proj_name = get_project_name(proj)
+            try:
+                drift = detect_drift(proj_name, hours_window=48)
+                if drift and drift.get('update_count', 0) >= 3:
+                    drift_alerts.append(f"⚠️ DRIFT ALERT: Project '{proj_name}' changed {drift['update_count']} times in 48h. Bottleneck?")
+            except Exception as e:
+                audit_log_sync("pulse", "WARNING", f"Drift detection failed for {proj_name}: {e}")
+        
+        drift_context = "\n".join(drift_alerts) if drift_alerts else "None"
+        
         # --- 🧭 LAYER 3: SMART PATTERN CONTEXT (Last 30 Days) ---
         # Look back 30 days so patterns can form over time, not just items
         thirty_days_ago = (now - timedelta(days=30)).isoformat()
@@ -2387,8 +2532,13 @@ async def process_pulse(auth_secret: str = None):
               4. Does the input mention home, kids, Sunju, or family? → FAMILY
               5. Is it about Danny personally (health, finance, personal admin)? → PERSONAL
               6. Default for anything business/work that doesn't fit 1-2: → SOLVSTRAT
-              7. NEVER default to INBOX for business or client work.
-
+                7. NEVER default to INBOX for business or client work.
+            
+            DRIFT DETECTION (Temporal Lineage):
+            - Check if active projects have been updated 3+ times in 48 hours.
+            - If DRIFT detected, add: "⚠️ DRIFT ALERT: Project '{name}' changed {count} times in 48h. Bottleneck?"
+            - Use detect_drift(project_name) to check (returns update_count).
+            
             RESOURCE CAPTURE LOGIC:
             - Identify any URLs in the NEW INPUTS. For each URL: CATEGORIZE (GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL), SUMMARIZE (1-sentence description), PROJECT MATCH (if relates to existing project).
             - Do NOT create a task for URLs. Just save them to the "resources" array.
@@ -2414,7 +2564,10 @@ async def process_pulse(auth_secret: str = None):
             - 15 minutes for routine tasks (emails, quick replies, status updates)
             - 45 minutes for anything related to Pilots, Sales, or high-stakes Mission 10 items
             - Default to 15 minutes if unspecified
-
+            
+            DRIFT ALERTS (Temporal Lineage):
+            {drift_context}
+            
             INSTRUCTIONS:
             1. STRICT DATA FIDELITY: You are strictly forbidden from inventing or hallucinating data to fill the JSON. If there is no explicit command in NEW INPUTS, do nothing.
             2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "completed_task_ids", "new_projects", and "new_people" arrays MUST remain 100% empty [].
@@ -2467,7 +2620,7 @@ async def process_pulse(auth_secret: str = None):
             print("✅ AI Data Parsed Successfully:", list(ai_data.keys()))
 
         except Exception as e:
-            print(f"AI Execution or JSON Parse Error: {e}")
+            audit_log_sync("pulse", "ERROR", f"AI Execution or JSON Parse Error: {e}")
             # The ai_data fallback is already set above, so the rest of the script won't crash
 
         # --- 3. WRITE Phase (Database Updates) ---
@@ -2502,7 +2655,7 @@ async def process_pulse(auth_secret: str = None):
                 if not already_exists:
                     p_description = new_p.get('description')
                     if not p_description:
-                        print(f"⚠️ New project '{p_name}' created without description — routing may be imprecise.")
+                        audit_log_sync("pulse", "WARNING", f"⚠️ New project '{p_name}' created without description — routing may be imprecise.")
 
                     filtered_new_projects.append({
                         "name": p_name,
@@ -2545,16 +2698,18 @@ async def process_pulse(auth_secret: str = None):
                         )
                         if existing_node.data:
                             if existing_node.data['type'] != 'project':
-                                supabase.table('graph_nodes').update({
+                                # Versioned update for graph_nodes
+                                versioned_update('graph_nodes', existing_node.data['id'], {
                                     'type': 'project',
                                     'metadata': node_metadata
-                                }).eq('id', existing_node.data['id']).execute()
+                                })
                                 print(f"⬆️ Upgraded node '{project_name}' from {existing_node.data['type']} → project")
                             else:
-                                print(f"⚠️ Project node '{project_name}' already exists, updating metadata.")
-                                supabase.table('graph_nodes').update({
+                                audit_log_sync("pulse", "WARNING", f"⚠️ Project node '{project_name}' already exists, updating metadata.")
+                                # Versioned update for graph_nodes
+                                versioned_update('graph_nodes', existing_node.data['id'], {
                                     'metadata': node_metadata
-                                }).eq('id', existing_node.data['id']).execute()
+                                })
                         else:
                             supabase.table('graph_nodes').insert({
                                 "label": project_name,
@@ -2629,7 +2784,7 @@ async def process_pulse(auth_secret: str = None):
                     try:
                         sync_to_google(tasks_service, title=task_title, task_id=g_id, status=item_status, due_at=new_reminder)
                     except Exception as g_err:
-                        print(f"⚠️ Google Tasks sync failed for '{task_title}': {g_err}")
+                        audit_log_sync("pulse", "WARNING", f"⚠️ Google Tasks sync failed for '{task_title}': {g_err}")
                         error_log.append(f"Google Tasks sync failed for: '{task_title}'")
 
                 # 4. SUPABASE UPDATE (Saves 'T' format and allows time removal)
@@ -2677,7 +2832,7 @@ async def process_pulse(auth_secret: str = None):
             except (ValueError, TypeError):
                 actual_inbox_id = 1
 
-            print(f"⚠️ Inbox resolution: actual_inbox_id = {actual_inbox_id} (source: {'graph' if inbox_from_graph else 'legacy'})")
+            audit_log_sync("pulse", "WARNING", f"⚠️ Inbox resolution: actual_inbox_id = {actual_inbox_id} (source: {'graph' if inbox_from_graph else 'legacy'})")
 
             for task in ai_data['new_tasks']:
                 task_title = task.get('title', 'Untitled Task')
@@ -2748,7 +2903,7 @@ async def process_pulse(auth_secret: str = None):
                         )
                         if name_match:
                             task_project_id = int(name_match['id'])
-                            print(f"⚠️ Task '{task.get('title')}' fuzzy-matched to '{name_match['name']}' (ai_target: '{ai_target}')")
+                            audit_log_sync("pulse", "WARNING", f"⚠️ Task '{task.get('title')}' fuzzy-matched to '{name_match['name']}' (ai_target: '{ai_target}')")
                         else:
                             work_hints = ['client', 'nda', 'pilot', 'send', 'check', 'follow', 'call', 'meeting', 'project']
                             is_work_context = any(hint in ai_target.lower() for hint in work_hints)
@@ -2759,7 +2914,7 @@ async def process_pulse(auth_secret: str = None):
                                 )
                                 if solvstrat_fallback:
                                     task_project_id = solvstrat_fallback['id']
-                                    print(f"⚠️ Task '{task.get('title')}' fell back to Solvstrat (no match for '{ai_target}')")
+                                    audit_log_sync("pulse", "WARNING", f"⚠️ Task '{task.get('title')}' fell back to Solvstrat (no match for '{ai_target}')")
                             else:
                                 error_log.append(f"Task routing failed for: '{task.get('title')}'")
 
@@ -2789,7 +2944,7 @@ async def process_pulse(auth_secret: str = None):
                     .not_.in_('status', ['done', 'cancelled']) \
                     .limit(1).execute()
                 if existing.data:
-                    print(f"⚠️ Idempotency guard: '{task_title}' already exists. Skipping.")
+                    audit_log_sync("pulse", "WARNING", f"⚠️ Idempotency guard: '{task_title}' already exists. Skipping.")
                     continue
 
                 task_inserts.append({
@@ -2847,7 +3002,7 @@ async def process_pulse(auth_secret: str = None):
                             )
                             if g_id: print(f"📡 Google Task Created: {task_title}")
                         except Exception as e:
-                            print(f"⚠️ Google Tasks Sync failed: {e}")
+                            audit_log_sync("pulse", "WARNING", f"⚠️ Google Tasks Sync failed: {e}")
                             error_log.append(f"Google Tasks sync failed for: '{task_title}'")
 
                     # 2b. STRATEGIC GATE: SYNC TO CALENDAR (Only runs if explicit time was given)
@@ -2861,16 +3016,36 @@ async def process_pulse(auth_secret: str = None):
                             e_id = await asyncio.to_thread(sync_to_calendar, task_title, sanitized_time, duration_mins)
                             if e_id: print(f"🔥 Calendar block secured: {task_title} ({duration_mins}m)")
                         except Exception as ce:
-                            print(f"⚠️ Calendar Sync failed for {task_title}: {ce}")
+                            audit_log_sync("pulse", "WARNING", f"⚠️ Calendar Sync failed for {task_title}: {ce}")
                             error_log.append(f"Calendar sync failed for: '{task_title}'")
 
-                    # 2c. Store Google IDs back to Supabase
+                    # 2c. Store Google IDs back to Supabase (versioned insert)
                     if g_id or e_id:
-                        update_payload = {}
-                        if g_id: update_payload['google_task_id'] = g_id
-                        if e_id: update_payload['google_event_id'] = e_id
-                        supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
-                        print(f"🔄 Updated task {task_id} with Google IDs.")
+                        try:
+                            # Get current task data
+                            current = supabase.table('tasks').select('*').eq('id', task_id).execute()
+                            if current.data:
+                                old_task = current.data[0]
+                                new_payload = {
+                                    **{k: v for k, v in old_task.items() if k not in ['id', 'created_at', 'version', 'is_current', 'supersedes_id']},
+                                    'google_task_id': g_id or old_task.get('google_task_id'),
+                                    'google_event_id': e_id or old_task.get('google_event_id')
+                                }
+                                # Create versioned insert
+                                create_versioned_task(
+                                    title=new_payload.get('title'),
+                                    project_id=new_payload.get('project_id'),
+                                    old_task_id=task_id,
+                                    **new_payload
+                                )
+                                print(f"🔄 Versioned task {task_id} with Google IDs.")
+                        except Exception as ve:
+                            # Fallback to update if versioning fails
+                            update_payload = {}
+                            if g_id: update_payload['google_task_id'] = g_id
+                            if e_id: update_payload['google_event_id'] = e_id
+                            supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
+                            print(f"🔄 Updated task {task_id} with Google IDs. (fallback)")
 
         # G. CLEANUP & LOGS
         if ai_data.get('logs'):
@@ -2971,7 +3146,7 @@ async def process_pulse(auth_secret: str = None):
                         )
                         backfill_result = parse_json_response(backfill_response.text)
                         if not isinstance(backfill_result, list):
-                            print(f"⚠️ Backfill classifier returned non-list, skipping.")
+                            audit_log_sync("pulse", "WARNING", f"⚠️ Backfill classifier returned non-list, skipping.")
                             backfill_result = []
 
                         backfilled_count = 0
@@ -2983,19 +3158,20 @@ async def process_pulse(auth_secret: str = None):
                             # Only update if: missionname is non-null, title exists in map, confidence >= 0.80
                             if missionname and missionname in mission_map and confidence >= 0.80:
                                 mission_id = mission_map[missionname]
-                                supabase.table('resources').update({
+                                # Versioned update for resources
+                                versioned_update('resources', res_id, {
                                     "mission_id": mission_id
-                                }).eq('id', res_id).execute()
+                                })
                                 backfilled_count += 1
                                 print(f"🔗 Backfilled resource {res_id} → mission '{missionname}' (conf: {confidence})")
 
                         print(f"✅ Backfilled {backfilled_count}/{len(backfill_batch)} historical resources with missions.")
 
                     except Exception as bc_err:
-                        print(f"⚠️ Resource backfill classification failed: {bc_err}")
+                        audit_log_sync("pulse", "WARNING", f"⚠️ Resource backfill classification failed: {bc_err}")
 
             except Exception as br_err:
-                print(f"⚠️ Resource backfill fetch error: {br_err}")
+                audit_log_sync("pulse", "WARNING", f"⚠️ Resource backfill fetch error: {br_err}")
 
         # --- 4. SPEAK Phase ---
         briefing_text = ai_data.get('briefing', '')
@@ -3052,7 +3228,7 @@ async def process_pulse(auth_secret: str = None):
                     else:
                         briefing_text = "\n".join(lines)
             except Exception as ed_err:
-                print(f"⚠️ Email decisions section failed: {ed_err}")
+                audit_log_sync("pulse", "WARNING", f"⚠️ Email decisions section failed: {ed_err}")
 
         # Append error summary to briefing if any failures occurred
         if error_log:
@@ -3084,7 +3260,7 @@ async def process_pulse(auth_secret: str = None):
                     .in_('id', shown_ids)\
                     .execute()
             except Exception as e:
-                print(f"⚠️ shown_in_brief update failed: {e}")
+                audit_log_sync("pulse", "WARNING", f"⚠️ shown_in_brief update failed: {e}")
         elif shown_ids:
             print("⚠️ Telegram send failed — shown_in_brief NOT updated. Will retry at next pulse.")
 
@@ -3110,6 +3286,6 @@ async def process_pulse(auth_secret: str = None):
 
     except Exception as e:
         import traceback
-        print(f"Pulse Critical Error: {e}")
+        audit_log_sync("pulse", "CRITICAL", f"Pulse Critical Error: {e}")
         traceback.print_exc()
         return {"error": str(e)}
