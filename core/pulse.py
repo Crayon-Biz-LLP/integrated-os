@@ -37,7 +37,7 @@ def format_error(e: Exception) -> str:
     return traceback.format_exc() if hasattr(e, '__traceback__') else str(e)
 
 
-def versioned_update(table_name: str, record_id: int, update_data: dict):
+def versioned_update(table_name: str, record_id: int, update_data: dict, user_id=None, change_source=None, change_reason=None):
     """
     Update a record using versioned insert pattern.
     Marks old record as is_current=FALSE, inserts new version.
@@ -46,6 +46,9 @@ def versioned_update(table_name: str, record_id: int, update_data: dict):
         table_name: 'tasks', 'memories', 'projects', 'resources'
         record_id: ID of record to update
         update_data: Fields to update
+        user_id: Optional user making the change (for audit)
+        change_source: Optional source of change (e.g., 'pulse_task_update')
+        change_reason: Optional reason for change
     """
     try:
         # Get current record
@@ -68,12 +71,19 @@ def versioned_update(table_name: str, record_id: int, update_data: dict):
         }
         
         # Get next version number
-        old_version = old_record.get('version', 0) or 0
+        old_version = old_record.get('version',0) or 0
         new_record['version'] = old_version + 1
         new_record['supersedes_id'] = record_id
         
         # Insert new version
         result = supabase.table(table_name).insert(new_record).execute()
+        
+        # Log the change
+        if change_source or change_reason:
+            audit_log_sync("pulse", "INFO", 
+                f"Versioned update: {table_name}:{record_id} v{new_record['version']}", 
+                {"source": change_source, "reason": change_reason, "user_id": user_id})
+        
         return bool(result.data)
         
     except Exception as e:
