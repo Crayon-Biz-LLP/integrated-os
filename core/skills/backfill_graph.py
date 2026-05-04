@@ -12,7 +12,22 @@ from google import genai
 # __file__ = .../core/skills/backfill_graph.py
 # We need to add .../core/ to path so `import pulse` works
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
+# Import utilities from audit_logger and pulse
+try:
+    from audit_logger import info, warning, error, audit_log_sync
+except ImportError:
+    # Fallback: define local version
+    def info(service, message, metadata=None):
+        print(f"[INFO] {service}: {message}")
+    
+    def warning(service, message, metadata=None):
+        print(f"[WARNING] {service}: {message}")
+    
+    def error(service, message, metadata=None):
+        print(f"[ERROR] {service}: {message}")
+    def audit_log_sync(service, level, message, metadata=None):
+        print(f"[{level}] {service}: {message}")
+        return
 
 # Import add_to_failed_queue from pulse.py
 try:

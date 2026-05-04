@@ -9,13 +9,22 @@ Usage:
 import os
 import sys
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from supabase import create_client
 from dotenv import load_dotenv
+
+# Import audit logger
+try:
+    from audit_logger import audit_log_sync
+except ImportError:
+    # Fallback: define local version
+    def audit_log_sync(service, level, message, metadata=None):
+        print(f"[{level}] {service}: {message}")
+        return
 
 load_dotenv()
 
