@@ -1016,9 +1016,10 @@ def reflexion_loop(supabase):
     info("backfill_graph", "Starting reflexion loop analysis")
     
     # Fetch failed operations from failed_queue
+    # Items with last_retry_at IS NULL or retry_count < 5 are "active" failures
     failed = supabase.table("failed_queue") \
         .select("*") \
-        .eq("status", "failed") \
+        .or_("last_retry_at.is.null,retry_count.lt.5") \
         .execute()
     
     if not failed.data:
