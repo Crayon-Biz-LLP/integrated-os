@@ -31,6 +31,12 @@ from temporal_lineage import (
 )
 
 
+def format_error(e: Exception) -> str:
+    """Format exception for logging."""
+    import traceback
+    return traceback.format_exc() if hasattr(e, '__traceback__') else str(e)
+
+
 def versioned_update(table_name: str, record_id: int, update_data: dict):
     """
     Update a record using versioned insert pattern.
@@ -2641,7 +2647,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             
             DRIFT DETECTION (Temporal Lineage):
             - Check if active projects have been updated 3+ times in 48 hours.
-            - If DRIFT detected, add: "⚠️ DRIFT ALERT: Project '{name}' changed {count} times in 48h. Bottleneck?"
+            - If DRIFT detected, add: "⚠️ DRIFT ALERT: Project '{{name}}' changed {{count}} times in 48h. Bottleneck?"
             - Use detect_drift(project_name) to check (returns update_count).
             
             RESOURCE CAPTURE LOGIC:
