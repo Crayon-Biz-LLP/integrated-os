@@ -77,8 +77,17 @@ export default function MessagesPage() {
     return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
   };
 
+  // Filter to only show chat messages and bot responses (not task raw_dumps)
+  const chatMessages = messages.filter(m => 
+    m.message_type === 'chat' || 
+    m.message_type === 'briefing' || 
+    m.message_type === 'acknowledgment' ||
+    m.sender === 'user' ||
+    m.direction === 'outgoing'
+  );
+
   // Group messages by date
-  const groupedMessages = messages.reduce((groups: Record<string, Message[]>, msg) => {
+  const groupedMessages = chatMessages.reduce((groups: Record<string, Message[]>, msg) => {
     const date = formatDate(msg.created_at);
     if (!groups[date]) groups[date] = [];
     groups[date].push(msg);
@@ -86,7 +95,9 @@ export default function MessagesPage() {
   }, {});
 
   const getSenderLabel = (msg: Message): string => {
-    if (msg.sender === 'system' || msg.message_type === 'briefing') return 'Rhodey';
+    if (msg.message_type === 'acknowledgment' || msg.message_type === 'briefing' || msg.sender === 'system') {
+      return 'Rhodey';
+    }
     if (msg.sender === 'user' || msg.direction === 'outgoing') return 'You';
     return 'Telegram';
   };
