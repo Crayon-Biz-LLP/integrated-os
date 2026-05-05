@@ -385,6 +385,8 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                     "content": content,
                     "status": "pending",
                     "direction": "incoming",
+                    "sender": "telegram",
+                    "message_type": "task",
                     "metadata": json.dumps({
                         "source": "multimodal", 
                         "mime_type": mime_type,
@@ -399,6 +401,8 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                     "content": content,
                     "status": "pending",
                     "direction": "incoming",
+                    "sender": "telegram",
+                    "message_type": "note",
                     "metadata": json.dumps({
                         "intent": "NOTE",
                         "source": "multimodal",
@@ -445,6 +449,8 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             "content": text,
             "status": "pending",
             "direction": "incoming",
+            "sender": "telegram",
+            "message_type": "task",
             "metadata": json.dumps({
                 "intent": "TASK",
                 "title": title, 
@@ -484,6 +490,8 @@ async def handle_clarification(text: str, question: str, chat_id: int, receipt: 
     supabase.table('raw_dumps').insert([{
         "content": text,
         "direction": "incoming",
+        "sender": "telegram",
+        "message_type": "clarification",
         "metadata": json.dumps({"awaiting_clarification": True})
     }]).execute()
 
@@ -1110,6 +1118,8 @@ async def process_webhook(update: dict):
                             "source": "email",
                             "status": "pending",
                             "direction": "incoming",
+                            "sender": "telegram",
+                            "message_type": "task",
                             "metadata": ({
                                 "email_id": _email_id,
                                 "is_human_sender": _row.get('is_human_sender', False)
@@ -1210,6 +1220,8 @@ async def process_webhook(update: dict):
                     "content": text,
                     "status": "pending",
                     "direction": "incoming",
+                    "sender": "telegram",
+                    "message_type": "note",
                     "metadata": json.dumps({
                         "intent": "NOTE",
                         "entity": classification.get('entity')
