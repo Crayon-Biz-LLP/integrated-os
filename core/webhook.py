@@ -996,9 +996,11 @@ KEYBOARD = {
 async def process_webhook(update: dict):
     try:
         update_id = update.get('update_id')
-        if update_id:
+        # Skip deduplication for web UI messages (update_id is a string like "web_123")
+        # Only check for Telegram updates (numeric update_ids)
+        if update_id and isinstance(update_id, (int, float)):
             try:
-                supabase.table('processed_updates').insert({"update_id": update_id}).execute()
+                supabase.table('processed_updates').insert({"update_id": int(update_id)}).execute()
                 # Cleanup: delete update IDs older than 72 hours
                 cutoff = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
                 supabase.table('processed_updates').delete().lt('created_at', cutoff).execute()
