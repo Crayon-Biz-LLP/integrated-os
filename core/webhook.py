@@ -1216,6 +1216,26 @@ async def process_webhook(update: dict):
         # Detect if message is from web UI (fake update_id from send-message endpoint)
         is_web_source = update.get('update_id') and str(update.get('update_id')).startswith('web_')
         source = "web" if is_web_source else "telegram"
+        sender = "user" if is_web_source else "telegram"
+        
+        # Save the original user message to raw_dumps for web UI display
+        # This ensures user messages appear in the Messages page
+        try:
+            supabase.table('raw_dumps').insert([{
+                "content": text,
+                "status": "processed",
+                "direction": "incoming",
+                "sender": sender,
+                "message_type": "chat",
+                "source": source,
+                "metadata": {
+                    "source": source,
+                    "is_web_ui": is_web_source
+                }
+            }]).execute()
+            print(f"💬 Saved user message to raw_dumps (sender={sender}, source={source})")
+        except Exception as e:
+            print(f"⚠️ Failed to save user message: {e}")
         
         if text.startswith('/') or text in ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library', '📊 Status']:
             return await handle_command(text, chat_id)
@@ -1238,7 +1258,8 @@ async def process_webhook(update: dict):
                 chat_id,
                 receipt,
                 entity=classification.get('entity'),
-                source=source
+                source=source,
+                sender=sender
             )
         elif intent == 'QUERY' and confidence >= 0.6:
             print(f"🧠 QUERY DETECTED: Routing to brain...")
