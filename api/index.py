@@ -134,7 +134,7 @@ async def get_messages_route(limit: int = 50, offset: int = 0):
         
         return {"messages": result.data or []}
     
-     except Exception as e:
+    except Exception as e:
         print(f"Get messages error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
