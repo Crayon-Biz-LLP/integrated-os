@@ -85,6 +85,12 @@ export default function MessagesPage() {
     return groups;
   }, {});
 
+  const getSenderLabel = (msg: Message): string => {
+    if (msg.sender === 'system' || msg.message_type === 'briefing') return 'Rhodey';
+    if (msg.sender === 'user' || msg.direction === 'outgoing') return 'You';
+    return 'Telegram';
+  };
+
   return (
     <div className="flex flex-col h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)]">
       {/* Header */}
@@ -142,29 +148,35 @@ export default function MessagesPage() {
                   ? JSON.parse(msg.metadata || '{}') 
                   : msg.metadata;
                 
+                const senderLabel = getSenderLabel(msg);
+                const isUser = msg.sender === 'user' || msg.direction === 'outgoing';
+                
                 return (
                   <div
                     key={msg.id}
                     className={cn(
                       'flex',
-                      isOutgoing ? 'justify-end' : 'justify-start'
+                      isUser ? 'justify-end' : 'justify-start'
                     )}
                   >
                     <div
                       className={cn(
                         'max-w-[80%] rounded-2xl px-4 py-2.5 text-sm',
-                        isOutgoing
+                        isUser
                           ? 'bg-primary text-primary-foreground rounded-br-md'
                           : 'bg-muted text-foreground rounded-bl-md'
                       )}
                     >
+                      <p className="text-[10px] font-medium text-muted-foreground mb-1">
+                        {senderLabel}
+                      </p>
                       <p className="whitespace-pre-wrap break-words leading-relaxed">
                         {msg.content}
                       </p>
                       <p
                         className={cn(
                           'text-[10px] mt-1 font-mono',
-                          isOutgoing ? 'text-primary-foreground/60' : 'text-muted-foreground/50'
+                          isUser ? 'text-primary-foreground/60' : 'text-muted-foreground/50'
                         )}
                       >
                         {formatTime(msg.created_at)}

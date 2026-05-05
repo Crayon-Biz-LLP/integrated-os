@@ -3397,6 +3397,21 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 send_success = True
             except Exception as e:
                 print(f"Telegram send failed: {e}")
+        
+        # Log Pulse briefing to raw_dumps so it appears in web UI
+        if send_success and briefing_text:
+            try:
+                supabase.table('raw_dumps').insert([{
+                    "content": briefing_text,
+                    "status": "completed",
+                    "is_processed": True,
+                    "direction": "incoming",
+                    "sender": "system",
+                    "message_type": "briefing",
+                    "metadata": json.dumps({"source": "pulse", "hour": hour})
+                }]).execute()
+            except Exception as log_err:
+                print(f"Failed to log briefing to raw_dumps: {log_err}")
 
         # Mark shown_in_brief only AFTER confirmed Telegram send
         if send_success and shown_ids:

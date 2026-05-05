@@ -111,8 +111,10 @@ async def send_message_route(request: Request):
             supabase.table('raw_dumps').insert([{
                 "content": message_text,
                 "status": "completed",
-                "is_processed": True,
+                "is_processed": False,
                 "direction": "outgoing",
+                "sender": "user",
+                "message_type": "chat",
                 "metadata": "{}"
             }]).execute()
             
@@ -128,15 +130,15 @@ async def send_message_route(request: Request):
 @app.get("/api/messages")
 async def get_messages_route(limit: int = 50, offset: int = 0):
     try:
-        from supabase import create_client, Client
+        from supabase import create_client
         
-        supabase: Client = create_client(
+        supabase = create_client(
             os.getenv("SUPABASE_URL"),
             os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         )
         
         result = supabase.table('raw_dumps')\
-            .select('id, content, created_at, direction, status, metadata')\
+            .select('id, content, created_at, direction, sender, message_type, status, metadata')\
             .order('created_at', desc=True)\
             .limit(limit)\
             .offset(offset)\
