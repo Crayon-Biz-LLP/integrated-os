@@ -464,7 +464,8 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None):
             "content": text,
             "memory_type": "note",
             "embedding": embedding,
-            "embedding_status": status
+            "embedding_status": status,
+            "source": "webhook"
         }).execute()
     except Exception as e:
         print(f"Failed to save note to memory: {e}")

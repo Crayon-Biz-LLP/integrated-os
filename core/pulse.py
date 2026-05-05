@@ -322,7 +322,8 @@ async def write_outcome_memory(task_title: str, project_name: str = None):
             "content": label,
             "memory_type": "outcome",
             "embedding": embedding,
-            "embedding_status": status
+            "embedding_status": status,
+            "source": "pulse_outcome"
         }).execute()
         print(f"🧠 Outcome memory written: {label}")
     except Exception as e:
@@ -1230,7 +1231,8 @@ async def generate_after_action_report() -> str:
                 "content": lesson,
                 "memory_type": "reflection",
                 "embedding": embedding,
-                "embedding_status": status
+                "embedding_status": status,
+                "source": "pulse_reflection"
             }).execute()
             print(f"📝 Daily Reflection saved: {lesson[:50]}...")
             return lesson
@@ -2068,7 +2070,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                                     "content": dump_content,
                                     "memory_type": "note",
                                     "embedding": embedding,
-                                    "embedding_status": status
+                                    "embedding_status": status,
+                                    "source": "pulse_note"
                                 }).execute()
                                 if result.data:  # Only add to note_dump_ids if insert succeeded
                                     note_dump_ids.append(dump_id)
@@ -2846,7 +2849,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             existing_people_res = supabase.table('people').select('name').execute()
             existing_names = {p['name'].lower().strip() for p in (existing_people_res.data or [])}
             deduped_people = [
-                p for p in ai_data['new_people']
+                {**p, "source": "pulse"} for p in ai_data['new_people']
                 if p.get('name', '').lower().strip() not in existing_names
             ]
             if deduped_people:

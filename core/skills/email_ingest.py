@@ -174,7 +174,35 @@ Body:
         return ""
 
 
-async def write_relationship_note(sender_name: str, sender_email: str, subject: str, summary: str):
+async def add_person_from_email(name: str, email: str = None, source: str = 'email_ingest') -> int | None:
+    """Add a person to people table if they don't exist. Returns person_id or None."""
+    if not name or len(name.strip()) < 2:
+        return None
+    
+    name_clean = name.strip()
+    
+    # Check existing
+    existing = supabase.table('people').select('id, name').execute()
+    existing_names = {p['name'].lower(): p['id'] for p in (existing.data or [])}
+    
+    if name_clean.lower() in existing_names:
+        return existing_names[name_clean.lower()]
+    
+    # Insert new person
+    result = supabase.table('people').insert({
+        "name": name_clean,
+        "role": None,
+        "strategic_weight": 5,
+        "source": source
+    }).execute()
+    
+    if result.data:
+        print(f"👤 Added new person from email: {name_clean}")
+        return result.data[0]['id']
+    return None
+
+
+async def write_relationship_note(sender_name: str, sender_email: str, subject: str, summary: str, people_id: int = None):
     """Write a synthesized relationship note to memories table."""
     prompt = f"""Synthesize a brief relationship note based on this email interaction. Focus on: who sent it, what was communicated, why it matters for Danny's relationship knowledge graph. NOT a raw summary.
 
@@ -188,10 +216,18 @@ Output ONLY a concise 1-2 sentence note about the relationship context."""
         response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite-preview")
         note_content = response.text.strip()
         embedding = await asyncio.to_thread(get_embedding, note_content)
+        
+        metadata = {}
+        if people_id:
+            metadata['people_id'] = people_id
+        
         supabase.table('memories').insert({
             "content": note_content,
             "memory_type": "relationship_note",
-            "embedding": embedding
+            "embedding": embedding,
+            "embedding_status": 'success' if embedding and any(embedding) else 'failed',
+            "source": "email_ingest",
+            "metadata": metadata if metadata else None
         }).execute()
         print(f"🧠 Relationship note written for {sender_name}")
     except Exception as e:
@@ -456,12 +492,19 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
             # Write relationship_note if human sender with memory value
             is_human = classification_data.get('is_human_sender', False)
             has_memory = classification_data.get('has_memory_value', False)
+            
+            # Add sender to people table if human
+            people_id = None
+            if is_human:
+                people_id = await add_person_from_email(sender_name, sender_email)
+            
             if is_human and has_memory:
                 await write_relationship_note(
                     sender_name, 
                     sender_email, 
                     subject, 
-                    classification_data.get('summary', '')
+                    classification_data.get('summary', ''),
+                    people_id=people_id
                 )
             
             print(f"✅ [fyi] {subject} | From: {sender_email}")
@@ -469,10 +512,30 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
         elif classification == 'actionable':
             linked_person_id = None
             linked_person_name = classification_data.get('linked_person_name')
+            
+            # Add linked_person_name to people table if not exists (only for actionable emails)
             if linked_person_name:
                 person_res = supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').maybe_single().execute()
                 if getattr(person_res, 'data', None):
                     linked_person_id = person_res.data['id']
+                else:
+                    # Add new person from email
+                    new_person = supabase.table('people').insert({
+                        "name": linked_person_name,
+                        "source": "email_ingest",
+                        "strategic_weight": 5
+                    }).execute()
+                    if new_person.data:
+                        linked_person_id = new_person.data[0]['id']
+                        print(f"👤 Added linked person from email: {linked_person_name}")
+            
+            # Add sender to people table if human
+            is_human = classification_data.get('is_human_sender', False)
+            if is_human:
+                sender_id = await add_person_from_email(sender_name, sender_email)
+                # Use sender_id if no linked_person_id
+                if not linked_person_id:
+                    linked_person_id = sender_id
             
             linked_project_id = None
             linked_project_name = classification_data.get('linked_project_name')
@@ -491,7 +554,6 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
             email_id = insert_res.data[0]['id']
             
             suggested_task = classification_data.get('suggested_task')
-            is_human = classification_data.get('is_human_sender', False)
             
             if suggested_task:
                 suggested_title = suggested_task or ''
@@ -510,7 +572,8 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
                     sender_name,
                     sender_email,
                     subject,
-                    classification_data.get('summary', '')
+                    classification_data.get('summary', ''),
+                    people_id=linked_person_id or (await add_person_from_email(sender_name, sender_email) if is_human else None)
                 )
             
             if classification_data.get('needs_draft'):
