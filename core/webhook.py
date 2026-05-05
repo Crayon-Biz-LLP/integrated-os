@@ -443,7 +443,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
 
 
 # 1. Update your handle_confident_task signature to accept entity
-async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None):
+async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram"):
     try:
         supabase.table('raw_dumps').insert([{
             "content": text,
@@ -451,6 +451,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             "direction": "incoming",
             "sender": "telegram",
             "message_type": "task",
+            "source": source,
             "metadata": json.dumps({
                 "intent": "TASK",
                 "title": title, 
@@ -463,9 +464,23 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
     
     ack = receipt or "Logged."
     await send_telegram(chat_id, f"{ack}")
+    
+    # Log acknowledgment to raw_dumps so it appears in web UI
+    try:
+        supabase.table('raw_dumps').insert([{
+            "content": ack,
+            "status": "completed",
+            "is_processed": True,
+            "direction": "incoming",
+            "sender": "system",
+            "message_type": "acknowledgment",
+            "metadata": json.dumps({"in_response_to": text, "type": "ack"})
+        }]).execute()
+    except Exception as ack_err:
+        print(f"Failed to log ack to raw_dumps: {ack_err}")
 
 
-async def handle_confident_note(text: str, chat_id: int, receipt: str = None):
+async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram"):
     embedding = await asyncio.to_thread(get_embedding, text)
     status = 'success' if embedding and any(embedding) else 'failed'
     try:
@@ -480,6 +495,21 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None):
         print(f"Failed to save note to memory: {e}")
     ack = receipt or "Note vaulted."
     await send_telegram(chat_id, f"{ack}")
+    
+    # Log acknowledgment to raw_dumps so it appears in web UI
+    try:
+        supabase.table('raw_dumps').insert([{
+            "content": ack,
+            "status": "completed",
+            "is_processed": True,
+            "direction": "incoming",
+            "sender": "system",
+            "message_type": "acknowledgment",
+            "source": source,
+            "metadata": json.dumps({"in_response_to": text, "type": "ack"})
+        }]).execute()
+    except Exception as ack_err:
+        print(f"Failed to log ack to raw_dumps: {ack_err}")
 
 
 async def handle_clarification(text: str, question: str, chat_id: int, receipt: str = None):
@@ -1180,30 +1210,34 @@ async def process_webhook(update: dict):
         confidence = classification.get('confidence', 0.5)
         
         print(f"🎯 Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
-
+        
+        # Detect if message is from web UI (fake update_id from send-message endpoint)
+        is_web_source = update.get('update_id') and str(update.get('update_id')).startswith('web_')
+        source = "web" if is_web_source else "telegram"
+        
         if text.startswith('/') or text in ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library', '📊 Status']:
             return await handle_command(text, chat_id)
-
+        
         if text.startswith('N:') or text.startswith('Note:'):
             note_content = text[2:].strip() if text.startswith('N:') else text[5:].strip()
             if note_content:
                 receipt = "Note vaulted."
-                await handle_confident_note(note_content, chat_id, receipt)
+                await handle_confident_note(note_content, chat_id, receipt, source=source)
             return {"success": True}
-
+        
         receipt = classification.get('receipt')
         
-        # 2. Update the call inside process_webhook (Line 408)
         if intent == 'TASK' and confidence >= 0.6:
-          print(f"📋 WORK LOGGED: {text[:80]}...")
-          await handle_confident_task(
-             text,
-             classification.get('title', text),
-             classification.get('time_context', ''),
-             chat_id,
-             receipt,
-             entity=classification.get('entity') # 🚀 PASS THE ENTITY
-          )
+            print(f"📋 WORK LOGGED: {text[:80]}...")
+            await handle_confident_task(
+                text,
+                classification.get('title', text),
+                classification.get('time_context', ''),
+                chat_id,
+                receipt,
+                entity=classification.get('entity'),
+                source=source
+            )
         elif intent == 'QUERY' and confidence >= 0.6:
             print(f"🧠 QUERY DETECTED: Routing to brain...")
             await interrogate_brain(text, chat_id)
@@ -1222,6 +1256,7 @@ async def process_webhook(update: dict):
                     "direction": "incoming",
                     "sender": "telegram",
                     "message_type": "note",
+                    "source": source,
                     "metadata": json.dumps({
                         "intent": "NOTE",
                         "entity": classification.get('entity')
