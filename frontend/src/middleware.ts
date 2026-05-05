@@ -1,15 +1,18 @@
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
-import { createServerClient } from '@supabase/ssr';
+import { NextResponse, NextRequest } from 'next/server';
 
 export async function middleware(request: NextRequest) {
-  // Skip Supabase initialization if credentials are not available (e.g., during build)
+  const isProtected = request.nextUrl.pathname.startsWith('/dashboard');
+  
+  // During build time, just pass through
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    if (isProtected) {
+      return NextResponse.redirect(new URL('/login', request.url));
+    }
     return NextResponse.next();
   }
 
-  const response = NextResponse.next();
-
+  // At runtime, use Supabase
+  const { createServerClient } = await import('@supabase/supabase-js');
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -17,9 +20,10 @@ export async function middleware(request: NextRequest) {
       cookies: {
         getAll() { return request.cookies.getAll(); },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options)
-          );
+          cookiesToSet.forEach(({ name, value, options }) => {
+            request.cookies.set(name, value);
+            response.cookies.set(name, value, options);
+          });
         },
       },
     }
@@ -27,16 +31,8 @@ export async function middleware(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser();
 
-  const isProtected = request.nextUrl.pathname.startsWith('/dashboard');
-  const isAuthRoute = request.nextUrl.pathname.startsWith('/login') ||
-    request.nextUrl.pathname.startsWith('/auth');
-
   if (isProtected && !user) {
     return NextResponse.redirect(new URL('/login', request.url));
-  }
-
-  if (isAuthRoute && user && !request.nextUrl.pathname.startsWith('/auth')) {
-    return NextResponse.redirect(new URL('/dashboard/tasks', request.url));
   }
 
   return response;
