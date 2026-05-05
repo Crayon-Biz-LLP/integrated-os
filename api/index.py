@@ -134,6 +134,124 @@ async def get_messages_route(limit: int = 50, offset: int = 0):
         
         return {"messages": result.data or []}
     
-    except Exception as e:
+     except Exception as e:
         print(f"Get messages error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- CALENDAR EVENTS (Fetches from Google Calendar) ---
+@app.get("/api/calendar-events")
+async def get_calendar_events(date: str = "today"):
+    """Fetch today's calendar events from Google Calendar"""
+    try:
+        from core.pulse import get_google_creds, format_rfc3339
+        from googleapiclient.discovery import build
+        from datetime import datetime, timedelta
+        
+        service = build('calendar', 'v3', credentials=get_google_creds())
+        
+        # Calculate time range
+        if date == "today":
+            today = datetime.now()
+            start = format_rfc3339(today.replace(hour=0, minute=0, second=0))
+            end = format_rfc3339(today.replace(hour=23, minute=59, second=59))
+        else:
+            # Parse specific date
+            target = datetime.fromisoformat(date)
+            start = format_rfc3339(target.replace(hour=0, minute=0, second=0))
+            end = format_rfc3339(target.replace(hour=23, minute=59, second=59))
+        
+        events_res = service.events().list(
+            calendarId='primary',
+            timeMin=start,
+            timeMax=end,
+            singleEvents=True,
+            orderBy='startTime',
+            maxResults=10
+        ).execute()
+        
+        events = events_res.get('items', [])
+        
+        # Simplify event data for frontend
+        simplified = []
+        for event in events:
+            simplified.append({
+                'id': event.get('id'),
+                'summary': event.get('summary', 'No Title'),
+                'start': event.get('start', {}),
+                'end': event.get('end', {}),
+                'description': event.get('description', '')
+            })
+        
+        return {"events": simplified}
+    
+    except Exception as e:
+        print(f"Calendar events error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- UPDATE TASK STATUS (Mark Done) ---
+@app.patch("/api/tasks/{task_id}/status")
+async def update_task_status(request: Request, task_id: int):
+    """Update task status (e.g., mark as done)"""
+    try:
+        body = await request.json()
+        new_status = body.get('status', 'done')
+        
+        from supabase import create_client
+        supabase = create_client(
+            os.getenv("SUPABASE_URL"),
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        )
+        
+        # If marking as done, set completed_at
+        update_data = {'status': new_status}
+        if new_status == 'done':
+            from datetime import datetime
+            update_data['completed_at'] = datetime.now().isoformat()
+        
+        result = supabase.table('tasks').update(update_data).eq('id', task_id).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        return {"success": True, "task": result.data[0]}
+    
+    except Exception as e:
+        print(f"Update task status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- EMAIL SHORTCODE ACTIONS ---
+@app.post("/api/email-action")
+async def email_action_route(request: Request):
+    """Approve or reject email pending task via shortcode"""
+    try:
+        body = await request.json()
+        shortcode = body.get('shortcode')
+        action = body.get('action')  # 'approve' or 'reject'
+        
+        if not shortcode or not action:
+            raise HTTPException(status_code=400, detail="shortcode and action required")
+        
+        # Call the existing logic from core/webhook.py
+        from core.webhook import handle_ed_command
+        from supabase import create_client
+        import os
+        
+        supabase = create_client(
+            os.getenv("SUPABASE_URL"),
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        )
+        
+        # Get the chat_id (owner)
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            raise HTTPException(status_code=500, detail="TELEGRAM_CHAT_ID not configured")
+        
+        # Simulate the command
+        command = f"{shortcode} {action}"
+        await handle_ed_command(command, int(chat_id))
+        
+        return {"success": True, "message": f"Shortcode {shortcode} {action}d"}
+    
+    except Exception as e:
+        print(f"Email action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -81,12 +81,12 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick }: TasksTa
       <Table>
         <TableHeader className="bg-muted/40 border-b border-border">
           <TableRow>
-            <TableHead className="section-label py-3 px-4 text-left w-[40%]">Task</TableHead>
+            <TableHead className="section-label py-3 px-4 text-left w-[35%]">Task</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Status</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Priority</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Project</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Due</TableHead>
-            <TableHead className="section-label py-3 px-4 text-left w-10"></TableHead>
+            <TableHead className="section-label py-3 px-4 text-left">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -127,16 +127,32 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick }: TasksTa
                   </span>
                 </TableCell>
                 <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onChangeProjectClick(task);
-                    }}
-                  >
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
+                  <div className="flex gap-1">
+                    {task.status !== 'done' && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const { markTaskDone } = await import('@/lib/tasks/api');
+                          await markTaskDone(task.id);
+                          window.location.reload();
+                        }}
+                      >
+                        ✓ Done
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onChangeProjectClick(task);
+                      }}
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))

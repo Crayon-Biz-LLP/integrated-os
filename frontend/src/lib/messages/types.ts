@@ -4,7 +4,7 @@ export interface Message {
   created_at: string;
   direction: 'incoming' | 'outgoing';
   sender: 'user' | 'telegram' | 'system';
-  message_type: 'chat' | 'task' | 'note' | 'briefing' | 'clarification' | 'acknowledgment' | 'system';
+  message_type: 'chat' | 'task' | 'note' | 'briefing' | 'clarification' | 'acknowledgment' | 'system' | 'response';
   status: string;
   metadata: string | Record<string, any>;
   source: string;

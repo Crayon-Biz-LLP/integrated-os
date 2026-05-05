@@ -44,28 +44,27 @@ export async function fetchEmails(filters: EmailFilters): Promise<Email[]> {
 }
 
 export async function fetchEmailStats(): Promise<EmailStats> {
-  const supabase = createClient();
-  const [
-    { count: total },
-    { count: actionable },
-    { count: fyi },
-    { count: pending_tasks },
-    { count: pending_drafts },
-  ] = await Promise.all([
-    supabase.from('emails').select('*', { count: 'exact', head: true }),
-    supabase.from('emails').select('*', { count: 'exact', head: true }).eq('classification', 'actionable'),
-    supabase.from('emails').select('*', { count: 'exact', head: true }).eq('classification', 'fyi'),
-    supabase.from('email_pending_tasks').select('*', { count: 'exact', head: true }).is('danny_decision', null),
-    supabase.from('email_drafts').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-  ]);
+  const res = await fetch(`/api/emails/stats`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch email stats");
+  return res.json();
+}
 
-  return {
-    total: total || 0,
-    actionable: actionable || 0,
-    fyi: fyi || 0,
-    pending_tasks: pending_tasks || 0,
-    pending_drafts: pending_drafts || 0,
-  };
+export async function approveShortcode(shortcode: number): Promise<void> {
+  const res = await fetch(`/api/email-action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shortcode, action: 'approve' }),
+  });
+  if (!res.ok) throw new Error("Failed to approve shortcode");
+}
+
+export async function rejectShortcode(shortcode: number): Promise<void> {
+  const res = await fetch(`/api/email-action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shortcode, action: 'reject' }),
+  });
+  if (!res.ok) throw new Error("Failed to reject shortcode");
 }
 
 export async function fetchPendingTasks(): Promise<EmailPendingTask[]> {
