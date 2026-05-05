@@ -131,6 +131,7 @@ Web Search Results:
                     embedding = None
                 supabase.table('raw_dumps').insert([{
                     "content": content,
+                    "direction": "incoming",
                     "metadata": json.dumps({"source": "research_agent", "task_id": task_id}),
                     "embedding": embedding
                 }]).execute()

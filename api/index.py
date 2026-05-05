@@ -72,3 +72,80 @@ async def send_draft_route(request: Request):
         raise HTTPException(status_code=400, detail="draft_id required")
     success, error = await send_draft_reply(draft_id)
     return {"success": success, "error": error}
+
+# --- SEND TELEGRAM MESSAGE ---
+@app.post("/api/send-message")
+async def send_message_route(request: Request):
+    try:
+        body = await request.json()
+        message_text = body.get("message")
+        if not message_text:
+            raise HTTPException(status_code=400, detail="message required")
+        
+        import httpx
+        from supabase import create_client, Client
+        
+        supabase: Client = create_client(
+            os.getenv("SUPABASE_URL"),
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        )
+        
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        
+        if not telegram_bot_token or not telegram_chat_id:
+            raise HTTPException(status_code=500, detail="Telegram credentials not configured")
+        
+        # Send via Telegram API
+        url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
+        payload = {
+            "chat_id": int(telegram_chat_id),
+            "text": message_text,
+            "parse_mode": "Markdown"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload)
+            result = response.json()
+        
+        if result.get("ok"):
+            # Log outgoing message to raw_dumps
+            supabase.table('raw_dumps').insert([{
+                "content": message_text,
+                "status": "completed",
+                "is_processed": True,
+                "direction": "outgoing",
+                "metadata": "{}"
+            }]).execute()
+            
+            return {"success": True, "message": "Message sent"}
+        else:
+            raise HTTPException(status_code=500, detail=f"Telegram API error: {result}")
+    
+    except Exception as e:
+        print(f"Send message error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- GET MESSAGE HISTORY ---
+@app.get("/api/messages")
+async def get_messages_route(limit: int = 50, offset: int = 0):
+    try:
+        from supabase import create_client, Client
+        
+        supabase: Client = create_client(
+            os.getenv("SUPABASE_URL"),
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        )
+        
+        result = supabase.table('raw_dumps')\
+            .select('id, content, created_at, direction, status, metadata')\
+            .order('created_at', desc=True)\
+            .limit(limit)\
+            .offset(offset)\
+            .execute()
+        
+        return {"messages": result.data or []}
+    
+    except Exception as e:
+        print(f"Get messages error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

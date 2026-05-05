@@ -3,17 +3,18 @@
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Cpu,
-  CheckSquare,
-  FolderOpen,
-  Mail,
-  Brain,
-  Calendar,
-  Users,
-  BookOpen,
-  LogOut,
-  Menu,
-} from 'lucide-react';
+   Cpu,
+   CheckSquare,
+   FolderOpen,
+   Mail,
+   MessageSquare,
+   Brain,
+   Calendar,
+   Users,
+   BookOpen,
+   LogOut,
+   Menu,
+ } from 'lucide-react';
 import { createClient } from '@/lib/supabase';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -25,25 +26,27 @@ import {
 import { cn } from '@/lib/utils';
 
 const navItems = [
-  { href: '/dashboard/tasks', label: 'Tasks', icon: CheckSquare },
-  { href: '/dashboard/projects', label: 'Projects', icon: FolderOpen },
-  { href: '/dashboard/emails', label: 'Emails', icon: Mail },
-  { href: '/dashboard/memories', label: 'Memories', icon: Brain },
-  { href: '/dashboard/calendar', label: 'Calendar', icon: Calendar },
-  { href: '/dashboard/people', label: 'People', icon: Users },
-  { href: '/dashboard/resources', label: 'Resources', icon: BookOpen },
+   { href: '/dashboard/tasks', label: 'Tasks', icon: CheckSquare },
+   { href: '/dashboard/projects', label: 'Projects', icon: FolderOpen },
+   { href: '/dashboard/emails', label: 'Emails', icon: Mail },
+   { href: '/dashboard/messages', label: 'Messages', icon: MessageSquare },
+   { href: '/dashboard/memories', label: 'Memories', icon: Brain },
+   { href: '/dashboard/calendar', label: 'Calendar', icon: Calendar },
+   { href: '/dashboard/people', label: 'People', icon: Users },
+   { href: '/dashboard/resources', label: 'Resources', icon: BookOpen },
 ];
 
 const mobileItems = navItems.slice(0, 5);
 
 const routeTitles: Record<string, string> = {
-  '/dashboard/tasks': 'Tasks',
-  '/dashboard/projects': 'Projects',
-  '/dashboard/emails': 'Emails',
-  '/dashboard/memories': 'Memories',
-  '/dashboard/calendar': 'Calendar',
-  '/dashboard/people': 'People',
-  '/dashboard/resources': 'Resources',
+   '/dashboard/tasks': 'Tasks',
+   '/dashboard/projects': 'Projects',
+   '/dashboard/emails': 'Emails',
+   '/dashboard/messages': 'Messages',
+   '/dashboard/memories': 'Memories',
+   '/dashboard/calendar': 'Calendar',
+   '/dashboard/people': 'People',
+   '/dashboard/resources': 'Resources',
 };
 
 export default function DashboardLayout({
