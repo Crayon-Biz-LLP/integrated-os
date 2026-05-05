@@ -1,5 +1,5 @@
 import { NextResponse, NextRequest } from 'next/server';
-import { createServerClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 
 export async function middleware(request: NextRequest) {
   // Skip Supabase during build time
@@ -13,7 +13,7 @@ export async function middleware(request: NextRequest) {
 
   const response = NextResponse.next();
   
-  const supabase = createServerClient(
+  const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
