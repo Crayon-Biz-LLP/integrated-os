@@ -384,6 +384,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                 supabase.table('raw_dumps').insert([{
                     "content": content,
                     "status": "pending",
+                    "direction": "incoming",
                     "metadata": json.dumps({
                         "source": "multimodal", 
                         "mime_type": mime_type,
@@ -397,6 +398,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                 supabase.table('raw_dumps').insert([{
                     "content": content,
                     "status": "pending",
+                    "direction": "incoming",
                     "metadata": json.dumps({
                         "intent": "NOTE",
                         "source": "multimodal",
@@ -442,6 +444,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         supabase.table('raw_dumps').insert([{
             "content": text,
             "status": "pending",
+            "direction": "incoming",
             "metadata": json.dumps({
                 "intent": "TASK",
                 "title": title, 
@@ -480,6 +483,7 @@ async def handle_clarification(text: str, question: str, chat_id: int, receipt: 
     
     supabase.table('raw_dumps').insert([{
         "content": text,
+        "direction": "incoming",
         "metadata": json.dumps({"awaiting_clarification": True})
     }]).execute()
 
@@ -1101,15 +1105,16 @@ async def process_webhook(update: dict):
 
                     # Insert into raw_dumps FIRST (let Pulse handle enrichment + project mapping)
                     try:
-                        supabase.table('raw_dumps').insert([{
-                            "content": _suggested_title,
-                            "source": "email",
-                            "status": "pending",
-                            "metadata": ({
-                                "email_id": _email_id,
-                                "is_human_sender": _row.get('is_human_sender', False)
-                            })
-                        }]).execute()
+                    supabase.table('raw_dumps').insert([{
+                        "content": _suggested_title,
+                        "source": "email",
+                        "status": "pending",
+                        "direction": "incoming",
+                        "metadata": ({
+                            "email_id": _email_id,
+                            "is_human_sender": _row.get('is_human_sender', False)
+                        })
+                    }]).execute()
                     except Exception as _insert_err:
                         await send_telegram(chat_id, f"⚠️ Task staging failed. Decision not recorded — you can retry with [{_row['id']}] yes.")
                         raise _insert_err
@@ -1204,6 +1209,7 @@ async def process_webhook(update: dict):
                 supabase.table('raw_dumps').insert([{
                     "content": text,
                     "status": "pending",
+                    "direction": "incoming",
                     "metadata": json.dumps({
                         "intent": "NOTE",
                         "entity": classification.get('entity')
