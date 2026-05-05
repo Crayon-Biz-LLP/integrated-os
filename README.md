@@ -67,3 +67,4 @@ You will need to populate a .env file with the following:
 🧭 Strategic Note
 
 Integrated-OS is governed by a "Season Context" stored in core_config. The AI uses this to prioritize tasks that align with your current 3–6 month goals (e.g., debt recovery or scaling a specific product). Any task not aligning with the "North Star" is deprioritized in the briefings.
+# Trigger redeploy
