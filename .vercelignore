@@ -1,0 +1,7 @@
+# Ignore frontend directory for Python backend project (integrated-os)
+# This ensures only the api/ directory is processed
+
+frontend/
+*.md
+.env*
+!.env.example
