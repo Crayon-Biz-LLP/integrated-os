@@ -31,8 +31,9 @@ export default function MessagesPage() {
   }, []);
 
   useEffect(() => {
+    // Scroll to bottom on initial load AND when new messages arrive
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, loading]);
 
   const handleSend = async () => {
     if (!inputText.trim() || sending) return;
@@ -77,6 +78,30 @@ export default function MessagesPage() {
     return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
   };
 
+  // Safe metadata parser (handles double-escaped JSON)
+  const parseMetadata = (meta: string | Record<string, any>): Record<string, any> => {
+    if (typeof meta === 'object' && meta !== null) return meta;
+    if (typeof meta !== 'string') return {};
+    
+    let cleaned = meta;
+    // Handle double-escaped JSON: "\"{\\\\"key\\\":...}\""
+    if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+      try {
+        cleaned = JSON.parse(cleaned); // Unwrap first layer
+      } catch {
+        // If that fails, try replacing escaped quotes
+        cleaned = cleaned.replace(/\\"/g, '"').slice(1, -1);
+      }
+    }
+    
+    try {
+      return JSON.parse(cleaned);
+    } catch (e) {
+      console.error('Metadata parse error:', meta);
+      return {};
+    }
+  };
+
   // Filter to only show chat messages and bot responses (not task raw_dumps)
   const chatMessages = messages.filter(m => 
     m.message_type === 'chat' || 
@@ -86,8 +111,11 @@ export default function MessagesPage() {
     m.direction === 'outgoing'
   );
 
+  // Reverse to show OLDEST first (like Telegram/WhatsApp - newest at bottom near input)
+  const sortedMessages = [...chatMessages].reverse();
+
   // Group messages by date
-  const groupedMessages = chatMessages.reduce((groups: Record<string, Message[]>, msg) => {
+  const groupedMessages = sortedMessages.reduce((groups: Record<string, Message[]>, msg) => {
     const date = formatDate(msg.created_at);
     if (!groups[date]) groups[date] = [];
     groups[date].push(msg);
@@ -155,9 +183,7 @@ export default function MessagesPage() {
             <div className="space-y-3">
               {msgs.map((msg) => {
                 const isOutgoing = msg.direction === 'outgoing';
-                const metadata = typeof msg.metadata === 'string' 
-                  ? JSON.parse(msg.metadata || '{}') 
-                  : msg.metadata;
+                const metadata = parseMetadata(msg.metadata);
                 
                 const senderLabel = getSenderLabel(msg);
                 const isUser = msg.sender === 'user' || msg.direction === 'outgoing';
