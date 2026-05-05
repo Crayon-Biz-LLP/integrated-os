@@ -1,25 +1,43 @@
-import { NextResponse, NextRequest } from 'next/server';
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
+  const response = NextResponse.next();
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() { return request.cookies.getAll(); },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            request.cookies.set(name, value);
+            response.cookies.set(name, value, options);
+          });
+        },
+      },
+    }
+  );
+
+  const { data: { user } } = await supabase.auth.getUser();
+
   const isProtected = request.nextUrl.pathname.startsWith('/dashboard');
-  const isAuth = request.nextUrl.pathname.startsWith('/login') || 
-    request.nextUrl.pathname.startsWith('/auth');
+  const isAuthRoute = request.nextUrl.pathname.startsWith('/login') ||
+                      request.nextUrl.pathname.startsWith('/auth');
 
-  // Check for Supabase auth cookie
-  const hasAuthCookie = request.cookies.has('sb-access-token') || 
-    request.cookies.has('sb-refresh-token');
-
-  if (isProtected && !hasAuthCookie) {
+  if (isProtected && !user) {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  if (isAuth && hasAuthCookie) {
+  if (isAuthRoute && user && !request.nextUrl.pathname.startsWith('/auth')) {
     return NextResponse.redirect(new URL('/dashboard/tasks', request.url));
   }
 
-  return NextResponse.next();
+  return response;
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/login', '/auth/callback'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };
