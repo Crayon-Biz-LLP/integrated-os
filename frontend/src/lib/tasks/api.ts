@@ -33,3 +33,16 @@ export async function updateTaskProject(taskId: number, projectId: number | null
   });
   if (!res.ok) throw new Error("Failed to update task project");
 }
+
+export async function updateTaskStatus(taskId: number, status: string): Promise<void> {
+  const res = await fetch(`/api/tasks/${taskId}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) throw new Error("Failed to update task status");
+}
+
+export async function markTaskDone(taskId: number): Promise<void> {
+  return updateTaskStatus(taskId, 'done');
+}
