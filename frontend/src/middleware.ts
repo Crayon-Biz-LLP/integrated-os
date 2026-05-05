@@ -3,6 +3,11 @@ import type { NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 
 export async function middleware(request: NextRequest) {
+  // Skip Supabase initialization if credentials are not available (e.g., during build)
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    return NextResponse.next();
+  }
+
   const response = NextResponse.next();
 
   const supabase = createServerClient(
