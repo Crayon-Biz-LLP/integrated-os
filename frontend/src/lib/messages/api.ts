@@ -1,6 +1,6 @@
 import { Message, MessagesResponse, SendMessageResponse } from './types';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
+const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || '';
 
 export async function fetchMessages(limit = 50, offset = 0): Promise<Message[]> {
   const res = await fetch(`${API_BASE}/api/messages?limit=${limit}&offset=${offset}`);
