@@ -1995,7 +1995,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         meta = json.loads(d.get('metadata', '{}') or '{}')
                         meta['request_id'] = request_id
                         supabase.table('raw_dumps') \
-                            .update({"metadata": json.dumps(meta)}) \
+                            .update({"metadata": meta}) \
                             .eq('id', d['id']) \
                             .execute()
                     except:
@@ -3408,7 +3408,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     "direction": "incoming",
                     "sender": "system",
                     "message_type": "briefing",
-                    "metadata": json.dumps({"source": "pulse", "hour": hour})
+                    "metadata": {"source": "pulse", "hour": hour}
                 }]).execute()
             except Exception as log_err:
                 print(f"Failed to log briefing to raw_dumps: {log_err}")
