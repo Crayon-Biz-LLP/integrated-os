@@ -385,8 +385,9 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                     "content": content,
                     "status": "pending",
                     "direction": "incoming",
-                    "sender": "telegram",
+                    "sender": "user",  # All user messages have sender "user"
                     "message_type": "task",
+                    "source": "multimodal",
                     "metadata": {
                         "source": "multimodal", 
                         "mime_type": mime_type,
@@ -401,8 +402,9 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                     "content": content,
                     "status": "pending",
                     "direction": "incoming",
-                    "sender": "telegram",
+                    "sender": "user",  # All user messages have sender "user"
                     "message_type": "note",
+                    "source": "multimodal",
                     "metadata": {
                         "intent": "NOTE",
                         "source": "multimodal",
@@ -443,13 +445,13 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
 
 
 # 1. Update your handle_confident_task signature to accept entity
-async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram"):
+async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram", sender: str = "user"):
     try:
         supabase.table('raw_dumps').insert([{
             "content": text,
             "status": "pending",
             "direction": "incoming",
-            "sender": "telegram",
+            "sender": sender,  # "user" for all user messages
             "message_type": "task",
             "source": source,
             "metadata": {
@@ -480,9 +482,28 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         print(f"Failed to log ack to raw_dumps: {ack_err}")
 
 
-async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram"):
+async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user"):
     embedding = await asyncio.to_thread(get_embedding, text)
     status = 'success' if embedding and any(embedding) else 'failed'
+    
+    # Save note to raw_dumps for display in Messages UI (pending for Pulse processing)
+    try:
+        supabase.table('raw_dumps').insert([{
+            "content": text,
+            "status": "pending",
+            "direction": "incoming",
+            "sender": sender,  # "user" for all user messages
+            "message_type": "note",
+            "source": source,
+            "metadata": {
+                "intent": "NOTE",
+                "entity": None
+            }
+        }]).execute()
+    except Exception as e:
+        print(f"Failed to save note dump: {e}")
+    
+    # Also save to memories with embedding
     try:
         supabase.table('memories').insert({
             "content": text,
@@ -493,6 +514,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         }).execute()
     except Exception as e:
         print(f"Failed to save note to memory: {e}")
+    
     ack = receipt or "Note vaulted."
     await send_telegram(chat_id, f"{ack}")
     
@@ -500,9 +522,9 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
     try:
         supabase.table('raw_dumps').insert([{
             "content": ack,
-            "status": "completed",
+            "status": "processed",
             "is_processed": True,
-            "direction": "incoming",
+            "direction": "outgoing",
             "sender": "system",
             "message_type": "acknowledgment",
             "source": source,
@@ -666,6 +688,24 @@ Provide a clear, concise answer. Format with Markdown. If referencing a specific
         answer = response.text.strip()
         
         await send_telegram(chat_id, f"🧠 *Brain Interrogation:*\n\n{answer}")
+        
+        # Log QUERY response to raw_dumps so it appears in web UI
+        try:
+            supabase.table('raw_dumps').insert([{
+                "content": answer,
+                "status": "processed",
+                "is_processed": True,
+                "direction": "outgoing",
+                "sender": "system",
+                "message_type": "response",
+                "source": "pulse",
+                "metadata": {
+                    "type": "query_response",
+                    "query": query
+                }
+            }]).execute()
+        except Exception as log_err:
+            print(f"Failed to log query response to raw_dumps: {log_err}")
         
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Interrogation error: {e}")
@@ -1150,12 +1190,12 @@ async def process_webhook(update: dict):
                             "source": "email",
                             "status": "pending",
                             "direction": "incoming",
-                            "sender": "telegram",
+                            "sender": "user",  # Email tasks are also user tasks
                             "message_type": "task",
-                            "metadata": ({
+                            "metadata": {
                                 "email_id": _email_id,
                                 "is_human_sender": _row.get('is_human_sender', False)
-                            })
+                            }
                         }]).execute()
                     except Exception as _insert_err:
                         await send_telegram(chat_id, f"⚠️ Task staging failed. Decision not recorded — you can retry with [{_row['id']}] yes.")
@@ -1216,24 +1256,25 @@ async def process_webhook(update: dict):
         # Detect if message is from web UI (fake update_id from send-message endpoint)
         is_web_source = update.get('update_id') and str(update.get('update_id')).startswith('web_')
         source = "web" if is_web_source else "telegram"
-        sender = "user" if is_web_source else "telegram"
+        sender = "user"  # All user messages (web/telegram) have sender "user"
         
         # Save the original user message to raw_dumps for web UI display
         # This ensures user messages appear in the Messages page
+        # User messages have status "pending" so Pulse can process them
         try:
             supabase.table('raw_dumps').insert([{
                 "content": text,
-                "status": "processed",
+                "status": "pending",
                 "direction": "incoming",
-                "sender": sender,
+                "sender": sender,  # "user" for all user messages
                 "message_type": "chat",
-                "source": source,
+                "source": source,  # "web" or "telegram"
                 "metadata": {
                     "source": source,
                     "is_web_ui": is_web_source
                 }
             }]).execute()
-            print(f"💬 Saved user message to raw_dumps (sender={sender}, source={source})")
+            print(f"💬 Saved user message to raw_dumps (sender={sender}, source={source}, status=pending)")
         except Exception as e:
             print(f"⚠️ Failed to save user message: {e}")
         
@@ -1259,7 +1300,7 @@ async def process_webhook(update: dict):
                 receipt,
                 entity=classification.get('entity'),
                 source=source,
-                sender=sender
+                sender=sender  # Pass the sender ("user" for all user messages)
             )
         elif intent == 'QUERY' and confidence >= 0.6:
             print(f"🧠 QUERY DETECTED: Routing to brain...")
@@ -1273,19 +1314,14 @@ async def process_webhook(update: dict):
                 }).execute()
                 await send_telegram(chat_id, "🔖 Resource saved to Library.")
             else:
-                supabase.table('raw_dumps').insert([{
-                    "content": text,
-                    "status": "pending",
-                    "direction": "incoming",
-                    "sender": "telegram",
-                    "message_type": "note",
-                    "source": source,
-                    "metadata": {
-                        "intent": "NOTE",
-                        "entity": classification.get('entity')
-                    }
-                }]).execute()
-                await send_telegram(chat_id, receipt or "Note secured.")
+                # Use handle_confident_note which saves to raw_dumps (for Pulse) and memories (with embedding)
+                await handle_confident_note(
+                    text, 
+                    chat_id, 
+                    receipt or "Note secured.", 
+                    source=source, 
+                    sender=sender
+                )
         elif intent == 'DELEGATE':
             supabase.table('agent_queue').insert({
                 "query": text,

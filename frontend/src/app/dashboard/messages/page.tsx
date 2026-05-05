@@ -126,8 +126,9 @@ export default function MessagesPage() {
     if (msg.message_type === 'acknowledgment' || msg.message_type === 'briefing' || msg.sender === 'system') {
       return 'Rhodey';
     }
+    // All user messages (web or telegram) show as "You"
     if (msg.sender === 'user' || msg.direction === 'outgoing') return 'You';
-    return 'Telegram';
+    return 'You';
   };
 
   return (
@@ -200,7 +201,7 @@ export default function MessagesPage() {
                       className={cn(
                         'max-w-[80%] rounded-2xl px-4 py-2.5 text-sm',
                         isUser
-                          ? 'bg-primary text-primary-foreground rounded-br-md'
+                          ? 'bg-teal-600 text-white rounded-br-md'  // Teal for user messages
                           : 'bg-muted text-foreground rounded-bl-md'
                       )}
                     >
@@ -213,7 +214,7 @@ export default function MessagesPage() {
                       <p
                         className={cn(
                           'text-[10px] mt-1 font-mono',
-                          isUser ? 'text-primary-foreground/60' : 'text-muted-foreground/50'
+                          isUser ? 'text-white/60' : 'text-muted-foreground/50'
                         )}
                       >
                         {formatTime(msg.created_at)}
