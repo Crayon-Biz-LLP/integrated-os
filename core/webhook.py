@@ -474,7 +474,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             "direction": "incoming",
             "sender": "system",
             "message_type": "acknowledgment",
-            "metadata": json.dumps({"in_response_to": text, "type": "ack"})
+            "metadata": {"in_response_to": text, "type": "ack"}
         }]).execute()
     except Exception as ack_err:
         print(f"Failed to log ack to raw_dumps: {ack_err}")
@@ -506,7 +506,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             "sender": "system",
             "message_type": "acknowledgment",
             "source": source,
-            "metadata": json.dumps({"in_response_to": text, "type": "ack"})
+            "metadata": {"in_response_to": text, "type": "ack"}
         }]).execute()
     except Exception as ack_err:
         print(f"Failed to log ack to raw_dumps: {ack_err}")
