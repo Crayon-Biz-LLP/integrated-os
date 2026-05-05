@@ -2,12 +2,13 @@
 import os
 import hmac
 import hashlib
+import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Updated imports: Pulling from your new 'core' module
-from core.webhook import process_webhook, send_draft_reply, send_telegram
+from core.webhook import process_webhook, send_draft_reply
 from core.pulse import process_pulse
 
 app = FastAPI(title="Integrated-OS")
@@ -82,30 +83,42 @@ async def send_message_route(request: Request):
         if not message_text:
             raise HTTPException(status_code=400, detail="message required")
         
-        from supabase import create_client, Client
-        
-        supabase: Client = create_client(
-            os.getenv("SUPABASE_URL"),
-            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        )
-        
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not telegram_chat_id:
-            raise HTTPException(status_code=500, detail="Telegram chat ID not configured")
         
-        # Send via Telegram using existing function
-        await send_telegram(int(telegram_chat_id), message_text, show_keyboard=False)
+        if not telegram_bot_token or not telegram_chat_id:
+            raise HTTPException(status_code=500, detail="Telegram credentials not configured")
         
-        # Log outgoing message to raw_dumps
-        supabase.table('raw_dumps').insert([{
-            "content": message_text,
-            "status": "completed",
-            "is_processed": True,
-            "direction": "outgoing",
-            "metadata": "{}"
-        }]).execute()
+        # Send via Telegram API
+        url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
+        payload = {
+            "chat_id": int(telegram_chat_id),
+            "text": message_text,
+            "parse_mode": "Markdown"
+        }
         
-        return {"success": True, "message": "Message sent"}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload)
+            result = response.json()
+        
+        if result.get("ok"):
+            # Log outgoing message to raw_dumps
+            from supabase import create_client
+            supabase = create_client(
+                os.getenv("SUPABASE_URL"),
+                os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+            )
+            supabase.table('raw_dumps').insert([{
+                "content": message_text,
+                "status": "completed",
+                "is_processed": True,
+                "direction": "outgoing",
+                "metadata": "{}"
+            }]).execute()
+            
+            return {"success": True, "message": "Message sent"}
+        else:
+            raise HTTPException(status_code=500, detail=f"Telegram API error: {result}")
     
     except Exception as e:
         print(f"Send message error: {e}")
