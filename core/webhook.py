@@ -387,11 +387,11 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                     "direction": "incoming",
                     "sender": "telegram",
                     "message_type": "task",
-                    "metadata": json.dumps({
+                    "metadata": {
                         "source": "multimodal", 
                         "mime_type": mime_type,
                         "entity": item.get('entity')
-                    })
+                    }
                 }]).execute()
                 task_count += 1
                 print(f"📋 Task extracted: {content[:50]}...")
@@ -403,12 +403,12 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                     "direction": "incoming",
                     "sender": "telegram",
                     "message_type": "note",
-                    "metadata": json.dumps({
+                    "metadata": {
                         "intent": "NOTE",
                         "source": "multimodal",
                         "mime_type": mime_type,
                         "entity": item.get('entity')
-                    })
+                    }
                 }]).execute()
                 note_count += 1
                 print(f"📝 Note staged: {content[:50]}...")
@@ -417,7 +417,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                 supabase.table('agent_queue').insert({
                     "query": content,
                     "status": "pending",
-                    "metadata": json.dumps({"source": "multimodal", "mime_type": mime_type})
+                    "metadata": {"source": "multimodal", "mime_type": mime_type}
                 }).execute()
                 print(f"🕵️ Agent dispatched: {content[:50]}...")
         
@@ -452,12 +452,12 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             "sender": "telegram",
             "message_type": "task",
             "source": source,
-            "metadata": json.dumps({
+            "metadata": {
                 "intent": "TASK",
                 "title": title, 
                 "time_context": time_context,
                 "entity": entity
-            })
+            }
         }]).execute()
     except Exception as e:
         print(f"Failed to save task dump: {e}")
@@ -522,7 +522,7 @@ async def handle_clarification(text: str, question: str, chat_id: int, receipt: 
         "direction": "incoming",
         "sender": "telegram",
         "message_type": "clarification",
-        "metadata": json.dumps({"awaiting_clarification": True})
+        "metadata": {"awaiting_clarification": True}
     }]).execute()
 
 
@@ -1257,10 +1257,10 @@ async def process_webhook(update: dict):
                     "sender": "telegram",
                     "message_type": "note",
                     "source": source,
-                    "metadata": json.dumps({
+                    "metadata": {
                         "intent": "NOTE",
                         "entity": classification.get('entity')
-                    })
+                    }
                 }]).execute()
                 await send_telegram(chat_id, receipt or "Note secured.")
         elif intent == 'DELEGATE':
@@ -1401,7 +1401,7 @@ async def handle_command(text: str, chat_id: int):
                     supabase.table('graph_nodes').insert({
                         "label": params,
                         "type": "mission",
-                        "metadata": json.dumps({"status": "active", "origin": "webhook_command"})
+                        "metadata": {"status": "active", "origin": "webhook_command"}
                     }).execute()
                     reply = f"🚀 **MISSION DECLARED:** {params}\n\nI am now hunting for components and 'Sparks' related to this goal."
             except Exception as e:
