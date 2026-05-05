@@ -182,12 +182,13 @@ export default function MessagesPage() {
             </div>
             
             <div className="space-y-3">
-              {msgs.map((msg) => {
+                {msgs.map((msg) => {
                 const isOutgoing = msg.direction === 'outgoing';
                 const metadata = parseMetadata(msg.metadata);
                 
                 const senderLabel = getSenderLabel(msg);
-                const isUser = msg.sender === 'user' || msg.direction === 'outgoing';
+                // Only user messages (sender: "user") get teal color, NOT system messages with direction: "outgoing"
+                const isUser = msg.sender === 'user';
                 
                 return (
                   <div

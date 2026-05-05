@@ -1258,25 +1258,9 @@ async def process_webhook(update: dict):
         source = "web" if is_web_source else "telegram"
         sender = "user"  # All user messages (web/telegram) have sender "user"
         
-        # Save the original user message to raw_dumps for web UI display
-        # This ensures user messages appear in the Messages page
-        # User messages have status "pending" so Pulse can process them
-        try:
-            supabase.table('raw_dumps').insert([{
-                "content": text,
-                "status": "pending",
-                "direction": "incoming",
-                "sender": sender,  # "user" for all user messages
-                "message_type": "chat",
-                "source": source,  # "web" or "telegram"
-                "metadata": {
-                    "source": source,
-                    "is_web_ui": is_web_source
-                }
-            }]).execute()
-            print(f"💬 Saved user message to raw_dumps (sender={sender}, source={source}, status=pending)")
-        except Exception as e:
-            print(f"⚠️ Failed to save user message: {e}")
+        # Note: User message will be saved by classification functions (handle_confident_task/note)
+        # with the correct message_type (task/note) and status (pending for Pulse)
+        # No need to save as "chat" separately - avoids duplicates
         
         if text.startswith('/') or text in ['🔴 Urgent', '📋 Brief', '🧭 Season Context', '🔓 Vault', '📚 Library', '📊 Status']:
             return await handle_command(text, chat_id)
