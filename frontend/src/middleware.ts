@@ -2,8 +2,10 @@ import { NextResponse, NextRequest } from 'next/server';
 
 export async function middleware(request: NextRequest) {
   const isProtected = request.nextUrl.pathname.startsWith('/dashboard');
-  
-  // During build time, just pass through
+  const isAuthRoute = request.nextUrl.pathname.startsWith('/login') ||
+    request.nextUrl.pathname.startsWith('/auth');
+
+  // During build time or when credentials are missing, just pass through
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
     if (isProtected) {
       return NextResponse.redirect(new URL('/login', request.url));
@@ -11,7 +13,7 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // At runtime, use Supabase
+  // At runtime with credentials, use Supabase for auth
   const { createServerClient } = await import('@supabase/supabase-js');
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -22,7 +24,6 @@ export async function middleware(request: NextRequest) {
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value, options }) => {
             request.cookies.set(name, value);
-            response.cookies.set(name, value, options);
           });
         },
       },
@@ -35,7 +36,11 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  return response;
+  if (isAuthRoute && user) {
+    return NextResponse.redirect(new URL('/dashboard/tasks', request.url));
+  }
+
+  return NextResponse.next();
 }
 
 export const config = {
