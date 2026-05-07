@@ -4,9 +4,12 @@ export function proxy(request: NextRequest) {
   try {
     const { pathname } = request.nextUrl;
     
-    // Check for Supabase auth cookies
-    const hasAuthCookie = request.cookies.has('sb-access-token') || 
-      request.cookies.has('sb-refresh-token');
+    // Check for Supabase auth cookies (try multiple possible names)
+    const cookies = request.cookies.getAll();
+    const hasAuthCookie = cookies.some(c => 
+      c.name.startsWith('sb-') && 
+      (c.name.includes('auth-token') || c.name.includes('access-token') || c.name.includes('refresh-token'))
+    );
 
     // Protected routes - redirect to login if not authenticated
     if (pathname.startsWith('/dashboard') && !hasAuthCookie) {
@@ -14,7 +17,7 @@ export function proxy(request: NextRequest) {
     }
 
     // Auth routes - redirect to dashboard if already authenticated
-    if ((pathname.startsWith('/login') || pathname.startsWith('/auth')) && hasAuthCookie) {
+    if ((pathname.startsWith('/login') || pathname.startsWith('/auth/callback')) && hasAuthCookie) {
       return NextResponse.redirect(new URL('/dashboard/tasks', request.url));
     }
 
