@@ -6,8 +6,8 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("tasks")
-    .eq("is_current", true)
-    .select("id, status, reminder_at, deadline, completed_at");
+    .select("id, status, reminder_at, deadline, completed_at")
+    .eq("is_current", true);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
