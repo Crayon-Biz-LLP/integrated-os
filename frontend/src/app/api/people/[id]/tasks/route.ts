@@ -20,7 +20,6 @@ export async function GET(
 
   const { data, error } = await supabase
     .from("tasks")
-    .eq("is_current", true)
     .select(`
       id,
       title,
@@ -35,6 +34,7 @@ export async function GET(
       )
     `)
     .ilike("title", `%${name}%`)
+    .eq("is_current", true)
     .filter("status", "not.in", "(done,cancelled)")
     .order("created_at", { ascending: false });
 

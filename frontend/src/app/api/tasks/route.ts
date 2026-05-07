@@ -13,7 +13,6 @@ export async function GET(req: NextRequest) {
 
   let query = supabase
     .from("tasks")
-    .eq("is_current", true)
     .select(`
       id,
       title,
@@ -33,6 +32,7 @@ export async function GET(req: NextRequest) {
         org_tag
       )
     `)
+    .eq("is_current", true)
     .order("created_at", { ascending: false });
 
   if (search) query = query.ilike("title", `%${search}%`);

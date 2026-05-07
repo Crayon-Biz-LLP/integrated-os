@@ -50,8 +50,8 @@ export async function GET(req: NextRequest) {
 
   const { data: taskCounts } = await supabase
     .from("tasks")
-    .eq("is_current", true)
     .select("project_id")
+    .eq("is_current", true)
     .in("status", ["todo", "in_progress", "blocked"]);
 
   if (taskCounts) {

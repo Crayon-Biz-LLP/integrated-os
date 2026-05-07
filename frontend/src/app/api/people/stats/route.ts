@@ -16,8 +16,8 @@ export async function GET(req: NextRequest) {
   // Fetch open tasks
   const { data: openTasks, error: tasksError } = await supabase
     .from("tasks")
-    .eq("is_current", true)
     .select("id, title, status")
+    .eq("is_current", true)
     .filter("status", "not.in", "(done,cancelled)");
 
   if (tasksError) {
