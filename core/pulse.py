@@ -59,9 +59,6 @@ def versioned_update(table_name: str, record_id: int, update_data: dict, user_id
         
         old_record = current.data[0]
         
-        # Mark old as not current
-        supabase.table(table_name).update({"is_current": False}).eq('id', record_id).execute()
-        
         # Prepare new version
         new_record = {
             **{k: v for k, v in old_record.items() 
@@ -75,8 +72,11 @@ def versioned_update(table_name: str, record_id: int, update_data: dict, user_id
         new_record['version'] = old_version + 1
         new_record['supersedes_id'] = record_id
         
-        # Insert new version
+        # Insert new version FIRST (so failure doesn't orphan the old record)
         result = supabase.table(table_name).insert(new_record).execute()
+        
+        # Mark old as not current (only after new insert succeeds)
+        supabase.table(table_name).update({"is_current": False}).eq('id', record_id).execute()
         
         # Log the change
         if change_source or change_reason:
@@ -87,9 +87,10 @@ def versioned_update(table_name: str, record_id: int, update_data: dict, user_id
         return bool(result.data)
         
     except Exception as e:
-        # Fallback to regular update
+        # Fallback to regular update — include is_current=True to avoid orphaned records
         audit_log_sync("pulse", "WARNING", f"Versioned update failed for {table_name}:{record_id}, falling back to update: {e}")
-        supabase.table(table_name).update(update_data).eq('id', record_id).execute()
+        fallback_data = {**update_data, 'is_current': True}
+        supabase.table(table_name).update(fallback_data).eq('id', record_id).execute()
         return True
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
