@@ -1,4 +1,3 @@
-export const dynamic = 'force-dynamic';
 'use client';
 
 import dynamic from 'next/dynamic';
