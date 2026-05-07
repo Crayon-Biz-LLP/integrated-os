@@ -32,19 +32,23 @@ export default function EmailsPage() {
   useEffect(() => {
     const loadNonFilterData = async () => {
       try {
-        const [tasksData, draftsData, statsData] = await Promise.all([
+        const [tasksData, draftsData] = await Promise.all([
           fetchPendingTasks(),
           fetchPendingDrafts(),
-          fetchEmailStats(),
         ]);
         setPendingTasks(tasksData);
         setDrafts(draftsData);
-        setEmailStats(statsData);
       } catch (error) {
-        console.error('Failed to load non-filter data:', error);
+        console.error('Failed to load tasks/drafts:', error);
       } finally {
         setPendingTasksLoading(false);
         setDraftsLoading(false);
+      }
+      // Stats is independent — failure won't block tasks/drafts
+      try {
+        setEmailStats(await fetchEmailStats());
+      } catch (error) {
+        console.error('Failed to load email stats:', error);
       }
     };
     loadNonFilterData();
