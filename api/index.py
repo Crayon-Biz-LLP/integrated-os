@@ -9,7 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Updated imports: Pulling from your new 'core' module
 from core.webhook import process_webhook, send_draft_reply
-from core.pulse import process_pulse
+from core.pulse import (
+    process_pulse,
+    get_tasks_service,
+    sync_to_google,
+    delete_calendar_event,
+    versioned_update,
+    write_outcome_memory,
+)
 
 app = FastAPI(title="Integrated-OS")
 
@@ -191,7 +198,7 @@ async def get_calendar_events(date: str = "today"):
 # --- UPDATE TASK STATUS (Mark Done) ---
 @app.patch("/api/tasks/{task_id}/status")
 async def update_task_status(request: Request, task_id: int):
-    """Update task status (e.g., mark as done)"""
+    """Update task status (e.g., mark as done). Handles versioning, Google Tasks/Calendar sync, and outcome memory."""
     try:
         body = await request.json()
         new_status = body.get('status', 'done')
@@ -202,19 +209,66 @@ async def update_task_status(request: Request, task_id: int):
             os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         )
         
-        # If marking as done, set completed_at
+        # 1. Fetch current active task
+        task_res = supabase.table('tasks').select('*').eq('id', task_id).eq('is_current', True).single().execute()
+        if not task_res.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        task = task_res.data
+        current_status = task.get('status')
+        if current_status in ['done', 'cancelled']:
+            return {"success": True, "task": task, "message": f"Task already {current_status}"}
+        
+        g_id = task.get('google_task_id')
+        e_id = task.get('google_event_id')
+        task_title = task.get('title', 'Untitled Task')
+        
+        # 2. Delete calendar event if exists
+        if e_id and new_status in ['done', 'cancelled']:
+            try:
+                delete_calendar_event(e_id)
+            except Exception as e:
+                print(f"Calendar event delete failed (non-critical): {e}")
+        
+        # 3. Sync to Google Tasks
+        if g_id and new_status in ['done', 'cancelled']:
+            try:
+                tasks_service = get_tasks_service()
+                sync_to_google(tasks_service, title=task_title, task_id=g_id, status=new_status)
+            except Exception as e:
+                print(f"Google Tasks sync failed (non-critical): {e}")
+        
+        # 4. Versioned update
         update_data = {'status': new_status}
         if new_status == 'done':
             from datetime import datetime
             update_data['completed_at'] = datetime.now().isoformat()
         
-        result = supabase.table('tasks').update(update_data).eq('id', task_id).execute()
+        versioned_update(
+            table_name='tasks',
+            record_id=task_id,
+            update_data=update_data,
+            change_source='web_done',
+            change_reason=f"Status: {new_status}"
+        )
         
-        if not result.data:
-            raise HTTPException(status_code=404, detail="Task not found")
+        # 5. Outcome memory
+        if new_status == 'done':
+            proj_name = None
+            proj_id = task.get('project_id')
+            if proj_id:
+                proj_lookup = supabase.table('projects').select('name').eq('id', proj_id).maybe_single().execute()
+                proj_name = proj_lookup.data['name'] if proj_lookup.data else None
+            await write_outcome_memory(task_title, proj_name)
         
-        return {"success": True, "task": result.data[0]}
+        # Return the new version
+        new_task_res = supabase.table('tasks').select('*').eq('supersedes_id', task_id).eq('is_current', True).single().execute()
+        new_task = new_task_res.data if new_task_res.data else task
+        
+        return {"success": True, "task": new_task}
     
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Update task status error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
