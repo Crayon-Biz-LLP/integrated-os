@@ -1207,7 +1207,7 @@ async def generate_after_action_report() -> str:
         completed_tasks_res = supabase.table('tasks').select('title').eq('status', 'done').gte('completed_at', today_start).execute()
         completed_count = len(completed_tasks_res.data) if completed_tasks_res.data else 0
         
-        open_tasks_res = supabase.table('tasks').select('id').eq('status', 'todo').execute()
+        open_tasks_res = supabase.table('tasks').select('id').eq('status', 'todo').eq('is_current', True).execute()
         open_count = len(open_tasks_res.data) if open_tasks_res.data else 0
         
         prompt = f"""You are Danny's Rhodey. Provide a dry After-Action Report (AAR). 1-2 sentences max. Focus on loops closed vs. open.
@@ -1395,6 +1395,7 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
         result = supabase_client.table('tasks')\
             .select('id, title, google_task_id, status')\
             .eq('status', 'todo')\
+            .eq('is_current', True)\
             .not_.is_('google_task_id', None)\
             .execute()
         
@@ -2008,7 +2009,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             
             print(f"🔒 Locked {len(dump_ids)} dumps for processing.")
 
-        active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at, reminder_at, google_event_id').not_.in_('status', ['done', 'cancelled']).execute()
+        active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at, reminder_at, google_event_id').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
         active_tasks = active_tasks_res.data or []
 
         # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
