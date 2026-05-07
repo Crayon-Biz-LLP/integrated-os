@@ -88,12 +88,6 @@ def create_versioned_task(
         if old.data:
             version = (old.data[0].get("version", 0) or 0) + 1
     
-    # Mark old task as not current
-    if old_task_id:
-        supabase.table("tasks").update({
-            "is_current": False
-        }).eq("id", old_task_id).execute()
-    
     # Create new version
     new_task = {
         "title": title,
@@ -104,7 +98,15 @@ def create_versioned_task(
         **kwargs
     }
     
+    # Insert new version FIRST (so failure doesn't orphan the old record)
     result = supabase.table("tasks").insert(new_task).execute()
+    
+    # Mark old task as not current (only after new insert succeeds)
+    if old_task_id:
+        supabase.table("tasks").update({
+            "is_current": False
+        }).eq("id", old_task_id).execute()
+    
     return result.data[0] if result.data else None
 
 
