@@ -13,8 +13,9 @@ import {
    Users,
    BookOpen,
    LogOut,
-   Menu,
- } from 'lucide-react';
+    Menu,
+    House,
+  } from 'lucide-react';
 import { createClient } from '@/lib/supabase';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -26,6 +27,7 @@ import {
 import { cn } from '@/lib/utils';
 
 const navItems = [
+   { href: '/dashboard', label: 'Home', icon: House },
    { href: '/dashboard/tasks', label: 'Tasks', icon: CheckSquare },
    { href: '/dashboard/projects', label: 'Projects', icon: FolderOpen },
    { href: '/dashboard/emails', label: 'Emails', icon: Mail },
@@ -39,6 +41,7 @@ const navItems = [
 const mobileItems = navItems.slice(0, 5);
 
 const routeTitles: Record<string, string> = {
+   '/dashboard': 'Command Center',
    '/dashboard/tasks': 'Tasks',
    '/dashboard/projects': 'Projects',
    '/dashboard/emails': 'Emails',
