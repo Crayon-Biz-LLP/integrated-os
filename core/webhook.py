@@ -1484,7 +1484,7 @@ async def handle_command(text: str, chat_id: int):
     elif text in ['/urgent', '🔴 Urgent']:
         now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
         now_iso = now_ist.strftime('%Y-%m-%dT%H:%M:%S+05:30')
-        fire_res = supabase.table('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}").limit(1).execute()
+        fire_res = supabase.table('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').eq('is_current', True).or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}").limit(1).execute()
         if fire_res.data:
             fire = fire_res.data[0]
             reply = f"🔴 **ACTION REQUIRED:**\n\n🔥 {fire.get('title')}\n⏱️ Est: {fire.get('estimated_minutes')} mins"

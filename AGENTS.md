@@ -96,3 +96,40 @@ PULSE_APP_NAME  # Default: Pulse
 - CI: GitHub Actions (`workflow_dispatch` in `.github/workflows/pulse.yml`)
 - Local: Send POST to `/api/pulse` with header `x-pulse-secret: <PULSE_SECRET>`
 - No linters/typecheckers configured; skip lint/typecheck steps
+
+## Vercel Deployment Safety
+
+### Two Projects, Separate Config
+This repo has **two Vercel projects** linked to the same GitHub repo:
+- **`integrated-os`** (backend): Root Directory = `.`, Python FastAPI, uses root `vercel.json` with `rewrites` + `functions`
+- **`integrated-os-frontend`** (frontend): Root Directory = `frontend/`, Next.js, no `vercel.json` (auto-detected)
+
+### Critical: `routes` vs `rewrites` in `vercel.json`
+- `routes` = **platform-level** — applied globally to ALL projects in the repo. Changes here can break other projects.
+- `rewrites` = **build-level** — scoped to the project's build output. Safe to use per project.
+
+**Rule**: Always use `rewrites` (not `routes`) in `vercel.json`. A catch-all `routes` pattern broke the frontend by routing all requests to `api/index.py` across both projects.
+
+### Preview Deployments for Changes
+Before pushing to `main`, use branch deployments to test changes without breaking production:
+```bash
+git checkout -b feat/my-change
+# make changes, commit, push
+git checkout main
+# Vercel auto-deploys preview URL for the branch
+```
+This applies to: `vercel.json` changes, env vars, build config, framework upgrades.
+
+### One Config Per Project Principle
+- **Backend config**: root `vercel.json` (uses `rewrites` + `functions` for Python runtime)
+- **Frontend**: No `vercel.json` needed (Next.js auto-detected), or its own `frontend/vercel.json`
+- Never share `routes` across projects — they're platform-level, not project-level
+
+### Safe Deployment Checklist
+When making infrastructure changes:
+1. [ ] Does this modify `vercel.json`, `.vercelignore`, or build config?
+2. [ ] Have I checked what other Vercel projects share this repo?
+3. [ ] Could `routes` or `builds` affect other projects?
+4. [ ] Use a preview/branch deployment to test first
+5. [ ] Check build logs for warnings (e.g., "builds existing in config" warning)
+6. [ ] Verify both frontend AND backend still work after deployment
