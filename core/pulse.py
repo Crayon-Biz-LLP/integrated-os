@@ -62,8 +62,9 @@ def versioned_update(table_name: str, record_id: int, update_data: dict, user_id
         # Prepare new version
         new_record = {
             **{k: v for k, v in old_record.items() 
-               if k not in ['id', 'created_at', 'version', 'is_current', 'supersedes_id']},
-            **update_data,
+               if k not in ['id', 'created_at', 'version', 'is_current', 'supersedes_id', 'updated_at']},
+            **{k: v for k, v in update_data.items() if v is not None},
+            **{k: v for k, v in update_data.items() if v is None},
             'is_current': True
         }
         
