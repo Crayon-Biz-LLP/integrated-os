@@ -13,6 +13,7 @@ export async function GET(req: NextRequest) {
 
   let query = supabase
     .from("tasks")
+    .eq("is_current", true)
     .select(`
       id,
       title,

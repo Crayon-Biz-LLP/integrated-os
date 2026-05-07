@@ -18,6 +18,7 @@ export async function GET(
 
   const { data: tasks, error } = await supabase
     .from("tasks")
+    .eq("is_current", true)
     .select(
       "id, title, status, priority, reminder_at, deadline, created_at, is_revenue_critical"
     )

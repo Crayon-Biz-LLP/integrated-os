@@ -20,6 +20,7 @@ export async function GET(
 
   const { data, error } = await supabase
     .from("tasks")
+    .eq("is_current", true)
     .select(`
       id,
       title,

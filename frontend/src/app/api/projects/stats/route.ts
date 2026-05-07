@@ -25,6 +25,7 @@ export async function GET() {
 
   const { data: tasks, error: tasksError } = await supabase
     .from("tasks")
+    .eq("is_current", true)
     .select("id, project_id")
     .in("status", ["todo", "in_progress", "blocked"]);
 
