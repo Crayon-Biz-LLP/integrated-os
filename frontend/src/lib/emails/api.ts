@@ -83,13 +83,16 @@ export async function fetchPendingTasks(): Promise<EmailPendingTask[]> {
 }
 
 export async function decideTask(id: number, decision: 'yes' | 'no'): Promise<void> {
-  const supabase = createClient();
-  const { error } = await supabase
-    .from('email_pending_tasks')
-    .update({ danny_decision: decision })
-    .eq('id', id);
-
-  if (error) throw error;
+  const action = decision === 'yes' ? 'approve' : 'reject';
+  const res = await fetch('/api/email-action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, action }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to decide task' }));
+    throw new Error(err.detail || 'Failed to decide task');
+  }
 }
 
 export async function fetchPendingDrafts(): Promise<EmailDraft[]> {

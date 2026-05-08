@@ -273,39 +273,33 @@ async def update_task_status(request: Request, task_id: int):
         print(f"Update task status error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- EMAIL SHORTCODE ACTIONS ---
+# --- EMAIL PENDING TASK DECISIONS (approve/reject from frontend) ---
 @app.post("/api/email-action")
 async def email_action_route(request: Request):
-    """Approve or reject email pending task via shortcode"""
+    """Approve or reject email pending task via API (called from frontend)."""
     try:
         body = await request.json()
-        shortcode = body.get('shortcode')
-        action = body.get('action')  # 'approve' or 'reject'
-        
-        if not shortcode or not action:
-            raise HTTPException(status_code=400, detail="shortcode and action required")
-        
-        # Call the existing logic from core/webhook.py
-        from core.webhook import handle_ed_command
-        from supabase import create_client
-        import os
-        
-        supabase = create_client(
-            os.getenv("SUPABASE_URL"),
-            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        )
-        
-        # Get the chat_id (owner)
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not chat_id:
-            raise HTTPException(status_code=500, detail="TELEGRAM_CHAT_ID not configured")
-        
-        # Simulate the command
-        command = f"{shortcode} {action}"
-        await handle_ed_command(command, int(chat_id))
-        
-        return {"success": True, "message": f"Shortcode {shortcode} {action}d"}
-    
+        pending_id = body.get('id') or body.get('shortcode')
+        action = body.get('action', '')  # 'approve'/'reject' or 'yes'/'no'
+
+        if not pending_id or not action:
+            raise HTTPException(status_code=400, detail="id and action required")
+
+        # Normalize action: 'yes'/'no' → 'approve'/'reject'
+        if action == 'yes':
+            action = 'approve'
+        elif action == 'no':
+            action = 'reject'
+
+        from core.webhook import process_email_pending_decision
+
+        result = await process_email_pending_decision(int(pending_id), action)
+
+        if result['success']:
+            return {"success": True, "message": result['message'], "action": result['action']}
+        else:
+            return {"success": False, "message": result['message'], "action": result['action']}
+
     except Exception as e:
         print(f"Email action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

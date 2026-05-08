@@ -99,6 +99,100 @@ def is_already_in_tasks_table(title: str) -> bool:
         print(f"Duplicate guard check failed (failing open): {e}")
         return False  # Fail open — never block suggestion creation on DB error
 
+
+async def process_email_pending_decision(pending_id: int, decision: str, supabase_client=None) -> dict:
+    """Process approve/reject for an email pending task (shared by Telegram + API).
+
+    For 'approve': inserts into raw_dumps then sets danny_decision='approved'.
+    For 'reject': sets danny_decision='rejected' and cleans up orphan drafts.
+
+    Args:
+        pending_id: ID in email_pending_tasks table.
+        decision: 'approve' or 'reject'.
+        supabase_client: Optional supabase client (defaults to module-level).
+
+    Returns: dict with keys: success (bool), message (str), action (str|None).
+    """
+    client = supabase_client or supabase
+
+    # Look up pending row
+    row_res = client.table('email_pending_tasks')\
+        .select('*')\
+        .eq('id', pending_id)\
+        .is_('danny_decision', 'null')\
+        .limit(1)\
+        .maybe_single()\
+        .execute()
+
+    if not row_res.data:
+        decided = client.table('email_pending_tasks')\
+            .select('id, danny_decision')\
+            .eq('id', pending_id)\
+            .not_.is_('danny_decision', 'null')\
+            .limit(1)\
+            .maybe_single()\
+            .execute()
+        if decided.data:
+            return {
+                "success": False, "action": "already_decided",
+                "message": f"[{pending_id}] was already {decided.data['danny_decision']}."
+            }
+        return {
+            "success": False, "action": "not_found",
+            "message": f"No task found matching [{pending_id}]."
+        }
+
+    row = row_res.data
+    title = row.get('suggested_title', '')
+    email_id = row.get('email_id')
+    is_human = row.get('is_human_sender', False)
+
+    if decision == 'approve':
+        if is_already_in_tasks_table(title):
+            versioned_update('email_pending_tasks', row['id'], {'danny_decision': 'skipped'})
+            return {
+                "success": False, "action": "duplicate",
+                "message": f"A similar task already exists on your board: [{title}]"
+            }
+
+        try:
+            client.table('raw_dumps').insert([{
+                "content": title,
+                "source": "email",
+                "status": "pending",
+                "direction": "incoming",
+                "sender": "user",
+                "message_type": "task",
+                "metadata": {
+                    "email_id": email_id,
+                    "is_human_sender": is_human
+                }
+            }]).execute()
+        except Exception:
+            return {
+                "success": False, "action": "staging_failed",
+                "message": f"Task staging failed for [{row['id']}]. You can retry."
+            }
+
+        versioned_update('email_pending_tasks', row['id'], {'danny_decision': 'approved'})
+        print(f"Staged to raw_dumps via email approval: {title}")
+        return {"success": True, "action": "approved", "message": f"Task staged: {title}"}
+
+    elif decision == 'reject':
+        versioned_update('email_pending_tasks', row['id'], {'danny_decision': 'rejected'})
+        try:
+            versioned_update('email_drafts', row['id'], {'danny_decision': 'skipped'})
+        except Exception:
+            pass
+        return {"success": True, "action": "rejected", "message": f"Dropped: {title}"}
+
+    else:
+        return {
+            "success": False, "action": "invalid_action",
+            "message": f"Invalid decision: {decision}. Must be 'approve' or 'reject'."
+        }
+
+
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
@@ -1144,92 +1238,22 @@ async def process_webhook(update: dict):
                 _shortcode = (_approve_match or _reject_match).group(1)
                 _is_approve = bool(_approve_match)
                 
-                # Shortcode = integer ID
-                _row_res = supabase.table('email_pending_tasks')\
-                    .select('*')\
-                    .eq('id', int(_shortcode))\
-                    .is_('danny_decision', 'null')\
-                    .limit(1)\
-                    .maybe_single()\
-                    .execute()
-                
-                if not _row_res.data:
-                    # Check if this shortcode exists but was already decided
-                    decided = supabase.table('email_pending_tasks')\
-                        .select('id, danny_decision')\
-                        .eq('id', int(_shortcode))\
-                        .not_.is_('danny_decision', 'null')\
-                        .limit(1)\
-                        .maybe_single()\
-                        .execute()
-                    if decided.data:
-                        reply = f"⚠️ [{_shortcode}] was already {decided.data['danny_decision']}. Use /ep to see what's still pending."
-                    else:
-                        reply = f"⚠️ No task found matching [{_shortcode}]. Use /ep to see pending tasks."
-                    await send_telegram(chat_id, reply)
-                    return {"success": True}
-                
-                _row = _row_res.data
-                _suggested_title = _row.get('suggested_title', '')
-                _suggested_project = _row.get('suggested_project')
-                _suggested_project_id = _row.get('suggested_project_id')
-                _email_id = _row.get('email_id')
-                
-                if _is_approve:
-                    # Check for duplicate in tasks table FIRST before setting decision
-                    if is_already_in_tasks_table(_suggested_title):
-                        # Use versioned update for email_pending_tasks
-                        versioned_update('email_pending_tasks', _row['id'], {'danny_decision': 'skipped'})
-                        await send_telegram(chat_id, f"⚠️ A similar task already exists on your board: [{_suggested_title}]")
-                        return {"success": True}
+                result = await process_email_pending_decision(
+                    pending_id=int(_shortcode),
+                    decision='approve' if _is_approve else 'reject'
+                )
 
-                    # Insert into raw_dumps FIRST (let Pulse handle enrichment + project mapping)
-                    try:
-                        supabase.table('raw_dumps').insert([{
-                            "content": _suggested_title,
-                            "source": "email",
-                            "status": "pending",
-                            "direction": "incoming",
-                            "sender": "user",  # Email tasks are also user tasks
-                            "message_type": "task",
-                            "metadata": {
-                                "email_id": _email_id,
-                                "is_human_sender": _row.get('is_human_sender', False)
-                            }
-                        }]).execute()
-                    except Exception as _insert_err:
-                        await send_telegram(chat_id, f"⚠️ Task staging failed. Decision not recorded — you can retry with [{_row['id']}] yes.")
-                        raise _insert_err
-                    
-                    # Only update danny_decision after successful raw_dumps insert
-                        # Use versioned update for email_pending_tasks
-                        versioned_update('email_pending_tasks', _row['id'], {'danny_decision': 'approved'})
-                    
-                    await send_telegram(chat_id, f"✅ Task staged: {_suggested_title}")
-                    print(f"✅ Staged to raw_dumps: {_suggested_title}")
-                    
-                    # Note: Memory write removed - should only happen after Pulse creates final task.
-                    # Pulse should check metadata.is_human_sender to write relationship_note memory
-                    # when it creates the final task from this raw_dump.
-                
+                if result['success']:
+                    await send_telegram(chat_id, f"✅ {result['message']}")
                 else:
-                    # Reject flow — also clean up orphan draft if one exists
-                    # Use versioned_update for email_pending_tasks
-                    versioned_update('email_pending_tasks', _row['id'], {'danny_decision': 'rejected'})
-                    
-                    # Orphan cleanup: reject any pending draft linked to this email
-                    try:
-                        # Use versioned_update for email_drafts
-                        versioned_update('email_drafts', _row['id'], {'danny_decision': 'skipped'})
-                    except Exception:
-                        pass  # silent cleanup — don't block the reject flow
+                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                    if result['action'] in ('staging_failed',):
+                        raise Exception(result['message'])
 
-                    await send_telegram(chat_id, f"⏭️ Dropped: {_suggested_title}")
-                
                 return {"success": True}
-            
+
             except Exception as _sc_err:
-                audit_log_sync("webhook", "WARNING", f"⚠️ Shortcode handler error: {_sc_err}")
+                audit_log_sync("webhook", "WARNING", f"Shortcode handler error: {_sc_err}")
                 await send_telegram(chat_id, "⚠️ Something went wrong. Try again or use /ep to retry.")
                 return {"success": True}
 
