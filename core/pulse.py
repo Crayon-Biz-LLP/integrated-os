@@ -3161,47 +3161,16 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                             audit_log_sync("pulse", "WARNING", f"⚠️ Calendar Sync failed for {task_title}: {ce}")
                             error_log.append(f"Calendar sync failed for: '{task_title}'")
 
-                    # 2c. Store Google IDs back to Supabase (versioned insert)
+                    # 2c. Store Google IDs back to Supabase (direct update, no version churn)
                     if g_id or e_id:
                         try:
-                            # Get current task data
-                            current = supabase.table('tasks').select('*').eq('id', task_id).execute()
-                            if current.data:
-                                old_task = current.data[0]
-                                new_payload = {
-                                    **{k: v for k, v in old_task.items() if k not in ['id', 'created_at', 'version', 'is_current', 'supersedes_id']},
-                                    'google_task_id': g_id or old_task.get('google_task_id'),
-                                    'google_event_id': e_id or old_task.get('google_event_id')
-                                }
-                                # Create versioned insert
-                                create_versioned_task(
-                                    title=new_payload.get('title'),
-                                    project_id=new_payload.get('project_id'),
-                                    old_task_id=task_id,
-                                    **new_payload
-                                )
-                                print(f"🔄 Versioned task {task_id} with Google IDs.")
+                            supabase.table('tasks').update({
+                                'google_task_id': g_id,
+                                'google_event_id': e_id,
+                            }).eq('id', task_id).execute()
+                            print(f"🔄 Updated task {task_id} with Google IDs.")
                         except Exception as ve:
-                            # Fallback to update if versioning fails
-                            update_payload = {}
-                            if g_id: update_payload['google_task_id'] = g_id
-                            if e_id: update_payload['google_event_id'] = e_id
-                            # Still use versioned_update in fallback (with minimal data)
-                            try:
-                                versioned_update(
-                                    table_name='tasks',
-                                    record_id=task_id,
-                                    update_data=update_payload,
-                                    user_id=None,
-                                    change_source='pulse_google_sync',
-                                    change_reason='Google ID sync (fallback from versioning error)'
-                                )
-                            except Exception as ve2:
-                                # Last resort: direct update
-                                supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
-                                audit_log_sync("pulse", "WARNING", 
-                                    f"🔄 Direct update for task {task_id} (versioning failed twice)")
-                            audit_log_sync("pulse", "INFO", f"🔄 Updated task {task_id} with Google IDs. (fallback)")
+                            audit_log_sync("pulse", "WARNING", f"⚠️ Google ID update failed for task {task_id}: {ve}")
 
         # G. CLEANUP & LOGS
         if ai_data.get('logs'):
