@@ -129,10 +129,11 @@ def is_already_in_email_queue(title: str) -> bool:
             if result.data:
                 audit_log_sync("pulse", "WARNING", f"⚠️  Duplicate guard: '{title}' matches pending email task (keyword: '{kw}'). Skipping.")
                 return True
-            # Check active tasks on board
+            # Check active tasks on board (only current versions)
             result = supabase.table('tasks')\
                 .select('id')\
                 .ilike('title', f'%{kw}%')\
+                .eq('is_current', True)\
                 .not_.in_('status', ['done', 'cancelled'])\
                 .limit(1)\
                 .execute()

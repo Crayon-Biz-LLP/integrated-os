@@ -133,3 +133,39 @@ When making infrastructure changes:
 4. [ ] Use a preview/branch deployment to test first
 5. [ ] Check build logs for warnings (e.g., "builds existing in config" warning)
 6. [ ] Verify both frontend AND backend still work after deployment
+
+## Spec-Driven Development (Spec Kit)
+
+Uses [github/spec-kit](https://github.com/github/spec-kit) for structured AI-assisted development.
+
+### Directory Structure
+- `.specify/` — spec-kit CLI config (templates, scripts, workflows, extensions). Managed via `specify init/add/remove`.
+- `.speckit/` — Manually-authored SDD artifacts (constitution, spec, plan, tasks, analyze). Source of truth for governance and specs.
+- `.opencode/command/speckit.*.md` — Slash commands available to the opencode agent.
+
+### Key Reference Files
+| File | When to Read |
+|---|---|
+| `.speckit/speckit.constitution.md` | **Always** — non-negotiable project rules |
+| `.speckit/speckit.plan.md` | Before any architecture/stack decision |
+| `.speckit/speckit.specify.md` | When implementing a new feature |
+| `.speckit/speckit.tasks.md` | When picking up implementation work |
+| `.speckit/speckit.analyze.md` | Before writing code — cross-artifact contradictions |
+
+### Available Slash Commands
+`/speckit.constitution`, `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement`, `/speckit.analyze`, `/speckit.clarify`, `/speckit.checklist`, `/speckit.taskstoissues`
+
+### Git Safety Rule (Non-Negotiable)
+- **NEVER auto-commit or auto-push changes.** Always present a summary of changes and wait for explicit user approval before any `git add`, `git commit`, or `git push`.
+- The git extension hooks are configured with `auto_commit: default: false` — if an agent prompt asks about committing, say no and let the user decide.
+- Branch creation (`speckit.git.feature`) is acceptable without approval since it does not create commits.
+
+### CLI
+```bash
+specify check  # Verify spec-kit tooling is ready
+```
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->
