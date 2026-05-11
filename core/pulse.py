@@ -149,8 +149,10 @@ def is_already_in_email_queue(title: str) -> bool:
             'match_threshold': 0.88
         }).execute()
         if similarity_res.data:
-            audit_log_sync("pulse", "WARNING", f"⚠️ Semantic duplicate guard: '{title}' is semantically similar to an existing memory. Skipping.")
-            return True
+            score = similarity_res.data[0].get('similarity')
+            if isinstance(score, (int, float)) and score > 0:
+                audit_log_sync("pulse", "WARNING", f"⚠️ Semantic duplicate guard: '{title}' is semantically similar to an existing memory. Skipping.")
+                return True
         
         return False
     except Exception as e:
@@ -700,8 +702,12 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
             'query_embedding': query_embedding,
             'match_threshold': 0.7,
             'match_count': max_memories,
-            'filter': {'created_at': {'gte': thirty_days_ago}}  # Last 30 days
         }).execute()
+        if memories_res.data:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            memories_res.data = [m for m in memories_res.data
+                                 if m.get('created_at')
+                                 and m['created_at'] >= cutoff]
         
         if not memories_res.data:
             return ""
