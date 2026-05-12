@@ -32,7 +32,7 @@ except ImportError:
 # Import versioned_update from pulse (with robust path handling for vercel)
 try:
     # Try direct import (works when both files are in same directory)
-    from pulse import versioned_update
+    from pulse import versioned_update, add_to_failed_queue
 except ImportError:
     try:
         # Fallback: add parent directory to path
@@ -40,13 +40,24 @@ except ImportError:
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if parent_dir not in sys.path:
             sys.path.insert(0, parent_dir)
-        from pulse import versioned_update
+        from pulse import versioned_update, add_to_failed_queue
     except ImportError:
         # If all fails, define a local fallback (shouldn't happen)
         def versioned_update(table_name, record_id, update_data):
             print(f"Warning: versioned_update not available, using direct update")
             supabase.table(table_name).update(update_data).eq('id', record_id).execute()
             return True
+        
+        async def add_to_failed_queue(source_table, source_id, operation, error_message):
+            try:
+                supabase.table('failed_queue').insert({
+                    "source_table": source_table,
+                    "source_id": str(source_id),
+                    "operation": operation,
+                    "error_message": str(error_message)[:500] if error_message else None,
+                }).execute()
+            except:
+                pass
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
@@ -96,8 +107,29 @@ def is_already_in_tasks_table(title: str) -> bool:
         # No exact match found
         return False
     except Exception as e:
-        print(f"Duplicate guard check failed (failing open): {e}")
+        audit_log_sync("webhook", "WARNING", f"Duplicate guard check failed (failing open): {e}")
         return False  # Fail open — never block suggestion creation on DB error
+
+
+def is_recent_raw_dump(content: str, source: str) -> bool:
+    """Check if identical content+source was inserted in the last 60 seconds.
+    Used as idempotency guard against Telegram double-fires and user double-taps."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        dup = supabase.table('raw_dumps') \
+            .select('id') \
+            .eq('content', content) \
+            .eq('source', source) \
+            .gte('created_at', cutoff) \
+            .limit(1) \
+            .execute()
+        if dup.data:
+            print(f"Duplicate guard: Skipping '{content[:50]}...' — inserted within 60s")
+            return True
+        return False
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"Duplicate guard check failed (failing open): {e}")
+        return False
 
 
 async def process_email_pending_decision(pending_id: int, decision: str, supabase_client=None) -> dict:
@@ -230,7 +262,7 @@ async def trigger_github_pulse() -> bool:
                 print("✓ GitHub Actions workflow triggered successfully")
                 return True
             else:
-                print(f"✗ GitHub dispatch failed: {response.status_code} - {response.text}")
+                audit_log_sync("webhook", "ERROR", f"GitHub dispatch failed: {response.status_code}")
                 return False
                 
     except Exception as e:
@@ -316,7 +348,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     Return ONLY valid JSON (no markdown, no explanation):
     {{
-        "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE|QUERY",
+        "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE|QUERY|DECLARE_PRACTICE",
         "confidence": 0.0-1.0,
         "entity": "SOLVSTRAT|QHORD|PERSONAL|CHURCH|INBOX",
         "title": "extracted task title",
@@ -334,6 +366,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - NOTE: Ideas, insights, or learnings worth remembering.
     - QUERY: The user is asking a question to retrieve information from their past notes, tasks, or the vault (e.g., "What did the analyst say?", "When is my meeting?").
     - DELEGATE: Research, competitor audits, or autonomous web research.
+    - DECLARE_PRACTICE: If Danny says "I want to [activity] every [timeframe]", "I'm going to start [activity]", "Track [activity] for me", "I want to build a practice of [activity]", or expresses intent to establish a recurring behavior — classify as DECLARE_PRACTICE. Extract the practice name into the title field. Route to the most relevant entity (PERSONAL for health/personal routines, SOLVSTRAT for work practices, etc.).
     - RECEIPT RULE: Receipts must be confirmation-only. Use: '[Subject] logged for [Time/Day].'
     - LITERAL SUBJECT RULE: Mirror Danny's verb. (e.g., 'Check with Vasanth' → 'Vasanth check-in logged').
     - ZERO DATA LOSS: Never drop qualifiers like 'Canadian project' or 'Zoho API'.
@@ -540,6 +573,12 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
 
 # 1. Update your handle_confident_task signature to accept entity
 async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram", sender: str = "user"):
+    # ── Idempotency guard: skip if identical content+source inserted within 60s ──
+    if is_recent_raw_dump(text, source):
+        ack = receipt or "Logged."
+        await send_telegram(chat_id, f"{ack}")
+        return
+
     try:
         supabase.table('raw_dumps').insert([{
             "content": text,
@@ -556,7 +595,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             }
         }]).execute()
     except Exception as e:
-        print(f"Failed to save task dump: {e}")
+        audit_log_sync("webhook", "ERROR", f"Failed to save task dump: {e}")
     
     ack = receipt or "Logged."
     await send_telegram(chat_id, f"{ack}")
@@ -573,45 +612,87 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             "metadata": {"in_response_to": text, "type": "ack"}
         }]).execute()
     except Exception as ack_err:
-        print(f"Failed to log ack to raw_dumps: {ack_err}")
+        audit_log_sync("webhook", "WARNING", f"Failed to log ack to raw_dumps: {ack_err}")
 
 
 async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user"):
-    embedding = await asyncio.to_thread(get_embedding, text)
-    status = 'success' if embedding and any(embedding) else 'failed'
-    
-    # Save note to raw_dumps for display in Messages UI (pending for Pulse processing)
+    # ── Idempotency guard: skip if identical content+source inserted within 60s ──
+    if is_recent_raw_dump(text, source):
+        ack = receipt or "Note vaulted."
+        await send_telegram(chat_id, f"{ack}")
+        return
+
+    # ── Step 1: Insert as staged (captured, pending processing) ──
+    insert_data = {
+        "content": text,
+        "status": "staged",
+        "direction": "incoming",
+        "sender": sender,
+        "message_type": "note",
+        "source": source,
+        "metadata": {"intent": "NOTE", "entity": None}
+    }
     try:
-        supabase.table('raw_dumps').insert([{
-            "content": text,
-            "status": "pending",
-            "direction": "incoming",
-            "sender": sender,  # "user" for all user messages
-            "message_type": "note",
-            "source": source,
-            "metadata": {
-                "intent": "NOTE",
-                "entity": None
-            }
-        }]).execute()
+        dump_res = supabase.table('raw_dumps').insert([insert_data]).execute()
+        dump_id = dump_res.data[0]['id'] if dump_res.data else None
     except Exception as e:
-        print(f"Failed to save note dump: {e}")
-    
-    # Also save to memories with embedding
+        audit_log_sync("webhook", "ERROR", f"Failed to save note dump: {e}")
+        dump_id = None
+
+    # ── Step 2: Attempt embedding ──
+    embedding = await asyncio.to_thread(get_embedding, text)
+    embed_success = bool(embedding and any(embedding))
+    embed_status = 'success' if embed_success else 'failed'
+
+    if not embed_success:
+        # Mark as embedding_failed, write to DLQ, send retry receipt
+        if dump_id:
+            try:
+                supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
+            except Exception as e:
+                audit_log_sync("webhook", "ERROR", f"Failed to update dump {dump_id} to embedding_failed: {e}")
+        try:
+            await add_to_failed_queue('memories', str(dump_id or 'unknown'), 'embedding', 'Embedding returned null/zero vector')
+        except Exception as e:
+            audit_log_sync("webhook", "ERROR", f"Failed to write to failed_queue: {e}")
+        ack = receipt or "✅ Captured. Memory indexing will retry shortly."
+        await send_telegram(chat_id, f"{ack}")
+        return
+
+    # ── Step 3: Save to memories (success path) ──
     try:
         supabase.table('memories').insert({
             "content": text,
             "memory_type": "note",
             "embedding": embedding,
-            "embedding_status": status,
+            "embedding_status": embed_status,
             "source": "webhook"
         }).execute()
     except Exception as e:
-        print(f"Failed to save note to memory: {e}")
-    
+        audit_log_sync("webhook", "ERROR", f"Failed to save note to memory: {e}")
+        if dump_id:
+            try:
+                supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
+            except:
+                pass
+        try:
+            await add_to_failed_queue('memories', str(dump_id or 'unknown'), 'memory_insert', str(e))
+        except:
+            pass
+        ack = receipt or "✅ Captured. Memory indexing will retry shortly."
+        await send_telegram(chat_id, f"{ack}")
+        return
+
+    # ── Step 4: Mark as processed ──
+    if dump_id:
+        try:
+            supabase.table('raw_dumps').update({"status": "processed", "is_processed": True}).eq('id', dump_id).execute()
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING", f"Failed to mark dump {dump_id} as processed: {e}")
+
     ack = receipt or "Note vaulted."
     await send_telegram(chat_id, f"{ack}")
-    
+
     # Log acknowledgment to raw_dumps so it appears in web UI
     try:
         supabase.table('raw_dumps').insert([{
@@ -625,7 +706,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             "metadata": {"in_response_to": text, "type": "ack"}
         }]).execute()
     except Exception as ack_err:
-        print(f"Failed to log ack to raw_dumps: {ack_err}")
+        audit_log_sync("webhook", "WARNING", f"Failed to log ack to raw_dumps: {ack_err}")
 
 
 async def handle_clarification(text: str, question: str, chat_id: int, receipt: str = None):
@@ -799,7 +880,7 @@ Provide a clear, concise answer. Format with Markdown. If referencing a specific
                 }
             }]).execute()
         except Exception as log_err:
-            print(f"Failed to log query response to raw_dumps: {log_err}")
+            audit_log_sync("webhook", "WARNING", f"Failed to log query response to raw_dumps: {log_err}")
         
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Interrogation error: {e}")
@@ -1245,10 +1326,43 @@ async def process_webhook(update: dict):
 
                 if result['success']:
                     await send_telegram(chat_id, f"✅ {result['message']}")
-                else:
-                    await send_telegram(chat_id, f"⚠️ {result['message']}")
-                    if result['action'] in ('staging_failed',):
-                        raise Exception(result['message'])
+                    return {"success": True}
+
+                # 🏃 Practice dismissal via shortcode — email not found + "drop"
+                if not _is_approve and result['action'] == 'not_found':
+                    try:
+                        _node_res = supabase.table('graph_nodes') \
+                            .select('id, label, metadata') \
+                            .eq('id', int(_shortcode)) \
+                            .eq('type', 'practice') \
+                            .limit(1) \
+                            .maybe_single() \
+                            .execute()
+                        if _node_res.data:
+                            _n = _node_res.data
+                            _rm = _n.get('metadata', {})
+                            if isinstance(_rm, str):
+                                _rm = json.loads(_rm)
+                            _rm['status'] = 'dismissed'
+                            _rm['dismissed_at'] = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%Y-%m-%d')
+                            supabase.table('graph_nodes').update({'metadata': _rm}).eq('id', _n['id']).execute()
+                            _variants = _rm.get('variants', [_n.get('label', '')])
+                            _excl = supabase.table('core_config').select('content').eq('key', 'dismissed_practice_variants').maybe_single().execute()
+                            _existing = json.loads(_excl.data.get('content', '[]')) if _excl.data else []
+                            _existing_lower = set(v.lower() for v in _existing)
+                            _new_entries = [v for v in _variants if v.lower() not in _existing_lower]
+                            if _new_entries:
+                                supabase.table('core_config').update({'content': json.dumps(_existing + _new_entries)}).eq('key', 'dismissed_practice_variants').execute()
+                            await send_telegram(chat_id, f"🗑️ Dismissed: {_n.get('label', '')}")
+                            print(f"📍 SHORTCODE DROP: Dismissed practice '{_n.get('label', '')}' via shortcode.")
+                            return {"success": True}
+                    except Exception as _sc_practice_err:
+                        audit_log_sync("webhook", "WARNING", f"Shortcode practice fallback error: {_sc_practice_err}")
+
+                # Standard failure handling
+                await send_telegram(chat_id, f"⚠️ {result['message']}")
+                if result['action'] in ('staging_failed',):
+                    raise Exception(result['message'])
 
                 return {"success": True}
 
@@ -1268,7 +1382,67 @@ async def process_webhook(update: dict):
             if query:
                 await interrogate_brain(query, chat_id)
                 return {"success": True}
-        
+
+        # 🏃 /drop-{practice} HANDLER — dismiss a practice permanently
+        import re as _re_drop
+        _drop_match = _re_drop.match(r'^/drop-(.+)$', text.strip(), _re_drop.IGNORECASE)
+        if _drop_match:
+            practice_name = _drop_match.group(1).strip().replace('-', ' ')
+            try:
+                # Find practice node by label (case-insensitive)
+                node_res = supabase.table('graph_nodes') \
+                    .select('id, label, metadata') \
+                    .eq('type', 'practice') \
+                    .ilike('label', practice_name) \
+                    .limit(1) \
+                    .execute()
+                if not node_res.data:
+                    await send_telegram(chat_id, f"⚠️ No practice found matching '{practice_name}'.")
+                    return {"success": True}
+
+                node = node_res.data[0]
+                raw_meta = node.get('metadata', {})
+                if isinstance(raw_meta, str):
+                    try:
+                        raw_meta = json.loads(raw_meta)
+                    except:
+                        raw_meta = {}
+
+                # Mark as dismissed
+                raw_meta['status'] = 'dismissed'
+                raw_meta['dismissed_at'] = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%Y-%m-%d')
+
+                supabase.table('graph_nodes') \
+                    .update({'metadata': raw_meta}) \
+                    .eq('id', node['id']) \
+                    .execute()
+
+                # Add variants to global exclusion list
+                variants = raw_meta.get('variants', [node.get('label', practice_name)])
+                exclusion_res = supabase.table('core_config') \
+                    .select('content') \
+                    .eq('key', 'dismissed_practice_variants') \
+                    .maybe_single() \
+                    .execute()
+                existing_exclusion = json.loads(exclusion_res.data.get('content', '[]')) if exclusion_res.data else []
+                existing_lower = set(v.lower() for v in existing_exclusion)
+                new_entries = [v for v in variants if v.lower() not in existing_lower]
+                if new_entries:
+                    updated_exclusion = existing_exclusion + new_entries
+                    supabase.table('core_config') \
+                        .update({'content': json.dumps(updated_exclusion)}) \
+                        .eq('key', 'dismissed_practice_variants') \
+                        .execute()
+
+                label = node.get('label', practice_name)
+                await send_telegram(chat_id, f"🗑️ Dismissed: {label}")
+                print(f"📍 DROP: Dismissed practice '{label}' — {len(new_entries)} variants excluded.")
+
+            except Exception as _drop_err:
+                audit_log_sync("webhook", "WARNING", f"/drop error: {_drop_err}")
+                await send_telegram(chat_id, "⚠️ Failed to dismiss practice. Try again.")
+            return {"success": True}
+
         context = await get_recent_context(limit=2)
         classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json)
         
@@ -1337,6 +1511,9 @@ async def process_webhook(update: dict):
             }).execute()
             ack = receipt or "The intern is on it. I'll ping you when the research is ready."
             await send_telegram(chat_id, f"✓ {ack}")
+        elif intent == 'DECLARE_PRACTICE' and confidence >= 0.6:
+            print(f"🏃 PRACTICE DECLARED: {classification.get('title', text)}")
+            await handle_declare_practice(text, chat_id, classification)
         elif intent == 'NOISE':
             await handle_noise(chat_id)
         else:
@@ -1352,6 +1529,112 @@ async def process_webhook(update: dict):
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Webhook Error: {e}")
         return {"error": str(e), "status": 500}
+
+
+async def handle_practices_command(chat_id: int):
+    """Query and display all practice nodes grouped by status."""
+    try:
+        practices_res = supabase.table('graph_nodes') \
+            .select('id, label, metadata') \
+            .eq('type', 'practice') \
+            .execute()
+        all_practices = practices_res.data or []
+
+        if not all_practices:
+            await send_telegram(chat_id, "🏃 No practices tracked yet.")
+            return
+
+        active = []
+        drifting = []
+        dormant = []
+        inactive = []
+
+        for p in all_practices:
+            raw_meta = p.get('metadata')
+            if isinstance(raw_meta, str):
+                try:
+                    meta = json.loads(raw_meta)
+                except:
+                    meta = {}
+            elif isinstance(raw_meta, dict):
+                meta = raw_meta
+            else:
+                meta = {}
+
+            label = p.get('label', '')
+            status = meta.get('status', 'active')
+            health_score = meta.get('health_score', 50)
+            occurrence_count = meta.get('occurrence_count', 0)
+
+            if health_score >= 80:
+                trend = "✓"
+            elif health_score >= 50:
+                trend = "→"
+            else:
+                trend = "↓"
+
+            is_drifting = status == 'active' and health_score < 50
+
+            entry = {
+                'label': label,
+                'health_score': health_score,
+                'trend': trend,
+                'occurrence_count': occurrence_count,
+                'status': status
+            }
+
+            if status == 'dormant':
+                dormant.append(entry)
+            elif status == 'inactive':
+                inactive.append(entry)
+            elif is_drifting:
+                drifting.append(entry)
+            else:
+                active.append(entry)
+
+        active.sort(key=lambda x: x['health_score'], reverse=True)
+        drifting.sort(key=lambda x: x['health_score'])
+        dormant.sort(key=lambda x: x['occurrence_count'], reverse=True)
+
+        lines = ["🏃 *PRACTICES*\n"]
+
+        if active:
+            lines.append(f"━ Active ({len(active)}) ━")
+            for e in active:
+                bar_len = e['health_score'] // 10
+                bar = "█" * bar_len + "░" * (10 - bar_len)
+                lines.append(f"{e['label']:20s} {bar} {e['health_score']:3d}%  {e['trend']}")
+
+        if drifting:
+            lines.append("")
+            lines.append(f"━ Drifting ({len(drifting)}) ━")
+            for e in drifting:
+                bar_len = e['health_score'] // 10
+                bar = "█" * bar_len + "░" * (10 - bar_len)
+                lines.append(f"{e['label']:20s} {bar} {e['health_score']:3d}%  {e['trend']} ↓")
+
+        if dormant:
+            lines.append("")
+            lines.append(f"━ Dormant ({len(dormant)}) ━")
+            for e in dormant:
+                lines.append(f"⏸️ {e['label']} — {e['occurrence_count']} occurrences")
+
+        if inactive:
+            lines.append("")
+            lines.append(f"━ Inactive ({len(inactive)}) ━")
+            for e in inactive:
+                lines.append(f"💤 {e['label']}")
+
+        total = len(all_practices)
+        active_count = len(active)
+        avg_health = sum(e['health_score'] for e in active) // max(len(active), 1) if active else 0
+        lines.append(f"\n_{total} total · {active_count} active · Avg health {avg_health}%_")
+
+        await send_telegram(chat_id, "\n".join(lines))
+
+    except Exception as e:
+        audit_log_sync("webhook", "ERROR", f"/practices error: {e}")
+        await send_telegram(chat_id, f"⚠️ Practices query failed: {e}")
 
 
 async def handle_status_command(chat_id: int):
@@ -1402,7 +1685,7 @@ async def handle_status_command(chat_id: int):
         # Unprocessed raw dumps
         raw_dumps_res = supabase.table('raw_dumps')\
             .select('id', count='exact')\
-            .eq('status', 'pending')\
+            .in_('status', ['pending', 'staged'])\
             .execute()
         raw_dumps_count = raw_dumps_res.count or 0
 
@@ -1437,6 +1720,77 @@ async def handle_status_command(chat_id: int):
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"/status error: {e}")
         await send_telegram(chat_id, f"⚠️ Status check failed: {e}")
+
+
+async def handle_declare_practice(text: str, chat_id: int, classification: dict):
+    """Handle DECLARE_PRACTICE intent — creates a declared practice node."""
+    try:
+        practice_name = classification.get('title', text).strip()
+        if not practice_name or len(practice_name) < 3:
+            await send_telegram(chat_id, "⚠️ Couldn't identify the practice. Try again.")
+            return
+
+        # Check for existing practice with similar label (threshold 0.85)
+        existing_res = supabase.table('graph_nodes') \
+            .select('id, label, metadata') \
+            .eq('type', 'practice') \
+            .in_('status', ['active', 'dormant']) \
+            .execute()
+        existing_practices = existing_res.data or []
+
+        if existing_practices:
+            name_embedding = await asyncio.to_thread(get_embedding, practice_name)
+            for p in existing_practices:
+                p_label = p.get('label', '')
+                p_embedding = await asyncio.to_thread(get_embedding, p_label)
+                dot = sum(a * b for a, b in zip(name_embedding, p_embedding))
+                n_a = sum(a * a for a in name_embedding) ** 0.5
+                n_b = sum(b * b for b in p_embedding) ** 0.5
+                sim = dot / (n_a * n_b) if n_a and n_b else 0.0
+                if sim >= 0.85:
+                    await send_telegram(chat_id, f"Already tracking: {p_label}")
+                    return
+
+        # Create practice node
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist_offset)
+        metadata = {
+            "declared": True,
+            "canonical_name_set_at": now.strftime('%Y-%m-%d'),
+            "frequency_observed": "0/14days",
+            "frequency_baseline": "0/14days",
+            "baseline_source": "bootstrap",
+            "baseline_weeks_of_data": 0,
+            "typical_time": None,
+            "typical_days": [],
+            "confidence": 1.0,
+            "last_occurrence": None,
+            "first_detected": now.strftime('%Y-%m-%d'),
+            "occurrence_count": 0,
+            "status": "active",
+            "resumed_at": None,
+            "entity": classification.get('entity'),
+            "entities": [classification.get('entity')] if classification.get('entity') else [],
+            "variants": [practice_name],
+            "health_score": 100,
+            "health_score_raw": 100
+        }
+
+        node_res = supabase.table('graph_nodes').insert({
+            "label": practice_name,
+            "type": "practice",
+            "metadata": metadata
+        }).execute()
+
+        if node_res.data:
+            await send_telegram(chat_id, f"Tracking: {practice_name}")
+            print(f"📍 DECLARE_PRACTICE: Created practice node '{practice_name}'")
+        else:
+            await send_telegram(chat_id, "⚠️ Could not create practice. Try again.")
+
+    except Exception as e:
+        audit_log_sync("webhook", "ERROR", f"handle_declare_practice error: {e}")
+        await send_telegram(chat_id, "⚠️ Something went wrong. Try again.")
 
 
 async def handle_command(text: str, chat_id: int):
@@ -1524,6 +1878,10 @@ async def handle_command(text: str, chat_id: int):
 
     elif text in ['/status', '📊 Status']:
         await handle_status_command(chat_id)
+        return {"success": True}
+
+    elif text in ['/practices', '🏃 Practices']:
+        await handle_practices_command(chat_id)
         return {"success": True}
 
     elif text in ['/ep']:

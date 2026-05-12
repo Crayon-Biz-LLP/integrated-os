@@ -68,6 +68,7 @@ async def run_batch_sweep():
         stale_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
         stale_pages = supabase.table('canonical_pages') \
             .select('title, last_synth_at, project_id') \
+            .eq('is_current', True) \
             .lt('last_synth_at', stale_threshold.isoformat()) \
             .execute()
         if stale_pages.data:
@@ -161,6 +162,7 @@ async def run_batch_sweep():
                 existing = supabase.table('canonical_pages') \
                     .select('id, content') \
                     .eq('project_id', project_id) \
+                    .eq('is_current', True) \
                     .limit(1).execute()
 
                 existing_content = existing.data[0]["content"] if existing.data else None
@@ -255,21 +257,44 @@ NEW FRAGMENTS:
             
             try:
                 if existing_id:
-                    supabase.table('canonical_pages').update({
+                    # Get current version number
+                    version_res = supabase.table('canonical_pages') \
+                        .select('version') \
+                        .eq('id', existing_id) \
+                        .single() \
+                        .execute()
+                    old_version = (version_res.data.get('version') or 0) if version_res.data else 0
+
+                    # Insert new version FIRST (so failure doesn't orphan old)
+                    supabase.table('canonical_pages').insert({
+                        "title": entity_name,
+                        "project_id": project_id,
                         "content": markdown,
                         "embedding": embedding,
+                        "version": old_version + 1,
+                        "is_current": True,
+                        "supersedes_id": existing_id,
                         "updated_at": now_iso,
                         "source_count": payload_entry['fragment_count'],
                         "last_synth_at": now_iso,
                         "is_sparse": len(markdown) < 500
-                    }).eq('id', existing_id).execute()
-                    print(f"✅ Master Page Merged: {entity_name} ({payload_entry['fragment_count']} fragments)")
+                    }).execute()
+
+                    # Mark old as not current
+                    supabase.table('canonical_pages') \
+                        .update({"is_current": False}) \
+                        .eq('id', existing_id) \
+                        .execute()
+
+                    print(f"✅ Master Page Versioned: {entity_name} (v{old_version + 1}, {payload_entry['fragment_count']} fragments)")
                 else:
                     supabase.table('canonical_pages').insert({
                         "title": entity_name,
                         "project_id": project_id,
                         "content": markdown,
                         "embedding": embedding,
+                        "version": 1,
+                        "is_current": True,
                         "updated_at": now_iso,
                         "source_count": payload_entry['fragment_count'],
                         "last_synth_at": now_iso,
