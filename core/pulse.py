@@ -2588,7 +2588,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
          OUTPUT JSON SCHEMA (WARNING: ONLY POPULATE ARRAYS IF EXPLICITLY COMMANDED IN NEW INPUTS. OTHERWISE RETURN []):
         {{
             "completed_task_ids": [
-                // Example ONLY: {{ "id": 123, "status": "done" }}, {{ "id": 456, "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" }}
+                // Example ONLY: {{ "id": 123, "status": "done" }}, {{ "id": 456, "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" }}, {{ "id": 789, "status": "todo", "reminder_at": "2026-03-21" }}
             ],
             "new_projects": [
                 // Example ONLY: {{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }}
@@ -2597,7 +2597,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 // Example ONLY: {{ "name": "...", "role": "...", "strategic_weight": 9 }}
             ],
             "new_tasks": [
-                // Example ONLY: {{ "title": "...", "project_name": "...", "priority": "urgent", "estimated_duration": 15, "reminder_at": "..." }}
+                // Example ONLY: {{ "title": "...", "project_name": "...", "priority": "urgent", "estimated_duration": 15, "reminder_at": null }},
+                // Example ONLY: {{ "title": "...", "project_name": "Solvstrat", "priority": "important", "estimated_duration": 30, "reminder_at": "2026-03-21" }},
+                // Example ONLY: {{ "title": "...", "project_name": "Qhord", "priority": "urgent", "estimated_duration": 45, "reminder_at": "2026-03-21T10:00:00+05:30" }}
             ],
             "resources": [
                 // Example ONLY: {{ "url": "...", "title": "...", "summary": "...", "mission_name": "...", "project_name": "...", "strategic_note": "..." }}
