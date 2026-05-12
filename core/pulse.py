@@ -2825,33 +2825,34 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                             "project_id": str(new_proj.get('id')),
                             "org_tag": new_proj.get('org_tag'),
                         }
-                        existing_node = (
-                            supabase.table('graph_nodes')
-                            .select('id', 'type')
-                            .ilike('label', project_name)
-                            .maybe_single()
-                            .execute()
-                        )
-                        if existing_node.data:
-                            if existing_node.data['type'] != 'project':
-                                # Versioned update for graph_nodes
-                                versioned_update('graph_nodes', existing_node.data['id'], {
-                                    'type': 'project',
-                                    'metadata': node_metadata
-                                })
-                                print(f"⬆️ Upgraded node '{project_name}' from {existing_node.data['type']} → project")
+                        try:
+                            existing_node = (
+                                supabase.table('graph_nodes')
+                                .select('id', 'type')
+                                .ilike('label', project_name)
+                                .maybe_single()
+                                .execute()
+                            )
+                            if existing_node and existing_node.data:
+                                if existing_node.data['type'] != 'project':
+                                    versioned_update('graph_nodes', existing_node.data['id'], {
+                                        'type': 'project',
+                                        'metadata': node_metadata
+                                    })
+                                    print(f"⬆️ Upgraded node '{project_name}' from {existing_node.data['type']} → project")
+                                else:
+                                    audit_log_sync("pulse", "WARNING", f"⚠️ Project node '{project_name}' already exists, updating metadata.")
+                                    versioned_update('graph_nodes', existing_node.data['id'], {
+                                        'metadata': node_metadata
+                                    })
                             else:
-                                audit_log_sync("pulse", "WARNING", f"⚠️ Project node '{project_name}' already exists, updating metadata.")
-                                # Versioned update for graph_nodes
-                                versioned_update('graph_nodes', existing_node.data['id'], {
-                                    'metadata': node_metadata
-                                })
-                        else:
-                            supabase.table('graph_nodes').insert({
-                                "label": project_name,
-                                "type": "project",
-                                "metadata": node_metadata
-                            }).execute()
+                                supabase.table('graph_nodes').insert({
+                                    "label": project_name,
+                                    "type": "project",
+                                    "metadata": node_metadata
+                                }).execute()
+                        except Exception as gn_err:
+                            audit_log_sync("pulse", "WARNING", f"⚠️ Graph node sync failed (non-critical): {gn_err}")
                     legacy_projects.extend(p_res.data)
                     projects.extend(p_res.data)
                     print(f"✅ Created {len(p_res.data)} new entity projects.")
