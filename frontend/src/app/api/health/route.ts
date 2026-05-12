@@ -57,7 +57,7 @@ export async function GET() {
       .from('tasks')
       .select('id', { count: 'exact', head: true })
       .eq('is_current', true)
-      .not('status', 'in', '('done,cancelled)');
+      .not('status', 'in', "('done','cancelled')");
     const { count: tasksClosed } = await supabase
       .from('tasks')
       .select('id', { count: 'exact', head: true })
