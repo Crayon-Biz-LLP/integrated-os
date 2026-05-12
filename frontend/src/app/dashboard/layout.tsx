@@ -11,10 +11,11 @@ import {
    Brain,
    Calendar,
    Users,
-   BookOpen,
-   LogOut,
-    Menu,
-    House,
+    BookOpen,
+    Activity,
+    LogOut,
+     Menu,
+     House,
   } from 'lucide-react';
 import { createClient } from '@/lib/supabase';
 import { useEffect, useState } from 'react';
@@ -36,6 +37,7 @@ const navItems = [
    { href: '/dashboard/calendar', label: 'Calendar', icon: Calendar },
    { href: '/dashboard/people', label: 'People', icon: Users },
    { href: '/dashboard/resources', label: 'Resources', icon: BookOpen },
+   { href: '/dashboard/health', label: 'Health', icon: Activity },
 ];
 
 const mobileItems = navItems.slice(0, 5);
@@ -50,6 +52,7 @@ const routeTitles: Record<string, string> = {
    '/dashboard/calendar': 'Calendar',
    '/dashboard/people': 'People',
    '/dashboard/resources': 'Resources',
+   '/dashboard/health': 'Health',
 };
 
 export default function DashboardLayout({
