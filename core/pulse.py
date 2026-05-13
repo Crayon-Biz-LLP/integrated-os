@@ -500,8 +500,8 @@ async def call_llm_with_fallback(
     if model is None:
         model = BRIEFING_MODEL
     
-    max_retries_per_provider = 2 if is_critical else 1
-    base_delay = 8 if is_critical else 4
+    max_retries_per_provider = 3 if is_critical else 2
+    base_delay = 10 if is_critical else 6
     
     providers = [
         {
@@ -977,7 +977,7 @@ async def detect_temporal_patterns() -> str:
         # Search memories from same month/day in previous years
         memories_res = supabase.table('memories') \
             .select('content, memory_type, created_at') \
-            .or_(f"created_at.ilike.%{today.month:02}-{today.day:02}%") \
+            .or_(f"created_at::text.ilike.%{today.month:02}-{today.day:02}%") \
             .order('created_at', desc=True) \
             .limit(10) \
             .execute()
@@ -1045,8 +1045,8 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list) 
                 if not person_name:
                     continue
                 related_resources = [
-                    r.get('title', '') for r in resources[:30]
-                    if person_name.lower() in (r.get('title', '') + r.get('strategic_note', '')).lower()
+                    (r.get('title', '') or '') for r in resources[:30]
+                    if person_name.lower() in ((r.get('title', '') or '') + (r.get('strategic_note', '') or '')).lower()
                 ]
                 if len(related_resources) >= 2:
                     insights.append(f"👤 {person_name} appears in: {' | '.join(related_resources[:3])}")
@@ -3022,7 +3022,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 # Store request_id in metadata for idempotency
                 for d in dumps:
                     try:
-                        meta = json.loads(d.get('metadata', '{}') or '{}')
+                        raw_meta = d.get('metadata', {})
+                        if isinstance(raw_meta, str):
+                            meta = json.loads(raw_meta) if raw_meta else {}
+                        elif isinstance(raw_meta, dict):
+                            meta = raw_meta
+                        else:
+                            meta = {}
                         meta['request_id'] = request_id
                         supabase.table('raw_dumps') \
                             .update({"metadata": meta}) \
@@ -3082,8 +3088,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         continue
                     metadata = {}
                     try:
-                        if raw_dump.get('metadata'):
-                            metadata = json.loads(raw_dump['metadata'])
+                        raw_meta = raw_dump.get('metadata')
+                        if isinstance(raw_meta, str):
+                            metadata = json.loads(raw_meta)
+                        elif isinstance(raw_meta, dict):
+                            metadata = raw_meta
                     except Exception as e:
                         audit_log_sync("pulse", "WARNING", f"⚠️ Metadata parse error for dump {dump_id}: {e}")
 
