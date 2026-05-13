@@ -252,7 +252,13 @@ def fetch_memories():
     processed_memory_ids = set()
     for row in existing_edges or []:
         try:
-            meta = json.loads(row.get("metadata", "{}"))
+            raw_meta = row.get("metadata", {})
+            if isinstance(raw_meta, str):
+                meta = json.loads(raw_meta)
+            elif isinstance(raw_meta, dict):
+                meta = raw_meta
+            else:
+                meta = {}
             if meta.get("memory_id"):
                 # Normalize: treat as int for comparison with memories.id
                 try:
@@ -835,7 +841,7 @@ def backfill_orphaned_tasks():
                         .maybe_single() \
                         .execute()
                     
-                    if not existing.data:
+                    if existing is None or not existing.data:
                         supabase.table("graph_edges").insert({
                             "source_node_id": task_node_id,
                             "target_node_id": proj_node_id,
