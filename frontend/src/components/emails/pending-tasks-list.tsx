@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { EmailPendingTask } from '@/lib/emails/types';
 import { decideTask } from '@/lib/emails/api';
+import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { Check, X, AlertTriangle } from 'lucide-react';
 
@@ -23,11 +24,14 @@ export function PendingTasksList({ tasks: initialTasks, loading }: PendingTasksL
   }, [initialTasks]);
 
   const handleDecision = async (id: number, decision: 'yes' | 'no') => {
-    setTasks((prev) => prev.filter((task) => task.id !== id));
+    const task = tasks.find((t) => t.id === id);
+    setTasks((prev) => prev.filter((t) => t.id !== id));
     try {
       await decideTask(id, decision);
     } catch (error) {
       console.error('Failed to decide task:', error);
+      if (task) setTasks((prev) => [...prev, task]);
+      toast.error('Failed to save decision. Task has been restored.');
     }
   };
 

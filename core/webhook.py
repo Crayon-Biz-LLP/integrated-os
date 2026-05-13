@@ -181,7 +181,7 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
 
     if decision == 'approve':
         if is_already_in_tasks_table(title):
-            versioned_update('email_pending_tasks', row['id'], {'danny_decision': 'skipped'})
+            client.table('email_pending_tasks').update({'danny_decision': 'skipped'}).eq('id', row['id']).execute()
             return {
                 "success": False, "action": "duplicate",
                 "message": f"A similar task already exists on your board: [{title}]"
@@ -206,14 +206,23 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
                 "message": f"Task staging failed for [{row['id']}]. You can retry."
             }
 
-        versioned_update('email_pending_tasks', row['id'], {'danny_decision': 'approved'})
+        client.table('email_pending_tasks').update({'danny_decision': 'approved'}).eq('id', row['id']).execute()
         print(f"Staged to raw_dumps via email approval: {title}")
         return {"success": True, "action": "approved", "message": f"Task staged: {title}"}
 
     elif decision == 'reject':
-        versioned_update('email_pending_tasks', row['id'], {'danny_decision': 'rejected'})
+        client.table('email_pending_tasks').update({'danny_decision': 'rejected'}).eq('id', row['id']).execute()
         try:
-            versioned_update('email_drafts', row['id'], {'danny_decision': 'skipped'})
+            draft_res = supabase.table('email_drafts')\
+                .select('id')\
+                .eq('email_id', email_id)\
+                .maybe_single()\
+                .execute()
+            if draft_res.data:
+                supabase.table('email_drafts')\
+                    .update({'danny_decision': 'skipped'})\
+                    .eq('id', draft_res.data['id'])\
+                    .execute()
         except Exception:
             pass
         return {"success": True, "action": "rejected", "message": f"Dropped: {title}"}
@@ -936,7 +945,7 @@ async def send_draft_reply(draft_id: int) -> tuple:
     """Send an approved draft via Gmail or Outlook based on email source. Returns (success: bool, error: str|None)."""
     try:
         draft_res = supabase.table('email_drafts')\
-            .select('id, email_id, draft_body, status, emails(sender_email, thread_id, source, subject)')\
+            .select('id, email_id, draft_body, status, emails(sender_email, thread_id, source, subject, message_id)')\
             .eq('id', draft_id)\
             .eq('status', 'pending')\
             .maybe_single()\
@@ -970,12 +979,32 @@ async def send_draft_reply(draft_id: int) -> tuple:
         msg['In-Reply-To'] = email['thread_id']
         msg['References'] = email['thread_id']
 
+        # Include original CC recipients (Reply All behavior)
+        self_email = os.getenv('GMAIL_SENDER_EMAIL', '')
+        try:
+            original = gmail_service.users().messages().get(
+                userId='me', id=email['message_id'],
+                format='metadata', metadataHeaders=['Cc']
+            ).execute()
+            cc_headers = [
+                h['value'] for h in original.get('payload', {}).get('headers', [])
+                if h['name'].lower() == 'cc'
+            ]
+            if cc_headers:
+                cc_addrs = [
+                    a.strip() for a in cc_headers[0].split(',')
+                    if a.strip() and self_email not in a
+                ]
+                if cc_addrs:
+                    msg['Cc'] = ', '.join(cc_addrs)
+        except Exception:
+            pass  # Fall back to sender-only if original email unavailable
+
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
         send_body = {'raw': raw, 'threadId': email['thread_id']}
 
         # Update status to 'sent' BEFORE Gmail API call to prevent double-send
-        # Use versioned update for email_drafts
-        versioned_update('email_drafts', draft_id, {'status': 'sent'})
+        supabase.table('email_drafts').update({'status': 'sent'}).eq('id', draft_id).execute()
 
         try:
             gmail_service.users().messages().send(userId='me', body=send_body).execute()
@@ -1005,11 +1034,30 @@ async def send_outlook_draft(draft: dict) -> tuple:
             result = refresh_outlook_token(write_back=True)
             access_token = result["access_token"]
 
+        # Include original CC recipients (Reply All behavior)
+        cc_recipients = []
+        try:
+            async with httpx.AsyncClient(timeout=15) as cc_client:
+                cc_resp = await cc_client.get(
+                    f"https://graph.microsoft.com/v1.0/me/messages/{email['message_id']}",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={"$select": "ccRecipients"}
+                )
+                if cc_resp.status_code == 200:
+                    cc_data = cc_resp.json()
+                    for r in cc_data.get('ccRecipients', []):
+                        addr = r.get('emailAddress', {}).get('address', '')
+                        if addr and to_email not in addr:
+                            cc_recipients.append({"emailAddress": {"address": addr}})
+        except Exception:
+            pass  # Fall back to sender-only if original email unavailable
+
         payload = {
             "message": {
                 "subject": f"Re: {subject}",
                 "body": {"contentType": "Text", "content": body},
-                "toRecipients": [{"emailAddress": {"address": to_email}}]
+                "toRecipients": [{"emailAddress": {"address": to_email}}],
+                **({"ccRecipients": cc_recipients} if cc_recipients else {})
             },
             "saveToSentItems": True
         }
@@ -1020,8 +1068,7 @@ async def send_outlook_draft(draft: dict) -> tuple:
         }
 
         # Update status to 'sent' BEFORE Outlook API call to prevent double-send
-        # Use versioned update for email_drafts
-        versioned_update('email_drafts', draft['id'], {'status': 'sent'})
+        supabase.table('email_drafts').update({'status': 'sent'}).eq('id', draft['id']).execute()
 
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
