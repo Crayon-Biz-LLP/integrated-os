@@ -3891,16 +3891,16 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                             )
                             if existing_node and existing_node.data:
                                 if existing_node.data['type'] != 'project':
-                                    versioned_update('graph_nodes', existing_node.data['id'], {
+                                    supabase.table('graph_nodes').update({
                                         'type': 'project',
                                         'metadata': node_metadata
-                                    })
+                                    }).eq('id', existing_node.data['id']).execute()
                                     print(f"⬆️ Upgraded node '{project_name}' from {existing_node.data['type']} → project")
                                 else:
                                     audit_log_sync("pulse", "WARNING", f"⚠️ Project node '{project_name}' already exists, updating metadata.")
-                                    versioned_update('graph_nodes', existing_node.data['id'], {
+                                    supabase.table('graph_nodes').update({
                                         'metadata': node_metadata
-                                    })
+                                    }).eq('id', existing_node.data['id']).execute()
                             else:
                                 supabase.table('graph_nodes').insert({
                                     "label": project_name,
@@ -4402,7 +4402,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     lines = ["\n\n📨 EMAIL DECISIONS (" + str(len(pending_decisions.data)) + ") — reply [code] yes/drop"]
                     shown_ids = []
                     for row in pending_decisions.data:
-                        shortcode = str(row['id'])[-4:]
+                        shortcode = str(row['id'])
                         project_label = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                         title = row['suggested_title'][:60]
                         lines.append(f"[{shortcode}] {title}{project_label}")
