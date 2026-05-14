@@ -59,6 +59,14 @@ except ImportError:
             except:
                 pass
 
+# Import conversation module (session management for Q&A)
+from core.conversation import (
+    get_or_create_session,
+    get_history,
+    log_exchange,
+    format_history_for_prompt
+)
+
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -348,7 +356,7 @@ def get_embedding(text: str) -> list:
         return [0] * EMBEDDING_DIMENSION
 
 
-async def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]") -> dict:
+async def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]", conversation_history: str = "") -> dict:
     ist_offset = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist_offset)
     current_hour = ist_hour if ist_hour is not None else now.hour
@@ -368,7 +376,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
 
-    Message: "{text}"{context_str}
+    Message: "{text}"{context_str}{conversation_history}
     CURRENT TIME CONTEXT: It's the {time_phase}.
     IDENTITY & BUSINESS CONTEXT: {core_json}
 
@@ -391,6 +399,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - QUERY: The user is asking a question to retrieve information from their past notes, tasks, or the vault (e.g., "What did the analyst say?", "When is my meeting?").
+    - CONVERSATION HISTORY: Use the CONVERSATION HISTORY block above to disambiguate vague follow-ups. If Danny says "what about tomorrow?" after having just asked about today, route as DAILY_BRIEF. If he says "reschedule the 2pm" after discussing calendar, route as TASK. The history tells you what the current topic is.
     - DELEGATE: Research, competitor audits, or autonomous web research.
     - DECLARE_PRACTICE: If Danny says "I want to [activity] every [timeframe]", "I'm going to start [activity]", "Track [activity] for me", "I want to build a practice of [activity]", or expresses intent to establish a recurring behavior — classify as DECLARE_PRACTICE. Extract the practice name into the title field. Route to the most relevant entity (PERSONAL for health/personal routines, SOLVSTRAT for work practices, etc.).
     - DAILY_BRIEF: Danny is asking about today's schedule, calendar, or what's on his plate. Examples: "what's today?", "what's on my calendar?", "what do I have today?", "give me my day", "what's happening today?". Extract into title: "Daily Briefing". Entity: INBOX.
@@ -419,7 +428,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         return {"intent": "NOTE", "confidence": 0.8, "receipt": "Manual correction secured in the vault."}
 
 
-async def handle_daily_brief(text: str, chat_id: int):
+async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, conversation_history: str = ""):
     """
     Handle DAILY_BRIEF intent — on-demand daily briefing.
     Queries Google Calendar for today's events and tasks table for open tasks,
@@ -495,6 +504,7 @@ async def handle_daily_brief(text: str, chat_id: int):
             return "\n".join([f"- {i.get(key, '')}" for i in items])
 
         prompt = f"""You are Danny's Rhodey. Danny just asked what today looks like. Give a compact 3-5 sentence briefing — cut through the noise and tell him where he stands.
+{conversation_history}
 
 Date: {date_str}
 Time: {now_time_str} IST
@@ -540,6 +550,10 @@ Lead with the next event if there is one. Be direct — no coaching, no motivati
         reply = "\n".join(fallback_lines)
 
     await send_telegram(chat_id, f"{reply}")
+
+    # Log bot reply to conversation history
+    if session_id:
+        log_exchange(session_id, 'bot', 'DAILY_BRIEF', reply, chat_id)
 
     try:
         supabase.table('raw_dumps').insert([{
@@ -934,7 +948,7 @@ async def hybrid_search_graph(query: str) -> str:
         return ""
 
 
-async def interrogate_brain(query: str, chat_id: int):
+async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = ""):
     """On-Demand Brain Interrogation - Hybrid Graph + Vector Search."""
     try:
         await send_telegram(chat_id, "🧠 *Searching your vault...*")
@@ -1016,7 +1030,7 @@ async def interrogate_brain(query: str, chat_id: int):
         
         prompt = f"""You are Danny's Rhodey. Danny is asking about a node in your network. Use the TACTICAL MAP to identify dependencies and potential bottlenecks. Give a direct, logic-based answer. If you don't know the answer, say so. Cite the source if possible.
 
-{context_str}
+{context_str}{conversation_history}
 
 Question: {query}
 
@@ -1027,6 +1041,10 @@ Provide a clear, concise answer. Format with Markdown. If referencing a specific
         answer = response.text.strip()
         
         await send_telegram(chat_id, f"🧠 *Brain Interrogation:*\n\n{answer}")
+
+        # Log bot reply to conversation history
+        if session_id:
+            log_exchange(session_id, 'bot', 'QUERY', answer, chat_id)
         
         # Log QUERY response to raw_dumps so it appears in web UI
         try:
@@ -1580,14 +1598,20 @@ async def process_webhook(update: dict):
         
         # 📋 /today prefix — on-demand daily briefing, skip classify_intent()
         if text.strip().lower() in ('/today', '/brief', '/day'):
-            await handle_daily_brief(text, chat_id)
+            sid, hist = get_or_create_session(chat_id)
+            hist_text = format_history_for_prompt(hist)
+            log_exchange(sid, 'user', 'DAILY_BRIEF', text, chat_id)
+            await handle_daily_brief(text, chat_id, session_id=sid, conversation_history=hist_text)
             return {"success": True}
 
         # ? prefix shortcut — handle as QUERY directly, skip classify_intent()
         if text.startswith('?'):
             query = text[1:].strip()
             if query:
-                await interrogate_brain(query, chat_id)
+                sid, hist = get_or_create_session(chat_id)
+                hist_text = format_history_for_prompt(hist)
+                log_exchange(sid, 'user', 'QUERY', text, chat_id)
+                await interrogate_brain(query, chat_id, session_id=sid, conversation_history=hist_text)
                 return {"success": True}
 
         # 🏃 /drop-{practice} HANDLER — dismiss a practice permanently
@@ -1650,13 +1674,20 @@ async def process_webhook(update: dict):
                 await send_telegram(chat_id, "⚠️ Failed to dismiss practice. Try again.")
             return {"success": True}
 
+        # Initialize conversation session
+        session_id, history = get_or_create_session(chat_id)
+        history_text = format_history_for_prompt(history)
+
         context = await get_recent_context(limit=2)
-        classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json)
+        classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json, conversation_history=history_text)
         
         intent = classification.get('intent', 'TASK')
         confidence = classification.get('confidence', 0.5)
         
         print(f"🎯 Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
+
+        # Log user message to conversation history
+        log_exchange(session_id, 'user', intent, text, chat_id)
         
         # Detect if message is from web UI (fake update_id from send-message endpoint)
         is_web_source = update.get('update_id') and str(update.get('update_id')).startswith('web_')
@@ -1693,10 +1724,10 @@ async def process_webhook(update: dict):
             )
         elif intent == 'DAILY_BRIEF' and confidence >= 0.6:
             print(f"📋 DAILY BRIEF requested")
-            await handle_daily_brief(text, chat_id)
+            await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
         elif intent == 'QUERY' and confidence >= 0.6:
             print(f"🧠 QUERY DETECTED: Routing to brain...")
-            await interrogate_brain(text, chat_id)
+            await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text)
         elif intent == 'NOTE' and confidence >= 0.6:
             if text.startswith('http') or 'www.' in text:
                 supabase.table('resources').insert({

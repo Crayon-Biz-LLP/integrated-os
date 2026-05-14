@@ -30,6 +30,11 @@ from temporal_lineage import (
     get_state_at_time
 )
 
+# Import conversation history
+from conversation import (
+    get_or_create_session, format_history_for_prompt
+)
+
 
 def format_error(e: Exception) -> str:
     """Format exception for logging."""
@@ -2999,6 +3004,17 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         health_report = await check_pipeline_health()
         print(health_report)
         
+        # --- 0.2 CONVERSATION HISTORY (Phase 5) ---
+        conversation_history = ""
+        try:
+            pulse_chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+            if pulse_chat_id:
+                _, hist_pairs = get_or_create_session(pulse_chat_id)
+                if hist_pairs:
+                    conversation_history = format_history_for_prompt(hist_pairs)
+        except Exception as e:
+            warning("pulse", f"Conversation history fetch failed: {e}")
+        
         # --- 0.1 BATCH ENRICHMENT (One Gemini call for all unenriched resources) ---
         batch_enrich_results = await batch_enrich_resources()
         
@@ -3533,6 +3549,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         prompt = f"""    
         ROLE: Danny's Rhodey. You are his most trusted advisor — the one who cuts through the noise and tells him exactly where he stands. You have full situational awareness of his work, family, and faith. You don't coach, motivate, or perform. You speak plainly, like a friend who has been in the room the whole time. Your job is to give Danny a clear picture of the board so he can make his next move.
+        {conversation_history}
         STRATEGIC CONTEXT: {season_config}
         CURRENT PHASE: {briefing_mode}
         CURRENT TIME: {current_time_str}
