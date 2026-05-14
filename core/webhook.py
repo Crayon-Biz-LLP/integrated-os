@@ -1103,34 +1103,73 @@ async def handle_noise(chat_id: int):
     await send_telegram(chat_id, "👍")
 
 
+def _chunk_message(text: str, max_len: int = 4000) -> list[str]:
+    if len(text) <= max_len:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        split_at = text.rfind('\n', 0, max_len)
+        if split_at == -1:
+            split_at = text.rfind(' ', 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip()
+    return chunks
+
+
 async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True):
+    chunks = _chunk_message(message_text)
+    total = len(chunks)
     telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message_text,
-        "parse_mode": "Markdown"
-    }
-    if show_keyboard:
-        payload["reply_markup"] = {
-            "keyboard": [
-                [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
-                [{"text": "🚀 Mission"}, {"text": "📚 Library"}],
-                [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}],
-                [{"text": "📊 Status"}]
-            ],
-            "resize_keyboard": True,
-            "persistent": True
-        }
-        payload["disable_web_page_preview"] = True
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(url, json=payload)
-        return True
-    except Exception as e:
-        print(f"Telegram send failed to {chat_id}: {e}")
-        return False
+    success = True
+    async with httpx.AsyncClient() as client:
+        for i, chunk in enumerate(chunks):
+            suffix = f"({i+1}/{total})"
+            if total > 1:
+                if i == 0:
+                    nl = chunk.find('\n')
+                    if nl != -1:
+                        chunk = chunk[:nl] + " " + suffix + chunk[nl:]
+                    else:
+                        chunk = chunk + " " + suffix
+                else:
+                    chunk = suffix + "\n\n" + chunk
+            payload = {
+                "chat_id": chat_id,
+                "text": chunk,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            }
+            if show_keyboard and i == total - 1:
+                payload["reply_markup"] = {
+                    "keyboard": [
+                        [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
+                        [{"text": "🚀 Mission"}, {"text": "📚 Library"}],
+                        [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}],
+                        [{"text": "📊 Status"}]
+                    ],
+                    "resize_keyboard": True,
+                    "persistent": True,
+                }
+            try:
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 400 and "can't parse entities" in resp.text.lower():
+                    clean = chunk.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+                    payload["text"] = clean
+                    payload.pop("parse_mode", None)
+                    resp = await client.post(url, json=payload)
+                if resp.status_code != 200:
+                    print(f"Telegram chunk {i+1}/{total} failed: {resp.status_code} {resp.text}")
+                    success = False
+            except Exception as e:
+                print(f"Telegram chunk {i+1}/{total} exception: {e}")
+                success = False
+    return success
 
 
 def get_gmail_service():
