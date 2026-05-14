@@ -7,7 +7,11 @@ import sys
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from google import genai
-from core.rate_limiter import flash_lite_limiter
+# Import rate limiter
+try:
+    from core.rate_limiter import flash_lite_limiter
+except ImportError:
+    from rate_limiter import flash_lite_limiter
 
 # Add parent directory for importing from pulse.py
 # __file__ = .../core/skills/backfill_graph.py
