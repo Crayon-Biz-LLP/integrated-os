@@ -64,6 +64,23 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
 
+class MemoryCache(base.Cache):
+    _cache = {}
+    def get(self, url):
+        return self._cache.get(url)
+    def set(self, url, content):
+        self._cache[url] = content
+
+def get_google_creds():
+    """Unified credential handshake for Google services."""
+    return Credentials(
+        None,
+        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
+        client_id=os.getenv("GOOGLE_CLIENT_ID"),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+        token_uri="https://oauth2.googleapis.com/token"
+    )
+
 def normalize_title(title: str) -> str:
     """Normalize title for comparison: lowercase, strip punctuation, collapse whitespace."""
     import re
@@ -357,7 +374,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     Return ONLY valid JSON (no markdown, no explanation):
     {{
-        "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE|QUERY|DECLARE_PRACTICE",
+        "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE|QUERY|DECLARE_PRACTICE|DAILY_BRIEF",
         "confidence": 0.0-1.0,
         "entity": "SOLVSTRAT|QHORD|PERSONAL|CHURCH|INBOX",
         "title": "extracted task title",
@@ -376,6 +393,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - QUERY: The user is asking a question to retrieve information from their past notes, tasks, or the vault (e.g., "What did the analyst say?", "When is my meeting?").
     - DELEGATE: Research, competitor audits, or autonomous web research.
     - DECLARE_PRACTICE: If Danny says "I want to [activity] every [timeframe]", "I'm going to start [activity]", "Track [activity] for me", "I want to build a practice of [activity]", or expresses intent to establish a recurring behavior — classify as DECLARE_PRACTICE. Extract the practice name into the title field. Route to the most relevant entity (PERSONAL for health/personal routines, SOLVSTRAT for work practices, etc.).
+    - DAILY_BRIEF: Danny is asking about today's schedule, calendar, or what's on his plate. Examples: "what's today?", "what's on my calendar?", "what do I have today?", "give me my day", "what's happening today?". Extract into title: "Daily Briefing". Entity: INBOX.
     - RECEIPT RULE: Receipts must be confirmation-only. Use: '[Subject] logged for [Time/Day].'
     - LITERAL SUBJECT RULE: Mirror Danny's verb. (e.g., 'Check with Vasanth' → 'Vasanth check-in logged').
     - ZERO DATA LOSS: Never drop qualifiers like 'Canadian project' or 'Zoho API'.
@@ -399,6 +417,143 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Classification parse error: {e}")
         return {"intent": "NOTE", "confidence": 0.8, "receipt": "Manual correction secured in the vault."}
+
+
+async def handle_daily_brief(text: str, chat_id: int):
+    """
+    Handle DAILY_BRIEF intent — on-demand daily briefing.
+    Queries Google Calendar for today's events and tasks table for open tasks,
+    then formats a compact 3-5 sentence briefing via Flash Lite.
+
+    Falls back to raw data if the LLM call fails.
+    """
+    events_list = []
+    tasks_today = []
+    overdue_tasks = []
+
+    try:
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+
+        # Google Calendar events for today
+        try:
+            service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
+            time_min = today_start.isoformat()
+            time_max = today_end.isoformat()
+            events_res = service.events().list(
+                calendarId='primary',
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            for e in events_res.get('items', []):
+                start = e.get('start', {})
+                dt = start.get('dateTime') or start.get('date', '')
+                summary = e.get('summary', 'Untitled')
+                events_list.append({"time": dt, "title": summary})
+        except Exception as cal_err:
+            audit_log_sync("webhook", "WARNING", f"Brief calendar query failed: {cal_err}")
+
+        # Open tasks due today
+        try:
+            tasks_res = supabase.table('tasks') \
+                .select('title, reminder_at, priority') \
+                .eq('is_current', True) \
+                .not_.in_('status', ['done', 'cancelled']) \
+                .lte('reminder_at', today_end.isoformat()) \
+                .gte('reminder_at', today_start.isoformat()) \
+                .order('priority', desc=True) \
+                .execute()
+            tasks_today = tasks_res.data or []
+        except Exception as t_err:
+            audit_log_sync("webhook", "WARNING", f"Brief tasks query failed: {t_err}")
+
+        # Overdue tasks (up to 5)
+        try:
+            overdue_res = supabase.table('tasks') \
+                .select('title, reminder_at, priority') \
+                .eq('is_current', True) \
+                .not_.in_('status', ['done', 'cancelled']) \
+                .lt('reminder_at', today_start.isoformat()) \
+                .order('priority', desc=True) \
+                .limit(5) \
+                .execute()
+            overdue_tasks = overdue_res.data or []
+        except Exception:
+            pass
+
+        # Build prompt for Flash Lite
+        now_time_str = now.strftime('%I:%M %p').lstrip('0').lstrip(' ')
+        date_str = now.strftime('%A, %d %B')
+
+        def fmt_list(items, key='title'):
+            if not items:
+                return "None"
+            return "\n".join([f"- {i.get(key, '')}" for i in items])
+
+        prompt = f"""You are Danny's Rhodey. Danny just asked what today looks like. Give a compact 3-5 sentence briefing — cut through the noise and tell him where he stands.
+
+Date: {date_str}
+Time: {now_time_str} IST
+
+CALENDAR EVENTS:
+{fmt_list(events_list)}
+
+TASKS DUE TODAY:
+{fmt_list(tasks_today)}
+
+OVERDUE:
+{fmt_list(overdue_tasks)}
+
+Lead with the next event if there is one. Be direct — no coaching, no motivational language. If nothing is on, say so simply."""
+
+        response = await call_gemini_with_retry(
+            prompt=prompt,
+            model=CLASSIFICATION_MODEL,
+            config={'response_mime_type': 'text/plain'}
+        )
+        reply = response.text.strip()
+
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"Daily brief generation failed: {e}")
+        reply = None
+
+    if not reply:
+        fallback_lines = ["📋 *Today's Briefing*"]
+        if events_list:
+            fallback_lines.append("\n*Calendar:*")
+            for e in events_list:
+                fallback_lines.append(f"• {e['title']}")
+        if tasks_today:
+            fallback_lines.append("\n*Tasks:*")
+            for t in tasks_today:
+                fallback_lines.append(f"• {t['title']}")
+        if overdue_tasks:
+            fallback_lines.append("\n*Overdue:*")
+            for t in overdue_tasks:
+                fallback_lines.append(f"• {t['title']}")
+        if not events_list and not tasks_today and not overdue_tasks:
+            fallback_lines.append("\nNothing scheduled today.")
+        reply = "\n".join(fallback_lines)
+
+    await send_telegram(chat_id, f"{reply}")
+
+    try:
+        supabase.table('raw_dumps').insert([{
+            "content": reply,
+            "status": "completed",
+            "is_processed": True,
+            "direction": "outgoing",
+            "sender": "system",
+            "message_type": "briefing",
+            "source": "pulse",
+            "metadata": {"type": "daily_brief", "trigger": "on_demand"}
+        }]).execute()
+    except Exception as log_err:
+        audit_log_sync("webhook", "WARNING", f"Failed to log daily brief: {log_err}")
 
 
 async def get_recent_context(limit: int = 2) -> list:
@@ -1423,6 +1578,11 @@ async def process_webhook(update: dict):
             await handle_ed_command(text, chat_id)
             return {"success": True}
         
+        # 📋 /today prefix — on-demand daily briefing, skip classify_intent()
+        if text.strip().lower() in ('/today', '/brief', '/day'):
+            await handle_daily_brief(text, chat_id)
+            return {"success": True}
+
         # ? prefix shortcut — handle as QUERY directly, skip classify_intent()
         if text.startswith('?'):
             query = text[1:].strip()
@@ -1531,6 +1691,9 @@ async def process_webhook(update: dict):
                 source=source,
                 sender=sender  # Pass the sender ("user" for all user messages)
             )
+        elif intent == 'DAILY_BRIEF' and confidence >= 0.6:
+            print(f"📋 DAILY BRIEF requested")
+            await handle_daily_brief(text, chat_id)
         elif intent == 'QUERY' and confidence >= 0.6:
             print(f"🧠 QUERY DETECTED: Routing to brain...")
             await interrogate_brain(text, chat_id)
