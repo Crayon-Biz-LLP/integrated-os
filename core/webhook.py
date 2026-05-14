@@ -1100,7 +1100,20 @@ Danny is asking a question. You have access to his tactical map, memories, activ
 
 Question: {query}
 
-Give a sharp, direct answer. If you spot a bottleneck or a pattern, call it out. If something is urgent, say so. If there's nothing useful, say that. Format with Markdown. Cite sources like [MEMORY], [TASK], or [RESOURCE] if relevant."""
+Give a sharp, direct answer. If you spot a bottleneck or a pattern, call it out. If something is urgent, say so. If there's nothing useful, say that.
+
+Formatting rules:
+- Use emojis naturally for task context: 💰 money, 🏠 home, 📋 admin, 🛠️ work, 🏛️ church, etc.
+- Do NOT use `###` headers — use **bold** or just plain text for section breaks
+- Do NOT prefix tasks with "TASK" — just list them cleanly
+- Bullet points only, no numbered lists
+
+Example format:
+**Focus here** — clear bottleneck callout.
+* 💰 Task name [Project]
+* 📋 Another task [Project]
+
+Cite sources like [MEMORY], [TASK], or [RESOURCE] if relevant."""
         
         response = await call_gemini_with_retry(prompt=prompt, model=CLASSIFICATION_MODEL)
         
