@@ -7,16 +7,12 @@ import sys
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from google import genai
-# Import rate limiter
-try:
-    from core.rate_limiter import flash_lite_limiter
-except ImportError:
-    from rate_limiter import flash_lite_limiter
 
 # Add parent directory for importing from pulse.py
 # __file__ = .../core/skills/backfill_graph.py
 # We need to add .../core/ to path so `import pulse` works
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from rate_limiter import flash_lite_limiter
 # Import utilities from audit_logger and pulse
 try:
     from audit_logger import info, warning, error, audit_log_sync
