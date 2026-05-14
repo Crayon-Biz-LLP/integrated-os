@@ -439,6 +439,21 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         return {"intent": "NOTE", "confidence": 0.8, "receipt": "Manual correction secured in the vault."}
 
 
+def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "") -> str:
+    """Format a task line with consistent [Project] bracket.
+    Strips the project name from the end of the title if already embedded
+    to avoid duplication like 'Qhord [Qhord]'."""
+    title = title.rstrip()
+    if project_name and title.lower().endswith(project_name.lower()):
+        title = title[:-len(project_name)].rstrip()
+    line = f"{title} [{project_name}]"
+    if priority:
+        line += f" ({priority})"
+    if suffix:
+        line += suffix
+    return line
+
+
 async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, conversation_history: str = ""):
     """
     Handle DAILY_BRIEF intent — on-demand daily briefing.
@@ -509,10 +524,10 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
                                 due = " 🔔 due today" if not day_offset else " 🔔 due tomorrow"
                         except:
                             pass
-                    active_tasks_list.append(f"{t['title']} [{pn}] ({t.get('priority','todo')}){due}")
+                    active_tasks_list.append(_format_task_line(t['title'], pn, t.get('priority','todo'), due))
                     reminder = t.get('reminder_at')
                     if reminder and reminder < now_utc:
-                        overdue_tasks.append(f"{t['title']} [{pn}]")
+                        overdue_tasks.append(_format_task_line(t['title'], pn))
         except Exception as t_err:
             audit_log_sync("webhook", "WARNING", f"Brief tasks query failed: {t_err}")
 
@@ -526,8 +541,17 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
                 .order('updated_at', desc=True) \
                 .limit(5) \
                 .execute()
-            for t in (comp_res.data or []):
-                recently_completed.append(t['title'])
+            completed_raw = comp_res.data or []
+            if completed_raw:
+                done_proj_ids = list(set(t.get('project_id') for t in completed_raw if t.get('project_id')))
+                done_proj_map = {}
+                if done_proj_ids:
+                    done_proj_res = supabase.table('projects').select('id, name').in_('id', done_proj_ids).execute()
+                    for p in (done_proj_res.data or []):
+                        done_proj_map[p['id']] = p['name']
+                for t in completed_raw:
+                    pn = done_proj_map.get(t.get('project_id'), 'INBOX')
+                    recently_completed.append(_format_task_line(t['title'], pn))
         except Exception:
             pass
 
@@ -539,6 +563,8 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
         prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
 
 Danny is asking about {day_label.lower()}. You have his calendar events for {day_label}, his full active task list, overdue items, and recent completions. Identify what matters and cut through the noise.
+
+Answer only what Danny asked. Do not list unrelated tasks or extra context.
 {conversation_history}
 
 {day_label.upper()} — {target.strftime('%A, %d %B')}
@@ -561,7 +587,7 @@ Formatting rules:
 - Emoji goes at the **start** of each task line, not at the end
 - Pick emojis naturally: 💰 money, 🏠 home, 📋 admin, 🛠️ work, 🏛️ church, etc.
 - Do NOT use `###` headers — use **bold** or just plain text for section breaks
-- Do NOT prefix tasks with "TASK" — just list them cleanly
+- Do NOT prefix tasks with "TASK" — just list them cleanly. Do NOT include intent labels like TASK, NOTE, or QUERY anywhere in your response.
 - Bullet points only, no numbered lists
 
 Example:
@@ -569,7 +595,7 @@ Example:
 * 💰 Task name [Project]
 * 📋 Another task [Project]
 
-Cite sources like [MEMORY], [TASK], or [RESOURCE] if relevant."""
+Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or RESOURCE without brackets. Preserve the [Project] bracket from the task data exactly as shown."""
 
         response = await call_gemini_with_retry(
             prompt=prompt,
@@ -1150,7 +1176,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                         proj_map[p['id']] = p['name']
                 for t in raw_tasks:
                     p_name = proj_map.get(t.get('project_id'), 'INBOX')
-                    active_tasks_list.append(f"{t.get('title', '')} [{p_name}] ({t.get('priority', 'todo')})")
+                    active_tasks_list.append(_format_task_line(t.get('title', ''), p_name, t.get('priority', 'todo')))
         except Exception as tasks_err:
             print(f"Active tasks query failed: {tasks_err}")
         
@@ -1161,7 +1187,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             reminder = t.get('reminder_at')
             if reminder and reminder < now_utc:
                 p_name = proj_map.get(t.get('project_id'), 'INBOX')
-                overdue_tasks.append(f"{t.get('title', '')} [{p_name}]")
+                overdue_tasks.append(_format_task_line(t.get('title', ''), p_name))
         
         # Recent completions — tasks done in last 24h
         recently_completed = []
@@ -1178,7 +1204,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                         done_proj_map[p['id']] = p['name']
                 for t in completed_raw:
                     p_name = done_proj_map.get(t.get('project_id'), 'INBOX')
-                    recently_completed.append(f"{t.get('title', '')} [{p_name}]")
+                    recently_completed.append(_format_task_line(t.get('title', ''), p_name))
         except Exception as done_err:
             print(f"Recent completions query failed: {done_err}")
         
@@ -1217,8 +1243,9 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         
         prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
 
-Danny is asking a question. You have access to his tactical map, memories, active tasks, and resources. Look at the data below, identify what matters — dependencies, blockers, what to act on — and cut through the noise.
+Danny is asking a question. You have access to his tactical map, memories, active tasks, and resources. Look at the data below, identify what matters — dependencies, blockers — and cut through the noise.
 
+Answer only what Danny asked. Do not list unrelated tasks or extra context.
 {context_str}{conversation_history}
 
 Question: {query}
@@ -1229,7 +1256,7 @@ Formatting rules:
 - Emoji goes at the **start** of each task line, not at the end
 - Pick emojis naturally: 💰 money, 🏠 home, 📋 admin, 🛠️ work, 🏛️ church, etc.
 - Do NOT use `###` headers — use **bold** or just plain text for section breaks
-- Do NOT prefix tasks with "TASK" — just list them cleanly
+- Do NOT prefix tasks with "TASK" — just list them cleanly. Do NOT include intent labels like TASK, NOTE, or QUERY anywhere in your response.
 - Bullet points only, no numbered lists
 
 Example format:
@@ -1237,7 +1264,7 @@ Example format:
 * 💰 Task name [Project]
 * 📋 Another task [Project]
 
-Cite sources like [MEMORY], [TASK], or [RESOURCE] if relevant."""
+Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or RESOURCE without brackets. Preserve the [Project] bracket from the task data exactly as shown."""
         
         response = await call_gemini_with_retry(prompt=prompt, model=CLASSIFICATION_MODEL)
         
