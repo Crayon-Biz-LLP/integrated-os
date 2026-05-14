@@ -13,6 +13,12 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
 
+# Import rate limiter
+try:
+    from core.rate_limiter import flash_lite_limiter
+except ImportError:
+    from rate_limiter import flash_lite_limiter
+
 # Import audit_logger (with robust path handling for Vercel)
 try:
     from audit_logger import audit_log_sync
@@ -314,6 +320,9 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
     
     for attempt in range(max_retries):
         try:
+            # Rate limit: only for flash-lite model
+            if "flash-lite" in model:
+                await flash_lite_limiter.acquire_async()
             if contents is not None:
                 response = gemini_client.models.generate_content(
                     model=model,

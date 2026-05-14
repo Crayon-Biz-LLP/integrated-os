@@ -35,6 +35,9 @@ from conversation import (
     get_or_create_session, format_history_for_prompt
 )
 
+# Import rate limiter
+from rate_limiter import flash_lite_limiter
+
 
 def format_error(e: Exception) -> str:
     """Format exception for logging."""
@@ -545,6 +548,9 @@ async def call_llm_with_fallback(
         
         for attempt in range(max_retries_per_provider):
             try:
+                # Rate limit: only for flash-lite model
+                if provider_name == "gemini" and "flash-lite" in model_name:
+                    await flash_lite_limiter.acquire_async()
                 response = prov["fn"](prompt, contents, config)
                 elapsed = time.time() - start_time
                 

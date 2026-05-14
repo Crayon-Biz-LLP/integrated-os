@@ -7,6 +7,7 @@ import sys
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from google import genai
+from core.rate_limiter import flash_lite_limiter
 
 # Add parent directory for importing from pulse.py
 # __file__ = .../core/skills/backfill_graph.py
@@ -154,6 +155,9 @@ def call_llm_with_fallback_sync(
         
         for attempt in range(max_retries_per_provider):
             try:
+                # Rate limit: only for Gemini flash-lite model
+                if provider_name == "gemini" and "flash-lite" in model_name:
+                    flash_lite_limiter.acquire()
                 response = prov["fn"](prompt, config)
                 
                 if hasattr(response, 'text'):
@@ -252,13 +256,7 @@ def fetch_memories():
     processed_memory_ids = set()
     for row in existing_edges or []:
         try:
-            raw_meta = row.get("metadata", {})
-            if isinstance(raw_meta, str):
-                meta = json.loads(raw_meta)
-            elif isinstance(raw_meta, dict):
-                meta = raw_meta
-            else:
-                meta = {}
+            meta = _normalize_meta(row.get("metadata"))
             if meta.get("memory_id"):
                 # Normalize: treat as int for comparison with memories.id
                 try:
@@ -297,15 +295,7 @@ def fetch_memories():
         if d["id"] in processed_memory_ids:
             continue
         content = d.get("content", "")
-        raw_meta = d.get("metadata")
-        meta = {}
-        if isinstance(raw_meta, str):
-            try:
-                meta = json.loads(raw_meta)
-            except:
-                meta = {}
-        elif isinstance(raw_meta, dict):
-            meta = raw_meta
+        meta = _normalize_meta(d.get("metadata"))
         # Include if it has NOTE intent OR contains known entity
         is_note = meta.get("intent") == "NOTE"
         has_entity = dump_contains_known_entity(content, known_entities)
@@ -341,13 +331,7 @@ def dump_contains_known_entity(content: str, known_entities: set) -> bool:
 def synthesize_content(memory: dict) -> str:
     memory_type = memory.get("memory_type", "")
     content = memory.get("content", "")
-    metadata = memory.get("metadata", {})
-    
-    if isinstance(metadata, str):
-        try:
-            metadata = json.loads(metadata)
-        except:
-            metadata = {}
+    metadata = _normalize_meta(memory.get("metadata"))
     
     if memory_type == "Prophecy":
         entry_type = metadata.get("entry_type", "")
@@ -793,12 +777,7 @@ def backfill_orphaned_tasks():
     existing_task_nodes = fetch_all_paginated("graph_nodes", "id, metadata", in_filter_col="type", in_filter_val=["task"])
     task_node_task_ids = set()
     for node in (existing_task_nodes or []):
-        meta = node.get("metadata") or {}
-        if isinstance(meta, str):
-            try:
-                meta = json.loads(meta)
-            except:
-                meta = {}
+        meta = _normalize_meta(node.get("metadata"))
         tid = meta.get("task_id")
         if tid:
             task_node_task_ids.add(int(tid))
@@ -956,6 +935,20 @@ def backfill_orphaned_tasks():
     print(f"✅ Task backfill complete: {count} tasks processed.")
 
 
+def _normalize_meta(raw) -> dict:
+    """Normalize graph node metadata to dict. Handles str, dict, and list JSONB values."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+    if isinstance(raw, list):
+        return {}
+    return {}
+
+
 def sync_project_nodes_to_projects_table():
     """Sync project-type graph nodes to projects table via legacy_id.
     For each project node missing legacy_id, match by label to projects table.
@@ -971,12 +964,7 @@ def sync_project_nodes_to_projects_table():
 
     synced = 0
     for n in nodes:
-        meta = n.get("metadata") or {}
-        if isinstance(meta, str):
-            try:
-                meta = json.loads(meta)
-            except Exception:
-                meta = {}
+        meta = _normalize_meta(n.get("metadata"))
         if meta.get("legacy_id"):
             continue
         label_lower = n["label"].strip().lower()
@@ -1008,12 +996,7 @@ def sync_person_nodes_to_people_table():
     synced = 0
     added = 0
     for n in nodes:
-        meta = n.get("metadata") or {}
-        if isinstance(meta, str):
-            try:
-                meta = json.loads(meta)
-            except Exception:
-                meta = {}
+        meta = _normalize_meta(n.get("metadata"))
         if meta.get("people_id"):
             continue
         label_lower = n["label"].strip().lower()
