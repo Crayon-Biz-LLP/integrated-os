@@ -1031,6 +1031,34 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         except Exception as tasks_err:
             print(f"Active tasks query failed: {tasks_err}")
         
+        # Overdue detection — tasks past their reminder_at
+        overdue_tasks = []
+        now_utc = datetime.now(timezone.utc).isoformat()
+        for t in raw_tasks:
+            reminder = t.get('reminder_at')
+            if reminder and reminder < now_utc:
+                p_name = proj_map.get(t.get('project_id'), 'INBOX')
+                overdue_tasks.append(f"{t.get('title', '')} [{p_name}]")
+        
+        # Recent completions — tasks done in last 24h
+        recently_completed = []
+        try:
+            since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+            completed_res = supabase.table('tasks').select('title, priority, project_id, updated_at').eq('is_current', False).eq('status', 'done').gte('updated_at', since).order('updated_at', desc=True).limit(5).execute()
+            completed_raw = completed_res.data or []
+            if completed_raw:
+                done_proj_ids = list(set(t.get('project_id') for t in completed_raw if t.get('project_id')))
+                done_proj_map = {}
+                if done_proj_ids:
+                    done_proj_res = supabase.table('projects').select('id, name').in_('id', done_proj_ids).execute()
+                    for p in (done_proj_res.data or []):
+                        done_proj_map[p['id']] = p['name']
+                for t in completed_raw:
+                    p_name = done_proj_map.get(t.get('project_id'), 'INBOX')
+                    recently_completed.append(f"{t.get('title', '')} [{p_name}]")
+        except Exception as done_err:
+            print(f"Recent completions query failed: {done_err}")
+        
         all_context = []
         
         if tactical_map:
@@ -1038,6 +1066,12 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         
         if active_tasks_list:
             all_context.append("ACTIVE TASKS:\n" + "\n".join(f"- {t}" for t in active_tasks_list))
+        
+        if overdue_tasks:
+            all_context.append("OVERDUE:\n" + "\n".join(f"- {t}" for t in overdue_tasks))
+        
+        if recently_completed:
+            all_context.append("RECENTLY COMPLETED (24h):\n" + "\n".join(f"- {t}" for t in recently_completed))
         
         for item in combined_results:
             source = item.get('source', 'memory').upper()
@@ -1058,13 +1092,15 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         
         context_str = "\n\n".join(all_context)
         
-        prompt = f"""You are Danny's Rhodey. Danny is asking a question. You have access to his active tasks, memories, and resources. Use the data below to give a direct, accurate answer. If you don't know the answer, say so. Cite the source if possible.
+        prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
+
+Danny is asking a question. You have access to his tactical map, memories, active tasks, and resources. Look at the data below, identify what matters — dependencies, blockers, what to act on — and cut through the noise.
 
 {context_str}{conversation_history}
 
 Question: {query}
 
-Provide a clear, concise answer. Format with Markdown. If referencing a specific item, cite it like [TASK], [MEMORY], or [RESOURCE]."""
+Give a sharp, direct answer. If you spot a bottleneck or a pattern, call it out. If something is urgent, say so. If there's nothing useful, say that. Format with Markdown. Cite sources like [MEMORY], [TASK], or [RESOURCE] if relevant."""
         
         response = await call_gemini_with_retry(prompt=prompt, model=CLASSIFICATION_MODEL)
         
