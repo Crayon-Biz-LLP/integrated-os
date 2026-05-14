@@ -70,7 +70,7 @@ def get_history(session_id: str, max_tokens: int = MAX_HISTORY_TOKENS) -> list:
     res = _get_supabase().table('conversations') \
         .select('role, intent, content, token_count') \
         .eq('session_id', session_id) \
-        .order('created_at', asc=True) \
+        .order('created_at') \
         .execute()
 
     rows = res.data or []
