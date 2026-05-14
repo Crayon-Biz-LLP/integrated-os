@@ -1103,7 +1103,8 @@ Question: {query}
 Give a sharp, direct answer. If you spot a bottleneck or a pattern, call it out. If something is urgent, say so. If there's nothing useful, say that.
 
 Formatting rules:
-- Use emojis naturally for task context: 💰 money, 🏠 home, 📋 admin, 🛠️ work, 🏛️ church, etc.
+- Emoji goes at the **start** of each task line, not at the end
+- Pick emojis naturally: 💰 money, 🏠 home, 📋 admin, 🛠️ work, 🏛️ church, etc.
 - Do NOT use `###` headers — use **bold** or just plain text for section breaks
 - Do NOT prefix tasks with "TASK" — just list them cleanly
 - Bullet points only, no numbered lists
