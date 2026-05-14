@@ -268,11 +268,26 @@ def fetch_memories():
         except Exception as e:
             audit_log_sync("backfill_graph", "WARNING", f"⚠️ Metadata processing error: {e}")
     
+    total_memories = fetch_all_paginated("memories", "id, memory_type, created_at")
+    print(f"  MEMORY DIAGNOSTICS:")
+    print(f"    Total memories in DB: {len(total_memories) if total_memories else 0}")
+    
     memories = fetch_all_paginated("memories", "id, content, memory_type, metadata, created_at", "memory_type", MEMORY_TYPES)
+    print(f"    Memories matching MEMORY_TYPES filter: {len(memories) if memories else 0}")
+    
+    # Count by type
+    if memories:
+        type_counts = {}
+        for m in memories:
+            t = m.get("memory_type", "unknown")
+            type_counts[t] = type_counts.get(t, 0) + 1
+        for t, c in sorted(type_counts.items(), key=lambda x: -x[1]):
+            print(f"      {t}: {c}")
     
     # Filter to only unprocessed memories (fix int/string type mismatch)
     memories = [m for m in (memories or []) if m["id"] not in processed_memory_ids]
-    print(f"  (Skipping {len(processed_memory_ids)} already-processed memories)")
+    print(f"    Already in graph edges (skipped): {len(processed_memory_ids)}")
+    print(f"    New memories to process: {len(memories)}")
     
     known_entities = fetch_known_entities()
 
@@ -759,6 +774,12 @@ def run_backfill():
 
     backfill_orphaned_tasks()
 
+    # ── Step 3: Sync graph project nodes → projects table ──────────────────
+    sync_project_nodes_to_projects_table()
+
+    # ── Step 4: Sync graph person nodes → people table ─────────────────────
+    sync_person_nodes_to_people_table()
+
 
 def backfill_orphaned_tasks():
     """Backfills graph nodes + edges for tasks with no corresponding graph_nodes entry."""
@@ -820,15 +841,40 @@ def backfill_orphaned_tasks():
             continue
         
         if project_id:
+            proj_node = None
+            # Try metadata->>legacy_id first (new style)
             try:
                 proj_node = supabase.table("graph_nodes") \
                     .select("id") \
                     .eq("type", "project") \
-                    .filter("metadata->>project_id", "eq", str(project_id)) \
+                    .filter("metadata->>legacy_id", "eq", str(project_id)) \
                     .maybe_single() \
                     .execute()
             except Exception:
-                proj_node = None
+                pass
+            # Try metadata->>project_id (old style)
+            if proj_node is None or proj_node.data is None:
+                try:
+                    proj_node = supabase.table("graph_nodes") \
+                        .select("id") \
+                        .eq("type", "project") \
+                        .filter("metadata->>project_id", "eq", str(project_id)) \
+                        .maybe_single() \
+                        .execute()
+                except Exception:
+                    proj_node = None
+            # Fallback: label-based match using project name
+            if (proj_node is None or proj_node.data is None) and project_id in project_id_to_name:
+                proj_name = project_id_to_name[project_id]
+                try:
+                    proj_node = supabase.table("graph_nodes") \
+                        .select("id") \
+                        .eq("type", "project") \
+                        .ilike("label", proj_name) \
+                        .maybe_single() \
+                        .execute()
+                except Exception:
+                    proj_node = None
             
             if proj_node is not None and proj_node.data is not None:
                 proj_node_id = proj_node.data["id"]
@@ -856,6 +902,8 @@ def backfill_orphaned_tasks():
         
         for pid, pname in person_id_to_name.items():
             if pname.lower() in search_text:
+                # Try metadata->>people_id first (new style)
+                person_node = None
                 try:
                     person_node = supabase.table("graph_nodes") \
                         .select("id") \
@@ -864,7 +912,18 @@ def backfill_orphaned_tasks():
                         .maybe_single() \
                         .execute()
                 except Exception:
-                    person_node = None
+                    pass
+                # Fallback: label-based match
+                if person_node is None or person_node.data is None:
+                    try:
+                        person_node = supabase.table("graph_nodes") \
+                            .select("id") \
+                            .eq("type", "person") \
+                            .ilike("label", pname) \
+                            .maybe_single() \
+                            .execute()
+                    except Exception:
+                        person_node = None
                 
                 if person_node and person_node.data:
                     person_node_id = person_node.data["id"]
@@ -877,7 +936,7 @@ def backfill_orphaned_tasks():
                             .maybe_single() \
                             .execute()
                         
-                        if not existing_edge.data:
+                        if not existing_edge or not existing_edge.data:
                             supabase.table("graph_edges").insert({
                                 "source_node_id": task_node_id,
                                 "target_node_id": person_node_id,
@@ -895,6 +954,95 @@ def backfill_orphaned_tasks():
         count += 1
     
     print(f"✅ Task backfill complete: {count} tasks processed.")
+
+
+def sync_project_nodes_to_projects_table():
+    """Sync project-type graph nodes to projects table via legacy_id.
+    For each project node missing legacy_id, match by label to projects table.
+    One-time backfill for existing orphan data, then runs incrementally."""
+    print("\n🏗️ Project node sync: Linking graph projects to projects table...")
+    nodes = fetch_all_paginated("graph_nodes", "id, label, metadata", in_filter_col="type", in_filter_val=["project"])
+    if not nodes:
+        print("No project nodes found.")
+        return
+
+    all_projects = fetch_all_paginated("projects", "id, name")
+    name_to_id = {p["name"].strip().lower(): p["id"] for p in all_projects}
+
+    synced = 0
+    for n in nodes:
+        meta = n.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        if meta.get("legacy_id"):
+            continue
+        label_lower = n["label"].strip().lower()
+        legacy_id = name_to_id.get(label_lower)
+        if legacy_id:
+            meta["legacy_id"] = legacy_id
+            try:
+                supabase.table("graph_nodes").update({"metadata": json.dumps(meta)}).eq("id", n["id"]).execute()
+                synced += 1
+            except Exception as e:
+                audit_log_sync("backfill_graph", "WARNING", f"Failed to sync project node {n['id']}: {e}")
+
+    print(f"Synced {synced} project nodes to projects table.")
+
+
+def sync_person_nodes_to_people_table():
+    """Sync person-type graph nodes to people table via people_id.
+    For each person node missing people_id, match by label to people table.
+    Creates new people table rows for unmatched person nodes."""
+    print("\n👤 Person node sync: Linking graph people to people table...")
+    nodes = fetch_all_paginated("graph_nodes", "id, label, metadata", in_filter_col="type", in_filter_val=["person"])
+    if not nodes:
+        print("No person nodes found.")
+        return
+
+    all_people = fetch_all_paginated("people", "id, name")
+    name_to_id = {p["name"].strip().lower(): p["id"] for p in all_people}
+
+    synced = 0
+    added = 0
+    for n in nodes:
+        meta = n.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        if meta.get("people_id"):
+            continue
+        label_lower = n["label"].strip().lower()
+        if label_lower in name_to_id:
+            meta["people_id"] = name_to_id[label_lower]
+        else:
+            # Add new person to people table
+            try:
+                result = supabase.table("people").insert({
+                    "name": n["label"].strip(),
+                    "source": "backfill_graph"
+                }).execute()
+                if result.data:
+                    new_id = result.data[0]["id"]
+                    meta["people_id"] = new_id
+                    name_to_id[label_lower] = new_id
+                    added += 1
+                else:
+                    continue
+            except Exception as e:
+                audit_log_sync("backfill_graph", "WARNING", f"Failed to create person '{n['label']}': {e}")
+                continue
+        try:
+            supabase.table("graph_nodes").update({"metadata": json.dumps(meta)}).eq("id", n["id"]).execute()
+            synced += 1
+        except Exception as e:
+            audit_log_sync("backfill_graph", "WARNING", f"Failed to update person node {n['id']}: {e}")
+
+    print(f"Synced {synced} person nodes ({added} new people added).")
 
 
 def compact_memories(supabase):
@@ -1101,6 +1249,10 @@ if __name__ == "__main__":
     # Run backfill
     run_backfill()
     
+    # Run graph→table sync
+    sync_project_nodes_to_projects_table()
+    sync_person_nodes_to_people_table()
+
     # Run Phase-3 enhancements
     compact_memories(supabase)
     prune_memories(supabase)

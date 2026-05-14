@@ -999,15 +999,36 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         combined_results.sort(key=lambda x: x.get('similarity', 0), reverse=True)
         
         try:
-            resources_res = supabase.table('resources').select('title, url, category, content').execute()
+            resources_res = supabase.table('resources').select('title, url, category, summary').execute()
             resources = resources_res.data or []
         except:
             resources = []
+        
+        # Fetch active tasks with project names
+        active_tasks_list = []
+        try:
+            tasks_res = supabase.table('tasks').select('id, title, priority, project_id, status, reminder_at, created_at').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).order('priority', desc=True).order('created_at', desc=True).execute()
+            raw_tasks = tasks_res.data or []
+            if raw_tasks:
+                proj_ids = list(set(t.get('project_id') for t in raw_tasks if t.get('project_id')))
+                proj_map = {}
+                if proj_ids:
+                    proj_res = supabase.table('projects').select('id, name, org_tag').in_('id', proj_ids).execute()
+                    for p in (proj_res.data or []):
+                        proj_map[p['id']] = p['name']
+                for t in raw_tasks:
+                    p_name = proj_map.get(t.get('project_id'), 'INBOX')
+                    active_tasks_list.append(f"{t.get('title', '')} [{p_name}] ({t.get('priority', 'todo')})")
+        except Exception as tasks_err:
+            print(f"Active tasks query failed: {tasks_err}")
         
         all_context = []
         
         if tactical_map:
             all_context.append(f"TACTICAL MAP:\n{tactical_map}")
+        
+        if active_tasks_list:
+            all_context.append("ACTIVE TASKS:\n" + "\n".join(f"- {t}" for t in active_tasks_list))
         
         for item in combined_results:
             source = item.get('source', 'memory').upper()
@@ -1019,8 +1040,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             title = r.get('title', 'Untitled')
             url = r.get('url', '')
             category = r.get('category', 'resource')
-            content = r.get('content', title)
-            all_context.append(f"[{category.upper()}] {content}" + (f" | Link: {url}" if url else ""))
+            summary = r.get('summary', title)
+            all_context.append(f"[{category.upper()}] {summary}" + (f" | Link: {url}" if url else ""))
         
         if not all_context:
             await send_telegram(chat_id, "🔍 *No relevant memories found.*\n\n_Try a different query._")
@@ -1028,13 +1049,13 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         
         context_str = "\n\n".join(all_context)
         
-        prompt = f"""You are Danny's Rhodey. Danny is asking about a node in your network. Use the TACTICAL MAP to identify dependencies and potential bottlenecks. Give a direct, logic-based answer. If you don't know the answer, say so. Cite the source if possible.
+        prompt = f"""You are Danny's Rhodey. Danny is asking a question. You have access to his active tasks, memories, and resources. Use the data below to give a direct, accurate answer. If you don't know the answer, say so. Cite the source if possible.
 
 {context_str}{conversation_history}
 
 Question: {query}
 
-Provide a clear, concise answer. Format with Markdown. If referencing a specific memory, cite it like [MEMORY] or [RESOURCE]."""
+Provide a clear, concise answer. Format with Markdown. If referencing a specific item, cite it like [TASK], [MEMORY], or [RESOURCE]."""
         
         response = await call_gemini_with_retry(prompt=prompt, model=CLASSIFICATION_MODEL)
         
