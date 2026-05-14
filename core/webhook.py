@@ -971,13 +971,18 @@ async def handle_clarification(text: str, question: str, chat_id: int, session_i
     if session_id:
         log_exchange(session_id, 'bot', 'CLARIFICATION', reply, chat_id)
     
-    supabase.table('raw_dumps').insert([{
-        "content": text,
-        "direction": "incoming",
-        "sender": "telegram",
-        "message_type": "clarification",
-        "metadata": {"awaiting_clarification": True}
-    }]).execute()
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table('raw_dumps').insert([{
+                "content": text,
+                "direction": "incoming",
+                "sender": "telegram",
+                "message_type": "clarification",
+                "metadata": {"awaiting_clarification": True}
+            }]).execute()
+        )
+    except Exception as clar_err:
+        audit_log_sync("webhook", "WARNING", f"Failed to log clarification to raw_dumps: {clar_err}")
 
 
 async def hybrid_search_graph(query: str) -> str:
@@ -1069,7 +1074,8 @@ async def resolve_disambiguation(text: str, chat_id: int, session_id: str, last_
         return False
     original = last_clarification.get("original", text)
     log_exchange(session_id, 'user', intent, text, chat_id)
-    await route_by_intent(intent, original, chat_id, session_id)
+    classification = {"title": original, "intent": intent}
+    await route_by_intent(intent, original, chat_id, session_id, classification=classification)
     return True
 
 
@@ -1892,22 +1898,23 @@ async def process_webhook(update: dict):
             await handle_ed_command(text, chat_id)
             return {"success": True}
         
+        # Initialize conversation session early so shortcuts share the same session_id as the main flow
+        session_id, history = get_or_create_session(chat_id)
+
         # 📋 /today prefix — on-demand daily briefing, skip classify_intent()
         if text.strip().lower() in ('/today', '/brief', '/day'):
-            sid, hist = get_or_create_session(chat_id)
-            hist_text = format_history_for_prompt(hist)
-            log_exchange(sid, 'user', 'DAILY_BRIEF', text, chat_id)
-            await handle_daily_brief(text, chat_id, session_id=sid, conversation_history=hist_text)
+            history_text = format_history_for_prompt(history)
+            log_exchange(session_id, 'user', 'DAILY_BRIEF', text, chat_id)
+            await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
             return {"success": True}
 
         # ? prefix shortcut — handle as QUERY directly, skip classify_intent()
         if text.startswith('?'):
             query = text[1:].strip()
             if query:
-                sid, hist = get_or_create_session(chat_id)
-                hist_text = format_history_for_prompt(hist)
-                log_exchange(sid, 'user', 'QUERY', text, chat_id)
-                await interrogate_brain(query, chat_id, session_id=sid, conversation_history=hist_text)
+                history_text = format_history_for_prompt(history)
+                log_exchange(session_id, 'user', 'QUERY', text, chat_id)
+                await interrogate_brain(query, chat_id, session_id=session_id, conversation_history=history_text)
                 return {"success": True}
 
         # 🏃 /drop-{practice} HANDLER — dismiss a practice permanently
@@ -1970,8 +1977,6 @@ async def process_webhook(update: dict):
                 await send_telegram(chat_id, "⚠️ Failed to dismiss practice. Try again.")
             return {"success": True}
 
-        # Initialize conversation session
-        session_id, history = get_or_create_session(chat_id)
         history_text = format_history_for_prompt(history)
 
         context = await get_recent_context(limit=2)
