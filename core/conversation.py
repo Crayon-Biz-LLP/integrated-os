@@ -23,8 +23,8 @@ def _get_supabase():
 
 
 def _approx_tokens(text: str) -> int:
-    """Approximate token count: words, floor at 1."""
-    return max(1, len(text.split()))
+    """Approximate token count based on character length (~4 chars/token)."""
+    return max(1, len(text) // 4)
 
 
 def get_or_create_session(chat_id: int) -> tuple:

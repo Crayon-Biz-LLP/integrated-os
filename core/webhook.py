@@ -398,6 +398,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         "time_context": "time info if any",
         "clarification_question": "question if needed",
         "receipt": "Stealth status report (no entity names).",
+        "possible_intents": ["TASK", "NOTE", "QUERY", "DAILY_BRIEF", "DELEGATE", "DECLARE_PRACTICE", "NOISE"],
         "reasoning": "brief logic"
     }}
 
@@ -408,6 +409,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - QUERY: The user is asking a question to retrieve information from their past notes, tasks, or the vault (e.g., "What did the analyst say?", "When is my meeting?").
+    - DISAMBIGUATION: If confidence < 0.8 and you're torn between multiple intents, list alternatives in "possible_intents". For example, if a message could be either a QUERY or a TASK, set intent to your best guess and possible_intents to ["TASK", "QUERY"]. Leave as an empty array if you're confident.
     - CONVERSATION HISTORY: Use the CONVERSATION HISTORY block above to disambiguate vague follow-ups. If Danny says "what about tomorrow?" after having just asked about today, route as DAILY_BRIEF. If he says "reschedule the 2pm" after discussing calendar, route as TASK. The history tells you what the current topic is.
     - DELEGATE: Research, competitor audits, or autonomous web research.
     - DECLARE_PRACTICE: If Danny says "I want to [activity] every [timeframe]", "I'm going to start [activity]", "Track [activity] for me", "I want to build a practice of [activity]", or expresses intent to establish a recurring behavior — classify as DECLARE_PRACTICE. Extract the practice name into the title field. Route to the most relevant entity (PERSONAL for health/personal routines, SOLVSTRAT for work practices, etc.).
@@ -440,30 +442,34 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, conversation_history: str = ""):
     """
     Handle DAILY_BRIEF intent — on-demand daily briefing.
-    Queries Google Calendar for today's events and tasks table for open tasks,
-    then formats a compact 3-5 sentence briefing via Flash Lite.
-
-    Falls back to raw data if the LLM call fails.
+    Parses whether the user asks about today or tomorrow, queries Google Calendar
+    for that day's events, and fetches all active pending tasks + overdue items.
     """
     events_list = []
-    tasks_today = []
+    active_tasks_list = []
     overdue_tasks = []
+    recently_completed = []
 
     try:
         ist = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + timedelta(days=1)
+        lowtext = text.lower()
 
-        # Google Calendar events for today
+        # Determine target day
+        day_offset = 1 if 'tomorrow' in lowtext else 0
+        target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=day_offset)
+        day_label = "Tomorrow" if day_offset else "Today"
+        target_end = target + timedelta(days=1)
+        now_utc = datetime.now(timezone.utc).isoformat()
+        since_utc = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
+        # Google Calendar events for target day
         try:
             service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
-            time_min = today_start.isoformat()
-            time_max = today_end.isoformat()
             events_res = service.events().list(
                 calendarId='primary',
-                timeMin=time_min,
-                timeMax=time_max,
+                timeMin=target.isoformat(),
+                timeMax=target_end.isoformat(),
                 singleEvents=True,
                 orderBy='startTime'
             ).execute()
@@ -475,59 +481,95 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
         except Exception as cal_err:
             audit_log_sync("webhook", "WARNING", f"Brief calendar query failed: {cal_err}")
 
-        # Open tasks due today
+        # All active pending tasks
         try:
             tasks_res = supabase.table('tasks') \
-                .select('title, reminder_at, priority') \
+                .select('id, title, priority, project_id, status, reminder_at, created_at') \
                 .eq('is_current', True) \
                 .not_.in_('status', ['done', 'cancelled']) \
-                .lte('reminder_at', today_end.isoformat()) \
-                .gte('reminder_at', today_start.isoformat()) \
                 .order('priority', desc=True) \
+                .order('created_at', desc=True) \
                 .execute()
-            tasks_today = tasks_res.data or []
+            raw_tasks = tasks_res.data or []
+            if raw_tasks:
+                proj_ids = list(set(t.get('project_id') for t in raw_tasks if t.get('project_id')))
+                proj_map = {}
+                if proj_ids:
+                    proj_res = supabase.table('projects').select('id, name, org_tag').in_('id', proj_ids).execute()
+                    for p in (proj_res.data or []):
+                        proj_map[p['id']] = p['name']
+                for t in raw_tasks:
+                    pn = proj_map.get(t.get('project_id'), 'INBOX')
+                    ts = t.get('reminder_at')
+                    due = ""
+                    if ts:
+                        try:
+                            due_dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                            if due_dt < target_end and due_dt >= target:
+                                due = " 🔔 due today" if not day_offset else " 🔔 due tomorrow"
+                        except:
+                            pass
+                    active_tasks_list.append(f"{t['title']} [{pn}] ({t.get('priority','todo')}){due}")
+                    reminder = t.get('reminder_at')
+                    if reminder and reminder < now_utc:
+                        overdue_tasks.append(f"{t['title']} [{pn}]")
         except Exception as t_err:
             audit_log_sync("webhook", "WARNING", f"Brief tasks query failed: {t_err}")
 
-        # Overdue tasks (up to 5)
+        # Recent completions
         try:
-            overdue_res = supabase.table('tasks') \
-                .select('title, reminder_at, priority') \
-                .eq('is_current', True) \
-                .not_.in_('status', ['done', 'cancelled']) \
-                .lt('reminder_at', today_start.isoformat()) \
-                .order('priority', desc=True) \
+            comp_res = supabase.table('tasks') \
+                .select('title, project_id') \
+                .eq('is_current', False) \
+                .eq('status', 'done') \
+                .gte('updated_at', since_utc) \
+                .order('updated_at', desc=True) \
                 .limit(5) \
                 .execute()
-            overdue_tasks = overdue_res.data or []
+            for t in (comp_res.data or []):
+                recently_completed.append(t['title'])
         except Exception:
             pass
 
-        # Build prompt for Flash Lite
-        now_time_str = now.strftime('%I:%M %p').lstrip('0').lstrip(' ')
-        date_str = now.strftime('%A, %d %B')
-
-        def fmt_list(items, key='title'):
+        def fmt_list(items):
             if not items:
                 return "None"
-            return "\n".join([f"- {i.get(key, '')}" for i in items])
+            return "\n".join(f"- {i}" for i in items)
 
-        prompt = f"""You are Danny's Rhodey. Danny just asked what today looks like. Give a compact 3-5 sentence briefing — cut through the noise and tell him where he stands.
+        prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
+
+Danny is asking about {day_label.lower()}. You have his calendar events for {day_label}, his full active task list, overdue items, and recent completions. Identify what matters and cut through the noise.
 {conversation_history}
 
-Date: {date_str}
-Time: {now_time_str} IST
+{day_label.upper()} — {target.strftime('%A, %d %B')}
 
 CALENDAR EVENTS:
-{fmt_list(events_list)}
+{fmt_list(e['title'] + (' at ' + e['time'][:16].replace('T', ' ')) if e.get('time') else e['title'] for e in events_list) if events_list else "None"}
 
-TASKS DUE TODAY:
-{fmt_list(tasks_today)}
+ACTIVE TASKS:
+{fmt_list(active_tasks_list) if active_tasks_list else "None"}
 
 OVERDUE:
-{fmt_list(overdue_tasks)}
+{fmt_list(overdue_tasks) if overdue_tasks else "None"}
 
-Lead with the next event if there is one. Be direct — no coaching, no motivational language. If nothing is on, say so simply."""
+RECENTLY COMPLETED (24h):
+{fmt_list(recently_completed) if recently_completed else "None"}
+
+Give a sharp, direct answer. If you spot a bottleneck or a pattern, call it out. If something is urgent, say so. If there's nothing useful, say that.
+
+Formatting rules:
+- Emoji goes at the **start** of each task line, not at the end
+- Pick emojis naturally: 💰 money, 🏠 home, 📋 admin, 🛠️ work, 🏛️ church, etc.
+- Do NOT use `###` headers — use **bold** or just plain text for section breaks
+- Do NOT prefix tasks with "TASK" — just list them cleanly
+- Bullet points only, no numbered lists
+
+Example:
+**Focus here** — bottleneck callout.
+* 💰 Task name [Project]
+* 📋 Another task [Project]
+
+Cite sources like [MEMORY], [TASK], or [RESOURCE] if relevant."""
 
         response = await call_gemini_with_retry(
             prompt=prompt,
@@ -541,26 +583,25 @@ Lead with the next event if there is one. Be direct — no coaching, no motivati
         reply = None
 
     if not reply:
-        fallback_lines = ["📋 *Today's Briefing*"]
+        fallback_lines = [f"📋 *{day_label}'s Briefing*"]
         if events_list:
             fallback_lines.append("\n*Calendar:*")
             for e in events_list:
                 fallback_lines.append(f"• {e['title']}")
-        if tasks_today:
-            fallback_lines.append("\n*Tasks:*")
-            for t in tasks_today:
-                fallback_lines.append(f"• {t['title']}")
+        if active_tasks_list:
+            fallback_lines.append("\n*Active Tasks:*")
+            for t in active_tasks_list:
+                fallback_lines.append(f"• {t}")
         if overdue_tasks:
             fallback_lines.append("\n*Overdue:*")
             for t in overdue_tasks:
-                fallback_lines.append(f"• {t['title']}")
-        if not events_list and not tasks_today and not overdue_tasks:
-            fallback_lines.append("\nNothing scheduled today.")
+                fallback_lines.append(f"• {t}")
+        if not events_list and not active_tasks_list:
+            fallback_lines.append(f"\nNothing on for {day_label.lower()}.")
         reply = "\n".join(fallback_lines)
 
     await send_telegram(chat_id, f"{reply}")
 
-    # Log bot reply to conversation history
     if session_id:
         log_exchange(session_id, 'bot', 'DAILY_BRIEF', reply, chat_id)
 
@@ -896,10 +937,13 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         audit_log_sync("webhook", "WARNING", f"Failed to log ack to raw_dumps: {ack_err}")
 
 
-async def handle_clarification(text: str, question: str, chat_id: int, receipt: str = None):
+async def handle_clarification(text: str, question: str, chat_id: int, session_id: str = None, receipt: str = None):
     ack = receipt or "Copy that. I need one more detail to log this."
     reply = f"{ack}\n\n{question}\n\n_Context: \"{text[:100]}...\"_"
     await send_telegram(chat_id, reply)
+    
+    if session_id:
+        log_exchange(session_id, 'bot', 'CLARIFICATION', reply, chat_id)
     
     supabase.table('raw_dumps').insert([{
         "content": text,
@@ -955,6 +999,83 @@ async def hybrid_search_graph(query: str) -> str:
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Hybrid search error: {e}")
         return ""
+
+
+INTENT_OPTIONS = {
+    "t": ("TASK", "📋 Task — something to do"),
+    "q": ("QUERY", "❓ Query — answer a question"),
+    "n": ("NOTE", "📝 Note — record this"),
+    "b": ("DAILY_BRIEF", "📅 Brief — what's on my schedule"),
+    "r": ("DELEGATE", "🤖 Research — look something up"),
+    "p": ("DECLARE_PRACTICE", "🏃 Practice — track a habit"),
+    "x": ("NOISE", "👍 Nothing — just noise"),
+}
+
+INTENT_BY_KEYWORD = {}
+for _sc, (_intent, _label) in INTENT_OPTIONS.items():
+    INTENT_BY_KEYWORD[_intent.lower()] = _intent
+    INTENT_BY_KEYWORD[_sc] = _intent
+
+
+async def ask_intent_disambiguation(text: str, possible_intents: list, chat_id: int, session_id: str):
+    opts = []
+    for sc, (intent, label) in INTENT_OPTIONS.items():
+        if intent in possible_intents:
+            opts.append(f"`{sc}` — {label}")
+    if not opts:
+        return
+    reply = (
+        f"🧐 *Not sure what to do with this.* Is it?\n\n"
+        + "\n".join(opts)
+        + f"\n\n_Reply with a shortcode or just say it._"
+    )
+    log_exchange(session_id, 'bot', 'CLARIFICATION', json.dumps({"possible_intents": possible_intents, "original": text}), chat_id)
+    await send_telegram(chat_id, reply)
+
+
+async def resolve_disambiguation(text: str, chat_id: int, session_id: str, last_clarification: dict) -> bool:
+    cleaned = text.strip().lower()
+    if cleaned in INTENT_BY_KEYWORD:
+        intent = INTENT_BY_KEYWORD[cleaned]
+    elif cleaned in [v[0].lower() for v in INTENT_OPTIONS.values() if v[0].lower() != cleaned]:
+        intent = next(v[0] for v in INTENT_OPTIONS.values() if v[0].lower() == cleaned)
+    else:
+        return False
+    original = last_clarification.get("original", text)
+    log_exchange(session_id, 'user', intent, text, chat_id)
+    await route_by_intent(intent, original, chat_id, session_id)
+    return True
+
+
+async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user"):
+    history_text = ""
+    if session_id:
+        pairs = get_history(session_id, max_tokens=5)
+        history_text = format_history_for_prompt(pairs)
+
+    if intent == 'TASK':
+        title = classification.get('title', text) if classification else text
+        receipt = classification.get('receipt') if classification else None
+        entity = classification.get('entity') if classification else None
+        time_context = classification.get('time_context', '') if classification else ''
+        await handle_confident_task(text, title, time_context, chat_id, receipt, entity=entity, source=source, sender=sender)
+    elif intent == 'DAILY_BRIEF':
+        await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
+    elif intent == 'QUERY':
+        await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text)
+    elif intent == 'NOTE':
+        receipt = classification.get('receipt') if classification else None
+        await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender)
+    elif intent == 'DELEGATE':
+        supabase.table('agent_queue').insert({"query": text, "status": "pending"}).execute()
+        ack = classification.get('receipt', "The intern is on it. I'll ping you when the research is ready.") if classification else "The intern is on it. I'll ping you when the research is ready."
+        await send_telegram(chat_id, f"✓ {ack}")
+    elif intent == 'DECLARE_PRACTICE':
+        await handle_declare_practice(text, chat_id, classification or {})
+    elif intent == 'NOISE':
+        await handle_noise(chat_id)
+    else:
+        await handle_clarification(text, "Could you provide more details?", chat_id, session_id=session_id)
 
 
 async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = ""):
@@ -1015,6 +1136,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         
         # Fetch active tasks with project names
         active_tasks_list = []
+        raw_tasks = []
+        proj_map = {}
         try:
             tasks_res = supabase.table('tasks').select('id, title, priority, project_id, status, reminder_at, created_at').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).order('priority', desc=True).order('created_at', desc=True).execute()
             raw_tasks = tasks_res.data or []
@@ -1177,6 +1300,7 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
     telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
     success = True
+    last_failed = -1
     async with httpx.AsyncClient() as client:
         for i, chunk in enumerate(chunks):
             suffix = f"({i+1}/{total})"
@@ -1206,19 +1330,35 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
                     "resize_keyboard": True,
                     "persistent": True,
                 }
-            try:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 400 and "can't parse entities" in resp.text.lower():
-                    clean = chunk.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
-                    payload["text"] = clean
-                    payload.pop("parse_mode", None)
+            # Send with one retry
+            for attempt in range(2):
+                try:
                     resp = await client.post(url, json=payload)
-                if resp.status_code != 200:
-                    print(f"Telegram chunk {i+1}/{total} failed: {resp.status_code} {resp.text}")
-                    success = False
-            except Exception as e:
-                print(f"Telegram chunk {i+1}/{total} exception: {e}")
-                success = False
+                    if resp.status_code == 400 and "can't parse entities" in resp.text.lower():
+                        clean = chunk.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+                        payload["text"] = clean
+                        payload.pop("parse_mode", None)
+                        resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        break
+                    if attempt == 0:
+                        await asyncio.sleep(1)
+                except Exception as e:
+                    if attempt == 0:
+                        print(f"Telegram chunk {i+1}/{total} retrying: {e}")
+                        await asyncio.sleep(1)
+                    else:
+                        print(f"Telegram chunk {i+1}/{total} failed after retry: {e}")
+                        success = False
+                        last_failed = i
+    # Notify user if some chunks were lost
+    if not success and last_failed >= 0 and last_failed < total - 1:
+        try:
+            note = f"⚠️ *Response incomplete* — part {last_failed+2}/{total} failed to send."
+            async with httpx.AsyncClient() as client:
+                await client.post(url, json={"chat_id": chat_id, "text": note, "parse_mode": "Markdown"})
+        except Exception:
+            pass
     return success
 
 
@@ -1556,8 +1696,11 @@ async def process_webhook(update: dict):
             try:
                 supabase.table('processed_updates').insert({"update_id": int(update_id)}).execute()
                 # Cleanup: delete update IDs older than 72 hours
-                cutoff = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
-                supabase.table('processed_updates').delete().lt('processed_at', cutoff).execute()
+                try:
+                    cutoff = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+                    supabase.table('processed_updates').delete().lt('processed_at', cutoff).execute()
+                except Exception as cleanup_e:
+                    audit_log_sync("webhook", "WARNING", f"⚠️ Dedup cleanup failed (non-critical): {cleanup_e}")
             except Exception as e:
                 error_msg = str(e)
                 if "23505" in error_msg or "already exists" in error_msg.lower():
@@ -1646,6 +1789,13 @@ async def process_webhook(update: dict):
                     await send_telegram(chat_id, "⚠️ Unsupported file type. Send as PDF, DOCX, or text.")
                     return {"success": True}
             
+            await send_telegram(chat_id, "⚠️ I can only process text, images, audio, and documents.")
+            return {"success": True}
+        
+        # Reject extremely long text before it hits Gemini
+        MAX_TEXT_LENGTH = 10000
+        if len(text) > MAX_TEXT_LENGTH:
+            await send_telegram(chat_id, f"⚠️ Message too long ({len(text)} chars). Please send shorter messages (max {MAX_TEXT_LENGTH} chars).")
             return {"success": True}
         
         # 📨 SHORTCODE REPLY HANDLER — must run before classify_intent()
@@ -1829,65 +1979,56 @@ async def process_webhook(update: dict):
         
         receipt = classification.get('receipt')
         
-        if intent == 'TASK' and confidence >= 0.6:
-            print(f"📋 WORK LOGGED: {text[:80]}...")
-            await handle_confident_task(
+        CONFIDENCE_HIGH = 0.8
+        CONFIDENCE_LOW = 0.5
+        possible_intents = classification.get('possible_intents', [])
+
+        # Check if we're responding to a pending disambiguation
+        try:
+            last_history = get_history(session_id, max_tokens=1)
+            if last_history:
+                last_bot = last_history[-1].get('bot', {})
+                if last_bot.get('intent') == 'CLARIFICATION':
+                    meta = json.loads(last_bot.get('content', '{}'))
+                    if isinstance(meta, dict) and meta.get('possible_intents'):
+                        if await resolve_disambiguation(text, chat_id, session_id, meta):
+                            return {"success": True}
+        except Exception:
+            pass
+
+        if confidence >= CONFIDENCE_HIGH:
+            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender)
+        elif possible_intents and len(possible_intents) >= 2 and confidence >= CONFIDENCE_LOW:
+            print(f"🧐 Ambiguous ({possible_intents}) — asking user")
+            await ask_intent_disambiguation(text, possible_intents, chat_id, session_id)
+        elif intent == 'CLARIFICATION_NEEDED':
+            await handle_clarification(
                 text,
-                classification.get('title', text),
-                classification.get('time_context', ''),
+                classification.get('clarification_question', 'Could you provide more details?'),
                 chat_id,
-                receipt,
-                entity=classification.get('entity'),
-                source=source,
-                sender=sender  # Pass the sender ("user" for all user messages)
+                session_id=session_id,
+                receipt=receipt
             )
-        elif intent == 'DAILY_BRIEF' and confidence >= 0.6:
-            print(f"📋 DAILY BRIEF requested")
-            await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
-        elif intent == 'QUERY' and confidence >= 0.6:
-            print(f"🧠 QUERY DETECTED: Routing to brain...")
-            await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text)
-        elif intent == 'NOTE' and confidence >= 0.6:
-            if text.startswith('http') or 'www.' in text:
-                supabase.table('resources').insert({
-                    "url": text,
-                    "title": classification.get('title', 'New Resource'),
-                    "category": classification.get('entity', 'INBOX')
-                }).execute()
-                await send_telegram(chat_id, "🔖 Resource saved to Library.")
-            else:
-                # Use handle_confident_note which saves to raw_dumps (for Pulse) and memories (with embedding)
-                await handle_confident_note(
-                    text, 
-                    chat_id, 
-                    receipt or "Note secured.", 
-                    source=source, 
-                    sender=sender
-                )
-        elif intent == 'DELEGATE':
-            supabase.table('agent_queue').insert({
-                "query": text,
-                "status": "pending"
-            }).execute()
-            ack = receipt or "The intern is on it. I'll ping you when the research is ready."
-            await send_telegram(chat_id, f"✓ {ack}")
-        elif intent == 'DECLARE_PRACTICE' and confidence >= 0.6:
-            print(f"🏃 PRACTICE DECLARED: {classification.get('title', text)}")
-            await handle_declare_practice(text, chat_id, classification)
-        elif intent == 'NOISE':
-            await handle_noise(chat_id)
+        elif confidence >= CONFIDENCE_LOW:
+            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender)
         else:
             await handle_clarification(
                 text,
                 classification.get('clarification_question', 'Could you provide more details?'),
                 chat_id,
-                receipt
+                session_id=session_id,
+                receipt=receipt
             )
 
         return {"success": True}
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Webhook Error: {e}")
+        try:
+            if chat_id:
+                await send_telegram(chat_id, "⚠️ *Something went wrong.*\n\n_Try again or report this._")
+        except Exception:
+            pass
         return {"error": str(e), "status": 500}
 
 
