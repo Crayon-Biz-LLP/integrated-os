@@ -1,9 +1,8 @@
 'use client';
 
 import type { CalendarEvent } from '@/lib/calendar/types';
-import { format, parseISO, isSameDay } from 'date-fns';
+import { format } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
-import { cn } from '@/lib/utils';
 import { Clock, CalendarDays } from 'lucide-react';
 
 interface AgendaViewProps {
@@ -12,12 +11,14 @@ interface AgendaViewProps {
   onEventClick: (event: CalendarEvent) => void;
 }
 
-function formatTime(time: string): string {
-  try {
-    return format(parseISO(time.replace('+05:30', 'Z').replace(' ', 'T')), 'h:mm a');
-  } catch {
-    return time;
-  }
+function formatTime(iso: string): string {
+  const m = iso.match(/T(\d{2}):(\d{2})/);
+  if (!m) return iso;
+  const h = parseInt(m[1]);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const display = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${display}:${min} ${ampm}`;
 }
 
 export function AgendaView({ events, date, onEventClick }: AgendaViewProps) {

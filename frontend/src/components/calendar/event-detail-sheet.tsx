@@ -1,15 +1,34 @@
 'use client';
 
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
-import { Badge } from '@/components/ui/badge';
 import type { CalendarEvent } from '@/lib/calendar/types';
-import { format, parseISO } from 'date-fns';
 import { Calendar, Clock, Globe, FileText } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 
 interface EventDetailSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   event: CalendarEvent | null;
+}
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function formatIsoDate(iso: string): string {
+  const p = iso.substring(0, 10).split('-');
+  if (p.length !== 3) return iso;
+  const d = new Date(parseInt(p[0]), parseInt(p[1]) - 1, parseInt(p[2]));
+  return `${DAYS[d.getDay()]}, ${MONTHS[d.getMonth()]} ${parseInt(p[2])}, ${p[0]}`;
+}
+
+function formatIsoTime(iso: string): string {
+  const m = iso.match(/T(\d{2}):(\d{2})/);
+  if (!m) return iso;
+  const h = parseInt(m[1]);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const display = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${display}:${min} ${ampm}`;
 }
 
 export function EventDetailSheet({ open, onOpenChange, event }: EventDetailSheetProps) {
@@ -29,20 +48,14 @@ export function EventDetailSheet({ open, onOpenChange, event }: EventDetailSheet
           <div className="flex items-center gap-2 text-sm">
             <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
             <span className="text-sm text-foreground">
-              {startDate
-                ? format(parseISO(startDate.replace('+05:30', 'Z').replace(' ', 'T')), 'EEEE, MMMM d, yyyy')
-                : 'No date'}
+              {startDate ? formatIsoDate(startDate) : 'No date'}
             </span>
           </div>
           <div className="flex items-center gap-2 text-sm">
             <Clock className="h-4 w-4 text-muted-foreground shrink-0" />
             <span className="text-sm text-foreground">
-              {startDate
-                ? `${format(parseISO(startDate.replace('+05:30', 'Z').replace(' ', 'T')), 'h:mm a')} – ${
-                    endDate
-                      ? format(parseISO(endDate.replace('+05:30', 'Z').replace(' ', 'T')), 'h:mm a')
-                      : ''
-                  }`
+              {startDate && startDate.includes('T')
+                ? `${formatIsoTime(startDate)} – ${endDate && endDate.includes('T') ? formatIsoTime(endDate) : ''}`
                 : 'All day'}
             </span>
           </div>
