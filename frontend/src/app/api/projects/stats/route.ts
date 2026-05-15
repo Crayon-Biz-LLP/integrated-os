@@ -17,7 +17,8 @@ export async function GET() {
 
   const { data: projects, error } = await supabase
     .from("projects")
-    .select("id, status, is_active");
+    .select("id, status, is_active")
+    .limit(500);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -27,7 +28,8 @@ export async function GET() {
     .from("tasks")
     .select("id, project_id")
     .eq("is_current", true)
-    .in("status", ["todo", "in_progress", "blocked"]);
+    .in("status", ["todo", "in_progress", "blocked"])
+    .limit(500);
 
   if (tasksError) {
     return NextResponse.json({ error: tasksError.message }, { status: 500 });

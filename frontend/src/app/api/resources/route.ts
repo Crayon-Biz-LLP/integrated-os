@@ -23,8 +23,6 @@ export async function GET(req: NextRequest) {
     const category = searchParams.get("category");
     const sort = searchParams.get("sort") || "newest";
 
-    console.log("Resources API - Query params:", { search, mission, category, sort });
-
     let query = supabase
       .from("resources")
       .select(`
@@ -73,14 +71,13 @@ export async function GET(req: NextRequest) {
         query = query.order("created_at", { ascending: false });
     }
 
+    query = query.limit(100);
     const { data, error } = await query;
 
     if (error) {
       console.error("Supabase error fetching resources:", error);
       return NextResponse.json({ error: error.message, details: error }, { status: 500 });
     }
-
-    console.log("Resources API - Fetched resources count:", data?.length || 0);
 
     const resources = (data ?? []).map((r: any) => {
       const missionData = Array.isArray(r.missions) ? r.missions[0] : r.missions;

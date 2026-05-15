@@ -1,23 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { TaskFilters as TaskFiltersType, Project } from '@/lib/tasks/types';
-import { fetchProjects } from '@/lib/tasks/api';
+import type { TaskFilters as TaskFiltersType, Project } from '@/lib/tasks/types';
 
 interface TasksFiltersProps {
   filters: TaskFiltersType;
   onFiltersChange: (filters: TaskFiltersType) => void;
+  projects: Project[];
 }
 
-export function TasksFilters({ filters, onFiltersChange }: TasksFiltersProps) {
-  const [projects, setProjects] = useState<Project[]>([]);
-
-  useEffect(() => {
-    fetchProjects().then(setProjects);
-  }, []);
+export function TasksFilters({ filters, onFiltersChange, projects }: TasksFiltersProps) {
 
   const handleFilterChange = <K extends keyof TaskFiltersType>(
     key: K,

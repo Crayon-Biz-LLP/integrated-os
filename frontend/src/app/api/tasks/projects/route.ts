@@ -8,7 +8,8 @@ export async function GET() {
     .from("projects")
     .select("id, name, org_tag, is_active, status")
     .eq("is_active", true)
-    .order("name", { ascending: true });
+    .order("name", { ascending: true })
+    .limit(100);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

@@ -7,7 +7,8 @@ export async function GET(req: NextRequest) {
   // Fetch all people
   const { data: people, error: peopleError } = await supabase
     .from("people")
-    .select("id, name, strategic_weight, created_at");
+    .select("id, name, strategic_weight, created_at")
+    .limit(500);
 
   if (peopleError) {
     return NextResponse.json({ error: peopleError.message }, { status: 500 });
@@ -18,7 +19,8 @@ export async function GET(req: NextRequest) {
     .from("tasks")
     .select("id, title, status")
     .eq("is_current", true)
-    .filter("status", "not.in", "(done,cancelled)");
+    .filter("status", "not.in", "(done,cancelled)")
+    .limit(500);
 
   if (tasksError) {
     return NextResponse.json({ error: tasksError.message }, { status: 500 });

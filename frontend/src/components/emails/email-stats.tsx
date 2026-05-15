@@ -1,9 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { fetchEmailStats } from '@/lib/emails/api';
 import type { EmailStats } from '@/lib/emails/types';
 import { cn } from '@/lib/utils';
 import { Inbox, Tag, Mail, AlertTriangle, FileEdit } from 'lucide-react';
@@ -16,17 +13,10 @@ const STAT_CONFIG = [
   { key: 'pending_drafts', label: 'Drafts Awaiting', icon: FileEdit, color: 'text-purple-600' },
 ] as const;
 
-export function EmailStats() {
-  const [stats, setStats] = useState<EmailStats | null>(null);
-  const [loading, setLoading] = useState(true);
+export function EmailStats({ stats, loading }: { stats?: EmailStats | null; loading?: boolean }) {
+  const isLoading = loading ?? stats === null;
 
-  useEffect(() => {
-    fetchEmailStats()
-      .then(setStats)
-      .finally(() => setLoading(false));
-  }, []);
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
         {[...Array(5)].map((_, i) => (

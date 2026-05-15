@@ -13,7 +13,8 @@ export async function GET(req: NextRequest) {
   const { data: people, error: peopleError } = await supabase
     .from("people")
     .select("id, name, role, strategic_weight, created_at")
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(100);
 
   if (peopleError) {
     return NextResponse.json({ error: peopleError.message }, { status: 500 });
@@ -24,7 +25,8 @@ export async function GET(req: NextRequest) {
     .from("tasks")
     .select("id, title, status")
     .eq("is_current", true)
-    .filter("status", "not.in", "(done,cancelled)");
+    .filter("status", "not.in", "(done,cancelled)")
+    .limit(500);
 
   if (tasksError) {
     return NextResponse.json({ error: tasksError.message }, { status: 500 });

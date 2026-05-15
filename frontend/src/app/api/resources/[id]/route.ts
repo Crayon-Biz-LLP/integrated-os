@@ -21,8 +21,6 @@ export async function GET(
     const { id } = await params;
     const supabase = await createServerSupabaseClient();
 
-    console.log("Resource [id] API - Fetching resource:", id);
-
     const { data, error } = await supabase
       .from("resources")
       .select(`

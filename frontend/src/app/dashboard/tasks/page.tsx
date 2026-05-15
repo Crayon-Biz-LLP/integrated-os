@@ -1,96 +1,61 @@
-'use client';
+import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { computeTaskStats } from "@/lib/tasks/stats";
+import type { Task, Project } from "@/lib/tasks/types";
+import { TasksShell } from "./tasks-shell";
 
-import { useEffect, useState } from 'react';
-import { Task, TaskFilters } from '@/lib/tasks/types';
-import { fetchTasks } from '@/lib/tasks/api';
-import { TasksStats } from '@/components/tasks/tasks-stats';
-import { TasksFilters } from '@/components/tasks/tasks-filters';
-import { TasksTable } from '@/components/tasks/tasks-table';
-import { TaskDetailSheet } from '@/components/tasks/task-detail-sheet';
-import { ChangeProjectDialog } from '@/components/tasks/change-project-dialog';
+export const dynamic = 'force-dynamic';
 
-const defaultFilters: TaskFilters = {
-  search: '',
-  status: 'all',
-  priority: 'all',
-  projectId: 'all',
-  dueWindow: 'all',
-};
-
-export default function Page() {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState<TaskFilters>(defaultFilters);
-
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [detailSheetOpen, setDetailSheetOpen] = useState(false);
-  const [changeProjectDialogOpen, setChangeProjectDialogOpen] = useState(false);
-
-  useEffect(() => {
-    setLoading(true);
-    fetchTasks(filters).then((data) => {
-      setTasks(data);
-      setLoading(false);
-    });
-  }, [filters]);
-
-  const handleTaskClick = (task: Task) => {
-    setSelectedTask(task);
-    setDetailSheetOpen(true);
+function mapTask(t: any): Task {
+  const proj = Array.isArray(t.projects) ? t.projects[0] : t.projects;
+  return {
+    id: t.id,
+    title: t.title,
+    status: t.status ?? "todo",
+    priority: t.priority ?? "medium",
+    project_id: t.project_id,
+    project_name: proj?.name ?? "Inbox",
+    project_org_tag: proj?.org_tag ?? null,
+    estimated_minutes: t.estimated_minutes,
+    is_revenue_critical: t.is_revenue_critical ?? false,
+    deadline: t.deadline,
+    created_at: t.created_at,
+    completed_at: t.completed_at,
+    reminder_at: t.reminder_at,
+    duration_mins: t.duration_mins,
   };
+}
 
-  const handleChangeProjectClick = (task: Task) => {
-    setSelectedTask(task);
-    setDetailSheetOpen(false);
-    setChangeProjectDialogOpen(true);
-  };
+export default async function Page() {
+  const supabase = await createServerSupabaseClient();
 
-  const handleDetailChangeProjectClick = () => {
-    setDetailSheetOpen(false);
-    setChangeProjectDialogOpen(true);
-  };
+  const [tasksRes, statsRes, projectsRes] = await Promise.all([
+    supabase
+      .from("tasks")
+      .select(`
+        id, title, status, priority, project_id, estimated_minutes,
+        is_revenue_critical, deadline, created_at, completed_at,
+        reminder_at, duration_mins,
+        projects ( id, name, org_tag )
+      `)
+      .eq("is_current", true)
+      .order("created_at", { ascending: false })
+      .limit(100),
+    supabase
+      .from("tasks")
+      .select("id, status, reminder_at, deadline, completed_at")
+      .eq("is_current", true)
+      .limit(500),
+    supabase
+      .from("projects")
+      .select("id, name, org_tag, is_active, status")
+      .eq("is_active", true)
+      .order("name", { ascending: true })
+      .limit(100),
+  ]);
 
-  const handleProjectUpdated = (updatedTask: Task) => {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === updatedTask.id ? updatedTask : t))
-    );
-    setSelectedTask(updatedTask);
-  };
+  const tasks: Task[] = (tasksRes.data ?? []).map(mapTask);
+  const projects: Project[] = (projectsRes.data ?? []) as Project[];
+  const stats = computeTaskStats(statsRes.data ?? []);
 
-  return (
-    <div className="p-4 md:p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Tasks</h1>
-        <p className="text-sm text-muted-foreground/70 mt-0.5">Track progress across active work</p>
-      </div>
-
-      <TasksStats />
-
-      <div className="mt-6">
-        <TasksFilters filters={filters} onFiltersChange={setFilters} />
-      </div>
-
-      <div className="mt-4">
-        <TasksTable
-          tasks={tasks}
-          onTaskClick={handleTaskClick}
-          onChangeProjectClick={handleChangeProjectClick}
-        />
-      </div>
-
-      <TaskDetailSheet
-        task={selectedTask}
-        open={detailSheetOpen}
-        onOpenChange={setDetailSheetOpen}
-        onChangeProjectClick={handleDetailChangeProjectClick}
-      />
-
-      <ChangeProjectDialog
-        task={selectedTask}
-        open={changeProjectDialogOpen}
-        onOpenChange={setChangeProjectDialogOpen}
-        onSuccess={handleProjectUpdated}
-      />
-    </div>
-  );
+  return <TasksShell initialTasks={tasks} initialStats={stats} projects={projects} />;
 }

@@ -1,21 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { TaskStats as TaskStatsType } from '@/lib/tasks/types';
-import { fetchTaskStats } from '@/lib/tasks/api';
+import type { TaskStats as TaskStatsType } from '@/lib/tasks/types';
 
-export function TasksStats() {
-  const [stats, setStats] = useState<TaskStatsType | null>(null);
-  const [loading, setLoading] = useState(true);
+export function TasksStats({ stats, loading }: { stats?: TaskStatsType | null; loading?: boolean }) {
+  const isLoading = loading ?? stats === null;
 
-  useEffect(() => {
-    fetchTaskStats().then((data) => {
-      setStats(data);
-      setLoading(false);
-    });
-  }, []);
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {[1, 2, 3, 4].map((i) => (

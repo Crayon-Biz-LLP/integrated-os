@@ -25,6 +25,7 @@ export default function EmailsPage() {
   const [drafts, setDrafts] = useState<EmailDraft[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(true);
   const [emailStats, setEmailStats] = useState<EmailStatsData | null>(null);
+  const [emailStatsLoading, setEmailStatsLoading] = useState(true);
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
 
@@ -49,6 +50,8 @@ export default function EmailsPage() {
         setEmailStats(await fetchEmailStats());
       } catch (error) {
         console.error('Failed to load email stats:', error);
+      } finally {
+        setEmailStatsLoading(false);
       }
     };
     loadNonFilterData();
@@ -84,7 +87,7 @@ export default function EmailsPage() {
     <div className="p-4 md:p-6">
       <h1 className="text-2xl font-bold tracking-tight">Emails</h1>
       <p className="text-sm text-muted-foreground/70 mt-0.5">Ingested from Gmail and Outlook</p>
-      <EmailStats />
+      <EmailStats stats={emailStats} loading={emailStatsLoading} />
       <EmailTabs
         activeTab={activeTab}
         onTabChange={setActiveTab}

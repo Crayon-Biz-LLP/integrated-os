@@ -18,6 +18,7 @@ interface TasksTableProps {
   tasks: Task[];
   onTaskClick: (task: Task) => void;
   onChangeProjectClick: (task: Task) => void;
+  onTaskDone?: (task: Task) => Promise<void>;
 }
 
   const statusVariants: Record<string, 'default' | 'secondary' | 'outline' | 'destructive'> = {
@@ -75,7 +76,7 @@ function isOverdue(task: Task): boolean {
   return due < today;
 }
 
-export function TasksTable({ tasks, onTaskClick, onChangeProjectClick }: TasksTableProps) {
+export function TasksTable({ tasks, onTaskClick, onChangeProjectClick, onTaskDone }: TasksTableProps) {
   return (
     <div className="card-premium overflow-hidden">
       <Table>
@@ -134,9 +135,13 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick }: TasksTa
                         size="sm"
                         onClick={async (e) => {
                           e.stopPropagation();
-                          const { markTaskDone } = await import('@/lib/tasks/api');
-                          await markTaskDone(task.id);
-                          window.location.reload();
+                          if (onTaskDone) {
+                            await onTaskDone(task);
+                          } else {
+                            const { markTaskDone } = await import('@/lib/tasks/api');
+                            await markTaskDone(task.id);
+                            window.location.reload();
+                          }
                         }}
                       >
                         ✓ Done

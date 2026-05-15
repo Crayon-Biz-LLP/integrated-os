@@ -24,7 +24,8 @@ export async function GET(
     .eq("project_id", Number(id))
     .eq("is_current", true)
     .in("status", ["todo", "in_progress", "blocked"])
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(100);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

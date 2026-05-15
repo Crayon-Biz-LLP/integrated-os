@@ -42,7 +42,8 @@ export async function GET(req: NextRequest) {
     .from("projects")
     .select("*")
     .order("org_tag", { ascending: true })
-    .order("name", { ascending: true });
+    .order("name", { ascending: true })
+    .limit(100);
 
   if (projectsError) {
     return NextResponse.json({ error: projectsError.message }, { status: 500 });
@@ -52,7 +53,8 @@ export async function GET(req: NextRequest) {
     .from("tasks")
     .select("project_id")
     .eq("is_current", true)
-    .in("status", ["todo", "in_progress", "blocked"]);
+    .in("status", ["todo", "in_progress", "blocked"])
+    .limit(500);
 
   if (taskCounts) {
     const taskCountMap: Record<number, number> = {};
@@ -75,7 +77,8 @@ export async function GET(req: NextRequest) {
       const { data: parentData } = await supabase
         .from("projects")
         .select("id, name")
-        .in("id", Array.from(parentIds));
+        .in("id", Array.from(parentIds))
+        .limit(100);
       
       if (parentData) {
         parentData.forEach((p) => {

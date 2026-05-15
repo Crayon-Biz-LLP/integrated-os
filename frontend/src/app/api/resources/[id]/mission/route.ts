@@ -13,8 +13,6 @@ export async function PATCH(
     const { mission_id } = await req.json();
     const supabase = await createServerSupabaseClient();
 
-    console.log("Resource [id]/mission API - Updating resource:", id, "mission_id:", mission_id);
-
     const { data, error } = await supabase
       .from("resources")
       .update({ mission_id: mission_id || null })

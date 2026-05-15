@@ -1,5 +1,7 @@
 'use client';
 
+import { SWRConfig } from 'swr';
+import { swrConfig } from '@/lib/fetcher';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -191,7 +193,9 @@ export default function DashboardLayout({
       {/* Main Content */}
       <main className="lg:pl-64">
         <div className="min-h-screen pt-14 pb-16 lg:pb-0">
-          {children}
+          <SWRConfig value={swrConfig}>
+            {children}
+          </SWRConfig>
         </div>
       </main>
     </div>

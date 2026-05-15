@@ -8,11 +8,10 @@ export async function GET() {
   try {
     const supabase = await createServerSupabaseClient();
 
-    console.log("Stats API - Fetching resource stats");
-
     const { data: allResources, error } = await supabase
       .from("resources")
-      .select("id, mission_id, created_at");
+      .select("id, mission_id, created_at")
+      .limit(500);
 
     if (error) {
       console.error("Supabase error fetching resources stats:", error);
@@ -40,8 +39,6 @@ export async function GET() {
       unmappedResources,
       recentResources,
     };
-
-    console.log("Stats API - Returning stats:", stats);
 
     return NextResponse.json(stats);
   } catch (err: any) {

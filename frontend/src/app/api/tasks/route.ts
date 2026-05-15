@@ -33,7 +33,8 @@ export async function GET(req: NextRequest) {
       )
     `)
     .eq("is_current", true)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(100);
 
   if (search) query = query.ilike("title", `%${search}%`);
   if (status && status !== "all") query = query.eq("status", status);

@@ -5,7 +5,7 @@ export async function GET() {
   const supabase = await createServerSupabaseClient();
 
   const [emailsRes, pendingTasksRes, pendingDraftsRes] = await Promise.all([
-    supabase.from("emails").select("classification"),
+    supabase.from("emails").select("classification").limit(500),
     supabase.from("email_pending_tasks").select("id", { count: "exact", head: true }).is("danny_decision", null),
     supabase.from("email_drafts").select("id", { count: "exact", head: true }).eq("status", "pending"),
   ]);

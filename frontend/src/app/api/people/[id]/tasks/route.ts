@@ -36,7 +36,8 @@ export async function GET(
     .ilike("title", `%${name}%`)
     .eq("is_current", true)
     .filter("status", "not.in", "(done,cancelled)")
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(100);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
