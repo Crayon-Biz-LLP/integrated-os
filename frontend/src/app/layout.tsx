@@ -28,6 +28,10 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        <link rel="preconnect" href="https://tubkofgecrmtuwilhgby.supabase.co" />
+        <link rel="dns-prefetch" href="https://tubkofgecrmtuwilhgby.supabase.co" />
+      </head>
       <body className="min-h-full flex flex-col">{children} <Toaster /></body>
     </html>
   );

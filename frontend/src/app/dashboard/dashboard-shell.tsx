@@ -9,6 +9,7 @@ import { WhatToDoNow } from '@/components/dashboard/what-to-do-now';
 import { QuickChat } from '@/components/dashboard/quick-chat';
 import { PulseBriefings } from '@/components/dashboard/pulse-briefings';
 import { RecentTasks } from '@/components/dashboard/recent-tasks';
+import { QuickCommandDialog } from '@/components/dashboard/quick-command-dialog';
 import { Button } from '@/components/ui/button';
 
 const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || '';
@@ -25,6 +26,7 @@ export function DashboardShell({
   initialEmailStats: EmailStats;
 }) {
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [commandMode, setCommandMode] = useState<'query' | 'note' | 'task' | null>(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/calendar-events?date=today`)
@@ -62,10 +64,17 @@ export function DashboardShell({
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold tracking-tight">🧭 Command Center</h1>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm">? Query</Button>
-          <Button variant="outline" size="sm">N: Note</Button>
-          <Button variant="outline" size="sm">+ Task</Button>
+          <Button variant="outline" size="sm" onClick={() => setCommandMode('query')}>? Query</Button>
+          <Button variant="outline" size="sm" onClick={() => setCommandMode('note')}>N: Note</Button>
+          <Button variant="outline" size="sm" onClick={() => setCommandMode('task')}>+ Task</Button>
         </div>
+        {commandMode && (
+          <QuickCommandDialog
+            mode={commandMode}
+            open={true}
+            onOpenChange={(open) => { if (!open) setCommandMode(null); }}
+          />
+        )}
       </div>
 
       <StatsCards taskStats={initialTaskStats} emailStats={initialEmailStats} />

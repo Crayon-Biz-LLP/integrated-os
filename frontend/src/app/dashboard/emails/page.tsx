@@ -27,12 +27,14 @@ export default async function EmailsPage() {
       .from("email_pending_tasks")
       .select(`*, email:emails(subject, sender_email, sender)`)
       .is("danny_decision", null)
-      .order("created_at", { ascending: false }),
+      .order("created_at", { ascending: false })
+      .limit(100),
     supabase
       .from("email_drafts")
       .select(`*, email:emails(subject, sender_email, sender, source)`)
       .eq("status", "pending")
-      .order("created_at", { ascending: false }),
+      .order("created_at", { ascending: false })
+      .limit(100),
     supabase
       .from("email_drafts")
       .select("id", { count: "exact", head: true })
