@@ -38,7 +38,7 @@ except ImportError:
 # Import versioned_update from pulse (with robust path handling for vercel)
 try:
     # Try direct import (works when both files are in same directory)
-    from pulse import versioned_update, add_to_failed_queue
+    from pulse import versioned_update, add_to_failed_queue, get_outlook_calendar_events
 except ImportError:
     try:
         # Fallback: add parent directory to path
@@ -46,7 +46,7 @@ except ImportError:
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if parent_dir not in sys.path:
             sys.path.insert(0, parent_dir)
-        from pulse import versioned_update, add_to_failed_queue
+        from pulse import versioned_update, add_to_failed_queue, get_outlook_calendar_events
     except ImportError:
         # If all fails, define a local fallback (shouldn't happen)
         def versioned_update(table_name, record_id, update_data):
@@ -594,6 +594,14 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
                 events_list.append({"time": dt, "title": summary})
         except Exception as cal_err:
             audit_log_sync("webhook", "WARNING", f"Brief calendar query failed: {cal_err}")
+
+        # Outlook calendar events for target day
+        try:
+            outlook_events = get_outlook_calendar_events(target)
+            for e in outlook_events:
+                events_list.append({"time": e["time"], "title": e["title"]})
+        except Exception as ol_err:
+            audit_log_sync("webhook", "WARNING", f"Brief Outlook calendar query failed: {ol_err}")
 
         # All active pending tasks
         try:
