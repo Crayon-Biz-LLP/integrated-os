@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import type { Task, TaskStats } from '@/lib/tasks/types';
 import type { EmailPendingTask, EmailStats } from '@/lib/emails/types';
 import type { CalendarEvent } from '@/lib/calendar/types';
@@ -11,22 +11,33 @@ import { PulseBriefings } from '@/components/dashboard/pulse-briefings';
 import { RecentTasks } from '@/components/dashboard/recent-tasks';
 import { Button } from '@/components/ui/button';
 
+const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || '';
+
 export function DashboardShell({
   initialOpenTasks,
   initialTaskStats,
   initialPendingEmails,
   initialEmailStats,
-  initialCalendarEvents,
 }: {
   initialOpenTasks: Task[];
   initialTaskStats: TaskStats;
   initialPendingEmails: EmailPendingTask[];
   initialEmailStats: EmailStats;
-  initialCalendarEvents: CalendarEvent[];
 }) {
-  const now = new Date();
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/calendar-events?date=today`)
+      .then((res) => res.json())
+      .then((data) => setCalendarEvents(data.events || []))
+      .catch(() => {});
+  }, []);
+
+  const today = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, []);
 
   const overdueTasks = useMemo(
     () => initialOpenTasks.filter((t) => {
@@ -34,7 +45,7 @@ export function DashboardShell({
       const due = new Date(t.reminder_at || t.deadline || '');
       return due < today;
     }),
-    [initialOpenTasks, today.getTime()]
+    [initialOpenTasks, today]
   );
 
   const dueTodayTasks = useMemo(
@@ -43,7 +54,7 @@ export function DashboardShell({
       const due = new Date(t.reminder_at || t.deadline || '');
       return due >= today && due < new Date(today.getTime() + 86400000);
     }),
-    [initialOpenTasks, today.getTime()]
+    [initialOpenTasks, today]
   );
 
   return (
@@ -63,7 +74,7 @@ export function DashboardShell({
         overdueTasks={overdueTasks}
         dueTodayTasks={dueTodayTasks}
         pendingEmails={initialPendingEmails}
-        calendarEvents={initialCalendarEvents}
+        calendarEvents={calendarEvents}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

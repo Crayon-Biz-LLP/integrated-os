@@ -1,8 +1,10 @@
 'use client';
 
+import useSWR from 'swr';
+import { fetcher } from '@/lib/fetcher';
 import { Task } from '@/lib/tasks/types';
-import { fetchTasks, markTaskDone } from '@/lib/tasks/api';
-import { useState, useEffect } from 'react';
+import { markTaskDone } from '@/lib/tasks/api';
+import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
@@ -41,44 +43,35 @@ function isOverdue(task: Task): boolean {
   return due < today;
 }
 
+const SWR_KEY = '/api/tasks?status=todo';
+
 export function RecentTasks() {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data, isLoading, mutate } = useSWR<Task[]>(SWR_KEY, fetcher, {
+    refreshInterval: 30000,
+  });
 
-  const loadTasks = async () => {
-    try {
-      const data = await fetchTasks({ status: 'todo' });
-      // Sort by due date, priority
-      const sorted = data
-        .filter((t) => t.status !== 'done' && t.status !== 'cancelled')
-        .sort((a, b) => {
-          const dateA = new Date(getDueDate(a) || '9999');
-          const dateB = new Date(getDueDate(b) || '9999');
-          return dateA.getTime() - dateB.getTime();
-        });
-      setTasks(sorted.slice(0, 5)); // Show only 5 most relevant
-    } catch (error) {
-      console.error('Failed to load tasks:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadTasks();
-  }, []);
+  const tasks = useMemo(() => {
+    if (!data) return [];
+    return data
+      .filter((t) => t.status !== 'done' && t.status !== 'cancelled')
+      .sort((a, b) => {
+        const dateA = new Date(getDueDate(a) || '9999');
+        const dateB = new Date(getDueDate(b) || '9999');
+        return dateA.getTime() - dateB.getTime();
+      })
+      .slice(0, 5);
+  }, [data]);
 
   const handleMarkDone = async (taskId: number) => {
     try {
       await markTaskDone(taskId);
-      // Reload tasks
-      loadTasks();
+      mutate();
     } catch (error) {
       console.error('Failed to mark done:', error);
     }
   };
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="card-premium p-6">
         <div className="flex items-center justify-between mb-4">
