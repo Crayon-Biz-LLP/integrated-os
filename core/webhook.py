@@ -163,6 +163,29 @@ def is_recent_raw_dump(content: str, source: str) -> bool:
         return False
 
 
+OPPORTUNITY_PATTERNS = [
+    r"new possible project",
+    r"potential opportunity",
+    r"opportunity with",
+    r"we will be tasked",
+    r"project opportunity",
+    r"potential project",
+    r"potential client",
+    r"might work on",
+    r"client called",
+    r"there is a new",
+    r"possible new",
+]
+
+
+def detect_opportunity_language(text: str) -> bool:
+    text_lower = text.lower()
+    for pattern in OPPORTUNITY_PATTERNS:
+        if re.search(pattern, text_lower):
+            return True
+    return False
+
+
 async def process_email_pending_decision(pending_id: int, decision: str, supabase_client=None) -> dict:
     """Process approve/reject for an email pending task (shared by Telegram + API).
 
@@ -1075,6 +1098,42 @@ async def resolve_disambiguation(text: str, chat_id: int, session_id: str, last_
     original = last_clarification.get("original", text)
     log_exchange(session_id, 'user', intent, text, chat_id)
     classification = {"title": original, "intent": intent}
+    await route_by_intent(intent, original, chat_id, session_id, classification=classification)
+    return True
+
+
+async def ask_task_or_note_confirmation(text: str, classification: dict, chat_id: int, session_id: str):
+    reply = (
+        f"🧐 *Is this a task or a note?*\n\n"
+        f"_{text[:200]}..._\n\n"
+        f"`t` — 📋 Task — something to do\n"
+        f"`n` — 📝 Note — record this"
+    )
+    log_exchange(
+        session_id, 'bot', 'CLARIFICATION',
+        json.dumps({
+            "confirmation": "task_or_note",
+            "possible_intents": ["TASK", "NOTE"],
+            "original": text,
+            "classification": classification
+        }),
+        chat_id
+    )
+    await send_telegram(chat_id, reply)
+
+
+async def resolve_task_note_confirmation(text: str, chat_id: int, session_id: str, last_clarification: dict) -> bool:
+    cleaned = text.strip().lower()
+    if cleaned in ('t', 'task'):
+        intent = 'TASK'
+    elif cleaned in ('n', 'note'):
+        intent = 'NOTE'
+    else:
+        return False
+    original = last_clarification.get("original", text)
+    classification = last_clarification.get("classification", {"title": original})
+    classification["intent"] = intent
+    log_exchange(session_id, 'user', intent, text, chat_id)
     await route_by_intent(intent, original, chat_id, session_id, classification=classification)
     return True
 
@@ -2009,6 +2068,10 @@ async def process_webhook(update: dict):
                 await handle_confident_note(note_content, chat_id, receipt, source=source)
             return {"success": True}
         
+        # 🔙 UNDO SUBCOMMAND HANDLER — undo n, undo t, undo d
+        if _re.match(r'^undo\s+(n(?:ote)?|t(?:ask)?|d(?:elete)?)\s*$', text.strip(), _re.IGNORECASE):
+            return await handle_undo_command(text, chat_id)
+        
         receipt = classification.get('receipt')
         
         CONFIDENCE_HIGH = 0.8
@@ -2022,11 +2085,21 @@ async def process_webhook(update: dict):
                 last_bot = last_history[-1].get('bot', {})
                 if last_bot.get('intent') == 'CLARIFICATION':
                     meta = json.loads(last_bot.get('content', '{}'))
-                    if isinstance(meta, dict) and meta.get('possible_intents'):
-                        if await resolve_disambiguation(text, chat_id, session_id, meta):
-                            return {"success": True}
+                    if isinstance(meta, dict):
+                        if meta.get('confirmation') == 'task_or_note':
+                            if await resolve_task_note_confirmation(text, chat_id, session_id, meta):
+                                return {"success": True}
+                        elif meta.get('possible_intents'):
+                            if await resolve_disambiguation(text, chat_id, session_id, meta):
+                                return {"success": True}
         except Exception:
             pass
+
+        # --- OPPORTUNITY LANGUAGE CONFIRMATION ---
+        if intent == 'TASK' and confidence >= CONFIDENCE_HIGH and detect_opportunity_language(text):
+            print(f"🧐 Opportunity language detected — asking confirmation for: {text[:50]}...")
+            await ask_task_or_note_confirmation(text, classification, chat_id, session_id)
+            return {"success": True}
 
         if confidence >= CONFIDENCE_HIGH:
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender)
@@ -2326,6 +2399,148 @@ async def handle_declare_practice(text: str, chat_id: int, classification: dict)
         await send_telegram(chat_id, "⚠️ Something went wrong. Try again.")
 
 
+async def handle_undo_command(text: str, chat_id: int):
+    import re as _re
+
+    # Bare /undo → show most recent entry
+    if text.strip() == '/undo':
+        try:
+            recent = supabase.table('raw_dumps') \
+                .select('id, content, message_type, status, created_at') \
+                .eq('direction', 'incoming') \
+                .eq('sender', 'user') \
+                .not_.in_('message_type', ['acknowledgment', 'briefing', 'response', 'clarification']) \
+                .order('created_at', desc=True) \
+                .limit(1) \
+                .maybe_single() \
+                .execute()
+
+            if not recent or not recent.data:
+                await send_telegram(chat_id, "Nothing to undo.")
+                return {"success": True}
+
+            r = recent.data
+            content = r.get('content', '')
+            msg_type = r.get('message_type', 'unknown')
+            status = r.get('status', 'unknown')
+
+            lines = [
+                f"🧐 *Last entry:*",
+                f"\n_{content[:200]}..._",
+                f"\n📌 Type: `{msg_type}` · Status: `{status}`",
+                f"\n`undo n` — Flip to note",
+                f"`undo t` — Flip to task",
+                f"`undo d` — Delete",
+            ]
+            await send_telegram(chat_id, "\n".join(lines))
+            return {"success": True}
+        except Exception as e:
+            audit_log_sync("webhook", "ERROR", f"/undo fetch error: {e}")
+            await send_telegram(chat_id, f"⚠️ Failed to fetch last entry: {e}")
+            return {"success": True}
+
+    # Parse subcommands
+    undo_n = _re.match(r'^undo\s+n(?:ote)?\s*$', text.strip(), _re.IGNORECASE)
+    undo_t = _re.match(r'^undo\s+t(?:ask)?\s*$', text.strip(), _re.IGNORECASE)
+    undo_d = _re.match(r'^undo\s+d(?:elete)?\s*$', text.strip(), _re.IGNORECASE)
+
+    if not (undo_n or undo_t or undo_d):
+        await send_telegram(chat_id, "Usage: `/undo` to see last entry, `undo n`, `undo t`, or `undo d` to act.")
+        return {"success": True}
+
+    # Fetch the most recent entry
+    try:
+        recent = supabase.table('raw_dumps') \
+            .select('id, content, message_type, status') \
+            .eq('direction', 'incoming') \
+            .eq('sender', 'user') \
+            .not_.in_('message_type', ['acknowledgment', 'briefing', 'response', 'clarification']) \
+            .order('created_at', desc=True) \
+            .limit(1) \
+            .maybe_single() \
+            .execute()
+
+        if not recent or not recent.data:
+            await send_telegram(chat_id, "Nothing to undo.")
+            return {"success": True}
+
+        r = recent.data
+        dump_id = r['id']
+        content = r.get('content', '')
+        current_type = r.get('message_type', '')
+        current_status = r.get('status', '')
+
+        if undo_d:
+            supabase.table('raw_dumps').update({
+                "status": "cancelled",
+                "is_processed": True,
+            }).eq('id', dump_id).execute()
+            # Best-effort cancel any task Pulse may have created
+            try:
+                supabase.table('tasks').update({"status": "cancelled"}) \
+                    .ilike('title', content[:100]) \
+                    .in_('status', ['todo', 'in_progress']) \
+                    .execute()
+            except Exception:
+                pass
+            await send_telegram(chat_id, f"🗑️ Deleted: _{content[:80]}..._")
+            return {"success": True}
+
+        if undo_n:
+            supabase.table('raw_dumps').update({
+                "message_type": "note",
+                "status": "staged",
+            }).eq('id', dump_id).execute()
+            # Process as note inline
+            embedding = await asyncio.to_thread(get_embedding, content)
+            if embedding and any(embedding):
+                try:
+                    supabase.table('memories').insert({
+                        "content": content,
+                        "memory_type": "note",
+                        "embedding": embedding,
+                        "embedding_status": "success",
+                        "source": "webhook_undo"
+                    }).execute()
+                    supabase.table('raw_dumps').update({
+                        "status": "processed",
+                        "is_processed": True,
+                    }).eq('id', dump_id).execute()
+                except Exception:
+                    pass
+            # Best-effort cancel any task Pulse may have created
+            try:
+                supabase.table('tasks').update({"status": "cancelled"}) \
+                    .ilike('title', content[:100]) \
+                    .in_('status', ['todo', 'in_progress']) \
+                    .execute()
+            except Exception:
+                pass
+            await send_telegram(chat_id, f"📝 Flipped to note: _{content[:80]}..._")
+            return {"success": True}
+
+        if undo_t:
+            supabase.table('raw_dumps').update({
+                "message_type": "task",
+                "status": "pending",
+            }).eq('id', dump_id).execute()
+            # If it was in memories, remove it
+            try:
+                supabase.table('memories').delete() \
+                    .eq('content', content) \
+                    .eq('source', 'webhook_undo') \
+                    .execute()
+            except Exception:
+                pass
+            await send_telegram(chat_id, f"📋 Flipped to task: _{content[:80]}..._")
+            return {"success": True}
+
+    except Exception as e:
+        audit_log_sync("webhook", "ERROR", f"Undo action error: {e}")
+        await send_telegram(chat_id, f"⚠️ Undo failed: {e}")
+        return {"success": True}
+
+
 async def handle_command(text: str, chat_id: int):
     reply = ""
     
@@ -2442,6 +2657,9 @@ async def handle_command(text: str, chat_id: int):
     elif text.startswith('/ed'):
         await handle_ed_command(text, chat_id)
         return {"success": True}
+
+    elif text in ['/undo']:
+        return await handle_undo_command(text, chat_id)
 
     else:
         await send_telegram(chat_id, "⚠️ Unknown command. Type /help or tap the menu to see available commands.")
