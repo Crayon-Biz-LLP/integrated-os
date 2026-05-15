@@ -13,6 +13,7 @@ from google import genai
 # We need to add .../core/ to path so `import pulse` works
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from rate_limiter import flash_lite_limiter
+from people_utils import normalize_person_name, is_blocklisted_person
 # Import utilities from audit_logger and pulse
 try:
     from audit_logger import info, warning, error, audit_log_sync
@@ -498,7 +499,8 @@ Rules:
 - Create edges for relationships between nodes
 - Use UPPERCASE relationship types: "RELATES_TO", "PARENT_OF", "WORKS_AT", "BELONGS_TO", "AUTHORED", "INTRODUCED", "VENDOR_TO", "DISCUSSED_WITH"
 - Include "AUTHORED" edge from "Danny" to indicate he wrote this memory
-- If no clear graph elements, return empty arrays"""
+- If no clear graph elements, return empty arrays
+- CRITICAL: Do NOT extract anything from URLs, file paths, or online handles. Ignore path segments in links like "github.com/username" or "bit.ly/handle". Only extract entities that appear as clear person names, organization names, or project names in natural language text."""
     
     try:
         response = call_llm_with_fallback_sync(
@@ -985,25 +987,41 @@ def sync_person_nodes_to_people_table():
     For each person node missing people_id, match by label to people table.
     Creates new people table rows for unmatched person nodes."""
     print("\n👤 Person node sync: Linking graph people to people table...")
-    nodes = fetch_all_paginated("graph_nodes", "id, label, metadata", in_filter_col="type", in_filter_val=["person"])
+    nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata", in_filter_col="type", in_filter_val=["person"])
     if not nodes:
         print("No person nodes found.")
         return
 
     all_people = fetch_all_paginated("people", "id, name")
-    name_to_id = {p["name"].strip().lower(): p["id"] for p in all_people}
+    name_to_id = {}
+    for p in all_people:
+        raw = p["name"].strip().lower()
+        if raw and raw not in name_to_id:
+            name_to_id[raw] = p["id"]
+        norm = normalize_person_name(p["name"])
+        if norm and norm not in name_to_id:
+            name_to_id[norm] = p["id"]
 
     synced = 0
     added = 0
+    skipped = 0
     for n in nodes:
+        # Defensive: skip if node type is not person (safety guard for type corruption)
+        if n.get("type") != "person":
+            skipped += 1
+            continue
         meta = _normalize_meta(n.get("metadata"))
         if meta.get("people_id"):
             continue
+        if is_blocklisted_person(n["label"]):
+            skipped += 1
+            continue
         label_lower = n["label"].strip().lower()
-        if label_lower in name_to_id:
-            meta["people_id"] = name_to_id[label_lower]
+        label_norm = normalize_person_name(n["label"])
+        matched_id = name_to_id.get(label_norm) or name_to_id.get(label_lower)
+        if matched_id:
+            meta["people_id"] = matched_id
         else:
-            # Add new person to people table
             try:
                 result = supabase.table("people").insert({
                     "name": n["label"].strip(),
@@ -1012,7 +1030,8 @@ def sync_person_nodes_to_people_table():
                 if result.data:
                     new_id = result.data[0]["id"]
                     meta["people_id"] = new_id
-                    name_to_id[label_lower] = new_id
+                    if label_norm:
+                        name_to_id[label_norm] = new_id
                     added += 1
                 else:
                     continue
@@ -1025,7 +1044,7 @@ def sync_person_nodes_to_people_table():
         except Exception as e:
             audit_log_sync("backfill_graph", "WARNING", f"Failed to update person node {n['id']}: {e}")
 
-    print(f"Synced {synced} person nodes ({added} new people added).")
+    print(f"Synced {synced} person nodes ({added} new people, {skipped} blocklisted).")
 
 
 def compact_memories(supabase):

@@ -74,6 +74,11 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - Return empty arrays if no explicit commands in inputs
 - Filter tasks by 2-day horizon, 14-day creation window
 
+### Data Deletion Safety (Non-Negotiable)
+- **NEVER delete any database records (people, tasks, graph_nodes, etc.) without explicit user approval.** Present what would be deleted and ask before executing.
+- This applies to: `DELETE` queries, marking records as pruned/removed, and cascade deletions.
+- Always use `--dry-run` mode first and show the user what will be affected before running destructive operations.
+
 ## Required Environment Variables
 ```
 SUPABASE_URL
