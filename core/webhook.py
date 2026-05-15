@@ -2040,8 +2040,11 @@ async def process_webhook(update: dict):
         # Initialize conversation session early so shortcuts share the same session_id as the main flow
         session_id, history = get_or_create_session(chat_id)
 
-        # 🔄 Task update clarification response — skip classify_intent()
-        if text.strip().lower() in ('u', 'update', 'n', 'new', 'create'):
+        # 🔄 Pending clarification response — skip classify_intent()
+        # Uses direct DB query instead of get_history to avoid token-budget truncation
+        CLARIFICATION_REPLY_WORDS = {'u', 'update', 'n', 'new', 'create', 't', 'task', 'note',
+                                      'q', 'query', 'b', 'daily_brief', 'r', 'delegate', 'p', 'declare_practice', 'x', 'noise'}
+        if text.strip().lower() in CLARIFICATION_REPLY_WORDS:
             try:
                 last_clar = supabase.table('conversations') \
                     .select('content') \
@@ -2053,9 +2056,16 @@ async def process_webhook(update: dict):
                     .execute()
                 if last_clar.data:
                     meta = json.loads(last_clar.data[0]['content'])
-                    if isinstance(meta, dict) and meta.get('confirmation') == 'task_update':
-                        if await resolve_task_update_confirmation(text, chat_id, session_id, meta):
-                            return {"success": True}
+                    if isinstance(meta, dict):
+                        if meta.get('confirmation') == 'task_update':
+                            if await resolve_task_update_confirmation(text, chat_id, session_id, meta):
+                                return {"success": True}
+                        elif meta.get('confirmation') == 'task_or_note':
+                            if await resolve_task_note_confirmation(text, chat_id, session_id, meta):
+                                return {"success": True}
+                        elif meta.get('possible_intents'):
+                            if await resolve_disambiguation(text, chat_id, session_id, meta):
+                                return {"success": True}
             except Exception:
                 pass
 
@@ -2176,26 +2186,6 @@ async def process_webhook(update: dict):
         CONFIDENCE_HIGH = 0.8
         CONFIDENCE_LOW = 0.5
         possible_intents = classification.get('possible_intents', [])
-
-        # Check if we're responding to a pending disambiguation
-        try:
-            last_history = get_history(session_id, max_tokens=1)
-            if last_history:
-                last_bot = last_history[-1].get('bot', {})
-                if last_bot.get('intent') == 'CLARIFICATION':
-                    meta = json.loads(last_bot.get('content', '{}'))
-                    if isinstance(meta, dict):
-                        if meta.get('confirmation') == 'task_or_note':
-                            if await resolve_task_note_confirmation(text, chat_id, session_id, meta):
-                                return {"success": True}
-                        elif meta.get('confirmation') == 'task_update':
-                            if await resolve_task_update_confirmation(text, chat_id, session_id, meta):
-                                return {"success": True}
-                        elif meta.get('possible_intents'):
-                            if await resolve_disambiguation(text, chat_id, session_id, meta):
-                                return {"success": True}
-        except Exception:
-            pass
 
         # --- OPPORTUNITY LANGUAGE CONFIRMATION ---
         if intent == 'TASK' and confidence >= CONFIDENCE_HIGH and detect_opportunity_language(text):
