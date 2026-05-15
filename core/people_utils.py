@@ -2,7 +2,7 @@ import re
 
 BLOCKLIST_PEOPLE = {
     "wife", "parents", "sister's family", "sisters family", "customer",
-    "employee", "finance manager", "kids", "shirley", "author", "narrator",
+    "employee", "finance manager", "kids", "author", "narrator",
     "user", "mother", "aunt", "uncle",
 }
 

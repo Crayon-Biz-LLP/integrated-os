@@ -122,13 +122,12 @@ supabase: Client = create_client(
 )
 
 def is_already_in_email_queue(title: str) -> bool:
-    """Check if a task title already exists in email_pending_tasks or tasks table."""
+    """Check if a task title already exists in email_pending_tasks."""
     try:
         keywords = [w for w in title.lower().split() if len(w) > 4]
         if not keywords:
             return False
         for kw in keywords[:3]:
-            # Check pending queue
             result = supabase.table('email_pending_tasks')\
                 .select('id')\
                 .ilike('suggested_title', f'%{kw}%')\
@@ -138,19 +137,8 @@ def is_already_in_email_queue(title: str) -> bool:
             if result.data:
                 audit_log_sync("pulse", "WARNING", f"⚠️  Duplicate guard: '{title}' matches pending email task (keyword: '{kw}'). Skipping.")
                 return True
-            # Check active tasks on board (only current versions)
-            result = supabase.table('tasks')\
-                .select('id')\
-                .ilike('title', f'%{kw}%')\
-                .eq('is_current', True)\
-                .not_.in_('status', ['done', 'cancelled'])\
-                .limit(1)\
-                .execute()
-            if result.data:
-                audit_log_sync("pulse", "WARNING", f"⚠️  Duplicate guard: '{title}' matches existing task on board (keyword: '{kw}'). Skipping.")
-                return True
-        
-        # Secondary: Semantic embedding check (high threshold to avoid false positives)
+
+        # Semantic embedding check (high threshold to avoid false positives)
         embedding = get_embedding(title)
         similarity_res = supabase.rpc('match_memories', {
             'query_embedding': embedding,
@@ -166,7 +154,7 @@ def is_already_in_email_queue(title: str) -> bool:
         return False
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Duplicate guard check failed: {e}")
-        return False  # Fail open — don't block task creation if check errors
+        return False
 
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
@@ -349,6 +337,7 @@ class CompletedTask(BaseModel):
     id: int
     status: str
     reminder_at: Optional[str] = None
+    duration_mins: Optional[int] = None
 
 class NewProject(BaseModel):
     name: str
@@ -3378,8 +3367,17 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         else:
             stale_context = None
 
+        def _enrich(d: dict) -> str:
+            content = d.get('content', '')
+            meta = d.get('metadata') or {}
+            if isinstance(meta, str):
+                try: meta = json.loads(meta)
+                except: meta = {}
+            tid = meta.get('task_update_id')
+            return f"⚠️ TASK UPDATE (task #{tid}): {content}" if tid else content
+
         # --- 🕒 1.8 INPUT PREP ---
-        new_inputs_text = "\n---\n".join([d['content'] for d in dumps]) if dumps else "None"    
+        new_inputs_text = "\n---\n".join([_enrich(d) for d in dumps]) if dumps else "None"
         
         # --- 🧠 DRIFT DETECTION (Temporal Lineage) ---
         drift_alerts = []
@@ -3508,8 +3506,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             safe_parts.append(part)
             running_len += len(part) + 3
         compressed_tasks_final = ' | '.join(safe_parts)
-        new_inputs_text = "\n---\n".join([d['content'] for d in dumps])
-        new_input_summary = " | ".join([d['content'] for d in dumps[:5]])
+        new_inputs_text = "\n---\n".join([_enrich(d) for d in dumps])
+        new_input_summary = " | ".join([_enrich(d) for d in dumps[:5]])
         current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
 
         # --- 🧭 LAYER 4: CANONICAL SYNTHESIS (The Master Pages) ---
@@ -3791,6 +3789,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out.
             5. STALE LOOPS: If STALE_TASKS exists, always include the ⏳ Stale Loops section — never suppress it regardless of mode.
             6. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
+            6a. UPDATE DETECTION: If a user says "Update [title]" or "Reschedule [title]" or "Change [title] to [new time]", IMMEDIATELY search ALL SYSTEM TASKS for the matching task. Return it in completed_task_ids with the updated reminder_at and/or duration_mins — NOT in new_tasks.
             7. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When Danny mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
             8. AUTO-ONBOARDING: If a new Client/Project is mentioned, add to "new_projects". If a new Person is mentioned, add to "new_people".
             9. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
@@ -4030,6 +4029,16 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 # REMOVE the 'if' here to allow clearing the time
                 update_payload["reminder_at"] = new_reminder 
 
+                # Propagate duration_mins update if provided
+                duration_update = item.get('duration_mins')
+                if duration_update is not None:
+                    update_payload["duration_mins"] = duration_update
+                    update_payload["estimated_minutes"] = duration_update
+
+                change_reason = f"Status: {item_status}, reminder: {new_reminder}"
+                if duration_update is not None:
+                    change_reason += f", duration: {duration_update}min"
+
                 # Use versioned_update for task status changes (creates history)
                 versioned_update(
                     table_name='tasks',
@@ -4037,7 +4046,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     update_data=update_payload,
                     user_id=None,
                     change_source='pulse_task_update',
-                    change_reason=f"Status: {item_status}, reminder: {new_reminder}"
+                    change_reason=change_reason
                 )
                 
                 # 🧠 Outcome memory with project context

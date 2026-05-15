@@ -142,6 +142,82 @@ def is_already_in_tasks_table(title: str) -> bool:
         return False  # Fail open — never block suggestion creation on DB error
 
 
+UPDATE_TRIGGER_WORDS = {'update', 'reschedule', 'reschedule', 'change', 'move', 'push', 'postpone', 'delay', 'bring', 'advance'}
+
+
+def check_task_overlap_for_update(text: str) -> list:
+    """Check if message keywords overlap with active tasks (≥2 keyword match).
+    Returns list of matched task dicts, empty if below threshold."""
+    try:
+        keywords = [w.lower() for w in text.split() if len(w) > 4]
+        if len(keywords) < 2:
+            return []
+        active_keywords = keywords[:3]
+
+        tasks_res = supabase.table('tasks')\
+            .select('id, title')\
+            .eq('is_current', True)\
+            .not_.in_('status', ['done', 'cancelled'])\
+            .execute()
+        if not tasks_res.data:
+            return []
+
+        matched = []
+        for task in tasks_res.data:
+            existing = task.get('title', '').lower()
+            count = sum(1 for kw in active_keywords if kw in existing)
+            if count >= 2:
+                matched.append(task)
+        return matched
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"Task overlap check failed: {e}")
+        return []
+
+
+async def ask_task_update_confirmation(text: str, classification: dict, chat_id: int, session_id: str, matched_tasks: list):
+    """Ask user whether to update an existing task or create a new one."""
+    task = matched_tasks[0]
+    reply = (
+        f"🧐 *This looks like it relates to an existing task:*\n\n"
+        f"_{task['title']}_\n\n"
+        f"`u` — 🔄 Update existing task\n"
+        f"`n` — ➕ Create new task"
+    )
+    log_exchange(
+        session_id, 'bot', 'CLARIFICATION',
+        json.dumps({
+            "confirmation": "task_update",
+            "matched_tasks": matched_tasks,
+            "original": text,
+            "classification": classification
+        }),
+        chat_id
+    )
+    await send_telegram(chat_id, reply)
+
+
+async def resolve_task_update_confirmation(text: str, chat_id: int, session_id: str, last_clarification: dict) -> bool:
+    """Handle user response to update-vs-create question."""
+    cleaned = text.strip().lower()
+    matched_tasks = last_clarification.get('matched_tasks', [])
+    original = last_clarification.get("original", text)
+    classification = last_clarification.get("classification", {"title": original})
+    classification["intent"] = "TASK"
+
+    if cleaned in ('u', 'update'):
+        target = matched_tasks[0]
+        classification["task_update_id"] = target['id']
+        log_exchange(session_id, 'user', 'TASK', text, chat_id)
+        await route_by_intent("TASK", original, chat_id, session_id,
+                              classification=classification, task_update_id=target['id'])
+        return True
+    elif cleaned in ('n', 'new', 'create'):
+        log_exchange(session_id, 'user', 'TASK', text, chat_id)
+        await route_by_intent("TASK", original, chat_id, session_id, classification=classification)
+        return True
+    return False
+
+
 def is_recent_raw_dump(content: str, source: str) -> bool:
     """Check if identical content+source was inserted in the last 60 seconds.
     Used as idempotency guard against Telegram double-fires and user double-taps."""
@@ -848,28 +924,31 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
         return {"tasks": 0, "notes": 0}
 
 
-# 1. Update your handle_confident_task signature to accept entity
-async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram", sender: str = "user"):
+async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram", sender: str = "user", task_update_id: int = None):
     # ── Idempotency guard: skip if identical content+source inserted within 60s ──
     if is_recent_raw_dump(text, source):
         ack = receipt or "Logged."
         await send_telegram(chat_id, f"{ack}")
         return
 
+    meta = {
+        "intent": "TASK",
+        "title": title,
+        "time_context": time_context,
+        "entity": entity
+    }
+    if task_update_id is not None:
+        meta["task_update_id"] = task_update_id
+
     try:
         supabase.table('raw_dumps').insert([{
             "content": text,
             "status": "pending",
             "direction": "incoming",
-            "sender": sender,  # "user" for all user messages
+            "sender": sender,
             "message_type": "task",
             "source": source,
-            "metadata": {
-                "intent": "TASK",
-                "title": title, 
-                "time_context": time_context,
-                "entity": entity
-            }
+            "metadata": meta
         }]).execute()
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Failed to save task dump: {e}")
@@ -1138,7 +1217,7 @@ async def resolve_task_note_confirmation(text: str, chat_id: int, session_id: st
     return True
 
 
-async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user"):
+async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None):
     history_text = ""
     if session_id:
         pairs = get_history(session_id, max_tokens=5)
@@ -1149,7 +1228,8 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None
         time_context = classification.get('time_context', '') if classification else ''
-        await handle_confident_task(text, title, time_context, chat_id, receipt, entity=entity, source=source, sender=sender)
+        task_update_id = task_update_id if task_update_id is not None else (classification.get('task_update_id') if classification else None)
+        await handle_confident_task(text, title, time_context, chat_id, receipt, entity=entity, source=source, sender=sender, task_update_id=task_update_id)
     elif intent == 'DAILY_BRIEF':
         await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
     elif intent == 'QUERY':
@@ -2089,6 +2169,9 @@ async def process_webhook(update: dict):
                         if meta.get('confirmation') == 'task_or_note':
                             if await resolve_task_note_confirmation(text, chat_id, session_id, meta):
                                 return {"success": True}
+                        elif meta.get('confirmation') == 'task_update':
+                            if await resolve_task_update_confirmation(text, chat_id, session_id, meta):
+                                return {"success": True}
                         elif meta.get('possible_intents'):
                             if await resolve_disambiguation(text, chat_id, session_id, meta):
                                 return {"success": True}
@@ -2100,6 +2183,16 @@ async def process_webhook(update: dict):
             print(f"🧐 Opportunity language detected — asking confirmation for: {text[:50]}...")
             await ask_task_or_note_confirmation(text, classification, chat_id, session_id)
             return {"success": True}
+
+        # --- TASK UPDATE DISAMBIGUATION ---
+        if intent == 'TASK' and confidence >= CONFIDENCE_HIGH:
+            first_word = text.strip().lower().split()[0] if text.strip() else ''
+            if first_word in UPDATE_TRIGGER_WORDS:
+                matched = check_task_overlap_for_update(text)
+                if matched:
+                    print(f"🔄 Task update overlap detected — asking: {text[:50]}...")
+                    await ask_task_update_confirmation(text, classification, chat_id, session_id, matched)
+                    return {"success": True}
 
         if confidence >= CONFIDENCE_HIGH:
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender)
