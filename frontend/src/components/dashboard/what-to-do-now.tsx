@@ -1,7 +1,7 @@
 'use client';
 
 import { Task } from '@/lib/tasks/types';
-import { CalendarEvent } from '@/lib/calendar/api';
+import { CalendarEvent } from '@/lib/calendar/types';
 import { EmailPendingTask } from '@/lib/emails/types';
 import { markTaskDone } from '@/lib/tasks/api';
 import { approveShortcode, rejectShortcode } from '@/lib/emails/api';
