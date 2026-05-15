@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from core.constants import EmailStatus
+from core.people_utils import normalize_person_name, is_blocklisted_person
 
 load_dotenv()
 load_dotenv('.env.local')
@@ -181,12 +182,27 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
     
     name_clean = name.strip()
     
-    # Check existing
-    existing = supabase.table('people').select('id, name').execute()
-    existing_names = {p['name'].lower(): p['id'] for p in (existing.data or [])}
+    if is_blocklisted_person(name_clean):
+        print(f"⏭ Skipping blocklisted person from email: {name_clean}")
+        return None
     
-    if name_clean.lower() in existing_names:
-        return existing_names[name_clean.lower()]
+    # Check existing using both raw and normalized name
+    existing = supabase.table('people').select('id, name').execute()
+    existing_names = {}
+    for p in (existing.data or []):
+        existing_names[p['name'].lower()] = p['id']
+        norm = normalize_person_name(p['name'])
+        if norm and norm not in existing_names:
+            existing_names[norm] = p['id']
+    
+    name_lower = name_clean.lower()
+    name_norm = normalize_person_name(name_clean)
+    
+    matched = existing_names.get(name_norm) if name_norm else None
+    if matched is None:
+        matched = existing_names.get(name_lower)
+    if matched is not None:
+        return matched
     
     # Insert new person
     result = supabase.table('people').insert({
@@ -515,19 +531,21 @@ async def process_email(msg_data: dict, gmail_service, active_task_keywords: set
             
             # Add linked_person_name to people table if not exists (only for actionable emails)
             if linked_person_name:
-                person_res = supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').maybe_single().execute()
-                if getattr(person_res, 'data', None):
-                    linked_person_id = person_res.data['id']
+                if is_blocklisted_person(linked_person_name):
+                    print(f"⏭ Skipping blocklisted linked person: {linked_person_name}")
                 else:
-                    # Add new person from email
-                    new_person = supabase.table('people').insert({
-                        "name": linked_person_name,
-                        "source": "email_ingest",
-                        "strategic_weight": 5
-                    }).execute()
-                    if new_person.data:
-                        linked_person_id = new_person.data[0]['id']
-                        print(f"👤 Added linked person from email: {linked_person_name}")
+                    person_res = supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').maybe_single().execute()
+                    if getattr(person_res, 'data', None):
+                        linked_person_id = person_res.data['id']
+                    else:
+                        new_person = supabase.table('people').insert({
+                            "name": linked_person_name,
+                            "source": "email_ingest",
+                            "strategic_weight": 5
+                        }).execute()
+                        if new_person.data:
+                            linked_person_id = new_person.data[0]['id']
+                            print(f"👤 Added linked person from email: {linked_person_name}")
             
             # Add sender to people table if human
             is_human = classification_data.get('is_human_sender', False)

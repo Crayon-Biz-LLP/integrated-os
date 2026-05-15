@@ -19,6 +19,7 @@ from typing import List, Optional
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from audit_logger import info, warning, error, critical, audit_log_sync
+from people_utils import normalize_person_name, is_blocklisted_person
 
 # Import temporal lineage
 from temporal_lineage import (
@@ -3939,11 +3940,29 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         # B. BATCH NEW PEOPLE
         if ai_data.get('new_people'):
             existing_people_res = supabase.table('people').select('name').execute()
-            existing_names = {p['name'].lower().strip() for p in (existing_people_res.data or [])}
-            deduped_people = [
-                {**p, "source": "pulse"} for p in ai_data['new_people']
-                if p.get('name', '').lower().strip() not in existing_names
-            ]
+            existing_raw = {p['name'].lower().strip() for p in (existing_people_res.data or [])}
+            existing_norm = {normalize_person_name(p['name']) for p in (existing_people_res.data or []) if normalize_person_name(p['name'])}
+            existing_nodes_res = supabase.table('graph_nodes').select('label, type').execute()
+            existing_non_person_nodes = set()
+            for gn in (existing_nodes_res.data or []):
+                if gn.get('type') != 'person':
+                    norm = normalize_person_name(gn.get('label', ''))
+                    if norm:
+                        existing_non_person_nodes.add(norm)
+            deduped_people = []
+            for p in ai_data['new_people']:
+                name = p.get('name', '')
+                if not name:
+                    continue
+                if is_blocklisted_person(name):
+                    continue
+                name_raw = name.lower().strip()
+                name_norm = normalize_person_name(name)
+                if name_raw in existing_raw or (name_norm and name_norm in existing_norm):
+                    continue
+                if name_norm and name_norm in existing_non_person_nodes:
+                    continue
+                deduped_people.append({**p, "source": "pulse"})
             if deduped_people:
                 supabase.table('people').insert(deduped_people).execute()
 
