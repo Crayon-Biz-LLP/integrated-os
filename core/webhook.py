@@ -19,6 +19,19 @@ try:
 except ImportError:
     from rate_limiter import flash_lite_limiter
 
+# Import quick_process for inline task processing
+try:
+    from core.quick_process import process_single_dump, get_tasks_service
+except ImportError:
+    try:
+        from quick_process import process_single_dump, get_tasks_service
+    except ImportError:
+        async def process_single_dump(text, metadata, tasks_service=None):
+            return {"action": "skipped", "reason": "import_failed"}
+
+        def get_tasks_service():
+            return None
+
 # Import audit_logger (with robust path handling for Vercel)
 try:
     from audit_logger import audit_log_sync
@@ -948,8 +961,9 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
     if task_update_id is not None:
         meta["task_update_id"] = task_update_id
 
+    dump_id = None
     try:
-        supabase.table('raw_dumps').insert([{
+        dump_res = supabase.table('raw_dumps').insert([{
             "content": text,
             "status": "pending",
             "direction": "incoming",
@@ -958,6 +972,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             "source": source,
             "metadata": meta
         }]).execute()
+        dump_id = dump_res.data[0]['id'] if dump_res.data else None
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Failed to save task dump: {e}")
     
@@ -977,6 +992,17 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         }]).execute()
     except Exception as ack_err:
         audit_log_sync("webhook", "WARNING", f"Failed to log ack to raw_dumps: {ack_err}")
+    
+    # Inline: process the dump immediately (fire-and-forget)
+    if dump_id:
+        try:
+            tasks_service = get_tasks_service()
+            result = await process_single_dump(text, meta, tasks_service)
+            if result.get('action') in ('created', 'completed', 'filed'):
+                supabase.table('raw_dumps').update({"status": "synced"}).eq('id', dump_id).execute()
+                audit_log_sync("webhook", "INFO", f"Inline processed dump {dump_id}: {result['action']}")
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING", f"Inline processing failed for dump {dump_id}: {e}")
 
 
 async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user"):

@@ -65,8 +65,8 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - Supabase uses service role key (bypasses RLS)
 
 ### Pulse Cron Schedule (UTC, matches `.github/workflows/pulse.yml`)
-- Weekdays: `0 2,7,11,14 * * 1-5` (7:30AM, 12:30PM, 4:30PM, 7:30PM IST)
-- Weekends: `30 4,9 * * 0,6` (10AM, 3PM IST)
+- Weekdays: `30 23 * * 1-5` + `0 2,6,9,12 * * 1-5` (scheduled 5AM, 7:30AM, 11:30AM, 2:30PM, 5:30PM IST → arrives ~7AM, 10AM, 2PM, 4PM, 8PM IST due to queue delays)
+- Weekends: `30 2,9 * * 0,6` (8AM, 3PM IST)
 
 ### AI Briefing Rules
 - NEVER create tasks from URLs unless explicitly commanded

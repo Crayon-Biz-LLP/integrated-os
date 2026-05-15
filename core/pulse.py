@@ -3197,13 +3197,16 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         batch_enrich_results = await batch_enrich_resources()
         
         # --- 1. READ: Fetch and Lock ---
-        # 1.1 Fetch only 'pending' items
+        # 1.1 Fetch pending, staged, and synced items
         dumps_res = supabase.table('raw_dumps') \
-            .select('id, content, metadata') \
-            .in_('status', ['pending', 'staged']) \
+            .select('id, content, metadata, status') \
+            .in_('status', ['pending', 'staged', 'synced']) \
             .execute()
 
-        dumps = dumps_res.data or []
+        all_dumps = dumps_res.data or []
+
+        synced_dumps = [d for d in all_dumps if d.get('status') == 'synced']
+        dumps = [d for d in all_dumps if d.get('status') != 'synced']
 
         completion_dump_ids = []
         
@@ -3690,6 +3693,22 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         compressed_tasks_final = ' | '.join(safe_parts)
         new_inputs_text = "\n---\n".join([_enrich(d) for d in dumps])
         new_input_summary = " | ".join([_enrich(d) for d in dumps[:5]])
+
+        synced_inputs_text = ""
+        if synced_dumps:
+            synced_lines = []
+            for d in synced_dumps:
+                content = d.get('content', '')
+                meta = d.get('metadata') or {}
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except Exception:
+                        meta = {}
+                tid = meta.get('task_update_id')
+                prefix = f"⚠️ TASK UPDATE (task #{tid}): " if tid else ""
+                synced_lines.append(f"{prefix}{content}")
+            synced_inputs_text = "\n---\n".join(synced_lines) if synced_lines else "None"
         current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
 
         # --- 🧭 LAYER 4: CANONICAL SYNTHESIS (The Master Pages) ---
@@ -3791,6 +3810,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         - NEWLY ENRICHED RESOURCES: {newly_enriched_context}
         - ENRICHED WEB LINKS: {link_context}
         - NEW INPUTS: {new_inputs_text}
+        - SYNCED TASK UPDATES (already processed, for context only): {synced_inputs_text}
         - 📧 EMAIL-SUGGESTED TASKS (surface these in the brief under a section called "📧 Inbox" — Danny decides whether to create them as tasks, do not auto-create):
         {chr(10).join(f"- {t['suggested_title']} (Project: {t.get('suggested_project') or 'Unknown'})" for t in pending_email_tasks) if pending_email_tasks else "None"}
 
@@ -4733,6 +4753,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 "is_processed": True 
             }).in_('id', dump_ids).execute()
             print(f"✅ Phase 3: Marked {len(dump_ids)} dumps as completed.")
+
+        if synced_dumps:
+            synced_ids = [d['id'] for d in synced_dumps]
+            supabase.table('raw_dumps').update({
+                "status": "completed",
+                "is_processed": True
+            }).in_('id', synced_ids).execute()
+            print(f"✅ Sealed {len(synced_ids)} synced dumps after briefing.")
 
         return {"success": True, "briefing": briefing_text}
 
