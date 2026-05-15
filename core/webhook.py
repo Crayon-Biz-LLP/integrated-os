@@ -2040,6 +2040,25 @@ async def process_webhook(update: dict):
         # Initialize conversation session early so shortcuts share the same session_id as the main flow
         session_id, history = get_or_create_session(chat_id)
 
+        # 🔄 Task update clarification response — skip classify_intent()
+        if text.strip().lower() in ('u', 'update', 'n', 'new', 'create'):
+            try:
+                last_clar = supabase.table('conversations') \
+                    .select('content') \
+                    .eq('session_id', session_id) \
+                    .eq('role', 'bot') \
+                    .eq('intent', 'CLARIFICATION') \
+                    .order('created_at', desc=True) \
+                    .limit(1) \
+                    .execute()
+                if last_clar.data:
+                    meta = json.loads(last_clar.data[0]['content'])
+                    if isinstance(meta, dict) and meta.get('confirmation') == 'task_update':
+                        if await resolve_task_update_confirmation(text, chat_id, session_id, meta):
+                            return {"success": True}
+            except Exception:
+                pass
+
         # 📋 /today prefix — on-demand daily briefing, skip classify_intent()
         if text.strip().lower() in ('/today', '/brief', '/day'):
             history_text = format_history_for_prompt(history)
