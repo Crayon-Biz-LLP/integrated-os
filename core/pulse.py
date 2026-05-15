@@ -1564,6 +1564,54 @@ def get_outlook_calendar_events(target_date):
         return []
 
 
+def get_outlook_calendar_events_range(start_date, end_date):
+    """Fetch calendar events from Outlook for a date range (for week/month views).
+    Returns list of {time, title, source, id} or [] on failure."""
+    try:
+        from core.skills.outlook_token_helper import refresh_outlook_token
+        token_data = refresh_outlook_token(write_back=False)
+        access_token = token_data["access_token"]
+
+        start_dt = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = end_date.replace(hour=23, minute=59, second=59)
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Prefer": 'outlook.timezone="Asia/Kolkata"',
+        }
+
+        params = {
+            "startDateTime": start_dt.isoformat(),
+            "endDateTime": end_dt.isoformat(),
+            "$orderby": "start/dateTime",
+            "$select": "subject,start,end,id",
+            "$top": 100,
+        }
+
+        url = "https://graph.microsoft.com/v1.0/me/calendarview"
+        events = []
+        while url:
+            if url.startswith("https://"):
+                resp = httpx.get(url, headers=headers, params=params, timeout=30)
+            else:
+                resp = httpx.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            for item in data.get("value", []):
+                events.append({
+                    "time": item["start"]["dateTime"],
+                    "title": item.get("subject", "Untitled"),
+                    "source": "outlook",
+                    "id": item.get("id"),
+                })
+            url = data.get("@odata.nextLink")
+            params = None
+        return events
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"Outlook calendar range fetch failed: {e}")
+        return []
+
+
 def get_google_calendar_events(target_date):
     """Fetch calendar events from Google Calendar for a given date.
     Returns list of {time, title, source, id} or [] on failure."""
@@ -1593,6 +1641,38 @@ def get_google_calendar_events(target_date):
         return events
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Google calendar fetch failed: {e}")
+        return []
+
+
+def get_google_calendar_events_range(start_date, end_date):
+    """Fetch calendar events from Google Calendar for a date range (for week/month views)."""
+    try:
+        service = build("calendar", "v3", credentials=get_google_creds(), cache=MemoryCache())
+        start_dt = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = end_date.replace(hour=23, minute=59, second=59)
+        rfc_start = format_rfc3339(start_dt.isoformat())
+        rfc_end = format_rfc3339(end_dt.isoformat())
+        events_res = service.events().list(
+            calendarId="primary",
+            timeMin=rfc_start,
+            timeMax=rfc_end,
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=100,
+        ).execute()
+        events = []
+        for e in events_res.get("items", []):
+            start = e.get("start", {})
+            dt = start.get("dateTime") or start.get("date", "")
+            events.append({
+                "time": dt,
+                "title": e.get("summary", "Untitled"),
+                "source": "google",
+                "id": e.get("id"),
+            })
+        return events
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"Google calendar range fetch failed: {e}")
         return []
 
 

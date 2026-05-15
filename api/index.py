@@ -150,14 +150,20 @@ async def get_messages_route(limit: int = 50, offset: int = 0):
 
 # --- CALENDAR EVENTS (Fetches from Google + Outlook) ---
 @app.get("/api/calendar-events")
-async def get_calendar_events(date: str = "today"):
-    """Fetch today's calendar events from Google Calendar and Outlook"""
+async def get_calendar_events(date: str = None, start: str = None, end: str = None):
+    """Fetch calendar events from Google Calendar and Outlook.
+    Use `date=today` or `date=YYYY-MM-DD` for a single day.
+    Use `start=YYYY-MM-DD&end=YYYY-MM-DD` for a date range (week/month view)."""
     try:
         from googleapiclient.discovery import build
         from datetime import datetime, timedelta
         
         # Calculate time range
-        if date == "today":
+        if start and end:
+            start_dt = datetime.fromisoformat(start).replace(hour=0, minute=0, second=0)
+            end_dt = datetime.fromisoformat(end).replace(hour=23, minute=59, second=59)
+            target = start_dt
+        elif date == "today" or not date:
             today = datetime.now()
             target = today.replace(hour=0, minute=0, second=0)
             start = format_rfc3339(target)
@@ -165,6 +171,13 @@ async def get_calendar_events(date: str = "today"):
         else:
             target = datetime.fromisoformat(date)
             start = format_rfc3339(target.replace(hour=0, minute=0, second=0))
+            end = format_rfc3339(target.replace(hour=23, minute=59, second=59))
+        
+        # Use start/end if provided, otherwise use the computed start/end
+        if start and end:
+            pass  # Already set from start/end params
+        else:
+            start = format_rfc3339(target)
             end = format_rfc3339(target.replace(hour=23, minute=59, second=59))
         
         # Google Calendar events
@@ -175,7 +188,7 @@ async def get_calendar_events(date: str = "today"):
             timeMax=end,
             singleEvents=True,
             orderBy='startTime',
-            maxResults=10
+            maxResults=50
         ).execute()
         
         # Simplify event data for frontend
@@ -190,9 +203,13 @@ async def get_calendar_events(date: str = "today"):
                 'source': 'google',
             })
         
-        # Outlook calendar events
+        # Outlook calendar events (fetch range if start/end provided)
         try:
-            outlook_events = get_outlook_calendar_events(target)
+            if start and end:
+                from core.pulse import get_outlook_calendar_events_range
+                outlook_events = get_outlook_calendar_events_range(start_dt, end_dt)
+            else:
+                outlook_events = get_outlook_calendar_events(target)
             for e in outlook_events:
                 simplified.append({
                     'id': e.get('id'),
