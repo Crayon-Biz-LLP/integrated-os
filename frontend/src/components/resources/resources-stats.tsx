@@ -1,23 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { ResourceStats } from '@/lib/resources/types';
-import { fetchResourceStats } from '@/lib/resources/api';
+import type { ResourceStats } from '@/lib/resources/types';
 
-export function ResourcesStats() {
-  const [stats, setStats] = useState<ResourceStats | null>(null);
-  const [loading, setLoading] = useState(true);
+export function ResourcesStats({ stats, loading }: { stats?: ResourceStats | null; loading?: boolean }) {
+  const isLoading = loading ?? stats === null;
 
-  useEffect(() => {
-    fetchResourceStats()
-      .then((data) => {
-        setStats(data);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {[1, 2, 3, 4].map((i) => (

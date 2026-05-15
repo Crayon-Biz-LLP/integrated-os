@@ -1,121 +1,64 @@
-'use client';
+import { createServerSupabaseClient } from "@/lib/supabase-server";
+import type { Email, EmailStats as EmailStatsData, EmailPendingTask, EmailDraft } from "@/lib/emails/types";
+import { EmailsShell } from "./emails-shell";
 
-import { useState, useEffect } from 'react';
-import { EmailStats } from '@/components/emails/email-stats';
-import { EmailTabs } from '@/components/emails/email-tabs';
-import { EmailsInboxTable } from '@/components/emails/emails-inbox-table';
-import { EmailFilters } from '@/components/emails/email-filters';
-import { PendingTasksList } from '@/components/emails/pending-tasks-list';
-import { DraftsList } from '@/components/emails/drafts-list';
-import { EmailDetailSheet } from '@/components/emails/email-detail-sheet';
-import { fetchEmails, fetchPendingTasks, fetchPendingDrafts, fetchEmailStats } from '@/lib/emails/api';
-import type { Email, EmailFilters as EmailFiltersType, EmailPendingTask, EmailDraft, EmailStats as EmailStatsData } from '@/lib/emails/types';
+export const dynamic = 'force-dynamic';
 
-export default function EmailsPage() {
-  const [activeTab, setActiveTab] = useState<'inbox' | 'pending' | 'drafts'>('inbox');
-  const [emails, setEmails] = useState<Email[]>([]);
-  const [emailsLoading, setEmailsLoading] = useState(true);
-  const [emailFilters, setEmailFilters] = useState<EmailFiltersType>({
-    classification: 'all',
-    source: 'all',
-    search: '',
-  });
-  const [pendingTasks, setPendingTasks] = useState<EmailPendingTask[]>([]);
-  const [pendingTasksLoading, setPendingTasksLoading] = useState(true);
-  const [drafts, setDrafts] = useState<EmailDraft[]>([]);
-  const [draftsLoading, setDraftsLoading] = useState(true);
-  const [emailStats, setEmailStats] = useState<EmailStatsData | null>(null);
-  const [emailStatsLoading, setEmailStatsLoading] = useState(true);
-  const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
-  const [isSheetOpen, setIsSheetOpen] = useState(false);
+export default async function EmailsPage() {
+  const supabase = await createServerSupabaseClient();
 
-  // On mount: fetch non-filter dependent data (pending tasks, drafts, stats)
-  useEffect(() => {
-    const loadNonFilterData = async () => {
-      try {
-        const [tasksData, draftsData] = await Promise.all([
-          fetchPendingTasks(),
-          fetchPendingDrafts(),
-        ]);
-        setPendingTasks(tasksData);
-        setDrafts(draftsData);
-      } catch (error) {
-        console.error('Failed to load tasks/drafts:', error);
-      } finally {
-        setPendingTasksLoading(false);
-        setDraftsLoading(false);
-      }
-      // Stats is independent — failure won't block tasks/drafts
-      try {
-        setEmailStats(await fetchEmailStats());
-      } catch (error) {
-        console.error('Failed to load email stats:', error);
-      } finally {
-        setEmailStatsLoading(false);
-      }
-    };
-    loadNonFilterData();
-  }, []);
+  const [emailsRes, emailClassRes, pendingTasksRes, draftsRes, pendingDraftsCountRes] = await Promise.all([
+    supabase
+      .from("emails")
+      .select(`
+        id, subject, sender, sender_email, body_summary,
+        classification, source, received_at,
+        linked_project_id, linked_person_id,
+        linked_project:projects(name),
+        linked_person:people(name)
+      `)
+      .order("received_at", { ascending: false })
+      .limit(100),
+    supabase
+      .from("emails")
+      .select("classification")
+      .limit(500),
+    supabase
+      .from("email_pending_tasks")
+      .select(`*, email:emails(subject, sender_email, sender)`)
+      .is("danny_decision", null)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("email_drafts")
+      .select(`*, email:emails(subject, sender_email, sender, source)`)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("email_drafts")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "pending"),
+  ]);
 
-  // On email filter change: fetch only emails
-  useEffect(() => {
-    const loadEmails = async () => {
-      setEmailsLoading(true);
-      try {
-        const emailsData = await fetchEmails(emailFilters);
-        setEmails(emailsData);
-      } catch (error) {
-        console.error('Failed to load emails:', error);
-      } finally {
-        setEmailsLoading(false);
-      }
-    };
-    loadEmails();
-  }, [emailFilters]);
+  const emails = (emailsRes.data ?? []) as unknown as Email[];
+  const emailClassList = emailClassRes.data ?? [];
+  const pendingTasks = (pendingTasksRes.data ?? []) as unknown as EmailPendingTask[];
+  const drafts = (draftsRes.data ?? []) as unknown as EmailDraft[];
 
-  const handleEmailClick = (email: Email) => {
-    setSelectedEmail(email);
-    setIsSheetOpen(true);
-  };
-
-  const handleSheetOpenChange = (open: boolean) => {
-    setIsSheetOpen(open);
-    if (!open) setSelectedEmail(null);
+  const emailStats: EmailStatsData = {
+    total: emailClassList.length,
+    actionable: emailClassList.filter((e: any) => e.classification === "actionable").length,
+    fyi: emailClassList.filter((e: any) => e.classification === "fyi").length,
+    pending_tasks: pendingTasks.length,
+    pending_drafts: pendingDraftsCountRes.count ?? 0,
   };
 
   return (
-    <div className="p-4 md:p-6">
-      <h1 className="text-2xl font-bold tracking-tight">Emails</h1>
-      <p className="text-sm text-muted-foreground/70 mt-0.5">Ingested from Gmail and Outlook</p>
-      <EmailStats stats={emailStats} loading={emailStatsLoading} />
-      <EmailTabs
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        inboxCount={emailStats?.total || 0}
-        pendingCount={emailStats?.pending_tasks || 0}
-        draftsCount={emailStats?.pending_drafts || 0}
-      />
-      {activeTab === 'inbox' && (
-        <>
-          <EmailFilters filters={emailFilters} onFiltersChange={setEmailFilters} />
-          <EmailsInboxTable
-            emails={emails}
-            loading={emailsLoading}
-            onEmailClick={handleEmailClick}
-          />
-        </>
-      )}
-      {activeTab === 'pending' && (
-        <PendingTasksList tasks={pendingTasks} loading={pendingTasksLoading} />
-      )}
-      {activeTab === 'drafts' && (
-        <DraftsList drafts={drafts} loading={draftsLoading} />
-      )}
-      <EmailDetailSheet
-        open={isSheetOpen}
-        onOpenChange={handleSheetOpenChange}
-        email={selectedEmail}
-      />
-    </div>
+    <EmailsShell
+      initialEmails={emails}
+      initialStats={emailStats}
+      initialPendingTasks={pendingTasks}
+      initialDrafts={drafts}
+      initialStatsLoading={false}
+    />
   );
 }

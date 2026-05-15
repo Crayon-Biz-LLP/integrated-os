@@ -1,22 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { PeopleStats as PeopleStatsType } from '@/lib/people/types';
-import { fetchPeopleStats } from '@/lib/people/api';
+import type { PeopleStats as PeopleStatsType } from '@/lib/people/types';
 import { Users, Star, MessageSquare, Clock } from 'lucide-react';
 
-export function PeopleStats() {
-  const [stats, setStats] = useState<PeopleStatsType | null>(null);
-  const [loading, setLoading] = useState(true);
+export function PeopleStats({ stats, loading }: { stats?: PeopleStatsType | null; loading?: boolean }) {
+  const isLoading = loading ?? stats === null;
 
-  useEffect(() => {
-    fetchPeopleStats().then((data) => {
-      setStats(data);
-      setLoading(false);
-    });
-  }, []);
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {[1, 2, 3, 4].map((i) => (

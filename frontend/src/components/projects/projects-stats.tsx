@@ -1,23 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { ProjectStats as ProjectStatsType } from '@/lib/projects/types';
-import { fetchProjectStats } from '@/lib/projects/api';
+import type { ProjectStats as ProjectStatsType } from '@/lib/projects/types';
 
-export function ProjectsStats() {
-  const [stats, setStats] = useState<ProjectStatsType | null>(null);
-  const [loading, setLoading] = useState(true);
+export function ProjectsStats({ stats, loading }: { stats?: ProjectStatsType | null; loading?: boolean }) {
+  const isLoading = loading ?? stats === null;
 
-  useEffect(() => {
-    fetchProjectStats()
-      .then((data) => {
-        setStats(data);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {[1, 2, 3, 4].map((i) => (
