@@ -12,7 +12,8 @@ import type { Task, TaskStats } from '@/lib/tasks/types';
 import { fetchPendingTasks } from '@/lib/emails/api';
 import type { EmailPendingTask, EmailStats } from '@/lib/emails/types';
 import { fetchEmailStats } from '@/lib/emails/api';
-import { CalendarEvent, fetchCalendarEvents } from '@/lib/calendar/api';
+import { fetchCalendarEvents } from '@/lib/calendar/api';
+import type { CalendarEvent } from '@/lib/calendar/types';
 import { Button } from '@/components/ui/button';
 
 export default function DashboardPage() {
