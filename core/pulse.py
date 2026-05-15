@@ -3995,6 +3995,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     continue
 
                 # 2. THE SMART CALENDAR SYNC (With Radar)
+                cal_duration = item.get('duration_mins', 15)
                 if item_status in ['done', 'cancelled'] and e_id:
                     delete_calendar_event(e_id)
                     e_id = None
@@ -4007,7 +4008,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         ai_data['briefing'] = current_briefing + f"\n\n⚠️ **SNOOZE CONFLICT:** Tried moving '{task_title}' to {new_reminder.split('T')[1][:5]}, but you have '{conflict_name}' then."
                     
                     # Edit or create the block
-                    e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id)
+                    e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id, duration_mins=cal_duration)
                 elif e_id:
                     # Snooze to DATE-ONLY -> Remove existing block
                     delete_calendar_event(e_id)
