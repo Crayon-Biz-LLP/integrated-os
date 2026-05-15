@@ -223,7 +223,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
             .maybe_single() \
             .execute()
 
-        if task_node.data:
+        if task_node and task_node.data:
             task_node_id = task_node.data['id']
         else:
             new_node = supabase.table('graph_nodes').insert({
@@ -254,7 +254,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                     .maybe_single() \
                     .execute()
 
-                if not existing.data:
+                if not existing or not existing.data:
                     supabase.table('graph_edges').insert({
                         "source_node_id": task_node_id,
                         "target_node_id": proj_node.data['id'],
@@ -289,7 +289,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                         .maybe_single() \
                         .execute()
 
-                    if not existing_edge.data:
+                    if not existing_edge or not existing_edge.data:
                         supabase.table('graph_edges').insert({
                             "source_node_id": task_node_id,
                             "target_node_id": person_node.data['id'],
@@ -782,6 +782,8 @@ async def hybrid_search_graph(query: str) -> str:
         
         if connected_ids:
             labels_res = supabase.table('graph_nodes').select('id, label').in_('id', list(connected_ids)).execute()
+            if not labels_res.data:
+                return ""
             label_map = {str(n['id']): n['label'] for n in labels_res.data}
             
             labeled_map = []
@@ -978,7 +980,7 @@ async def detect_temporal_patterns() -> str:
         # Search memories from same month/day in previous years
         memories_res = supabase.table('memories') \
             .select('content, memory_type, created_at') \
-            .or_(f"created_at::text.ilike.%{today.month:02}-{today.day:02}%") \
+            .or_(f"created_at::text.ilike.*{today.month:02}-{today.day:02}*") \
             .order('created_at', desc=True) \
             .limit(10) \
             .execute()
@@ -1715,6 +1717,8 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         seen = set()
         
         for edge in (edges_res.data or []):
+            if not edge:
+                continue
             source = edge.get('source_node_id')
             target = edge.get('target_node_id')
             rel = edge.get('relationship')
