@@ -8,9 +8,10 @@ import { CalendarDateNav } from '@/components/calendar/calendar-date-nav';
 import { CalendarStats } from '@/components/calendar/calendar-stats';
 import { DayView } from '@/components/calendar/day-view';
 import { WeekView } from '@/components/calendar/week-view';
+import { MonthView } from '@/components/calendar/month-view';
 import { AgendaView } from '@/components/calendar/agenda-view';
 import { EventDetailSheet } from '@/components/calendar/event-detail-sheet';
-import { startOfWeek, endOfWeek, format } from 'date-fns';
+import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, format } from 'date-fns';
 import { cn } from '@/lib/utils';
 
 export default function CalendarPage() {
@@ -25,7 +26,15 @@ export default function CalendarPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      if (view === 'week') {
+      if (view === 'month') {
+        const start = startOfMonth(currentDate);
+        const end = endOfMonth(currentDate);
+        const data = await fetchEventsByRange(
+          format(start, 'yyyy-MM-dd'),
+          format(end, 'yyyy-MM-dd'),
+        );
+        setEvents(data);
+      } else if (view === 'week') {
         const start = startOfWeek(currentDate, { weekStartsOn: 1 });
         const end = endOfWeek(currentDate, { weekStartsOn: 1 });
         const data = await fetchEventsByRange(
@@ -52,6 +61,11 @@ export default function CalendarPage() {
   function handleEventClick(event: CalendarEvent) {
     setSelectedEvent(event);
     setSheetOpen(true);
+  }
+
+  function handleNavigateToDay(date: Date) {
+    setCurrentDate(date);
+    setView('day');
   }
 
   function goToday() {
@@ -114,7 +128,14 @@ export default function CalendarPage() {
         <WeekView
           events={filteredEvents}
           currentDate={currentDate}
-          onDateChange={setCurrentDate}
+          onDateChange={handleNavigateToDay}
+          onEventClick={handleEventClick}
+        />
+      ) : view === 'month' ? (
+        <MonthView
+          events={filteredEvents}
+          currentDate={currentDate}
+          onDateChange={handleNavigateToDay}
           onEventClick={handleEventClick}
         />
       ) : (

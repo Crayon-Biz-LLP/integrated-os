@@ -1,7 +1,7 @@
 'use client';
 
 import { ChevronLeft, ChevronRight, CalendarDays } from 'lucide-react';
-import { format, addDays, addWeeks, startOfWeek, endOfWeek } from 'date-fns';
+import { format, addDays, addWeeks, addMonths, startOfWeek, endOfWeek } from 'date-fns';
 import type { CalendarViewType } from '@/lib/calendar/types';
 
 interface CalendarDateNavProps {
@@ -17,12 +17,17 @@ export function CalendarDateNav({ currentDate, view, onDateChange, onToday }: Ca
       onDateChange(addDays(currentDate, direction));
     } else if (view === 'week') {
       onDateChange(addWeeks(currentDate, direction));
+    } else if (view === 'month') {
+      onDateChange(addMonths(currentDate, direction));
     }
   }
 
   function getLabel(): string {
     if (view === 'day') {
       return format(currentDate, 'EEEE, MMMM d, yyyy');
+    }
+    if (view === 'month') {
+      return format(currentDate, 'MMMM yyyy');
     }
     const start = startOfWeek(currentDate, { weekStartsOn: 1 });
     const end = endOfWeek(currentDate, { weekStartsOn: 1 });

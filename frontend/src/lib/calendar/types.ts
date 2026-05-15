@@ -1,6 +1,6 @@
 export type CalendarSource = 'google' | 'outlook';
 
-export type CalendarViewType = 'day' | 'week' | 'agenda';
+export type CalendarViewType = 'day' | 'week' | 'month' | 'agenda';
 
 export interface CalendarEvent {
   id: string;

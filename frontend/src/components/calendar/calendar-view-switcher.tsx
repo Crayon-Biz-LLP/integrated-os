@@ -11,6 +11,7 @@ interface CalendarViewSwitcherProps {
 const views: { value: CalendarViewType; label: string }[] = [
   { value: 'day', label: 'Day' },
   { value: 'week', label: 'Week' },
+  { value: 'month', label: 'Month' },
   { value: 'agenda', label: 'Agenda' },
 ];
 
