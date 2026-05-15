@@ -1,8 +1,7 @@
 'use client';
 
 import type { CalendarEvent } from '@/lib/calendar/types';
-import { startOfWeek, addDays, format, isSameDay, parseISO } from 'date-fns';
-import { Badge } from '@/components/ui/badge';
+import { startOfWeek, addDays, format } from 'date-fns';
 import { cn } from '@/lib/utils';
 
 interface WeekViewProps {
@@ -15,16 +14,22 @@ interface WeekViewProps {
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 function getDayEvents(day: Date, events: CalendarEvent[]): CalendarEvent[] {
+  const dayStr = format(day, 'yyyy-MM-dd');
   return events.filter((e) => {
     const dt = e.start.dateTime || e.start.date;
     if (!dt) return false;
-    try {
-      const eventDate = parseISO(dt.replace('+05:30', 'Z').replace(' ', 'T'));
-      return isSameDay(eventDate, day);
-    } catch {
-      return false;
-    }
+    return dt.substring(0, 10) === dayStr;
   });
+}
+
+function formatIsoTimeShort(iso: string): string {
+  const m = iso.match(/T(\d{2}):(\d{2})/);
+  if (!m) return '';
+  const h = parseInt(m[1]);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const display = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${display}:${min} ${ampm}`;
 }
 
 export function WeekView({ events, currentDate, onDateChange, onEventClick }: WeekViewProps) {
@@ -35,7 +40,7 @@ export function WeekView({ events, currentDate, onDateChange, onEventClick }: We
     <div className="grid grid-cols-7 gap-px bg-border/40 rounded-lg overflow-hidden border border-border/40">
       {DAYS.map((dayName, i) => {
         const day = addDays(weekStart, i);
-        const isToday = isSameDay(day, today);
+        const isToday = format(day, 'yyyy-MM-dd') === format(today, 'yyyy-MM-dd');
         const dayEvents = getDayEvents(day, events);
 
         return (
@@ -76,7 +81,7 @@ export function WeekView({ events, currentDate, onDateChange, onEventClick }: We
                     >
                       {event.start.dateTime && (
                         <span className="block text-[10px] text-muted-foreground tabular-nums">
-                          {format(parseISO(event.start.dateTime.replace('+05:30', 'Z').replace(' ', 'T')), 'h:mm a')}
+                          {formatIsoTimeShort(event.start.dateTime)}
                         </span>
                       )}
                       <span className="font-medium">{event.summary}</span>

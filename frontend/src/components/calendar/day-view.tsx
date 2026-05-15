@@ -1,7 +1,6 @@
 'use client';
 
 import type { CalendarEvent } from '@/lib/calendar/types';
-import { parseISO, format } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { Clock } from 'lucide-react';
@@ -24,22 +23,20 @@ const SOURCE_BADGE = {
   outlook: { variant: 'secondary' as const, label: 'Outlook' },
 } as const;
 
-function getEventHour(time: string): number {
-  try {
-    const d = parseISO(time.replace('+05:30', 'Z').replace(' ', 'T'));
-    return d.getHours() + d.getMinutes() / 60;
-  } catch {
-    return 6;
-  }
+function getHourFromIso(time: string): number {
+  const m = time.match(/T(\d{2}):(\d{2})/);
+  if (!m) return 6;
+  return parseInt(m[1]) + parseInt(m[2]) / 60;
 }
 
-function formatEventTime(time: string): string {
-  try {
-    const d = parseISO(time.replace('+05:30', 'Z').replace(' ', 'T'));
-    return format(d, 'h:mm a');
-  } catch {
-    return time;
-  }
+function formatIsoTime(time: string): string {
+  const m = time.match(/T(\d{2}):(\d{2})/);
+  if (!m) return time;
+  const h = parseInt(m[1]);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const display = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${display}:${min} ${ampm}`;
 }
 
 export function DayView({ events, date, onEventClick }: DayViewProps) {
@@ -67,7 +64,7 @@ export function DayView({ events, date, onEventClick }: DayViewProps) {
           const slotEnd = hour + 1;
           const slotEvents = events.filter((e) => {
             if (!e.start.dateTime) return false;
-            const h = getEventHour(e.start.dateTime);
+            const h = getHourFromIso(e.start.dateTime);
             return h >= slotStart && h < slotEnd;
           });
 
@@ -80,7 +77,7 @@ export function DayView({ events, date, onEventClick }: DayViewProps) {
               </div>
               <div className={cn('flex-1 min-h-[40px] border-t border-border/40 relative py-0.5', slotEvents.length === 0 && 'group-hover:bg-muted/20')}>
                 {slotEvents.map((event) => {
-                  const startHour = getEventHour(event.start.dateTime);
+                  const startHour = getHourFromIso(event.start.dateTime);
                   const offsetMinutes = (startHour - slotStart) * 60;
                   return (
                     <button
@@ -95,7 +92,7 @@ export function DayView({ events, date, onEventClick }: DayViewProps) {
                       <div className="flex items-center gap-2">
                         <Clock className="h-3 w-3 text-muted-foreground shrink-0" />
                         <span className="text-xs tabular-nums text-muted-foreground">
-                          {formatEventTime(event.start.dateTime)}
+                          {formatIsoTime(event.start.dateTime)}
                         </span>
                         <Badge variant={SOURCE_BADGE[event.source].variant} className="text-[9px] px-1 py-0 h-4 ml-auto">
                           {SOURCE_BADGE[event.source].label}
