@@ -16,6 +16,9 @@ from core.pulse import (
     delete_calendar_event,
     versioned_update,
     write_outcome_memory,
+    get_outlook_calendar_events,
+    get_google_creds,
+    format_rfc3339,
 )
 
 app = FastAPI(title="Integrated-OS")
@@ -145,28 +148,27 @@ async def get_messages_route(limit: int = 50, offset: int = 0):
         print(f"Get messages error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- CALENDAR EVENTS (Fetches from Google Calendar) ---
+# --- CALENDAR EVENTS (Fetches from Google + Outlook) ---
 @app.get("/api/calendar-events")
 async def get_calendar_events(date: str = "today"):
-    """Fetch today's calendar events from Google Calendar"""
+    """Fetch today's calendar events from Google Calendar and Outlook"""
     try:
-        from core.pulse import get_google_creds, format_rfc3339
         from googleapiclient.discovery import build
         from datetime import datetime, timedelta
-        
-        service = build('calendar', 'v3', credentials=get_google_creds())
         
         # Calculate time range
         if date == "today":
             today = datetime.now()
-            start = format_rfc3339(today.replace(hour=0, minute=0, second=0))
-            end = format_rfc3339(today.replace(hour=23, minute=59, second=59))
+            target = today.replace(hour=0, minute=0, second=0)
+            start = format_rfc3339(target)
+            end = format_rfc3339(target.replace(hour=23, minute=59, second=59))
         else:
-            # Parse specific date
             target = datetime.fromisoformat(date)
             start = format_rfc3339(target.replace(hour=0, minute=0, second=0))
             end = format_rfc3339(target.replace(hour=23, minute=59, second=59))
         
+        # Google Calendar events
+        service = build('calendar', 'v3', credentials=get_google_creds())
         events_res = service.events().list(
             calendarId='primary',
             timeMin=start,
@@ -176,18 +178,30 @@ async def get_calendar_events(date: str = "today"):
             maxResults=10
         ).execute()
         
-        events = events_res.get('items', [])
-        
         # Simplify event data for frontend
         simplified = []
-        for event in events:
+        for event in events_res.get('items', []):
             simplified.append({
                 'id': event.get('id'),
                 'summary': event.get('summary', 'No Title'),
                 'start': event.get('start', {}),
                 'end': event.get('end', {}),
-                'description': event.get('description', '')
+                'description': event.get('description', ''),
+                'source': 'google',
             })
+        
+        # Outlook calendar events
+        try:
+            outlook_events = get_outlook_calendar_events(target)
+            for e in outlook_events:
+                simplified.append({
+                    'id': e.get('id'),
+                    'summary': e.get('title'),
+                    'start': {'dateTime': e['time']},
+                    'source': 'outlook',
+                })
+        except Exception as ol_err:
+            print(f"Outlook calendar events error: {ol_err}")
         
         return {"events": simplified}
     

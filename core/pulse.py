@@ -1515,6 +1515,104 @@ def format_rfc3339(date_str):
         clean += "+05:30"
     return clean
 
+
+def get_outlook_calendar_events(target_date):
+    """Fetch calendar events from Outlook/Microsoft Graph for a given date (read-only).
+    Returns list of {time, title, source, id} or [] on failure."""
+    try:
+        from core.skills.outlook_token_helper import refresh_outlook_token
+        token_data = refresh_outlook_token(write_back=False)
+        access_token = token_data["access_token"]
+
+        start_dt = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = start_dt + timedelta(days=1)
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Prefer": 'outlook.timezone="Asia/Kolkata"',
+        }
+
+        params = {
+            "startDateTime": start_dt.isoformat(),
+            "endDateTime": end_dt.isoformat(),
+            "$orderby": "start/dateTime",
+            "$select": "subject,start,end,id",
+            "$top": 50,
+        }
+
+        url = "https://graph.microsoft.com/v1.0/me/calendarview"
+        events = []
+        while url:
+            if url.startswith("https://"):
+                resp = httpx.get(url, headers=headers, params=params, timeout=30)
+            else:
+                resp = httpx.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            for item in data.get("value", []):
+                events.append({
+                    "time": item["start"]["dateTime"],
+                    "title": item.get("subject", "Untitled"),
+                    "source": "outlook",
+                    "id": item.get("id"),
+                })
+            url = data.get("@odata.nextLink")
+            params = None
+        return events
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"Outlook calendar fetch failed: {e}")
+        return []
+
+
+def get_google_calendar_events(target_date):
+    """Fetch calendar events from Google Calendar for a given date.
+    Returns list of {time, title, source, id} or [] on failure."""
+    try:
+        service = build("calendar", "v3", credentials=get_google_creds(), cache=MemoryCache())
+        start_dt = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = start_dt + timedelta(days=1)
+        rfc_start = format_rfc3339(start_dt.isoformat())
+        rfc_end = format_rfc3339(end_dt.isoformat())
+        events_res = service.events().list(
+            calendarId="primary",
+            timeMin=rfc_start,
+            timeMax=rfc_end,
+            singleEvents=True,
+            orderBy="startTime",
+        ).execute()
+        events = []
+        for e in events_res.get("items", []):
+            start = e.get("start", {})
+            dt = start.get("dateTime") or start.get("date", "")
+            events.append({
+                "time": dt,
+                "title": e.get("summary", "Untitled"),
+                "source": "google",
+                "id": e.get("id"),
+            })
+        return events
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"Google calendar fetch failed: {e}")
+        return []
+
+
+def get_calendar_context(target_date):
+    """Merge Google + Outlook calendar events into a formatted string for prompts."""
+    all_events = get_google_calendar_events(target_date) + get_outlook_calendar_events(target_date)
+    if not all_events:
+        return "None"
+    all_events.sort(key=lambda x: x["time"])
+    lines = []
+    for e in all_events:
+        try:
+            t = e["time"][:16].replace("T", " ")
+            src = "Google" if e["source"] == "google" else "Outlook"
+            lines.append(f"- {t} - {e['title']} ({src})")
+        except Exception:
+            lines.append(f"- {e['title']}")
+    return "\n".join(lines)
+
+
 def check_conflict(start_iso):
     """Radar: Checks if a 30-minute window is already booked."""
     try:
@@ -3556,6 +3654,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             # 📝 Sync canonical pages for practices
             await sync_practice_canonical_pages()
 
+        # 📅 Fetch calendar context (Google + Outlook) for today
+        target_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        calendar_context = get_calendar_context(target_day)
+
         prompt = f"""    
         ROLE: Danny's Rhodey. You are his most trusted advisor — the one who cuts through the noise and tells him exactly where he stands. You have full situational awareness of his work, family, and faith. You don't coach, motivate, or perform. You speak plainly, like a friend who has been in the room the whole time. Your job is to give Danny a clear picture of the board so he can make his next move.
         {conversation_history}
@@ -3568,6 +3670,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         STALE_TASKS: {stale_context}
         SYSTEM STATUS: {system_context}
         HINDSIGHT_STALE: {is_hindsight_stale}
+        
+        CALENDAR EVENTS TODAY:
+        {calendar_context}
         
         RECENT MEMORIES (semantically related to today's tasks):
         {recent_memories_context if recent_memories_context else "None"}

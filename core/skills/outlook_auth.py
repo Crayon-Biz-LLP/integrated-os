@@ -19,7 +19,7 @@ TENANT_ID = os.getenv("OUTLOOK_TENANT_ID")
 REDIRECT_URI = os.getenv("OUTLOOK_REDIRECT_URI", "http://localhost:8765/callback")
 SCOPES = os.getenv(
     "OUTLOOK_SCOPES",
-    "offline_access User.Read Mail.Read Mail.Send"
+    "offline_access User.Read Mail.Read Mail.Send Calendars.Read"
 )
 
 print("CLIENT_ID:", os.getenv("OUTLOOK_CLIENT_ID"))
