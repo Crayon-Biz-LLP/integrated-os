@@ -163,6 +163,8 @@ async def get_calendar_events(date: str = None, start: str = None, end: str = No
             start_dt = datetime.fromisoformat(start).replace(hour=0, minute=0, second=0)
             end_dt = datetime.fromisoformat(end).replace(hour=23, minute=59, second=59)
             target = start_dt
+            start = format_rfc3339(start_dt)
+            end = format_rfc3339(end_dt)
         elif date == "today" or not date:
             today = datetime.now()
             target = today.replace(hour=0, minute=0, second=0)
@@ -171,13 +173,6 @@ async def get_calendar_events(date: str = None, start: str = None, end: str = No
         else:
             target = datetime.fromisoformat(date)
             start = format_rfc3339(target.replace(hour=0, minute=0, second=0))
-            end = format_rfc3339(target.replace(hour=23, minute=59, second=59))
-        
-        # Use start/end if provided, otherwise use the computed start/end
-        if start and end:
-            pass  # Already set from start/end params
-        else:
-            start = format_rfc3339(target)
             end = format_rfc3339(target.replace(hour=23, minute=59, second=59))
         
         # Google Calendar events
