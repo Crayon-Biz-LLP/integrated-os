@@ -8,6 +8,7 @@ import base64
 from email.mime.text import MIMEText
 from email.utils import getaddresses
 from supabase import create_client, Client
+from core.duplicate_guard import check_duplicate
 from datetime import datetime, timezone, timedelta
 from google import genai
 from google.oauth2.credentials import Credentials
@@ -109,51 +110,23 @@ def get_google_creds():
         token_uri="https://oauth2.googleapis.com/token"
     )
 
-def normalize_title(title: str) -> str:
-    """Normalize title for comparison: lowercase, strip punctuation, collapse whitespace."""
-    import re
-    # Lowercase
-    normalized = title.lower()
-    # Strip punctuation (keep alphanumeric and spaces)
-    normalized = re.sub(r'[^a-z0-9\s]', '', normalized)
-    # Collapse repeated whitespace
-    normalized = re.sub(r'\s+', ' ', normalized).strip()
-    return normalized
-
-
-def is_already_in_tasks_table(title: str) -> bool:
+def is_already_in_tasks_table(title: str) -> dict:
     """Check if a similar task already exists in the tasks table.
-    Uses strict matching: normalized exact match or extremely high similarity.
-    Fails open on errors."""
+    Uses normalized exact match + anchor entity overlap (Jaccard-like).
+    Fails open — always returns 'clear' on errors.
+    
+    Returns dict with keys: result ('block'|'flag'|'clear'), matched_id, matched_title, is_superset, ratio.
+    """
     try:
-        # First, try exact normalized match
-        normalized_title = normalize_title(title)
-        if not normalized_title:
-            return False
-        
-        # Fetch active tasks for comparison
         result = supabase.table('tasks')\
             .select('id, title')\
             .not_.in_('status', ['done', 'cancelled'])\
             .execute()
-        
-        if not result.data:
-            return False
-        
-        # Check for exact normalized match
-        for task in result.data:
-            existing_title = task.get('title', '')
-            if normalize_title(existing_title) == normalized_title:
-                print(f"⚠️ Duplicate guard: '{title}' matches "
-                      f"existing task (id: {task['id']}, title: '{existing_title}'). "
-                      f"Skipping.")
-                return True
-        
-        # No exact match found
-        return False
+        tasks = result.data or []
+        return check_duplicate(title, tasks)
     except Exception as e:
         audit_log_sync("webhook", "WARNING", f"Duplicate guard check failed (failing open): {e}")
-        return False  # Fail open — never block suggestion creation on DB error
+        return {"result": "clear", "matched_id": None, "matched_title": None, "is_superset": False, "ratio": 0.0}
 
 
 UPDATE_TRIGGER_WORDS = {'update', 'reschedule', 'reschedule', 'change', 'move', 'push', 'postpone', 'delay', 'bring', 'advance'}
@@ -324,7 +297,20 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
     is_human = row.get('is_human_sender', False)
 
     if decision == 'approve':
-        if is_already_in_tasks_table(title):
+        guard = is_already_in_tasks_table(title)
+
+        if guard['result'] == 'block':
+            if guard['is_superset'] and guard['matched_id']:
+                try:
+                    client.table('tasks').update({'title': title}).eq('id', guard['matched_id']).execute()
+                    client.table('email_pending_tasks').update({'danny_decision': 'merged'}).eq('id', row['id']).execute()
+                    print(f"Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' → '{title}'")
+                    return {
+                        "success": True, "action": "updated",
+                        "message": f"Updated task [{guard['matched_id']}] with richer title: {title}"
+                    }
+                except Exception:
+                    pass
             client.table('email_pending_tasks').update({'danny_decision': 'skipped'}).eq('id', row['id']).execute()
             return {
                 "success": False, "action": "duplicate",
@@ -332,7 +318,7 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
             }
 
         try:
-            client.table('raw_dumps').insert([{
+            insert_data = {
                 "content": title,
                 "source": "email",
                 "status": "pending",
@@ -343,7 +329,13 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
                     "email_id": email_id,
                     "is_human_sender": is_human
                 }
-            }]).execute()
+            }
+            if guard['result'] == 'flag':
+                insert_data['metadata']['possible_duplicate'] = True
+                insert_data['metadata']['duplicate_of_title'] = guard['matched_title']
+                insert_data['metadata']['duplicate_of_id'] = guard['matched_id']
+
+            client.table('raw_dumps').insert([insert_data]).execute()
         except Exception:
             return {
                 "success": False, "action": "staging_failed",
@@ -351,6 +343,14 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
             }
 
         client.table('email_pending_tasks').update({'danny_decision': 'approved'}).eq('id', row['id']).execute()
+
+        if guard['result'] == 'flag':
+            print(f"Staged to raw_dumps with possible_duplicate flag: {title}")
+            return {
+                "success": True, "action": "approved",
+                "message": f"Task staged: {title}\n⚠️ Looks similar to '{guard['matched_title']}' — kept both."
+            }
+
         print(f"Staged to raw_dumps via email approval: {title}")
         return {"success": True, "action": "approved", "message": f"Task staged: {title}"}
 
@@ -2775,7 +2775,7 @@ async def handle_command(text: str, chat_id: int):
     elif text in ['/ep']:
         try:
             pending = supabase.table('email_pending_tasks')\
-                .select('id, suggested_title, suggested_project')\
+                .select('id, suggested_title, suggested_project, possible_duplicate, duplicate_of_title')\
                 .is_('danny_decision', 'null')\
                 .order('created_at', desc=False)\
                 .limit(10)\
@@ -2784,7 +2784,11 @@ async def handle_command(text: str, chat_id: int):
                 lines = [f"📨 Pending email tasks ({len(pending.data)}):"]
                 for row in pending.data:
                     project = row.get('suggested_project') or 'Unknown'
-                    lines.append(f"[{row['id']}] {row['suggested_title'][:60]} — {project}")
+                    flag = row.get('possible_duplicate', False)
+                    dup_of = row.get('duplicate_of_title', '') if flag else ''
+                    prefix = "⚠️ " if flag else ""
+                    suffix = f" (possible dup: {dup_of})" if flag else ""
+                    lines.append(f"{prefix}[{row['id']}] {row['suggested_title'][:60]} — {project}{suffix}")
                 lines.append('"[id] yes" to approve · "[id] drop" to reject')
                 reply = "\n\n".join(lines)
             else:

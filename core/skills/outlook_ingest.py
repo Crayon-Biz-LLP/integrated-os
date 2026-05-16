@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from core.constants import EmailStatus
+from core.duplicate_guard import check_duplicate
 
 load_dotenv()
 load_dotenv('.env.local')
@@ -21,35 +22,17 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
 
-def build_active_task_keyword_set() -> set:
-    """Fetch all active task titles ONCE and extract keywords into a set."""
+def build_active_task_list() -> list:
+    """Fetch all active task titles ONCE for duplicate checking."""
     try:
         result = supabase.table('tasks')\
-            .select('title')\
+            .select('id, title')\
             .not_.in_('status', ['done', 'cancelled'])\
             .execute()
-        keywords = set()
-        for row in (result.data or []):
-            title = row.get('title', '')
-            for word in title.lower().split():
-                if len(word) > 4:
-                    keywords.add(word)
-        return keywords
+        return result.data or []
     except Exception as e:
-        print(f"⚠️ Failed to build task keyword set (failing open): {e}")
-        return set()
-
-
-def is_duplicate_task(title: str, active_keywords: set) -> bool:
-    """In-memory dedup check. Zero DB calls."""
-    if not active_keywords:
-        return False
-    words = [w for w in title.lower().split() if len(w) > 4]
-    for kw in words[:3]:
-        if kw in active_keywords:
-            print(f"⚠️  Duplicate guard: '{title}' matches existing task (keyword: '{kw}'). Dropping.")
-            return True
-    return False
+        print(f"⚠️ Failed to build active task list (failing open): {e}")
+        return []
 
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
@@ -295,8 +278,8 @@ async def ingest_outlook_messages(limit=25):
         print("No new Outlook messages found.")
         return {"processed": 0, "ignored": 0, "skipped": 0}
 
-    active_task_keywords = build_active_task_keyword_set()
-    print(f"🧠 Loaded {len(active_task_keywords)} active task keywords for dedup.")
+    active_task_list = build_active_task_list()
+    print(f"🧠 Loaded {len(active_task_list)} active tasks for duplicate checking.")
 
     processed = 0
     ignored = 0
@@ -436,7 +419,29 @@ async def ingest_outlook_messages(limit=25):
                 
                 if suggested_task:
                     suggested_title = suggested_task or ''
-                    if not is_duplicate_task(suggested_title, active_task_keywords):
+                    guard = check_duplicate(suggested_title, active_task_list)
+                    if guard['result'] == 'block':
+                        if guard['is_superset'] and guard['matched_id']:
+                            try:
+                                supabase.table('tasks').update({'title': suggested_title}).eq('id', guard['matched_id']).execute()
+                                print(f"🔁 Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' → '{suggested_title}'")
+                            except Exception as upd_err:
+                                print(f"⚠️ Auto-update failed: {upd_err}")
+                        else:
+                            print(f"⚠️ Duplicate guard (block): '{suggested_title}' matches existing task [{guard['matched_id']}]. Skipping.")
+                    elif guard['result'] == 'flag':
+                        supabase.table('email_pending_tasks').insert({
+                            "email_id": email_id,
+                            "suggested_title": suggested_task,
+                            "suggested_project": linked_project_name,
+                            "shown_in_brief": False,
+                            "danny_decision": None,
+                            "is_human_sender": is_human,
+                            "possible_duplicate": True,
+                            "duplicate_of_title": guard['matched_title']
+                        }).execute()
+                        print(f"⚠️ Duplicate guard (flag): '{suggested_title}' may be similar to task '{guard['matched_title']}'. Created with flag.")
+                    else:
                         supabase.table('email_pending_tasks').insert({
                             "email_id": email_id,
                             "suggested_title": suggested_task,
