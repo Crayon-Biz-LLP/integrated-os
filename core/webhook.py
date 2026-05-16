@@ -6,6 +6,7 @@ import httpx
 import re
 import base64
 from email.mime.text import MIMEText
+from email.utils import getaddresses
 from supabase import create_client, Client
 from datetime import datetime, timezone, timedelta
 from google import genai
@@ -1610,33 +1611,60 @@ async def send_draft_reply(draft_id: int) -> tuple:
         gmail_service = get_gmail_service()
         email = draft['emails']
 
-        msg = MIMEText(draft['draft_body'])
+        msg = MIMEText(draft['draft_body'], _charset='utf-8')
         msg['To'] = email['sender_email']
         msg['From'] = os.getenv('GMAIL_SENDER_EMAIL', '')
         msg['Subject'] = f"Re: {email['subject']}"
-        msg['In-Reply-To'] = email['thread_id']
-        msg['References'] = email['thread_id']
 
-        # Include original CC recipients (Reply All behavior)
+        # Fetch original message headers for reply-all behavior and proper threading
         self_email = os.getenv('GMAIL_SENDER_EMAIL', '')
+        original_msg_id = None
+        additional_cc = []
+
         try:
             original = gmail_service.users().messages().get(
                 userId='me', id=email['message_id'],
-                format='metadata', metadataHeaders=['Cc']
+                format='metadata', metadataHeaders=['Message-ID', 'To', 'Cc']
             ).execute()
-            cc_headers = [
-                h['value'] for h in original.get('payload', {}).get('headers', [])
-                if h['name'].lower() == 'cc'
-            ]
-            if cc_headers:
-                cc_addrs = [
-                    a.strip() for a in cc_headers[0].split(',')
-                    if a.strip() and self_email not in a
-                ]
-                if cc_addrs:
-                    msg['Cc'] = ', '.join(cc_addrs)
-        except Exception:
-            pass  # Fall back to sender-only if original email unavailable
+            orig_headers_list = original.get('payload', {}).get('headers', [])
+
+            # Extract RFC 5322 Message-ID for In-Reply-To/References
+            for h in orig_headers_list:
+                if h['name'].lower() == 'message-id':
+                    original_msg_id = h['value'].strip()
+                    break
+
+            # Collect all recipients from To and Cc for reply-all (exclude sender and self)
+            orig_headers = {h['name'].lower(): h['value'] for h in orig_headers_list}
+            sender_email_lower = email['sender_email'].lower()
+            self_email_lower = self_email.lower()
+
+            for field in ('to', 'cc'):
+                header_val = orig_headers.get(field, '')
+                if header_val:
+                    for display_name, addr in getaddresses([header_val]):
+                        addr_lower = addr.lower()
+                        if addr_lower and addr_lower != sender_email_lower and addr_lower != self_email_lower:
+                            if display_name and display_name != addr:
+                                additional_cc.append(f"{display_name} <{addr}>")
+                            else:
+                                additional_cc.append(addr)
+
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING",
+                f"Could not fetch original message {email['message_id']} for reply headers: {e}")
+
+        # Set threading headers (use proper Message-ID if available)
+        if original_msg_id:
+            msg['In-Reply-To'] = original_msg_id
+            msg['References'] = original_msg_id
+        else:
+            msg['In-Reply-To'] = email['thread_id']
+            msg['References'] = email['thread_id']
+
+        # Include additional CC recipients (reply-all behavior)
+        if additional_cc:
+            msg['Cc'] = ', '.join(additional_cc)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
         send_body = {'raw': raw, 'threadId': email['thread_id']}
@@ -1659,11 +1687,9 @@ async def send_draft_reply(draft_id: int) -> tuple:
 
 
 async def send_outlook_draft(draft: dict) -> tuple:
-    """Send an approved draft via Outlook Graph API. Returns (success: bool, error: str|None)."""
+    """Send an approved draft via Outlook Graph API replyAll. Returns (success: bool, error: str|None)."""
     try:
         email = draft['emails']
-        to_email = email['sender_email']
-        subject = email['subject']
         body = draft['draft_body']
 
         access_token = os.getenv("OUTLOOK_ACCESS_TOKEN")
@@ -1672,32 +1698,10 @@ async def send_outlook_draft(draft: dict) -> tuple:
             result = refresh_outlook_token(write_back=True)
             access_token = result["access_token"]
 
-        # Include original CC recipients (Reply All behavior)
-        cc_recipients = []
-        try:
-            async with httpx.AsyncClient(timeout=15) as cc_client:
-                cc_resp = await cc_client.get(
-                    f"https://graph.microsoft.com/v1.0/me/messages/{email['message_id']}",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    params={"$select": "ccRecipients"}
-                )
-                if cc_resp.status_code == 200:
-                    cc_data = cc_resp.json()
-                    for r in cc_data.get('ccRecipients', []):
-                        addr = r.get('emailAddress', {}).get('address', '')
-                        if addr and to_email not in addr:
-                            cc_recipients.append({"emailAddress": {"address": addr}})
-        except Exception:
-            pass  # Fall back to sender-only if original email unavailable
-
         payload = {
             "message": {
-                "subject": f"Re: {subject}",
-                "body": {"contentType": "Text", "content": body},
-                "toRecipients": [{"emailAddress": {"address": to_email}}],
-                **({"ccRecipients": cc_recipients} if cc_recipients else {})
-            },
-            "saveToSentItems": True
+                "body": {"contentType": "Text", "content": body}
+            }
         }
 
         headers = {
@@ -1705,12 +1709,12 @@ async def send_outlook_draft(draft: dict) -> tuple:
             "Content-Type": "application/json"
         }
 
-        # Update status to 'sent' BEFORE Outlook API call to prevent double-send
+        # Update status to 'sent' BEFORE API call to prevent double-send
         supabase.table('email_drafts').update({'status': 'sent'}).eq('id', draft['id']).execute()
 
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                "https://graph.microsoft.com/v1.0/me/sendMail",
+                f"https://graph.microsoft.com/v1.0/me/messages/{email['message_id']}/replyAll",
                 json=payload,
                 headers=headers
             )
@@ -1724,7 +1728,7 @@ async def send_outlook_draft(draft: dict) -> tuple:
                 access_token = result["access_token"]
                 headers["Authorization"] = f"Bearer {access_token}"
                 response = await client.post(
-                    "https://graph.microsoft.com/v1.0/me/sendMail",
+                    f"https://graph.microsoft.com/v1.0/me/messages/{email['message_id']}/replyAll",
                     json=payload,
                     headers=headers
                 )
