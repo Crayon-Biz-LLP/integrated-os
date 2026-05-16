@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from supabase import create_client
 from dotenv import load_dotenv
+from postgrest.exceptions import APIError
 
 load_dotenv()
 
@@ -69,6 +70,41 @@ def update_jsonb(table: str, jsonb_path: str, old: str, new: str) -> int:
     return len(ids)
 
 
+def safe_count(table: str, column: str, value: str) -> tuple:
+    try:
+        q = supabase.table(table).select("id", count="exact").eq(column, value).execute()
+        c = q.count if hasattr(q, 'count') else len(q.data or [])
+        return (c, None)
+    except APIError as e:
+        return (0, str(e))
+
+
+def safe_count_jsonb(table: str, jsonb_path: str, value: str) -> tuple:
+    try:
+        data = supabase.table(table).select("id").eq(jsonb_path, value).execute()
+        return (len(data.data or []), None)
+    except APIError as e:
+        return (0, str(e))
+
+
+def safe_update(table: str, column: str, old: str, new: str) -> tuple:
+    try:
+        data = supabase.table(table).select("id").eq(column, old).execute()
+        ids = [r["id"] for r in (data.data or [])]
+        if ids:
+            supabase.table(table).update({column: new}).eq(column, old).execute()
+        return (len(ids), None)
+    except APIError as e:
+        return (0, str(e))
+
+
+def safe_update_jsonb(table: str, jsonb_path: str, old: str, new: str) -> tuple:
+    try:
+        return (update_jsonb(table, jsonb_path, old, new), None)
+    except APIError as e:
+        return (0, str(e))
+
+
 def migrate_all(dry_run: bool = False):
     print(f"\n{'='*60}")
     print(f"  CHURCH → ASHRAYA Migration")
@@ -77,71 +113,47 @@ def migrate_all(dry_run: bool = False):
 
     results = []
 
-    # 1. projects.org_tag
-    count = count_records("projects", "org_tag", OLD_TAG)
-    results.append(("projects", "org_tag", count))
-    if not dry_run and count > 0:
-        updated = update_column("projects", "org_tag", OLD_TAG, NEW_TAG)
-        print(f"  ✓ projects.org_tag: {updated} rows updated")
-    else:
-        print(f"  ~ projects.org_tag: {count} rows {'would be updated' if dry_run else 'up to date'}")
+    steps = [
+        ("projects", "org_tag", False),
+        ("projects", "name", False),
+        ("tasks", "org_tag", False),
+        ("graph_nodes", "metadata->>org_tag", True),
+        ("graph_nodes", "metadata->>entity", True),
+        ("raw_dumps", "metadata->>entity", True),
+        ("resources", "category", False),
+    ]
 
-    # 1b. projects.name (where name = 'Church')
-    count_name = count_records("projects", "name", "Church")
-    results.append(("projects", "name", count_name))
-    if not dry_run and count_name > 0:
-        updated = update_column("projects", "name", "Church", "Ashraya")
-        print(f"  ✓ projects.name: {updated} rows updated")
-    else:
-        print(f"  ~ projects.name: {count_name} rows {'would be updated' if dry_run else 'up to date'}")
+    for table, col, is_jsonb in steps:
+        if is_jsonb:
+            count, err = safe_count_jsonb(table, col, OLD_TAG)
+        else:
+            count, err = safe_count(table, col, OLD_TAG)
 
-    # 2. tasks.org_tag
-    count = count_records("tasks", "org_tag", OLD_TAG)
-    results.append(("tasks", "org_tag", count))
-    if not dry_run and count > 0:
-        updated = update_column("tasks", "org_tag", OLD_TAG, NEW_TAG)
-        print(f"  ✓ tasks.org_tag: {updated} rows updated")
-    else:
-        print(f"  ~ tasks.org_tag: {count} rows {'would be updated' if dry_run else 'up to date'}")
+        if err:
+            print(f"  ⚠ {table}.{col}: skipped ({err})")
+            results.append((table, col, "❌ skipped"))
+            continue
 
-    # 3. graph_nodes metadata->>org_tag (project nodes)
-    count = count_jsonb("graph_nodes", "metadata->>org_tag", OLD_TAG)
-    results.append(("graph_nodes", "metadata->>org_tag", count))
-    if not dry_run and count > 0:
-        updated = update_jsonb("graph_nodes", "metadata->>org_tag", OLD_TAG, NEW_TAG)
-        print(f"  ✓ graph_nodes metadata->>org_tag: {updated} rows updated")
-    else:
-        print(f"  ~ graph_nodes metadata->>org_tag: {count} rows {'would be updated' if dry_run else 'up to date'}")
+        results.append((table, col, count))
 
-    # 4. graph_nodes metadata->>entity (practice/declared nodes)
-    count = count_jsonb("graph_nodes", "metadata->>entity", OLD_TAG)
-    results.append(("graph_nodes", "metadata->>entity", count))
-    if not dry_run and count > 0:
-        updated = update_jsonb("graph_nodes", "metadata->>entity", OLD_TAG, NEW_TAG)
-        print(f"  ✓ graph_nodes metadata->>entity: {updated} rows updated")
-    else:
-        print(f"  ~ graph_nodes metadata->>entity: {count} rows {'would be updated' if dry_run else 'up to date'}")
-
-    # 5. raw_dumps metadata->>entity (archival)
-    count = count_jsonb("raw_dumps", "metadata->>entity", OLD_TAG)
-    results.append(("raw_dumps", "metadata->>entity", count))
-    if not dry_run and count > 0:
-        updated = update_jsonb("raw_dumps", "metadata->>entity", OLD_TAG, NEW_TAG)
-        print(f"  ✓ raw_dumps metadata->>entity: {updated} rows updated")
-    else:
-        print(f"  ~ raw_dumps metadata->>entity: {count} rows {'would be updated' if dry_run else 'up to date'}")
-
-    # 6. resources.category
-    count = count_records("resources", "category", OLD_TAG)
-    results.append(("resources", "category", count))
-    if not dry_run and count > 0:
-        updated = update_column("resources", "category", OLD_TAG, NEW_TAG)
-        print(f"  ✓ resources.category: {updated} rows updated")
-    else:
-        print(f"  ~ resources.category: {count} rows {'would be updated' if dry_run else 'up to date'}")
+        if not dry_run and count > 0:
+            if is_jsonb:
+                updated, update_err = safe_update_jsonb(table, col, OLD_TAG, NEW_TAG)
+            else:
+                updated, update_err = safe_update(table, col, OLD_TAG, NEW_TAG)
+            if update_err:
+                print(f"  ✗ {table}.{col}: update failed ({update_err})")
+            else:
+                print(f"  ✓ {table}.{col}: {updated} rows updated")
+        elif dry_run:
+            if count > 0 or err:
+                pass
+            print(f"  ~ {table}.{col}: {count} rows {'would be updated' if dry_run else 'up to date'}{' (name: Church → Ashraya)' if col == 'name' and count > 0 else ''}")
+        else:
+            print(f"  — {table}.{col}: {count} rows (up to date)")
 
     print(f"\n{'='*60}")
-    total = sum(r[2] for r in results)
+    total = sum(r[2] for r in results if isinstance(r[2], int))
     if dry_run:
         print(f"  DRY RUN COMPLETE — {total} total records would be affected.")
         print(f"  Run without --dry-run to apply.")
@@ -150,8 +162,12 @@ def migrate_all(dry_run: bool = False):
     print(f"{'='*60}\n")
 
     for table, column, count in results:
-        status = "✓" if count > 0 else "—"
-        print(f"  {status} {table}.{column}: {count} rows")
+        if isinstance(count, int) and count > 0:
+            print(f"  ✓ {table}.{column}: {count} rows")
+        elif isinstance(count, int):
+            print(f"  — {table}.{column}: {count} rows")
+        else:
+            print(f"  ⚠ {table}.{column}: {count}")
 
 
 if __name__ == "__main__":
