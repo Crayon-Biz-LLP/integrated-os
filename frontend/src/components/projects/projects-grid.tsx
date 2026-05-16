@@ -9,12 +9,12 @@ interface ProjectsGridProps {
   onProjectClick: (project: Project) => void;
 }
 
-const groupOrder = ['SOLVSTRAT', 'PRODUCT_LABS', 'CHURCH', 'PERSONAL', 'ADMIN', 'INBOX', null];
+const groupOrder = ['SOLVSTRAT', 'PRODUCT_LABS', 'ASHRAYA', 'PERSONAL', 'ADMIN', 'INBOX', null];
 
 const groupLabels: Record<string, string> = {
   SOLVSTRAT: 'SOLVSTRAT',
   PRODUCT_LABS: 'PRODUCT_LABS',
-  CHURCH: 'CHURCH',
+  ASHRAYA: 'ASHRAYA',
   PERSONAL: 'PERSONAL',
   ADMIN: 'ADMIN',
   INBOX: 'INBOX',

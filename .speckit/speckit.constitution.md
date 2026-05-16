@@ -64,7 +64,7 @@ If `PULSE_SECRET` cannot be verified, reject the request with 401. Never assume 
 The system confirms capture. It does NOT promise to execute. Rhodey never says "I'll ping X" or "I'll handle this." Rhodey says "Logged."
 
 ### P9 — Entity Routing is Stealth
-The `entity` field (SOLVSTRAT, PERSONAL, QHORD, CHURCH, CRAYON, INBOX) is assigned in the JSON — it is NEVER mentioned in the receipt text sent to Danny via Telegram.
+The `entity` field (SOLVSTRAT, PERSONAL, QHORD, ASHRAYA, CRAYON, INBOX) is assigned in the JSON — it is NEVER mentioned in the receipt text sent to Danny via Telegram.
 
 ### P10 — System Health is Observable
 If the pipeline has not processed a record in 60+ minutes during business hours (9am–10pm IST), the Janitor must alert Danny via Telegram.

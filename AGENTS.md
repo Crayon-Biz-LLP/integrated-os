@@ -50,8 +50,8 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 | SOLVSTRAT | Cash engine, client work |
 | PRODUCT_LABS | Incubator projects (CashFlow+, Integrated-OS) |
 | CRAYON | Governance, tax, legal |
-| PERSONAL | Family, home |
-| CHURCH | Church activities |
+| PERSONAL | Family, home, personal spiritual practices |
+| ASHRAYA | Ashraya church admin/operations |
 
 ## Critical Conventions
 

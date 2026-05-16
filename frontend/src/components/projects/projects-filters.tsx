@@ -13,7 +13,7 @@ interface ProjectsFiltersProps {
 const orgTags = [
   { value: 'all', label: 'All' },
   { value: 'SOLVSTRAT', label: 'SOLVSTRAT' },
-  { value: 'CHURCH', label: 'CHURCH' },
+  { value: 'ASHRAYA', label: 'ASHRAYA' },
   { value: 'PERSONAL', label: 'PERSONAL' },
   { value: 'PRODUCT_LABS', label: 'PRODUCT_LABS' },
   { value: 'INBOX', label: 'INBOX' },

@@ -1318,9 +1318,10 @@ async def batch_enrich_resources():
     
     prompt = f"""You are Danny's Trusted Partner. For each resource below, provide a strategic_note (one sentence on strategic value) and category.
 
-    Categories: COMPETITOR, TECH_TOOL, LEAD_POTENTIAL, MARKET_TREND, CHURCH, PERSONAL
+    Categories: COMPETITOR, TECH_TOOL, LEAD_POTENTIAL, MARKET_TREND, ASHRAYA, PERSONAL
     Rules:
-    - CHURCH or PERSONAL for family/home/faith topics
+    - ASHRAYA for Ashraya church admin/operations content
+    - PERSONAL for family/home/personal spiritual topics
     - COMPETITOR for competitors to Qhord
     - TECH_TOOL for SaaS/dev/productivity tools
     - LEAD_POTENTIAL for potential clients/partners
@@ -2182,6 +2183,21 @@ async def detect_practices():
                 'metadata': meta
             })
 
+        # Backfill sequential shortcodes for existing practices
+        max_shortcode = 0
+        for pn in existing_practice_nodes:
+            sc = pn['metadata'].get('shortcode')
+            if isinstance(sc, (int, float)):
+                max_shortcode = max(max_shortcode, int(sc))
+        for pn in existing_practice_nodes:
+            if not pn['metadata'].get('shortcode'):
+                max_shortcode += 1
+                pn['metadata']['shortcode'] = max_shortcode
+                supabase.table('graph_nodes') \
+                    .update({'metadata': pn['metadata']}) \
+                    .eq('id', pn['id']) \
+                    .execute()
+
         # Build set of all existing variant texts for novel candidate filtering
         all_variant_texts = set()
         for pn in existing_practice_nodes:
@@ -2222,6 +2238,11 @@ async def detect_practices():
                 except:
                     raw_meta = {}
             entity = raw_meta.get('entity') if isinstance(raw_meta, dict) else None
+
+            # Skip work-tagged entries — only PERSONAL or unclassified may become practices
+            _WORK_ENTITIES = {'SOLVSTRAT', 'CRAYON', 'QHORD', 'PRODUCT_LABS', 'ASHRAYA'}
+            if entity and entity.upper() in _WORK_ENTITIES:
+                continue
 
             candidates.append({
                 'text': text,
@@ -2414,10 +2435,11 @@ Rules:
 - If ALL entries describe the same recurring activity (e.g., "morning run", "went for a jog", "ran 5k"), return is_same_activity: true and suggest a short canonical_name.
 - If they describe DIFFERENT activities, return is_same_activity: false.
 - Only return true if you are confident ALL entries refer to the same underlying practice.
-- canonical_name must be short and natural (e.g., "Morning Run", "Client Lunch", "Weekly Review").
+- canonical_name must be short and natural (e.g., "Morning Run", "Daily Journal", "Weekly Review").
+- If is_same_activity is true, also determine if entries represent a PERSONAL HABIT or just work/project tasks. A personal habit is a recurring behavioral practice (e.g., "Morning Run", "Daily Journal"). Work/project entries describe working on a deliverable (e.g., "built feature X", "fixed bug Y"). Return is_personal_habit: true only for genuine recurring behaviors, not project tasks.
 
 Return ONLY valid JSON:
-{{"is_same_activity": true, "canonical_name": "Morning Run"}}"""
+{{"is_same_activity": true, "is_personal_habit": true, "canonical_name": "Morning Run"}}"""
 
             try:
                 response = await call_llm_with_fallback(
@@ -2429,6 +2451,9 @@ Return ONLY valid JSON:
                 )
                 result = parse_json_response(response.text)
                 if not result.get('is_same_activity') or not result.get('canonical_name'):
+                    continue
+                if not result.get('is_personal_habit'):
+                    print(f"📍 detect_practices: Skipping '{result.get('canonical_name', '')}' — not a personal habit.")
                     continue
 
                 canonical_name = result['canonical_name'].strip()
@@ -2453,8 +2478,12 @@ Return ONLY valid JSON:
                 first_detected = min(ts for ts in timestamps if ts) if timestamps else now.isoformat()
                 last_occurrence = max(ts for ts in timestamps if ts) if timestamps else now.isoformat()
 
+                new_shortcode = max_shortcode + 1
+                max_shortcode = new_shortcode
+
                 metadata = {
                     "declared": False,
+                    "shortcode": new_shortcode,
                     "canonical_name_set_at": now.strftime('%Y-%m-%d'),
                     "frequency_observed": f"{len(cluster_indices)}/14days",
                     "frequency_baseline": f"{len(cluster_indices)}/14days",
@@ -2515,8 +2544,8 @@ Return ONLY valid JSON:
 
                 if node_res.data:
                     node_id = node_res.data[0]['id']
-                    new_practice_nodes[canonical_name] = node_id
-                    print(f"📍 detect_practices: Created practice node '{canonical_name}' (id: {node_id})")
+                    new_practice_nodes[canonical_name] = new_shortcode
+                    print(f"📍 detect_practices: Created practice node '{canonical_name}' (shortcode: {new_shortcode}, id: {node_id})")
 
                     # Create ASSOCIATED_WITH edges for distinct entities
                     for entity_text in distinct_entities:
@@ -2982,7 +3011,7 @@ async def build_rhythms_section(new_practice_labels: list = None, new_practice_i
 
     Args:
         new_practice_labels: Labels of newly detected practices (for confirmation)
-        new_practice_ids: Dict mapping label -> graph_nodes.id for new practices (shortcode)
+        new_practice_ids: Dict mapping label -> shortcode for new practices
         correlations: List of correlation insight strings from build_practice_correlations()
 
     Returns:
@@ -3040,8 +3069,11 @@ async def build_rhythms_section(new_practice_labels: list = None, new_practice_i
             if status == 'active' and health_score < 50:
                 is_drifting = True
 
+            shortcode = meta.get('shortcode')
+
             entry = {
                 'label': label,
+                'shortcode': shortcode,
                 'health_score': health_score,
                 'trend': trend,
                 'status': status,
@@ -3074,7 +3106,8 @@ async def build_rhythms_section(new_practice_labels: list = None, new_practice_i
             for e in active:
                 bar_len = e['health_score'] // 10
                 bar = "█" * bar_len + "░" * (10 - bar_len)
-                lines.append(f"{e['label']:20s} {bar} {e['health_score']:3d}%  {e['trend']} active")
+                sc_tag = f"[#{e['shortcode']}]" if e.get('shortcode') else ""
+                lines.append(f"{sc_tag:8s} {e['label']:20s} {bar} {e['health_score']:3d}%  {e['trend']} active")
 
         # Drifting
         if drifting:
@@ -3083,7 +3116,8 @@ async def build_rhythms_section(new_practice_labels: list = None, new_practice_i
             for e in drifting:
                 bar_len = e['health_score'] // 10
                 bar = "█" * bar_len + "░" * (10 - bar_len)
-                lines.append(f"{e['label']:20s} {bar} {e['health_score']:3d}%  {e['trend']} DRIFTING")
+                sc_tag = f"[#{e['shortcode']}]" if e.get('shortcode') else ""
+                lines.append(f"{sc_tag:8s} {e['label']:20s} {bar} {e['health_score']:3d}%  {e['trend']} DRIFTING")
 
         # Dormant
         if dormant:
@@ -3091,7 +3125,8 @@ async def build_rhythms_section(new_practice_labels: list = None, new_practice_i
                 lines.append("━━━ RHYTHMS ━━━")
             lines.append("")
             for e in dormant:
-                lines.append(f"⏸️ {e['label']} — dormant")
+                sc_tag = f"[#{e['shortcode']}]" if e.get('shortcode') else ""
+                lines.append(f"⏸️ {sc_tag:8s} {e['label']} — dormant")
 
         # Correlations (task completion on practice days vs non-practice days)
         if correlations and any(c for c in correlations if c.strip()):
@@ -3108,10 +3143,10 @@ async def build_rhythms_section(new_practice_labels: list = None, new_practice_i
             lines.append("")
             lines.append("NEW PRACTICES DETECTED")
             for name in new_auto:
-                _pid = (new_practice_ids or {}).get(name)
-                if _pid:
-                    lines.append(f"• [{_pid}] \"{name}\" — tracking as a practice.")
-                    lines.append(f"  Reply \"{_pid} drop\" to dismiss.")
+                _shortcode = (new_practice_ids or {}).get(name)
+                if _shortcode:
+                    lines.append(f"• [#{_shortcode}] \"{name}\" — tracking as a practice.")
+                    lines.append(f"  Reply \"{_shortcode} drop\" to dismiss.")
                 else:
                     safe_name = name.lower().replace(' ', '-')
                     lines.append(f"• \"{name}\" — tracking as a practice.")
@@ -3456,13 +3491,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             o_tag = project.get('org_tag') if project else "INBOX"
 
             if is_weekend:
-                if o_tag in ['PERSONAL', 'CHURCH']:
+                if o_tag in ['PERSONAL', 'ASHRAYA']:
                     filtered_tasks.append(t)
             elif hour < 19:
                 if o_tag in ['SOLVSTRAT', 'PRODUCT_LABS', 'CRAYON', 'INBOX']:
                     filtered_tasks.append(t)
             else:
-                if o_tag in ['PERSONAL', 'CHURCH']:
+                if o_tag in ['PERSONAL', 'ASHRAYA']:
                     filtered_tasks.append(t)
 
         # --- 1.4 CONTEXT COMPRESSION & PRUNING ---
@@ -3925,7 +3960,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             4. For new projects you don't recognise from the list:
                - If it's client/tech work → use "Solvstrat" as the project_name.
                - If it's Qhord-related → use "Qhord".
-               - If it's church/faith → use "Church".
+                - If it's Ashraya church admin/operations → use "Ashraya".
                - If it's family/home → use "Family & Home".
                - NEVER use "Inbox" for business tasks.
 
@@ -3942,20 +3977,21 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
               QHORD      | context: work     | Danny's own GTM product company. Anything related to building, marketing, or selling Qhord as a standalone product. → Set org_tag: "QHORD", parent_project_name: "Qhord"
 
-              CHURCH     | context: personal | Ministry, sermons, church service, faith-based activities, volunteering, and community outreach. → Set org_tag: "CHURCH", parent_project_name: "Church"
+              ASHRAYA    | context: personal | Ashraya church administration, operations, accounts, facility management, event coordination, and organizational work. → Set org_tag: "ASHRAYA", parent_project_name: "Ashraya"
 
               FAMILY    | context: personal | Home, kids, spouse (Sunju), house maintenance, school, family events, domestic tasks. → Set org_tag: "FAMILY", parent_project_name: "Family & Home"
 
-              PERSONAL   | context: personal | Danny's individual pursuits — health, finance, personal admin, hobbies, investments, gadgets, learning, anything that is about Danny himself. → Set org_tag: "PERSONAL"
+              PERSONAL   | context: personal | Danny's individual pursuits — health, finance, personal admin, hobbies, investments, gadgets, learning, personal spiritual practices (bible reading, prayer, volunteering), anything that is about Danny himself. → Set org_tag: "PERSONAL"
 
               ROUTING RULES (apply in order):
               1. Does the input mention a client paying Solvstrat for tech/product work? → SOLVSTRAT
               2. Does the input mention Qhord product development or GTM? → QHORD
-              3. Does the input mention church, ministry, sermon, or faith service? → CHURCH
-              4. Does the input mention home, kids, Sunju, or family? → FAMILY
-              5. Is it about Danny personally (health, finance, personal admin)? → PERSONAL
-              6. Default for anything business/work that doesn't fit 1-2: → SOLVSTRAT
-                7. NEVER default to INBOX for business or client work.
+              3. Does the input mention Ashraya church admin, operations, accounts, or organizational work? → ASHRAYA
+              4. Does the input mention personal spiritual practices (bible reading, prayer, volunteering)? → PERSONAL
+              5. Does the input mention home, kids, Sunju, or family? → FAMILY
+              6. Is it about Danny personally (health, finance, personal admin, learning, hobbies)? → PERSONAL
+              7. Default for anything business/work that doesn't fit 1-2: → SOLVSTRAT
+                 8. NEVER default to INBOX for business or client work.
             
             DRIFT DETECTION (Temporal Lineage):
             - Check if active projects have been updated 3+ times in 48 hours.
@@ -4051,10 +4087,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         # A. BATCH NEW PROJECTS (Deduplicated)
         if ai_data.get('new_projects'):
-            valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'CHURCH', 'FAMILY', 'QHORD']
+            valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'ASHRAYA', 'FAMILY', 'QHORD']
 
             CONTEXT_MAP = {
-                'CHURCH':       'personal',
+                'ASHRAYA':      'personal',
                 'PERSONAL':     'personal',
                 'FAMILY':       'personal',
                 'SOLVSTRAT':    'work',

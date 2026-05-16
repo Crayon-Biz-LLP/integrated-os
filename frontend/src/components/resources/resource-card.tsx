@@ -16,7 +16,7 @@ const categoryColors: Record<string, string> = {
   COMPETITOR: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
   LEADPOTENTIAL: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
   MARKETTREND: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
-  CHURCH: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
+  ASHRAYA: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
   PERSONAL: 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase',
 };
 
