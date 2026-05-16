@@ -3762,20 +3762,24 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 print(f"🧠 Canonical: Loaded {len(pages_res.data)} Master Pages for context.")
 
         # --- 🏃 PRACTICE DETECTION (Weekends only, before brief) ---
+        new_practice_nodes = {}
         new_practice_labels = []
         correlation_insights = []
         if is_weekend:
-            print("📍 Weekend pulse: Running practice detection...")
-            before_labels = set()
-            before_res = supabase.table('graph_nodes').select('label').eq('type', 'practice').execute()
-            for r in (before_res.data or []):
-                before_labels.add(r['label'])
-            new_practice_nodes = await detect_practices() or {}
-            after_res = supabase.table('graph_nodes').select('label').eq('type', 'practice').execute()
-            after_labels = set(r['label'] for r in (after_res.data or []))
-            new_practice_labels = sorted(after_labels - before_labels)
-            if new_practice_labels:
-                print(f"📍 New practices detected: {new_practice_labels}")
+            # Practice detection runs once a week — Saturday before 2PM IST (accounts for GH Actions delay)
+            is_discovery_pulse = now.weekday() == 5 and now.hour < 14
+            if is_discovery_pulse:
+                print("📍 Weekend pulse: Running practice detection...")
+                before_labels = set()
+                before_res = supabase.table('graph_nodes').select('label').eq('type', 'practice').execute()
+                for r in (before_res.data or []):
+                    before_labels.add(r['label'])
+                new_practice_nodes = await detect_practices() or {}
+                after_res = supabase.table('graph_nodes').select('label').eq('type', 'practice').execute()
+                after_labels = set(r['label'] for r in (after_res.data or []))
+                new_practice_labels = sorted(after_labels - before_labels)
+                if new_practice_labels:
+                    print(f"📍 New practices detected: {new_practice_labels}")
 
             # 🕸️ Build PRECEDES/FOLLOWED_BY edges between practices
             await build_practice_edges()
