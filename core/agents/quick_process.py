@@ -20,12 +20,16 @@ def is_bare_url(text: str) -> bool:
 
 
 def build_combined_prompt(text: str, projects: list) -> str:
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    date_context = now_ist.strftime("%A, %B %d, %Y at %I:%M %p IST")
     project_lines = "\n".join([
         f"  - {p['name']} (tag: {p.get('org_tag', 'INBOX')})"
         for p in projects
     ]) if projects else "  - General (tag: INBOX)"
 
     return f"""You are Danny's task processor. Analyze this message.
+
+Current date and time: {date_context}
 
 Message: "{text}"
 
@@ -41,11 +45,11 @@ Active projects for routing:
 If TASK or COMPLETION, extract these fields:
 - title: Brief action-oriented title (2-8 words)
 - project_name: Exact project name from the list above that best matches. Use "General" if none match.
-- reminder_at: ISO-8601 datetime in IST (UTC+05:30). If no time given, return null.
-  Examples: "today 3pm" → "2026-05-15T15:00:00+05:30"
-            "tomorrow" → "2026-05-16"
+- reminder_at: ISO-8601 datetime in IST (UTC+05:30) based on the current date above. If no time given, return null.
+  Examples: "today 3pm" → "{now_ist.strftime('%Y-%m-%d')}T15:00:00+05:30"
+            "tomorrow" → "{(now_ist + timedelta(days=1)).strftime('%Y-%m-%d')}"
             "next Friday 2pm" → "2026-05-22T14:00:00+05:30"
-            "6:30 pm today" → "2026-05-15T18:30:00+05:30"
+            "6:30 pm today" → "{now_ist.strftime('%Y-%m-%d')}T18:30:00+05:30"
 - duration_mins: Estimated minutes (15 for quick tasks, 45 for meetings/calls)
 - priority: "urgent", "important", or "low"
 
@@ -162,9 +166,15 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
     g_id = None
 
     if sanitized_time and explicit_time:
-        e_id = sync_to_calendar(title, sanitized_time, task_insert['duration_mins'])
+        try:
+            e_id = sync_to_calendar(title, sanitized_time, task_insert['duration_mins'])
+        except Exception as e:
+            audit_log_sync("quick_process", "ERROR", f"Calendar sync failed: {e}")
     if sanitized_time and tasks_service:
-        g_id = sync_to_google(tasks_service, title, sanitized_time, explicit_time=explicit_time)
+        try:
+            g_id = sync_to_google(tasks_service, title, sanitized_time, explicit_time=explicit_time)
+        except Exception as e:
+            audit_log_sync("quick_process", "ERROR", f"Google Tasks sync failed: {e}")
 
     if e_id or g_id:
         update = {}
