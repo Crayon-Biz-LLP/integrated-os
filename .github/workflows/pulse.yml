@@ -49,14 +49,14 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python core/skills/archive_ingest.py
+        run: python -m core.skills.archive_ingest
 
       - name: "Step 2: Update Neural Graph (Link Memories)"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python core/skills/backfill_graph.py
+        run: python -m core.skills.backfill_graph
 
       - name: "Step 3: Execute Rhodey SITREP (The Briefing)"
         env:
@@ -75,7 +75,7 @@ jobs:
           OUTLOOK_REFRESH_TOKEN: ${{ secrets.OUTLOOK_REFRESH_TOKEN }}
           OUTLOOK_TENANT_ID: ${{ secrets.OUTLOOK_TENANT_ID }}
           OUTLOOK_SCOPES: ${{ secrets.OUTLOOK_SCOPES }}
-        run: python core/pulse_cli.py
+        run: python -m core.pulse_cli
 
   notify_failure:
     runs-on: ubuntu-latest
