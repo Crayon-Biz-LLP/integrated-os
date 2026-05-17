@@ -124,9 +124,8 @@ async def detect_practices():
                     raw_meta = {}
             entity = raw_meta.get('entity') if isinstance(raw_meta, dict) else None
 
-            # Skip work-tagged entries — only PERSONAL or unclassified may become practices
-            _WORK_ENTITIES = {'SOLVSTRAT', 'CRAYON', 'QHORD', 'PRODUCT_LABS', 'ASHRAYA'}
-            if entity and entity.upper() in _WORK_ENTITIES:
+            # Only allow explicit PERSONAL-tagged entries to become practices
+            if not entity or entity.upper() != 'PERSONAL':
                 continue
 
             candidates.append({
