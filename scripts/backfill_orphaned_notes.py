@@ -17,7 +17,7 @@ import argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from core.audit_logger import audit_log_sync
+from core.lib.audit_logger import audit_log_sync
 from dotenv import load_dotenv
 from supabase import create_client
 

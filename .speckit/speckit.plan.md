@@ -25,7 +25,7 @@
 [Danny: Telegram]
        │
        ▼
-[apiwebhook.py] ── classify ──► [Gemini Flash]
+[core/webhook/handler.py] ── classify ──► [Gemini Flash]
        │
        ├──► TASK ──────────────► [raw_dumps: staged]
        │                               │
@@ -47,7 +47,7 @@
 
 
 [GitHub Actions Cron]
-  ├── pulse.py (daily briefing)
+  ├── core/pulse/engine.py (daily briefing)
   ├── brain_synth.py (weekly synthesis)
   ├── email_ingest.yml (Gmail + Outlook)
   └── janitor.py (every 30 mins health check)

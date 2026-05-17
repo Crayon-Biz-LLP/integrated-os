@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.pulse import process_pulse
 from supabase import create_client
-from audit_logger import info, warning, error
+from core.lib.audit_logger import info, warning, error
 
 
 def cleanup_raw_dumps():

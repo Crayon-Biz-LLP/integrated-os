@@ -1,26 +1,17 @@
 import os
-import sys
 import json
 import asyncio
 import re
-from datetime import datetime, timedelta, timezone
-from dotenv import load_dotenv
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from core.constants import EmailStatus
-from core.duplicate_guard import check_duplicate
-
-load_dotenv()
-load_dotenv('.env.local')
-from supabase import create_client, Client
-from google import genai
+from core.lib.constants import EmailStatus
+from core.lib.duplicate_guard import check_duplicate
+from core.services.db import get_supabase, get_embedding
+from core.services.llm import call_gemini_classify, get_gemini_client
 import requests
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+supabase = get_supabase()
 
 def build_active_task_list() -> list:
     """Fetch all active task titles ONCE for duplicate checking."""
@@ -33,11 +24,6 @@ def build_active_task_list() -> list:
     except Exception as e:
         print(f"⚠️ Failed to build active task list (failing open): {e}")
         return []
-
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-EMBEDDING_MODEL = "gemini-embedding-2-preview"
-EMBEDDING_DIMENSION = 768
 
 RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
 NOREPLY_PATTERNS = [
@@ -60,42 +46,9 @@ def get_access_token():
     result = refresh_outlook_token(write_back=True)
     return result["access_token"]
 
-def get_embedding(text: str) -> list:
-    try:
-        result = gemini_client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=text,
-            config={
-                'output_dimensionality': EMBEDDING_DIMENSION
-            }
-        )
-        return result.embeddings[0].values
-    except Exception as e:
-        print(f"Embedding error: {e}")
-        return [0] * EMBEDDING_DIMENSION
-
 async def call_gemini_with_retry(prompt: str, model: str, config: dict = None):
-    max_retries = 3
-    base_delay = 5
+    return await call_gemini_classify(prompt, model, config)
 
-    for attempt in range(max_retries):
-        try:
-            response = gemini_client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=config or {}
-            )
-            return response
-        except Exception as e:
-            error_str = str(e).lower()
-            should_retry = any(err in error_str for err in RETRYABLE_ERRORS)
-            if should_retry and attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                print(f"API Hiccup ({error_str}), retrying in {delay}s...")
-                await asyncio.sleep(delay)
-                continue
-            else:
-                raise
 
 def parse_json_response(response_text: str) -> any:
     if not response_text:

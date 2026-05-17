@@ -1,14 +1,13 @@
-# api/index.py
 import os
 import hmac
 import hashlib
-import httpx
+import time
+from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# Updated imports: Pulling from your new 'core' module
-from core.webhook import process_webhook, send_draft_reply
+from core.webhook import process_webhook, send_draft_reply, process_email_pending_decision
 from core.pulse import (
     process_pulse,
     get_tasks_service,
@@ -17,9 +16,11 @@ from core.pulse import (
     versioned_update,
     write_outcome_memory,
     get_outlook_calendar_events,
+    get_outlook_calendar_events_range,
     get_google_creds,
     format_rfc3339,
 )
+from core.services.db import get_supabase
 
 app = FastAPI(title="Integrated-OS")
 
@@ -100,8 +101,6 @@ async def send_message_route(request: Request):
         if not telegram_bot_token or not telegram_chat_id:
             raise HTTPException(status_code=500, detail="Telegram credentials not configured")
         
-        import time
-        
         # Create a fake Telegram update object (mirrors what Telegram sends)
         # Prefix update_id with "web_" to identify web UI messages
         fake_update = {
@@ -128,22 +127,14 @@ async def send_message_route(request: Request):
 @app.get("/api/messages")
 async def get_messages_route(limit: int = 50, offset: int = 0):
     try:
-        from supabase import create_client
-        
-        supabase = create_client(
-            os.getenv("SUPABASE_URL"),
-            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        )
-        
+        supabase = get_supabase()
         result = supabase.table('raw_dumps')\
             .select('id, content, created_at, direction, sender, message_type, status, metadata, source')\
             .order('created_at', desc=True)\
             .limit(limit)\
             .offset(offset)\
             .execute()
-        
         return {"messages": result.data or []}
-    
     except Exception as e:
         print(f"Get messages error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -151,43 +142,38 @@ async def get_messages_route(limit: int = 50, offset: int = 0):
 # --- CALENDAR EVENTS (Fetches from Google + Outlook) ---
 @app.get("/api/calendar-events")
 async def get_calendar_events(date: str = None, start: str = None, end: str = None):
-    """Fetch calendar events from Google Calendar and Outlook.
-    Use `date=today` or `date=YYYY-MM-DD` for a single day.
-    Use `start=YYYY-MM-DD&end=YYYY-MM-DD` for a date range (week/month view)."""
     try:
         from googleapiclient.discovery import build
-        from datetime import datetime, timedelta
-        
-        # Calculate time range
+
         if start and end:
             start_dt = datetime.fromisoformat(start).replace(hour=0, minute=0, second=0)
             end_dt = datetime.fromisoformat(end).replace(hour=23, minute=59, second=59)
-            target = start_dt
-            start = format_rfc3339(start_dt)
-            end = format_rfc3339(end_dt)
+            rfc_start = format_rfc3339(start_dt)
+            rfc_end = format_rfc3339(end_dt)
         elif date == "today" or not date:
             today = datetime.now()
-            target = today.replace(hour=0, minute=0, second=0)
-            start = format_rfc3339(target)
-            end = format_rfc3339(target.replace(hour=23, minute=59, second=59))
+            start_dt = today.replace(hour=0, minute=0, second=0)
+            end_dt = start_dt.replace(hour=23, minute=59, second=59)
+            rfc_start = format_rfc3339(start_dt)
+            rfc_end = format_rfc3339(end_dt)
         else:
             target = datetime.fromisoformat(date)
-            start = format_rfc3339(target.replace(hour=0, minute=0, second=0))
-            end = format_rfc3339(target.replace(hour=23, minute=59, second=59))
-        
-        # Google Calendar events
+            start_dt = target.replace(hour=0, minute=0, second=0)
+            end_dt = start_dt.replace(hour=23, minute=59, second=59)
+            rfc_start = format_rfc3339(start_dt)
+            rfc_end = format_rfc3339(end_dt)
+
+        simplified = []
+
         service = build('calendar', 'v3', credentials=get_google_creds())
         events_res = service.events().list(
             calendarId='primary',
-            timeMin=start,
-            timeMax=end,
+            timeMin=rfc_start,
+            timeMax=rfc_end,
             singleEvents=True,
             orderBy='startTime',
             maxResults=50
         ).execute()
-        
-        # Simplify event data for frontend
-        simplified = []
         for event in events_res.get('items', []):
             simplified.append({
                 'id': event.get('id'),
@@ -197,14 +183,10 @@ async def get_calendar_events(date: str = None, start: str = None, end: str = No
                 'description': event.get('description', ''),
                 'source': 'google',
             })
-        
-        # Outlook calendar events (fetch range if start/end provided)
+
         try:
-            if start and end:
-                from core.pulse import get_outlook_calendar_events_range
-                outlook_events = get_outlook_calendar_events_range(start_dt, end_dt)
-            else:
-                outlook_events = get_outlook_calendar_events(target)
+            outlook_events = get_outlook_calendar_events_range(start_dt, end_dt) \
+                if start and end else get_outlook_calendar_events(start_dt)
             for e in outlook_events:
                 simplified.append({
                     'id': e.get('id'),
@@ -214,9 +196,8 @@ async def get_calendar_events(date: str = None, start: str = None, end: str = No
                 })
         except Exception as ol_err:
             print(f"Outlook calendar events error: {ol_err}")
-        
+
         return {"events": simplified}
-    
     except Exception as e:
         print(f"Calendar events error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -224,52 +205,42 @@ async def get_calendar_events(date: str = None, start: str = None, end: str = No
 # --- UPDATE TASK STATUS (Mark Done) ---
 @app.patch("/api/tasks/{task_id}/status")
 async def update_task_status(request: Request, task_id: int):
-    """Update task status (e.g., mark as done). Handles versioning, Google Tasks/Calendar sync, and outcome memory."""
     try:
         body = await request.json()
         new_status = body.get('status', 'done')
-        
-        from supabase import create_client
-        supabase = create_client(
-            os.getenv("SUPABASE_URL"),
-            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        )
-        
-        # 1. Fetch current active task
+
+        supabase = get_supabase()
+
         task_res = supabase.table('tasks').select('*').eq('id', task_id).eq('is_current', True).single().execute()
         if not task_res.data:
             raise HTTPException(status_code=404, detail="Task not found")
-        
+
         task = task_res.data
         current_status = task.get('status')
         if current_status in ['done', 'cancelled']:
             return {"success": True, "task": task, "message": f"Task already {current_status}"}
-        
+
         g_id = task.get('google_task_id')
         e_id = task.get('google_event_id')
         task_title = task.get('title', 'Untitled Task')
-        
-        # 2. Delete calendar event if exists
+
         if e_id and new_status in ['done', 'cancelled']:
             try:
                 delete_calendar_event(e_id)
             except Exception as e:
                 print(f"Calendar event delete failed (non-critical): {e}")
-        
-        # 3. Sync to Google Tasks
+
         if g_id and new_status in ['done', 'cancelled']:
             try:
                 tasks_service = get_tasks_service()
                 sync_to_google(tasks_service, title=task_title, task_id=g_id, status=new_status)
             except Exception as e:
                 print(f"Google Tasks sync failed (non-critical): {e}")
-        
-        # 4. Versioned update
+
         update_data = {'status': new_status}
         if new_status == 'done':
-            from datetime import datetime
             update_data['completed_at'] = datetime.now().isoformat()
-        
+
         versioned_update(
             table_name='tasks',
             record_id=task_id,
@@ -277,8 +248,7 @@ async def update_task_status(request: Request, task_id: int):
             change_source='web_done',
             change_reason=f"Status: {new_status}"
         )
-        
-        # 5. Outcome memory
+
         if new_status == 'done':
             proj_name = None
             proj_id = task.get('project_id')
@@ -286,13 +256,12 @@ async def update_task_status(request: Request, task_id: int):
                 proj_lookup = supabase.table('projects').select('name').eq('id', proj_id).maybe_single().execute()
                 proj_name = proj_lookup.data['name'] if proj_lookup.data else None
             await write_outcome_memory(task_title, proj_name)
-        
-        # Return the new version
+
         new_task_res = supabase.table('tasks').select('*').eq('supersedes_id', task_id).eq('is_current', True).single().execute()
         new_task = new_task_res.data if new_task_res.data else task
-        
+
         return {"success": True, "task": new_task}
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -316,8 +285,6 @@ async def email_action_route(request: Request):
             action = 'approve'
         elif action == 'no':
             action = 'reject'
-
-        from core.webhook import process_email_pending_decision
 
         result = await process_email_pending_decision(int(pending_id), action)
 

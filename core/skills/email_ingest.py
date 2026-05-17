@@ -1,34 +1,32 @@
 import random
 import os
-import sys
 import json
 import asyncio
 import base64
 import re
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
-from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from core.constants import EmailStatus
-from core.people_utils import normalize_person_name, is_blocklisted_person
-from core.duplicate_guard import check_duplicate
+from core.lib.constants import EmailStatus
+from core.lib.people_utils import normalize_person_name, is_blocklisted_person
+from core.lib.duplicate_guard import check_duplicate
+from core.services.db import get_supabase, get_embedding
+from core.services.google_service import get_google_creds, _MemoryCache
+from core.services.llm import call_gemini_classify, get_gemini_client
 
-load_dotenv()
-load_dotenv('.env.local')
-from supabase import create_client, Client
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.discovery_cache import base
-from google import genai
+supabase = get_supabase()
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
+NOREPLY_PATTERNS = [
+    'noreply', 'no-reply', 'donotreply', 'mailer-daemon',
+    'bounce', 'notifications@', 'automated@',
+    'nesl.co.in', 'incometax.gov', 'gst.gov', 'mca.gov',
+    'estatement@', 'alerts@', 'statement@', 'update@',
+    'do-not-reply', 'donotreply'
+]
+
 
 def build_active_task_list() -> list:
-    """Fetch all active task titles ONCE for duplicate checking."""
     try:
         result = supabase.table('tasks')\
             .select('id, title')\
@@ -36,110 +34,8 @@ def build_active_task_list() -> list:
             .execute()
         return result.data or []
     except Exception as e:
-        print(f"⚠️ Failed to build active task list (failing open): {e}")
+        print(f"Failed to build active task list (failing open): {e}")
         return []
-
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-EMBEDDING_MODEL = "gemini-embedding-2-preview"
-EMBEDDING_DIMENSION = 768
-
-RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
-NOREPLY_PATTERNS = [
-    'noreply', 'no-reply', 'donotreply', 'mailer-daemon',
-    'bounce', 'notifications@', 'automated@',
-    # Government portals and financial utilities
-    'nesl.co.in', 'incometax.gov', 'gst.gov', 'mca.gov',
-    'estatement@', 'alerts@', 'statement@', 'update@',
-    'do-not-reply', 'donotreply'
-]
-
-
-class MemoryCache(base.Cache):
-    _cache = {}
-
-    def get(self, url):
-        return self._cache.get(url)
-
-    def set(self, url, content):
-        self._cache[url] = content
-
-
-def get_google_creds():
-    return Credentials(
-        None,
-        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
-        client_id=os.getenv("GOOGLE_CLIENT_ID"),
-        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-        token_uri="https://oauth2.googleapis.com/token"
-    )
-
-
-def get_embedding(text: str) -> list:
-    try:
-        result = gemini_client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=text,
-            config={
-                'output_dimensionality': EMBEDDING_DIMENSION
-            }
-        )
-        return result.embeddings[0].values
-    except Exception as e:
-        print(f"Embedding error: {e}")
-        return [0] * EMBEDDING_DIMENSION
-
-
-async def call_gemini_with_retry(prompt: str, model: str, config: dict = None):
-    max_retries = 3
-    base_delay = 5
-    non_retryable = ['401', '403', '400', 'invalid api key', 'permission denied']
-
-    for attempt in range(max_retries):
-        try:
-            response = gemini_client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=config or {}
-            )
-            return response
-        except Exception as e:
-            error_str = str(e).lower()
-            if any(err in error_str for err in non_retryable):
-                raise
-            should_retry = any(err in error_str for err in RETRYABLE_ERRORS)
-            if should_retry and attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                jittered = delay * (0.75 + random.random() * 0.5)
-                print(f"⚠️ API Hiccup ({error_str[:50]}), retrying in {jittered:.0f}s...")
-                await asyncio.sleep(jittered)
-                continue
-            else:
-                raise
-
-
-def parse_json_response(response_text: str) -> any:
-    if not response_text:
-        raise ValueError("Empty response")
-
-    text = response_text.strip()
-    text = re.sub(r'^```json\n?', '', text)
-    text = re.sub(r'\n?```$', '', text).strip()
-    text = re.sub(r',\s*([}\]])', r'\1', text)
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    match = re.search(r'\{[\s\S]*\}|\[[\s\S]*\]', text)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
-
-    raise ValueError(f"Could not parse JSON from response: {text[:100]}...")
 
 
 async def generate_draft(sender: str, subject: str, body: str) -> str:
@@ -151,25 +47,23 @@ Body:
 {body[:1000]}"""
 
     try:
-        response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite-preview")
+        response = await call_gemini_classify(prompt, model="gemini-3.1-flash-lite-preview")
         return response.text.strip()
     except Exception as e:
-        print(f"⚠️ Draft generation failed: {e}")
+        print(f"Draft generation failed: {e}")
         return ""
 
 
 async def add_person_from_email(name: str, email: str = None, source: str = 'email_ingest') -> int | None:
-    """Add a person to people table if they don't exist. Returns person_id or None."""
     if not name or len(name.strip()) < 2:
         return None
-    
+
     name_clean = name.strip()
-    
+
     if is_blocklisted_person(name_clean):
-        print(f"⏭ Skipping blocklisted person from email: {name_clean}")
+        print(f"Skipping blocklisted person from email: {name_clean}")
         return None
-    
-    # Check existing using both raw and normalized name
+
     existing = supabase.table('people').select('id, name').execute()
     existing_names = {}
     for p in (existing.data or []):
@@ -177,32 +71,30 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
         norm = normalize_person_name(p['name'])
         if norm and norm not in existing_names:
             existing_names[norm] = p['id']
-    
+
     name_lower = name_clean.lower()
     name_norm = normalize_person_name(name_clean)
-    
+
     matched = existing_names.get(name_norm) if name_norm else None
     if matched is None:
         matched = existing_names.get(name_lower)
     if matched is not None:
         return matched
-    
-    # Insert new person
+
     result = supabase.table('people').insert({
         "name": name_clean,
         "role": None,
         "strategic_weight": 5,
         "source": source
     }).execute()
-    
+
     if result.data:
-        print(f"👤 Added new person from email: {name_clean}")
+        print(f"Added new person from email: {name_clean}")
         return result.data[0]['id']
     return None
 
 
 async def write_relationship_note(sender_name: str, sender_email: str, subject: str, summary: str, people_id: int = None):
-    """Write a synthesized relationship note to memories table."""
     prompt = f"""Synthesize a brief relationship note based on this email interaction. Focus on: who sent it, what was communicated, why it matters for Danny's relationship knowledge graph. NOT a raw summary.
 
 Sender: {sender_name} ({sender_email})
@@ -210,16 +102,16 @@ Subject: {subject}
 Summary: {summary}
 
 Output ONLY a concise 1-2 sentence note about the relationship context."""
-    
+
     try:
-        response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite-preview")
+        response = await call_gemini_classify(prompt, model="gemini-3.1-flash-lite-preview")
         note_content = response.text.strip()
         embedding = await asyncio.to_thread(get_embedding, note_content)
-        
+
         metadata = {}
         if people_id:
             metadata['people_id'] = people_id
-        
+
         supabase.table('memories').insert({
             "content": note_content,
             "memory_type": "relationship_note",
@@ -228,9 +120,9 @@ Output ONLY a concise 1-2 sentence note about the relationship context."""
             "source": "email_ingest",
             "metadata": metadata if metadata else None
         }).execute()
-        print(f"🧠 Relationship note written for {sender_name}")
+        print(f"Relationship note written for {sender_name}")
     except Exception as e:
-        print(f"⚠️ Relationship note write failed: {e}")
+        print(f"Relationship note write failed: {e}")
 
 
 def extract_email_address(sender_header: str) -> tuple:
@@ -347,7 +239,7 @@ Subject: {subject}
 Body:
 {body[:1000]}
 
-─── CLASSIFICATION RULES ───
+CLASSIFICATION RULES
 
 CLASSIFY AS "ignored" IF ANY of these are true:
 - Sender contains: noreply, no-reply, donotreply, mailer-daemon, bounce, notifications@, automated@, alert@, update@
@@ -366,7 +258,7 @@ CLASSIFY AS "actionable" IF:
 - Requires Danny to respond, decide, coordinate, approve, or take an action
 - Church coordination, Ashraya ministry tasks, personal obligations, and family matters all qualify
 
-─── OUTPUT RULES ───
+OUTPUT RULES
 
 suggested_task:
 - Verb-first, specific action (e.g., "Confirm attendance for Ashraya prayer meeting with Elder Thomas", "Call Amma about Sunday lunch plan")
@@ -377,7 +269,7 @@ needs_draft:
 - true if Danny needs to write a reply
 - true if is_human_sender = true AND the sender is waiting for acknowledgement,
   confirmation, or an update — even if the task itself is an offline action
-- false ONLY if the task is a call, meeting, or internal action where 
+- false ONLY if the task is a call, meeting, or internal action where
   the sender has no expectation of a response
 
 is_human_sender:
@@ -401,12 +293,13 @@ Return ONLY valid JSON, NO markdown, NO explanation:
   "has_memory_value": true or false
 }}"""
 
-    response = await call_gemini_with_retry(
+    response = await call_gemini_classify(
         prompt,
         model="gemini-3.1-flash-lite-preview",
         config={"response_mime_type": "application/json"}
     )
     return json.loads(response.text)
+
 
 async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tuple:
     msg_id = msg_data['id']
@@ -419,7 +312,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
         if existing is not None and existing.data:
             return (EmailStatus.IGNORED, msg_data.get('snippet', '')[:50])
     except Exception as e:
-        print(f"⚠️ Dedup check failed for {msg_id}: {e}")
+        print(f"Dedup check failed for {msg_id}: {e}")
 
     try:
         full_msg = gmail_service.users().messages().get(userId='me', id=msg_id, format='full').execute()
@@ -448,7 +341,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
             try:
                 classification_data = await classify_email(sender_header, subject, body, to_header, cc_header)
             except Exception as classify_err:
-                print(f"⏭️ [skipped - classification error] {subject} | Will retry on next run")
+                print(f"[skipped - classification error] {subject} | Will retry on next run")
                 return ("skipped_api_error", subject)
         classification = classification_data.get('classification', 'ignored')
 
@@ -464,7 +357,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
                 "classification": EmailStatus.IGNORED,
                 "status": EmailStatus.IGNORED
             }).execute()
-            print(f"⏭️ [ignored] {subject} | From: {sender_email}")
+            print(f"[ignored] {subject} | From: {sender_email}")
             return (EmailStatus.IGNORED, subject)
 
         email_row = {
@@ -485,37 +378,34 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
         if classification == 'fyi':
             insert_res = supabase.table('emails').insert(email_row).execute()
             if not insert_res.data:
-                print(f"⚠️ Email insert returned no data for {subject}")
+                print(f"Email insert returned no data for {subject}")
                 return ('error', 'insert returned no data')
-            
-            # Write relationship_note if human sender with memory value
+
             is_human = classification_data.get('is_human_sender', False)
             has_memory = classification_data.get('has_memory_value', False)
-            
-            # Add sender to people table if human
+
             people_id = None
             if is_human:
                 people_id = await add_person_from_email(sender_name, sender_email)
-            
+
             if is_human and has_memory:
                 await write_relationship_note(
-                    sender_name, 
-                    sender_email, 
-                    subject, 
+                    sender_name,
+                    sender_email,
+                    subject,
                     classification_data.get('summary', ''),
                     people_id=people_id
                 )
-            
-            print(f"✅ [fyi] {subject} | From: {sender_email}")
+
+            print(f"[fyi] {subject} | From: {sender_email}")
 
         elif classification == 'actionable':
             linked_person_id = None
             linked_person_name = classification_data.get('linked_person_name')
-            
-            # Add linked_person_name to people table if not exists (only for actionable emails)
+
             if linked_person_name:
                 if is_blocklisted_person(linked_person_name):
-                    print(f"⏭ Skipping blocklisted linked person: {linked_person_name}")
+                    print(f"Skipping blocklisted linked person: {linked_person_name}")
                 else:
                     person_res = supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').maybe_single().execute()
                     if getattr(person_res, 'data', None):
@@ -528,34 +418,32 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
                         }).execute()
                         if new_person.data:
                             linked_person_id = new_person.data[0]['id']
-                            print(f"👤 Added linked person from email: {linked_person_name}")
-            
-            # Add sender to people table if human
+                            print(f"Added linked person from email: {linked_person_name}")
+
             is_human = classification_data.get('is_human_sender', False)
             if is_human:
                 sender_id = await add_person_from_email(sender_name, sender_email)
-                # Use sender_id if no linked_person_id
                 if not linked_person_id:
                     linked_person_id = sender_id
-            
+
             linked_project_id = None
             linked_project_name = classification_data.get('linked_project_name')
             if linked_project_name:
                 project_res = supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').maybe_single().execute()
                 if getattr(project_res, 'data', None):
                     linked_project_id = project_res.data['id']
-            
+
             email_row['linked_person_id'] = linked_person_id
             email_row['linked_project_id'] = linked_project_id
-            
+
             insert_res = supabase.table('emails').insert(email_row).execute()
             if not insert_res.data:
-                print(f"⚠️ Email insert returned no data for {subject}")
+                print(f"Email insert returned no data for {subject}")
                 return ('error', 'insert returned no data')
             email_id = insert_res.data[0]['id']
-            
+
             suggested_task = classification_data.get('suggested_task')
-            
+
             if suggested_task:
                 suggested_title = suggested_task or ''
                 guard = check_duplicate(suggested_title, active_tasks)
@@ -563,11 +451,11 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
                     if guard['is_superset'] and guard['matched_id']:
                         try:
                             supabase.table('tasks').update({'title': suggested_title}).eq('id', guard['matched_id']).execute()
-                            print(f"🔁 Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' → '{suggested_title}'")
+                            print(f"Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' -> '{suggested_title}'")
                         except Exception as upd_err:
-                            print(f"⚠️ Auto-update failed: {upd_err}")
+                            print(f"Auto-update failed: {upd_err}")
                     else:
-                        print(f"⚠️ Duplicate guard (block): '{suggested_title}' matches existing task [{guard['matched_id']}]. Skipping.")
+                        print(f"Duplicate guard (block): '{suggested_title}' matches existing task [{guard['matched_id']}]. Skipping.")
                 elif guard['result'] == 'flag':
                     supabase.table('email_pending_tasks').insert({
                         "email_id": email_id,
@@ -579,7 +467,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
                         "possible_duplicate": True,
                         "duplicate_of_title": guard['matched_title']
                     }).execute()
-                    print(f"⚠️ Duplicate guard (flag): '{suggested_title}' may be similar to task '{guard['matched_title']}'. Created with flag.")
+                    print(f"Duplicate guard (flag): '{suggested_title}' may be similar to task '{guard['matched_title']}'. Created with flag.")
                 else:
                     supabase.table('email_pending_tasks').insert({
                         "email_id": email_id,
@@ -589,7 +477,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
                         "danny_decision": None,
                         "is_human_sender": is_human
                     }).execute()
-            
+
             if is_human and classification_data.get('has_memory_value'):
                 await write_relationship_note(
                     sender_name,
@@ -598,7 +486,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
                     classification_data.get('summary', ''),
                     people_id=linked_person_id or (await add_person_from_email(sender_name, sender_email) if is_human else None)
                 )
-            
+
             if classification_data.get('needs_draft'):
                 draft_body = await generate_draft(sender_name, subject, body)
                 if draft_body:
@@ -607,13 +495,13 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
                         "draft_body": draft_body,
                         "status": "pending"
                     }).execute()
-            
-            print(f"✅ [actionable] {subject} | From: {sender_email}")
+
+            print(f"[actionable] {subject} | From: {sender_email}")
 
         return (classification, subject)
 
     except Exception as e:
-        print(f"❌ Error processing email {msg_id}: {e}")
+        print(f"Error processing email {msg_id}: {e}")
         try:
             supabase.table('emails').insert({
                 "message_id": msg_id,
@@ -626,18 +514,19 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
                 "received_at": datetime.now(timezone.utc).isoformat()
             }).execute()
         except Exception as insert_err:
-            print(f"⚠️ Failed to insert error record: {insert_err}")
+            print(f"Failed to insert error record: {insert_err}")
         return (EmailStatus.ERROR, str(e))
 
 
 async def main():
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-    print("📧 Email ingest started at " + str(now_ist))
+    print("Email ingest started at " + str(now_ist))
 
-    gmail_service = build('gmail', 'v1', credentials=get_google_creds(), cache=MemoryCache())
+    from googleapiclient.discovery import build
+    gmail_service = build('gmail', 'v1', credentials=get_google_creds(), cache=_MemoryCache())
 
     active_tasks = build_active_task_list()
-    print(f"🧠 Loaded {len(active_tasks)} active tasks for duplicate checking.")
+    print(f"Loaded {len(active_tasks)} active tasks for duplicate checking.")
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     after_timestamp = int(cutoff.timestamp())
@@ -646,11 +535,11 @@ async def main():
     messages = result.get('messages', [])
 
     if not messages:
-        print("📭 No new emails found.")
+        print("No new emails found.")
         print("Email ingest complete. 0 processed, 0 ignored, 0 skipped (duplicates).")
         return
 
-    print(f"📬 Found {len(messages)} emails to process.")
+    print(f"Found {len(messages)} emails to process.")
 
     processed = 0
     ignored = 0
@@ -661,11 +550,11 @@ async def main():
 
     for msg in messages:
         if not msg:
-            print("⚠️ Skipping None message data")
+            print("Skipping None message data")
             continue
         msg_id = msg.get('id')
         if msg_id in seen_ids:
-            print(f"⚠️ Duplicate msg_id in batch: {msg_id}, skipping")
+            print(f"Duplicate msg_id in batch: {msg_id}, skipping")
             skipped += 1
             continue
         seen_ids.add(msg_id)
@@ -681,7 +570,7 @@ async def main():
                 processed += 1
             results.append((status, detail))
         except Exception as e:
-            print(f"❌ Fatal error processing message: {e}")
+            print(f"Fatal error processing message: {e}")
 
     print(f"Email ingest complete. {processed} processed, {ignored} ignored, {skipped} skipped (duplicates), {skipped_api_error} skipped (api error).")
 

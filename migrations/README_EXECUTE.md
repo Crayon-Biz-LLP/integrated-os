@@ -64,8 +64,8 @@ AND contype = 'f';
 
 **Why:** Prevents edges pointing to non-existent nodes.
 
-### 2. `pulse.py` - Versioned Updates
-**File:** `core/pulse.py`
+### 2. `pulse/engine.py` - Versioned Updates
+**File:** `core/pulse/engine.py`
 
 **Fix:** Refactored critical `.update()` calls to use `versioned_update()`:
 - ✅ `resources.mission_id` update (line 1286)
@@ -88,8 +88,8 @@ AND contype = 'f';
    ```
 3. **Run cleanup_orphans.py** to remove any existing orphans:
    ```bash
-   python core/cleanup_orphans.py --dry-run  # Check first
-   python core/cleanup_orphans.py            # Actually delete
+   python core/agents/cleanup_orphans.py --dry-run  # Check first
+   python core/agents/cleanup_orphans.py            # Actually delete
    ```
 4. **Monitor audit_logs** for orphan creation attempts:
    ```sql
@@ -103,8 +103,8 @@ AND contype = 'f';
 ## Files Modified (Root Cause Fixes)
 
 1. ✅ `core/skills/backfill_graph.py` - Edge validation before insert
-2. ✅ `core/pulse.py` - Versioned updates for tasks/resources
-3. ✅ `core/cleanup_orphans.py` - Added warning for orphaned edges (should be rare now)
+2. ✅ `core/pulse/engine.py` - Versioned updates for tasks/resources
+3. ✅ `core/agents/cleanup_orphans.py` - Added warning for orphaned edges (should be rare now)
 4. ✅ `migrations/009_add_cascade_delete.sql` - CASCADE foreign keys (needs manual run)
 5. ⏳ `migrations/010_fix_raw_dumps_retention.sql` - 30-day retention (optional)
 
@@ -113,6 +113,6 @@ AND contype = 'f';
 ## Next Steps
 
 1. **Run Migration 009** in Supabase Dashboard (5 minutes)
-2. **Run cleanup_orphans.py** to remove existing orphans
+2. **Run agents/cleanup_orphans.py** to remove existing orphans
 3. **Monitor** for new orphan creation (should be near zero now)
 4. **Optional:** Implement Phase-1 Janitor Daemon + DLQ logic (if needed)

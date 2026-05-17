@@ -6,7 +6,7 @@
 ## Tier 0 — STOP THE BLEEDING (Do This Week)
 
 ### T-001: Add try/except to handle_confident_note()
-**File**: `apiwebhook.py`
+**File**: `core/webhook/handler.py`
 **Depends on**: Nothing
 **Risk**: Low — additive change
 **Deploy safe**: YES
@@ -62,7 +62,7 @@ CREATE TABLE dead_letter_queue (
 ---
 
 ### T-004: Add log_audit() utility function
-**File**: `apiwebhook.py` (shared utils)
+**File**: `core/webhook/handler.py` (shared utils)
 **Depends on**: T-002
 **Risk**: Low — additive
 **Deploy safe**: YES
@@ -83,7 +83,7 @@ def log_audit(function_name, event_type, message, raw_input=None):
 ---
 
 ### T-005: Replace print() errors with log_audit() calls
-**File**: `apiwebhook.py`, `pulse.py`
+**File**: `core/webhook/handler.py`, `core/pulse/engine.py`
 **Depends on**: T-004
 **Risk**: Low
 **Deploy safe**: YES — purely additive, no logic change
@@ -95,7 +95,7 @@ Scan for every `except` block and add `log_audit()` call before existing handlin
 ## Tier 1 — PIPELINE INTEGRITY (Week 2)
 
 ### T-006: Introduce 'staged' → 'processed' state machine in raw_dumps
-**File**: `apiwebhook.py`, Supabase migration
+**File**: `core/webhook/handler.py`, Supabase migration
 **Depends on**: T-001, T-004
 **Risk**: Medium — changes status values used in queries
 **Deploy safe**: YES with migration first
@@ -174,7 +174,7 @@ Same `is_current` + `version` pattern. `brain_synth.py` writes a new page versio
 ---
 
 ### T-011: Idempotency guard on raw_dumps insert
-**File**: `apiwebhook.py`
+**File**: `core/webhook/handler.py`
 **Depends on**: T-006
 **Risk**: Low
 **Deploy safe**: YES

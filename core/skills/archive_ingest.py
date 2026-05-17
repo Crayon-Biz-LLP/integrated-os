@@ -2,26 +2,13 @@ import os
 import json
 import time
 from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
-from dotenv import load_dotenv
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from google import genai
 
-dotenv_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
-load_dotenv(dotenv_path)
+from core.services.db import get_supabase, get_embedding
+from core.services.google_service import get_google_creds
 
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
-if not supabase_url or not supabase_key:
-    raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
-
-supabase: Client = create_client(supabase_url, supabase_key)
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+supabase = get_supabase()
 
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
@@ -64,15 +51,6 @@ def with_retry(fn, retries=3, base_delay=1, label="operation"):
                 print(f"{label} failed after 3 attempts: {e}")
                 raise e
 
-
-def get_google_creds():
-    return Credentials(
-        None,
-        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
-        client_id=os.getenv("GOOGLE_CLIENT_ID"),
-        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-        token_uri="https://oauth2.googleapis.com/token"
-    )
 
 
 def get_sheets_service():
@@ -150,22 +128,6 @@ def synthesize_content(entry_type: str, row) -> str:
 
     return " | ".join([p for p in parts if p])
 
-
-def get_embedding(text: str) -> list:
-    if not text:
-        return []
-    try:
-        result = gemini_client.models.embed_content(
-            model="gemini-embedding-2-preview",
-            contents=text,
-            config={"output_dimensionality": 768}
-        )
-        if result and hasattr(result, 'embeddings') and result.embeddings:
-            return result.embeddings[0].values
-        return []
-    except Exception as e:
-        print(f"Embedding generation error: {e}")
-        return []
 
 
 def parse_timestamp(ts: str) -> str:

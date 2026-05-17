@@ -1,59 +1,17 @@
 import asyncio
 import json
-from datetime import datetime, timezone, timedelta
-from dotenv import load_dotenv
-load_dotenv()
 import os
-from supabase import create_client, Client
-from google import genai
+import httpx
+from datetime import datetime, timezone, timedelta
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+from core.services.db import get_supabase, get_embedding
+from core.services.llm import call_gemini_with_retry
 
-EMBEDDING_MODEL = "gemini-embedding-2-preview"
-EMBEDDING_DIMENSION = 768
+supabase = get_supabase()
 
-def get_embedding(text: str) -> list:
-    try:
-        result = gemini_client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=text,
-            config={"output_dimensionality": EMBEDDING_DIMENSION}
-        )
-        return result.embeddings[0].values
-    except Exception as e:
-        print(f"Embedding error: {e}")
-        return []
-
-async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None):
-    max_retries = 5
-    base_delay = 15
-    retryable_errors = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded']
-    for attempt in range(max_retries):
-        try:
-            response = gemini_client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=config or {}
-            )
-            return response
-        except Exception as e:
-            error_str = str(e).lower()
-            should_retry = any(err in error_str for err in retryable_errors)
-            if should_retry and attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                print(f"⚠️ Gemini retry ({error_str}), retrying in {delay}s...")
-                await asyncio.sleep(delay)
-                continue
-            else:
-                raise
 
 async def run_batch_sweep():
     try:
-        # 1. GATHER TARGETS
         active_res = supabase.table('projects') \
             .select('id, name') \
             .eq('is_active', True) \
@@ -63,8 +21,7 @@ async def run_batch_sweep():
 
         batch_payload = []
 
-        # Staleness check
-        print(f"🔍 Checking canonical page freshness...")
+        print("Checking canonical page freshness...")
         stale_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
         stale_pages = supabase.table('canonical_pages') \
             .select('title, last_synth_at, project_id') \
@@ -72,15 +29,12 @@ async def run_batch_sweep():
             .lt('last_synth_at', stale_threshold.isoformat()) \
             .execute()
         if stale_pages.data:
-            print(f"⚠️ {len(stale_pages.data)} stale pages detected: {[p['title'] for p in stale_pages.data]}")
-            # Mark stale pages for re-synthesis by adding to batch_payload
+            print(f"{len(stale_pages.data)} stale pages detected: {[p['title'] for p in stale_pages.data]}")
             for p in stale_pages.data:
-                # Check if already in entities list
                 if not any(e[0] == p.get('project_id') for e in entities):
                     entities.append((p.get('project_id'), p['title']))
 
-        # 2. COLLECT
-        print(f"📡 Gathering fragments for {len(entities)} entities...")
+        print(f"Gathering fragments for {len(entities)} entities...")
         for project_id, entity_name in entities:
             try:
                 all_fragments = []
@@ -93,10 +47,8 @@ async def run_batch_sweep():
                         seen_hashes.add(h)
                         all_fragments.append(f"[{prefix}] {text}")
 
-                # Get entity embedding once — reuse for all semantic searches
                 entity_embedding = get_embedding(entity_name)
 
-                # memories — semantic search
                 if entity_embedding:
                     mem = supabase.rpc('match_memories', {
                         'query_embedding': entity_embedding,
@@ -107,14 +59,12 @@ async def run_batch_sweep():
                         for f in mem.data:
                             add_fragment("MEMORY", f['content'])
 
-                # tasks — project_id match (precise, no change needed)
                 tasks = supabase.table('tasks').select('title, status') \
                     .eq('project_id', project_id).execute()
                 if tasks.data:
                     for t in tasks.data:
                         add_fragment(f"TASK/{t['status'].upper()}", t['title'])
 
-                # logs — semantic search
                 if entity_embedding:
                     logs = supabase.rpc('match_logs', {
                         'query_embedding': entity_embedding,
@@ -125,7 +75,6 @@ async def run_batch_sweep():
                         for f in logs.data:
                             add_fragment("LOG", f['content'])
 
-                # resources — semantic search
                 if entity_embedding:
                     resources = supabase.rpc('match_resources', {
                         'query_embedding': entity_embedding,
@@ -136,7 +85,6 @@ async def run_batch_sweep():
                         for r in resources.data:
                             add_fragment("RESOURCE", f"{r['title']} — {r.get('summary', '')}")
 
-                # raw_dumps — semantic search (threshold raised to 0.5)
                 if entity_embedding:
                     dumps = supabase.rpc('match_raw_dumps', {
                         'query_embedding': entity_embedding,
@@ -147,7 +95,6 @@ async def run_batch_sweep():
                         for d in dumps.data:
                             add_fragment("DUMP", d['content'])
 
-                # people — ilike (no embedding column on people table)
                 people = supabase.table('people').select('name, role, strategic_weight') \
                     .ilike('name', f'%{entity_name}%').execute()
                 if people.data:
@@ -180,21 +127,18 @@ async def run_batch_sweep():
         if not batch_payload:
             print("No data found to synthesize.")
             return
-        
-        # Notify start via Telegram
+
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if telegram_chat_id and telegram_bot_token:
             try:
-                import httpx
                 url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
-                payload = {"chat_id": int(telegram_chat_id), "text": f"🧠 *Synthesizing {len(batch_payload)} Master Pages...*", "parse_mode": "Markdown"}
+                payload = {"chat_id": int(telegram_chat_id), "text": f"Synthesizing {len(batch_payload)} Master Pages...", "parse_mode": "Markdown"}
                 httpx.post(url, json=payload, timeout=10)
             except:
                 pass
-        
-        # 3. SYNTHESIZE
-        print("🧠 Synthesizing Master Pages per entity...")
+
+        print("Synthesizing Master Pages per entity...")
         results = {}
         for entry in batch_payload:
             entity_name = entry['entity']
@@ -229,35 +173,33 @@ NEW FRAGMENTS:
                 if response and response.text:
                     results[entity_name] = response.text.strip()
                 else:
-                    print(f"  ⚠️ No response for {entity_name}, skipping.")
+                    print(f"No response for {entity_name}, skipping.")
             except Exception as e:
-                print(f"  ❌ Gemini failed for {entity_name}: {e}")
+                print(f"Gemini failed for {entity_name}: {e}")
                 continue
 
-        # 4. COMMIT
         for entity_name, markdown in results.items():
             payload_entry = next((p for p in batch_payload if p['entity'] == entity_name), None)
             if not payload_entry:
                 continue
-            
+
             project_id = payload_entry['project_id']
             existing_id = payload_entry.get('existing_id')
             existing_content = payload_entry.get('existing_page', '')
-            
+
             if len(markdown) < 300:
-                print(f"⚠️ Skipping {entity_name} — output too sparse ({len(markdown)} chars)")
+                print(f"Skipping {entity_name} — output too sparse ({len(markdown)} chars)")
                 continue
-            
+
             if existing_content and len(markdown) < len(existing_content) * 0.6:
-                print(f"⚠️ Skipping {entity_name} — output significantly shorter than existing page.")
+                print(f"Skipping {entity_name} — output significantly shorter than existing page.")
                 continue
-            
+
             embedding = get_embedding(markdown)
             now_iso = datetime.now(timezone.utc).isoformat()
-            
+
             try:
                 if existing_id:
-                    # Get current version number
                     version_res = supabase.table('canonical_pages') \
                         .select('version') \
                         .eq('id', existing_id) \
@@ -265,7 +207,6 @@ NEW FRAGMENTS:
                         .execute()
                     old_version = (version_res.data.get('version') or 0) if version_res.data else 0
 
-                    # Insert new version FIRST (so failure doesn't orphan old)
                     supabase.table('canonical_pages').insert({
                         "title": entity_name,
                         "project_id": project_id,
@@ -280,13 +221,12 @@ NEW FRAGMENTS:
                         "is_sparse": len(markdown) < 500
                     }).execute()
 
-                    # Mark old as not current
                     supabase.table('canonical_pages') \
                         .update({"is_current": False}) \
                         .eq('id', existing_id) \
                         .execute()
 
-                    print(f"✅ Master Page Versioned: {entity_name} (v{old_version + 1}, {payload_entry['fragment_count']} fragments)")
+                    print(f"Master Page Versioned: {entity_name} (v{old_version + 1}, {payload_entry['fragment_count']} fragments)")
                 else:
                     supabase.table('canonical_pages').insert({
                         "title": entity_name,
@@ -300,24 +240,23 @@ NEW FRAGMENTS:
                         "last_synth_at": now_iso,
                         "is_sparse": len(markdown) < 500
                     }).execute()
-                    print(f"✅ Master Page Created: {entity_name} ({payload_entry['fragment_count']} fragments)")
+                    print(f"Master Page Created: {entity_name} ({payload_entry['fragment_count']} fragments)")
             except Exception as e:
-                print(f"  ❌ DB commit failed for {entity_name}: {e}")
+                print(f"DB commit failed for {entity_name}: {e}")
                 continue
 
     except Exception as e:
         print(f"Brain sweep failed: {e}")
-        # Notify failure via Telegram
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if telegram_chat_id and telegram_bot_token:
             try:
-                import httpx
                 url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
-                payload = {"chat_id": int(telegram_chat_id), "text": f"⚠️ Brain Synthesizer failed: {str(e)[:100]}", "parse_mode": "Markdown"}
+                payload = {"chat_id": int(telegram_chat_id), "text": f"Brain Synthesizer failed: {str(e)[:100]}", "parse_mode": "Markdown"}
                 httpx.post(url, json=payload, timeout=10)
             except:
                 pass
+
 
 if __name__ == "__main__":
     asyncio.run(run_batch_sweep())

@@ -18,21 +18,9 @@ import sys
 import json
 import difflib
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.services.db import get_supabase
 
-from supabase import create_client
-from dotenv import load_dotenv
-
-load_dotenv()
-
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
-if not supabase_url or not supabase_key:
-    print("ERROR: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
-    sys.exit(1)
-
-supabase = create_client(supabase_url, supabase_key)
+supabase = get_supabase()
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 

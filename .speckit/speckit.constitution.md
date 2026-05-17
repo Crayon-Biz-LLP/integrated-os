@@ -134,7 +134,7 @@ The system must NOT:
 
 - No feature is deployed without a migration rollback plan
 - No prompt change is made without testing on the last 20 `raw_dumps` records
-- No model is changed without updating `EMBEDDING_MODEL` and `CLASSIFICATION_MODEL` constants in both `apiwebhook.py` and `pulse.py`
+- No model is changed without updating `EMBEDDING_MODEL` and `CLASSIFICATION_MODEL` constants in both `core/webhook/handler.py` and `core/pulse/engine.py`
 - GitHub Actions workflows must have `timeout-minutes` set — no unbounded runs
 - All secrets referenced in workflows must exist in the GitHub org secrets vault before the workflow is pushed
 

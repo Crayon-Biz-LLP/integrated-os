@@ -28,9 +28,9 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - `core/pulse_cli.py` - CLI entry for pulse (used in CI)
 
 ### Core Modules
-- `core/webhook.py` - Telegram command handling, raw dump capture, message classification
-- `core/pulse.py` - AI briefing generation, task management, calendar sync. `format_rfc3339()` at line 1024
-- `core/research_agent.py` - Research and embedding tasks
+- `core/webhook/handler.py` - Telegram command handling, raw dump capture, message classification
+- `core/pulse/engine.py` - AI briefing generation, task management, calendar sync. `format_rfc3339()` in `core/services/google_service.py`
+- `core/agents/research_agent.py` - Research and embedding tasks
 - `core/skills/` - Ingest (email, archive) and graph sync scripts (run via CI)
 
 ### Database (Supabase)
@@ -57,7 +57,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 
 ### Time Handling
 - All timestamps use **IST (UTC+05:30)**
-- Use `format_rfc3339()` in `core/pulse.py:1024` to sanitize times
+- Use `format_rfc3339()` in `core/services/google_service.py` to sanitize times
 - Format: `YYYY-MM-DDTHH:MM:SS+05:30`
 
 ### Security

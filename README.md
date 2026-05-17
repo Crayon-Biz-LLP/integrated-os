@@ -12,7 +12,7 @@ The system operates as a triangular engine:
     The Pulse: A scheduled briefing engine that syncs calendars and delivers SITREPs (Situation Reports).
 
 🧩 Component Breakdown
-1. core/webhook.py (The Intake)
+1. core/webhook/handler.py (The Intake)
 
 This is the system's "ears." It handles real-time communication from Telegram.
 
@@ -22,7 +22,7 @@ This is the system's "ears." It handles real-time communication from Telegram.
 
     Intent Classification: Uses gemini-3.1-flash-lite to distinguish between a "Task" (to-do), a "Note" (memory), or "Noise" (ignore).
 
-2. core/pulse.py (The Engine)
+2. core/pulse/engine.py (The Engine)
 
 This is the system's "brain" and "executor." It runs on a schedule via GitHub Actions.
 
@@ -34,7 +34,7 @@ This is the system's "brain" and "executor." It runs on a schedule via GitHub Ac
 
     Google Sync: Two-way synchronization between Supabase and Google Tasks/Calendar.
 
-3. core/research_agent.py (The Intern)
+3. core/agents/research_agent.py (The Intern)
 
 A specialized worker that handles "Delegated" tasks. When you ask the system to research a competitor or a tool, this agent uses the Jina AI search engine to browse the live web and synthesize a "Research Dossier" back into your staging area.
 🤖 How "Agents" Interact with the Core
@@ -43,11 +43,11 @@ The "Agents" in Integrated-OS are not just chatbots; they are functional modules
 
     Trigger: You send a Telegram message: "Research the new pricing for Qhord's competitors."
 
-    Classification: webhook.py identifies the intent as DELEGATE and drops a record into the agent_queue.
+    Classification: webhook/handler.py identifies the intent as DELEGATE and drops a record into the agent_queue.
 
-    Execution: The research_agent.py (running as a separate GitHub Worker) picks up the queue item, crawls the web, and generates a dossier.
+    Execution: The agents/research_agent.py (running as a separate GitHub Worker) picks up the queue item, crawls the web, and generates a dossier.
 
-    Feedback: The result is injected back into raw_dumps, and pulse.py summarizes the findings in your next scheduled SITREP.
+    Feedback: The result is injected back into raw_dumps, and pulse/engine.py summarizes the findings in your next scheduled SITREP.
 
 🚀 Quick-Start Setup
 1. Environment Variables

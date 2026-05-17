@@ -2,128 +2,16 @@ import os
 import json
 import re
 import asyncio
+import hashlib
 from datetime import datetime, timedelta, timezone
 
-from supabase import create_client, Client
-from google import genai
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.discovery_cache import base
+from core.lib.audit_logger import info, warning, error, audit_log_sync
+from core.lib.rate_limiter import flash_lite_limiter
+from core.services.db import get_supabase, get_embedding, fetch_active_projects, zombie_recovery, versioned_update
+from core.services.google_service import format_rfc3339, sync_to_calendar, sync_to_google, delete_calendar_event, get_tasks_service
+from core.services.llm import call_gemini_classify, CLASSIFICATION_MODEL, get_gemini_client
 
-import sys
-sys.path.insert(0, os.path.dirname(__file__))
-from audit_logger import info, warning, error, audit_log_sync
-from rate_limiter import flash_lite_limiter
-
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
-
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-CLASSIFICATION_MODEL = "gemini-3.1-flash-lite-preview"
-
-
-class MemoryCache(base.Cache):
-    _cache = {}
-    def get(self, url):
-        return self._cache.get(url)
-    def set(self, url, content):
-        self._cache[url] = content
-
-
-def get_google_creds():
-    return Credentials(
-        None,
-        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
-        client_id=os.getenv("GOOGLE_CLIENT_ID"),
-        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-        token_uri="https://oauth2.googleapis.com/token"
-    )
-
-
-def get_tasks_service():
-    return build('tasks', 'v1', credentials=get_google_creds(), cache=MemoryCache())
-
-
-def format_rfc3339(date_str):
-    if not date_str:
-        return None
-    clean = str(date_str).replace(' ', 'T')
-    if 'T' not in clean:
-        return clean
-    if '+' not in clean and not clean.endswith('Z'):
-        clean += '+05:30'
-    return clean
-
-
-def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
-    service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
-    try:
-        rfc_time = format_rfc3339(start_iso)
-        start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
-        end_dt = start_dt + timedelta(minutes=int(duration_mins))
-        event_body = {
-            'summary': title,
-            'start': {'dateTime': rfc_time, 'timeZone': 'Asia/Kolkata'},
-            'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'},
-            'reminders': {'useDefault': True}
-        }
-        if event_id:
-            res = service.events().patch(calendarId='primary', eventId=event_id, body=event_body).execute()
-        else:
-            res = service.events().insert(calendarId='primary', body=event_body).execute()
-        return res.get('id')
-    except Exception as e:
-        if event_id:
-            return sync_to_calendar(title, start_iso, event_id=None)
-        audit_log_sync("quick_process", "ERROR", f"Calendar sync failed: {e}")
-        return None
-
-
-def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo', explicit_time=False):
-    if task_id and status in ('done', 'cancelled'):
-        try:
-            service.tasks().patch(tasklist='@default', task=task_id, body={'status': 'completed'}).execute()
-            return task_id
-        except Exception:
-            return None
-    rfc_date = format_rfc3339(due_at)
-    try:
-        body = {'title': title}
-        if rfc_date:
-            body['due'] = rfc_date
-        if task_id:
-            res = service.tasks().patch(tasklist='@default', task=task_id, body=body).execute()
-        else:
-            res = service.tasks().insert(tasklist='@default', body=body).execute()
-        return res.get('id')
-    except Exception as e:
-        audit_log_sync("quick_process", "WARNING", f"Google Tasks sync failed: {e}")
-        return None
-
-
-def get_embedding(text: str) -> list:
-    try:
-        result = gemini_client.models.embed_content(
-            model="gemini-embedding-2-preview",
-            contents=text,
-            config={'output_dimensionality': 768}
-        )
-        return result.embeddings[0].values
-    except Exception as e:
-        audit_log_sync("quick_process", "ERROR", f"Embedding error: {e}")
-        return [0] * 768
-
-
-def fetch_active_projects() -> list:
-    try:
-        res = supabase.table('projects').select('id, name, org_tag').eq('status', 'active').execute()
-        return res.data or []
-    except Exception as e:
-        audit_log_sync("quick_process", "WARNING", f"Failed to fetch projects: {e}")
-        return []
+supabase = get_supabase()
 
 
 def is_bare_url(text: str) -> bool:
@@ -188,10 +76,9 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
     prompt = build_combined_prompt(text, projects)
 
     try:
-        await flash_lite_limiter.acquire_async()
-        response = gemini_client.models.generate_content(
+        response = await call_gemini_classify(
+            prompt,
             model=CLASSIFICATION_MODEL,
-            contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
         result = json.loads(response.text.strip().replace('```json', '').replace('```', '').strip())
@@ -245,15 +132,11 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
         if task_ref.data and task_ref.data['status'] not in ('done', 'cancelled'):
             td = task_ref.data
             if td.get('google_event_id'):
-                try:
-                    _delete_calendar_event(td['google_event_id'])
-                except Exception:
-                    pass
+                delete_calendar_event(td['google_event_id'])
             if td.get('google_task_id') and tasks_service:
                 sync_to_google(tasks_service, title=td['title'], task_id=td['google_task_id'], status='done')
-            from pulse import versioned_update
             versioned_update('tasks', td['id'], {"status": "done", "completed_at": datetime.now(timezone.utc).isoformat()},
-                             change_source='quick_process', change_reason=f"Completed via quick_process")
+                             change_source='quick_process', change_reason="Completed via quick_process")
             return {"action": "completed", "task_id": td['id']}
         return {"action": "skipped", "reason": "no_matching_task"}
 
@@ -297,31 +180,8 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
     return {"action": "created", "task_id": task_id, "google_event_id": e_id, "google_task_id": g_id}
 
 
-def _delete_calendar_event(event_id):
-    if not event_id:
-        return
-    service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
-    try:
-        service.events().delete(calendarId='primary', eventId=event_id).execute()
-    except Exception:
-        pass
-
-
 def hashlib_md5(data: bytes) -> str:
-    import hashlib
     return hashlib.md5(data).hexdigest()
-
-
-def zombie_recovery():
-    try:
-        ten_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
-        supabase.table('raw_dumps') \
-            .update({"status": "pending"}) \
-            .eq('status', 'processing') \
-            .lt('created_at', ten_mins_ago) \
-            .execute()
-    except Exception as e:
-        audit_log_sync("quick_process", "WARNING", f"Zombie recovery failed: {e}")
 
 
 async def process_pending_dumps():

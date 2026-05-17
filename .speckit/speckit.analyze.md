@@ -55,11 +55,11 @@
 
 ## Items Confirmed Consistent
 
-- ✅ Constitution P4 (IST timezone) — `pulse.py` uses `pytz.timezone('Asia/Kolkata')` in all time-aware logic
+- ✅ Constitution P4 (IST timezone) — `core/pulse/engine.py` uses `pytz.timezone('Asia/Kolkata')` in all time-aware logic
 - ✅ Constitution P9 (entity routing stealth) — entity field is in JSON, not in Telegram receipt text
 - ✅ Constitution P7 (fail closed on auth) — `PULSE_SECRET` check returns 401 before any processing
 - ✅ Plan: Supabase as single store — confirmed in all files
-- ✅ Plan: Telegram as alerting channel — confirmed in pulse.py and webhook receipt logic
+- ✅ Plan: Telegram as alerting channel — confirmed in core/pulse/engine.py and webhook receipt logic
 
 ---
 

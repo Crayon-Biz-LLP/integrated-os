@@ -1,66 +1,28 @@
 import os
+import sys
 import json
 import time
 import uuid
 import httpx
-import sys
-from supabase import create_client, Client
-from dotenv import load_dotenv
-from google import genai
+from supabase import create_client
 
-# Add parent directory for importing from pulse.py
-# __file__ = .../core/skills/backfill_graph.py
-# We need to add .../core/ to path so `import pulse` works
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from rate_limiter import flash_lite_limiter
-from people_utils import normalize_person_name, is_blocklisted_person
-# Import utilities from audit_logger and pulse
-try:
-    from audit_logger import info, warning, error, audit_log_sync
-except ImportError:
-    # Fallback: define local version
-    def info(service, message, metadata=None):
-        print(f"[INFO] {service}: {message}")
-    
-    def warning(service, message, metadata=None):
-        print(f"[WARNING] {service}: {message}")
-    
-    def error(service, message, metadata=None):
-        print(f"[ERROR] {service}: {message}")
-    def audit_log_sync(service, level, message, metadata=None):
-        print(f"[{level}] {service}: {message}")
-        return
+from core.lib.rate_limiter import flash_lite_limiter
+from core.lib.people_utils import normalize_person_name, is_blocklisted_person
+from core.lib.audit_logger import info, warning, error, audit_log_sync
+from core.services.db import get_supabase
+from core.services.pipeline_service import add_to_failed_queue
+from core.services.llm import get_gemini_client, call_llm_with_fallback as _service_call_llm
 
-# Import add_to_failed_queue from pulse.py
-try:
-    from pulse import add_to_failed_queue
-except ImportError:
-    # Fallback: define a local version if import fails
-    async def add_to_failed_queue(source_table: str, source_id: str, operation: str, error_message: str):
-        print(f"Failed queue: {source_table}:{source_id} - {error_message}")
-        return
+supabase = get_supabase()
+gemini_client = get_gemini_client()
 
-
-dotenv_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
-load_dotenv(dotenv_path)
-
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-
-# OpenRouter config (matching pulse.py)
+# OpenRouter config
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
 PULSE_HTTP_REFERER = os.getenv("PULSE_HTTP_REFERER", "http://localhost:8000")
 PULSE_APP_NAME = os.getenv("PULSE_APP_NAME", "Pulse")
 GEMMA_FALLBACK_MODEL = "gemma-4-31b-it"
 OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-
-if not supabase_url or not supabase_key:
-    raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
-
-supabase: Client = create_client(supabase_url, supabase_key)
-gemini_client = genai.Client(api_key=gemini_api_key)
 
 RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit', '429']
 NON_RETRYABLE_ERRORS = ['401', '403', '400', 'invalid']

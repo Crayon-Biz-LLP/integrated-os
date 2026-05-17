@@ -6,7 +6,7 @@
 ## Current System State (as of May 2026)
 
 ### What is built and working
-- Telegram webhook intake (`apiwebhook.py`) — classification, task/note routing, multimodal support
+- Telegram webhook intake (`core/webhook/handler.py`) — classification, task/note routing, multimodal support
 - Email ingestion — Gmail + Outlook → Supabase (`email_ingest.yml` GitHub Action)
 - Email draft generation and approval via `ed` commands
 - Pulse briefing — triggered via GitHub Actions, sends daily SITREP to Telegram
@@ -17,7 +17,7 @@
 
 ### What is broken or incomplete
 - **CRITICAL**: `raw_dumps` records are marked `completed` even when embedding fails → 41+ orphaned records with `embedding: null`
-- **CRITICAL**: `handle_confident_note()` in `apiwebhook.py` runs embedding synchronously in the webhook response path — if Gemini is slow, the webhook times out
+- **CRITICAL**: `handle_confident_note()` in `core/webhook/handler.py` runs embedding synchronously in the webhook response path — if Gemini is slow, the webhook times out
 - **MISSING**: No `system_audit_logs` table — errors go to `print()` and disappear
 - **MISSING**: No `dead_letter_queue` for failed embeddings
 - **MISSING**: No Janitor/heartbeat monitoring the pipeline health
@@ -57,7 +57,7 @@
 **Acceptance Criteria**:
 - New table: `system_audit_logs(id, function_name, event_type, message, raw_input, created_at)`
 - `event_type` is one of: `error`, `warning`, `info`, `retry`, `dlq_write`
-- All `except` blocks in `apiwebhook.py` and `pulse.py` call `log_audit()` before any other action
+- All `except` blocks in `core/webhook/handler.py` and `core/pulse/engine.py` call `log_audit()` before any other action
 - `log_audit()` itself must never throw — it wraps its own DB call in a try/except that falls back to `print()`
 - `system_audit_logs` is never modified or deleted — append-only
 
