@@ -1196,7 +1196,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     e_id = None
                 elif new_reminder and was_explicit_time:
                     # 🛰️ RADAR: Check for conflict before moving the block
-                    conflict_name = await asyncio.to_thread(check_conflict, new_reminder)
+                    conflict_name = await asyncio.to_thread(check_conflict, new_reminder, e_id)
                     if conflict_name:
                         # 🛡️ Safety: Assignment ensures we don't crash if 'briefing' key is missing
                         current_briefing = ai_data.get('briefing', "")

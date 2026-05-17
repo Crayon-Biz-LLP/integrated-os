@@ -104,12 +104,6 @@ async def detect_practices():
             .in_('message_type', ['task', 'note']) \
             .execute()
 
-        mem_res = supabase.table('memories') \
-            .select('id, content, created_at, memory_type') \
-            .gte('created_at', fourteen_days_ago) \
-            .in_('memory_type', ['note', 'outcome']) \
-            .execute()
-
         candidates = []
         seen_texts = set()
 
@@ -140,23 +134,6 @@ async def detect_practices():
                 'timestamp': item.get('created_at'),
                 'entity': entity,
                 'source': 'raw_dumps',
-                'source_id': item.get('id')
-            })
-
-        for item in (mem_res.data or []):
-            text = (item.get('content') or '').strip()
-            if not text or len(text) < 5 or len(text) > 500:
-                continue
-            text_lower = text.lower()
-            if text_lower in seen_texts:
-                continue
-            seen_texts.add(text_lower)
-
-            candidates.append({
-                'text': text,
-                'timestamp': item.get('created_at'),
-                'entity': None,
-                'source': 'memories',
                 'source_id': item.get('id')
             })
 
@@ -327,10 +304,10 @@ Rules:
 - If they describe DIFFERENT activities, return is_same_activity: false.
 - Only return true if you are confident ALL entries refer to the same underlying practice.
 - canonical_name must be short and natural (e.g., "Morning Run", "Daily Journal", "Weekly Review").
-- If is_same_activity is true, also determine if entries represent a PERSONAL HABIT or just work/project tasks. A personal habit is a recurring behavioral practice (e.g., "Morning Run", "Daily Journal"). Work/project entries describe working on a deliverable (e.g., "built feature X", "fixed bug Y"). Return is_personal_habit: true only for genuine recurring behaviors, not project tasks.
+- If is_same_activity is true, also determine if entries represent a PERSONAL HABIT or just work/project tasks. A personal habit is a recurring behavioral practice (e.g., "Morning Run", "Bible Reading", "Daily Journal"). Work/project entries describe coding, development, design, project management, client work, or any activity tied to a business deliverable (e.g., "built frontend", "fixed bug Y", "deployed feature", "designed UI", "code review", "sprint planning"). These must be REJECTED. If you set is_personal_habit: false, include a brief reject_reason explaining why.
 
 Return ONLY valid JSON:
-{{"is_same_activity": true, "is_personal_habit": true, "canonical_name": "Morning Run"}}"""
+{{"is_same_activity": true, "is_personal_habit": true, "canonical_name": "Morning Run", "reject_reason": ""}}"""
 
             try:
                 response = await call_llm_with_fallback(

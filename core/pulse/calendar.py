@@ -39,7 +39,7 @@ def get_calendar_context(target_date):
             lines.append(f"- {e['title']}")
     return "\n".join(lines)
 
-def check_conflict(start_iso):
+def check_conflict(start_iso, exclude_event_id=None):
     """Radar: Checks if a 30-minute window is already booked."""
     try:
         service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
@@ -56,6 +56,8 @@ def check_conflict(start_iso):
         ).execute()
 
         events = events_res.get('items', [])
+        if exclude_event_id:
+            events = [e for e in events if e.get('id') != exclude_event_id]
         return events[0].get('summary') if events else None
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"⚠️ Conflict check failed: {e}")

@@ -80,6 +80,11 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - This applies to: `DELETE` queries, marking records as pruned/removed, and cascade deletions.
 - Always use `--dry-run` mode first and show the user what will be affected before running destructive operations.
 
+### Product Summary (Living Documentation)
+- `product-summary/` must stay in sync with the codebase at all times
+- When modifying existing behavior → update the relevant `product-summary/XX-<topic>.md` file
+- When adding a new feature or solution → create a new file (`25-<topic>.md`, `26-<topic>.md`, etc.) AND update `product-summary/README.md` contents table
+
 ## Required Environment Variables
 ```
 SUPABASE_URL

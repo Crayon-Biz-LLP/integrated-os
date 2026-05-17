@@ -294,7 +294,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Inline processing failed for dump {dump_id}: {e}")
 
-async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user"):
+async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None):
     # ── Idempotency guard: skip if identical content+source inserted within 60s ──
     if is_recent_raw_dump(text, source):
         ack = receipt or "Note vaulted."
@@ -309,7 +309,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         "sender": sender,
         "message_type": "note",
         "source": source,
-        "metadata": {"intent": "NOTE", "entity": None}
+        "metadata": {"intent": "NOTE", "entity": entity}
     }
     try:
         dump_res = supabase.table('raw_dumps').insert([insert_data]).execute()
@@ -345,7 +345,8 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             "memory_type": "note",
             "embedding": embedding,
             "embedding_status": embed_status,
-            "source": "webhook"
+            "source": "webhook",
+            "metadata": {"entity": entity}
         }).execute()
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Failed to save note to memory: {e}")
@@ -490,7 +491,8 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text)
     elif intent == 'NOTE':
         receipt = classification.get('receipt') if classification else None
-        await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender)
+        entity = classification.get('entity') if classification else None
+        await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity)
     elif intent == 'DELEGATE':
         supabase.table('agent_queue').insert({"query": text, "status": "pending"}).execute()
         ack = classification.get('receipt', "The intern is on it. I'll ping you when the research is ready.") if classification else "The intern is on it. I'll ping you when the research is ready."
