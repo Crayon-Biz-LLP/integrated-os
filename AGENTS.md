@@ -47,11 +47,11 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 ## Project Routing Tags
 | Tag | Purpose |
 |-----|---------|
-| SOLVSTRAT | Cash engine, client work |
-| PRODUCT_LABS | Incubator projects (CashFlow+, Integrated-OS) |
-| CRAYON | Governance, tax, legal |
-| PERSONAL | Family, home, personal spiritual practices |
-| ASHRAYA | Ashraya church admin/operations |
+| SOLVSTRAT | Client services & delivery |
+| QHORD | Product GTM & launch (June 2026) |
+| ASHRAYA | Church admin, operations, finances |
+| PERSONAL | Family, home, health, spiritual, journaling |
+| CRAYON | Company governance, legal, tax, umbrella entity |
 
 ## Critical Conventions
 

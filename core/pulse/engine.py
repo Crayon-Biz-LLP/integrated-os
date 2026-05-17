@@ -440,7 +440,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 if o_tag in ['PERSONAL', 'ASHRAYA']:
                     filtered_tasks.append(t)
             elif hour < 19:
-                if o_tag in ['SOLVSTRAT', 'PRODUCT_LABS', 'CRAYON', 'INBOX']:
+                if o_tag in ['SOLVSTRAT', 'CRAYON', 'INBOX']:
                     filtered_tasks.append(t)
             else:
                 if o_tag in ['PERSONAL', 'ASHRAYA']:
@@ -809,8 +809,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             - HEADER SPACING: Double-space before headers (e.g., \n\n🚀 Work) and single-space after them.
             - NO NUMBERING: Use headers and icons only. Never use '1.' or '2.' to separate strategic points.
             - TONAL GUARD: Keep the 'Intel: Vaulted' or 'Intel: Secured' style for the Night phase, but never sacrifice vertical layout.
-            - STRICT DATA FIDELITY FOR BRIEFING: You are STRICTLY FORBIDDEN from listing any task in ANY section (Work, Home, Chores, Ideas, or Done) that does not appear verbatim in the SYSTEM TASKS list provided below. Do NOT surface tasks from HINDSIGHT MEMORIES, Canonical Pages, or any other context into the briefing output. All context is for intelligence and routing only — NEVER for output.
-            - EMPTY SECTION SUPPRESSION: If a section (Work, Home, Done, Ideas) has absolutely zero items to list, you MUST completely omit that section header from the briefing. Never output 'None today' or 'Empty'. Silence is preferred.
+            - STRICT DATA FIDELITY FOR BRIEFING: You are STRICTLY FORBIDDEN from listing any task in ANY section (Work, Home, Church, Ideas, or Done) that does not appear verbatim in the SYSTEM TASKS list provided below. Do NOT surface tasks from HINDSIGHT MEMORIES, Canonical Pages, or any other context into the briefing output. All context is for intelligence and routing only — NEVER for output.
+            - EMPTY SECTION SUPPRESSION: If a section (Work, Home, Church, Done, Ideas) has absolutely zero items to list, you MUST completely omit that section header from the briefing. Never output 'None today' or 'Empty'. Silence is preferred.
             - HEADLINE RULE: Use exactly "{briefing_mode}".
             - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
             - COMPASS TONE: If HINDSIGHT_STALE is FALSE, weave the latest hindsight insights into a sharp, forward-leaning opening.
@@ -826,19 +826,21 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             - SECTIONS: 
                 ✅ Done: ONLY list tasks that were moved to "completed_task_ids" in this specific run. NEVER list items from HINDSIGHT_MEMORIES in this section.
                 🚀 Work: Active tasks from SYSTEM_TASKS only.
-                🏠 Home: Personal tasks only.
+                🏠 Home: Family and personal tasks only. Do NOT include Ashraya/Church tasks here.
+                ⛪ Church: Ashraya church admin, operations, finance, and organizational tasks only.
                 💡 - Ideas: ONLY list items that appear in NEWLY ENRICHED RESOURCES or RECENT LIBRARY PATTERNS from this run. Never pull from Hindsight Memories or Canonical Pages.
             - MEMORY ISOLATION: HINDSIGHT_MEMORIES are for THE COMPASS (Opening Synthesis) ONLY. You are strictly forbidden from listing a memory as a bullet point in the task sections.
             - TONE: Match the PERSONA GUIDELINE. Be direct, simple, human. Talk like a friend who is also a high-level operator.
             - TONE GUARD: NEVER use words like 'Operational', 'Vanguard', 'Strategic Momentum', 'Audit', 'Battlefield', 'Chief of Staff', 'Tactical', 'Executive Office'. Use simple, punchy sentences. NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'mission', 'ready for your review'.
             - INTELLIGENT FILTERING: 
-                - If mode is 🔴 Urgent: HIDE the 🏠 Home and 💡 Ideas sections. Focus strictly on 🚀 Work and ✅ Done.
-                - If mode is 🟡 Important: Prioritize 🚀 Work.
+                - If mode is 🔴 Urgent: HIDE the 🏠 Home, ⛪ Church, and 💡 Ideas sections. Focus strictly on 🚀 Work and ✅ Done.
+                - If mode is 🟡 Important: Prioritize 🚀 Work and ⛪ Church.
                 - NIGHT MODE PRIORITIZATION (Intel: Vaulted):
                     - 1. ✅ Done: List this first. Danny needs to see the loops he closed today to clear his mind.
                     - 2. 🏠 Home: List this second. Prioritize family, pets, and chores to transition Danny into 'Dad' mode.
-                    - 3. 🚀 Work: List only the top 2-3 most critical open loops for tomorrow. 
-                    - 4. 💡 Ideas: List any insights captured today to ensure they are 'secured' in the vault.
+                    - 3. ⛪ Church: List third. Ashraya church tasks.
+                    - 4. 🚀 Work: List only the top 2-3 most critical open loops for tomorrow. 
+                    - 5. 💡 Ideas: List any insights captured today to ensure they are 'secured' in the vault.
             - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
             - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
             - REVENUE BOLDING: Bold all tasks involving Sales, Pilots, or Payments using **task title**.
@@ -915,7 +917,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                - NEVER use "Inbox" for business tasks.
 
             NEW PROJECT CREATION CRITERIA:
-            - Only add to "new_projects" if a COMPLETELY UNKNOWN client, product, or organization is mentioned that does not already exist in the active project list above.
+            - SOLVSTRAT: Auto-create new projects for completely unknown client names mentioned (e.g., a company hiring Solvstrat for tech work). Set org_tag: "SOLVSTRAT", parent_project_name: "Solvstrat".
+            - OTHER DOMAINS (QHORD, ASHRAYA, PERSONAL, CRAYON): ONLY create a new project if Danny explicitly says "create a project", "start a new project", or gives a clear commanding instruction. Otherwise, route the work as a task under the existing parent project. Do NOT auto-create projects for one-off tasks or casual mentions.
             - Always populate "description" with a one-sentence summary of the project's purpose.
             - Always populate "keywords" with an array of relevant names, abbreviations, companies, and topics.
             - Always populate "context" using the rules below.
@@ -923,25 +926,24 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             ORG_TAG & CONTEXT ROUTING (MANDATORY — never leave as INBOX):
             Danny's world has 5 domains. Route every new project into exactly one:
 
-              SOLVSTRAT  | context: work     | Tech services company. Client projects, delivery, and anything involving product development, software builds, APIs, or technical consulting. Clients include: Shield Identity, GRB, Himanshu, Canadian project, Johan, Zoho projects, and any new client who hires Solvstrat for tech work. → If a new client/project is Solvstrat work, set org_tag: "SOLVSTRAT", parent_project_name: "Solvstrat"
+              CRAYON     | context: work     | Company umbrella. Governance, legal, tax, compliance, admin structure, company-level config, board matters. → Set org_tag: "CRAYON", parent_project_name: "Crayon"
 
-              QHORD      | context: work     | Danny's own GTM product company. Anything related to building, marketing, or selling Qhord as a standalone product. → Set org_tag: "QHORD", parent_project_name: "Qhord"
+              SOLVSTRAT  | context: work     | Client services and delivery. Software development, consulting, client projects, tech services. Clients include: Shield Identity, GRB, Equisoft, Armour Cyber, Johan. → Set org_tag: "SOLVSTRAT", parent_project_name: "Solvstrat"
 
-              ASHRAYA    | context: personal | Ashraya church administration, operations, accounts, facility management, event coordination, and organizational work. → Set org_tag: "ASHRAYA", parent_project_name: "Ashraya"
+              QHORD      | context: work     | Danny's own product company (launching June 2026). Product development, GTM, marketing, beta, sales, everything Qhord. → Set org_tag: "QHORD", parent_project_name: "Qhord"
 
-              FAMILY    | context: personal | Home, kids, spouse (Sunju), house maintenance, school, family events, domestic tasks. → Set org_tag: "FAMILY", parent_project_name: "Family & Home"
+              ASHRAYA    | context: personal | Ashraya church administration, operations, accounts, facility management, event coordination, organizational work. → Set org_tag: "ASHRAYA", parent_project_name: "Ashraya"
 
-              PERSONAL   | context: personal | Danny's individual pursuits — health, finance, personal admin, hobbies, investments, gadgets, learning, personal spiritual practices (bible reading, prayer, volunteering), anything that is about Danny himself. → Set org_tag: "PERSONAL"
+              PERSONAL   | context: personal | Everything personal — family, home, kids, health, personal admin, hobbies, investments, learning, spiritual practices, journaling. Under "Family & Home" parent. → Set org_tag: "PERSONAL", parent_project_name: "Family & Home"
 
               ROUTING RULES (apply in order):
-              1. Does the input mention a client paying Solvstrat for tech/product work? → SOLVSTRAT
-              2. Does the input mention Qhord product development or GTM? → QHORD
-              3. Does the input mention Ashraya church admin, operations, accounts, or organizational work? → ASHRAYA
-              4. Does the input mention personal spiritual practices (bible reading, prayer, volunteering)? → PERSONAL
-              5. Does the input mention home, kids, Sunju, or family? → FAMILY
-              6. Is it about Danny personally (health, finance, personal admin, learning, hobbies)? → PERSONAL
-              7. Default for anything business/work that doesn't fit 1-2: → SOLVSTRAT
-                 8. NEVER default to INBOX for business or client work.
+              1. Does the input mention Crayon governance, legal, tax, company structure? → CRAYON
+              2. Does the input mention Qhord product development, GTM, or launch? → QHORD
+              3. Does the input mention a client paying Solvstrat for tech/product work? → SOLVSTRAT
+              4. Does the input mention Ashraya church admin, operations, accounts? → ASHRAYA
+              5. Does the input mention family, home, kids, health, spiritual, learning, or personal admin? → PERSONAL
+              6. Default for anything business/work that doesn't fit 1-3: → SOLVSTRAT
+              7. NEVER default to INBOX for business or client work.
             
             DRIFT DETECTION (Temporal Lineage):
             - Check if active projects have been updated 3+ times in 48 hours.
@@ -986,7 +988,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             6. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
             6a. UPDATE DETECTION: If a user says "Update [title]" or "Reschedule [title]" or "Change [title] to [new time]", IMMEDIATELY search ALL SYSTEM TASKS for the matching task. Return it in completed_task_ids with the updated reminder_at and/or duration_mins — NOT in new_tasks.
             7. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When Danny mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
-            8. AUTO-ONBOARDING: If a new Client/Project is mentioned, add to "new_projects". If a new Person is mentioned, add to "new_people".
+            8. AUTO-ONBOARDING: If a new Solvstrat client is mentioned, add to "new_projects" (org_tag: SOLVSTRAT). For other domains, only create a project if Danny explicitly commands it. If a new Person is mentioned, add to "new_people".
             9. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
             10. WEEKEND FILTER: If isWeekend is true, do NOT suggest or list Work tasks in the briefing.
             """
@@ -1037,16 +1039,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         # A. BATCH NEW PROJECTS (Deduplicated)
         if ai_data.get('new_projects'):
-            valid_tags = ['SOLVSTRAT', 'PRODUCT_LABS', 'PERSONAL', 'CRAYON', 'ASHRAYA', 'FAMILY', 'QHORD']
+            valid_tags = ['SOLVSTRAT', 'QHORD', 'PERSONAL', 'CRAYON', 'ASHRAYA']
 
             CONTEXT_MAP = {
-                'ASHRAYA':      'personal',
-                'PERSONAL':     'personal',
-                'FAMILY':       'personal',
-                'SOLVSTRAT':    'work',
-                'QHORD':        'work',
-                'PRODUCT_LABS': 'work',
-                'CRAYON':       'work',
+                'ASHRAYA':   'personal',
+                'PERSONAL':  'personal',
+                'SOLVSTRAT': 'work',
+                'QHORD':     'work',
+                'CRAYON':    'work',
             }
             filtered_new_projects = []
 
@@ -1610,7 +1610,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         if briefing_text:
             # 🛡️ THE ARCHITECT'S FINAL REPAIR: Force double newlines before all section headers
             # This ensures that even if the AI 'whispers', the grid stays intact.
-            headers = ['🚀 Work', '🏠 Home', '💡 Ideas', '✅ Done', '🛡️ WEEKEND RECON']
+            headers = ['🚀 Work', '🏠 Home', '⛪ Church', '💡 Ideas', '✅ Done', '🛡️ WEEKEND RECON']
             for header in headers:
                 if header in briefing_text:
                     # Replace the header with a version that has breathing room above it

@@ -2,40 +2,58 @@ import asyncio
 import json
 import os
 import httpx
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from core.services.db import get_supabase, get_embedding
 from core.services.llm import call_gemini_with_retry
 
 supabase = get_supabase()
 
+PARENT_ORG_TAGS = {'SOLVSTRAT', 'QHORD', 'ASHRAYA', 'PERSONAL', 'CRAYON'}
+SKIP_ORG_TAGS = {None, 'INBOX'}
+MIN_FRAGMENT_THRESHOLD = 5
+
+ORG_TAG_CONTEXT = {
+    'SOLVSTRAT': 'Client services and delivery. Software development, consulting, client projects.',
+    'QHORD': "Product GTM and launch. Qhord is Danny's standalone product launching June 2026.",
+    'ASHRAYA': 'Ashraya church administration, operations, finances, events.',
+    'PERSONAL': 'Family, home, health, personal admin, spiritual practices.',
+    'CRAYON': 'Company governance, legal, tax, compliance, admin structure.',
+}
+
+
+def filter_fragments_by_project(results, project_name):
+    """Filter RPC results to only include fragments matching this project."""
+    if not results:
+        return []
+    project_kw = project_name.lower()
+    filtered = []
+    for r in results:
+        meta = r.get('metadata') or {}
+        entity = (meta.get('entity') or '').lower() if isinstance(meta, dict) else ''
+        content = (r.get('content') or r.get('title') or '').lower()
+        if project_kw in entity or project_kw in content:
+            filtered.append(r)
+    return filtered
+
 
 async def run_batch_sweep():
     try:
         active_res = supabase.table('projects') \
-            .select('id, name') \
+            .select('id, name, org_tag') \
             .eq('is_active', True) \
             .eq('status', 'active') \
             .execute()
-        entities = [(p['id'], p.get('name') or p.get('title', '')) for p in active_res.data]
+        entities = []
+        for p in active_res.data:
+            org_tag = p.get('org_tag')
+            if org_tag not in SKIP_ORG_TAGS:
+                entities.append((p['id'], p.get('name') or p.get('title', ''), org_tag))
 
         batch_payload = []
 
-        print("Checking canonical page freshness...")
-        stale_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
-        stale_pages = supabase.table('canonical_pages') \
-            .select('title, last_synth_at, project_id') \
-            .eq('is_current', True) \
-            .lt('last_synth_at', stale_threshold.isoformat()) \
-            .execute()
-        if stale_pages.data:
-            print(f"{len(stale_pages.data)} stale pages detected: {[p['title'] for p in stale_pages.data]}")
-            for p in stale_pages.data:
-                if not any(e[0] == p.get('project_id') for e in entities):
-                    entities.append((p.get('project_id'), p['title']))
-
         print(f"Gathering fragments for {len(entities)} entities...")
-        for project_id, entity_name in entities:
+        for project_id, entity_name, org_tag in entities:
             try:
                 all_fragments = []
                 seen_hashes = set()
@@ -56,7 +74,7 @@ async def run_batch_sweep():
                         'match_count': 20
                     }).execute()
                     if mem.data:
-                        for f in mem.data:
+                        for f in filter_fragments_by_project(mem.data, entity_name):
                             add_fragment("MEMORY", f['content'])
 
                 tasks = supabase.table('tasks').select('title, status') \
@@ -72,7 +90,7 @@ async def run_batch_sweep():
                         'match_count': 20
                     }).execute()
                     if logs.data:
-                        for f in logs.data:
+                        for f in filter_fragments_by_project(logs.data, entity_name):
                             add_fragment("LOG", f['content'])
 
                 if entity_embedding:
@@ -82,7 +100,7 @@ async def run_batch_sweep():
                         'match_count': 10
                     }).execute()
                     if resources.data:
-                        for r in resources.data:
+                        for r in filter_fragments_by_project(resources.data, entity_name):
                             add_fragment("RESOURCE", f"{r['title']} — {r.get('summary', '')}")
 
                 if entity_embedding:
@@ -92,7 +110,7 @@ async def run_batch_sweep():
                         'match_count': 30
                     }).execute()
                     if dumps.data:
-                        for d in dumps.data:
+                        for d in filter_fragments_by_project(dumps.data, entity_name):
                             add_fragment("DUMP", d['content'])
 
                 people = supabase.table('people').select('name, role, strategic_weight') \
@@ -101,28 +119,49 @@ async def run_batch_sweep():
                     for p in people.data:
                         add_fragment("PERSON", f"{p.get('name', 'Unknown')} — {p.get('role', 'Unknown role')}")
 
+                if org_tag in PARENT_ORG_TAGS:
+                    child_res = supabase.table('projects') \
+                        .select('id, name') \
+                        .eq('parent_project_id', project_id) \
+                        .eq('status', 'active') \
+                        .execute()
+                    for child in child_res.data or []:
+                        child_tasks = supabase.table('tasks').select('title, status') \
+                            .eq('project_id', child['id']).execute()
+                        for t in child_tasks.data or []:
+                            add_fragment(f"CHILD_TASK/{t['status'].upper()}", f"[{child['name']}] {t['title']}")
+
             except Exception as e:
                 print(f"Skipping {entity_name} — failed to fetch fragments: {e}")
                 continue
 
-            if all_fragments:
-                existing = supabase.table('canonical_pages') \
-                    .select('id, content') \
-                    .eq('project_id', project_id) \
-                    .eq('is_current', True) \
-                    .limit(1).execute()
+            is_parent = org_tag in PARENT_ORG_TAGS and entity_name.lower() == org_tag.lower()
 
-                existing_content = existing.data[0]["content"] if existing.data else None
-                existing_id = existing.data[0]["id"] if existing.data else None
+            existing = supabase.table('canonical_pages') \
+                .select('id, content') \
+                .eq('project_id', project_id) \
+                .eq('is_current', True) \
+                .limit(1).execute()
+            existing_content = existing.data[0]["content"] if existing.data else None
+            existing_id = existing.data[0]["id"] if existing.data else None
 
+            if len(all_fragments) >= MIN_FRAGMENT_THRESHOLD or is_parent:
                 batch_payload.append({
                     "entity": entity_name,
                     "project_id": project_id,
+                    "org_tag": org_tag,
+                    "is_parent": is_parent,
                     "existing_page": existing_content or "No existing page — create from scratch.",
                     "new_fragments": all_fragments,
                     "fragment_count": len(all_fragments),
                     "existing_id": existing_id
                 })
+            elif existing_id:
+                supabase.table('canonical_pages') \
+                    .update({"is_current": False}) \
+                    .eq('id', existing_id) \
+                    .execute()
+                print(f"Master Page Archived: {entity_name} — below threshold ({len(all_fragments)} fragments).")
 
         if not batch_payload:
             print("No data found to synthesize.")
@@ -144,16 +183,30 @@ async def run_batch_sweep():
             entity_name = entry['entity']
             print(f"  Processing {entity_name} ({entry['fragment_count']} fragments)...")
 
+            org_tag = entry.get('org_tag', '')
+            is_parent = entry.get('is_parent', False)
+            org_context = ORG_TAG_CONTEXT.get(org_tag, org_tag)
+
+            if is_parent:
+                prompt_role = "Executive Summary Writer for Danny's OS"
+                prompt_objective = f"Write a high-level overview of the {org_tag} domain ({entity_name}). Synthesize all sub-projects and activity under this domain."
+                scope_rules = f"""DOMAIN SCOPE: This page covers the {org_tag} domain and its sub-projects only.
+EXCLUDE: Any content related to other domains (SOLVSTRAT, QHORD, ASHRAYA, PERSONAL, CRAYON).
+DOMAIN DESCRIPTION: {org_context}"""
+            else:
+                prompt_role = "Knowledge Curator for Danny's OS"
+                prompt_objective = f"Update the Master Page for {entity_name} (under {org_tag})."
+                scope_rules = f"""PROJECT SCOPE: This page is ONLY for {entity_name} under {org_tag}.
+EXCLUDE: Any content about other projects, clients, or domains.
+DOMAIN CONTEXT: {entity_name} belongs to {org_tag} ({org_context})."""
+
             per_prompt = f"""
-ROLE: Senior Historian and Knowledge Curator for Danny's OS.
-OBJECTIVE: Update the Master Page for {entity_name} using an ACCUMULATION MODEL.
+ROLE: {prompt_role}
+OBJECTIVE: {prompt_objective}
 
 RULES:
-- MERGE, DO NOT REPLACE. The existing page is ground truth. Never discard established facts.
-- ENRICH. Add new information from NEW FRAGMENTS that isn't already in the existing page.
-- CORRECT. If new fragments contradict the existing page, update with the newer information.
-- REVENUE GUARD: Solvstrat = Service (Leads/Sales/Clients). Qhord = Product (GTM/Beta).
-- ATTRIBUTION: Map client wins to Solvstrat. Map GTM milestones to Qhord.
+- {scope_rules}
+- CORRECT: If new fragments contradict the existing page, update with newer information.
 - SPARSE GUARD: Output MUST be at least 300 characters. If fragments are thin, preserve the existing page as-is.
 - FORMAT: Clean Markdown with headers and bullets.
 - OUTPUT: Return ONLY the raw Markdown string. No JSON wrapper.
@@ -191,10 +244,6 @@ NEW FRAGMENTS:
                 print(f"Skipping {entity_name} — output too sparse ({len(markdown)} chars)")
                 continue
 
-            if existing_content and len(markdown) < len(existing_content) * 0.6:
-                print(f"Skipping {entity_name} — output significantly shorter than existing page.")
-                continue
-
             embedding = get_embedding(markdown)
             now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -207,26 +256,20 @@ NEW FRAGMENTS:
                         .execute()
                     old_version = (version_res.data.get('version') or 0) if version_res.data else 0
 
-                    supabase.table('canonical_pages').insert({
-                        "title": entity_name,
-                        "project_id": project_id,
-                        "content": markdown,
-                        "embedding": embedding,
-                        "version": old_version + 1,
-                        "is_current": True,
-                        "supersedes_id": existing_id,
-                        "updated_at": now_iso,
-                        "source_count": payload_entry['fragment_count'],
-                        "last_synth_at": now_iso,
-                        "is_sparse": len(markdown) < 500
-                    }).execute()
-
                     supabase.table('canonical_pages') \
-                        .update({"is_current": False}) \
+                        .update({
+                            "content": markdown,
+                            "embedding": embedding,
+                            "version": old_version + 1,
+                            "updated_at": now_iso,
+                            "source_count": payload_entry['fragment_count'],
+                            "last_synth_at": now_iso,
+                            "is_sparse": len(markdown) < 500
+                        }) \
                         .eq('id', existing_id) \
                         .execute()
 
-                    print(f"Master Page Versioned: {entity_name} (v{old_version + 1}, {payload_entry['fragment_count']} fragments)")
+                    print(f"Master Page Updated: {entity_name} (v{old_version + 1}, {payload_entry['fragment_count']} fragments)")
                 else:
                     supabase.table('canonical_pages').insert({
                         "title": entity_name,
