@@ -28,7 +28,7 @@ app = FastAPI(title="Integrated-OS")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -51,6 +51,14 @@ async def webhook_route(request: Request):
 def verify_hmac(payload: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
+
+def require_api_auth(request: Request):
+    api_key = request.headers.get("X-API-Key")
+    expected = os.getenv("API_SECRET_KEY")
+    if not expected:
+        return
+    if not api_key or not hmac.compare_digest(api_key, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 # --- THE PULSE ENGINE (Routes to pulse.py) ---
 @app.post("/api/pulse")
@@ -78,6 +86,7 @@ async def pulse_route_post(request: Request):
 # --- SEND DRAFT REPLY (Routes to webhook.py) ---
 @app.post("/api/send-draft")
 async def send_draft_route(request: Request):
+    require_api_auth(request)
     body = await request.json()
     draft_id = body.get("draft_id")
     if not draft_id:
@@ -88,6 +97,7 @@ async def send_draft_route(request: Request):
 # --- SEND MESSAGE VIA WEB UI (Mirrors Telegram exactly) ---
 @app.post("/api/send-message")
 async def send_message_route(request: Request):
+    require_api_auth(request)
     try:
         body = await request.json()
         message_text = body.get("message")
@@ -121,11 +131,12 @@ async def send_message_route(request: Request):
     
     except Exception as e:
         print(f"Send message error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # --- GET MESSAGE HISTORY ---
 @app.get("/api/messages")
-async def get_messages_route(limit: int = 50, offset: int = 0):
+async def get_messages_route(request: Request, limit: int = 50, offset: int = 0):
+    require_api_auth(request)
     try:
         supabase = get_supabase()
         result = supabase.table('raw_dumps')\
@@ -137,11 +148,12 @@ async def get_messages_route(limit: int = 50, offset: int = 0):
         return {"messages": result.data or []}
     except Exception as e:
         print(f"Get messages error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # --- CALENDAR EVENTS (Fetches from Google + Outlook) ---
 @app.get("/api/calendar-events")
-async def get_calendar_events(date: str = None, start: str = None, end: str = None):
+async def get_calendar_events(request: Request, date: str = None, start: str = None, end: str = None):
+    require_api_auth(request)
     try:
         from googleapiclient.discovery import build
 
@@ -200,11 +212,12 @@ async def get_calendar_events(date: str = None, start: str = None, end: str = No
         return {"events": simplified}
     except Exception as e:
         print(f"Calendar events error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # --- UPDATE TASK STATUS (Mark Done) ---
 @app.patch("/api/tasks/{task_id}/status")
 async def update_task_status(request: Request, task_id: int):
+    require_api_auth(request)
     try:
         body = await request.json()
         new_status = body.get('status', 'done')
@@ -266,12 +279,13 @@ async def update_task_status(request: Request, task_id: int):
         raise
     except Exception as e:
         print(f"Update task status error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # --- EMAIL PENDING TASK DECISIONS (approve/reject from frontend) ---
 @app.post("/api/email-action")
 async def email_action_route(request: Request):
     """Approve or reject email pending task via API (called from frontend)."""
+    require_api_auth(request)
     try:
         body = await request.json()
         pending_id = body.get('id') or body.get('shortcode')
@@ -295,4 +309,4 @@ async def email_action_route(request: Request):
 
     except Exception as e:
         print(f"Email action error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")

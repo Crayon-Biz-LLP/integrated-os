@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest) {
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
-  const body = await request.json();
-
   const apiKey = process.env.API_SECRET_KEY || "";
+  const body = await req.json();
 
-  const res = await fetch(`${backendUrl}/api/email-action`, {
+  const res = await fetch(`${backendUrl}/api/send-draft`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": apiKey,
+    },
     body: JSON.stringify(body),
   });
 

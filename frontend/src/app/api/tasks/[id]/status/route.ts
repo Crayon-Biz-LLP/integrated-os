@@ -9,9 +9,11 @@ export async function PATCH(
 
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
+  const apiKey = process.env.API_SECRET_KEY || "";
+
   const res = await fetch(`${backendUrl}/api/tasks/${id}/status`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
     body: JSON.stringify(body),
   });
 

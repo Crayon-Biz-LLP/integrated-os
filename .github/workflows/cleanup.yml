@@ -38,7 +38,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: python core/cleanup_orphans.py
+        run: python core/agents/cleanup_orphans.py
       
       - name: Notify on failure
         if: failure()

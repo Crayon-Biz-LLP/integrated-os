@@ -62,6 +62,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 
 ### Security
 - Pulse endpoints validate `PULSE_SECRET` (header `x-pulse-secret`) and HMAC `X-Rhodey-Signature`
+- Frontend-facing endpoints (`/api/messages`, `/api/calendar-events`, `/api/tasks/*`, `/api/send-message`, `/api/send-draft`, `/api/email-action`) require `X-API-Key` header matching `API_SECRET_KEY` (constant-time comparison via `hmac.compare_digest`). No auth on `/api/webhook`, `/api/pulse` (has its own), or `/` health check.
 - Supabase uses service role key (bypasses RLS)
 
 ### Pulse Cron Schedule (UTC, matches `.github/workflows/pulse.yml`)
@@ -95,6 +96,7 @@ OPENROUTER_API_KEY  # Fallback for LLM calls (backfill_graph, pulse)
 OPENROUTER_BASE_URL  # Default: https://openrouter.ai/api/v1/chat/completions
 PULSE_HTTP_REFERER  # Default: http://localhost:8000
 PULSE_APP_NAME  # Default: Pulse
+API_SECRET_KEY  # Shared secret for frontend API auth (X-API-Key header)
 ```
 
 ## Testing
@@ -108,6 +110,8 @@ PULSE_APP_NAME  # Default: Pulse
 This repo has **two Vercel projects** linked to the same GitHub repo:
 - **`integrated-os`** (backend): Root Directory = `.`, Python FastAPI, uses root `vercel.json` with `rewrites` + `functions`
 - **`integrated-os-frontend`** (frontend): Root Directory = `frontend/`, Next.js, no `vercel.json` (auto-detected)
+
+**Important**: `API_SECRET_KEY` must be set as an environment variable in **both** Vercel projects — the backend reads it for auth, and the frontend proxies need it to forward the `X-API-Key` header.
 
 ### Critical: `routes` vs `rewrites` in `vercel.json`
 - `routes` = **platform-level** — applied globally to ALL projects in the repo. Changes here can break other projects.

@@ -12,8 +12,6 @@ import { RecentTasks } from '@/components/dashboard/recent-tasks';
 import { QuickCommandDialog } from '@/components/dashboard/quick-command-dialog';
 import { Button } from '@/components/ui/button';
 
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || '';
-
 export function DashboardShell({
   initialOpenTasks,
   initialTaskStats,
@@ -29,7 +27,7 @@ export function DashboardShell({
   const [commandMode, setCommandMode] = useState<'query' | 'note' | 'task' | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/calendar-events?date=today`)
+    fetch('/api/calendar-events?date=today')
       .then((res) => res.json())
       .then((data) => setCalendarEvents(data.events || []))
       .catch(() => {});

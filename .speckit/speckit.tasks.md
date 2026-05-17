@@ -116,8 +116,8 @@ Modify `handle_confident_note()`:
 
 ---
 
-### T-007: Backfill 41 orphaned notes
-**File**: New script `scripts/backfill_orphaned_notes.py`
+### T-007: Backfill 41 orphaned notes [REMOVED]
+**File**: ~~`scripts/backfill_orphaned_notes.py`~~ — script deleted during cleanup; functionality not needed
 **Depends on**: T-006, T-002, T-003
 **Risk**: Medium — touches production data
 **Deploy safe**: RUN ONCE manually, NOT in CI
