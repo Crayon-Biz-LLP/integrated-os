@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
@@ -71,8 +71,8 @@ def delete_calendar_event(event_id):
     service = build('calendar', 'v3', credentials=get_google_creds(), cache=_MemoryCache())
     try:
         service.events().delete(calendarId='primary', eventId=event_id).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        audit_log_sync("google_service", "WARNING", f"Calendar event {event_id} delete failed (likely already gone): {e}")
 
 
 def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo', explicit_time=False):
@@ -84,6 +84,18 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
             return None
 
     rfc_date = format_rfc3339(due_at)
+
+    # Time-Visibility Title Hack — prefix with 🕒 HH:MM when explicit time is set
+    if explicit_time and rfc_date and 'T' in str(rfc_date):
+        try:
+            dt = datetime.fromisoformat(rfc_date.replace('Z', '+00:00'))
+            ist_dt = dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
+            time_str = ist_dt.strftime('%H:%M')
+            if title and f"{time_str}" not in title:
+                title = f"🕒 {time_str} | {title}"
+        except Exception:
+            pass
+
     try:
         body = {'title': title}
         if rfc_date:

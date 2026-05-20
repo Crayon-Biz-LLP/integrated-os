@@ -7,6 +7,7 @@ from googleapiclient.discovery_cache import base
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import get_google_creds, format_rfc3339
 from core.lib.temporal_lineage import create_versioned_task
+from core.services.db import versioned_update
 from core.services.outlook_service import get_outlook_calendar_events, get_outlook_calendar_events_range
 
 supabase: Client = create_client(
@@ -134,7 +135,7 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                         if current.data:
                             old_task = current.data[0]
                             new_payload = {
-                                **{k: v for k, v in old_task.items() if k not in ['id', 'created_at', 'version', 'is_current', 'supersedes_id']},
+                                **{k: v for k, v in old_task.items() if k not in ['id', 'created_at', 'version', 'is_current', 'supersedes_id', 'google_task_id']},
                                 'status': 'done',
                                 'completed_at': datetime.now(timezone.utc).isoformat()
                             }
@@ -145,11 +146,11 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                                 **new_payload
                             )
                     except Exception as ve:
-                        # Fallback to direct update
-                        supabase.table('tasks').update({
+                        # Fallback to versioned update
+                        versioned_update('tasks', task_id, {
                             'status': 'done',
                             'completed_at': datetime.now(timezone.utc).isoformat()
-                        }).eq('id', task_id).execute()
+                        })
 
                     # 🧠 Collect for outcome memory — caller will fire as background tasks
                     proj_name = None
