@@ -1000,7 +1000,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         response_text = ""
         ai_data = {
             "briefing": f"⚠️ FALLBACK MODE\n\n{len(dumps)} new inputs:\n{new_input_summary[:200]}",
-            "new_tasks": [], "logs": [], "completed_task_ids": [], "new_projects": [], "new_people": []
+            "new_tasks": [], "logs": [], "completed_task_ids": [], "new_projects": [], "new_people": [],
+            "resources": []
         }
 
         try:
@@ -1520,6 +1521,27 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         if missions_created_count > 0:
             print(f"✅ Created {missions_created_count} new missions this run.")
 
+        # I. RESOURCES — Persist AI-generated bookmarks (deduplicated by URL)
+        if ai_data.get('resources'):
+            existing_resources_res = supabase.table('resources').select('url').execute()
+            existing_urls = set(r['url'] for r in (existing_resources_res.data or []) if r.get('url'))
+            resource_inserts = []
+            for res in ai_data['resources']:
+                url = res.get('url', '').strip()
+                if not url or url in existing_urls:
+                    continue
+                existing_urls.add(url)
+                resource_inserts.append({
+                    "url": url,
+                    "title": res.get('title'),
+                    "summary": res.get('summary'),
+                    "strategic_note": res.get('strategic_note'),
+                    "category": res.get('category', 'INBOX'),
+                })
+            if resource_inserts:
+                supabase.table('resources').insert(resource_inserts).execute()
+                print(f"✅ Vaulted {len(resource_inserts)} new resources.")
+
         # TITLE A1. HISTORICAL RESOURCE MISSION BACKFILL...
         # Only attempt backfill if there are active missions to map against
         if active_missions:
@@ -1591,10 +1613,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                             # Only update if: missionname is non-null, title exists in map, confidence >= 0.80
                             if missionname and missionname in mission_map and confidence >= 0.80:
                                 mission_id = mission_map[missionname]
-                                # Versioned update for resources
-                                versioned_update('resources', res_id, {
+                                supabase.table('resources').update({
                                     "mission_id": mission_id
-                                })
+                                }).eq('id', res_id).execute()
                                 backfilled_count += 1
                                 print(f"🔗 Backfilled resource {res_id} → mission '{missionname}' (conf: {confidence})")
 

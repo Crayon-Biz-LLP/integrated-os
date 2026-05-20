@@ -6,7 +6,6 @@ import httpx
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-from core.services.db import versioned_update
 from core.pulse.llm import call_llm_with_fallback, parse_json_response, get_embedding
 
 supabase: Client = create_client(
@@ -35,7 +34,7 @@ async def fetch_url_metadata(url: str):
     return {"title": "Unknown", "description": ""}
 
 async def batch_enrich_resources():
-    unenriched = supabase.table('resources').select('id, url').is_('enriched_at', None).execute()
+    unenriched = supabase.table('resources').select('id, url').is_('enriched_at', None).eq('is_current', True).execute()
     if not unenriched.data:
         print("📚 No unenriched resources found.")
         return []
@@ -104,15 +103,15 @@ async def batch_enrich_resources():
             if all(v == 0 for v in embedding):
                 audit_log_sync("pulse", "WARNING", f"Warning: zero-vector embedding for daily reflection — storing anyway")
 
-            # Versioned update for resources
-            versioned_update('resources', item['id'], {
+            # Direct update — resources are immutable bookmarks, no versioning needed
+            supabase.table('resources').update({
                 "title": title,
                 "summary": item.get('description'),
                 "strategic_note": strategic_note,
                 "category": item.get('category', 'MARKET_TREND'),
                 "enriched_at": enriched_at,
                 "embedding": embedding
-            })
+            }).eq('id', item['id']).execute()
 
         print(f"✅ Batch enriched {len(parsed)} resources with embeddings.")
 
@@ -121,7 +120,7 @@ async def batch_enrich_resources():
             missions_res = supabase.table('missions').select('id, title').eq('status', 'active').execute()
             active_missions = missions_res.data or []
 
-            unlinked = supabase.table('resources').select('id, title, strategic_note').is_('mission_id', None).not_.is_('enriched_at', None).execute()
+            unlinked = supabase.table('resources').select('id, title, strategic_note').is_('mission_id', None).not_.is_('enriched_at', None).eq('is_current', True).execute()
 
             for resource in (unlinked.data or []):
                 resource_text = f"{resource.get('title', '')} {resource.get('strategic_note', '')}".lower()
@@ -129,15 +128,10 @@ async def batch_enrich_resources():
                     mission_keywords = mission['title'].lower().split()
                     match_score = sum(1 for kw in mission_keywords if kw in resource_text)
                     if match_score >= 2:
-                        # Use versioned_update for mission linking (creates history)
-                        versioned_update(
-                            table_name='resources',
-                            record_id=resource['id'],
-                            update_data={"mission_id": mission['id']},
-                            user_id=None,
-                            change_source='pulse_mission_resolver',
-                            change_reason=f"Linked to mission: {mission['title']}"
-                        )
+                        # Direct update — resources are immutable bookmarks, no versioning needed
+                        supabase.table('resources').update({
+                            "mission_id": mission['id']
+                        }).eq('id', resource['id']).execute()
                         audit_log_sync("pulse", "INFO",
                             f"🔗 Linked resource '{resource.get('title')}' → mission '{mission['title']}'")
                         break
