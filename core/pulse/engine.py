@@ -809,7 +809,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             - HEADER SPACING: Double-space before headers (e.g., \n\n🚀 Work) and single-space after them.
             - NO NUMBERING: Use headers and icons only. Never use '1.' or '2.' to separate strategic points.
             - TONAL GUARD: Keep the 'Intel: Vaulted' or 'Intel: Secured' style for the Night phase, but never sacrifice vertical layout.
-            - STRICT DATA FIDELITY FOR BRIEFING: You are STRICTLY FORBIDDEN from listing any task in ANY section (Work, Home, Church, Ideas, or Done) that does not appear verbatim in the SYSTEM TASKS list provided below. Do NOT surface tasks from HINDSIGHT MEMORIES, Canonical Pages, or any other context into the briefing output. All context is for intelligence and routing only — NEVER for output.
+            - STRICT DATA FIDELITY FOR BRIEFING: You are STRICTLY FORBIDDEN from listing any task in ANY task section (Work, Home, Church, Ideas, or Done) that does not appear verbatim in the SYSTEM TASKS list provided below. EXCEPT: The 📅 Schedule section, which MUST pull directly from the CALENDAR EVENTS TODAY context provided above. Do NOT surface tasks from HINDSIGHT MEMORIES, Canonical Pages, or any other context into the briefing output. All context is for intelligence and routing only — NEVER for output.
             - EMPTY SECTION SUPPRESSION: If a section (Work, Home, Church, Done, Ideas) has absolutely zero items to list, you MUST completely omit that section header from the briefing. Never output 'None today' or 'Empty'. Silence is preferred.
             - HEADLINE RULE: Use exactly "{briefing_mode}".
             - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
@@ -824,6 +824,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             - RECENCY BIAS: The first sentence of the brief MUST prioritize data from NEW INPUTS. Only use the Master Page context to provide the 'Why' behind the 'What'.
             - ICON RULES: 🔴 (Urgent), 🟡 (Important), ⚪ (Chores), 💡 (Ideas).
             - SECTIONS: 
+                📅 Schedule: List all items from CALENDAR EVENTS TODAY.
                 ✅ Done: ONLY list tasks that were moved to "completed_task_ids" in this specific run. NEVER list items from HINDSIGHT_MEMORIES in this section.
                 🚀 Work: Active tasks from SYSTEM_TASKS only.
                 🏠 Home: Family and personal tasks only. Do NOT include Ashraya/Church tasks here.
@@ -836,11 +837,12 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 - If mode is 🔴 Urgent: HIDE the 🏠 Home, ⛪ Church, and 💡 Ideas sections. Focus strictly on 🚀 Work and ✅ Done.
                 - If mode is 🟡 Important: Prioritize 🚀 Work and ⛪ Church.
                 - NIGHT MODE PRIORITIZATION (Intel: Vaulted):
-                    - 1. ✅ Done: List this first. Danny needs to see the loops he closed today to clear his mind.
-                    - 2. 🏠 Home: List this second. Prioritize family, pets, and chores to transition Danny into 'Dad' mode.
-                    - 3. ⛪ Church: List third. Ashraya church tasks.
-                    - 4. 🚀 Work: List only the top 2-3 most critical open loops for tomorrow. 
-                    - 5. 💡 Ideas: List any insights captured today to ensure they are 'secured' in the vault.
+                    - 1. 📅 Schedule: List all items from CALENDAR EVENTS TODAY.
+                    - 2. ✅ Done: List this second. Danny needs to see the loops he closed today to clear his mind.
+                    - 3. 🏠 Home: List this third. Prioritize family, pets, and chores to transition Danny into 'Dad' mode.
+                    - 4. ⛪ Church: List fourth. Ashraya church tasks.
+                    - 5. 🚀 Work: List only the top 2-3 most critical open loops for tomorrow. 
+                    - 6. 💡 Ideas: List any insights captured today to ensure they are 'secured' in the vault.
             - SECTION DENSITY: Max 3 items per section. If more exist, append: "...and X more in /library or /vault".
             - TASK SYNTAX: Every item must follow: "- [ICON] [Task Title]". No IDs, weights, or parentheses.
             - REVENUE BOLDING: Bold all tasks involving Sales, Pilots, or Payments using **task title**.
