@@ -132,7 +132,7 @@ async def call_llm_with_fallback(
     Multi-provider LLM call with fallback chain.
 
     Provider chain:
-    1. Primary: Gemini (gemini-3-flash-preview)
+    1. Primary: Gemini (gemini-3.5-flash)
     2. Fallback: Gemma (gemma-4-31b-it)
     3. Fallback: OpenRouter (nvidia/nemotron-3-super-120b-a12b:free)
 
@@ -351,4 +351,4 @@ EMBEDDING_MODEL = "gemini-embedding-2-preview"
 
 EMBEDDING_DIMENSION = 768
 
-BRIEFING_MODEL = "gemini-3-flash-preview"
+BRIEFING_MODEL = "gemini-3.5-flash"

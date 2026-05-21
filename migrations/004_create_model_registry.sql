@@ -25,7 +25,7 @@ ON model_registry(provider, created_at DESC);
 
 -- Comments
 COMMENT ON TABLE model_registry IS 'Tracks LLM model usage, performance, and versions';
-COMMENT ON COLUMN model_registry.model_name IS 'e.g., gemini-3-flash-preview, gemma-3-27b-it';
+COMMENT ON COLUMN model_registry.model_name IS 'e.g., gemini-3.5-flash, gemma-3-27b-it';
 COMMENT ON COLUMN model_registry.provider IS 'gemini, openrouter, gemma';
 COMMENT ON COLUMN model_registry.version IS 'Model version tag if available';
 COMMENT ON COLUMN model_registry.input_tokens IS 'Tokens in prompt';

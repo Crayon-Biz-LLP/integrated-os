@@ -40,7 +40,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter)
 
 ### External Integrations
-- **Gemini AI**: Briefing (`gemini-3-flash-preview`), Classification (`gemini-3.1-flash-lite-preview`), Embeddings (`gemini-embedding-2-preview`)
+- **Gemini AI**: Briefing (`gemini-3.5-flash`), Classification (`gemini-3.1-flash-lite-preview`), Embeddings (`gemini-embedding-2-preview`)
 - Google Calendar API (event blocks), Google Tasks API (checklist)
 - Telegram Bot API
 

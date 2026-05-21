@@ -311,7 +311,7 @@ Return ONLY valid JSON:
             try:
                 response = await call_llm_with_fallback(
                     prompt=verify_prompt,
-                    model="gemini-3-flash-preview",
+                    model="gemini-3.5-flash",
                     config={'response_mime_type': 'application/json'},
                     is_critical=False,
                     require_json=True

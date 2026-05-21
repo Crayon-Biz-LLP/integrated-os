@@ -11,7 +11,7 @@ from core.lib.rate_limiter import flash_lite_limiter
 
 _gemini_client = None
 
-BRIEFING_MODEL = "gemini-3-flash-preview"
+BRIEFING_MODEL = "gemini-3.5-flash"
 CLASSIFICATION_MODEL = "gemini-3.1-flash-lite-preview"
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIMENSION = 768
