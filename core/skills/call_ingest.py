@@ -36,7 +36,7 @@ def list_new_recordings(service, folder_id: str) -> list:
     for row in (existing.data or []):
         processed.add(row["drive_file_id"])
 
-    query = f"'{folder_id}' in parents and mimeType contains 'audio/' and trashed = false"
+    query = f"'{folder_id}' in parents and trashed = false"
     results = service.files().list(
         q=query,
         fields="files(id, name, mimeType, size, createdTime)",
@@ -44,10 +44,14 @@ def list_new_recordings(service, folder_id: str) -> list:
         pageSize=10
     ).execute()
 
-    new_files = []
-    for f in (results.get("files", []) or []):
-        if f["id"] not in processed:
-            new_files.append(f)
+    raw_files = results.get("files", []) or []
+    print(f"  Found {len(raw_files)} file(s) in Drive folder")
+    for f in raw_files:
+        print(f"    {f['name']} ({f['mimeType']})")
+
+    new_files = [f for f in raw_files if f["id"] not in processed]
+    if processed:
+        print(f"  Filtered to {len(new_files)} new file(s) (ignoring {len(processed)} already processed)")
     return new_files
 
 
