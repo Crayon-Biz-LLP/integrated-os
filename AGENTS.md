@@ -14,7 +14,9 @@ uvicorn api.index:app --reload --port 8000
 
 ### Pulse CLI (Local)
 ```bash
-python core/pulse_cli.py  # Requires PULSE_SECRET, Supabase, Gemini, Telegram vars
+python core/pulse_cli.py         # Main AI briefing
+python core/pulse_cli.py decisions  # Decision pulse (no AI)
+# Both require PULSE_SECRET, Supabase, Gemini, Telegram vars
 ```
 
 ### Deployment
@@ -30,7 +32,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 
 ### Core Modules
 - `core/webhook/handler.py` - Telegram command handling, raw dump capture, message classification
-- `core/pulse/engine.py` - AI briefing generation, task management, calendar sync. `format_rfc3339()` in `core/services/google_service.py`
+- `core/pulse/engine.py` - AI briefing generation (`process_pulse`), task management, calendar sync, and **Decision Pulse** (`process_decision_pulse` — no AI, just pending email/call/whatsapp items). `format_rfc3339()` in `core/services/google_service.py`
 - `core/agents/research_agent.py` - Research and embedding tasks
 - `core/skills/` - Ingest (email, archive) and graph sync scripts (run via CI)
 
@@ -77,8 +79,8 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - Supabase uses service role key (bypasses RLS)
 
 ### Pulse Cron Schedule (UTC, matches `.github/workflows/pulse.yml`)
-- Weekdays: `30 23 * * 1-5` + `0 2,6,9,12 * * 1-5` (scheduled 5AM, 7:30AM, 11:30AM, 2:30PM, 5:30PM IST → arrives ~7AM, 10AM, 2PM, 4PM, 8PM IST due to queue delays)
-- Weekends: `30 2,9 * * 0,6` (8AM, 3PM IST)
+- **Main briefing**: Weekdays `30 23 * * 1-5` + `0 2,6,9,12 * * 1-5` (5AM, 7:30AM, 11:30AM, 2:30PM, 5:30PM IST); Weekends `30 2,9 * * 0,6` (8AM, 3PM IST)
+- **Decision Pulse** (no AI, pending approvals): `30 4,10 * * *` (10AM, 3:30PM IST) — runs alongside main briefing on overlapping crons
 
 ### AI Briefing Rules
 - NEVER create tasks from URLs unless explicitly commanded

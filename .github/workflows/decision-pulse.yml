@@ -1,0 +1,30 @@
+name: Decision Pulse
+on:
+  schedule:
+    - cron: '30 4,10 * * *'  # 10:00 AM & 3:30 PM IST
+  workflow_dispatch:
+
+jobs:
+  run-decisions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: "Decision Pulse (Pending Approvals)"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PULSE_SECRET: ${{ secrets.PULSE_SECRET }}
+        run: python -m core.pulse_cli decisions

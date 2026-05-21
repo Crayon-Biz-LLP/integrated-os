@@ -13,4 +13,5 @@ from core.services.db import versioned_update
 from core.pulse.memory import write_outcome_memory
 from core.pulse.engine import (
     process_pulse,
+    process_decision_pulse,
 )

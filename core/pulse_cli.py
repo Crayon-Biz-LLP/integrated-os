@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Pulse CLI - Command-line interface for running the pulse briefing.
+Pulse CLI - Command-line interface for the pulse engine.
 
 Usage:
-    python core/pulse_cli.py [cleanup|compact|prune]
+    python core/pulse_cli.py [pulse|decisions|cleanup|compact|prune]
 
 Commands:
-    cleanup  - Remove old raw_dumps (>30 days)
-    compact  - Compact duplicate memories
-    prune    - Prune old/irrelevant memories
+    pulse     - Run the main AI-powered strategic briefing (default)
+    decisions - Run the lightweight decision pulse (no AI)
+    cleanup   - Remove old raw_dumps (>90 days)
+    compact   - Compact duplicate memories
+    prune     - Prune old/irrelevant memories
 
 Required env vars:
     PULSE_SECRET - Secret for authentication
@@ -23,7 +25,7 @@ from datetime import datetime, timedelta
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.pulse import process_pulse
+from core.pulse import process_pulse, process_decision_pulse
 from supabase import create_client
 from core.lib.audit_logger import info, warning, error
 
@@ -80,8 +82,16 @@ def main():
     elif command == "prune":
         prune_memories()
         return
+    elif command == "decisions":
+        run_decisions()
+        return
     
     # Default: run pulse
+    run_pulse()
+
+
+def run_pulse():
+    """Execute the main AI-powered pulse briefing."""
     print("Starting Pulse CLI...")
     
     pulse_secret = os.getenv("PULSE_SECRET")
@@ -109,6 +119,37 @@ def main():
     except Exception as e:
         error("pulse_cli", f"Pulse crashed: {e}")
         print(f"✗ Pulse crashed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def run_decisions():
+    """Execute the lightweight decision pulse (no AI)."""
+    print("Starting Decision Pulse...")
+    
+    pulse_secret = os.getenv("PULSE_SECRET")
+    if not pulse_secret:
+        print("ERROR: PULSE_SECRET not found in environment variables")
+        sys.exit(1)
+    
+    print("Running process_decision_pulse...")
+    
+    try:
+        result = asyncio.run(process_decision_pulse(auth_secret=pulse_secret))
+        
+        if result.get("success"):
+            count = result.get("decision_count", 0)
+            print(f"✓ Decision pulse completed ({count} pending items)")
+            sys.exit(0)
+        else:
+            error_msg = result.get("error", "Unknown error")
+            print(f"✗ Decision pulse failed: {error_msg}")
+            sys.exit(1)
+            
+    except Exception as e:
+        error("pulse_cli", f"Decision pulse crashed: {e}")
+        print(f"✗ Decision pulse crashed: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
