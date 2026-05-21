@@ -1294,7 +1294,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 new_reminder = format_rfc3339(raw_reminder) if raw_reminder else None
                 
                 # 1. Fetch current IDs AND Status
-                task_ref = supabase.table('tasks').select('status', 'google_task_id', 'google_event_id', 'title').eq('id', target_id).single().execute()
+                task_ref = supabase.table('tasks').select('status', 'google_task_id', 'google_event_id', 'title', 'priority').eq('id', target_id).single().execute()
 
                 # 🛡️ GUARD: Safely extract data - check BEFORE calling .get()
                 task_data = task_ref.data if task_ref.data else {}
@@ -1322,7 +1322,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         ai_data['briefing'] = current_briefing + f"\n\n⚠️ **SNOOZE CONFLICT:** Tried moving '{task_title}' to {new_reminder.split('T')[1][:5]}, but you have '{conflict_name}' then."
                     
                     # Edit or create the block
-                    e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id, duration_mins=cal_duration)
+                    e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id, duration_mins=cal_duration, priority=task_data.get('priority', 'important'))
                 elif e_id:
                     # Snooze to DATE-ONLY -> Remove existing block
                     delete_calendar_event(e_id)
@@ -1580,7 +1580,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                                 briefing = ai_data.get('briefing', "")
                                 ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
                             
-                            e_id = await asyncio.to_thread(sync_to_calendar, task_title, sanitized_time, duration_mins)
+                            e_id = await asyncio.to_thread(sync_to_calendar, task_title, sanitized_time, duration_mins, None, db_task.get('priority', 'important'))
                             if e_id: print(f"🔥 Calendar block secured: {task_title} ({duration_mins}m)")
                         except Exception as ce:
                             audit_log_sync("pulse", "WARNING", f"⚠️ Calendar Sync failed for {task_title}: {ce}")

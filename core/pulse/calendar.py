@@ -64,7 +64,7 @@ def check_conflict(start_iso, exclude_event_id=None):
         audit_log_sync("pulse", "WARNING", f"⚠️ Conflict check failed: {e}")
         return None
 
-def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
+def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority='important'):
     """Creates or UPDATES a block on the grid with dynamic duration."""
     service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
     try:
@@ -73,10 +73,25 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
 
         # 🕒 DYNAMIC DURATION (Defaulting to 15 now)
         end_dt = start_dt + timedelta(minutes=int(duration_mins))
+        
+        priority_lower = str(priority).lower() if priority else "important"
+        if priority_lower == "urgent":
+            prefix = "🔥 CRITICAL: "
+        elif priority_lower == "low":
+            prefix = "☕ INFO: "
+        else:
+            prefix = "⚡ ACTION: "
+            
+        clean_title = title
+        for p in ["🔥 CRITICAL: ", "⚡ ACTION: ", "☕ INFO: "]:
+            if clean_title.startswith(p):
+                clean_title = clean_title[len(p):]
+                
+        formatted_title = f"{prefix}{clean_title}"
 
         event_body = {
-            'summary': f"🔥 CRITICAL: {title}",
-            'description': 'Automated via Integrated-OS Sync',
+            'summary': formatted_title,
+            'description': 'Rhodey created this for you.',
             'start': {'dateTime': rfc_time, 'timeZone': 'Asia/Kolkata'},
             'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'},
             'reminders': {'useDefault': True}
@@ -84,17 +99,17 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
 
         if event_id:
             res = service.events().patch(calendarId='primary', eventId=event_id, body=event_body).execute()
-            print(f"🔄 SUCCESS: Calendar slot edited for {title}")
+            print(f"🔄 SUCCESS: Calendar slot edited for {formatted_title}")
         else:
             res = service.events().insert(calendarId='primary', body=event_body).execute()
-            print(f"📅 SUCCESS: New calendar block secured for {title}")
+            print(f"📅 SUCCESS: New calendar block secured for {formatted_title}")
 
         return res.get('id')
     except Exception as e:
         # Fallback logic: If the event_id was invalid, try creating fresh
         if event_id:
             audit_log_sync("pulse", "WARNING", f"⚠️ Event ID {event_id} invalid. Attempting fresh creation...")
-            return sync_to_calendar(title, start_iso, event_id=None)
+            return sync_to_calendar(title, start_iso, duration_mins, event_id=None, priority=priority)
         audit_log_sync("pulse", "ERROR", f"❌ CRITICAL: Calendar sync failed: {e}")
         return None
 

@@ -122,7 +122,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
 
     task_update_id = metadata.get('task_update_id')
     if task_update_id:
-        task_ref = supabase.table('tasks').select('id, google_task_id, google_event_id, title, status') \
+        task_ref = supabase.table('tasks').select('id, google_task_id, google_event_id, title, status, priority') \
             .eq('id', task_update_id) \
             .eq('is_current', True) \
             .maybe_single().execute()
@@ -141,7 +141,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
                 
                 if explicit_time:
                     try:
-                        e_id = sync_to_calendar(td['title'], sanitized_time, event_id=e_id, duration_mins=result.get('duration_mins', 15))
+                        e_id = sync_to_calendar(td['title'], sanitized_time, event_id=e_id, duration_mins=result.get('duration_mins', 15), priority=td.get('priority', 'important'))
                         update_payload['google_event_id'] = e_id
                     except Exception as e:
                         audit_log_sync("quick_process", "ERROR", f"Calendar sync failed on update: {e}")
@@ -207,7 +207,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
 
     if sanitized_time and explicit_time:
         try:
-            e_id = sync_to_calendar(title, sanitized_time, task_insert['duration_mins'])
+            e_id = sync_to_calendar(title, sanitized_time, task_insert['duration_mins'], priority=task_insert['priority'])
         except Exception as e:
             audit_log_sync("quick_process", "ERROR", f"Calendar sync failed: {e}")
     if sanitized_time and tasks_service:

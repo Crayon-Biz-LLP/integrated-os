@@ -41,14 +41,31 @@ def format_rfc3339(date_str):
     return clean
 
 
-def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
+def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority='important'):
     service = build('calendar', 'v3', credentials=get_google_creds(), cache=_MemoryCache())
     try:
         rfc_time = format_rfc3339(start_iso)
         start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
         end_dt = start_dt + timedelta(minutes=int(duration_mins))
+        
+        priority_lower = str(priority).lower() if priority else "important"
+        if priority_lower == "urgent":
+            prefix = "🔥 CRITICAL: "
+        elif priority_lower == "low":
+            prefix = "☕ INFO: "
+        else:
+            prefix = "⚡ ACTION: "
+            
+        clean_title = title
+        for p in ["🔥 CRITICAL: ", "⚡ ACTION: ", "☕ INFO: "]:
+            if clean_title.startswith(p):
+                clean_title = clean_title[len(p):]
+                
+        formatted_title = f"{prefix}{clean_title}"
+        
         event_body = {
-            'summary': title,
+            'summary': formatted_title,
+            'description': 'Rhodey created this for you.',
             'start': {'dateTime': rfc_time, 'timeZone': 'Asia/Kolkata'},
             'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'},
             'reminders': {'useDefault': True}
@@ -60,7 +77,7 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None):
         return res.get('id')
     except Exception as e:
         if event_id:
-            return sync_to_calendar(title, start_iso, event_id=None)
+            return sync_to_calendar(title, start_iso, duration_mins, event_id=None, priority=priority)
         audit_log_sync("google_service", "ERROR", f"Calendar sync failed: {e}")
         return None
 
