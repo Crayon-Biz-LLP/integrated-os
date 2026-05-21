@@ -25,6 +25,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 ### Entry Points
 - `api/index.py:29` - POST `/api/webhook` - Telegram message intake
 - `api/index.py:44` - POST `/api/pulse` - Scheduled briefing engine
+- `api/index.py:318` - POST `/api/whatsapp-ingest` - WhatsApp notification ingest (MacroDroid)
 - `core/pulse_cli.py` - CLI entry for pulse (used in CI)
 
 ### Core Modules
@@ -35,14 +36,24 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 
 ### Database (Supabase)
 - Uses `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)
-- Tables: `tasks`, `raw_dumps`, `memories`, `graph_nodes`, `graph_edges`, `projects`, `resources`, `missions`, `people`, `core_config`
+- Tables: `tasks`, `raw_dumps`, `memories`, `graph_nodes`, `graph_edges`, `projects`, `resources`, `missions`, `people`, `core_config`, `whatsapp_messages`
 - **Note**: `raw_dumps` does NOT store embeddings - only `memories` table has embeddings
+- `whatsapp_messages` holds WhatsApp chats with classification + approval status
 - `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter)
 
 ### External Integrations
 - **Gemini AI**: Briefing (`gemini-3.5-flash`), Classification (`gemini-3.1-flash-lite-preview`), Embeddings (`gemini-embedding-2-preview`)
 - Google Calendar API (event blocks), Google Tasks API (checklist)
 - Telegram Bot API
+- WhatsApp via MacroDroid (Android notification → webhook to `/api/whatsapp-ingest`)
+
+### Shortcode Prefixes
+| Prefix | Table | Action |
+|--------|-------|--------|
+| `e{id}` | `email_pending_tasks` | Approve/reject email-suggested task |
+| `c{id}` | `call_pending_items` | Approve/reject call-extracted item |
+| `w{id}` | `whatsapp_messages` | Approve/reject WhatsApp-suggested task |
+| `{id}` (bare) | Tries email → call → whatsapp → practice | Fallback compat |
 
 ## Project Routing Tags
 | Tag | Purpose |
@@ -102,6 +113,7 @@ OPENROUTER_BASE_URL  # Default: https://openrouter.ai/api/v1/chat/completions
 PULSE_HTTP_REFERER  # Default: http://localhost:8000
 PULSE_APP_NAME  # Default: Pulse
 API_SECRET_KEY  # Shared secret for frontend API auth (X-API-Key header)
+WHATSAPP_INGEST_SECRET  # Shared secret for WhatsApp ingest (X-Ingest-Secret header)
 ```
 
 ## Testing

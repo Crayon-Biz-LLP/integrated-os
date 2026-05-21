@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.webhook import process_webhook, send_draft_reply, process_email_pending_decision
+from core.skills.whatsapp_ingest import process_whatsapp_message
 from core.pulse import (
     process_pulse,
     get_tasks_service,
@@ -310,6 +311,35 @@ async def email_action_route(request: Request):
 
     except Exception as e:
         print(f"Email action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- WHATSAPP INGEST (Receives MacroDroid webhook) ---
+@app.post("/api/whatsapp-ingest")
+async def whatsapp_ingest_route(request: Request):
+    expected_secret = os.getenv("WHATSAPP_INGEST_SECRET")
+    if expected_secret:
+        provided = request.headers.get("X-Ingest-Secret", "")
+        if not hmac.compare_digest(provided, expected_secret):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        body = await request.json()
+        sender_name = body.get("sender", "") or body.get("sender_name", "")
+        sender_phone = body.get("phone", "") or body.get("sender_phone", "")
+        message_text = body.get("text", "") or body.get("body", "") or body.get("message", "")
+        received_at = body.get("received_at") or body.get("timestamp")
+
+        if not sender_phone or not message_text:
+            raise HTTPException(status_code=400, detail="sender_phone and message required")
+
+        result = await process_whatsapp_message(sender_name, sender_phone, message_text, received_at)
+        return {"success": True, "result": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"WhatsApp ingest error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

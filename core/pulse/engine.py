@@ -662,6 +662,16 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             .execute()
         pending_call_items = pending_call_items_res.data or []
 
+        # Fetch WhatsApp messages not yet shown in brief
+        pending_whatsapp_res = supabase.table('whatsapp_messages')\
+            .select('id, suggested_title, suggested_project')\
+            .eq('shown_in_brief', False)\
+            .is_('danny_decision', None)\
+            .execute()
+        pending_whatsapp_items = pending_whatsapp_res.data or []
+
+        pending_whatsapp_items_ctx = chr(10).join(f"- {t['suggested_title']} (Project: {t.get('suggested_project') or 'Unknown'})" for t in pending_whatsapp_items) if pending_whatsapp_items else "None"
+
         print("📦 Step 5: Building context...")
         # --- 2. THINK Phase ---
         print('🤖 Building prompt...')
@@ -808,6 +818,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         {chr(10).join(f"- {t['suggested_title']} (Project: {t.get('suggested_project') or 'Unknown'})" for t in pending_email_tasks) if pending_email_tasks else "None"}
         - 📞 CALL EXTRACTS (surface these in the brief under a section called "📞 Call Extracts" — Danny decides whether to create them as tasks, do not auto-create):
         {chr(10).join(f"- {t['suggested_title']} (Project: {t.get('suggested_project') or 'Unknown'})" for t in pending_call_items) if pending_call_items else "None"}
+        - 💬 WHATSAPP EXTRACTS (surface these in the brief under a section called "💬 WhatsApp Extracts" — Danny decides whether to create them as tasks, do not auto-create):
+        {pending_whatsapp_items_ctx}
 
         INSTRUCTIONS:
             HARD CONSTRAINTS (Non-Negotiable):
@@ -1664,6 +1676,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             # 📨 EMAIL DECISIONS SECTION — Surface pending email tasks for Danny's approval
             shown_ids = []
             call_shown_ids = []
+            whatsapp_shown_ids = []
             try:
                 # Auto-expire tasks older than 7 days
                 cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
@@ -1725,6 +1738,37 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         briefing_text = "\n".join(call_lines)
             except Exception as call_err:
                 audit_log_sync("pulse", "WARNING", f"⚠️ Call extracts section failed: {call_err}")
+
+            # 💬 WHATSAPP EXTRACTS SECTION — Surface pending WhatsApp messages for Danny's approval
+            try:
+                whatsapp_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+                supabase.table('whatsapp_messages')\
+                    .update({'danny_decision': 'expired'})\
+                    .is_('danny_decision', 'null')\
+                    .lt('created_at', whatsapp_cutoff)\
+                    .execute()
+
+                whatsapp_pending = supabase.table('whatsapp_messages')\
+                    .select('id, suggested_title, suggested_project, sender_name, created_at')\
+                    .is_('danny_decision', 'null')\
+                    .order('created_at', desc=False)\
+                    .limit(5)\
+                    .execute()
+                if whatsapp_pending.data:
+                    wa_lines = ["\n\n💬 WHATSAPP EXTRACTS (" + str(len(whatsapp_pending.data)) + ") — reply [w{code}] yes/drop"]
+                    for row in whatsapp_pending.data:
+                        sc = str(row['id'])
+                        proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
+                        t = row['suggested_title'][:60]
+                        from_str = f" — {row['sender_name']}" if row.get('sender_name') else ""
+                        wa_lines.append(f"💬 [w{sc}] {t}{proj}{from_str}")
+                        whatsapp_shown_ids.append(row['id'])
+                    if briefing_text:
+                        briefing_text += "\n".join(wa_lines)
+                    else:
+                        briefing_text = "\n".join(wa_lines)
+            except Exception as wa_err:
+                audit_log_sync("pulse", "WARNING", f"⚠️ WhatsApp extracts section failed: {wa_err}")
 
         # --- 🏃 RHYTHMS SECTION (Weekends only) ---
         if is_weekend:
@@ -1797,6 +1841,17 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 audit_log_sync("pulse", "WARNING", f"⚠️ Call shown_in_brief update failed: {e}")
         elif call_shown_ids:
             print("⚠️ Telegram send failed — call shown_in_brief NOT updated. Will retry at next pulse.")
+
+        if send_success and whatsapp_shown_ids:
+            try:
+                supabase.table('whatsapp_messages')\
+                    .update({'shown_in_brief': True})\
+                    .in_('id', whatsapp_shown_ids)\
+                    .execute()
+            except Exception as e:
+                audit_log_sync("pulse", "WARNING", f"⚠️ WhatsApp shown_in_brief update failed: {e}")
+        elif whatsapp_shown_ids:
+            print("⚠️ Telegram send failed — whatsapp shown_in_brief NOT updated. Will retry at next pulse.")
 
         # --- 📝 AFTER-ACTION REPORT ---
         if hour >= 20 or hour < 4:
