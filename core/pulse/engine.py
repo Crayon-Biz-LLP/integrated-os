@@ -810,21 +810,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         new_inputs_text = "\n---\n".join([_enrich(d) for d in dumps])
         new_input_summary = " | ".join([_enrich(d) for d in dumps[:5]])
 
-        synced_inputs_text = ""
-        if synced_dumps:
-            synced_lines = []
-            for d in synced_dumps:
-                content = d.get('content', '')
-                meta = d.get('metadata') or {}
-                if isinstance(meta, str):
-                    try:
-                        meta = json.loads(meta)
-                    except Exception:
-                        meta = {}
-                tid = meta.get('task_update_id')
-                prefix = f"⚠️ TASK UPDATE (task #{tid}): " if tid else ""
-                synced_lines.append(f"{prefix}{content}")
-            synced_inputs_text = "\n---\n".join(synced_lines) if synced_lines else "None"
+        # Removed synced_inputs_text completely to prevent LLM from double processing inline updates
         current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
 
         # --- 🧭 LAYER 4: CANONICAL SYNTHESIS (The Master Pages) ---
@@ -930,7 +916,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         - NEWLY ENRICHED RESOURCES: {newly_enriched_context}
         - ENRICHED WEB LINKS: {link_context}
         - NEW INPUTS: {new_inputs_text}
-        - SYNCED TASK UPDATES (already processed, for context only): {synced_inputs_text}
         INSTRUCTIONS:
             HARD CONSTRAINTS (Non-Negotiable):
             - VERTICALITY MANDATE: You are STRICTLY FORBIDDEN from writing lists as sentences. Every icon (🔴, 🟡, ✅, 🚀) MUST start on a brand new line.
