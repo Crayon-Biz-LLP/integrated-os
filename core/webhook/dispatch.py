@@ -288,7 +288,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         try:
             tasks_service = get_tasks_service()
             result = await process_single_dump(text, meta, tasks_service)
-            if result.get('action') in ('created', 'completed', 'filed'):
+            if result.get('action') in ('created', 'completed', 'filed', 'updated'):
                 supabase.table('raw_dumps').update({"status": "synced"}).eq('id', dump_id).execute()
                 audit_log_sync("webhook", "INFO", f"Inline processed dump {dump_id}: {result['action']}")
         except Exception as e:

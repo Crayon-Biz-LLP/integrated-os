@@ -120,6 +120,46 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
     sanitized_time = format_rfc3339(result.get('reminder_at'))
     explicit_time = bool(result.get('reminder_at') and 'T' in str(result.get('reminder_at')))
 
+    task_update_id = metadata.get('task_update_id')
+    if task_update_id:
+        task_ref = supabase.table('tasks').select('id, google_task_id, google_event_id, title, status') \
+            .eq('id', task_update_id) \
+            .eq('is_current', True) \
+            .maybe_single().execute()
+        if task_ref.data:
+            td = task_ref.data
+            e_id = td.get('google_event_id')
+            g_id = td.get('google_task_id')
+            
+            update_payload = {}
+            if result.get('duration_mins'):
+                update_payload["duration_mins"] = result.get('duration_mins')
+                update_payload["estimated_minutes"] = result.get('duration_mins')
+                
+            if sanitized_time:
+                update_payload["reminder_at"] = sanitized_time
+                
+                if explicit_time:
+                    try:
+                        e_id = sync_to_calendar(td['title'], sanitized_time, event_id=e_id, duration_mins=result.get('duration_mins', 15))
+                        update_payload['google_event_id'] = e_id
+                    except Exception as e:
+                        audit_log_sync("quick_process", "ERROR", f"Calendar sync failed on update: {e}")
+                elif e_id:
+                    delete_calendar_event(e_id)
+                    update_payload['google_event_id'] = None
+                
+                if g_id and tasks_service:
+                    try:
+                        sync_to_google(tasks_service, title=td['title'], task_id=g_id, status=td['status'], due_at=sanitized_time)
+                    except Exception as e:
+                        audit_log_sync("quick_process", "ERROR", f"Google Tasks sync failed on update: {e}")
+
+            if update_payload:
+                versioned_update('tasks', task_update_id, update_payload, change_source='quick_process', change_reason="Updated via quick_process inline")
+                
+            return {"action": "updated", "task_id": task_update_id}
+
     dedup_key = hashlib_md5(f"{title.lower().strip()}:{project_id or 0}".encode())[:16]
     existing = supabase.table('tasks').select('id') \
         .eq('dedup_key', dedup_key) \
@@ -227,7 +267,7 @@ async def process_pending_dumps():
 
         result = await process_single_dump(d['content'], meta, tasks_service)
 
-        if result.get('action') in ('created', 'completed', 'filed'):
+        if result.get('action') in ('created', 'completed', 'filed', 'updated'):
             supabase.table('raw_dumps').update({
                 "status": "synced"
             }).eq('id', d['id']).execute()
