@@ -654,6 +654,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         pending_email_tasks = pending_email_tasks_res.data or []
 
+        # Fetch call-suggested items not yet shown in brief
+        pending_call_items_res = supabase.table('call_pending_items')\
+            .select('id, suggested_title, suggested_project')\
+            .eq('shown_in_brief', False)\
+            .is_('danny_decision', None)\
+            .execute()
+        pending_call_items = pending_call_items_res.data or []
+
         print("📦 Step 5: Building context...")
         # --- 2. THINK Phase ---
         print('🤖 Building prompt...')
@@ -798,6 +806,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         - SYNCED TASK UPDATES (already processed, for context only): {synced_inputs_text}
         - 📧 EMAIL-SUGGESTED TASKS (surface these in the brief under a section called "📧 Inbox" — Danny decides whether to create them as tasks, do not auto-create):
         {chr(10).join(f"- {t['suggested_title']} (Project: {t.get('suggested_project') or 'Unknown'})" for t in pending_email_tasks) if pending_email_tasks else "None"}
+        - 📞 CALL EXTRACTS (surface these in the brief under a section called "📞 Call Extracts" — Danny decides whether to create them as tasks, do not auto-create):
+        {chr(10).join(f"- {t['suggested_title']} (Project: {t.get('suggested_project') or 'Unknown'})" for t in pending_call_items) if pending_call_items else "None"}
 
         INSTRUCTIONS:
             HARD CONSTRAINTS (Non-Negotiable):
@@ -1653,6 +1663,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
             # 📨 EMAIL DECISIONS SECTION — Surface pending email tasks for Danny's approval
             shown_ids = []
+            call_shown_ids = []
             try:
                 # Auto-expire tasks older than 7 days
                 cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
@@ -1669,13 +1680,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     .limit(5)\
                     .execute()
                 if pending_decisions.data:
-                    lines = ["\n\n📨 EMAIL DECISIONS (" + str(len(pending_decisions.data)) + ") — reply [code] yes/drop"]
+                    lines = ["\n\n📨 EMAIL DECISIONS (" + str(len(pending_decisions.data)) + ") — reply [e{code}] yes/drop"]
                     shown_ids = []
                     for row in pending_decisions.data:
                         shortcode = str(row['id'])
                         project_label = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                         title = row['suggested_title'][:60]
-                        lines.append(f"[{shortcode}] {title}{project_label}")
+                        lines.append(f"[e{shortcode}] {title}{project_label}")
                         shown_ids.append(row['id'])
                     if briefing_text:
                         briefing_text += "\n".join(lines)
@@ -1683,6 +1694,37 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         briefing_text = "\n".join(lines)
             except Exception as ed_err:
                 audit_log_sync("pulse", "WARNING", f"⚠️ Email decisions section failed: {ed_err}")
+
+            # 📞 CALL EXTRACTS SECTION — Surface pending call items for Danny's approval
+            try:
+                call_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+                supabase.table('call_pending_items')\
+                    .update({'danny_decision': 'expired'})\
+                    .is_('danny_decision', 'null')\
+                    .lt('created_at', call_cutoff)\
+                    .execute()
+
+                call_pending = supabase.table('call_pending_items')\
+                    .select('id, suggested_title, suggested_project, action_type, created_at')\
+                    .is_('danny_decision', 'null')\
+                    .order('created_at', desc=False)\
+                    .limit(5)\
+                    .execute()
+                if call_pending.data:
+                    call_lines = ["\n\n📞 CALL EXTRACTS (" + str(len(call_pending.data)) + ") — reply [c{code}] yes/drop"]
+                    for row in call_pending.data:
+                        sc = str(row['id'])
+                        proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
+                        t = row['suggested_title'][:60]
+                        prefix = "📋 " if row.get('action_type') == 'task' else "💡 "
+                        call_lines.append(f"{prefix}[c{sc}] {t}{proj}")
+                        call_shown_ids.append(row['id'])
+                    if briefing_text:
+                        briefing_text += "\n".join(call_lines)
+                    else:
+                        briefing_text = "\n".join(call_lines)
+            except Exception as call_err:
+                audit_log_sync("pulse", "WARNING", f"⚠️ Call extracts section failed: {call_err}")
 
         # --- 🏃 RHYTHMS SECTION (Weekends only) ---
         if is_weekend:
@@ -1741,9 +1783,20 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     .in_('id', shown_ids)\
                     .execute()
             except Exception as e:
-                audit_log_sync("pulse", "WARNING", f"⚠️ shown_in_brief update failed: {e}")
+                audit_log_sync("pulse", "WARNING", f"⚠️ Email shown_in_brief update failed: {e}")
         elif shown_ids:
-            print("⚠️ Telegram send failed — shown_in_brief NOT updated. Will retry at next pulse.")
+            print("⚠️ Telegram send failed — email shown_in_brief NOT updated. Will retry at next pulse.")
+
+        if send_success and call_shown_ids:
+            try:
+                supabase.table('call_pending_items')\
+                    .update({'shown_in_brief': True})\
+                    .in_('id', call_shown_ids)\
+                    .execute()
+            except Exception as e:
+                audit_log_sync("pulse", "WARNING", f"⚠️ Call shown_in_brief update failed: {e}")
+        elif call_shown_ids:
+            print("⚠️ Telegram send failed — call shown_in_brief NOT updated. Will retry at next pulse.")
 
         # --- 📝 AFTER-ACTION REPORT ---
         if hour >= 20 or hour < 4:

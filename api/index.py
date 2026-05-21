@@ -2,6 +2,7 @@ import os
 import hmac
 import hashlib
 import time
+import httpx
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -310,3 +311,41 @@ async def email_action_route(request: Request):
     except Exception as e:
         print(f"Email action error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- DRIVE WEBHOOK (Receives Google Drive push notifications) ---
+@app.post("/api/drive-webhook")
+async def drive_webhook(request: Request):
+    channel_id = request.headers.get("X-Goog-Channel-ID", "")
+    resource_state = request.headers.get("X-Goog-Resource-State", "")
+    resource_id = request.headers.get("X-Goog-Resource-ID", "")
+
+    print(f"Drive webhook: channel={channel_id} state={resource_state} resource={resource_id}")
+
+    if resource_state == "sync":
+        return {"success": True}
+
+    if resource_state == "change":
+        try:
+            github_token = os.getenv("GITHUB_TOKEN")
+            owner = os.getenv("GITHUB_OWNER", "Crayon-Biz-LLP")
+            repo = os.getenv("GITHUB_REPO", "integrated-os")
+            if github_token and owner and repo:
+                url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/call_ingest.yml/dispatches"
+                headers = {
+                    "Authorization": f"token {github_token}",
+                    "Accept": "application/vnd.github+json"
+                }
+                payload = {"ref": "main"}
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(url, json=payload, headers=headers, timeout=10)
+                    if resp.status_code == 204:
+                        print("Triggered call_ingest workflow via Drive webhook")
+                    else:
+                        print(f"GitHub dispatch failed: {resp.status_code}")
+            else:
+                print("Missing GITHUB_TOKEN, GITHUB_OWNER, or GITHUB_REPO — can't trigger workflow")
+        except Exception as e:
+            print(f"Drive webhook dispatch error: {e}")
+
+    return {"success": True}

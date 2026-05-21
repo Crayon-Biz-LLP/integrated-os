@@ -8,6 +8,7 @@ from core.webhook.telegram import send_telegram, download_telegram_file
 from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
 from core.webhook.email import process_email_pending_decision, handle_ed_command
+from core.webhook.call import process_call_pending_decision
 from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, ask_task_or_note_confirmation, resolve_task_note_confirmation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
 from core.webhook.commands import handle_command, handle_undo_command
 from core.webhook.multimodal import process_multimodal_content
@@ -113,9 +114,56 @@ async def process_webhook(update: dict):
             await send_telegram(chat_id, f"Message too long ({len(text)} chars). Please send shorter messages (max {MAX_TEXT_LENGTH} chars).")
             return {"success": True}
 
+        _email_approve_match = re.match(r'^[eE](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
+        _email_reject_match = re.match(r'^[eE](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
+        _call_approve_match = re.match(r'^[cC](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
+        _call_reject_match = re.match(r'^[cC](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
         _approve_match = re.match(r'^(\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _reject_match = re.match(r'^(\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
 
+        # e-prefix: direct to email_pending_tasks
+        if _email_approve_match or _email_reject_match:
+            try:
+                _sc = (_email_approve_match or _email_reject_match).group(1)
+                _is_approve = bool(_email_approve_match)
+                result = await process_email_pending_decision(
+                    pending_id=int(_sc),
+                    decision='approve' if _is_approve else 'reject'
+                )
+                if result['success']:
+                    await send_telegram(chat_id, f"✅ {result['message']}")
+                else:
+                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                    if result['action'] in ('staging_failed',):
+                        raise Exception(result['message'])
+                return {"success": True}
+            except Exception as _sc_err:
+                audit_log_sync("webhook", "WARNING", f"Email prefix shortcode error: {_sc_err}")
+                await send_telegram(chat_id, "Something went wrong. Try again.")
+                return {"success": True}
+
+        # c-prefix: direct to call_pending_items
+        if _call_approve_match or _call_reject_match:
+            try:
+                _sc = (_call_approve_match or _call_reject_match).group(1)
+                _is_approve = bool(_call_approve_match)
+                result = await process_call_pending_decision(
+                    pending_id=int(_sc),
+                    decision='approve' if _is_approve else 'reject'
+                )
+                if result['success']:
+                    await send_telegram(chat_id, f"✅ {result['message']}")
+                else:
+                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                    if result['action'] in ('staging_failed',):
+                        raise Exception(result['message'])
+                return {"success": True}
+            except Exception as _sc_err:
+                audit_log_sync("webhook", "WARNING", f"Call prefix shortcode error: {_sc_err}")
+                await send_telegram(chat_id, "Something went wrong. Try again.")
+                return {"success": True}
+
+        # Unprefixed: backward-compatible — email first, then calls, then practice dismissal
         if _approve_match or _reject_match:
             try:
                 _shortcode = (_approve_match or _reject_match).group(1)
@@ -130,35 +178,53 @@ async def process_webhook(update: dict):
                     await send_telegram(chat_id, f"✅ {result['message']}")
                     return {"success": True}
 
-                if not _is_approve and result['action'] == 'not_found':
-                    try:
-                        _node_res = supabase.table('graph_nodes') \
-                            .select('id, label, metadata') \
-                            .eq('type', 'practice') \
-                            .eq('metadata->>shortcode', str(_shortcode)) \
-                            .limit(1) \
-                            .maybe_single() \
-                            .execute()
-                        if _node_res.data:
-                            _n = _node_res.data
-                            _rm = _n.get('metadata', {})
-                            if isinstance(_rm, str):
-                                _rm = json.loads(_rm)
-                            _rm['status'] = 'dismissed'
-                            _rm['dismissed_at'] = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%Y-%m-%d')
-                            supabase.table('graph_nodes').update({'metadata': _rm}).eq('id', _n['id']).execute()
-                            _variants = _rm.get('variants', [_n.get('label', '')])
-                            _excl = supabase.table('core_config').select('content').eq('key', 'dismissed_practice_variants').maybe_single().execute()
-                            _existing = json.loads(_excl.data.get('content', '[]')) if _excl.data else []
-                            _existing_lower = set(v.lower() for v in _existing)
-                            _new_entries = [v for v in _variants if v.lower() not in _existing_lower]
-                            if _new_entries:
-                                supabase.table('core_config').update({'content': json.dumps(_existing + _new_entries)}).eq('key', 'dismissed_practice_variants').execute()
-                            await send_telegram(chat_id, f"Dismissed: {_n.get('label', '')}")
-                            print(f"SHORTCODE DROP: Dismissed practice '{_n.get('label', '')}' via shortcode.")
-                            return {"success": True}
-                    except Exception as _sc_practice_err:
-                        audit_log_sync("webhook", "WARNING", f"Shortcode practice fallback error: {_sc_practice_err}")
+                if result['action'] == 'not_found':
+                    call_result = await process_call_pending_decision(
+                        pending_id=int(_shortcode),
+                        decision='approve' if _is_approve else 'reject'
+                    )
+                    if call_result['success']:
+                        await send_telegram(chat_id, f"✅ {call_result['message']}")
+                        return {"success": True}
+                    if call_result['action'] != 'not_found':
+                        await send_telegram(chat_id, f"⚠️ {call_result['message']}")
+                        if call_result['action'] in ('staging_failed',):
+                            raise Exception(call_result['message'])
+                        return {"success": True}
+
+                    # Not found in email or call — try practice dismissal (reject only)
+                    if not _is_approve:
+                        try:
+                            _node_res = supabase.table('graph_nodes') \
+                                .select('id, label, metadata') \
+                                .eq('type', 'practice') \
+                                .eq('metadata->>shortcode', str(_shortcode)) \
+                                .limit(1) \
+                                .maybe_single() \
+                                .execute()
+                            if _node_res.data:
+                                _n = _node_res.data
+                                _rm = _n.get('metadata', {})
+                                if isinstance(_rm, str):
+                                    _rm = json.loads(_rm)
+                                _rm['status'] = 'dismissed'
+                                _rm['dismissed_at'] = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%Y-%m-%d')
+                                supabase.table('graph_nodes').update({'metadata': _rm}).eq('id', _n['id']).execute()
+                                _variants = _rm.get('variants', [_n.get('label', '')])
+                                _excl = supabase.table('core_config').select('content').eq('key', 'dismissed_practice_variants').maybe_single().execute()
+                                _existing = json.loads(_excl.data.get('content', '[]')) if _excl.data else []
+                                _existing_lower = set(v.lower() for v in _existing)
+                                _new_entries = [v for v in _variants if v.lower() not in _existing_lower]
+                                if _new_entries:
+                                    supabase.table('core_config').update({'content': json.dumps(_existing + _new_entries)}).eq('key', 'dismissed_practice_variants').execute()
+                                await send_telegram(chat_id, f"Dismissed: {_n.get('label', '')}")
+                                print(f"SHORTCODE DROP: Dismissed practice '{_n.get('label', '')}' via shortcode.")
+                                return {"success": True}
+                        except Exception as _sc_practice_err:
+                            audit_log_sync("webhook", "WARNING", f"Shortcode practice fallback error: {_sc_practice_err}")
+
+                    await send_telegram(chat_id, f"⚠️ No pending item found matching [{_shortcode}].")
+                    return {"success": True}
 
                 await send_telegram(chat_id, f"⚠️ {result['message']}")
                 if result['action'] in ('staging_failed',):

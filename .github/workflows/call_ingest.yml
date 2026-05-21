@@ -1,0 +1,57 @@
+name: Call Recording Ingest
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
+
+jobs:
+  process-calls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Whisper
+        run: pip install faster-whisper
+
+      - name: Cache Whisper Model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/whisper
+          key: whisper-${{ env.WHISPER_MODEL_SIZE }}-${{ runner.os }}
+        env:
+          WHISPER_MODEL_SIZE: base
+
+      - name: Process Call Recordings
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_CALLS_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_CALLS_FOLDER_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WHISPER_MODEL_SIZE: base
+        run: python -m core.skills.call_ingest
+
+  notify_failure:
+    runs-on: ubuntu-latest
+    needs: process-calls
+    if: failure()
+    steps:
+      - name: Notify on failure
+        run: |
+          echo "⚠️ Call Recording Ingest FAILED at $(date)"
+          echo "Check logs: https://github.com/${{ github.repository }}/actions"
