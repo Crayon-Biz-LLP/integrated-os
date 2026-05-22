@@ -330,8 +330,14 @@ async def whatsapp_ingest_route(request: Request):
         message_text = body.get("text", "") or body.get("body", "") or body.get("message", "")
         received_at = body.get("received_at") or body.get("timestamp")
 
-        if not sender_phone or not message_text:
-            raise HTTPException(status_code=400, detail="sender_phone and message required")
+        identifier = sender_phone or sender_name
+
+        if not identifier or not message_text:
+            raise HTTPException(status_code=400, detail="sender/phone and message required")
+
+        # Fallback to name if phone is missing so downstream logic doesn't break
+        if not sender_phone:
+            sender_phone = sender_name
 
         result = await process_whatsapp_message(sender_name, sender_phone, message_text, received_at)
         return {"success": True, "result": result}

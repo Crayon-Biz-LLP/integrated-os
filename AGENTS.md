@@ -183,6 +183,9 @@ Uses [github/spec-kit](https://github.com/github/spec-kit) for structured AI-ass
 ### Available Slash Commands
 `/speckit.constitution`, `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement`, `/speckit.analyze`, `/speckit.clarify`, `/speckit.checklist`, `/speckit.taskstoissues`
 
+### Investigation Safety Rule (Non-Negotiable)
+- **NEVER create temporary files, test scripts, or folders for investigation or execution without explicit prior user approval.** Do not create anything without explicit permission from the user.
+
 ### Git Safety Rule (Non-Negotiable)
 - **NEVER auto-commit or auto-push changes.** Always present a summary of changes and wait for explicit user approval before any `git add`, `git commit`, or `git push`.
 - The git extension hooks are configured with `auto_commit: default: false` — if an agent prompt asks about committing, say no and let the user decide.

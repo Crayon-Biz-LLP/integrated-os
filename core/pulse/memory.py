@@ -221,22 +221,30 @@ async def detect_temporal_patterns() -> str:
 
         today = date.today()
         today_str = today.strftime("%B %d")
+        month_day = f"-{today.month:02}-{today.day:02}"
 
-        # Search memories from same month/day in previous years
+        # Fetch recent memories and filter for "On this day" in Python to avoid PostgREST cast issues
         memories_res = supabase.table('memories') \
             .select('content, memory_type, created_at') \
-            .or_(f"created_at::text.ilike.*{today.month:02}-{today.day:02}*") \
             .order('created_at', desc=True) \
-            .limit(10) \
+            .limit(5000) \
             .execute()
 
         if not memories_res.data:
             return ""
 
+        on_this_day_memories = [
+            m for m in memories_res.data 
+            if m.get('created_at') and month_day in m['created_at']
+        ][:10]
+
+        if not on_this_day_memories:
+            return ""
+
         lines = [f"📅 TEMPORAL PATTERNS (On this day {today_str}):"]
         seen = set()
 
-        for m in memories_res.data:
+        for m in on_this_day_memories:
             content = m.get('content', '')[:100]
             mem_type = m.get('memory_type', '')
             created = m.get('created_at', '')[:4]  # Just the year
