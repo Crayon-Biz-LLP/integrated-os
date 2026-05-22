@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from core.lib.audit_logger import info, warning, error, audit_log_sync
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
+from core.lib.duplicate_guard import check_duplicate
 from core.lib.temporal_lineage import detect_drift
 from core.lib.conversation import get_or_create_session, format_history_for_prompt
 
@@ -1501,6 +1502,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         print(f"⏰ De-clash: Staggered '{task.get('title', 'Untitled Task')}' to {sanitized_time.split('T')[1][:5]}")
 
                 explicit_time = bool(raw_time and 'T' in str(raw_time))
+
+                # Semantic duplicate guard
+                combined_active_tasks = active_tasks + task_inserts
+                guard = check_duplicate(task_title, combined_active_tasks)
+                if guard['result'] in ['block', 'flag']:
+                    audit_log_sync("pulse", "WARNING", f"⚠️ AI Semantic Guard: '{task_title}' matches existing task '{guard['matched_title']}'. Skipping.")
+                    continue
 
                 # Idempotency guard using content hash
                 dedup_key = hashlib.md5(

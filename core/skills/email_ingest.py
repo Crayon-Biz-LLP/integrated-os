@@ -38,6 +38,20 @@ def build_active_task_list() -> list:
         return []
 
 
+def fetch_rejected_email_tasks() -> list:
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        result = supabase.table('email_pending_tasks')\
+            .select('id, suggested_title')\
+            .eq('danny_decision', 'rejected')\
+            .gte('created_at', cutoff)\
+            .execute()
+        return [{"id": r['id'], "title": r['suggested_title']} for r in (result.data or []) if r.get('suggested_title')]
+    except Exception as e:
+        print(f"Failed to build rejected task list: {e}")
+        return []
+
+
 async def generate_draft(sender: str, subject: str, body: str) -> str:
     prompt = f"""You are drafting a professional reply on behalf of Danny (Yashwant Daniel), founder of Crayon. Write a concise, warm, and direct reply to this email. Do not sign off with a full signature block — end with just 'Danny'. Do not send — this is a draft for Danny's review.
 
@@ -301,7 +315,7 @@ Return ONLY valid JSON, NO markdown, NO explanation:
     return json.loads(response.text)
 
 
-async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tuple:
+async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejected_tasks: list) -> tuple:
     msg_id = msg_data['id']
     sender_name = None
     sender_email = None
@@ -446,37 +460,43 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list) -> tu
 
             if suggested_task:
                 suggested_title = suggested_task or ''
-                guard = check_duplicate(suggested_title, active_tasks)
-                if guard['result'] == 'block':
-                    if guard['is_superset'] and guard['matched_id']:
-                        try:
-                            supabase.table('tasks').update({'title': suggested_title}).eq('id', guard['matched_id']).execute()
-                            print(f"Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' -> '{suggested_title}'")
-                        except Exception as upd_err:
-                            print(f"Auto-update failed: {upd_err}")
-                    else:
-                        print(f"Duplicate guard (block): '{suggested_title}' matches existing task [{guard['matched_id']}]. Skipping.")
-                elif guard['result'] == 'flag':
-                    supabase.table('email_pending_tasks').insert({
-                        "email_id": email_id,
-                        "suggested_title": suggested_task,
-                        "suggested_project": linked_project_name,
-                        "shown_in_brief": False,
-                        "danny_decision": None,
-                        "is_human_sender": is_human,
-                        "possible_duplicate": True,
-                        "duplicate_of_title": guard['matched_title']
-                    }).execute()
-                    print(f"Duplicate guard (flag): '{suggested_title}' may be similar to task '{guard['matched_title']}'. Created with flag.")
+                
+                # Check rejected tasks first
+                rejected_guard = check_duplicate(suggested_title, rejected_tasks)
+                if rejected_guard['result'] in ['block', 'flag']:
+                    print(f"Skipping task as it matches previously rejected task: {rejected_guard['matched_title']}")
                 else:
-                    supabase.table('email_pending_tasks').insert({
-                        "email_id": email_id,
-                        "suggested_title": suggested_task,
-                        "suggested_project": linked_project_name,
-                        "shown_in_brief": False,
-                        "danny_decision": None,
-                        "is_human_sender": is_human
-                    }).execute()
+                    guard = check_duplicate(suggested_title, active_tasks)
+                    if guard['result'] == 'block':
+                        if guard['is_superset'] and guard['matched_id']:
+                            try:
+                                supabase.table('tasks').update({'title': suggested_title}).eq('id', guard['matched_id']).execute()
+                                print(f"Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' -> '{suggested_title}'")
+                            except Exception as upd_err:
+                                print(f"Auto-update failed: {upd_err}")
+                        else:
+                            print(f"Duplicate guard (block): '{suggested_title}' matches existing task [{guard['matched_id']}]. Skipping.")
+                    elif guard['result'] == 'flag':
+                        supabase.table('email_pending_tasks').insert({
+                            "email_id": email_id,
+                            "suggested_title": suggested_task,
+                            "suggested_project": linked_project_name,
+                            "shown_in_brief": False,
+                            "danny_decision": None,
+                            "is_human_sender": is_human,
+                            "possible_duplicate": True,
+                            "duplicate_of_title": guard['matched_title']
+                        }).execute()
+                        print(f"Duplicate guard (flag): '{suggested_title}' may be similar to task '{guard['matched_title']}'. Created with flag.")
+                    else:
+                        supabase.table('email_pending_tasks').insert({
+                            "email_id": email_id,
+                            "suggested_title": suggested_task,
+                            "suggested_project": linked_project_name,
+                            "shown_in_brief": False,
+                            "danny_decision": None,
+                            "is_human_sender": is_human
+                        }).execute()
 
             if is_human and classification_data.get('has_memory_value'):
                 await write_relationship_note(
@@ -526,7 +546,8 @@ async def main():
     gmail_service = build('gmail', 'v1', credentials=get_google_creds(), cache=_MemoryCache())
 
     active_tasks = build_active_task_list()
-    print(f"Loaded {len(active_tasks)} active tasks for duplicate checking.")
+    rejected_tasks = fetch_rejected_email_tasks()
+    print(f"Loaded {len(active_tasks)} active tasks and {len(rejected_tasks)} rejected tasks for duplicate checking.")
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     after_timestamp = int(cutoff.timestamp())
@@ -559,7 +580,7 @@ async def main():
             continue
         seen_ids.add(msg_id)
         try:
-            status, detail = await process_email(msg, gmail_service, active_tasks)
+            status, detail = await process_email(msg, gmail_service, active_tasks, rejected_tasks)
             if status == EmailStatus.IGNORED:
                 ignored += 1
             elif status == EmailStatus.ERROR:

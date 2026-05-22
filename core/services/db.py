@@ -63,6 +63,11 @@ def versioned_update(table_name: str, record_id: int, update_data: dict, user_id
             return False
 
         old_record = current.data[0]
+        
+        # Concurrency guard: if old_record is no longer current, it was superseded by another process
+        if not old_record.get('is_current', True):
+            raise Exception(f"Concurrency conflict: Record {record_id} is no longer current.")
+
         new_record = {
             **{k: v for k, v in old_record.items()
                if k not in ['id', 'created_at', 'version', 'is_current', 'supersedes_id', 'updated_at']},
@@ -76,7 +81,16 @@ def versioned_update(table_name: str, record_id: int, update_data: dict, user_id
         new_record['supersedes_id'] = record_id
 
         result = supabase.table(table_name).insert(new_record).execute()
-        supabase.table(table_name).update({"is_current": False}).eq('id', record_id).execute()
+        
+        try:
+            supabase.table(table_name).update({"is_current": False}).eq('id', record_id).execute()
+        except Exception as update_err:
+            if result.data and len(result.data) > 0:
+                new_id = result.data[0].get('id')
+                if new_id:
+                    # Rollback the insert to prevent duplicate is_current=True records
+                    supabase.table(table_name).delete().eq('id', new_id).execute()
+            raise update_err
 
         if change_source or change_reason:
             audit_log_sync("db", "INFO",

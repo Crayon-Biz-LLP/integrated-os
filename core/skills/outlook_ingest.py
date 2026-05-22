@@ -25,6 +25,19 @@ def build_active_task_list() -> list:
         print(f"⚠️ Failed to build active task list (failing open): {e}")
         return []
 
+def fetch_rejected_email_tasks() -> list:
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        result = supabase.table('email_pending_tasks')\
+            .select('id, suggested_title')\
+            .eq('danny_decision', 'rejected')\
+            .gte('created_at', cutoff)\
+            .execute()
+        return [{"id": r['id'], "title": r['suggested_title']} for r in (result.data or []) if r.get('suggested_title')]
+    except Exception as e:
+        print(f"Failed to build rejected task list: {e}")
+        return []
+
 RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
 NOREPLY_PATTERNS = [
     'noreply', 'no-reply', 'donotreply', 'mailer-daemon',
@@ -232,7 +245,8 @@ async def ingest_outlook_messages(limit=25):
         return {"processed": 0, "ignored": 0, "skipped": 0}
 
     active_task_list = build_active_task_list()
-    print(f"🧠 Loaded {len(active_task_list)} active tasks for duplicate checking.")
+    rejected_task_list = fetch_rejected_email_tasks()
+    print(f"🧠 Loaded {len(active_task_list)} active tasks and {len(rejected_task_list)} rejected tasks for duplicate checking.")
 
     processed = 0
     ignored = 0
@@ -372,37 +386,43 @@ async def ingest_outlook_messages(limit=25):
                 
                 if suggested_task:
                     suggested_title = suggested_task or ''
-                    guard = check_duplicate(suggested_title, active_task_list)
-                    if guard['result'] == 'block':
-                        if guard['is_superset'] and guard['matched_id']:
-                            try:
-                                supabase.table('tasks').update({'title': suggested_title}).eq('id', guard['matched_id']).execute()
-                                print(f"🔁 Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' → '{suggested_title}'")
-                            except Exception as upd_err:
-                                print(f"⚠️ Auto-update failed: {upd_err}")
-                        else:
-                            print(f"⚠️ Duplicate guard (block): '{suggested_title}' matches existing task [{guard['matched_id']}]. Skipping.")
-                    elif guard['result'] == 'flag':
-                        supabase.table('email_pending_tasks').insert({
-                            "email_id": email_id,
-                            "suggested_title": suggested_task,
-                            "suggested_project": linked_project_name,
-                            "shown_in_brief": False,
-                            "danny_decision": None,
-                            "is_human_sender": is_human,
-                            "possible_duplicate": True,
-                            "duplicate_of_title": guard['matched_title']
-                        }).execute()
-                        print(f"⚠️ Duplicate guard (flag): '{suggested_title}' may be similar to task '{guard['matched_title']}'. Created with flag.")
+                    
+                    # Check rejected tasks first
+                    rejected_guard = check_duplicate(suggested_title, rejected_task_list)
+                    if rejected_guard['result'] in ['block', 'flag']:
+                        print(f"⏭️  Skipping task as it matches previously rejected task: {rejected_guard['matched_title']}")
                     else:
-                        supabase.table('email_pending_tasks').insert({
-                            "email_id": email_id,
-                            "suggested_title": suggested_task,
-                            "suggested_project": linked_project_name,
-                            "shown_in_brief": False,
-                            "danny_decision": None,
-                            "is_human_sender": is_human
-                        }).execute()
+                        guard = check_duplicate(suggested_title, active_task_list)
+                        if guard['result'] == 'block':
+                            if guard['is_superset'] and guard['matched_id']:
+                                try:
+                                    supabase.table('tasks').update({'title': suggested_title}).eq('id', guard['matched_id']).execute()
+                                    print(f"🔁 Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' → '{suggested_title}'")
+                                except Exception as upd_err:
+                                    print(f"⚠️ Auto-update failed: {upd_err}")
+                            else:
+                                print(f"⚠️ Duplicate guard (block): '{suggested_title}' matches existing task [{guard['matched_id']}]. Skipping.")
+                        elif guard['result'] == 'flag':
+                            supabase.table('email_pending_tasks').insert({
+                                "email_id": email_id,
+                                "suggested_title": suggested_task,
+                                "suggested_project": linked_project_name,
+                                "shown_in_brief": False,
+                                "danny_decision": None,
+                                "is_human_sender": is_human,
+                                "possible_duplicate": True,
+                                "duplicate_of_title": guard['matched_title']
+                            }).execute()
+                            print(f"⚠️ Duplicate guard (flag): '{suggested_title}' may be similar to task '{guard['matched_title']}'. Created with flag.")
+                        else:
+                            supabase.table('email_pending_tasks').insert({
+                                "email_id": email_id,
+                                "suggested_title": suggested_task,
+                                "suggested_project": linked_project_name,
+                                "shown_in_brief": False,
+                                "danny_decision": None,
+                                "is_human_sender": is_human
+                            }).execute()
                 
                 if classification_data.get("needs_draft"):
                     draft_body = await generate_draft(sender, subject, body)
