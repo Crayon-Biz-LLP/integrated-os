@@ -1,0 +1,10 @@
+{
+  "name": "supabase",
+  "description": "",
+  "source": "supabase/agent-skills",
+  "sourceType": "github",
+  "subpath": "supabase",
+  "installedAt": "2026-05-25T09:40:45.828Z",
+  "enabled": true,
+  "checksum": "cc492681062fc018"
+}

@@ -1081,6 +1081,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             - Do NOT create a task for URLs. Just save them to the "resources" array.
             - STRICT MISSION MATCHING: ONLY assign a `mission_id` if the resource is a direct "building block" for an ACTIVE MISSION. If it is just a "cool tool" or "interesting read," leave `mission_id` as NULL.
 
+            SERENDIPITY PROTOCOL:
+            - Under the "SERENDIPITY FINDS" context, you have been given a sample of multi-hop connections.
+            - Review the connections. If you find a truly surprising, non-obvious link (e.g., a past meeting with someone related to today's task), mention it exactly as a one-sentence insight in the briefing.
+            - STRICTLY FORBIDDEN: Do not merge multiple paths together. Do not hallucinate relationships. If all paths are boring, skip them entirely.
+
             STRATEGIC AUDIT INSTRUCTIONS:
             - BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects.
             - CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
@@ -1139,7 +1144,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     'system_instruction': system_instruction_text
                 },
                 is_critical=True,
-                require_json=True
+                require_json=True,
+                schema=PulseOutput
             )
             response_text = response.text
 

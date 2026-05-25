@@ -1,0 +1,10 @@
+{
+  "name": "caveman",
+  "description": "",
+  "source": "mattpocock/skills",
+  "sourceType": "github",
+  "subpath": "caveman",
+  "installedAt": "2026-05-25T11:18:58.242Z",
+  "enabled": true,
+  "checksum": "b4bb6fe3bf3da222"
+}

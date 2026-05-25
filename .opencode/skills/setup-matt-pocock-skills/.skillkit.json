@@ -1,0 +1,10 @@
+{
+  "name": "setup-matt-pocock-skills",
+  "description": "",
+  "source": "mattpocock/skills",
+  "sourceType": "github",
+  "subpath": "setup-matt-pocock-skills",
+  "installedAt": "2026-05-25T11:18:58.211Z",
+  "enabled": true,
+  "checksum": "c778d4e3d86ecc91"
+}

@@ -266,64 +266,62 @@ async def detect_temporal_patterns() -> str:
 
 async def serendipity_engine(active_tasks: list, people: list, resources: list) -> str:
     """
-    SERENDIPITY ENGINE: Surfaces unexpected connections and cross-domain insights.
-    Finds non-obvious links between tasks, people, resources, and past memories
-    that could spark new ideas or reveal hidden opportunities.
+    SERENDIPITY ENGINE: Surfaces unexpected multi-hop connections in the knowledge graph.
+    Uses PostgreSQL Recursive CTEs to find hidden 2nd and 3rd degree links between today's tasks
+    and historical projects, people, or resources.
     """
     try:
-        insights = []
-
-        # 1. Cross-domain task connections
-        # Find tasks from different org_tags that share keywords
-        if len(active_tasks) >= 2:
-            from collections import defaultdict
-            keyword_tasks = defaultdict(list)
-
-            for t in active_tasks[:20]:  # Limit to avoid token bloat
-                title_words = set(t.get('title', '').lower().split())
-                for word in title_words:
-                    if len(word) > 4:  # Only meaningful keywords
-                        keyword_tasks[word].append(t.get('title', ''))
-
-            # Find keywords that appear in tasks from different domains
-            for keyword, task_titles in keyword_tasks.items():
-                if len(task_titles) >= 2:
-                    insights.append(f"🔗 Keyword '{keyword}' connects: {' | '.join(task_titles[:3])}")
-
-        # 2. People + Resources serendipity
-        # Find resources that mention people but aren't directly linked
-        if people and resources:
-            for person in people[:5]:
-                person_name = person.get('name', '')
-                if not person_name:
-                    continue
-                related_resources = [
-                    (r.get('title', '') or '') for r in resources[:30]
-                    if person_name.lower() in ((r.get('title', '') or '') + (r.get('strategic_note', '') or '')).lower()
-                ]
-                if len(related_resources) >= 2:
-                    insights.append(f"👤 {person_name} appears in: {' | '.join(related_resources[:3])}")
-
-        # 3. Temporal serendipity - resources created on same day as memories
-        try:
-            from datetime import date
-            today = date.today()
-            thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-
-            recent_resources = [r for r in resources if r.get('created_at', '') > thirty_days_ago]
-            if recent_resources and len(recent_resources) >= 2:
-                insights.append(f"📚 Recent additions ({len(recent_resources)} resources in 30d) may have hidden connections to current tasks")
-        except:
-            pass
-
-        if insights:
-            lines = ["✨ SERENDIPITY FINDS:"]
-            lines.extend(insights[:5])  # Cap at 5 insights
-            return "\n".join(lines)
-
-        return ""
+        from core.pulse.llm import supabase
+        import random
+        
+        # 1. Gather all active task IDs
+        task_ids = [str(t.get('id')) for t in active_tasks if t.get('id')]
+        if not task_ids:
+            return "No active tasks to base serendipity queries on."
+            
+        # 2. Find the graph_node IDs for these tasks
+        # Assuming metadata->>task_id is how task nodes are linked
+        nodes_res = supabase.table('graph_nodes').select('id').in_('metadata->>task_id', task_ids).execute()
+        start_node_ids = [n['id'] for n in nodes_res.data]
+        
+        if not start_node_ids:
+            return "No graph nodes found for active tasks."
+            
+        # 3. Call the Supabase RPC
+        rpc_res = supabase.rpc('find_serendipity_paths', {'start_node_ids': start_node_ids, 'max_depth': 3}).execute()
+        paths = rpc_res.data
+        
+        if not paths:
+            return "No multi-hop connections found in the graph."
+            
+        # 4. Sample up to 30 paths to prevent token bloat and guarantee novelty
+        if len(paths) > 30:
+            paths = random.sample(paths, 30)
+            
+        # 5. Format the paths beautifully for the LLM
+        formatted_paths = []
+        for path in paths:
+            labels = path.get('path_labels', [])
+            types = path.get('path_types', [])
+            relations = path.get('path_relations', [])
+            weight = path.get('total_weight', 0.0)
+            
+            # Reconstruct the string: Task [X] --RELATES_TO--> Person [Y]
+            path_str_parts = []
+            for i in range(len(labels)):
+                if i == 0:
+                    path_str_parts.append(f"{types[i].capitalize()} [{labels[i]}]")
+                else:
+                    path_str_parts.append(f"--{relations[i]}--> {types[i].capitalize()} [{labels[i]}]")
+                    
+            path_str = " ".join(path_str_parts)
+            formatted_paths.append(f"- Path (Weight {weight}): {path_str}")
+            
+        final_output = "✨ HIDDEN GRAPH CONNECTIONS (MULTI-HOP):\n" + "\n".join(formatted_paths)
+        return final_output
 
     except Exception as e:
+        from core.lib.audit_logger import audit_log_sync
         audit_log_sync("pulse", "WARNING", f"⚠️ Serendipity Engine failed (non-critical): {e}")
         return ""
 

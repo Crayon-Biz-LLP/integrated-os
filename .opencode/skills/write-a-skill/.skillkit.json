@@ -1,0 +1,10 @@
+{
+  "name": "write-a-skill",
+  "description": "",
+  "source": "mattpocock/skills",
+  "sourceType": "github",
+  "subpath": "write-a-skill",
+  "installedAt": "2026-05-25T11:18:58.247Z",
+  "enabled": true,
+  "checksum": "be8f20e663092580"
+}

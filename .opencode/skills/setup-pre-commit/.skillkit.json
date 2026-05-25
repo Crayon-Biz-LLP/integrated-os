@@ -1,0 +1,10 @@
+{
+  "name": "setup-pre-commit",
+  "description": "",
+  "source": "mattpocock/skills",
+  "sourceType": "github",
+  "subpath": "setup-pre-commit",
+  "installedAt": "2026-05-25T11:18:58.236Z",
+  "enabled": true,
+  "checksum": "872f4037cb7e6e0e"
+}

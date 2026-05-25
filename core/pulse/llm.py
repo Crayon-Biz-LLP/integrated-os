@@ -5,6 +5,7 @@ import asyncio
 import time
 import random
 import httpx
+from pydantic import BaseModel
 from supabase import create_client, Client
 from google import genai
 from core.lib.audit_logger import audit_log_sync
@@ -126,10 +127,11 @@ async def call_llm_with_fallback(
     config: dict = None,
     contents=None,
     is_critical: bool = True,
-    require_json: bool = False
+    require_json: bool = False,
+    schema: type[BaseModel] = None
 ):
     """
-    Multi-provider LLM call with fallback chain.
+    Multi-provider LLM call with fallback chain and native control layer (Prompt Mutation, Schema Enforcement, Jittered Backoff).
 
     Provider chain:
     1. Primary: Gemini (gemini-3.5-flash)
@@ -143,6 +145,7 @@ async def call_llm_with_fallback(
         contents: Multi-modal contents instead of text prompt
         is_critical: If false, use faster fallback for non-critical ops
         require_json: If true, ensure JSON output parsing
+        schema: Pydantic BaseModel to enforce structured output
 
     Returns:
         Response object with .text attribute
@@ -190,18 +193,34 @@ async def call_llm_with_fallback(
         start_time = time.time()
         provider_name = prov["provider"]
         model_name = prov["model"]
+        
+        mutation_hint = ""
 
         for attempt in range(max_retries_per_provider):
             try:
+                # Apply mutation hint for targeted retries
+                current_prompt = prompt
+                current_contents = contents
+                
+                if mutation_hint:
+                    hint_text = f"\n\nSystem Correction for this attempt:\n{mutation_hint}"
+                    if current_contents is None:
+                        current_prompt += hint_text
+                    elif isinstance(current_contents, list):
+                        current_contents = current_contents + [hint_text]
+                    elif isinstance(current_contents, str):
+                        current_contents += hint_text
+
                 # Rate limit: only for flash-lite model
                 if provider_name == "gemini" and "flash-lite" in model_name:
                     await flash_lite_limiter.acquire_async()
-                response = prov["fn"](prompt, contents, config)
+                    
+                response = prov["fn"](current_prompt, current_contents, config)
                 elapsed = time.time() - start_time
 
                 # Log to model_registry
                 try:
-                    input_tokens = len(prompt) // 4 if prompt else 0  # Rough estimate
+                    input_tokens = len(current_prompt) // 4 if current_prompt else 0
                     output_tokens = 0
                     if hasattr(response, 'text'):
                         output_tokens = len(response.text) // 4
@@ -222,19 +241,40 @@ async def call_llm_with_fallback(
                 else:
                     response_text = str(response)
 
-                if require_json:
+                # Control Layer: Strict Schema Enforcement
+                if require_json or schema:
                     try:
                         parsed = parse_json_response(response_text)
-                    except ValueError as pe:
-                        audit_log_sync("pulse", "WARNING", f"⚠️ LLM parse failed provider={provider_name} model={model_name}: {pe}")
-                        if provider_idx == len(providers) - 1:
-                            raise
-                        continue
+                        if schema:
+                            # Use model_validate for Pydantic v2 (or parse_obj for v1, but we assume modern Pydantic here)
+                            if hasattr(schema, 'model_validate'):
+                                schema.model_validate(parsed)
+                            else:
+                                schema.parse_obj(parsed)
+                    except Exception as ve:
+                        audit_log_sync("pulse", "WARNING", f"⚠️ LLM validation failed provider={provider_name} model={model_name}: {ve}")
+                        
+                        # Targeted Prompt Mutation + Jittered Backoff
+                        if attempt < max_retries_per_provider - 1:
+                            mutation_hint = f"Your previous response failed validation: {str(ve)}. Please correct this and ensure you return ONLY valid JSON."
+                            delay = _jitter(base_delay * (2 ** attempt))
+                            audit_log_sync("pulse", "WARNING", f"⚠️ LLM retry (validation) provider={provider_name} model={model_name} attempt={attempt+1} delay={delay:.0f}s error={str(ve)[:50]}")
+                            await asyncio.sleep(delay)
+                            continue
+                        elif provider_idx == len(providers) - 1:
+                            raise ValueError(f"All LLM providers failed validation. Last error: {ve}")
+                        else:
+                            last_error = ve
+                            break  # Fallback to next provider
 
                 print(f"✓ LLM success provider={provider_name} model={model_name} elapsed={elapsed:.1f}s")
                 return response
 
             except Exception as e:
+                # If we caught the ValueError we explicitly raised during validation failure when attempts ran out, it's non_retryable here
+                if isinstance(e, ValueError) and "All LLM providers failed validation" in str(e):
+                    raise
+                    
                 error_str = str(e).lower()
                 elapsed = time.time() - start_time
 
@@ -247,7 +287,7 @@ async def call_llm_with_fallback(
 
                 if is_retryable and attempt < max_retries_per_provider - 1:
                     delay = _jitter(base_delay * (2 ** attempt))
-                    audit_log_sync("pulse", "WARNING", f"⚠️ LLM retry provider={provider_name} model={model_name} attempt={attempt+1} delay={delay:.0f}s error={error_str[:50]}")
+                    audit_log_sync("pulse", "WARNING", f"⚠️ LLM retry (network) provider={provider_name} model={model_name} attempt={attempt+1} delay={delay:.0f}s error={error_str[:50]}")
                     await asyncio.sleep(delay)
                     continue
 

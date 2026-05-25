@@ -1,0 +1,10 @@
+{
+  "name": "qa",
+  "description": "",
+  "source": "mattpocock/skills",
+  "sourceType": "github",
+  "subpath": "qa",
+  "installedAt": "2026-05-25T11:18:58.189Z",
+  "enabled": true,
+  "checksum": "d9727aac6503981b"
+}
