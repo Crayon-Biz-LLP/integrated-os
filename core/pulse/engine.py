@@ -420,6 +420,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         audit_log_sync("pulse", "WARNING", f"⚠️ Metadata parse error for dump {dump_id}: {e}")
 
                     gemini_category = item.get('category', '').upper()
+                    
+                    dump_content = raw_dump.get('content', '')
+                    has_url = bool(re.search(r'https?://\S+', dump_content))
+                    
+                    if has_url:
+                        gemini_category = 'TASK'
+                        
                     category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE', 'COMPLETION'] else metadata.get('intent', 'NOISE').upper()
                     
                     if category == 'NOTE':

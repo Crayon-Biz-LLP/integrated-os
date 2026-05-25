@@ -116,9 +116,10 @@ def cleanup_orphan_raw_dumps(dry_run: bool = False):
 
 if __name__ == "__main__":
     dry_run = "--dry-run" in sys.argv
+    force = "--yes" in sys.argv or "--force" in sys.argv
     if dry_run:
         print("DRY RUN MODE — no changes will be made\n")
-    else:
+    elif not force:
         confirm = input("Are you sure you want to clean up orphan records? (yes/no): ")
         if confirm.lower() != "yes":
             print("Aborted.")
