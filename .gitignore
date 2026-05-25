@@ -17,8 +17,6 @@ data/
 .opencode/
 .codegraph/
 .antigravity/
-.cursor/
-.vscode/
 **/.DS_Store
 **/.cursor/
 **/.vscode/
