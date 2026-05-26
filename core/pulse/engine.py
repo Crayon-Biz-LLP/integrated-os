@@ -392,7 +392,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             try:
                 sort_response = await call_llm_with_fallback(
                     prompt=sort_prompt,
-                    model="gemini-3.1-flash-lite-preview",
+                    model="gemini-3.1-flash-lite",
                     config={'response_mime_type': 'application/json'},
                     is_critical=False,
                     require_json=True
@@ -1731,7 +1731,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     try:
                         backfill_response = await call_llm_with_fallback(
                             prompt=backfill_prompt,
-                            model="gemini-3.1-flash-lite-preview",
+                            model="gemini-3.1-flash-lite",
                             config={'response_mime_type': 'application/json'},
                             is_critical=False,
                             require_json=True

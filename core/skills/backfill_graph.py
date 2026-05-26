@@ -38,12 +38,12 @@ def call_llm_with_fallback_sync(
     """
     Synchronous multi-provider LLM call with fallback chain.
     Provider chain:
-    1. Primary: Gemini (gemini-3.1-flash-lite-preview)
+    1. Primary: Gemini (gemini-3.1-flash-lite)
     2. Fallback: Gemma (gemma-4-31b-it)
     3. Fallback: OpenRouter (nvidia/nemotron-3-super-120b-a12b:free)
     """
     if model is None:
-        model = "gemini-3.1-flash-lite-preview"
+        model = "gemini-3.1-flash-lite"
     
     max_retries_per_provider = 2 if is_critical else 1
     base_delay = 8 if is_critical else 4
@@ -467,7 +467,7 @@ Rules:
     try:
         response = call_llm_with_fallback_sync(
             prompt=prompt,
-            model="gemini-3.1-flash-lite-preview",
+            model="gemini-3.1-flash-lite",
             config={"response_mime_type": "application/json"},
             is_critical=False,
             require_json=True

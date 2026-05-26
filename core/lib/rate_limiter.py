@@ -46,6 +46,6 @@ class SlidingWindowLimiter:
             self.timestamps.append(now)
 
 
-# Global shared limiter for gemini-3.1-flash-lite-preview (free tier: 15 RPM)
+# Global shared limiter for gemini-3.1-flash-lite (free tier: 15 RPM)
 # Using 12 RPM as ceiling to leave headroom for other processes
 flash_lite_limiter = SlidingWindowLimiter(max_calls=12, per_seconds=60)

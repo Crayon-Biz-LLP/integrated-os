@@ -19,7 +19,7 @@ gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
 
-CLASSIFICATION_MODEL = "gemini-3.1-flash-lite-preview"
+CLASSIFICATION_MODEL = "gemini-3.1-flash-lite"
 
 EMBEDDING_DIMENSION = 768
 

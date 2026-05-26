@@ -78,7 +78,7 @@ async def batch_enrich_resources():
     try:
         response = await call_llm_with_fallback(
             prompt=prompt,
-            model="gemini-3.1-flash-lite-preview",
+            model="gemini-3.1-flash-lite",
             config={'response_mime_type': 'application/json'},
             is_critical=False,
             require_json=True

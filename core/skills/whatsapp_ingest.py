@@ -69,7 +69,7 @@ Return ONLY valid JSON, NO markdown, NO explanation:
 
     response = await call_gemini_classify(
         prompt,
-        model="gemini-3.1-flash-lite-preview",
+        model="gemini-3.1-flash-lite",
         config={"response_mime_type": "application/json"}
     )
     return json.loads(response.text)

@@ -220,7 +220,7 @@ NEW FRAGMENTS:
             try:
                 response = await call_gemini_with_retry(
                     prompt=per_prompt,
-                    model="gemini-3.1-flash-lite-preview",
+                    model="gemini-3.1-flash-lite",
                     config={'response_mime_type': 'text/plain'}
                 )
                 if response and response.text:

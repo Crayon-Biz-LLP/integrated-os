@@ -95,7 +95,7 @@ Body:
 {body[:1000]}"""
 
     try:
-        response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite-preview")
+        response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite")
         return response.text.strip()
     except Exception as e:
         print(f"Draft generation failed: {e}")
@@ -180,7 +180,7 @@ Return ONLY valid JSON, NO markdown, NO explanation:
 
     response = await call_gemini_with_retry(
         prompt,
-        model="gemini-3.1-flash-lite-preview",
+        model="gemini-3.1-flash-lite",
         config={"response_mime_type": "application/json"}
     )
     return json.loads(response.text)

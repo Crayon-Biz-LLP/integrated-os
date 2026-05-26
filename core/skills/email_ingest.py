@@ -61,7 +61,7 @@ Body:
 {body[:1000]}"""
 
     try:
-        response = await call_gemini_classify(prompt, model="gemini-3.1-flash-lite-preview")
+        response = await call_gemini_classify(prompt, model="gemini-3.1-flash-lite")
         return response.text.strip()
     except Exception as e:
         print(f"Draft generation failed: {e}")
@@ -118,7 +118,7 @@ Summary: {summary}
 Output ONLY a concise 1-2 sentence note about the relationship context."""
 
     try:
-        response = await call_gemini_classify(prompt, model="gemini-3.1-flash-lite-preview")
+        response = await call_gemini_classify(prompt, model="gemini-3.1-flash-lite")
         note_content = response.text.strip()
         embedding = await asyncio.to_thread(get_embedding, note_content)
 
@@ -309,7 +309,7 @@ Return ONLY valid JSON, NO markdown, NO explanation:
 
     response = await call_gemini_classify(
         prompt,
-        model="gemini-3.1-flash-lite-preview",
+        model="gemini-3.1-flash-lite",
         config={"response_mime_type": "application/json"}
     )
     return json.loads(response.text)
