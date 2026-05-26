@@ -425,7 +425,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     has_url = bool(re.search(r'https?://\S+', dump_content))
                     
                     if has_url:
-                        gemini_category = 'TASK'
+                        gemini_category = 'NOTE'
                         
                     category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE', 'COMPLETION'] else metadata.get('intent', 'NOISE').upper()
                     
@@ -442,15 +442,19 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                                     "embedding_status": status,
                                     "source": "pulse_note"
                                 }).execute()
-                                if result.data:  # Only add to note_dump_ids if insert succeeded
+                                if result.data:
                                     note_dump_ids.append(dump_id)
                                     print(f"📝 Note filed to memory: {dump_content[:50]}...")
                                 else:
                                     raise Exception("Insert returned no data")
                             except Exception as e:
-                                # Add to failed_queue for retry
                                 await add_to_failed_queue('memories', str(dump_id), 'memory_insert', str(e))
                                 audit_log_sync("pulse", "WARNING", f"⚠️ Note insert failed: {e}")
+                            if re.search(r'https?://\S+', dump_content):
+                                try:
+                                    supabase.table('resources').insert({"url": dump_content}).execute()
+                                except Exception as e:
+                                    audit_log_sync("pulse", "WARNING", f"Resource insert failed for URL in note: {e}")
                     
                     elif category == 'NOISE':
                         note_dump_ids.append(dump_id)

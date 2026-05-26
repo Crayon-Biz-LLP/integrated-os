@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import asyncio
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
@@ -362,6 +363,13 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         ack = receipt or "✅ Captured. Memory indexing will retry shortly."
         await send_telegram(chat_id, f"{ack}")
         return
+
+    # ── Step 3b: If note contains a URL, also vault as resource ──
+    if re.search(r'https?://\S+', text):
+        try:
+            supabase.table('resources').insert({"url": text}).execute()
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING", f"Resource insert failed for URL: {e}")
 
     # ── Step 4: Mark as processed ──
     if dump_id:

@@ -99,6 +99,15 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - When modifying existing behavior → update the relevant `product-summary/XX-<topic>.md` file
 - When adding a new feature or solution → create a new file (`25-<topic>.md`, `26-<topic>.md`, etc.) AND update `product-summary/README.md` contents table
 
+### CodeGraph Pre-Flight (Non-Negotiable)
+Before implementing any bug fix, behavior change, or new feature, the agent MUST run these three queries in order:
+
+1. **`codegraph_context("<problem description>")`** — maps all relevant files, symbols, and entry points in one view, preventing single-file tunnel vision
+2. **`codegraph_trace("<entry point>", "<target data/table>")`** — traces the full data flow from ingestion to storage, surfacing ALL paths (not just the symptomatic one)
+3. **`codegraph_impact("<symbol to change>")`** — reveals what other code depends on the symbol being modified
+
+Violation example: Yesterday's URL→TASK fix touched only `engine.py` because the symptom appeared there. `codegraph_trace("webhook_route", "raw_dumps")` would have revealed `dispatch.py:handle_confident_note` as the primary ingestion path, preventing the oversight.
+
 ## Required Environment Variables
 ```
 SUPABASE_URL
