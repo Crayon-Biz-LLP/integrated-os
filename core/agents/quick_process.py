@@ -1,15 +1,13 @@
-import os
 import json
 import re
 import asyncio
 import hashlib
 from datetime import datetime, timedelta, timezone
 
-from core.lib.audit_logger import info, warning, error, audit_log_sync
-from core.lib.rate_limiter import flash_lite_limiter
+from core.lib.audit_logger import info, audit_log_sync
 from core.services.db import get_supabase, get_embedding, fetch_active_projects, zombie_recovery, versioned_update
 from core.services.google_service import format_rfc3339, sync_to_calendar, sync_to_google, delete_calendar_event, get_tasks_service
-from core.services.llm import call_gemini_classify, CLASSIFICATION_MODEL, get_gemini_client
+from core.services.llm import call_gemini_classify, CLASSIFICATION_MODEL
 
 supabase = get_supabase()
 
@@ -21,6 +19,59 @@ async def save_url_as_resource(text: str) -> bool:
     except Exception as e:
         audit_log_sync("quick_process", "WARNING", f"Resource insert failed for URL: {e}")
         return False
+
+
+def build_combined_prompt(text: str, projects: list) -> str:
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    date_context = now_ist.strftime("%A, %B %d, %Y at %I:%M %p IST")
+    project_lines = "\n".join([
+        f"  - {p['name']} (tag: {p.get('org_tag', 'INBOX')})"
+        for p in projects
+    ]) if projects else "  - General (tag: INBOX)"
+
+    return f"""You are Danny's task processor. Analyze this message.
+
+Current date and time: {date_context}
+
+Message: "{text}"
+
+First, determine the category:
+- TASK: An action item, something to do, a commitment, or a reschedule
+- COMPLETION: Past tense — "finished", "done", "sorted", "confirmed", "sent", "wrapped up"
+- NOTE: Idea, insight, observation (not actionable)
+- NOISE: Casual conversation, acknowledgment, low-value content
+
+Active projects for routing:
+{project_lines}
+
+If TASK or COMPLETION, extract these fields:
+- title: Brief action-oriented title (2-8 words)
+- project_name: Exact project name from the list above that best matches. Use "General" if none match.
+- reminder_at: ISO-8601 datetime in IST (UTC+05:30) based on the current date above. If no time given, return null.
+  Examples: "today 3pm" → "{now_ist.strftime('%Y-%m-%d')}T15:00:00+05:30"
+            "tomorrow" → "{(now_ist + timedelta(days=1)).strftime('%Y-%m-%d')}"
+            "next Friday 2pm" → "2026-05-22T14:00:00+05:30"
+            "6:30 pm today" → "{now_ist.strftime('%Y-%m-%d')}T18:30:00+05:30"
+- duration_mins: Estimated minutes (15 for quick tasks, 45 for meetings/calls)
+- priority: "urgent", "important", or "low"
+
+If COMPLETION: set status to "done"
+
+STRICT RULES:
+- If the message is ONLY a URL with no instruction, classify as NOTE
+- Never create tasks from URLs unless there is a clear action instruction
+- Never make up or hallucinate details not in the message
+
+Return ONLY valid JSON:
+{{
+  "category": "TASK|COMPLETION|NOTE|NOISE",
+  "title": "...",
+  "project_name": "...",
+  "reminder_at": null,
+  "duration_mins": 15,
+  "priority": "important",
+  "status": "todo"
+}}"""
 
 
 async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> dict:

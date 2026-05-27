@@ -1,10 +1,7 @@
-import os
 import json
 import re
 import asyncio
 from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from core.lib.audit_logger import audit_log_sync
 from core.services.outlook_service import get_outlook_calendar_events
@@ -113,7 +110,7 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
                             due_dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
                             if due_dt < target_end and due_dt >= target:
                                 due = " 🔔 due today" if not day_offset else " 🔔 due tomorrow"
-                        except:
+                        except Exception:
                             pass
                     active_tasks_list.append(_format_task_line(t['title'], pn, t.get('priority','todo'), due))
                     reminder = t.get('reminder_at')
@@ -354,11 +351,11 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         if dump_id:
             try:
                 supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
-            except:
+            except Exception:
                 pass
         try:
             await add_to_failed_queue('memories', str(dump_id or 'unknown'), 'memory_insert', str(e))
-        except:
+        except Exception:
             pass
         ack = receipt or "✅ Captured. Memory indexing will retry shortly."
         await send_telegram(chat_id, f"{ack}")
@@ -425,9 +422,9 @@ async def ask_intent_disambiguation(text: str, possible_intents: list, chat_id: 
     if not opts:
         return
     reply = (
-        f"🧐 *Not sure what to do with this.* Is it?\n\n"
+        "🧐 *Not sure what to do with this.* Is it?\n\n"
         + "\n".join(opts)
-        + f"\n\n_Reply with a shortcode or just say it._"
+        + "\n\n_Reply with a shortcode or just say it._"
     )
     log_exchange(session_id, 'bot', 'CLARIFICATION', json.dumps({"possible_intents": possible_intents, "original": text}), chat_id)
     await send_telegram(chat_id, reply)
@@ -565,7 +562,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         try:
             resources_res = supabase.table('resources').select('title, url, category, summary').execute()
             resources = resources_res.data or []
-        except:
+        except Exception:
             resources = []
 
         # Fetch active tasks with project names

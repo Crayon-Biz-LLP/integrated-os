@@ -8,10 +8,10 @@ from supabase import create_client
 
 from core.lib.rate_limiter import flash_lite_limiter
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
-from core.lib.audit_logger import info, warning, error, audit_log_sync
+from core.lib.audit_logger import info, warning, audit_log_sync
 from core.services.db import get_supabase
 from core.services.pipeline_service import add_to_failed_queue
-from core.services.llm import get_gemini_client, call_llm_with_fallback as _service_call_llm
+from core.services.llm import get_gemini_client
 
 supabase = get_supabase()
 gemini_client = get_gemini_client()
@@ -230,7 +230,7 @@ def fetch_memories():
             audit_log_sync("backfill_graph", "WARNING", f"⚠️ Metadata processing error: {e}")
     
     total_memories = fetch_all_paginated("memories", "id, memory_type, created_at")
-    print(f"  MEMORY DIAGNOSTICS:")
+    print("  MEMORY DIAGNOSTICS:")
     print(f"    Total memories in DB: {len(total_memories) if total_memories else 0}")
     
     memories = fetch_all_paginated("memories", "id, content, memory_type, metadata, created_at", "memory_type", MEMORY_TYPES)
@@ -417,7 +417,7 @@ def backfill_embeddings():
             # Mark as failed
             try:
                 supabase.table("memories").update({"embedding_status": "failed"}).eq("id", memory_id).execute()
-            except:
+            except Exception:
                 pass
             
             # Add to failed queue for retry (use sync version)
@@ -582,7 +582,6 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
 
 def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
     """Insert edges with validation - skip if source/target node doesn't exist."""
-    valid_edges = 0
     orphaned = 0
     
     for edge in edges:
@@ -607,7 +606,7 @@ def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
             
             if not source_check.data or not target_check.data:
                 audit_log_sync("backfill_graph", "WARNING", 
-                    f"Skipping edge: node doesn't exist in DB")
+                    "Skipping edge: node doesn't exist in DB")
                 orphaned += 1
                 continue
         except Exception as ve:

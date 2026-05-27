@@ -1,14 +1,13 @@
 import os
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import get_google_creds, format_rfc3339
 from core.lib.temporal_lineage import create_versioned_task
 from core.services.db import versioned_update
-from core.services.outlook_service import get_outlook_calendar_events, get_outlook_calendar_events_range
+from core.services.outlook_service import get_outlook_calendar_events
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -160,7 +159,7 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                                 old_task_id=task_id,
                                 **new_payload
                             )
-                    except Exception as ve:
+                    except Exception:
                         # Fallback to versioned update
                         versioned_update('tasks', task_id, {
                             'status': 'done',

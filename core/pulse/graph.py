@@ -1,10 +1,9 @@
 import os
 import json
 import asyncio
-from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-from core.pulse.llm import get_embedding, cosine_similarity
+from core.pulse.llm import get_embedding
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -228,7 +227,7 @@ async def check_task_dependencies(active_tasks: list) -> str:
                         if isinstance(meta, str):
                             try:
                                 meta = json.loads(meta)
-                            except:
+                            except Exception:
                                 meta = {}
                         dep_task_id = meta.get('task_id')
 
@@ -305,7 +304,7 @@ async def analyze_communication_patterns(people: list) -> str:
                     .or_(f'sender.ilike.%{person_name}%,linked_person_id.eq.{person_id}') \
                     .execute()
                 email_count = email_res.count or 0
-            except:
+            except Exception:
                 pass
 
             # High-strategic person with low communication = suggestion
@@ -365,7 +364,6 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         if not people or not active_tasks:
             return ""
 
-        lines = []
         task_map = {t['id']: t for t in active_tasks}
 
         # Get all person nodes
@@ -382,7 +380,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
             if isinstance(meta, str):
                 try:
                     meta = json.loads(meta)
-                except:
+                except Exception:
                     continue
             people_id = meta.get('people_id')
             if people_id and int(people_id) in people_ids:
@@ -401,7 +399,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
             if isinstance(meta, str):
                 try:
                     meta = json.loads(meta)
-                except:
+                except Exception:
                     continue
             task_id = meta.get('task_id')
             if task_id and int(task_id) in task_map:

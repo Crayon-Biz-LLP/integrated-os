@@ -1,9 +1,7 @@
-import os
 import json
 import asyncio
 import re as _re
 from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
 from core.webhook.telegram import send_telegram
 from core.webhook.classify import get_embedding
@@ -34,7 +32,7 @@ async def handle_practices_command(chat_id: int):
             if isinstance(raw_meta, str):
                 try:
                     meta = json.loads(raw_meta)
-                except:
+                except Exception:
                     meta = {}
             elif isinstance(raw_meta, dict):
                 meta = raw_meta
@@ -224,12 +222,12 @@ async def handle_undo_command(text: str, chat_id: int):
             status = r.get('status', 'unknown')
 
             lines = [
-                f"🧐 *Last entry:*",
+                "🧐 *Last entry:*",
                 f"\n_{content[:200]}..._",
                 f"\n📌 Type: `{msg_type}` · Status: `{status}`",
-                f"\n`undo n` — Flip to note",
-                f"`undo t` — Flip to task",
-                f"`undo d` — Delete",
+                "\n`undo n` — Flip to note",
+                "`undo t` — Flip to task",
+                "`undo d` — Delete",
             ]
             await send_telegram(chat_id, "\n".join(lines))
             return {"success": True}
@@ -266,8 +264,6 @@ async def handle_undo_command(text: str, chat_id: int):
         r = recent.data
         dump_id = r['id']
         content = r.get('content', '')
-        current_type = r.get('message_type', '')
-        current_status = r.get('status', '')
 
         if undo_d:
             supabase.table('raw_dumps').update({
@@ -379,7 +375,7 @@ async def handle_command(text: str, chat_id: int):
         items = lib_res.data or []
         if items:
             formatted = [f"🔖 **[{i.get('title') or 'Untitled'}]({i.get('url')})**" for i in items]
-            reply = f"📚 **RESOURCE LIBRARY (Last 10):**\n\n" + "\n\n".join(formatted)
+            reply = "📚 **RESOURCE LIBRARY (Last 10):**\n\n" + "\n\n".join(formatted)
         else:
             reply = "The library is empty. Save some links first!"
 
@@ -402,7 +398,7 @@ async def handle_command(text: str, chat_id: int):
                 try:
                     supabase.table('core_config').update({"content": params}).eq('key', 'current_season').execute()
                     reply = "✅ **Season Updated.**\nTarget Locked."
-                except:
+                except Exception:
                     reply = "❌ Database Error"
 
     elif text in ['/urgent', '🔴 Urgent']:

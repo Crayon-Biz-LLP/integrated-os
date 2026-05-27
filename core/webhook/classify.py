@@ -90,7 +90,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     context_str = ""
     if context:
-        context_str = f"\n\nPrevious messages for context:\n" + "\n".join([f"- {c['content']}" for c in context])
+        context_str = "\n\nPrevious messages for context:\n" + "\n".join([f"- {c['content']}" for c in context])
 
     prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy. If it's after 9 PM, append a dry command to sign off (e.g., 'Go be a dad').
 

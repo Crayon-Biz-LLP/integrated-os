@@ -1,5 +1,4 @@
 import os
-import json
 import time
 from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
@@ -92,7 +91,6 @@ def fetch_sheet_data():
 
 
 def synthesize_content(entry_type: str, row) -> str:
-    topic = row[3].strip() if len(row) > 3 and row[3] else ""
     thoughts = row[4].strip() if len(row) > 4 and row[4] else ""
     takeaway = row[5].strip() if len(row) > 5 and row[5] else ""
     word = row[6].strip() if len(row) > 6 and row[6] else ""
@@ -138,12 +136,12 @@ def parse_timestamp(ts: str) -> str:
         dt = datetime.strptime(ts.strip(), "%d/%m/%Y %H:%M:%S")
         dt = dt.replace(tzinfo=ist)
         return dt.isoformat()
-    except:
+    except Exception:
         try:
             dt = datetime.strptime(ts.strip(), "%d/%m/%Y")
             dt = dt.replace(tzinfo=ist)
             return dt.isoformat()
-        except:
+        except Exception:
             return None
 
 
@@ -276,16 +274,16 @@ def process_row(row) -> dict:
     if is_list:
         try:
             intensity = int(row[14]) if len(row) > 14 and row[14] else 0
-        except:
+        except Exception:
             intensity = 0
         try:
             faith_score = int(row[30]) if len(row) > 30 and row[30] else 0
-        except:
+        except Exception:
             faith_score = 0
         spillover_flag = row[29].strip() if len(row) > 29 else ""
         try:
             em_int = int(row[21]) if len(row) > 21 and row[21] else 0
-        except:
+        except Exception:
             em_int = 0
         category = row[28].strip() if len(row) > 28 and row[28] else ""
         action_velocity = row[31].strip() if len(row) > 31 and row[31] else ""
@@ -297,16 +295,16 @@ def process_row(row) -> dict:
     else:
         try:
             intensity = int(row.get("Emotional Intensity", "").strip() or 0)
-        except:
+        except Exception:
             intensity = 0
         try:
             faith_score = int(row.get("Faith Score", "").strip() or 0)
-        except:
+        except Exception:
             faith_score = 0
         spillover_flag = row.get("Spillover Flag", "").strip()
         try:
             em_int = int(row.get("Emotional Intensity", "").strip() or 0)
-        except:
+        except Exception:
             em_int = 0
         category = row.get("Category", "").strip()
         action_velocity = row.get("Action Velocity", "").strip()
@@ -366,7 +364,7 @@ def run_ingest():
         parsed = process_row(row)
         
         if not parsed["created_at"]:
-            print(f"Skipping row with no valid timestamp")
+            print("Skipping row with no valid timestamp")
             continue
         
         if last_sync and parsed["created_at"] <= last_sync:
@@ -396,7 +394,7 @@ def run_ingest():
             
             if memory_id:
                 if not embedding:
-                    print(f"Skipping graphify for row — embedding failed")
+                    print("Skipping graphify for row — embedding failed")
                 else:
                     graphify(parsed["content"], memory_id)
             

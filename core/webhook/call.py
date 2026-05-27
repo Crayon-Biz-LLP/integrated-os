@@ -1,5 +1,3 @@
-import os
-import json
 from datetime import datetime, timezone
 from core.webhook.utils import supabase
 

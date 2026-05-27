@@ -3,7 +3,6 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-from core.services.db import versioned_update
 from core.pulse.llm import call_llm_with_fallback, get_embedding
 
 supabase: Client = create_client(
@@ -70,7 +69,6 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
 
         # Semantic search for relevant memories (last 30 days)
         from datetime import timedelta
-        thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
 
         memories_res = supabase.rpc('match_memories', {
             'query_embedding': query_embedding,
@@ -130,7 +128,8 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
         async def fetch_memories_for_query(query_name: str, query_text: str):
             try:
                 embedding = await asyncio.to_thread(get_embedding, query_text)
-                if not any(embedding): return []
+                if not any(embedding):
+                    return []
                 res = supabase.rpc(
                     'match_memories',
                     {
@@ -172,7 +171,6 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
 async def generate_after_action_report() -> str:
     """Generate an After-Action Report on the day's activities and save to memories."""
     try:
-        now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
         completed_tasks_res = supabase.table('tasks').select('title').eq('status', 'done').gte('completed_at', today_start).execute()
@@ -197,7 +195,7 @@ async def generate_after_action_report() -> str:
             embedding = await asyncio.to_thread(get_embedding, lesson)
             status = 'success' if embedding and any(embedding) else 'failed'
             if status == 'failed':
-                audit_log_sync("pulse", "WARNING", f"Warning: zero-vector embedding for daily reflection — storing with failed status")
+                audit_log_sync("pulse", "WARNING", "Warning: zero-vector embedding for daily reflection — storing with failed status")
             supabase.table('memories').insert({
                 "content": lesson,
                 "memory_type": "reflection",
@@ -359,7 +357,7 @@ async def adaptive_briefing_learner(briefing_history: list = None) -> str:
                     insights.append("🌅 Morning briefings seem more reflective — consider adding deeper synthesis")
                 elif evening_count > morning_count * 2:
                     insights.append("🌙 Evening briefings generate more insights — consider longer night briefings")
-        except:
+        except Exception:
             pass
 
         # 2. Section density learning
@@ -380,7 +378,7 @@ async def adaptive_briefing_learner(briefing_history: list = None) -> str:
                 sparse_tags = [tag for tag, count in tag_counts.items() if count < 2]
                 if sparse_tags:
                     insights.append(f"📊 Sparse sections detected: {', '.join(sparse_tags)} — consider condensing")
-        except:
+        except Exception:
             pass
 
         # 3. Prompt token optimization suggestion

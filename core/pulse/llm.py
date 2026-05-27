@@ -233,7 +233,7 @@ async def call_llm_with_fallback(
                         "latency_ms": int(elapsed * 1000),
                         "success": True
                     }).execute()
-                except Exception as log_err:
+                except Exception:
                     pass  # Don't fail main flow if logging fails
 
                 if hasattr(response, 'text'):

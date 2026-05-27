@@ -1,4 +1,10 @@
-import os, json, re, random, asyncio, httpx, hashlib
+import os
+import json
+import re
+import random
+import asyncio
+import httpx
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -122,8 +128,6 @@ async def process_decision_pulse(auth_secret: str = None):
         if pulse_secret and auth_secret != pulse_secret:
             return {"error": "Unauthorized.", "status": 401}
 
-        ist_offset = timezone(timedelta(hours=5, minutes=30))
-        now = datetime.now(ist_offset)
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
 
         # Auto-expire items older than 7 days
@@ -340,7 +344,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             dump_ids = [d['id'] for d in dumps]
             
             # 🔒 THE LOCK: Immediately claim these for processing
-            update_data = {"status": "processing"}
             if request_id:
                 # Store request_id in metadata for idempotency
                 for d in dumps:
@@ -357,7 +360,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                             .update({"metadata": meta}) \
                             .eq('id', d['id']) \
                             .execute()
-                    except:
+                    except Exception:
                         pass
             
             supabase.table('raw_dumps') \
@@ -496,7 +499,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             if isinstance(raw_meta, str):
                 try:
                     metadata = json.loads(raw_meta)
-                except:
+                except Exception:
                     metadata = {}
             elif isinstance(raw_meta, dict):
                 metadata = raw_meta
@@ -623,7 +626,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 created_dt = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00'))
                 if created_dt > two_weeks_ago:
                     recent_tasks.append(t)
-            except:
+            except Exception:
                 recent_tasks.append(t) # Safety fallback
 
         # This is the AI's "Visual Field"
@@ -693,8 +696,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             content = d.get('content', '')
             meta = d.get('metadata') or {}
             if isinstance(meta, str):
-                try: meta = json.loads(meta)
-                except: meta = {}
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
             tid = meta.get('task_update_id')
             return f"⚠️ TASK UPDATE (task #{tid}): {content}" if tid else content
 
@@ -807,7 +812,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         project_details = build_routing_context(legacy_projects)
 
-        project_names = [p.get('name') for p in legacy_projects if p.get('name')]
         people_names = [p['name'] for p in people]
         # Task-boundary-safe truncation: split on ' | ' delimiter and accumulate complete tasks
         parts = compressed_tasks.split(' | ')
@@ -1397,7 +1401,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             explicit_times = []
             
             # PHASE 0: Time Tracker - Track explicit times from AI
-            time_tracker = {}
 
             # PHASE 0: Inbox Discovery - Two-stage fallback from graph nodes → legacy projects
             inbox_from_graph = next(
@@ -1592,7 +1595,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                                 None,
                                 explicit_time
                             )
-                            if g_id: print(f"📡 Google Task Created: {task_title}")
+                            if g_id:
+                                print(f"📡 Google Task Created: {task_title}")
                         except Exception as e:
                             audit_log_sync("pulse", "WARNING", f"⚠️ Google Tasks Sync failed: {e}")
                             error_log.append(f"Google Tasks sync failed for: '{task_title}'")
@@ -1606,7 +1610,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                                 ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
                             
                             e_id = await asyncio.to_thread(sync_to_calendar, task_title, sanitized_time, duration_mins, None, db_task.get('priority', 'important'))
-                            if e_id: print(f"🔥 Calendar block secured: {task_title} ({duration_mins}m)")
+                            if e_id:
+                                print(f"🔥 Calendar block secured: {task_title} ({duration_mins}m)")
                         except Exception as ce:
                             audit_log_sync("pulse", "WARNING", f"⚠️ Calendar Sync failed for {task_title}: {ce}")
                             error_log.append(f"Calendar sync failed for: '{task_title}'")
@@ -1742,7 +1747,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         )
                         backfill_result = parse_json_response(backfill_response.text)
                         if not isinstance(backfill_result, list):
-                            audit_log_sync("pulse", "WARNING", f"⚠️ Backfill classifier returned non-list, skipping.")
+                            audit_log_sync("pulse", "WARNING", "⚠️ Backfill classifier returned non-list, skipping.")
                             backfill_result = []
 
                         backfilled_count = 0

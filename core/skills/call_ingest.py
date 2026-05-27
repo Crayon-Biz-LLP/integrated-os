@@ -1,6 +1,9 @@
-import os, json, io, tempfile, asyncio, sys, uuid
-from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
+import os
+import json
+import io
+import tempfile
+import asyncio
+from datetime import datetime, timezone
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -178,7 +181,7 @@ async def process_recordings():
             rec_res = supabase.table("call_recordings").insert(recording_data).execute()
             recording_id = rec_res.data[0]["id"] if rec_res.data else None
             if not recording_id:
-                print(f"  Failed to insert recording record — skipping items")
+                print("  Failed to insert recording record — skipping items")
                 continue
 
             items = []

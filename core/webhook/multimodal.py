@@ -1,6 +1,5 @@
 import os
 import json
-import re
 from datetime import datetime, timezone, timedelta
 from google import genai
 from supabase import create_client, Client
@@ -147,7 +146,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             summary = " & ".join(summary_parts)
             await send_telegram(chat_id, f"Logged {summary}.")
         else:
-            await send_telegram(chat_id, f"Understood.")
+            await send_telegram(chat_id, "Understood.")
 
         return {"tasks": task_count, "notes": note_count}
 

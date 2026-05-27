@@ -1,7 +1,5 @@
-import os
 import json
 import asyncio
-import re
 from datetime import datetime, timezone, timedelta
 from core.services.db import get_supabase, get_embedding
 from core.services.llm import call_gemini_classify
@@ -78,7 +76,6 @@ Return ONLY valid JSON, NO markdown, NO explanation:
 async def process_whatsapp_message(sender_name: str, sender_phone: str, message_text: str, received_at: str = None) -> dict:
     print(f"Processing WhatsApp message from {sender_name or sender_phone}: {message_text[:60]}...")
 
-    msg_hash = str(hash(f"{sender_phone}:{message_text.strip()[:100]}"))
     existing = supabase.table('whatsapp_messages')\
         .select('id')\
         .eq('sender_phone', sender_phone)\

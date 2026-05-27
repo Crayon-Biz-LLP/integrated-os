@@ -339,7 +339,7 @@ async def process_webhook(update: dict):
                 if isinstance(raw_meta, str):
                     try:
                         raw_meta = json.loads(raw_meta)
-                    except:
+                    except Exception:
                         raw_meta = {}
 
                 raw_meta['status'] = 'dismissed'

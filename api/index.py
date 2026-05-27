@@ -3,7 +3,7 @@ import hmac
 import hashlib
 import time
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware

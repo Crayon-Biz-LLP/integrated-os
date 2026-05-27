@@ -174,7 +174,7 @@ async def run_batch_sweep():
                 url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
                 payload = {"chat_id": int(telegram_chat_id), "text": f"Synthesizing {len(batch_payload)} Master Pages...", "parse_mode": "Markdown"}
                 httpx.post(url, json=payload, timeout=10)
-            except:
+            except Exception:
                 pass
 
         print("Synthesizing Master Pages per entity...")
@@ -297,7 +297,7 @@ NEW FRAGMENTS:
                 url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
                 payload = {"chat_id": int(telegram_chat_id), "text": f"Brain Synthesizer failed: {str(e)[:100]}", "parse_mode": "Markdown"}
                 httpx.post(url, json=payload, timeout=10)
-            except:
+            except Exception:
                 pass
 
 

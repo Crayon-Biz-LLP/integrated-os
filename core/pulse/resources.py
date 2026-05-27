@@ -101,7 +101,7 @@ async def batch_enrich_resources():
             embedding_text = f"{title}. {strategic_note}"
             embedding = await asyncio.to_thread(get_embedding, embedding_text)
             if all(v == 0 for v in embedding):
-                audit_log_sync("pulse", "WARNING", f"Warning: zero-vector embedding for daily reflection — storing anyway")
+                audit_log_sync("pulse", "WARNING", "Warning: zero-vector embedding for daily reflection — storing anyway")
 
             # Direct update — resources are immutable bookmarks, no versioning needed
             supabase.table('resources').update({

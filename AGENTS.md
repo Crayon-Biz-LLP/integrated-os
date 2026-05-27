@@ -94,6 +94,9 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - This applies to: `DELETE` queries, marking records as pruned/removed, and cascade deletions.
 - Always use `--dry-run` mode first and show the user what will be affected before running destructive operations.
 
+### Code Quality (Ruff)
+- **Always run `ruff check .` after making any code changes.** This project uses `ruff` to catch undefined variables, missing imports, and other linting errors before they crash in production. Fix any *newly introduced* errors immediately.
+
 ### Product Summary (Living Documentation)
 - `product-summary/` must stay in sync with the codebase at all times
 - When modifying existing behavior → update the relevant `product-summary/XX-<topic>.md` file

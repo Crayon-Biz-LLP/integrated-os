@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 SESSION_TIMEOUT_MINUTES = 5
 MAX_HISTORY_TOKENS = 2000
@@ -11,7 +11,7 @@ def _get_supabase():
     global _supabase
     if _supabase is None:
         try:
-            from supabase import create_client, Client
+            from supabase import create_client
             _supabase = create_client(
                 os.getenv("SUPABASE_URL"),
                 os.getenv("SUPABASE_SERVICE_ROLE_KEY")

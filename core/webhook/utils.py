@@ -78,7 +78,7 @@ async def get_recent_context(limit: int = 2) -> list:
             .limit(limit)\
             .execute()
         return res.data if res.data else []
-    except:
+    except Exception:
         return []
 
 async def trigger_github_pulse() -> bool:

@@ -9,6 +9,13 @@ Loads GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET from .env file or env vars.
 """
 import os
 import re
+import sys
+import json
+import http.server
+import urllib.parse
+import webbrowser
+import threading
+import httpx
 
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".env")
 if os.path.exists(_env_path):
@@ -18,13 +25,6 @@ if os.path.exists(_env_path):
             if m and m.group(1) not in os.environ:
                 val = m.group(2).strip().strip('"').strip("'")
                 os.environ[m.group(1)] = val
-import sys
-import json
-import http.server
-import urllib.parse
-import webbrowser
-import threading
-import httpx
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -111,7 +111,7 @@ def main():
     print("Opening browser for authorization...")
     webbrowser.open(auth_url)
     print()
-    print(f"If browser doesn't open, visit this URL:")
+    print("If browser doesn't open, visit this URL:")
     print(f"  {auth_url}")
     print()
 

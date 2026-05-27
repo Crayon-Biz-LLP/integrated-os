@@ -1,5 +1,3 @@
-import random
-import os
 import json
 import asyncio
 import base64
@@ -12,7 +10,7 @@ from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.duplicate_guard import check_duplicate
 from core.services.db import get_supabase, get_embedding
 from core.services.google_service import get_google_creds, _MemoryCache
-from core.services.llm import call_gemini_classify, get_gemini_client
+from core.services.llm import call_gemini_classify
 
 supabase = get_supabase()
 
@@ -354,7 +352,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
         else:
             try:
                 classification_data = await classify_email(sender_header, subject, body, to_header, cc_header)
-            except Exception as classify_err:
+            except Exception:
                 print(f"[skipped - classification error] {subject} | Will retry on next run")
                 return ("skipped_api_error", subject)
         classification = classification_data.get('classification', 'ignored')

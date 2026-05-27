@@ -179,7 +179,7 @@ async def retry_failed_operations(max_retries: int = 5):
                         }) \
                         .eq('id', queue_id) \
                         .execute()
-                except:
+                except Exception:
                     pass
                 failed_again += 1
 

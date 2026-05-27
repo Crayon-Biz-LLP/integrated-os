@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from core.services.db import get_supabase, get_embedding
 from core.services.telegram import send_telegram
-from core.services.llm import call_gemini_with_retry, get_gemini_client, CLASSIFICATION_MODEL
+from core.services.llm import call_gemini_with_retry, CLASSIFICATION_MODEL
 
 supabase = get_supabase()
 

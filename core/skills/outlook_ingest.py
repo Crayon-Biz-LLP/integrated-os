@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from core.lib.constants import EmailStatus
 from core.lib.duplicate_guard import check_duplicate
 from core.services.db import get_supabase, get_embedding
-from core.services.llm import call_gemini_classify, get_gemini_client
+from core.services.llm import call_gemini_classify
 import requests
 
 supabase = get_supabase()
@@ -296,7 +296,7 @@ async def ingest_outlook_messages(limit=25):
             else:
                 try:
                     classification_data = await classify_email(sender, subject, body, to_header, cc_header)
-                except Exception as classify_err:
+                except Exception:
                     print(f"⏭️ [skipped - classification error] {subject} | Will retry on next run")
                     skipped_api_error += 1
                     continue

@@ -1,4 +1,3 @@
-import os
 import httpx
 from datetime import timedelta
 from core.lib.audit_logger import audit_log_sync

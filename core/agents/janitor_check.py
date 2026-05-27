@@ -92,7 +92,7 @@ async def main():
         print("[JANITOR] All clear.")
         return
 
-    alert = f"Rhodey Janitor:\n" + "\n".join(issues)
+    alert = "Rhodey Janitor:\n" + "\n".join(issues)
     print(f"[JANITOR] Issues found:\n{alert}")
     if TELEGRAM_CHAT_ID:
         await send_telegram(int(TELEGRAM_CHAT_ID), alert)

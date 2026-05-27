@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.pulse import process_pulse, process_decision_pulse
 from supabase import create_client
-from core.lib.audit_logger import info, warning, error
+from core.lib.audit_logger import info, error
 
 
 def cleanup_raw_dumps():
@@ -106,7 +106,7 @@ def run_pulse():
         result = asyncio.run(process_pulse(auth_secret=pulse_secret))
         
         if result.get("success"):
-            print(f"✓ Pulse completed successfully")
+            print("✓ Pulse completed successfully")
             if result.get("briefing"):
                 briefing_preview = result["briefing"][:100].replace("\n", " ")
                 print(f"  Briefing preview: {briefing_preview}...")

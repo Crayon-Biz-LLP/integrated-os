@@ -1,4 +1,3 @@
-import os
 import re
 import traceback
 from core.lib.audit_logger import audit_log_sync
@@ -6,7 +5,6 @@ from core.lib.audit_logger import audit_log_sync
 
 def format_error(e: Exception) -> str:
     """Format exception for logging."""
-    import traceback
     return traceback.format_exc() if hasattr(e, '__traceback__') else str(e)
 
 def get_project_name(project: dict) -> str:

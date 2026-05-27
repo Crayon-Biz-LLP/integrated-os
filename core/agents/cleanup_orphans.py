@@ -6,7 +6,6 @@ Orphans are records that reference non-existent parent records.
 Usage:
     python core/cleanup_orphans.py [--dry-run]
 """
-import os
 import sys
 from datetime import datetime, timedelta, timezone
 

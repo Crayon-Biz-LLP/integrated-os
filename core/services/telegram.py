@@ -69,7 +69,7 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
                         break
                     if attempt == 0:
                         await asyncio.sleep(1)
-                except Exception as e:
+                except Exception:
                     if attempt == 0:
                         await asyncio.sleep(1)
                     else:

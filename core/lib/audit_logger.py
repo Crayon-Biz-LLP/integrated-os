@@ -5,7 +5,6 @@ Writes to Supabase audit_logs table for observability.
 import os
 import json
 import traceback
-from datetime import datetime, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -77,7 +76,7 @@ def info(service: str, message: str, metadata: dict = None):
             asyncio.ensure_future(audit_log(service, 'INFO', message, metadata))
         else:
             audit_log_sync(service, 'INFO', message, metadata)
-    except:
+    except Exception:
         audit_log_sync(service, 'INFO', message, metadata)
 
 
@@ -90,7 +89,7 @@ def warning(service: str, message: str, metadata: dict = None):
             asyncio.ensure_future(audit_log(service, 'WARNING', message, metadata))
         else:
             audit_log_sync(service, 'WARNING', message, metadata)
-    except:
+    except Exception:
         audit_log_sync(service, 'WARNING', message, metadata)
 
 
@@ -103,7 +102,7 @@ def error(service: str, message: str, metadata: dict = None):
             asyncio.ensure_future(audit_log(service, 'ERROR', message, metadata))
         else:
             audit_log_sync(service, 'ERROR', message, metadata)
-    except:
+    except Exception:
         audit_log_sync(service, 'ERROR', message, metadata)
 
 
@@ -116,5 +115,5 @@ def critical(service: str, message: str, metadata: dict = None):
             asyncio.ensure_future(audit_log(service, 'CRITICAL', message, metadata))
         else:
             audit_log_sync(service, 'CRITICAL', message, metadata)
-    except:
+    except Exception:
         audit_log_sync(service, 'CRITICAL', message, metadata)

@@ -1,13 +1,8 @@
 import os
-import json
-import re
 import base64
-import asyncio
 import httpx
 from email.mime.text import MIMEText
 from email.utils import getaddresses
-from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from core.lib.audit_logger import audit_log_sync

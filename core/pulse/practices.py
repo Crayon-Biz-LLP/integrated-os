@@ -62,7 +62,7 @@ async def detect_practices():
             if isinstance(raw_meta, str):
                 try:
                     meta = json.loads(raw_meta)
-                except:
+                except Exception:
                     meta = {}
             elif isinstance(raw_meta, dict):
                 meta = raw_meta
@@ -120,7 +120,7 @@ async def detect_practices():
             if isinstance(raw_meta, str):
                 try:
                     raw_meta = json.loads(raw_meta)
-                except:
+                except Exception:
                     raw_meta = {}
             entity = raw_meta.get('entity') if isinstance(raw_meta, dict) else None
 
@@ -244,7 +244,7 @@ async def detect_practices():
                             dt = dt.replace(tzinfo=timezone.utc)
                         dt_ist = dt.astimezone(ist_offset)
                         all_times.append(dt_ist.hour * 60 + dt_ist.minute)
-                    except:
+                    except Exception:
                         pass
                 all_times = all_times[-50:]
                 meta['_all_times'] = all_times
@@ -263,7 +263,7 @@ async def detect_practices():
                             dt = dt.replace(tzinfo=timezone.utc)
                         dt_ist = dt.astimezone(ist_offset)
                         existing_days.add(dt_ist.strftime('%a'))
-                    except:
+                    except Exception:
                         pass
                 meta['typical_days'] = sorted(existing_days)
 
@@ -381,7 +381,7 @@ Return ONLY valid JSON:
                             dt = dt.replace(tzinfo=timezone.utc)
                         dt_ist = dt.astimezone(ist_offset)
                         time_minutes.append(dt_ist.hour * 60 + dt_ist.minute)
-                    except:
+                    except Exception:
                         pass
                 if time_minutes:
                     avg_mins = int(sum(time_minutes) / len(time_minutes))
@@ -398,7 +398,7 @@ Return ONLY valid JSON:
                             dt = dt.replace(tzinfo=timezone.utc)
                         dt_ist = dt.astimezone(ist_offset)
                         day_set.add(dt_ist.strftime('%a'))
-                    except:
+                    except Exception:
                         pass
                 metadata['typical_days'] = sorted(day_set)
 
@@ -521,7 +521,7 @@ async def build_practice_edges():
             if isinstance(raw_meta, str):
                 try:
                     meta = json.loads(raw_meta)
-                except:
+                except Exception:
                     continue
             elif isinstance(raw_meta, dict):
                 meta = raw_meta
@@ -782,7 +782,7 @@ async def sync_practice_canonical_pages():
                 entity_labels = [e['label'] for e in (e_res.data or [])]
 
             lines = [f"# Practice: {label}"]
-            lines.append(f"\n## Overview")
+            lines.append("\n## Overview")
             lines.append(f"- Status: {meta.get('status', 'unknown')}")
             lines.append(f"- Health Score: {meta.get('health_score', 'N/A')}%")
             lines.append(f"- Occurrences: {meta.get('occurrence_count', 0)}")
@@ -792,7 +792,7 @@ async def sync_practice_canonical_pages():
 
             td = meta.get('typical_days', [])
             if td:
-                lines.append(f"\n## Typical Schedule")
+                lines.append("\n## Typical Schedule")
                 lines.append(f"- Days: {', '.join(td)}")
                 tt = meta.get('typical_time')
                 if tt:
@@ -812,7 +812,7 @@ async def sync_practice_canonical_pages():
 
             trans_at = meta.get('transitioned_at')
             if trans_at:
-                lines.append(f"\n## Lifecycle")
+                lines.append("\n## Lifecycle")
                 lines.append(f"- Last Status Transition: {trans_at}")
 
             content = "\n".join(lines)
@@ -905,7 +905,7 @@ async def build_rhythms_section(new_practice_labels: list = None, new_practice_i
             if isinstance(raw_meta, str):
                 try:
                     meta = json.loads(raw_meta)
-                except:
+                except Exception:
                     continue
             elif isinstance(raw_meta, dict):
                 meta = raw_meta
@@ -916,7 +916,6 @@ async def build_rhythms_section(new_practice_labels: list = None, new_practice_i
             status = meta.get('status', 'active')
             occurrence_count = meta.get('occurrence_count', 0)
             health_score = meta.get('health_score', 50)
-            health_raw = meta.get('health_score_raw', 50)
             trend = ""
 
             # Calculate trend arrow
