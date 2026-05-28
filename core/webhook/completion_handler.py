@@ -53,12 +53,13 @@ async def handle_confident_completion(
         # ── Stage 2: Embed + write to memories immediately (zero data loss) ──
         from core.webhook.classify import get_embedding
         embedding = await asyncio.to_thread(get_embedding, text)
+        embed_valid = bool(embedding and any(embedding))
         try:
             supabase.table("memories").insert({
                 "content":          text,
-                "memory_type":      "note",  # Using 'note' to satisfy any potential DB constraints
-                "embedding":        embedding,
-                "embedding_status": "embedded",
+                "memory_type":      "note",
+                "embedding":        embedding if embed_valid else None,
+                "embedding_status": "embedded" if embed_valid else "failed",
                 "source":           "webhook_completion",
                 "metadata": {
                     "intent": "COMPLETION",
@@ -67,6 +68,8 @@ async def handle_confident_completion(
             }).execute()
         except Exception as mem_err:
             audit_log_sync("completion", "WARNING", f"Memory write failed for dump {dump_id}: {mem_err}")
+            from core.services.pipeline_service import add_to_failed_queue
+            await add_to_failed_queue('memories', str(dump_id), 'memory_insert', str(mem_err))
 
         # ── Stage 3: Deterministic narrowing — fetch live active tasks ────────
         tasks_res = supabase.table("tasks") \

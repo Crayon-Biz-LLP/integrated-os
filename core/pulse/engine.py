@@ -330,7 +330,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         # 1.1 Fetch pending, staged, and synced items
         dumps_res = supabase.table('raw_dumps') \
             .select('id, content, metadata, status, message_type') \
-            .in_('status', ['pending', 'staged', 'synced', 'awaiting_completion_match', 'partially_synced']) \
+            .in_('status', ['pending', 'staged', 'synced', 'partially_synced']) \
             .execute()
 
         all_dumps = dumps_res.data or []

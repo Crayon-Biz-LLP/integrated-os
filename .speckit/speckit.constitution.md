@@ -148,4 +148,5 @@ A feature is DONE when:
 3. It logs to `system_audit_logs`
 4. It has been tested with a real Telegram or webhook input
 5. It does not break any existing flow confirmed in the last 14 days
+6. **Documentation is updated in the same commit** — the relevant `product-summary/XX-*.md` file(s) and `.speckit/` artifacts (plan, tasks, spec) must reflect the change. If the change introduces new behavior, a new `product-summary/` file is created and listed in `README.md`. Documentation debt is code debt.
 

@@ -23,16 +23,24 @@ ORG_TAG_CONTEXT = {
 
 
 def filter_fragments_by_project(results, project_name):
-    """Filter RPC results to only include fragments matching this project."""
+    """Filter RPC results to only include fragments matching this project.
+
+    Uses word-level matching: if ANY significant word (>2 chars) from the
+    project name appears in the entity field or content, the fragment passes.
+    This catches memories where the entity metadata stores a parent org tag
+    (e.g. 'SOLVSTRAT') instead of the child project name ('Armour Cyber').
+    """
     if not results:
         return []
-    project_kw = project_name.lower()
+    project_words = [w for w in project_name.lower().split() if len(w) > 2]
+    if not project_words:
+        return results
     filtered = []
     for r in results:
         meta = r.get('metadata') or {}
         entity = (meta.get('entity') or '').lower() if isinstance(meta, dict) else ''
         content = (r.get('content') or r.get('title') or '').lower()
-        if project_kw in entity or project_kw in content:
+        if any(w in entity or w in content for w in project_words):
             filtered.append(r)
     return filtered
 

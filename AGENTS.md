@@ -97,10 +97,12 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 ### Code Quality (Ruff)
 - **Always run `ruff check .` after making any code changes.** This project uses `ruff` to catch undefined variables, missing imports, and other linting errors before they crash in production. Fix any *newly introduced* errors immediately.
 
-### Product Summary (Living Documentation)
-- `product-summary/` must stay in sync with the codebase at all times
-- When modifying existing behavior → update the relevant `product-summary/XX-<topic>.md` file
-- When adding a new feature or solution → create a new file (`25-<topic>.md`, `26-<topic>.md`, etc.) AND update `product-summary/README.md` contents table
+### Product Summary (Living Documentation — Non-Negotiable)
+- `product-summary/` must stay in sync with the codebase **in every commit**, not as a follow-up
+- When modifying existing behavior → update the relevant `product-summary/XX-<topic>.md` file in the same commit
+- When adding a new feature or solution → create a new file AND update `product-summary/README.md` contents table **in the same commit**
+- Violation example: The completion handler (`completion_handler.py`) was committed without any `product-summary/` update — it went undocumented for weeks. This is now explicitly forbidden by `.speckit/speckit.constitution.md` §7 criterion #6 (Documentation is part of "Done")
+- `.speckit/` artifacts (plan, tasks, spec, analyze) must also be reviewed and updated if the change affects architecture, task backlog, or cross-artifact consistency
 
 ### CodeGraph Pre-Flight (Non-Negotiable)
 Before implementing any bug fix, behavior change, or new feature, the agent MUST run these three queries in order:
