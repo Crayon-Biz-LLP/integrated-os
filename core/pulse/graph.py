@@ -231,16 +231,21 @@ async def check_task_dependencies(active_tasks: list) -> str:
                                 meta = {}
                         dep_task_id = meta.get('task_id')
 
-                        if dep_task_id and int(dep_task_id) in task_map:
-                            dep_task = task_map[int(dep_task_id)]
-                            dep_status = dep_task.get('status', '')
+                        if dep_task_id:
+                            try:
+                                dep_task_id_int = int(dep_task_id)
+                                if dep_task_id_int in task_map:
+                                    dep_task = task_map[dep_task_id_int]
+                                    dep_status = dep_task.get('status', '')
 
-                            if dep_status not in ['done', 'cancelled']:
-                                blocked_tasks.append({
-                                    'task': task_title,
-                                    'depends_on': dep_task.get('title', ''),
-                                    'dep_status': dep_status
-                                })
+                                    if dep_status not in ['done', 'cancelled']:
+                                        blocked_tasks.append({
+                                            'task': task_title,
+                                            'depends_on': dep_task.get('title', ''),
+                                            'dep_status': dep_status
+                                        })
+                            except (ValueError, TypeError):
+                                pass
 
         if blocked_tasks:
             lines.append("⚠️ DEPENDENCY ALERTS (from graph_edges):")
@@ -383,8 +388,13 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
                 except Exception:
                     continue
             people_id = meta.get('people_id')
-            if people_id and int(people_id) in people_ids:
-                node_to_person[node['id']] = people_ids[int(people_id)]
+            if people_id:
+                try:
+                    people_id_int = int(people_id)
+                    if people_id_int in people_ids:
+                        node_to_person[node['id']] = people_ids[people_id_int]
+                except (ValueError, TypeError):
+                    pass
 
         # Find INVOLVES edges linking person nodes to task nodes
         task_nodes = supabase.table('graph_nodes') \
@@ -402,9 +412,14 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
                 except Exception:
                     continue
             task_id = meta.get('task_id')
-            if task_id and int(task_id) in task_map:
-                task_node_ids.append(node['id'])
-                task_node_map[node['id']] = int(task_id)
+            if task_id:
+                try:
+                    task_id_int = int(task_id)
+                    if task_id_int in task_map:
+                        task_node_ids.append(node['id'])
+                        task_node_map[node['id']] = task_id_int
+                except (ValueError, TypeError):
+                    pass
 
         if not task_node_ids or not node_to_person:
             return ""
