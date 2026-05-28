@@ -20,4 +20,5 @@ data/
 **/.cursor/
 **/.vscode/
 **/node_modules/
-**/venv/product-summary/
+**/venv/
+product-summary/
