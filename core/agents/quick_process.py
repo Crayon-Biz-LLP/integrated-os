@@ -8,6 +8,10 @@ from core.lib.audit_logger import info, audit_log_sync
 from core.services.db import get_supabase, get_embedding, fetch_active_projects, zombie_recovery, versioned_update
 from core.services.google_service import format_rfc3339, sync_to_calendar, sync_to_google, delete_calendar_event, get_tasks_service
 from core.services.llm import call_gemini_classify, CLASSIFICATION_MODEL
+from core.lib.duplicate_guard import check_duplicate
+from core.pulse.calendar import check_conflict
+from core.pulse.memory import write_outcome_memory
+from core.pulse.graph import write_graph_edges_for_task
 
 supabase = get_supabase()
 
@@ -171,29 +175,105 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
                 
             return {"action": "updated", "task_id": task_update_id}
 
+    # 🛡️ 1. Fetch active tasks for Semantic Guard
+    active_tasks_res = supabase.table('tasks').select('id, title, status, google_event_id, google_task_id, priority') \
+        .eq('is_current', True) \
+        .not_.in_('status', ['done', 'cancelled']) \
+        .execute()
+    active_tasks = active_tasks_res.data or []
+    
+    # 🛡️ 2. Run Semantic Guard
+    guard = check_duplicate(title, active_tasks)
+    
     dedup_key = hashlib_md5(f"{title.lower().strip()}:{project_id or 0}".encode())[:16]
+    matched_id = None
+    
+    if guard['result'] in ['block', 'flag']:
+        matched_id = guard['matched_id']
+    
+    if category == 'COMPLETION':
+        if not matched_id:
+            # Fallback to MD5 dedup_key if semantic guard missed it
+            task_ref = supabase.table('tasks').select('id').eq('dedup_key', dedup_key).eq('is_current', True).maybe_single().execute()
+            if task_ref.data:
+                matched_id = task_ref.data['id']
+                
+        if matched_id:
+            task_ref = supabase.table('tasks').select('id, google_task_id, google_event_id, title, status') \
+                .eq('id', matched_id) \
+                .eq('is_current', True) \
+                .maybe_single().execute()
+            if task_ref.data and task_ref.data['status'] not in ('done', 'cancelled'):
+                td = task_ref.data
+                if td.get('google_event_id'):
+                    delete_calendar_event(td['google_event_id'])
+                if td.get('google_task_id') and tasks_service:
+                    sync_to_google(tasks_service, title=td['title'], task_id=td['google_task_id'], status='done')
+                versioned_update('tasks', td['id'], {"status": "done", "completed_at": datetime.now(timezone.utc).isoformat()},
+                                 change_source='quick_process', change_reason="Completed via quick_process")
+                
+                # 🧠 Write outcome memory
+                asyncio.create_task(write_outcome_memory(td['title'], project_name))
+                
+                return {"action": "completed", "task_id": td['id']}
+        return {"action": "skipped", "reason": "no_matching_task"}
+        
+    elif matched_id:
+        # Semantic guard matched an existing task -> treat as UPDATE instead of duplicate skip
+        matched_task = next((t for t in active_tasks if t['id'] == matched_id), None)
+        if matched_task:
+            td = matched_task
+            e_id = td.get('google_event_id')
+            g_id = td.get('google_task_id')
+            
+            update_payload = {}
+            if result.get('duration_mins'):
+                update_payload["duration_mins"] = result.get('duration_mins')
+                update_payload["estimated_minutes"] = result.get('duration_mins')
+                
+            conflict_warning = None
+            if sanitized_time:
+                update_payload["reminder_at"] = sanitized_time
+                
+                if explicit_time:
+                    try:
+                        # Conflict check
+                        try:
+                            conflict_name = await asyncio.to_thread(check_conflict, sanitized_time, e_id)
+                            if conflict_name:
+                                conflict_warning = conflict_name
+                        except Exception as ce:
+                            audit_log_sync("quick_process", "WARNING", f"Calendar conflict check failed: {ce}")
+                            
+                        e_id = sync_to_calendar(td['title'], sanitized_time, event_id=e_id, duration_mins=result.get('duration_mins', 15), priority=td.get('priority', 'important'))
+                        update_payload['google_event_id'] = e_id
+                    except Exception as e:
+                        audit_log_sync("quick_process", "ERROR", f"Calendar sync failed on update: {e}")
+                elif e_id:
+                    delete_calendar_event(e_id)
+                    update_payload['google_event_id'] = None
+                
+                if g_id and tasks_service:
+                    try:
+                        sync_to_google(tasks_service, title=td['title'], task_id=g_id, status=td.get('status', 'todo'), due_at=sanitized_time)
+                    except Exception as e:
+                        audit_log_sync("quick_process", "ERROR", f"Google Tasks sync failed on update: {e}")
+
+            if update_payload:
+                versioned_update('tasks', matched_id, update_payload, change_source='quick_process', change_reason="Updated via quick_process semantic match")
+                
+            ret = {"action": "updated", "task_id": matched_id}
+            if conflict_warning:
+                ret["conflict_warning"] = conflict_warning
+            return ret
+            
+    # Fallback strict idempotency guard
     existing = supabase.table('tasks').select('id') \
         .eq('dedup_key', dedup_key) \
         .not_.in_('status', ['done', 'cancelled']) \
         .limit(1).execute()
     if existing.data:
         return {"action": "skipped", "reason": "duplicate", "task_id": existing.data[0]['id']}
-
-    if category == 'COMPLETION':
-        task_ref = supabase.table('tasks').select('id, google_task_id, google_event_id, title, status') \
-            .eq('dedup_key', dedup_key) \
-            .eq('is_current', True) \
-            .maybe_single().execute()
-        if task_ref.data and task_ref.data['status'] not in ('done', 'cancelled'):
-            td = task_ref.data
-            if td.get('google_event_id'):
-                delete_calendar_event(td['google_event_id'])
-            if td.get('google_task_id') and tasks_service:
-                sync_to_google(tasks_service, title=td['title'], task_id=td['google_task_id'], status='done')
-            versioned_update('tasks', td['id'], {"status": "done", "completed_at": datetime.now(timezone.utc).isoformat()},
-                             change_source='quick_process', change_reason="Completed via quick_process")
-            return {"action": "completed", "task_id": td['id']}
-        return {"action": "skipped", "reason": "no_matching_task"}
 
     task_insert = {
         "title": title,
@@ -215,9 +295,17 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
 
     e_id = None
     g_id = None
+    conflict_warning = None
 
     if sanitized_time and explicit_time:
         try:
+            try:
+                conflict_name = await asyncio.to_thread(check_conflict, sanitized_time)
+                if conflict_name:
+                    conflict_warning = conflict_name
+            except Exception as ce:
+                audit_log_sync("quick_process", "WARNING", f"Calendar conflict check failed: {ce}")
+                
             e_id = sync_to_calendar(title, sanitized_time, task_insert['duration_mins'], priority=task_insert['priority'])
         except Exception as e:
             audit_log_sync("quick_process", "ERROR", f"Calendar sync failed: {e}")
@@ -237,8 +325,18 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
             supabase.table('tasks').update(update).eq('id', task_id).execute()
         except Exception:
             pass
+            
+    # 🧠 Write graph edges for new task
+    try:
+        # Fire and forget graph edge creation
+        asyncio.create_task(write_graph_edges_for_task(task_id, title, project_id))
+    except Exception as ge:
+        audit_log_sync("quick_process", "WARNING", f"Failed to spawn graph edge task: {ge}")
 
-    return {"action": "created", "task_id": task_id, "google_event_id": e_id, "google_task_id": g_id}
+    ret = {"action": "created", "task_id": task_id, "google_event_id": e_id, "google_task_id": g_id}
+    if conflict_warning:
+        ret["conflict_warning"] = conflict_warning
+    return ret
 
 
 def hashlib_md5(data: bytes) -> str:

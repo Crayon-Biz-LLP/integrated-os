@@ -289,6 +289,12 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             if result.get('action') in ('created', 'completed', 'filed', 'updated'):
                 supabase.table('raw_dumps').update({"status": "synced"}).eq('id', dump_id).execute()
                 audit_log_sync("webhook", "INFO", f"Inline processed dump {dump_id}: {result['action']}")
+                
+                # Check if there is a calendar conflict warning to send
+                conflict = result.get('conflict_warning')
+                if conflict:
+                    await send_telegram(chat_id, f"⚠️ Heads up: this overlaps with '{conflict}' on your calendar.")
+                    
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Inline processing failed for dump {dump_id}: {e}")
 
