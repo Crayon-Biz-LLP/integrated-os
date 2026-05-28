@@ -494,6 +494,19 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
     elif intent == 'QUERY':
         await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text)
+    elif intent == 'COMPLETION':
+        from core.webhook.completion_handler import handle_confident_completion
+        receipt = classification.get('receipt') if classification else None
+        entity = classification.get('entity') if classification else None
+        await handle_confident_completion(
+            text=text,
+            title=classification.get("title", text) if classification else text,
+            chat_id=chat_id,
+            receipt=receipt,
+            entity=entity,
+            source=source,
+            sender=sender
+        )
     elif intent == 'NOTE':
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None

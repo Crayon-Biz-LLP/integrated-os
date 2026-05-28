@@ -102,21 +102,22 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     Return ONLY valid JSON (no markdown, no explanation):
     {{
-        "intent": "TASK|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE|QUERY|DECLARE_PRACTICE|DAILY_BRIEF",
+        "intent": "TASK|COMPLETION|NOTE|NOISE|CLARIFICATION_NEEDED|DELEGATE|QUERY|DECLARE_PRACTICE|DAILY_BRIEF",
         "confidence": 0.0-1.0,
         "entity": "SOLVSTRAT|QHORD|PERSONAL|ASHRAYA|INBOX",
         "title": "extracted task title",
         "time_context": "time info if any",
         "clarification_question": "question if needed",
         "receipt": "Stealth status report (no entity names).",
-        "possible_intents": ["TASK", "NOTE", "QUERY", "DAILY_BRIEF", "DELEGATE", "DECLARE_PRACTICE", "NOISE"],
+        "possible_intents": ["TASK", "COMPLETION", "NOTE", "QUERY", "DAILY_BRIEF", "DELEGATE", "DECLARE_PRACTICE", "NOISE"],
         "reasoning": "brief logic"
     }}
 
     Rules:
     - STRICT TITLE FIDELITY: The title field must be a literal extraction of the task as spoken. NEVER add project names, infer entities, or change Danny's wording (e.g., if he says "this OS," do NOT change it to "Qhord OS").
     - PROJECT ROUTING: Route tasks about personal finances, bills, home, or family to PERSONAL. Route Ashraya church administration, operations, accounts to ASHRAYA. Route personal spiritual practices (bible reading, prayer, volunteering) to PERSONAL. Only route to CRAYON if it relates to corporate governance, business taxes, or legal compliance. Route tech/client work to SOLVSTRAT.
-    - STATUS vs TASK: If a message describes something that HAS HAPPENED (e.g., 'Lead generated', 'Meeting finished', 'Sent the file'), classify it as a NOTE. A TASK must imply an OUTSTANDING action for Danny to perform (e.g., 'Call the lead', 'Prepare the ERP plan'). If it's a win or a milestone, it's a NOTE for the Historian.
+    - STATUS vs TASK: Task-referential has-happened actions map to COMPLETION; general wins, observations, and milestones still map to NOTE.
+    - COMPLETION: If the message describes a task-referential has-happened action that closes a specific known item (e.g., "Finished the ERP plan", "Done with the Vasanth call", "Sent the proposal to SolvStrat"), classify as COMPLETION. Extract the closest matching task description into `title`. This is NOT a NOTE. NOTE is for general wins, observations, and milestones with no open task to close. COMPLETION implies there is a specific outstanding item being checked off.
     - TASK: Any message that implies an action. Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
     - QUERY: The user is asking a question to retrieve information from their past notes, tasks, or the vault (e.g., "What did the analyst say?", "When is my meeting?").
@@ -208,6 +209,7 @@ INTENT_OPTIONS = {
     "b": ("DAILY_BRIEF", "📅 Brief — what's on my schedule"),
     "r": ("DELEGATE", "🤖 Research — look something up"),
     "p": ("DECLARE_PRACTICE", "🏃 Practice — track a habit"),
+    "c": ("COMPLETION", "✅ Completion — marked a task done"),
     "x": ("NOISE", "👍 Nothing — just noise"),
 }
 

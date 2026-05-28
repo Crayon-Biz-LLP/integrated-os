@@ -75,6 +75,13 @@ Return ONLY valid JSON:
 
 
 async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> dict:
+    # ── Bypass: COMPLETION dumps are owned exclusively by handle_confident_completion.
+    if (
+        metadata.get("intent") == "COMPLETION"
+        or metadata.get("message_type") == "completion"
+    ):
+        return {"action": "skipped", "reason": "completion_lane_exclusive"}
+
     stripped = text.strip()
     if re.match(r'^https?://\S+$', stripped):
         await save_url_as_resource(text)

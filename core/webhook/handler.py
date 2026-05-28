@@ -280,8 +280,8 @@ async def process_webhook(update: dict):
         session_id, history = get_or_create_session(chat_id)
 
         CLARIFICATION_REPLY_WORDS = {'u', 'update', 'n', 'new', 'create', 't', 'task', 'note',
-                                      'q', 'query', 'b', 'daily_brief', 'r', 'delegate', 'p', 'declare_practice', 'x', 'noise'}
-        if text.strip().lower() in CLARIFICATION_REPLY_WORDS:
+                                      'q', 'query', 'b', 'daily_brief', 'r', 'delegate', 'p', 'declare_practice', 'x', 'noise', 'none'}
+        if text.strip().lower() in CLARIFICATION_REPLY_WORDS or text.strip().isdigit():
             try:
                 last_clar = supabase.table('conversations') \
                     .select('content') \
@@ -299,6 +299,10 @@ async def process_webhook(update: dict):
                                 return {"success": True}
                         elif meta.get('confirmation') == 'task_or_note':
                             if await resolve_task_note_confirmation(text, chat_id, session_id, meta):
+                                return {"success": True}
+                        elif meta.get('confirmation') == 'completion_disambiguation':
+                            from core.webhook.completion_handler import resolve_completion_disambiguation
+                            if await resolve_completion_disambiguation(text, chat_id, session_id, meta):
                                 return {"success": True}
                         elif meta.get('possible_intents'):
                             if await resolve_disambiguation(text, chat_id, session_id, meta):

@@ -329,8 +329,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         # --- 1. READ: Fetch and Lock ---
         # 1.1 Fetch pending, staged, and synced items
         dumps_res = supabase.table('raw_dumps') \
-            .select('id, content, metadata, status') \
-            .in_('status', ['pending', 'staged', 'synced']) \
+            .select('id, content, metadata, status, message_type') \
+            .in_('status', ['pending', 'staged', 'synced', 'awaiting_completion_match', 'partially_synced']) \
             .execute()
 
         all_dumps = dumps_res.data or []
@@ -1851,8 +1851,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         # ✅ COMPLETION DUMP CLOSER — seal the raw dumps that were completion signals
         if completion_dump_ids:
-            supabase.table('raw_dumps').update({"status": "completed", "is_processed": True}).in_('id', completion_dump_ids).execute()
-            print(f"✅ Sealed {len(completion_dump_ids)} completion dumps.")
+            if ai_data.get('completed_task_ids'): # At least one task was closed
+                supabase.table('raw_dumps').update({"status": "completed", "is_processed": True}).in_('id', completion_dump_ids).execute()
+                print(f"✅ Sealed {len(completion_dump_ids)} completion dumps.")
+            else:
+                print(f"Skipped sealing {len(completion_dump_ids)} completion dumps — no tasks matched.")
 
         # --- PHASE 3: Processed Gate ---
         if dumps:
