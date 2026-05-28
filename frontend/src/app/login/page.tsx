@@ -1,11 +1,14 @@
 'use client';
 
+import { createBrowserClient } from '@supabase/ssr';
 import { Lock } from 'lucide-react';
-import { createClient } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 
 export default function LoginPage() {
-  const supabase = createClient();
+  const supabase = createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  );
 
   const handleGoogleLogin = async () => {
     await supabase.auth.signInWithOAuth({
