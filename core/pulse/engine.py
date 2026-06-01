@@ -159,6 +159,7 @@ async def process_decision_pulse(auth_secret: str = None):
         pending_whatsapp = supabase.table('whatsapp_messages')\
             .select('id, suggested_title, suggested_project, sender_name')\
             .is_('danny_decision', 'null')\
+            .eq('classification', 'actionable')\
             .order('created_at', desc=False)\
             .limit(5)\
             .execute()
@@ -183,7 +184,7 @@ async def process_decision_pulse(auth_secret: str = None):
             lines.append(f"📨 EMAIL DECISIONS ({len(email_items)}) — reply [e{{id}}] yes/drop")
             for row in email_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
-                lines.append(f"[e{row['id']}] {row['suggested_title'][:60]}{proj}")
+                lines.append(f"[e{row['id']}] {(row.get('suggested_title') or 'Untitled')[:60]}{proj}")
             lines.append("")
 
         if call_items:
@@ -191,7 +192,7 @@ async def process_decision_pulse(auth_secret: str = None):
             for row in call_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                 prefix = "📋 " if row.get('action_type') == 'task' else "💡 "
-                lines.append(f"{prefix}[c{row['id']}] {row['suggested_title'][:60]}{proj}")
+                lines.append(f"{prefix}[c{row['id']}] {(row.get('suggested_title') or 'Untitled')[:60]}{proj}")
             lines.append("")
 
         if whatsapp_items:
@@ -199,7 +200,7 @@ async def process_decision_pulse(auth_secret: str = None):
             for row in whatsapp_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                 from_str = f" — {row['sender_name']}" if row.get('sender_name') else ""
-                lines.append(f"💬 [w{row['id']}] {row['suggested_title'][:60]}{proj}{from_str}")
+                lines.append(f"💬 [w{row['id']}] {(row.get('suggested_title') or 'Untitled')[:60]}{proj}{from_str}")
             lines.append("")
 
         message = "\n".join(lines).strip()

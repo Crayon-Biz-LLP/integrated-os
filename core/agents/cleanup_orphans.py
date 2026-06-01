@@ -17,11 +17,11 @@ supabase = get_supabase()
 
 def cleanup_orphan_graph_edges(dry_run: bool = False):
     audit_log_sync("cleanup_orphans", "INFO", "Starting orphan graph edge cleanup...")
-    all_edges = supabase.table("graph_edges").select("id, source_id, target_id").execute()
+    all_edges = supabase.table("graph_edges").select("id, source_node_id, target_node_id").execute()
     orphans = 0
     for edge in all_edges.data or []:
-        src = supabase.table("graph_nodes").select("id").eq("id", edge["source_id"]).execute()
-        tgt = supabase.table("graph_nodes").select("id").eq("id", edge["target_id"]).execute()
+        src = supabase.table("graph_nodes").select("id").eq("id", edge["source_node_id"]).execute()
+        tgt = supabase.table("graph_nodes").select("id").eq("id", edge["target_node_id"]).execute()
         if not src.data or not tgt.data:
             orphans += 1
             if not dry_run:
