@@ -63,8 +63,8 @@ def check_conflict(start_iso, exclude_event_id=None):
         audit_log_sync("pulse", "WARNING", f"⚠️ Conflict check failed: {e}")
         return None
 
-def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority='important'):
-    """Creates or UPDATES a block on the grid with dynamic duration."""
+def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority='important', recurrence=None):
+    """Creates or UPDATES a block on the grid with dynamic duration and reminders."""
     service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
     try:
         rfc_time = format_rfc3339(start_iso)
@@ -93,8 +93,17 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority
             'description': 'Rhodey created this for you.',
             'start': {'dateTime': rfc_time, 'timeZone': 'Asia/Kolkata'},
             'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'},
-            'reminders': {'useDefault': True}
+            'reminders': {
+                'useDefault': False,
+                'overrides': [
+                    {'method': 'popup', 'minutes': 60},
+                    {'method': 'popup', 'minutes': 15}
+                ]
+            }
         }
+
+        if recurrence:
+            event_body['recurrence'] = [recurrence]
 
         if event_id:
             res = service.events().patch(calendarId='primary', eventId=event_id, body=event_body).execute()
@@ -108,7 +117,7 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority
         # Fallback logic: If the event_id was invalid, try creating fresh
         if event_id:
             audit_log_sync("pulse", "WARNING", f"⚠️ Event ID {event_id} invalid. Attempting fresh creation...")
-            return sync_to_calendar(title, start_iso, duration_mins, event_id=None, priority=priority)
+            return sync_to_calendar(title, start_iso, duration_mins, event_id=None, priority=priority, recurrence=recurrence)
         audit_log_sync("pulse", "ERROR", f"❌ CRITICAL: Calendar sync failed: {e}")
         return None
 

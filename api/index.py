@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.webhook import process_webhook, send_draft_reply, process_email_pending_decision
 from core.skills.whatsapp_ingest import process_whatsapp_message
+from core.pulse.sentinel import process_sentinel
 from core.pulse import (
     process_pulse,
     get_tasks_service,
@@ -84,6 +85,23 @@ async def pulse_route_post(request: Request):
         raise HTTPException(status_code=result.get("status", 500), detail=result["error"])
         
     return {"success": True, "briefing": result.get("briefing")}
+
+# --- THE SENTINEL WATCHER (Vercel Cron) ---
+@app.api_route("/api/sentinel", methods=["GET", "POST"])
+async def sentinel_route(request: Request):
+    """Triggered by Vercel Cron every 5 minutes."""
+    # Vercel Cron uses a bearer token
+    auth_header = request.headers.get("Authorization", "")
+    cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
+    
+    if not cron_secret:
+        raise HTTPException(status_code=500, detail="CRON_SECRET missing")
+        
+    if not auth_header.endswith(cron_secret) and request.headers.get("x-pulse-secret") != cron_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    result = await process_sentinel(auth_secret=cron_secret)
+    return result
 
 # --- SEND DRAFT REPLY (Routes to webhook.py) ---
 @app.post("/api/send-draft")

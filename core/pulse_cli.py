@@ -3,11 +3,12 @@
 Pulse CLI - Command-line interface for the pulse engine.
 
 Usage:
-    python core/pulse_cli.py [pulse|decisions|cleanup|compact|prune]
+    python core/pulse_cli.py [pulse|decisions|cleanup|compact|prune|sentinel]
 
 Commands:
     pulse     - Run the main AI-powered strategic briefing (default)
     decisions - Run the lightweight decision pulse (no AI)
+    sentinel  - Run the upcoming event watcher (Sentinel Nudge)
     cleanup   - Remove old raw_dumps (>90 days)
     compact   - Compact duplicate memories
     prune     - Prune old/irrelevant memories
@@ -26,6 +27,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.pulse import process_pulse, process_decision_pulse
+from core.pulse.sentinel import process_sentinel
 from supabase import create_client
 from core.lib.audit_logger import info, error
 
@@ -85,9 +87,36 @@ def main():
     elif command == "decisions":
         run_decisions()
         return
+    elif command == "sentinel":
+        run_sentinel()
+        return
     
     # Default: run pulse
     run_pulse()
+
+def run_sentinel():
+    """Execute the Sentinel event watcher."""
+    print("Starting Sentinel Watcher...")
+    
+    pulse_secret = os.getenv("PULSE_SECRET")
+    if not pulse_secret:
+        print("ERROR: PULSE_SECRET not found in environment variables")
+        sys.exit(1)
+        
+    try:
+        result = asyncio.run(process_sentinel(auth_secret=pulse_secret))
+        if result.get("success"):
+            print(f"✓ Sentinel completed (Alerted: {result.get('alerted', 0)})")
+            sys.exit(0)
+        else:
+            print(f"✗ Sentinel failed: {result.get('error')}")
+            sys.exit(1)
+    except Exception as e:
+        error("pulse_cli", f"Sentinel crashed: {e}")
+        print(f"✗ Sentinel crashed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 def run_pulse():

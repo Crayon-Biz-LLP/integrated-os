@@ -1006,9 +1006,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 // Example ONLY: {{ "name": "...", "role": "...", "strategic_weight": 9 }}
             ],
             "new_tasks": [
-                // Example ONLY: {{ "title": "...", "project_name": "...", "priority": "urgent", "estimated_duration": 15, "reminder_at": null }},
-                // Example ONLY: {{ "title": "...", "project_name": "Solvstrat", "priority": "important", "estimated_duration": 30, "reminder_at": "2026-03-21" }},
-                // Example ONLY: {{ "title": "...", "project_name": "Qhord", "priority": "urgent", "estimated_duration": 45, "reminder_at": "2026-03-21T10:00:00+05:30" }}
+                // Example ONLY: {{ "title": "...", "project_name": "...", "priority": "urgent", "estimated_duration": 15, "reminder_at": null, "recurrence": null }},
+                // Example ONLY: {{ "title": "...", "project_name": "Solvstrat", "priority": "important", "estimated_duration": 30, "reminder_at": "2026-03-21", "recurrence": "RRULE:FREQ=WEEKLY;BYDAY=MO" }},
+                // Example ONLY: {{ "title": "...", "project_name": "Qhord", "priority": "urgent", "estimated_duration": 45, "reminder_at": "2026-03-21T10:00:00+05:30", "recurrence": null }}
             ],
             "resources": [
                 // Example ONLY: {{ "url": "...", "title": "...", "summary": "...", "mission_name": "...", "project_name": "...", "strategic_note": "..." }}
@@ -1128,6 +1128,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             6. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
             6a. UPDATE DETECTION: If a user says "Update [title]" or "Reschedule [title]" or "Change [title] to [new time]", IMMEDIATELY search ALL SYSTEM TASKS for the matching task. Return it in completed_task_ids with the updated reminder_at and/or duration_mins — NOT in new_tasks.
             7. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When Danny mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
+            7a. RECURRENCE RULES: If Danny says "every Monday", "weekly", "daily", output an iCalendar RRULE string in "recurrence" (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO"). If he specifies an end date like "until December", append the UNTIL clause in UTC format (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261231T000000Z"). Otherwise leave it null.
             8. AUTO-ONBOARDING: If a new Solvstrat client is mentioned, add to "new_projects" (org_tag: SOLVSTRAT). For other domains, only create a project if Danny explicitly commands it. If a new Person is mentioned, add to "new_people".
             9. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
             10. WEEKEND FILTER: If isWeekend is true, do NOT suggest or list Work tasks in the briefing.
@@ -1345,7 +1346,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         ai_data['briefing'] = current_briefing + f"\n\n⚠️ **SNOOZE CONFLICT:** Tried moving '{task_title}' to {new_reminder.split('T')[1][:5]}, but you have '{conflict_name}' then."
                     
                     # Edit or create the block
-                    e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id, duration_mins=cal_duration, priority=task_data.get('priority', 'important'))
+                    e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id, duration_mins=cal_duration, priority=task_data.get('priority', 'important'), recurrence=item.get('recurrence'))
                 elif e_id:
                     # Snooze to DATE-ONLY -> Remove existing block
                     delete_calendar_event(e_id)
@@ -1400,6 +1401,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         if ai_data.get('new_tasks'):
             task_inserts = []
             explicit_times = []
+            recurrences_list = []
             
             # PHASE 0: Time Tracker - Track explicit times from AI
 
@@ -1555,12 +1557,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     "dedup_key": dedup_key,
                 })
                 explicit_times.append(explicit_time)
+                recurrences_list.append(task.get('recurrence'))
             if task_inserts:
                 insert_res = supabase.table('tasks').insert(task_inserts).execute()
                 print(f"✅ Phase 1: Inserted {len(insert_res.data)} new tasks to Supabase.")
 
                 # PHASE 2: Side-Effect Orchestration - Google Sync after DB success
-                for db_task, expl_time in zip(insert_res.data, explicit_times):
+                for db_task, expl_time, rrule in zip(insert_res.data, explicit_times, recurrences_list):
                     task_id = db_task['id']
                     task_title = db_task.get('title', 'Untitled Task')
                     
@@ -1610,7 +1613,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                                 briefing = ai_data.get('briefing', "")
                                 ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
                             
-                            e_id = await asyncio.to_thread(sync_to_calendar, task_title, sanitized_time, duration_mins, None, db_task.get('priority', 'important'))
+                            e_id = await asyncio.to_thread(sync_to_calendar, task_title, sanitized_time, duration_mins, None, db_task.get('priority', 'important'), rrule)
                             if e_id:
                                 print(f"🔥 Calendar block secured: {task_title} ({duration_mins}m)")
                         except Exception as ce:
