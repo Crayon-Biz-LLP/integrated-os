@@ -10,6 +10,8 @@
 - Email ingestion — Gmail + Outlook → Supabase (`email_ingest.yml` GitHub Action)
 - Email draft generation and approval via `ed` commands
 - Pulse briefing — triggered via GitHub Actions, sends daily SITREP to Telegram
+- Sentinel Watcher — 5-minute cron (`sentinel.yml`) checks Google Calendar to send JIT AI-driven pre-flight briefs to Telegram
+- Conversational Task Intake — disambiguation gate and Quick Pulse `CLARIFY` loops via Telegram (with conversation history support)
 - Brain interrogation — hybrid Graph + Vector search (`interrogate_brain()`)
 - Graph nodes and edges — entity relationship tracking
 - Gmail + Outlook send via `senddraftreply()`
