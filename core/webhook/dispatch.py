@@ -779,9 +779,10 @@ async def handle_declare_practice(text: str, chat_id: int, classification: dict)
         existing_res = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'practice') \
-            .in_('status', ['active', 'dormant']) \
             .execute()
-        existing_practices = existing_res.data or []
+        
+        # Filter status in Python because status is inside the metadata JSONB column
+        existing_practices = [p for p in (existing_res.data or []) if p.get('metadata', {}).get('status') in ['active', 'dormant']]
 
         if existing_practices:
             name_embedding = await asyncio.to_thread(get_embedding, practice_name)
