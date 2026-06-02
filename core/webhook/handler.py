@@ -241,7 +241,7 @@ async def process_webhook(update: dict):
                                 .execute()
                             if _node_res.data:
                                 _n = _node_res.data
-                                _rm = _n.get('metadata', {})
+                                _rm = _n.get('metadata') or {}
                                 if isinstance(_rm, str):
                                     _rm = json.loads(_rm)
                                 _rm['status'] = 'dismissed'
@@ -249,7 +249,7 @@ async def process_webhook(update: dict):
                                 supabase.table('graph_nodes').update({'metadata': _rm}).eq('id', _n['id']).execute()
                                 _variants = _rm.get('variants', [_n.get('label', '')])
                                 _excl = supabase.table('core_config').select('content').eq('key', 'dismissed_practice_variants').maybe_single().execute()
-                                _existing = json.loads(_excl.data.get('content', '[]')) if _excl.data else []
+                                _existing = json.loads(_excl.data.get('content') or '[]') if _excl.data else []
                                 _existing_lower = set(v.lower() for v in _existing)
                                 _new_entries = [v for v in _variants if v.lower() not in _existing_lower]
                                 if _new_entries:
@@ -339,7 +339,7 @@ async def process_webhook(update: dict):
                     return {"success": True}
 
                 node = node_res.data[0]
-                raw_meta = node.get('metadata', {})
+                raw_meta = node.get('metadata') or {}
                 if isinstance(raw_meta, str):
                     try:
                         raw_meta = json.loads(raw_meta)
@@ -360,7 +360,7 @@ async def process_webhook(update: dict):
                     .eq('key', 'dismissed_practice_variants') \
                     .maybe_single() \
                     .execute()
-                existing_exclusion = json.loads(exclusion_res.data.get('content', '[]')) if exclusion_res.data else []
+                existing_exclusion = json.loads(exclusion_res.data.get('content') or '[]') if exclusion_res.data else []
                 existing_lower = set(v.lower() for v in existing_exclusion)
                 new_entries = [v for v in variants if v.lower() not in existing_lower]
                 if new_entries:

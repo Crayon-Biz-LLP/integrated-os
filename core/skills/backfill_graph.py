@@ -1044,7 +1044,7 @@ def compact_memories(supabase):
                 try:
                     supabase.table("memories").update({
                         "metadata": json.dumps({
-                            **json.loads(m.get("metadata", "{}")),
+                            **json.loads(m.get("metadata") or "{}"),
                             "compacted": True,
                             "compacted_into": keep["id"]
                         })
@@ -1091,7 +1091,7 @@ def prune_memories(supabase):
             try:
                 supabase.table("memories").update({
                     "metadata": json.dumps({
-                        **json.loads(mem.get("metadata", "{}")),
+                        **json.loads(mem.get("metadata") or "{}"),
                         "pruned": True,
                         "pruned_at": datetime.now().isoformat()
                     })
@@ -1113,7 +1113,7 @@ def prune_memories(supabase):
             try:
                 supabase.table("memories").update({
                     "metadata": json.dumps({
-                        **json.loads(mem.get("metadata", "{}")),
+                        **json.loads(mem.get("metadata") or "{}"),
                         "pruned": True,
                         "pruned_at": datetime.now().isoformat()
                     })
@@ -1187,7 +1187,7 @@ def resolve_conflicts(supabase):
                 try:
                     supabase.table("memories").update({
                         "metadata": json.dumps({
-                            **json.loads(old.get("metadata", "{}")),
+                            **json.loads(old.get("metadata") or "{}"),
                             "superseded": True,
                             "superseded_by": latest["id"]
                         })

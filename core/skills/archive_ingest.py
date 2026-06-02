@@ -1,5 +1,6 @@
 import os
 import time
+import json
 from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -15,7 +16,14 @@ def get_entity_mappings() -> dict:
     try:
         res = supabase.table('core_config').select('content').eq('key', 'entity_mappings').execute()
         if res.data and res.data[0].get('content'):
-            return res.data[0]['content']
+            content = res.data[0]['content']
+            if isinstance(content, str):
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    print("⚠️ Failed to parse dynamic mappings JSON")
+            elif isinstance(content, dict):
+                return content
     except Exception as e:
         print(f"⚠️ Failed to fetch dynamic mappings: {e}")
     

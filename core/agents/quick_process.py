@@ -359,7 +359,7 @@ async def process_pending_dumps():
     for d in dumps:
         if d.get('message_type') not in ('task', None):
             continue
-        meta = d.get('metadata', {})
+        meta = d.get('metadata') or {}
         if isinstance(meta, str):
             try:
                 meta = json.loads(meta)

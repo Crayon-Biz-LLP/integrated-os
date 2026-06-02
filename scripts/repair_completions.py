@@ -12,9 +12,10 @@ Rules:
 """
 
 import os
-from dotenv import load_dotenv
-load_dotenv(".env")
 from supabase import create_client
+from dotenv import load_dotenv
+
+load_dotenv(".env")
 
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
 

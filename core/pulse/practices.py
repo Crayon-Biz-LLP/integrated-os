@@ -46,7 +46,7 @@ async def detect_practices():
             .eq('key', 'dismissed_practice_variants') \
             .maybe_single() \
             .execute()
-        exclusion_list = json.loads(exclusion_res.data.get('content', '[]')) if exclusion_res.data else []
+        exclusion_list = json.loads(exclusion_res.data.get('content') or '[]') if exclusion_res.data else []
 
         # ── Step 2: Load existing practice nodes ──
         practices_res = supabase.table('graph_nodes') \
@@ -116,7 +116,7 @@ async def detect_practices():
                 continue
             seen_texts.add(text_lower)
 
-            raw_meta = item.get('metadata', {})
+            raw_meta = item.get('metadata') or {}
             if isinstance(raw_meta, str):
                 try:
                     raw_meta = json.loads(raw_meta)

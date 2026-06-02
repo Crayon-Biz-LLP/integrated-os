@@ -223,7 +223,7 @@ async def check_task_dependencies(active_tasks: list) -> str:
                         .execute()
 
                     if target_node_res and target_node_res.data:
-                        meta = target_node_res.data.get('metadata', {})
+                        meta = target_node_res.data.get('metadata') or {}
                         if isinstance(meta, str):
                             try:
                                 meta = json.loads(meta)
@@ -381,7 +381,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         # Build node_id → person_name map
         node_to_person = {}
         for node in (person_nodes.data or []):
-            meta = node.get('metadata', {})
+            meta = node.get('metadata') or {}
             if isinstance(meta, str):
                 try:
                     meta = json.loads(meta)
@@ -405,7 +405,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         task_node_ids = []
         task_node_map = {}  # node_id → task_id
         for node in (task_nodes.data or []):
-            meta = node.get('metadata', {})
+            meta = node.get('metadata') or {}
             if isinstance(meta, str):
                 try:
                     meta = json.loads(meta)

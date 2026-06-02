@@ -349,7 +349,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 # Store request_id in metadata for idempotency
                 for d in dumps:
                     try:
-                        raw_meta = d.get('metadata', {})
+                        raw_meta = d.get('metadata') or {}
                         if isinstance(raw_meta, str):
                             meta = json.loads(raw_meta) if raw_meta else {}
                         elif isinstance(raw_meta, dict):
