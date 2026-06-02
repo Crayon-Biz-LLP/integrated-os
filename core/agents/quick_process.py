@@ -25,7 +25,7 @@ async def save_url_as_resource(text: str) -> bool:
         return False
 
 
-def build_combined_prompt(text: str, projects: list) -> str:
+def build_combined_prompt(text: str, projects: list, history_text: str = "") -> str:
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
     date_context = now_ist.strftime("%A, %B %d, %Y at %I:%M %p IST")
     project_lines = "\n".join([
@@ -37,6 +37,8 @@ def build_combined_prompt(text: str, projects: list) -> str:
 
 Current date and time: {date_context}
 
+{history_text}
+
 Message: "{text}"
 
 First, determine the category:
@@ -44,12 +46,13 @@ First, determine the category:
 - COMPLETION: Past tense — "finished", "done", "sorted", "confirmed", "sent", "wrapped up"
 - NOTE: Idea, insight, observation (not actionable)
 - NOISE: Casual conversation, acknowledgment, low-value content
+- CLARIFY: If the user asks you to schedule a meeting or task but omits critical info (like time, date, or person) AND it cannot be inferred from the history, or if it is too vague. Generate a specific question in `clarification_question`.
 
 Active projects for routing:
 {project_lines}
 
 If TASK or COMPLETION, extract these fields:
-- title: Brief action-oriented title (2-8 words)
+- title: Brief action-oriented title (2-8 words). If this is answering a clarification (e.g. "Tomorrow at 3pm"), merge the new detail with the original subject from the history into a complete title.
 - project_name: Exact project name from the list above that best matches. Use "General" if none match.
 - reminder_at: ISO-8601 datetime in IST (UTC+05:30) based on the current date above. If no time given, return null.
   Examples: "today 3pm" → "{now_ist.strftime('%Y-%m-%d')}T15:00:00+05:30"
@@ -69,18 +72,19 @@ STRICT RULES:
 
 Return ONLY valid JSON:
 {{
-  "category": "TASK|COMPLETION|NOTE|NOISE",
+  "category": "TASK|COMPLETION|NOTE|NOISE|CLARIFY",
   "title": "...",
   "project_name": "...",
   "reminder_at": null,
   "recurrence": null,
   "duration_mins": 15,
   "priority": "important",
-  "status": "todo"
+  "status": "todo",
+  "clarification_question": "..."
 }}"""
 
 
-async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> dict:
+async def process_single_dump(text: str, metadata: dict, tasks_service=None, history_text: str = "") -> dict:
     # ── Bypass: COMPLETION dumps are owned exclusively by handle_confident_completion.
     if (
         metadata.get("intent") == "COMPLETION"
@@ -94,7 +98,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
         return {"action": "filed", "type": "resource"}
 
     projects = fetch_active_projects()
-    prompt = build_combined_prompt(text, projects)
+    prompt = build_combined_prompt(text, projects, history_text)
 
     try:
         response = await call_gemini_classify(
@@ -108,6 +112,9 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
         return {"action": "error", "reason": str(e)}
 
     category = result.get('category', 'NOTE')
+
+    if category == 'CLARIFY':
+        return {"action": "clarify", "question": result.get('clarification_question', "I need a bit more detail to process this.")}
 
     if category == 'NOISE':
         return {"action": "skipped", "reason": "noise"}

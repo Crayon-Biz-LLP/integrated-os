@@ -233,7 +233,7 @@ Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or
     except Exception as log_err:
         audit_log_sync("webhook", "WARNING", f"Failed to log daily brief: {log_err}")
 
-async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram", sender: str = "user", task_update_id: int = None):
+async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram", sender: str = "user", task_update_id: int = None, history_text: str = "", session_id: str = None):
     # ── Idempotency guard: skip if identical content+source inserted within 60s ──
     if is_recent_raw_dump(text, source):
         ack = receipt or "Logged."
@@ -285,8 +285,13 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
     if dump_id:
         try:
             tasks_service = get_tasks_service()
-            result = await process_single_dump(text, meta, tasks_service)
-            if result.get('action') in ('created', 'completed', 'filed', 'updated'):
+            result = await process_single_dump(text, meta, tasks_service, history_text)
+            
+            if result.get('action') == 'clarify':
+                await handle_clarification(text, result.get('question', "Could you provide more details?"), chat_id, session_id=session_id)
+                # We don't mark as synced yet, user must reply
+                
+            elif result.get('action') in ('created', 'completed', 'filed', 'updated'):
                 supabase.table('raw_dumps').update({"status": "synced"}).eq('id', dump_id).execute()
                 audit_log_sync("webhook", "INFO", f"Inline processed dump {dump_id}: {result['action']}")
                 
@@ -495,7 +500,7 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         entity = classification.get('entity') if classification else None
         time_context = classification.get('time_context', '') if classification else ''
         task_update_id = task_update_id if task_update_id is not None else (classification.get('task_update_id') if classification else None)
-        await handle_confident_task(text, title, time_context, chat_id, receipt, entity=entity, source=source, sender=sender, task_update_id=task_update_id)
+        await handle_confident_task(text, title, time_context, chat_id, receipt, entity=entity, source=source, sender=sender, task_update_id=task_update_id, history_text=history_text, session_id=session_id)
     elif intent == 'DAILY_BRIEF':
         await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
     elif intent == 'QUERY':
