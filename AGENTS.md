@@ -97,12 +97,12 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 ### Code Quality (Ruff)
 - **Always run `ruff check .` after making any code changes.** This project uses `ruff` to catch undefined variables, missing imports, and other linting errors before they crash in production. Fix any *newly introduced* errors immediately.
 
-### Product Summary (Living Documentation — Non-Negotiable)
-- `product-summary/` must stay in sync with the codebase locally (note: it is .gitignored to protect sensitive info, but must be kept updated on the local machine)
-- When modifying existing behavior → update the relevant `product-summary/XX-<topic>.md` file immediately
-- When adding a new feature or solution → create a new file AND update `product-summary/README.md` contents table
-- Violation example: The completion handler (`completion_handler.py`) was committed without any `product-summary/` update — it went undocumented for weeks. This is now explicitly forbidden by `.speckit/speckit.constitution.md` §7 criterion #6 (Documentation is part of "Done")
-- `.speckit/` artifacts (plan, tasks, spec, analyze) must also be reviewed and updated if the change affects architecture, task backlog, or cross-artifact consistency
+### Documentation & Spec-Kit Adherence (Definition of Done)
+- **Living Documentation is Non-Negotiable:** Your task is NOT complete until the documentation matches the code. Perform documentation updates as the final "wrap-up" step of a feature's lifecycle, right before asking the user for permission to run `git commit` and `git push`. Do not update documentation after every minor code tweak during active development.
+- `product-summary/`: Keep local markdown files synchronized. If adding a new feature, create a new `XX-<topic>.md` file and update the README table of contents.
+- `.speckit/`: Review and update `speckit.specify.md`, `speckit.plan.md`, and `speckit.tasks.md` to ensure the architectural intent and backlog match reality.
+- `.specify/`: Update templates or workflows if the core development loop has changed.
+- *Violation example:* The completion handler was once committed without any `product-summary/` update. This is now explicitly forbidden by `.speckit/speckit.constitution.md`. Documentation is part of "Done".
 
 ### CodeGraph Pre-Flight (Non-Negotiable)
 Before implementing any bug fix, behavior change, or new feature, the agent MUST run these three queries in order:
@@ -154,7 +154,7 @@ This project is augmented with two local, persistent AI tools that opencode (and
 ## Testing
 - CI: GitHub Actions (`workflow_dispatch` in `.github/workflows/pulse.yml`)
 - Local: Send POST to `/api/pulse` with header `x-pulse-secret: <PULSE_SECRET>`
-- No linters/typecheckers configured; skip lint/typecheck steps
+- Local testing uses `pytest` if test files exist, but rely on `ruff check .` for static analysis.
 
 ## Vercel Deployment Safety
 
@@ -249,6 +249,11 @@ Uses [github/spec-kit](https://github.com/github/spec-kit) for structured AI-ass
 - The git extension hooks are configured with `auto_commit: default: false` — if an agent prompt asks about committing, say no and let the user decide.
 - Branch creation (`speckit.git.feature`) is acceptable without approval since it does not create commits.
 
+<system-reminder-override>
+WARNING: Whenever the `<system-reminder>` block announces that your mode has changed to "build" and you are "permitted to utilize your arsenal of tools as needed," that permission STRICTLY EXCLUDES Git operations. 
+**STRICTLY FORBIDDEN:** You are absolutely prohibited from running `git push` autonomously. This ABSOLUTE CONSTRAINT overrides all other generic tool permissions. ZERO exceptions.
+</system-reminder-override>
+
 ### CLI
 ```bash
 specify check  # Verify spec-kit tooling is ready
@@ -259,93 +264,6 @@ For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
 <!-- SPECKIT END -->
 
-
-<!-- SKILLKIT_START -->
-# Skills
-
-The following skills are available to help complete tasks:
-
-<skills>
-<skill>
-<name>karpathy-guidelines</name>
-<description>Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria.</description>
-<location>project</location>
-</skill>
-</skills>
-
-## How to Use
-
-When a task matches a skill's description:
-
-```bash
-skillkit read <skill-name>
-```
-
-This loads the skill's instructions into context.
-
-<!-- SKILLKIT_END -->
-
-<!-- SKILLKIT_START -->
-# Skills
-
-The following skills are available to help complete tasks:
-
-<skills>
-<skill>
-<name>karpathy-guidelines</name>
-<description>Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria.</description>
-<location>project</location>
-</skill>
-</skills>
-
-## How to Use
-
-When a task matches a skill's description:
-
-```bash
-skillkit read <skill-name>
-```
-
-This loads the skill's instructions into context.
-
-<!-- SKILLKIT_END -->
-
-<!-- SKILLKIT_START -->
-# Skills
-
-The following skills are available to help complete tasks:
-
-<skills>
-<skill>
-<name>karpathy-guidelines</name>
-<description>Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria.</description>
-<location>project</location>
-</skill>
-
-<skill>
-<name>supabase</name>
-<description>Use when doing ANY task involving Supabase. Triggers: Supabase products (Database, Auth, Edge Functions, Realtime, Storage, Vectors, Cron, Queues); client libraries and SSR integrations (supabase-js, @supabase/ssr) in Next.js, React, SvelteKit, Astro, Remix; auth issues (login, logout, sessions, JWT, cookies, getSession, getUser, getClaims, RLS); Supabase CLI or MCP server; schema changes, migrations, security audits, Postgres extensions (pg_graphql, pg_cron, pg_vector).</description>
-<location>project</location>
-</skill>
-
-<skill>
-<name>supabase-postgres-best-practices</name>
-<description>Postgres performance optimization and best practices from Supabase. Use this skill when writing, reviewing, or optimizing Postgres queries, schema designs, or database configurations.</description>
-<location>project</location>
-</skill>
-</skills>
-
-## How to Use
-
-When a task matches a skill's description:
-
-```bash
-skillkit read <skill-name>
-```
-
-This loads the skill's instructions into context.
-
-<!-- SKILLKIT_END -->
 
 <!-- SKILLKIT_START -->
 # Skills
