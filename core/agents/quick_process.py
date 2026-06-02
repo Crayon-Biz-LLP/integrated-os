@@ -58,6 +58,7 @@ If TASK or COMPLETION, extract these fields:
             "6:30 pm today" → "{now_ist.strftime('%Y-%m-%d')}T18:30:00+05:30"
 - duration_mins: Estimated minutes (15 for quick tasks, 45 for meetings/calls)
 - priority: "urgent", "important", or "low"
+- recurrence: iCalendar RRULE string if recurring is mentioned (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO" or "RRULE:FREQ=WEEKLY;BYDAY=WE;UNTIL=20260831T000000Z"). Otherwise null.
 
 If COMPLETION: set status to "done"
 
@@ -72,6 +73,7 @@ Return ONLY valid JSON:
   "title": "...",
   "project_name": "...",
   "reminder_at": null,
+  "recurrence": null,
   "duration_mins": 15,
   "priority": "important",
   "status": "todo"
@@ -156,7 +158,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
                 
                 if explicit_time:
                     try:
-                        e_id = sync_to_calendar(td['title'], sanitized_time, event_id=e_id, duration_mins=result.get('duration_mins', 15), priority=td.get('priority', 'important'))
+                        e_id = sync_to_calendar(td['title'], sanitized_time, event_id=e_id, duration_mins=result.get('duration_mins', 15), priority=td.get('priority', 'important'), recurrence=result.get('recurrence'))
                         update_payload['google_event_id'] = e_id
                     except Exception as e:
                         audit_log_sync("quick_process", "ERROR", f"Calendar sync failed on update: {e}")
@@ -245,7 +247,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
                         except Exception as ce:
                             audit_log_sync("quick_process", "WARNING", f"Calendar conflict check failed: {ce}")
                             
-                        e_id = sync_to_calendar(td['title'], sanitized_time, event_id=e_id, duration_mins=result.get('duration_mins', 15), priority=td.get('priority', 'important'))
+                        e_id = sync_to_calendar(td['title'], sanitized_time, event_id=e_id, duration_mins=result.get('duration_mins', 15), priority=td.get('priority', 'important'), recurrence=result.get('recurrence'))
                         update_payload['google_event_id'] = e_id
                     except Exception as e:
                         audit_log_sync("quick_process", "ERROR", f"Calendar sync failed on update: {e}")
@@ -306,7 +308,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
             except Exception as ce:
                 audit_log_sync("quick_process", "WARNING", f"Calendar conflict check failed: {ce}")
                 
-            e_id = sync_to_calendar(title, sanitized_time, task_insert['duration_mins'], priority=task_insert['priority'])
+            e_id = sync_to_calendar(title, sanitized_time, task_insert['duration_mins'], priority=task_insert['priority'], recurrence=result.get('recurrence'))
         except Exception as e:
             audit_log_sync("quick_process", "ERROR", f"Calendar sync failed: {e}")
     if sanitized_time and tasks_service:

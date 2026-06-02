@@ -41,7 +41,7 @@ def format_rfc3339(date_str):
     return clean
 
 
-def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority='important'):
+def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority='important', recurrence=None):
     service = build('calendar', 'v3', credentials=get_google_creds(), cache=_MemoryCache())
     try:
         rfc_time = format_rfc3339(start_iso)
@@ -62,22 +62,36 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority
                 clean_title = clean_title[len(p):]
                 
         formatted_title = f"{prefix}{clean_title}"
-        
+
         event_body = {
             'summary': formatted_title,
             'description': 'Rhodey created this for you.',
             'start': {'dateTime': rfc_time, 'timeZone': 'Asia/Kolkata'},
             'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'},
-            'reminders': {'useDefault': True}
+            'reminders': {
+                'useDefault': False,
+                'overrides': [
+                    {'method': 'popup', 'minutes': 60},
+                    {'method': 'popup', 'minutes': 15}
+                ]
+            }
         }
+        
+        if recurrence:
+            event_body['recurrence'] = [recurrence]
+
         if event_id:
             res = service.events().patch(calendarId='primary', eventId=event_id, body=event_body).execute()
+            print(f"Calendar block edited: {formatted_title}")
         else:
             res = service.events().insert(calendarId='primary', body=event_body).execute()
+            print(f"Calendar block secured: {formatted_title}")
+
         return res.get('id')
     except Exception as e:
         if event_id:
-            return sync_to_calendar(title, start_iso, duration_mins, event_id=None, priority=priority)
+            audit_log_sync("google_service", "WARNING", f"Event ID {event_id} invalid, attempting creation...")
+            return sync_to_calendar(title, start_iso, duration_mins, event_id=None, priority=priority, recurrence=recurrence)
         audit_log_sync("google_service", "ERROR", f"Calendar sync failed: {e}")
         return None
 
