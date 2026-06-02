@@ -13,6 +13,7 @@ GENERIC_VERBS = {
     'prepare', 'confirm', 'schedule', 'forward', 'approve', 'reject',
     'coordinate', 'arrange', 'discuss', 'contact', 'follow', 'send',
     'draft', 'reply', 'share', 'provide', 'collect', 'manage', 'call',
+    'meeting', 'project', 'task', 'catchup', 'sync', 'plan'
 }
 
 

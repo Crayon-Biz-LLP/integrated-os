@@ -190,7 +190,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None) -> 
     dedup_key = hashlib_md5(f"{title.lower().strip()}:{project_id or 0}".encode())[:16]
     matched_id = None
     
-    if guard['result'] in ['block', 'flag']:
+    if guard['result'] == 'block':
         matched_id = guard['matched_id']
     
     if category == 'COMPLETION':
