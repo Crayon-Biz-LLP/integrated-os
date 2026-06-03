@@ -18,7 +18,9 @@ import {
     LogOut,
      Menu,
      House,
-  } from 'lucide-react';
+     Scale,
+     Target,
+   } from 'lucide-react';
 import { createBrowserClient } from '@supabase/ssr';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -32,6 +34,7 @@ import { cn } from '@/lib/utils';
 const navItems = [
    { href: '/dashboard', label: 'Home', icon: House },
    { href: '/dashboard/tasks', label: 'Tasks', icon: CheckSquare },
+   { href: '/dashboard/decisions', label: 'Decisions', icon: Scale },
    { href: '/dashboard/projects', label: 'Projects', icon: FolderOpen },
    { href: '/dashboard/emails', label: 'Emails', icon: Mail },
    { href: '/dashboard/messages', label: 'Messages', icon: MessageSquare },
@@ -39,6 +42,7 @@ const navItems = [
    { href: '/dashboard/calendar', label: 'Calendar', icon: Calendar },
    { href: '/dashboard/people', label: 'People', icon: Users },
    { href: '/dashboard/resources', label: 'Resources', icon: BookOpen },
+   { href: '/dashboard/missions', label: 'Missions', icon: Target },
    { href: '/dashboard/health', label: 'Health', icon: Activity },
 ];
 
@@ -47,6 +51,7 @@ const mobileItems = navItems.slice(0, 5);
 const routeTitles: Record<string, string> = {
    '/dashboard': 'Command Center',
    '/dashboard/tasks': 'Tasks',
+   '/dashboard/decisions': 'Decisions',
    '/dashboard/projects': 'Projects',
    '/dashboard/emails': 'Emails',
    '/dashboard/messages': 'Messages',
@@ -54,8 +59,9 @@ const routeTitles: Record<string, string> = {
    '/dashboard/calendar': 'Calendar',
    '/dashboard/people': 'People',
    '/dashboard/resources': 'Resources',
+   '/dashboard/missions': 'Missions',
    '/dashboard/health': 'Health',
-};
+ };
 
 export default function DashboardLayout({
   children,

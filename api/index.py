@@ -8,7 +8,13 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.webhook import process_webhook, send_draft_reply, process_email_pending_decision
+from core.webhook import (
+    process_webhook,
+    send_draft_reply,
+    process_email_pending_decision,
+    process_call_pending_decision,
+    process_whatsapp_pending_decision,
+)
 from core.skills.whatsapp_ingest import process_whatsapp_message
 from core.pulse.sentinel import process_sentinel
 from core.pulse import (
@@ -329,6 +335,66 @@ async def email_action_route(request: Request):
 
     except Exception as e:
         print(f"Email action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- CALL PENDING ITEM DECISIONS (approve/reject from frontend) ---
+@app.post("/api/call-action")
+async def call_action_route(request: Request):
+    """Approve or reject call pending item via API (called from frontend)."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        pending_id = body.get('id') or body.get('shortcode')
+        action = body.get('action', '')
+
+        if not pending_id or not action:
+            raise HTTPException(status_code=400, detail="id and action required")
+
+        if action == 'yes':
+            action = 'approve'
+        elif action == 'no':
+            action = 'reject'
+
+        result = await process_call_pending_decision(int(pending_id), action)
+
+        if result['success']:
+            return {"success": True, "message": result['message'], "action": result['action']}
+        else:
+            return {"success": False, "message": result['message'], "action": result['action']}
+
+    except Exception as e:
+        print(f"Call action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- WHATSAPP PENDING DECISIONS (approve/reject from frontend) ---
+@app.post("/api/whatsapp-action")
+async def whatsapp_action_route(request: Request):
+    """Approve or reject WhatsApp pending message via API (called from frontend)."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        pending_id = body.get('id') or body.get('shortcode')
+        action = body.get('action', '')
+
+        if not pending_id or not action:
+            raise HTTPException(status_code=400, detail="id and action required")
+
+        if action == 'yes':
+            action = 'approve'
+        elif action == 'no':
+            action = 'reject'
+
+        result = await process_whatsapp_pending_decision(int(pending_id), action)
+
+        if result['success']:
+            return {"success": True, "message": result['message'], "action": result['action']}
+        else:
+            return {"success": False, "message": result['message'], "action": result['action']}
+
+    except Exception as e:
+        print(f"WhatsApp action error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
