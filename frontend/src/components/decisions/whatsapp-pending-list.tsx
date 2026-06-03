@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { decideWhatsAppMessage } from '@/lib/decisions/api';
 import type { WhatsAppPendingMessage } from '@/lib/decisions/types';
 import { toast } from 'sonner';
