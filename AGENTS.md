@@ -38,7 +38,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 
 ### Database (Supabase)
 - Uses `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)
-- Tables: `tasks`, `raw_dumps`, `memories`, `graph_nodes`, `graph_edges`, `projects`, `resources`, `missions`, `people`, `core_config`, `whatsapp_messages`
+- Tables: `tasks`, `raw_dumps`, `memories`, `graph_nodes`, `graph_edges`, `projects`, `resources`, `clusters`, `people`, `core_config`, `whatsapp_messages`
 - **Note**: `raw_dumps` does NOT store embeddings - only `memories` table has embeddings
 - `whatsapp_messages` holds WhatsApp chats with classification + approval status
 - `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter)

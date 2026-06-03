@@ -10,12 +10,12 @@ export async function PATCH(
   }
   try {
     const { id } = await params;
-    const { mission_id } = await req.json();
+    const { cluster_id } = await req.json();
     const supabase = await createServerSupabaseClient();
 
     const { data, error } = await supabase
       .from("resources")
-      .update({ mission_id: mission_id || null })
+      .update({ cluster_id: cluster_id || null })
       .eq("id", Number(id))
       .select(`
         id,
@@ -24,20 +24,20 @@ export async function PATCH(
         summary,
         strategic_note,
         category,
-        mission_id,
+        cluster_id,
         created_at,
         enriched_at
       `)
       .single();
 
     if (error) {
-      console.error("Supabase error updating resource mission:", error);
+      console.error("Supabase error updating resource cluster:", error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
     return NextResponse.json(data);
   } catch (err: any) {
-    console.error("Unexpected error in resource mission update route:", err);
+    console.error("Unexpected error in resource cluster update route:", err);
     return NextResponse.json({ error: err.message || "Internal server error" }, { status: 500 });
   }
 }

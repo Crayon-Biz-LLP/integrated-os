@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
     const supabase = await createServerSupabaseClient();
 
     const search = searchParams.get("search");
-    const mission = searchParams.get("mission");
+    const cluster = searchParams.get("cluster");
     const category = searchParams.get("category");
     const sort = searchParams.get("sort") || "newest";
 
@@ -32,10 +32,10 @@ export async function GET(req: NextRequest) {
         summary,
         category,
         strategic_note,
-        mission_id,
+        cluster_id,
         created_at,
         enriched_at,
-        missions!mission_id(id, title, status, description)
+        clusters!cluster_id(id, title, status, description)
       `);
 
     if (search) {
@@ -44,10 +44,10 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    if (mission === "unmapped") {
-      query = query.is("mission_id", null);
-    } else if (mission && mission !== "all") {
-      query = query.eq("mission_id", Number(mission));
+    if (cluster === "unmapped") {
+      query = query.is("cluster_id", null);
+    } else if (cluster && cluster !== "all") {
+      query = query.eq("cluster_id", Number(cluster));
     }
 
     if (category && category !== "all") {
@@ -64,8 +64,8 @@ export async function GET(req: NextRequest) {
       case "category":
         query = query.order("category", { ascending: true, nullsFirst: false });
         break;
-      case "mission":
-        query = query.order("mission_id", { ascending: true, nullsFirst: false });
+      case "cluster":
+        query = query.order("cluster_id", { ascending: true, nullsFirst: false });
         break;
       default:
         query = query.order("created_at", { ascending: false });
@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
     }
 
     const resources = (data ?? []).map((r: any) => {
-      const missionData = Array.isArray(r.missions) ? r.missions[0] : r.missions;
+      const clusterData = Array.isArray(r.clusters) ? r.clusters[0] : r.clusters;
       return {
         id: r.id,
         url: r.url,
@@ -88,13 +88,13 @@ export async function GET(req: NextRequest) {
         summary: r.summary,
         strategic_note: r.strategic_note,
         category: r.category,
-        mission_id: r.mission_id,
+        cluster_id: r.cluster_id,
         created_at: r.created_at,
         enriched_at: r.enriched_at,
         hostname: getHostname(r.url),
-        mission_title: missionData?.title ?? null,
-        mission_status: missionData?.status ?? null,
-        mission_description: missionData?.description ?? null,
+        cluster_title: clusterData?.title ?? null,
+        cluster_status: clusterData?.status ?? null,
+        cluster_description: clusterData?.description ?? null,
       };
     });
 

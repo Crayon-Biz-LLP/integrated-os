@@ -5,13 +5,13 @@ import { ResourcesHeader } from '@/components/resources/resources-header';
 import { ResourcesStats } from '@/components/resources/resources-stats';
 import { ResourcesFilters } from '@/components/resources/resources-filters';
 import { ResourcesViewToggle } from '@/components/resources/resources-view-toggle';
-import { ResourcesMissionGroups } from '@/components/resources/resources-mission-groups';
+import { ResourcesClusterGroups } from '@/components/resources/resources-cluster-groups';
 import { ResourcesLibraryGrid } from '@/components/resources/resources-library-grid';
 import { ResourceDetailSheet } from '@/components/resources/resource-detail-sheet';
-import type { Resource, ResourceMission, ResourceStats, ResourceFilters as FiltersType } from '@/lib/resources/types';
-import { updateResourceMission, fetchResource, fetchRelatedResources } from '@/lib/resources/api';
+import type { Resource, ResourceCluster, ResourceStats, ResourceFilters as FiltersType } from '@/lib/resources/types';
+import { updateResourceCluster, fetchResource, fetchRelatedResources } from '@/lib/resources/api';
 
-function filterResources(resources: Resource[], filters: FiltersType, missions: ResourceMission[]): Resource[] {
+function filterResources(resources: Resource[], filters: FiltersType, clusters: ResourceCluster[]): Resource[] {
   let result = [...resources];
 
   if (filters.search) {
@@ -25,11 +25,11 @@ function filterResources(resources: Resource[], filters: FiltersType, missions: 
     );
   }
 
-  if (filters.mission && filters.mission !== 'all') {
-    if (filters.mission === 'unmapped') {
-      result = result.filter((r) => r.mission_id === null);
+  if (filters.cluster && filters.cluster !== 'all') {
+    if (filters.cluster === 'unmapped') {
+      result = result.filter((r) => r.cluster_id === null);
     } else {
-      result = result.filter((r) => String(r.mission_id) === filters.mission);
+      result = result.filter((r) => String(r.cluster_id) === filters.cluster);
     }
   }
 
@@ -47,8 +47,8 @@ function filterResources(resources: Resource[], filters: FiltersType, missions: 
     case 'category':
       result.sort((a, b) => (a.category || '').localeCompare(b.category || ''));
       break;
-    case 'mission':
-      result.sort((a, b) => (a.mission_id || 0) - (b.mission_id || 0));
+    case 'cluster':
+      result.sort((a, b) => (a.cluster_id || 0) - (b.cluster_id || 0));
       break;
     default:
       result.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
@@ -59,11 +59,11 @@ function filterResources(resources: Resource[], filters: FiltersType, missions: 
 
 export function ResourcesShell({
   initialResources,
-  initialMissions,
+  initialClusters,
   initialStats,
 }: {
   initialResources: Resource[];
-  initialMissions: ResourceMission[];
+  initialClusters: ResourceCluster[];
   initialStats: ResourceStats;
 }) {
   const [resources] = useState(initialResources);
@@ -73,10 +73,10 @@ export function ResourcesShell({
 
   const [filters, setFilters] = useState<FiltersType>({
     search: '',
-    mission: 'all',
+    cluster: 'all',
     category: 'all',
     sort: 'newest',
-    view: 'mission',
+    view: 'cluster',
   });
 
   const categories = useMemo(
@@ -85,15 +85,15 @@ export function ResourcesShell({
   );
 
   const filteredResources = useMemo(
-    () => filterResources(resources, filters, initialMissions),
-    [resources, filters, initialMissions]
+    () => filterResources(resources, filters, initialClusters),
+    [resources, filters, initialClusters]
   );
 
   const handleResourceClick = useCallback(async (resource: Resource) => {
     setSelectedResource(resource);
     setDetailOpen(true);
 
-    if (resource.mission_id) {
+    if (resource.cluster_id) {
       try {
         const related = await fetchRelatedResources(resource.id);
         setRelatedResources(related);
@@ -105,13 +105,13 @@ export function ResourcesShell({
     }
   }, []);
 
-  const handleMissionChange = useCallback(async (resourceId: number, missionId: number | null) => {
+  const handleClusterChange = useCallback(async (resourceId: number, clusterId: number | null) => {
     try {
-      await updateResourceMission(resourceId, missionId);
+      await updateResourceCluster(resourceId, clusterId);
       if (selectedResource?.id === resourceId) {
         const updated = await fetchResource(resourceId);
         setSelectedResource(updated);
-        if (updated.mission_id) {
+        if (updated.cluster_id) {
           const related = await fetchRelatedResources(resourceId);
           setRelatedResources(related);
         } else {
@@ -119,8 +119,8 @@ export function ResourcesShell({
         }
       }
     } catch (err: any) {
-      console.error('Failed to update mission:', err);
-      alert('Failed to update mission: ' + (err.message || 'Unknown error'));
+      console.error('Failed to update cluster:', err);
+      alert('Failed to update cluster: ' + (err.message || 'Unknown error'));
     }
   }, [selectedResource]);
 
@@ -134,25 +134,25 @@ export function ResourcesShell({
           <ResourcesFilters
             search={filters.search || ''}
             setSearch={(v) => setFilters(f => ({ ...f, search: v }))}
-            mission={filters.mission || 'all'}
-            setMission={(v) => setFilters(f => ({ ...f, mission: v }))}
+            cluster={filters.cluster || 'all'}
+            setCluster={(v) => setFilters(f => ({ ...f, cluster: v }))}
             category={filters.category || 'all'}
             setCategory={(v) => setFilters(f => ({ ...f, category: v }))}
             sort={filters.sort || 'newest'}
             setSort={(v) => setFilters(f => ({ ...f, sort: v }))}
-            missions={initialMissions}
+            clusters={initialClusters}
             categories={categories}
           />
           <ResourcesViewToggle
-            view={filters.view || 'mission'}
+            view={filters.view || 'cluster'}
             setView={(v) => setFilters(f => ({ ...f, view: v }))}
           />
         </div>
 
-        {filters.view === 'mission' ? (
-          <ResourcesMissionGroups
+        {filters.view === 'cluster' ? (
+          <ResourcesClusterGroups
             resources={filteredResources}
-            missions={initialMissions}
+            clusters={initialClusters}
             onResourceClick={handleResourceClick}
           />
         ) : (
@@ -167,8 +167,8 @@ export function ResourcesShell({
         resource={selectedResource}
         open={detailOpen}
         onOpenChange={setDetailOpen}
-        missions={initialMissions}
-        onMissionChange={handleMissionChange}
+        clusters={initialClusters}
+        onClusterChange={handleClusterChange}
         relatedResources={relatedResources}
       />
     </div>

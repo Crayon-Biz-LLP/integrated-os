@@ -1,6 +1,6 @@
 'use client';
 
-import { Resource, ResourceMission } from '@/lib/resources/types';
+import { Resource, ResourceCluster } from '@/lib/resources/types';
 import {
   Sheet,
   SheetContent,
@@ -45,8 +45,8 @@ interface ResourceDetailSheetProps {
   resource: Resource | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  missions: ResourceMission[];
-  onMissionChange: (resourceId: number, missionId: number | null) => void;
+  clusters: ResourceCluster[];
+  onClusterChange: (resourceId: number, clusterId: number | null) => void;
   relatedResources?: Resource[];
 }
 
@@ -54,8 +54,8 @@ export function ResourceDetailSheet({
   resource, 
   open, 
   onOpenChange, 
-  missions,
-  onMissionChange,
+  clusters,
+  onClusterChange,
   relatedResources 
 }: ResourceDetailSheetProps) {
   if (!resource) return null;
@@ -95,9 +95,9 @@ export function ResourceDetailSheet({
             )}
 
             <div>
-              <p className="section-label mb-1">Mission</p>
+              <p className="section-label mb-1">Cluster</p>
               <span className="text-xs bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded font-semibold tracking-wide uppercase">
-                {resource.mission_title || 'Unmapped'}
+                {resource.cluster_title || 'Unmapped'}
               </span>
             </div>
 
@@ -147,14 +147,14 @@ export function ResourceDetailSheet({
           <Separator />
 
            <div>
-             <p className="section-label mb-2">Assign Mission</p>
+             <p className="section-label mb-2">Assign Cluster</p>
              <select
-               value={resource.mission_id ? String(resource.mission_id) : 'unmapped'}
-               onChange={(e) => onMissionChange(resource.id, e.target.value === 'unmapped' ? null : Number(e.target.value))}
+               value={resource.cluster_id ? String(resource.cluster_id) : 'unmapped'}
+               onChange={(e) => onClusterChange(resource.id, e.target.value === 'unmapped' ? null : Number(e.target.value))}
                className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground w-full"
              >
               <option value="unmapped">Unmapped</option>
-              {missions.map((m) => (
+              {clusters.map((m) => (
                 <option key={m.id} value={String(m.id)}>
                   {m.title}
                 </option>
@@ -162,17 +162,17 @@ export function ResourceDetailSheet({
             </select>
           </div>
 
-          {resource.mission_id && (
+          {resource.cluster_id && (
             <>
               <Separator />
               <div>
-                <p className="section-label mb-2">Mission Context</p>
-                <p className="text-sm text-foreground">{resource.mission_title}</p>
-                {resource.mission_description && (
-                  <p className="text-xs text-muted-foreground/60 italic mb-3 mt-1">{resource.mission_description}</p>
+                <p className="section-label mb-2">Cluster Context</p>
+                <p className="text-sm text-foreground">{resource.cluster_title}</p>
+                {resource.cluster_description && (
+                  <p className="text-xs text-muted-foreground/60 italic mb-3 mt-1">{resource.cluster_description}</p>
                 )}
                 <span className="text-xs bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded font-semibold tracking-wide uppercase">
-                  Status: {resource.mission_status || 'unknown'}
+                  Status: {resource.cluster_status || 'unknown'}
                 </span>
               </div>
 
@@ -201,11 +201,11 @@ export function ResourceDetailSheet({
             </>
           )}
 
-          {!resource.mission_id && (
+          {!resource.cluster_id && (
             <>
               <Separator />
               <p className="text-xs text-muted-foreground/80 leading-relaxed italic">
-                This resource is not currently attached to an active mission
+                This resource is not currently attached to an active cluster
               </p>
             </>
           )}

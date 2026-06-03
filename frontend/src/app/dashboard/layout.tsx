@@ -42,7 +42,7 @@ const navItems = [
    { href: '/dashboard/calendar', label: 'Calendar', icon: Calendar },
    { href: '/dashboard/people', label: 'People', icon: Users },
    { href: '/dashboard/resources', label: 'Resources', icon: BookOpen },
-   { href: '/dashboard/missions', label: 'Missions', icon: Target },
+   { href: '/dashboard/clusters', label: 'Clusters', icon: Target },
    { href: '/dashboard/health', label: 'Health', icon: Activity },
 ];
 
@@ -59,7 +59,7 @@ const routeTitles: Record<string, string> = {
    '/dashboard/calendar': 'Calendar',
    '/dashboard/people': 'People',
    '/dashboard/resources': 'Resources',
-   '/dashboard/missions': 'Missions',
+   '/dashboard/clusters': 'Clusters',
    '/dashboard/health': 'Health',
  };
 

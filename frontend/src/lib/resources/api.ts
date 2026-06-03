@@ -1,9 +1,9 @@
-import { Resource, ResourceFilters, ResourceStats, ResourceMission, ResourceDetail } from "./types";
+import { Resource, ResourceFilters, ResourceStats, ResourceCluster, ResourceDetail } from "./types";
 
 export async function fetchResources(filters?: ResourceFilters): Promise<Resource[]> {
   const params = new URLSearchParams();
   if (filters?.search) params.set("search", filters.search);
-  if (filters?.mission) params.set("mission", filters.mission);
+  if (filters?.cluster) params.set("cluster", filters.cluster);
   if (filters?.category) params.set("category", filters.category);
   if (filters?.sort) params.set("sort", filters.sort);
   if (filters?.view) params.set("view", filters.view);
@@ -19,9 +19,9 @@ export async function fetchResourceStats(): Promise<ResourceStats> {
   return res.json();
 }
 
-export async function fetchResourceMissions(): Promise<ResourceMission[]> {
-  const res = await fetch(`/api/resources/missions`, { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to fetch missions");
+export async function fetchResourceClusters(): Promise<ResourceCluster[]> {
+  const res = await fetch(`/api/resources/clusters`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch clusters");
   return res.json();
 }
 
@@ -37,11 +37,11 @@ export async function fetchRelatedResources(id: number): Promise<Resource[]> {
   return res.json();
 }
 
-export async function updateResourceMission(id: number, missionId: number | null): Promise<void> {
-  const res = await fetch(`/api/resources/${id}/mission`, {
+export async function updateResourceCluster(id: number, clusterId: number | null): Promise<void> {
+  const res = await fetch(`/api/resources/${id}/cluster`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mission_id: missionId }),
+    body: JSON.stringify({ cluster_id: clusterId }),
   });
-  if (!res.ok) throw new Error("Failed to update resource mission");
+  if (!res.ok) throw new Error("Failed to update resource cluster");
 }

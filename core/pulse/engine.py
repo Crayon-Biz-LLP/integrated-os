@@ -22,7 +22,7 @@ from core.pulse.llm import (
     supabase, parse_json_response, call_llm_with_fallback, get_embedding,
     BRIEFING_MODEL, is_already_in_email_queue,
 )
-from core.pulse.utils import format_error, get_project_name, build_routing_context, normalize_mission_title
+from core.pulse.utils import format_error, get_project_name, build_routing_context, normalize_cluster_title
 from core.pulse.memory import (
     write_outcome_memory, get_recent_memories_for_briefing,
     detect_temporal_patterns, serendipity_engine, adaptive_briefing_learner,
@@ -69,7 +69,7 @@ class ResourceItem(BaseModel):
     url: str
     title: Optional[str] = None
     summary: Optional[str] = None
-    mission_name: Optional[str] = None
+    cluster_name: Optional[str] = None
     project_name: Optional[str] = None
     strategic_note: Optional[str] = None
 
@@ -92,7 +92,7 @@ class PulseOutput(BaseModel):
     new_tasks: List[NewTask] = Field(default_factory=list)
     resources: List[ResourceItem] = Field(default_factory=list)
     logs: List[LogEntry] = Field(default_factory=list)
-    new_missions: List[str] = Field(default_factory=list)
+    new_clusters: List[str] = Field(default_factory=list)
     briefing: str
 
 
@@ -525,11 +525,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         people_res = supabase.table('people').select('name, strategic_weight').execute()
         people = people_res.data or []
 
-        print("📦 Step 4: Fetching missions...")
-        # Fetch Active Missions for Context
-        missions_res = supabase.table('missions').select('id, title').eq('status', 'active').execute()
-        active_missions = missions_res.data or []
-        mission_names = [m['title'] for m in active_missions]
+        print("📦 Step 4: Fetching clusters...")
+        # Fetch Active Clusters for Context
+        clusters_res = supabase.table('clusters').select('id, title').eq('status', 'active').execute()
+        active_clusters = clusters_res.data or []
+        cluster_names = [m['title'] for m in active_clusters]
 
         # --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         ist_offset = timezone(timedelta(hours=5, minutes=30))
@@ -966,7 +966,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 💡 - Ideas: ONLY list items that appear in NEWLY ENRICHED RESOURCES or RECENT LIBRARY PATTERNS from this run. Never pull from Hindsight Memories or Canonical Pages.
             - MEMORY ISOLATION: HINDSIGHT_MEMORIES are for THE COMPASS (Opening Synthesis) ONLY. You are strictly forbidden from listing a memory as a bullet point in the task sections.
             - TONE: Match the PERSONA GUIDELINE. Be direct, simple, human. Talk like a friend who is also a high-level operator.
-            - TONE GUARD: NEVER use words like 'Operational', 'Vanguard', 'Strategic Momentum', 'Audit', 'Battlefield', 'Chief of Staff', 'Tactical', 'Executive Office'. Use simple, punchy sentences. NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'mission', 'ready for your review'.
+            - TONE GUARD: NEVER use words like 'Operational', 'Vanguard', 'Strategic Momentum', 'Audit', 'Battlefield', 'Chief of Staff', 'Tactical', 'Executive Office'. Use simple, punchy sentences. NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'cluster', 'ready for your review'.
             - INTELLIGENT FILTERING: 
                 - If mode is 🔴 Urgent: HIDE the 🏠 Home, ⛪ Church, and 💡 Ideas sections. Focus strictly on 🚀 Work and ✅ Done.
                 - If mode is 🟡 Important: Prioritize 🚀 Work and ⛪ Church.
@@ -1011,10 +1011,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 // Example ONLY: {{ "title": "...", "project_name": "Qhord", "priority": "urgent", "estimated_duration": 45, "reminder_at": "2026-03-21T10:00:00+05:30", "recurrence": null }}
             ],
             "resources": [
-                // Example ONLY: {{ "url": "...", "title": "...", "summary": "...", "mission_name": "...", "project_name": "...", "strategic_note": "..." }}
+                // Example ONLY: {{ "url": "...", "title": "...", "summary": "...", "cluster_name": "...", "project_name": "...", "strategic_note": "..." }}
             ],
             "logs": [],
-            "new_missions": [],
+            "new_clusters": [],
             "briefing": "The formatted text string for Telegram."
         }}
         """
@@ -1088,7 +1088,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             RESOURCE CAPTURE LOGIC:
             - Identify any URLs in the NEW INPUTS. For each URL: CATEGORIZE (GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL), SUMMARIZE (1-sentence description), PROJECT MATCH (if relates to existing project).
             - Do NOT create a task for URLs. Just save them to the "resources" array.
-            - STRICT MISSION MATCHING: ONLY assign a `mission_id` if the resource is a direct "building block" for an ACTIVE MISSION. If it is just a "cool tool" or "interesting read," leave `mission_id` as NULL.
+            - STRICT CLUSTER MATCHING: ONLY assign a `cluster_id` if the resource is a direct "building block" for an ACTIVE CLUSTER. If it is just a "cool tool" or "interesting read," leave `cluster_id` as NULL.
 
             SERENDIPITY PROTOCOL:
             - Under the "SERENDIPITY FINDS" context, you have been given a sample of multi-hop connections.
@@ -1098,22 +1098,21 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             STRATEGIC AUDIT INSTRUCTIONS:
             - BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects.
             - CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
-            - PATTERN DETECTION: If you see 3+ links on a new topic, you MAY suggest a new mission in the `new_missions` JSON array.
+            - PATTERN DETECTION: If you see 3+ related URLs on a new topic, you MAY suggest a new cluster in the `new_clusters` JSON array. (Clusters are ONLY for grouping URLs).
             - THE VAULT GATE: These updates go to the DATABASE only.
-            - THE BRIEFING GATE: You are STRICTLY FORBIDDEN from mentioning new resources or new missions in the briefing UNLESS Danny specifically used the word "Vault" or "Mission" in the NEW INPUTS.
+            - THE BRIEFING GATE: You are STRICTLY FORBIDDEN from mentioning new resources or new clusters in the briefing UNLESS Danny specifically used the word "Vault" or "Cluster" in the NEW INPUTS.
 
-            MISSION vs. INCUBATOR FRAMEWORK:
-            - MISSION ASSEMBLY: Evaluate every URL and Input against ACTIVE MISSIONS. If a link provides a "component" for a mission, assign the "mission_name".
+            CLUSTER vs. INCUBATOR FRAMEWORK:
+            - CLUSTER ASSEMBLY: Evaluate every URL against ACTIVE CLUSTERS. If a URL provides a "component" for a cluster, assign the "cluster_name".
             - THE INCUBATOR AUDIT: If an input represents a high-potential standalone product idea NOT related to current goals, tag it as project_name: "INCUBATOR".
             - SPARK DETECTION: If a link is a "Spark" (brand new project concept), create a log with entry_type: "SPARK".
-            - AUTO-MISSION DETECTION: If 3+ items suggest a cohesive new goal, add it to the "new_missions" array.
 
             DYNAMIC TASK MATCHING:
             - Compare inputs against ALL SYSTEM TASKS.
             - If Danny says "I'm done" or "Completed," mark the status as `done`.
             - DURATION ASSIGNMENT: Assign `estimated_duration` based on task type:
             - 15 minutes for routine tasks (emails, quick replies, status updates)
-            - 45 minutes for anything related to Pilots, Sales, or high-stakes Mission 10 items
+            - 45 minutes for anything related to Pilots, Sales, or high-stakes Cluster 10 items
             - Default to 15 minutes if unspecified
             
             DRIFT ALERTS (Temporal Lineage):
@@ -1635,41 +1634,41 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         if ai_data.get('logs'):
             supabase.table('logs').insert(ai_data['logs']).execute()
 
-        # H. NEW MISSIONS
-        missions_created_count = 0
-        if ai_data.get('new_missions'):
-            # TITLE A0. BATCH NEW MISSIONS Deduplicated...
-            # Fetch existing mission titles for deduplication
-            existing_missions_res = supabase.table('missions').select('id, title').eq('status', 'active').execute()
-            existing_titles_normalized = {normalize_mission_title(m['title']): m for m in (existing_missions_res.data or [])}
+        # H. NEW CLUSTERS
+        clusters_created_count = 0
+        if ai_data.get('new_clusters'):
+            # TITLE A0. BATCH NEW CLUSTERS Deduplicated...
+            # Fetch existing cluster titles for deduplication
+            existing_clusters_res = supabase.table('clusters').select('id, title').eq('status', 'active').execute()
+            existing_titles_normalized = {normalize_cluster_title(m['title']): m for m in (existing_clusters_res.data or [])}
             run_dedup = set()
 
-            for mission_title in ai_data['new_missions']:
-                if not mission_title or not isinstance(mission_title, str):
+            for cluster_title in ai_data['new_clusters']:
+                if not cluster_title or not isinstance(cluster_title, str):
                     continue
-                norm = normalize_mission_title(mission_title)
+                norm = normalize_cluster_title(cluster_title)
                 if not norm or norm in run_dedup:
                     continue
                 if norm in existing_titles_normalized:
                     run_dedup.add(norm)
                     continue
-                # Insert new mission
+                # Insert new cluster
                 ist_ts = datetime.now(timezone(timedelta(hours=5, minutes=30)))
                 description = f"Auto-created by Pulse from recurring resource/input patterns on {ist_ts.strftime('%Y-%m-%d')}."
-                insert_res = supabase.table('missions').insert({
-                    "title": mission_title.strip(),
+                insert_res = supabase.table('clusters').insert({
+                    "title": cluster_title.strip(),
                     "status": "active",
                     "description": description
                 }).execute()
                 if insert_res.data:
-                    missions_created_count += 1
+                    clusters_created_count += 1
                     run_dedup.add(norm)
-                    active_missions.append(insert_res.data[0])
-                    mission_names.append(mission_title.strip())
-                    print(f"🎯 Mission auto-created: {mission_title}")
+                    active_clusters.append(insert_res.data[0])
+                    cluster_names.append(cluster_title.strip())
+                    print(f"🎯 Cluster auto-created: {cluster_title}")
 
-        if missions_created_count > 0:
-            print(f"✅ Created {missions_created_count} new missions this run.")
+        if clusters_created_count > 0:
+            print(f"✅ Created {clusters_created_count} new clusters this run.")
 
         # I. RESOURCES — Persist AI-generated bookmarks (deduplicated by URL)
         if ai_data.get('resources'):
@@ -1692,25 +1691,25 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 supabase.table('resources').insert(resource_inserts).execute()
                 print(f"✅ Vaulted {len(resource_inserts)} new resources.")
 
-        # TITLE A1. HISTORICAL RESOURCE MISSION BACKFILL...
-        # Only attempt backfill if there are active missions to map against
-        if active_missions:
+        # TITLE A1. HISTORICAL RESOURCE CLUSTER BACKFILL...
+        # Only attempt backfill if there are active clusters to map against
+        if active_clusters:
             try:
-                # Fetch resources with NULL mission_id that have metadata to classify
+                # Fetch resources with NULL cluster_id that have metadata to classify
                 null_resources_res = supabase.table('resources').select(
                     'id, url, title, summary, strategic_note, category'
-                ).is_('mission_id', None).execute()
+                ).is_('cluster_id', None).execute()
                 null_resources = null_resources_res.data or []
                 if null_resources:
-                    # Build mission title->id map
-                    mission_map = {m['title']: m['id'] for m in active_missions}
+                    # Build cluster title->id map
+                    cluster_map = {m['title']: m['id'] for m in active_clusters}
                     # Limit batch size for safety
                     batch_size = min(75, len(null_resources))
                     backfill_batch = null_resources[:batch_size]
-                    print(f"🔄 Backfilling {len(backfill_batch)} historical resources with missions...")
+                    print(f"🔄 Backfilling {len(backfill_batch)} historical resources with clusters...")
 
                     # Build classifier prompt
-                    mission_list_str = "\n".join([f"- {m['title']}" for m in active_missions])
+                    cluster_list_str = "\n".join([f"- {m['title']}" for m in active_clusters])
                     resources_json = json.dumps([{
                         "id": r['id'],
                         "title": r.get('title', ''),
@@ -1719,26 +1718,26 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         "category": r.get('category', '')
                     } for r in backfill_batch], indent=2)
 
-                    backfill_prompt = f"""You are a mission classifier. Classify each resource against the ACTIVE missions below.
+                    backfill_prompt = f"""You are a cluster classifier. Classify each resource against the ACTIVE clusters below.
 
-                    ACTIVE MISSIONS:
-                    {mission_list_str}
+                    ACTIVE CLUSTERS:
+                    {cluster_list_str}
 
                     STRICT RULES:
-                    - Only assign a mission if the resource is a DIRECT BUILDING BLOCK for that mission.
-                    - If it is a cool tool, general article, personal read, faith content, curiosity item, or interesting but non-core material, return mission_name: null.
-                    - Never force a match. Exact mission title only if assigning.
-                    - If ambiguous between two missions, return null.
-                    - If confidence is below 0.80, return null.
-                    - Better unmapped than wrongly mapped.
+                    - Only assign a cluster if the resource is a DIRECT BUILDING BLOCK for that cluster.
+                    - If it is a cool tool, general article, personal read, faith content, curiosity item, or interesting but non-core material, return cluster_name: null.
+                    - Never force a match. Exact cluster title only if assigning.
+                    - If ambiguous between two clusters, return null.
+                    - If confidence is below 0.70, return null.
+                    - It is okay to map loosely if the theme aligns well.
 
                     Resources to classify:
                     {resources_json}
 
                     Return ONLY valid JSON array:
                     [
-                    {{"id": 1, "missionname": "...", "reason": "...", "confidence": 0.85}},
-                    {{"id": 2, "missionname": null, "reason": "...", "confidence": 0.0}}
+                    {{"id": 1, "clustername": "...", "reason": "...", "confidence": 0.85}},
+                    {{"id": 2, "clustername": null, "reason": "...", "confidence": 0.0}}
                     ]"""
 
                     try:
@@ -1757,19 +1756,19 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                         backfilled_count = 0
                         for item in backfill_result:
                             res_id = item.get('id')
-                            missionname = item.get('missionname')
+                            clustername = item.get('clustername')
                             confidence = item.get('confidence', 0.0)
 
-                            # Only update if: missionname is non-null, title exists in map, confidence >= 0.80
-                            if missionname and missionname in mission_map and confidence >= 0.80:
-                                mission_id = mission_map[missionname]
+                            # Only update if: clustername is non-null, title exists in map, confidence >= 0.70
+                            if clustername and clustername in cluster_map and confidence >= 0.70:
+                                cluster_id = cluster_map[clustername]
                                 supabase.table('resources').update({
-                                    "mission_id": mission_id
+                                    "cluster_id": cluster_id
                                 }).eq('id', res_id).execute()
                                 backfilled_count += 1
-                                print(f"🔗 Backfilled resource {res_id} → mission '{missionname}' (conf: {confidence})")
+                                print(f"🔗 Backfilled resource {res_id} → cluster '{clustername}' (conf: {confidence})")
 
-                        print(f"✅ Backfilled {backfilled_count}/{len(backfill_batch)} historical resources with missions.")
+                        print(f"✅ Backfilled {backfilled_count}/{len(backfill_batch)} historical resources with clusters.")
 
                     except Exception as bc_err:
                         audit_log_sync("pulse", "WARNING", f"⚠️ Resource backfill classification failed: {bc_err}")

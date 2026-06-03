@@ -24,7 +24,7 @@ export function ResourcesLibraryGrid({ resources, onResourceClick }: ResourcesLi
           key={resource.id}
           resource={resource}
           onClick={onResourceClick}
-          showMissionBadge={true}
+          showClusterBadge={true}
         />
       ))}
     </div>

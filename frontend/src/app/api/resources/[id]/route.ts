@@ -30,10 +30,10 @@ export async function GET(
         summary,
         strategic_note,
         category,
-        mission_id,
+        cluster_id,
         created_at,
         enriched_at,
-        missions!mission_id(id, title, status, description)
+        clusters!cluster_id(id, title, status, description)
       `)
       .eq("id", Number(id))
       .single();
@@ -43,7 +43,7 @@ export async function GET(
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const missionData = Array.isArray(data.missions) ? data.missions[0] : data.missions;
+    const clusterData = Array.isArray(data.clusters) ? data.clusters[0] : data.clusters;
 
     const resource = {
       id: data.id,
@@ -52,13 +52,13 @@ export async function GET(
       summary: data.summary,
       strategic_note: data.strategic_note,
       category: data.category,
-      mission_id: data.mission_id,
+      cluster_id: data.cluster_id,
       created_at: data.created_at,
       enriched_at: data.enriched_at,
       hostname: getHostname(data.url),
-      mission_title: missionData?.title ?? null,
-      mission_status: missionData?.status ?? null,
-      mission_description: missionData?.description ?? null,
+      cluster_title: clusterData?.title ?? null,
+      cluster_status: clusterData?.status ?? null,
+      cluster_description: clusterData?.description ?? null,
     };
 
     return NextResponse.json(resource);

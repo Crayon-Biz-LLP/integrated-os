@@ -22,7 +22,7 @@ export function ResourcesStats({ stats, loading }: { stats?: ResourceStats | nul
 
   const statCards = [
     { label: 'Total Resources', value: stats.totalResources, colorClass: 'text-foreground' },
-    { label: 'Active Missions With Resources', value: stats.activeMissionsWithResources, colorClass: 'text-primary' },
+    { label: 'Active Clusters With Resources', value: stats.activeClustersWithResources, colorClass: 'text-primary' },
     { label: 'Unmapped Resources', value: stats.unmappedResources, colorClass: 'text-foreground' },
     { label: 'Added in Last 30 Days', value: stats.recentResources, colorClass: 'text-primary' },
   ];

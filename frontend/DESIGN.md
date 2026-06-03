@@ -384,7 +384,7 @@ Color rules (always add a color class alongside stat-number):
 Utility class for all secondary category labels, table column headers, 
 and module group headings.
 Applies: 0.65rem size, uppercase, letter-spacing 0.1em, text-muted-foreground.
-Use on: all <th> cells in tables, mission/group section headings, 
+Use on: all <th> cells in tables, cluster/group section headings, 
 "Linked Entities" labels, and any metadata category header.
 
 **Active nav item pattern**

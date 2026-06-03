@@ -23,11 +23,11 @@ export async function GET(
 
     const { data: resource, error: resourceError } = await supabase
       .from("resources")
-      .select("mission_id")
+      .select("cluster_id")
       .eq("id", Number(id))
       .single();
 
-    if (resourceError || !resource?.mission_id) {
+    if (resourceError || !resource?.cluster_id) {
       return NextResponse.json([]);
     }
 
@@ -40,12 +40,12 @@ export async function GET(
         summary,
         strategic_note,
         category,
-        mission_id,
+        cluster_id,
         created_at,
         enriched_at,
-        missions!mission_id(id, title, status, description)
+        clusters!cluster_id(id, title, status, description)
       `)
-      .eq("mission_id", resource.mission_id)
+      .eq("cluster_id", resource.cluster_id)
       .neq("id", Number(id))
       .limit(5);
 
@@ -55,7 +55,7 @@ export async function GET(
     }
 
     const related = (data ?? []).map((r: any) => {
-      const missionData = Array.isArray(r.missions) ? r.missions[0] : r.missions;
+      const clusterData = Array.isArray(r.clusters) ? r.clusters[0] : r.clusters;
       return {
         id: r.id,
         url: r.url,
@@ -63,13 +63,13 @@ export async function GET(
         summary: r.summary,
         strategic_note: r.strategic_note,
         category: r.category,
-        mission_id: r.mission_id,
+        cluster_id: r.cluster_id,
         created_at: r.created_at,
         enriched_at: r.enriched_at,
         hostname: getHostname(r.url),
-        mission_title: missionData?.title ?? null,
-        mission_status: missionData?.status ?? null,
-        mission_description: missionData?.description ?? null,
+        cluster_title: clusterData?.title ?? null,
+        cluster_status: clusterData?.status ?? null,
+        cluster_description: clusterData?.description ?? null,
       };
     });
 

@@ -51,8 +51,8 @@ def build_routing_context(legacy_projects: list) -> str:
 
     return '\n'.join(f'  - {line}' for line in lines)
 
-def normalize_mission_title(value: str) -> str:
-    """Normalize mission title for comparison: lowercase, strip, collapse punctuation."""
+def normalize_cluster_title(value: str) -> str:
+    """Normalize cluster title for comparison: lowercase, strip, collapse punctuation."""
     if not value or not isinstance(value, str):
         return ""
     normalized = value.lower().strip()

@@ -1,34 +1,34 @@
 'use client';
 
-import { Resource, ResourceMission } from '@/lib/resources/types';
+import { Resource, ResourceCluster } from '@/lib/resources/types';
 import { ResourceCard } from './resource-card';
 import { Badge } from '@/components/ui/badge';
 import { FolderOpen } from 'lucide-react';
 
-interface ResourcesMissionGroupsProps {
+interface ResourcesClusterGroupsProps {
   resources: Resource[];
-  missions: ResourceMission[];
+  clusters: ResourceCluster[];
   onResourceClick: (resource: Resource) => void;
 }
 
-export function ResourcesMissionGroups({ resources, missions, onResourceClick }: ResourcesMissionGroupsProps) {
-  const unmappedResources = resources.filter(r => !r.mission_id);
+export function ResourcesClusterGroups({ resources, clusters, onResourceClick }: ResourcesClusterGroupsProps) {
+  const unmappedResources = resources.filter(r => !r.cluster_id);
   
-  const missionResourcesMap: Record<number, Resource[]> = {};
+  const clusterResourcesMap: Record<number, Resource[]> = {};
   for (const r of resources) {
-    if (r.mission_id) {
-      if (!missionResourcesMap[r.mission_id]) {
-        missionResourcesMap[r.mission_id] = [];
+    if (r.cluster_id) {
+      if (!clusterResourcesMap[r.cluster_id]) {
+        clusterResourcesMap[r.cluster_id] = [];
       }
-      missionResourcesMap[r.mission_id].push(r);
+      clusterResourcesMap[r.cluster_id].push(r);
     }
   }
 
-  const missionsWithResources = missions
-    .filter(m => missionResourcesMap[m.id]?.length > 0)
-    .sort((a, b) => (missionResourcesMap[b.id]?.length || 0) - (missionResourcesMap[a.id]?.length || 0));
+  const clustersWithResources = clusters
+    .filter(m => clusterResourcesMap[m.id]?.length > 0)
+    .sort((a, b) => (clusterResourcesMap[b.id]?.length || 0) - (clusterResourcesMap[a.id]?.length || 0));
 
-  if (missionsWithResources.length === 0 && unmappedResources.length === 0) {
+  if (clustersWithResources.length === 0 && unmappedResources.length === 0) {
     return (
       <div className="text-center py-12 text-muted-foreground">
         <FolderOpen className="h-12 w-12 mx-auto mb-4 opacity-20" />
@@ -39,23 +39,23 @@ export function ResourcesMissionGroups({ resources, missions, onResourceClick }:
 
   return (
     <div className="space-y-8">
-      {missionsWithResources.map((mission) => {
-        const missionResources = missionResourcesMap[mission.id] || [];
+      {clustersWithResources.map((cluster) => {
+        const clusterResources = clusterResourcesMap[cluster.id] || [];
         return (
-          <div key={mission.id}>
+          <div key={cluster.id}>
             <div className="flex items-center gap-2 mb-3">
-              <h3 className="section-label pt-6 pb-1">{mission.title}</h3>
-              {mission.description && (
+              <h3 className="section-label pt-6 pb-1">{cluster.title}</h3>
+              {cluster.description && (
                 <span className="text-xs text-muted-foreground/60 italic mb-3">
-                  — {mission.description}
+                  — {cluster.description}
                 </span>
               )}
               <span className="text-xs bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded font-semibold tracking-wide uppercase ml-auto">
-                {missionResources.length} resource{missionResources.length !== 1 ? 's' : ''}
+                {clusterResources.length} resource{clusterResources.length !== 1 ? 's' : ''}
               </span>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-              {missionResources.map((resource) => (
+              {clusterResources.map((resource) => (
                 <ResourceCard
                   key={resource.id}
                   resource={resource}

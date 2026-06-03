@@ -3,31 +3,31 @@
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Search, SlidersHorizontal } from 'lucide-react';
-import { ResourceMission } from '@/lib/resources/types';
+import { ResourceCluster } from '@/lib/resources/types';
 
 interface ResourcesFiltersProps {
   search: string;
   setSearch: (v: string) => void;
-  mission: string;
-  setMission: (v: string) => void;
+  cluster: string;
+  setCluster: (v: string) => void;
   category: string;
   setCategory: (v: string) => void;
   sort: string;
   setSort: (v: string) => void;
-  missions: ResourceMission[];
+  clusters: ResourceCluster[];
   categories: string[];
 }
 
 export function ResourcesFilters({
   search,
   setSearch,
-  mission,
-  setMission,
+  cluster,
+  setCluster,
   category,
   setCategory,
   sort,
   setSort,
-  missions,
+  clusters,
   categories,
 }: ResourcesFiltersProps) {
   return (
@@ -51,19 +51,19 @@ export function ResourcesFilters({
           <option value="oldest">Oldest</option>
           <option value="title">Title</option>
           <option value="category">Category</option>
-          <option value="mission">Mission</option>
+          <option value="cluster">Cluster</option>
         </select>
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
         <select
-          value={mission}
-          onChange={(e) => setMission(e.target.value)}
+          value={cluster}
+          onChange={(e) => setCluster(e.target.value)}
           className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
-          <option value="all">All Missions</option>
+          <option value="all">All Clusters</option>
           <option value="unmapped">Unmapped</option>
-          {missions.map((m) => (
+          {clusters.map((m) => (
             <option key={m.id} value={String(m.id)}>
               {m.title}
             </option>
@@ -83,12 +83,12 @@ export function ResourcesFilters({
           ))}
         </select>
 
-        {(mission !== 'all' || category !== 'all' || search) && (
+        {(cluster !== 'all' || category !== 'all' || search) && (
           <Badge
             variant="outline"
             className="cursor-pointer h-8"
             onClick={() => {
-              setMission('all');
+              setCluster('all');
               setCategory('all');
               setSearch('');
             }}

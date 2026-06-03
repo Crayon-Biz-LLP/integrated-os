@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 interface ResourceCardProps {
   resource: Resource;
   onClick: (resource: Resource) => void;
-  showMissionBadge?: boolean;
+  showClusterBadge?: boolean;
 }
 
 const categoryColors: Record<string, string> = {
@@ -30,8 +30,8 @@ function getDisplayTitle(resource: Resource): string {
   return resource.title || resource.hostname || resource.url || 'Untitled';
 }
 
-export function ResourceCard({ resource, onClick, showMissionBadge = false }: ResourceCardProps) {
-  const isUnmapped = !resource.mission_id;
+export function ResourceCard({ resource, onClick, showClusterBadge = false }: ResourceCardProps) {
+  const isUnmapped = !resource.cluster_id;
   const categoryColor = resource.category ? (categoryColors[resource.category] || 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase') : '';
 
   return (
@@ -79,12 +79,12 @@ export function ResourceCard({ resource, onClick, showMissionBadge = false }: Re
         )}
 
         <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-border/50">
-          {showMissionBadge && (
+          {showClusterBadge && (
             <span className="text-xs bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded font-semibold tracking-wide uppercase">
-              {resource.mission_title || 'Unmapped'}
+              {resource.cluster_title || 'Unmapped'}
             </span>
           )}
-          {resource.hostname && !showMissionBadge && (
+          {resource.hostname && !showClusterBadge && (
             <span className="text-xs text-muted-foreground/60 font-mono truncate">{resource.hostname}</span>
           )}
           {resource.created_at && (

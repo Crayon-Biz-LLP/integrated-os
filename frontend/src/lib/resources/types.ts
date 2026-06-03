@@ -5,16 +5,16 @@ export interface Resource {
   summary: string | null;
   strategic_note: string | null;
   category: string | null;
-  mission_id: number | null;
+  cluster_id: number | null;
   created_at: string | null;
   enriched_at: string | null;
-  mission_title: string | null;
-  mission_status: string | null;
-  mission_description: string | null;
+  cluster_title: string | null;
+  cluster_status: string | null;
+  cluster_description: string | null;
   hostname: string | null;
 }
 
-export interface ResourceMission {
+export interface ResourceCluster {
   id: number;
   title: string;
   description: string | null;
@@ -24,17 +24,17 @@ export interface ResourceMission {
 
 export interface ResourceStats {
   totalResources: number;
-  activeMissionsWithResources: number;
+  activeClustersWithResources: number;
   unmappedResources: number;
   recentResources: number;
 }
 
 export interface ResourceFilters {
   search?: string;
-  mission?: string;
+  cluster?: string;
   category?: string;
   sort?: string;
-  view?: "mission" | "library";
+  view?: "cluster" | "library";
 }
 
 export interface ResourceDetail extends Resource {

@@ -1,4 +1,4 @@
-export interface Mission {
+export interface Cluster {
   id: number;
   title: string;
   description: string | null;
@@ -6,7 +6,7 @@ export interface Mission {
   created_at: string | null;
 }
 
-export interface MissionStats {
+export interface ClusterStats {
   total: number;
   active: number;
   completed: number;

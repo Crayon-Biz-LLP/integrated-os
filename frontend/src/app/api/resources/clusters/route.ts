@@ -8,8 +8,8 @@ export async function GET() {
   try {
     const supabase = await createServerSupabaseClient();
 
-    const { data: missions, error } = await supabase
-      .from("missions")
+    const { data: clusters, error } = await supabase
+      .from("clusters")
       .select(`
         id,
         title,
@@ -21,14 +21,14 @@ export async function GET() {
       .limit(100);
 
     if (error) {
-      console.error("Supabase error fetching missions:", error);
+      console.error("Supabase error fetching clusters:", error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
     const { data: resources, error: resourcesError } = await supabase
       .from("resources")
-      .select("mission_id")
-      .not("mission_id", "is", null)
+      .select("cluster_id")
+      .not("cluster_id", "is", null)
       .limit(500);
 
     if (resourcesError) {
@@ -37,12 +37,12 @@ export async function GET() {
 
     const resourceCountMap: Record<number, number> = {};
     for (const r of (resources ?? [])) {
-      if (r.mission_id) {
-        resourceCountMap[r.mission_id] = (resourceCountMap[r.mission_id] || 0) + 1;
+      if (r.cluster_id) {
+        resourceCountMap[r.cluster_id] = (resourceCountMap[r.cluster_id] || 0) + 1;
       }
     }
 
-    const result = (missions ?? []).map((m: any) => ({
+    const result = (clusters ?? []).map((m: any) => ({
       id: m.id,
       title: m.title,
       description: m.description,
@@ -52,7 +52,7 @@ export async function GET() {
 
     return NextResponse.json(result);
   } catch (err: any) {
-    console.error("Unexpected error in missions route:", err);
+    console.error("Unexpected error in clusters route:", err);
     return NextResponse.json({ error: err.message || "Internal server error" }, { status: 500 });
   }
 }

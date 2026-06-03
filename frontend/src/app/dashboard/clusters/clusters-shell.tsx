@@ -3,7 +3,7 @@
 import { useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import type { Mission, MissionStats } from '@/lib/missions/types';
+import type { Cluster, ClusterStats } from '@/lib/clusters/types';
 import { Target, Archive, CheckCircle, Activity } from 'lucide-react';
 
 const statusColors: Record<string, string> = {
@@ -18,19 +18,19 @@ const statusLabels: Record<string, string> = {
   archived: 'Archived',
 };
 
-export function MissionsShell({
-  initialMissions,
+export function ClustersShell({
+  initialClusters,
   initialStats,
 }: {
-  initialMissions: Mission[];
-  initialStats: MissionStats;
+  initialClusters: Cluster[];
+  initialStats: ClusterStats;
 }) {
-  const [missions] = useState(initialMissions);
+  const [clusters] = useState(initialClusters);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
 
   const filtered = useMemo(
-    () => statusFilter ? missions.filter((m) => m.status === statusFilter) : missions,
-    [missions, statusFilter]
+    () => statusFilter ? clusters.filter((m) => m.status === statusFilter) : clusters,
+    [clusters, statusFilter]
   );
 
   const statsCards = [
@@ -42,9 +42,9 @@ export function MissionsShell({
 
   return (
     <div className="p-4 md:p-6">
-      <h1 className="text-2xl font-bold tracking-tight">Missions</h1>
+      <h1 className="text-2xl font-bold tracking-tight">Clusters</h1>
       <p className="text-sm text-muted-foreground/70 mt-0.5">
-        Strategic missions and initiatives
+        Strategic clusters and initiatives
       </p>
 
       <div className="grid gap-4 md:grid-cols-4 mt-6">
@@ -93,27 +93,27 @@ export function MissionsShell({
       {filtered.length === 0 && (
         <div className="rounded-md border p-8 text-center text-muted-foreground">
           <Target className="h-8 w-8 mx-auto mb-2 text-muted-foreground/50" />
-          No missions found.
+          No clusters found.
         </div>
       )}
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {filtered.map((mission) => (
-          <Card key={mission.id}>
+        {filtered.map((cluster) => (
+          <Card key={cluster.id}>
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-base font-semibold">{mission.title}</CardTitle>
+                <CardTitle className="text-base font-semibold">{cluster.title}</CardTitle>
                 <Badge
                   variant="outline"
-                  className={`text-xs ${statusColors[mission.status || ''] || 'bg-muted text-muted-foreground'}`}
+                  className={`text-xs ${statusColors[cluster.status || ''] || 'bg-muted text-muted-foreground'}`}
                 >
-                  {statusLabels[mission.status || ''] || mission.status || 'Unknown'}
+                  {statusLabels[cluster.status || ''] || cluster.status || 'Unknown'}
                 </Badge>
               </div>
             </CardHeader>
             <CardContent>
-              {mission.description && (
-                <p className="text-sm text-muted-foreground line-clamp-3">{mission.description}</p>
+              {cluster.description && (
+                <p className="text-sm text-muted-foreground line-clamp-3">{cluster.description}</p>
               )}
             </CardContent>
           </Card>

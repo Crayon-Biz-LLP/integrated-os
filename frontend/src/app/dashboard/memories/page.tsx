@@ -319,7 +319,7 @@ function MemoriesContent() {
                             person: 'bg-blue-500/10 text-blue-600 border border-blue-500/20',
                             organization: 'bg-primary/10 text-primary border border-primary/20',
                             project: 'bg-violet-500/10 text-violet-600 border border-violet-500/20',
-                            mission: 'bg-purple-500/10 text-purple-600 border border-purple-500/20',
+                            cluster: 'bg-purple-500/10 text-purple-600 border border-purple-500/20',
                             task: 'bg-amber-500/10 text-amber-600 border border-amber-500/20',
                             concept: 'bg-muted text-muted-foreground border border-border',
                             emotional_state: 'bg-rose-500/10 text-rose-600 border border-rose-500/20',

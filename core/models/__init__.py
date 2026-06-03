@@ -29,7 +29,7 @@ class ResourceItem(BaseModel):
     url: str
     title: Optional[str] = None
     summary: Optional[str] = None
-    mission_name: Optional[str] = None
+    cluster_name: Optional[str] = None
     project_name: Optional[str] = None
     strategic_note: Optional[str] = None
 
@@ -55,5 +55,5 @@ class PulseOutput(BaseModel):
     new_tasks: List[NewTask] = Field(default_factory=list)
     resources: List[ResourceItem] = Field(default_factory=list)
     logs: List[LogEntry] = Field(default_factory=list)
-    new_missions: List[str] = Field(default_factory=list)
+    new_clusters: List[str] = Field(default_factory=list)
     briefing: str

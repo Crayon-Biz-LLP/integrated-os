@@ -15,7 +15,7 @@ const colorMap: Record<string, string> = {
   person: '#3b82f6',
   organization: '#0d9488',
   project: '#7c3aed',
-  mission: '#9333ea',
+  cluster: '#9333ea',
   task: '#d97706',
   concept: '#6b7280',
   emotional_state: '#e11d48',

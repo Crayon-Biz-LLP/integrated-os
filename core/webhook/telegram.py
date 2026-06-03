@@ -49,7 +49,7 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
                 payload["reply_markup"] = {
                     "keyboard": [
                         [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
-                        [{"text": "🚀 Mission"}, {"text": "📚 Library"}],
+                        [{"text": "🚀 Cluster"}, {"text": "📚 Library"}],
                         [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}],
                         [{"text": "📊 Status"}]
                     ],
@@ -112,7 +112,7 @@ async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
 KEYBOARD = {
     "keyboard": [
         [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
-        [{"text": "🚀 Mission"}, {"text": "📚 Library"}],
+        [{"text": "🚀 Cluster"}, {"text": "📚 Library"}],
         [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}],
         [{"text": "📊 Status"}]
     ],

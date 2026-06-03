@@ -10,7 +10,7 @@ export async function GET() {
 
     const { data: allResources, error } = await supabase
       .from("resources")
-      .select("id, mission_id, created_at")
+      .select("id, cluster_id, created_at")
       .limit(500);
 
     if (error) {
@@ -23,10 +23,10 @@ export async function GET() {
 
     const totalResources = (allResources ?? []).length;
 
-    const resourcesWithMissions = (allResources ?? []).filter(r => r.mission_id !== null);
-    const activeMissionsWithResources = new Set(resourcesWithMissions.map(r => r.mission_id)).size;
+    const resourcesWithClusters = (allResources ?? []).filter(r => r.cluster_id !== null);
+    const activeClustersWithResources = new Set(resourcesWithClusters.map(r => r.cluster_id)).size;
 
-    const unmappedResources = (allResources ?? []).filter(r => r.mission_id === null).length;
+    const unmappedResources = (allResources ?? []).filter(r => r.cluster_id === null).length;
 
     const recentResources = (allResources ?? []).filter(r => {
       if (!r.created_at) return false;
@@ -35,7 +35,7 @@ export async function GET() {
 
     const stats = {
       totalResources,
-      activeMissionsWithResources,
+      activeClustersWithResources,
       unmappedResources,
       recentResources,
     };

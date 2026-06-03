@@ -338,35 +338,35 @@ async def handle_undo_command(text: str, chat_id: int):
 async def handle_command(text: str, chat_id: int):
     reply = ""
 
-    if text.startswith('/mission') or text == '🚀 Mission':
-        params = text.replace('/mission', '').replace('🚀 Mission', '').strip()
+    if text.startswith('/cluster') or text == '🚀 Cluster':
+        params = text.replace('/cluster', '').replace('🚀 Cluster', '').strip()
         if not params:
-            m_res = supabase.table('graph_nodes').select('label').eq('type', 'mission').execute()
-            active_missions = [m for m in (m_res.data or []) if json.loads(m.get('metadata') or '{}').get('status') == 'active']
-            if active_missions:
-                m_list = "\n".join([f"• {m['label']}" for m in active_missions])
-                reply = f"🚀 **ACTIVE MISSIONS:**\n\n{m_list}\n\n_To start a new one, type /mission [Goal]_"
+            m_res = supabase.table('clusters').select('id, title').eq('status', 'active').execute()
+            active_clusters = m_res.data or []
+            if active_clusters:
+                m_list = "\n".join([f"• {m['title']}" for m in active_clusters])
+                reply = f"🚀 **ACTIVE CLUSTERS:**\n\n{m_list}\n\n_To start a new one, type /cluster [Goal]_"
             else:
-                reply = "🚀 No active missions. Type `/mission [Goal]` to start hunting."
+                reply = "🚀 No active clusters. Type `/cluster [Goal]` to start hunting."
         else:
             try:
-                existing_mission = (
-                    supabase.table('graph_nodes')
+                existing_cluster = (
+                    supabase.table('clusters')
                     .select('id')
-                    .eq('type', 'mission')
-                    .ilike('label', params)
+                    .ilike('title', params)
                     .maybe_single()
                     .execute()
                 )
-                if existing_mission.data:
-                    reply = f"⚠️ Mission '{params}' already exists. Type `/mission [different goal]` to start a new one."
+                if existing_cluster.data:
+                    reply = f"⚠️ Cluster '{params}' already exists. Type `/cluster [different goal]` to start a new one."
                 else:
-                    supabase.table('graph_nodes').insert({
-                        "label": params,
-                        "type": "mission",
-                        "metadata": {"status": "active", "origin": "webhook_command"}
+                    supabase.table('clusters').insert({
+                        "title": params,
+                        "status": "active",
+                        "description": "Declared via Telegram command"
                     }).execute()
-                    reply = f"🚀 **MISSION DECLARED:** {params}\n\nI am now hunting for components and 'Sparks' related to this goal."
+
+                    reply = f"🚀 **CLUSTER DECLARED:** {params}\n\nI am now hunting for components and 'Sparks' related to this goal."
             except Exception as e:
                 reply = f"❌ Error: {str(e)}"
 
