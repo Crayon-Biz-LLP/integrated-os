@@ -1146,7 +1146,8 @@ def reflexion_loop(supabase):
     # Analyze failure patterns
     patterns = {}
     for f in failed.data:
-        key = f"{f.get('operation')}:{f.get('error')[:50]}"
+        error_msg = f.get('error_message') or ""
+        key = f"{f.get('operation')}:{error_msg[:50]}"
         patterns[key] = patterns.get(key, 0) + 1
     
     # Log insights
