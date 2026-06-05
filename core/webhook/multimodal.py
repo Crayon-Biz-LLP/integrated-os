@@ -64,16 +64,18 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
     """
 
     try:
-        content_parts = [prompt]
+        parts = [genai.types.Part(text=prompt)]
 
         if mime_type.startswith('image/'):
-            content_parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+            parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
         elif mime_type.startswith('audio/') or mime_type == 'application/octet-stream':
-            content_parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+            parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
         elif mime_type in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']:
-            content_parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+            parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
         else:
-            content_parts.append(file_bytes.decode('utf-8', errors='ignore'))
+            parts.append(genai.types.Part(text=file_bytes.decode('utf-8', errors='ignore')))
+
+        content_parts = [genai.types.Content(parts=parts)]
 
         response = await call_gemini_with_retry(
             prompt,
