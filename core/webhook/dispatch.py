@@ -269,6 +269,12 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         dump_id = dump_res.data[0]['id'] if dump_res.data else None
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Failed to save task dump: {e}")
+        # dedup_key collision — fetch existing row
+        try:
+            existing = supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key).maybe_single().execute()
+            dump_id = existing.data.get('id') if existing.data else None
+        except Exception as e2:
+            audit_log_sync("webhook", "ERROR", f"Failed to fetch existing dump by dedup_key: {e2}")
 
     ack = receipt or "Logged."
     await send_telegram(chat_id, f"{ack}")
@@ -327,7 +333,13 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         dump_id = dump_res.data[0]['id'] if dump_res.data else None
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Failed to save note dump: {e}")
-        dump_id = None
+        # dedup_key collision — fetch existing row
+        try:
+            existing = supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key).maybe_single().execute()
+            dump_id = existing.data.get('id') if existing.data else None
+        except Exception as e2:
+            audit_log_sync("webhook", "ERROR", f"Failed to fetch existing dump by dedup_key: {e2}")
+            dump_id = None
 
     # ── Step 2: Attempt embedding ──
     embedding = await asyncio.to_thread(get_embedding, text)
