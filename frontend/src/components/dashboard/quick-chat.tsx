@@ -21,7 +21,7 @@ export function QuickChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Auto-refresh every 30 seconds
   useEffect(() => {
@@ -40,9 +40,14 @@ export function QuickChat() {
     return () => clearInterval(interval);
   }, []);
 
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom (isolated to container)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({
+        top: scrollContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
   }, [messages]);
 
   const handleSend = async () => {
@@ -73,7 +78,7 @@ export function QuickChat() {
         </a>
       </div>
       
-      <div className="space-y-3 max-h-64 overflow-y-auto">
+      <div className="space-y-3 max-h-64 overflow-y-auto" ref={scrollContainerRef}>
         {messages.map((msg) => {
           const isUser = msg.sender === 'user';
           const senderLabel = msg.sender === 'system' ? 'Rhodey' : 'You';
@@ -108,7 +113,6 @@ export function QuickChat() {
             </div>
           );
         })}
-        <div ref={messagesEndRef} />
       </div>
       
       <div className="flex gap-2">

@@ -12,7 +12,7 @@ export default function MessagesPage() {
   const [loading, setLoading] = useState(true);
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const loadMessages = async () => {
     setLoading(true);
@@ -32,7 +32,12 @@ export default function MessagesPage() {
 
   useEffect(() => {
     // Scroll to bottom on initial load AND when new messages arrive
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({
+        top: scrollContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
   }, [messages, loading]);
 
   const handleSend = async () => {
@@ -148,7 +153,7 @@ export default function MessagesPage() {
       </div>
 
       {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4" ref={scrollContainerRef}>
         {loading && (
           <div className="space-y-3">
             {[1, 2, 3].map(i => (
@@ -220,15 +225,13 @@ export default function MessagesPage() {
                       >
                         {formatTime(msg.created_at)}
                       </p>
-                    </div>
-                  </div>
-                );
-              })}
+              </div>
             </div>
+          );
+        })}
+      </div>
           </div>
         ))}
-        
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Input Area */}
