@@ -223,7 +223,7 @@ export function ClustersShell({
 
       {/* Expanded Cluster Modal */}
       <Dialog open={expandedClusterId !== null} onOpenChange={(open) => !open && setExpandedClusterId(null)}>
-        <DialogContent className="max-w-4xl max-h-[85vh] h-[85vh] flex flex-col p-0 gap-0 overflow-hidden bg-background/95 backdrop-blur-xl border-border/50 shadow-2xl rounded-2xl">
+        <DialogContent className="max-w-6xl w-[95vw] max-h-[85vh] h-[85vh] flex flex-col p-0 gap-0 overflow-hidden bg-background/95 backdrop-blur-xl border-border/50 shadow-2xl rounded-2xl">
           {activeCluster && (
             <>
               <DialogHeader className="p-6 pb-4 border-b shrink-0 bg-card/50">
@@ -256,7 +256,7 @@ export function ClustersShell({
                       <div className="flex-1 min-w-0 flex flex-col gap-1">
                         <div className="font-semibold text-base truncate pr-4">{getDisplayTitle(r)}</div>
                         <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                          <span className="truncate max-w-[200px] font-mono opacity-80">{r.hostname || 'Local Document'}</span>
+                          <span className="truncate max-w-[300px] font-mono opacity-80">{r.hostname || 'Local Document'}</span>
                           <span className="hidden sm:inline-block border-l h-3 border-border/50"></span>
                           <span>{formatDate(r.created_at)}</span>
                         </div>
