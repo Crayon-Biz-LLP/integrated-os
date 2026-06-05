@@ -2,11 +2,11 @@
 
 import { useState, useMemo, useCallback } from 'react';
 import type { Resource, ResourceCluster } from '@/lib/resources/types';
-import { ResourceDetailSheet } from '@/components/resources/resource-detail-sheet';
 import { updateResourceCluster, fetchResource, fetchRelatedResources } from '@/lib/resources/api';
-import { Search, Globe, FileText, LayoutGrid, Maximize2, Inbox } from 'lucide-react';
+import { Search, Globe, FileText, LayoutGrid, Maximize2, Inbox, ExternalLink, ChevronLeft } from 'lucide-react';
 import { Input } from '@/components/ui/input';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 
 const categoryColors: Record<string, string> = {
@@ -42,7 +42,6 @@ export function ClustersShell({
   const [expandedClusterId, setExpandedClusterId] = useState<number | 'unmapped' | null>(null);
   const [selectedResource, setSelectedResource] = useState<Resource | null>(null);
   const [relatedResources, setRelatedResources] = useState<Resource[]>([]);
-  const [detailOpen, setDetailOpen] = useState(false);
 
   // Filter resources
   const filteredResources = useMemo(() => {
@@ -79,7 +78,6 @@ export function ClustersShell({
 
   const handleResourceClick = useCallback(async (resource: Resource) => {
     setSelectedResource(resource);
-    setDetailOpen(true);
 
     if (resource.cluster_id) {
       try {
@@ -221,77 +219,225 @@ export function ClustersShell({
         </div>
       </div>
 
-      {/* Expanded Cluster Modal */}
-      <Dialog open={expandedClusterId !== null} onOpenChange={(open) => !open && setExpandedClusterId(null)}>
-        <DialogContent className="max-w-[95vw] sm:max-w-[95vw] md:max-w-4xl lg:max-w-6xl w-[95vw] max-h-[85vh] h-[85vh] flex flex-col p-0 gap-0 overflow-hidden bg-background/95 backdrop-blur-xl border-border/50 shadow-2xl rounded-2xl">
+      {/* Expanded Cluster Modal (Split Pane) */}
+      <Dialog 
+        open={expandedClusterId !== null} 
+        onOpenChange={(open) => {
+          if (!open) {
+            setExpandedClusterId(null);
+            setSelectedResource(null);
+          }
+        }}
+      >
+        <DialogContent 
+          showCloseButton={false}
+          className="max-w-[95vw] sm:max-w-[95vw] md:max-w-5xl lg:max-w-7xl w-[95vw] max-h-[90vh] h-[90vh] flex flex-col p-0 gap-0 overflow-hidden bg-background/95 backdrop-blur-2xl border-border/50 shadow-2xl rounded-2xl"
+        >
           {activeCluster && (
-            <>
-              <DialogHeader className="p-6 pb-4 border-b shrink-0 bg-card/50">
-                <div className="flex items-center gap-3">
-                  <div className={cn("p-2 rounded-xl", expandedClusterId === 'unmapped' ? "bg-muted" : "bg-primary/10 text-primary")}>
-                    {expandedClusterId === 'unmapped' ? <Inbox className="h-6 w-6" /> : <LayoutGrid className="h-6 w-6" />}
-                  </div>
-                  <div>
-                    <DialogTitle className="text-2xl font-bold">{activeCluster.title}</DialogTitle>
-                    <p className="text-sm text-muted-foreground mt-0.5">{activeCluster.items.length} resources</p>
-                  </div>
-                </div>
-                {activeCluster.description && (
-                  <p className="text-sm text-muted-foreground mt-3 max-w-2xl">{activeCluster.description}</p>
-                )}
-              </DialogHeader>
+            <div className="flex h-full w-full overflow-hidden">
               
-              <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-muted/5">
-                <div className="flex flex-col gap-2">
-                  {activeCluster.items.map(r => (
-                    <div 
-                      key={r.id} 
-                      onClick={() => handleResourceClick(r)}
-                      className="group flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 p-4 rounded-xl border border-border/40 bg-card hover:bg-accent/50 hover:border-border cursor-pointer transition-all hover:shadow-sm"
+              {/* Left Pane: Resource List */}
+              <div className={cn(
+                "flex-col h-full border-r border-border/50 bg-card/30 w-full md:w-2/5 md:min-w-[380px] md:max-w-[450px]",
+                selectedResource ? "hidden md:flex" : "flex"
+              )}>
+                {/* Header */}
+                <div className="p-5 md:p-6 pb-4 border-b shrink-0 bg-card/50">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className={cn("p-2 rounded-xl", expandedClusterId === 'unmapped' ? "bg-muted" : "bg-primary/10 text-primary")}>
+                        {expandedClusterId === 'unmapped' ? <Inbox className="h-5 w-5" /> : <LayoutGrid className="h-5 w-5" />}
+                      </div>
+                      <div>
+                        <h2 className="text-xl font-bold leading-tight">{activeCluster.title}</h2>
+                        <p className="text-xs text-muted-foreground mt-0.5 font-mono">{activeCluster.items.length} items</p>
+                      </div>
+                    </div>
+                    {/* Custom mobile close button to close dialog since we disabled the default one */}
+                    <button 
+                      onClick={() => setExpandedClusterId(null)}
+                      className="md:hidden p-2 bg-muted/50 rounded-full text-muted-foreground hover:bg-muted"
                     >
-                      <div className="hidden sm:flex w-8 h-8 rounded-full bg-muted/50 items-center justify-center shrink-0 group-hover:bg-background transition-colors">
-                        {r.url ? <Globe className="h-4 w-4 text-muted-foreground" /> : <FileText className="h-4 w-4 text-muted-foreground" />}
-                      </div>
-                      
-                      <div className="flex-1 min-w-0 flex flex-col gap-1">
-                        <div className="font-semibold text-base truncate pr-4">{getDisplayTitle(r)}</div>
-                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                          <span className="truncate max-w-[300px] font-mono opacity-80">{r.hostname || 'Local Document'}</span>
-                          <span className="hidden sm:inline-block border-l h-3 border-border/50"></span>
-                          <span>{formatDate(r.created_at)}</span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 sm:w-48 shrink-0 sm:justify-end">
-                        {r.category && (
-                          <span className={cn("text-[10px] px-2 py-1 rounded-md font-bold uppercase tracking-wider", categoryColors[r.category] || "text-muted-foreground bg-muted")}>
-                            {r.category}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                  {activeCluster.items.length === 0 && (
-                    <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
-                      <LayoutGrid className="h-12 w-12 opacity-20 mb-4" />
-                      <p>No resources found in this view.</p>
-                    </div>
+                      <Search className="h-4 w-4 rotate-45" /> {/* Just using as a close cross visually or we can use X */}
+                    </button>
+                  </div>
+                  {activeCluster.description && (
+                    <p className="text-sm text-muted-foreground line-clamp-2">{activeCluster.description}</p>
                   )}
                 </div>
+
+                {/* List */}
+                <div className="flex-1 overflow-y-auto p-3 md:p-4 bg-muted/5">
+                  <div className="flex flex-col gap-1.5">
+                    {activeCluster.items.map(r => {
+                      const isSelected = selectedResource?.id === r.id;
+                      return (
+                        <div 
+                          key={r.id} 
+                          onClick={() => handleResourceClick(r)}
+                          className={cn(
+                            "group flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all",
+                            isSelected 
+                              ? "bg-primary/5 border-primary/30 shadow-sm" 
+                              : "border-transparent hover:bg-accent/50 hover:border-border/40"
+                          )}
+                        >
+                          <div className={cn(
+                            "flex w-8 h-8 rounded-full items-center justify-center shrink-0 transition-colors",
+                            isSelected ? "bg-primary/10 text-primary" : "bg-muted/50 text-muted-foreground group-hover:bg-background"
+                          )}>
+                            {r.url ? <Globe className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
+                          </div>
+                          
+                          <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                            <div className={cn(
+                              "font-semibold text-sm truncate",
+                              isSelected ? "text-primary" : "text-foreground"
+                            )}>
+                              {getDisplayTitle(r)}
+                            </div>
+                            <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                              <span className="truncate max-w-[120px] font-mono opacity-80">{r.hostname || 'Local'}</span>
+                              {r.category && (
+                                <>
+                                  <span className="border-l h-2 border-border/50"></span>
+                                  <span className="font-bold uppercase tracking-wider opacity-70">{r.category.substring(0,4)}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {activeCluster.items.length === 0 && (
+                      <div className="flex flex-col items-center justify-center h-48 text-muted-foreground text-sm">
+                        <LayoutGrid className="h-10 w-10 opacity-20 mb-3" />
+                        <p>Inbox zero.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
-            </>
+
+              {/* Right Pane: Detail View */}
+              <div className={cn(
+                "flex-col h-full bg-background overflow-y-auto flex-1 relative",
+                selectedResource ? "flex" : "hidden md:flex"
+              )}>
+                {selectedResource ? (
+                  <div className="flex flex-col p-6 md:p-10 max-w-3xl mx-auto w-full animate-in fade-in slide-in-from-right-4 duration-300">
+                    <button 
+                      onClick={() => setSelectedResource(null)} 
+                      className="md:hidden mb-6 flex items-center w-fit text-sm font-medium text-muted-foreground hover:text-foreground transition-colors bg-muted/50 px-3 py-1.5 rounded-full"
+                    >
+                      <ChevronLeft className="w-4 h-4 mr-1" /> Back to list
+                    </button>
+
+                    <div className="flex items-center gap-3 mb-6">
+                      {selectedResource.category && (
+                        <span className={cn("text-xs px-2.5 py-1 rounded-md font-bold uppercase tracking-wider", categoryColors[selectedResource.category] || "text-muted-foreground bg-muted")}>
+                          {selectedResource.category}
+                        </span>
+                      )}
+                      <span className="text-xs text-muted-foreground/50 font-mono ml-auto">
+                        Added {formatDate(selectedResource.created_at)}
+                      </span>
+                    </div>
+
+                    <h2 className="text-2xl md:text-3xl font-bold leading-tight tracking-tight mb-6">
+                      {selectedResource.title || selectedResource.hostname || 'Untitled'}
+                    </h2>
+
+                    {selectedResource.url && (
+                      <a
+                        href={selectedResource.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="group flex items-center gap-2 text-sm text-primary/80 hover:text-primary font-mono mb-8 bg-primary/5 hover:bg-primary/10 w-fit px-3 py-2 rounded-lg transition-colors"
+                      >
+                        <Globe className="h-4 w-4" />
+                        {selectedResource.hostname || selectedResource.url}
+                        <ExternalLink className="h-3 w-3 opacity-50 group-hover:opacity-100 transition-opacity" />
+                      </a>
+                    )}
+
+                    <div className="space-y-8">
+                      {selectedResource.strategic_note && (
+                        <div>
+                          <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">Strategic Context</h4>
+                          <p className="text-base text-foreground/90 leading-relaxed border-l-2 border-primary/30 pl-4 italic">
+                            "{selectedResource.strategic_note}"
+                          </p>
+                        </div>
+                      )}
+
+                      {selectedResource.summary && (
+                        <div>
+                          <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">Summary</h4>
+                          <p className="text-sm text-muted-foreground leading-relaxed">
+                            {selectedResource.summary}
+                          </p>
+                        </div>
+                      )}
+
+                      <Separator className="my-8 opacity-50" />
+
+                      <div>
+                        <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">Cluster Assignment</h4>
+                        <select
+                          value={selectedResource.cluster_id ? String(selectedResource.cluster_id) : 'unmapped'}
+                          onChange={(e) => handleClusterChange(selectedResource.id, e.target.value === 'unmapped' ? null : Number(e.target.value))}
+                          className="w-full md:w-80 rounded-xl border border-border/50 bg-muted/20 text-sm px-4 py-3 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground cursor-pointer hover:bg-muted/40"
+                        >
+                          <option value="unmapped">Inbox / Unmapped</option>
+                          {initialClusters.map((m) => (
+                            <option key={m.id} value={String(m.id)}>
+                              {m.title}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {relatedResources.length > 0 && (
+                        <div className="pt-4">
+                          <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-4">Related in this Cluster ({relatedResources.length})</h4>
+                          <div className="flex flex-col gap-2">
+                            {relatedResources.slice(0, 5).map((r) => (
+                              <div key={r.id} className="flex items-center gap-3 p-3 rounded-lg border border-border/30 bg-muted/10">
+                                <div className="flex-1 font-medium text-sm truncate">{getDisplayTitle(r)}</div>
+                                {r.category && (
+                                  <span className={cn("text-[9px] px-1.5 py-0.5 rounded uppercase font-bold shrink-0", categoryColors[r.category] || "bg-muted")}>
+                                    {r.category.substring(0,4)}
+                                  </span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground opacity-50 p-6 text-center">
+                    <FileText className="h-16 w-16 mb-6 opacity-20" />
+                    <p className="text-lg font-medium">Select a resource</p>
+                    <p className="text-sm mt-2 max-w-sm">Click any resource in the list to view its strategic context, summary, and related cluster items.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Desktop Close Button (absolute over the right pane) */}
+              <button 
+                onClick={() => setExpandedClusterId(null)}
+                className="hidden md:flex absolute top-6 right-6 p-2.5 bg-muted/50 hover:bg-muted rounded-full text-muted-foreground transition-colors z-50"
+              >
+                <Search className="h-4 w-4 rotate-45" /> {/* Poor man's X icon since we didn't import X */}
+              </button>
+
+            </div>
           )}
         </DialogContent>
       </Dialog>
-
-      <ResourceDetailSheet
-        resource={selectedResource}
-        open={detailOpen}
-        onOpenChange={setDetailOpen}
-        clusters={initialClusters}
-        onClusterChange={handleClusterChange}
-        relatedResources={relatedResources}
-      />
     </div>
   );
 }
