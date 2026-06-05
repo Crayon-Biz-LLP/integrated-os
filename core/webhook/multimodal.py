@@ -40,6 +40,8 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             await send_telegram(chat_id, "Couldn't extract any text from that.")
             return
 
+        raw_text = f"ALT IMAGE: {raw_text}"
+
         # ── Pass 2: Feed into standard text pipeline ──
         classification = await classify_intent(
             raw_text,
@@ -47,6 +49,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             ist_hour=current_hour,
             core_json=core_json
         )
+        classification["extraction_method"] = "alt_image"
 
         intent = classification.get('intent', 'NOTE')
         confidence = classification.get('confidence', 0.5)
@@ -61,7 +64,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             )
         else:
             from core.webhook.dispatch import handle_confident_note
-            await handle_confident_note(raw_text, chat_id, source=source)
+            await handle_confident_note(raw_text, chat_id, source=source, extraction_method="alt_image")
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Multimodal processing error: {e}")

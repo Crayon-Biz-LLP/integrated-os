@@ -50,10 +50,10 @@ def is_already_in_tasks_table(title: str) -> dict:
 
 
 def is_recent_raw_dump(content: str, source: str) -> bool:
-    """Check if identical content+source was inserted in the last 60 seconds.
+    """Check if identical content+source was inserted in the last 5 minutes.
     Used as idempotency guard against Telegram double-fires and user double-taps."""
     try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         dup = supabase.table('raw_dumps') \
             .select('id') \
             .eq('content', content) \

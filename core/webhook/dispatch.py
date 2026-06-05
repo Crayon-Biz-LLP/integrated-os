@@ -1,6 +1,7 @@
 import json
 import re
 import asyncio
+import hashlib
 from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
 from core.lib.audit_logger import audit_log_sync
@@ -233,7 +234,7 @@ Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or
     except Exception as log_err:
         audit_log_sync("webhook", "WARNING", f"Failed to log daily brief: {log_err}")
 
-async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram", sender: str = "user", task_update_id: int = None, history_text: str = "", session_id: str = None):
+async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram", sender: str = "user", task_update_id: int = None, history_text: str = "", session_id: str = None, extraction_method: str = None):
     # ── Idempotency guard: skip if identical content+source inserted within 60s ──
     if is_recent_raw_dump(text, source):
         ack = receipt or "Logged."
@@ -248,6 +249,10 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
     }
     if task_update_id is not None:
         meta["task_update_id"] = task_update_id
+    if extraction_method is not None:
+        meta["extraction_method"] = extraction_method
+
+    dedup_key = hashlib.md5(f"{source}:{text}".encode()).hexdigest()
 
     dump_id = None
     try:
@@ -258,7 +263,8 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             "sender": sender,
             "message_type": "task",
             "source": source,
-            "metadata": meta
+            "metadata": meta,
+            "dedup_key": dedup_key
         }]).execute()
         dump_id = dump_res.data[0]['id'] if dump_res.data else None
     except Exception as e:
@@ -267,20 +273,6 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
     ack = receipt or "Logged."
     await send_telegram(chat_id, f"{ack}")
 
-    # Log acknowledgment to raw_dumps so it appears in web UI
-    try:
-        supabase.table('raw_dumps').insert([{
-            "content": ack,
-            "status": "completed",
-            "is_processed": True,
-            "direction": "outgoing",
-            "sender": "system",
-            "message_type": "acknowledgment",
-            "metadata": {"in_response_to": text, "type": "ack"}
-        }]).execute()
-    except Exception as ack_err:
-        audit_log_sync("webhook", "WARNING", f"Failed to log ack to raw_dumps: {ack_err}")
-
     # Inline: process the dump immediately (fire-and-forget)
     if dump_id:
         try:
@@ -288,8 +280,13 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             result = await process_single_dump(text, meta, tasks_service, history_text)
             
             if result.get('action') == 'clarify':
-                await handle_clarification(text, result.get('question', "Could you provide more details?"), chat_id, session_id=session_id)
-                # We don't mark as synced yet, user must reply
+                question = result.get('question', "Could you provide more details?")
+                reply = f"{ack}\n\n{question}\n\n_Context: \"{text[:100]}...\"_"
+                await send_telegram(chat_id, reply)
+                supabase.table('raw_dumps').update({
+                    "status": "clarify_needed",
+                    "metadata": {**meta, "clarification_question": question}
+                }).eq('id', dump_id).execute()
                 
             elif result.get('action') in ('created', 'completed', 'filed', 'updated'):
                 supabase.table('raw_dumps').update({"status": "synced"}).eq('id', dump_id).execute()
@@ -303,7 +300,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Inline processing failed for dump {dump_id}: {e}")
 
-async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None):
+async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None):
     # ── Idempotency guard: skip if identical content+source inserted within 60s ──
     if is_recent_raw_dump(text, source):
         ack = receipt or "Note vaulted."
@@ -311,6 +308,10 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         return
 
     # ── Step 1: Insert as staged (captured, pending processing) ──
+    metadata = {"intent": "NOTE", "entity": entity}
+    if extraction_method is not None:
+        metadata["extraction_method"] = extraction_method
+    dedup_key = hashlib.md5(f"{source}:{text}".encode()).hexdigest()
     insert_data = {
         "content": text,
         "status": "staged",
@@ -318,7 +319,8 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         "sender": sender,
         "message_type": "note",
         "source": source,
-        "metadata": {"intent": "NOTE", "entity": entity}
+        "metadata": metadata,
+        "dedup_key": dedup_key
     }
     try:
         dump_res = supabase.table('raw_dumps').insert([insert_data]).execute()
@@ -386,23 +388,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Failed to mark dump {dump_id} as processed: {e}")
 
-    ack = receipt or "Note vaulted."
-    await send_telegram(chat_id, f"{ack}")
-
-    # Log acknowledgment to raw_dumps so it appears in web UI
-    try:
-        supabase.table('raw_dumps').insert([{
-            "content": ack,
-            "status": "processed",
-            "is_processed": True,
-            "direction": "outgoing",
-            "sender": "system",
-            "message_type": "acknowledgment",
-            "source": source,
-            "metadata": {"in_response_to": text, "type": "ack"}
-        }]).execute()
-    except Exception as ack_err:
-        audit_log_sync("webhook", "WARNING", f"Failed to log ack to raw_dumps: {ack_err}")
+    await send_telegram(chat_id, receipt or "Note vaulted.")
 
 async def handle_clarification(text: str, question: str, chat_id: int, session_id: str = None, receipt: str = None):
     ack = receipt or "Copy that. I need one more detail to log this."
@@ -500,7 +486,8 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         entity = classification.get('entity') if classification else None
         time_context = classification.get('time_context', '') if classification else ''
         task_update_id = task_update_id if task_update_id is not None else (classification.get('task_update_id') if classification else None)
-        await handle_confident_task(text, title, time_context, chat_id, receipt, entity=entity, source=source, sender=sender, task_update_id=task_update_id, history_text=history_text, session_id=session_id)
+        extraction_method = classification.get('extraction_method') if classification else None
+        await handle_confident_task(text, title, time_context, chat_id, receipt, entity=entity, source=source, sender=sender, task_update_id=task_update_id, history_text=history_text, session_id=session_id, extraction_method=extraction_method)
     elif intent == 'DAILY_BRIEF':
         await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
     elif intent == 'QUERY':
@@ -521,7 +508,8 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
     elif intent == 'NOTE':
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None
-        await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity)
+        extraction_method = classification.get('extraction_method') if classification else None
+        await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method)
     elif intent == 'DELEGATE':
         supabase.table('agent_queue').insert({"query": text, "status": "pending"}).execute()
         ack = classification.get('receipt', "The intern is on it. I'll ping you when the research is ready.") if classification else "The intern is on it. I'll ping you when the research is ready."
