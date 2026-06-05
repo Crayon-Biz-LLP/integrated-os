@@ -273,7 +273,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             "content": ack,
             "status": "completed",
             "is_processed": True,
-            "direction": "incoming",
+            "direction": "outgoing",
             "sender": "system",
             "message_type": "acknowledgment",
             "metadata": {"in_response_to": text, "type": "ack"}

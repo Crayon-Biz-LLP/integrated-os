@@ -92,22 +92,6 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
     ):
         return {"action": "skipped", "reason": "completion_lane_exclusive"}
 
-    # ── Bypass: NOTE intents are pre-classified by multimodal pipeline.
-    # Skip AI re-classification; embed raw_text (verbatim) directly into memories.
-    if metadata.get("intent") == "NOTE" or metadata.get("message_type") == "note":
-        text_to_embed = (metadata.get("raw_text") or text).strip()
-        embedding = get_embedding(text_to_embed)
-        try:
-            supabase.table('memories').insert({
-                "content": text_to_embed,
-                "memory_type": "note",
-                "embedding": embedding,
-                "source": metadata.get("source", "multimodal")
-            }).execute()
-        except Exception as e:
-            audit_log_sync("quick_process", "WARNING", f"Memory insert failed for note: {e}")
-        return {"action": "filed", "type": "note"}
-
     stripped = text.strip()
     if re.match(r'^https?://\S+$', stripped):
         await save_url_as_resource(text)
@@ -382,7 +366,7 @@ async def process_pending_dumps():
     tasks_service = get_tasks_service()
     processed = 0
     for d in dumps:
-        if d.get('message_type') not in ('task', 'note', None):
+        if d.get('message_type') not in ('task', None):
             continue
         meta = d.get('metadata') or {}
         if isinstance(meta, str):

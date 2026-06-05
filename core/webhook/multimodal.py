@@ -1,74 +1,21 @@
-import os
-import json
 from datetime import datetime, timezone, timedelta
 from google import genai
-from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
 from core.webhook.telegram import send_telegram
-from core.webhook.classify import call_gemini_with_retry, CLASSIFICATION_MODEL
-
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+from core.webhook.classify import call_gemini_with_retry, CLASSIFICATION_MODEL, classify_intent
+from core.webhook.dispatch import route_by_intent
 
 
 async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int, ist_hour: int = None, core_json: str = "[]"):
-    """Process audio, image, or document content and extract tasks and insights."""
+    """Two-pass extraction: verbatim OCR → standard text pipeline."""
     ist_offset = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist_offset)
     current_hour = ist_hour if ist_hour is not None else now.hour
 
-    if 4 <= current_hour < 12:
-        time_phase = "morning"
-    elif 12 <= current_hour < 18:
-        time_phase = "afternoon"
-    else:
-        time_phase = "night"
-
-    prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy. If it's after 9 PM, append a dry command to sign off (e.g., 'Go be a dad').
-
-    PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
-
-    CURRENT TIME CONTEXT: It's the {time_phase}.
-
-    IDENTITY & BUSINESS CONTEXT: {core_json}
-
-    THE STRATEGIC MAP: PROJECT ROUTING: Route tasks about personal finances, bills, home, or family to PERSONAL. Only route to CRAYON if the task specifically relates to corporate governance, business taxes, or legal compliance. Route tech/client work to SOLVSTRAT. Default to INBOX.
-
-    ---
-    MULTIMODAL INSTRUCTIONS:
-    If an IMAGE: Transcribe text, analyze UI/Design patterns, identify strategic diagrams or URLs.
-    If AUDIO: Extract explicit actions, deadlines, decisions, and research requests.
-    If DOCUMENT: Summarize intent, extract deliverables, legal obligations, and deadlines.
-
-    RULES:
-    - TASK: Any implied action (Send, Call, Fix). Do not require a date.
-    - NOTE: Strategic insights, facts, or observations worth remembering.
-    - DELEGATE: Research requests, competitor audits, or dossier building.
-    - RECEIPT RULE: Receipts must be confirmation-only. Use: '[Subject] logged for [Time/Day].'
-    - LITERAL SUBJECT RULE: Mirror Danny's verb. (e.g., 'Check with Vasanth' → 'Vasanth check-in logged').
-    - ZERO DATA LOSS: Never drop qualifiers like 'Canadian project' or 'Zoho API'.
-    - STEALTH ROUTING: Assign the entity in the JSON, but NEVER mention it (SOLVSTRAT, PERSONAL) in the receipt text.
-    - DATE HANDSHAKE: If a time or day is mentioned, include it in the receipt for verification.
-    - If it's night (Phase: night), confirm the entry first, THEN give the sign-off command. (e.g., 'Vasanth check-in logged. Now go be a dad.').
-    - TONE GUARD: NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'cluster', 'ready for your review'.
-    - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
-
-    OUTPUT:
-    Return ONLY a valid JSON array of objects. For every item, include:
-    - 'type': "TASK", "NOTE", or "DELEGATE"
-    - 'entity': Project routing (QHORD, SOLVSTRAT, CRAYON, PERSONAL, etc.)
-    - 'content': Brief structured summary (as before)
-    - 'raw_text': (IMPORTANT) The FULL verbatim text from the source that this item was derived from. For images: ALL visible text, no summarization, no truncation. This is preserved for later retrieval.
-    Example: [{{"type": "NOTE", "entity": "SOLVSTRAT", "content": "AI engineering technical requirements for stack review", "raw_text": "Technical Requirements for AI Engineering Platform:\n1. Multi-model support (GPT-4, Claude, Gemini)\n2. RAG pipeline with vector database\n3. Agent orchestration framework\n4. Real-time monitoring dashboard\n5. API rate limiting and cost management"}}]
-
-    Tone: No corporate polish. No "Starship" metaphors. Talk like a high-level partner who knows the time of day and what's at stake.
-    """
-
     try:
-        parts = [genai.types.Part(text=prompt)]
+        # ── Pass 1: Pure verbatim extraction ──
+        extraction_prompt = "Transcribe ALL visible text from this image exactly as shown. Preserve original line breaks, spacing, and punctuation. Do not summarize, normalize, or omit any content. Return ONLY the raw text — no explanations, no formatting."
+        parts = [genai.types.Part(text=extraction_prompt)]
 
         if mime_type.startswith('image/'):
             parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
@@ -82,88 +29,41 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
         content_parts = [genai.types.Content(parts=parts)]
 
         response = await call_gemini_with_retry(
-            prompt,
+            extraction_prompt,
             contents=content_parts,
             model=CLASSIFICATION_MODEL,
-            config={'response_mime_type': 'application/json'}
+            config={'response_mime_type': 'text/plain'}
+        )
+        raw_text = response.text.strip()
+
+        if not raw_text:
+            await send_telegram(chat_id, "Couldn't extract any text from that.")
+            return
+
+        # ── Pass 2: Feed into standard text pipeline ──
+        classification = await classify_intent(
+            raw_text,
+            context=[],
+            ist_hour=current_hour,
+            core_json=core_json
         )
 
-        extracted = json.loads(response.text)
+        intent = classification.get('intent', 'NOTE')
+        confidence = classification.get('confidence', 0.5)
+        source = "multimodal"
 
-        task_count = 0
-        note_count = 0
+        CONFIDENCE_LOW = 0.5
 
-        for item in extracted:
-            item_type = item.get('type', '').upper()
-            content = item.get('content', '')
-
-            if not content:
-                continue
-
-            raw_text = item.get('raw_text', item.get('content'))
-
-            if item_type == 'TASK':
-                supabase.table('raw_dumps').insert([{
-                    "content": content,
-                    "status": "pending",
-                    "direction": "incoming",
-                    "sender": "user",  # All user messages have sender "user"
-                    "message_type": "task",
-                    "source": "multimodal",
-                    "metadata": {
-                        "source": "multimodal",
-                        "mime_type": mime_type,
-                        "entity": item.get('entity'),
-                        "raw_text": raw_text
-                    }
-                }]).execute()
-                task_count += 1
-                print(f"📋 Task extracted: {content[:50]}...")
-
-            elif item_type == 'NOTE':
-                supabase.table('raw_dumps').insert([{
-                    "content": content,
-                    "status": "pending",
-                    "direction": "incoming",
-                    "sender": "user",  # All user messages have sender "user"
-                    "message_type": "note",
-                    "source": "multimodal",
-                    "metadata": {
-                        "intent": "NOTE",
-                        "source": "multimodal",
-                        "mime_type": mime_type,
-                        "entity": item.get('entity'),
-                        "raw_text": raw_text
-                    }
-                }]).execute()
-                note_count += 1
-                print(f"📝 Note staged: {content[:50]}...")
-
-            elif item_type == 'DELEGATE':
-                supabase.table('agent_queue').insert({
-                    "query": content,
-                    "status": "pending",
-                    "metadata": {"source": "multimodal", "mime_type": mime_type}
-                }).execute()
-                print(f"🕵️ Agent dispatched: {content[:50]}...")
-
-        summary_parts = []
-        if task_count > 0:
-            summary_parts.append(f"{task_count} Task{'s' if task_count != 1 else ''}")
-        if note_count > 0:
-            summary_parts.append(f"{note_count} Insight{'s' if note_count != 1 else ''}")
-
-        if summary_parts:
-            summary = " & ".join(summary_parts)
-            await send_telegram(chat_id, f"Logged {summary}.")
+        if confidence >= CONFIDENCE_LOW:
+            await route_by_intent(
+                intent, raw_text, chat_id, session_id=None,
+                classification=classification, source=source
+            )
         else:
-            await send_telegram(chat_id, "Understood.")
-
-        return {"tasks": task_count, "notes": note_count}
+            from core.webhook.dispatch import handle_confident_note
+            await handle_confident_note(raw_text, chat_id, source=source)
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Multimodal processing error: {e}")
         ack = "Something went wrong. Try sending as text."
-        await send_telegram(chat_id, f"⚠️ {ack}")
-        return {"tasks": 0, "notes": 0}
-
+        await send_telegram(chat_id, f"\u26a0\ufe0f {ack}")
