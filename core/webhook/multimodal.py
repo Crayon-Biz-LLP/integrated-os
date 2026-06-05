@@ -67,11 +67,11 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
         content_parts = [prompt]
 
         if mime_type.startswith('image/'):
-            content_parts.append({"inline_data": {"mime_type": mime_type, "data": file_bytes}})
+            content_parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
         elif mime_type.startswith('audio/') or mime_type == 'application/octet-stream':
-            content_parts.append({"inline_data": {"mime_type": mime_type, "data": file_bytes}})
+            content_parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
         elif mime_type in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']:
-            content_parts.append({"inline_data": {"mime_type": mime_type, "data": file_bytes}})
+            content_parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
         else:
             content_parts.append(file_bytes.decode('utf-8', errors='ignore'))
 
