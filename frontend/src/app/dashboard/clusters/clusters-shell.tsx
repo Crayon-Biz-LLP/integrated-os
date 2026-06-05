@@ -223,7 +223,7 @@ export function ClustersShell({
 
       {/* Expanded Cluster Modal */}
       <Dialog open={expandedClusterId !== null} onOpenChange={(open) => !open && setExpandedClusterId(null)}>
-        <DialogContent className="max-w-6xl w-[95vw] max-h-[85vh] h-[85vh] flex flex-col p-0 gap-0 overflow-hidden bg-background/95 backdrop-blur-xl border-border/50 shadow-2xl rounded-2xl">
+        <DialogContent className="max-w-[95vw] sm:max-w-[95vw] md:max-w-4xl lg:max-w-6xl w-[95vw] max-h-[85vh] h-[85vh] flex flex-col p-0 gap-0 overflow-hidden bg-background/95 backdrop-blur-xl border-border/50 shadow-2xl rounded-2xl">
           {activeCluster && (
             <>
               <DialogHeader className="p-6 pb-4 border-b shrink-0 bg-card/50">
