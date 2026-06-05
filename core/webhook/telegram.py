@@ -1,5 +1,6 @@
 import os
 import asyncio
+import mimetypes
 import httpx
 
 
@@ -101,6 +102,11 @@ async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
 
             file_path = file_data['result']['file_path']
             mime_type = file_data['result'].get('mime_type', 'application/octet-stream')
+
+            if mime_type == 'application/octet-stream':
+                guessed, _ = mimetypes.guess_type(file_path)
+                if guessed:
+                    mime_type = guessed
 
             download_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
             file_resp = await client.get(download_url)
