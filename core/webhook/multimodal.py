@@ -57,8 +57,12 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
     - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
 
     OUTPUT:
-    Return ONLY a valid JSON array of objects. For every item, identify the 'entity' (QHORD, SOLVSTRAT, etc.).
-    Example: [{{"type": "TASK", "entity": "CRAYON", "content": "Send experience letters to Siva and Suriya by tomorrow"}}]
+    Return ONLY a valid JSON array of objects. For every item, include:
+    - 'type': "TASK", "NOTE", or "DELEGATE"
+    - 'entity': Project routing (QHORD, SOLVSTRAT, CRAYON, PERSONAL, etc.)
+    - 'content': Brief structured summary (as before)
+    - 'raw_text': (IMPORTANT) The FULL verbatim text from the source that this item was derived from. For images: ALL visible text, no summarization, no truncation. This is preserved for later retrieval.
+    Example: [{{"type": "NOTE", "entity": "SOLVSTRAT", "content": "AI engineering technical requirements for stack review", "raw_text": "Technical Requirements for AI Engineering Platform:\n1. Multi-model support (GPT-4, Claude, Gemini)\n2. RAG pipeline with vector database\n3. Agent orchestration framework\n4. Real-time monitoring dashboard\n5. API rate limiting and cost management"}}]
 
     Tone: No corporate polish. No "Starship" metaphors. Talk like a high-level partner who knows the time of day and what's at stake.
     """
@@ -96,6 +100,8 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             if not content:
                 continue
 
+            raw_text = item.get('raw_text', item.get('content'))
+
             if item_type == 'TASK':
                 supabase.table('raw_dumps').insert([{
                     "content": content,
@@ -107,7 +113,8 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                     "metadata": {
                         "source": "multimodal",
                         "mime_type": mime_type,
-                        "entity": item.get('entity')
+                        "entity": item.get('entity'),
+                        "raw_text": raw_text
                     }
                 }]).execute()
                 task_count += 1
@@ -125,7 +132,8 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                         "intent": "NOTE",
                         "source": "multimodal",
                         "mime_type": mime_type,
-                        "entity": item.get('entity')
+                        "entity": item.get('entity'),
+                        "raw_text": raw_text
                     }
                 }]).execute()
                 note_count += 1
