@@ -76,6 +76,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             content_parts.append(file_bytes.decode('utf-8', errors='ignore'))
 
         response = await call_gemini_with_retry(
+            prompt,
             contents=content_parts,
             model=CLASSIFICATION_MODEL,
             config={'response_mime_type': 'application/json'}
