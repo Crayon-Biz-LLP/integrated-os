@@ -102,10 +102,11 @@ async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
             file_path = file_data['result']['file_path']
             mime_type = file_data['result'].get('mime_type', 'application/octet-stream')
 
-            download_url = f"https://api.telegram.org/bot{bot_token}/file/{file_path}"
-            file_bytes = await client.get(download_url)
+            download_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+            file_resp = await client.get(download_url)
+            file_resp.raise_for_status()
 
-            return file_bytes.content, mime_type
+            return file_resp.content, mime_type
     except Exception as e:
         raise Exception(f"Failed to download Telegram file {file_id}: {e}")
 
