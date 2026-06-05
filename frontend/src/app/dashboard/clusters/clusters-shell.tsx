@@ -4,16 +4,18 @@ import { useState, useMemo, useCallback } from 'react';
 import type { Resource, ResourceCluster } from '@/lib/resources/types';
 import { ResourceDetailSheet } from '@/components/resources/resource-detail-sheet';
 import { updateResourceCluster, fetchResource, fetchRelatedResources } from '@/lib/resources/api';
-import { Kanban, List, Search, ChevronDown, ChevronRight, Globe, FileText } from 'lucide-react';
+import { Search, Globe, FileText, LayoutGrid, Maximize2, Inbox } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { cn } from '@/lib/utils';
 
 const categoryColors: Record<string, string> = {
-  TECHTOOL: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-  COMPETITOR: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
-  LEADPOTENTIAL: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
-  MARKETTREND: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
-  ASHRAYA: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-  PERSONAL: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+  TECHTOOL: 'text-blue-500 bg-blue-500/10',
+  COMPETITOR: 'text-red-500 bg-red-500/10',
+  LEADPOTENTIAL: 'text-green-500 bg-green-500/10',
+  MARKETTREND: 'text-purple-500 bg-purple-500/10',
+  ASHRAYA: 'text-amber-500 bg-amber-500/10',
+  PERSONAL: 'text-emerald-500 bg-emerald-500/10',
 };
 
 function getDisplayTitle(resource: Resource): string {
@@ -23,7 +25,7 @@ function getDisplayTitle(resource: Resource): string {
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '';
   const date = new Date(dateStr);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 export function ClustersShell({
@@ -35,7 +37,9 @@ export function ClustersShell({
 }) {
   const [resources, setResources] = useState(initialResources);
   const [search, setSearch] = useState('');
-  const [view, setView] = useState<'board' | 'list'>('board');
+  
+  // Selection States
+  const [expandedClusterId, setExpandedClusterId] = useState<number | 'unmapped' | null>(null);
   const [selectedResource, setSelectedResource] = useState<Resource | null>(null);
   const [relatedResources, setRelatedResources] = useState<Resource[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -93,7 +97,6 @@ export function ClustersShell({
     try {
       await updateResourceCluster(resourceId, clusterId);
       
-      // Update local state so it immediately reflects without reload
       setResources(prev => prev.map(r => r.id === resourceId ? { ...r, cluster_id: clusterId } : r));
 
       if (selectedResource?.id === resourceId) {
@@ -112,165 +115,174 @@ export function ClustersShell({
     }
   }, [selectedResource]);
 
-  const renderMicroCard = (r: Resource) => (
-    <div
-      key={r.id}
-      onClick={() => handleResourceClick(r)}
-      className="bg-card hover:bg-accent border border-border/50 hover:border-border rounded-md p-2.5 cursor-pointer shadow-sm transition-all text-sm flex flex-col gap-1.5"
-    >
-      <div className="font-medium leading-snug line-clamp-2">{getDisplayTitle(r)}</div>
-      <div className="flex items-center justify-between mt-0.5">
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
-          {r.url ? <Globe className="h-3 w-3" /> : <FileText className="h-3 w-3" />}
-          <span className="truncate max-w-[120px]">{r.hostname || 'Local'}</span>
-        </div>
-        {r.category && (
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-sm font-semibold uppercase ${categoryColors[r.category] || 'bg-muted text-muted-foreground'}`}>
-            {r.category.substring(0, 4)}
-          </span>
-        )}
-      </div>
-    </div>
-  );
+  // Determine span sizes for Bento Grid
+  const getBentoSpan = (count: number) => {
+    if (count >= 30) return 'col-span-1 md:col-span-2 row-span-2';
+    if (count >= 15) return 'col-span-1 md:col-span-2 row-span-1';
+    return 'col-span-1 md:col-span-1 row-span-1';
+  };
 
-  const BoardView = () => (
-    <div className="flex-1 overflow-x-auto pb-4 pt-2">
-      <div className="flex gap-4 h-full px-4 md:px-6 min-w-max">
-        {/* Unmapped Column */}
-        <div className="w-[320px] flex flex-col gap-3 bg-muted/30 rounded-xl p-3 border border-border/50">
-          <div className="flex items-center justify-between px-1">
-            <h3 className="font-semibold text-sm">Inbox / Unmapped</h3>
-            <span className="text-xs font-mono bg-background px-1.5 py-0.5 rounded-md border">{unmapped.length}</span>
-          </div>
-          <div className="flex flex-col gap-2 overflow-y-auto pr-1 pb-2">
-            {unmapped.map(renderMicroCard)}
-            {unmapped.length === 0 && <p className="text-xs text-muted-foreground p-2 text-center italic">Inbox zero</p>}
-          </div>
-        </div>
+  const activeCluster = useMemo(() => {
+    if (expandedClusterId === 'unmapped') return { title: 'Inbox / Unmapped', items: unmapped, description: 'Resources waiting to be categorized.' };
+    if (expandedClusterId !== null) {
+      const c = initialClusters.find(c => c.id === expandedClusterId);
+      return c ? { title: c.title, items: grouped[c.id] || [], description: c.description } : null;
+    }
+    return null;
+  }, [expandedClusterId, unmapped, grouped, initialClusters]);
 
-        {/* Cluster Columns */}
-        {initialClusters.map(c => (
-          <div key={c.id} className="w-[320px] flex flex-col gap-3 bg-muted/10 rounded-xl p-3 border border-border/50">
-            <div className="flex flex-col gap-0.5 px-1">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-sm truncate pr-2">{c.title}</h3>
-                <span className="text-xs font-mono bg-background px-1.5 py-0.5 rounded-md border">{grouped[c.id]?.length || 0}</span>
-              </div>
-              {c.description && <p className="text-[10px] text-muted-foreground line-clamp-2 leading-tight mt-1">{c.description}</p>}
-            </div>
-            <div className="flex flex-col gap-2 overflow-y-auto pr-1 pb-2">
-              {grouped[c.id]?.map(renderMicroCard)}
-              {(!grouped[c.id] || grouped[c.id].length === 0) && <p className="text-xs text-muted-foreground p-2 text-center italic">Empty</p>}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  const renderBentoBox = (id: number | 'unmapped', title: string, items: Resource[], description?: string | null) => {
+    const spanClass = getBentoSpan(items.length);
+    const isUnmapped = id === 'unmapped';
 
-  const ListView = () => {
-    // We will just render them expanded for simplicity, since standard search provides quick filtering
     return (
-      <div className="flex-1 overflow-y-auto px-4 md:px-6 pb-8">
-        <div className="max-w-6xl mx-auto flex flex-col gap-8 mt-4">
-          
-          {unmapped.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2 border-b pb-2">
-                <h3 className="font-semibold">Inbox / Unmapped</h3>
-                <span className="text-xs font-mono bg-muted px-1.5 py-0.5 rounded-md">{unmapped.length}</span>
-              </div>
-              <div className="flex flex-col border rounded-lg divide-y bg-card overflow-hidden">
-                {unmapped.map(r => (
-                  <div key={r.id} onClick={() => handleResourceClick(r)} className="flex items-center gap-4 px-4 py-3 hover:bg-muted/50 cursor-pointer text-sm transition-colors">
-                    <div className="w-4 flex-shrink-0 opacity-50">{r.url ? <Globe className="h-4 w-4" /> : <FileText className="h-4 w-4" />}</div>
-                    <div className="flex-1 font-medium truncate">{getDisplayTitle(r)}</div>
-                    <div className="w-32 flex-shrink-0 text-muted-foreground/70 truncate">{r.hostname}</div>
-                    <div className="w-24 flex-shrink-0">
-                      {r.category && <span className={`text-[10px] px-2 py-0.5 rounded font-semibold uppercase ${categoryColors[r.category] || 'bg-muted text-muted-foreground'}`}>{r.category}</span>}
-                    </div>
-                    <div className="w-24 flex-shrink-0 text-right text-muted-foreground/50">{formatDate(r.created_at)}</div>
-                  </div>
-                ))}
-              </div>
+      <div
+        key={id}
+        onClick={() => setExpandedClusterId(id)}
+        className={cn(
+          "group relative flex flex-col bg-card border border-border/50 rounded-2xl p-5 cursor-pointer overflow-hidden transition-all duration-300 hover:shadow-lg hover:border-primary/30 hover:-translate-y-1",
+          spanClass,
+          isUnmapped ? "bg-muted/30 border-dashed" : ""
+        )}
+      >
+        <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Maximize2 className="h-4 w-4 text-muted-foreground" />
+        </div>
+        
+        <div className="flex items-center gap-3 mb-3">
+          <div className={cn("p-2 rounded-xl flex-shrink-0", isUnmapped ? "bg-muted" : "bg-primary/10 text-primary")}>
+            {isUnmapped ? <Inbox className="h-5 w-5" /> : <LayoutGrid className="h-5 w-5" />}
+          </div>
+          <div>
+            <h3 className="font-bold text-base leading-tight tracking-tight line-clamp-1 pr-6">{title}</h3>
+            <p className="text-xs font-mono text-muted-foreground mt-0.5">{items.length} resources</p>
+          </div>
+        </div>
+
+        {description && (
+          <p className="text-xs text-muted-foreground/80 line-clamp-2 mb-4 leading-relaxed">
+            {description}
+          </p>
+        )}
+
+        <div className="mt-auto flex flex-col gap-2 relative z-10">
+          {items.slice(0, spanClass.includes('row-span-2') ? 5 : 3).map(r => (
+            <div key={r.id} className="flex items-center gap-2 text-xs bg-background/50 border border-border/40 rounded-lg px-3 py-2 backdrop-blur-sm">
+              <span className="truncate flex-1 font-medium text-muted-foreground group-hover:text-foreground transition-colors">
+                {getDisplayTitle(r)}
+              </span>
+              {r.category && (
+                <span className={cn("text-[9px] px-1.5 py-0.5 rounded font-bold uppercase shrink-0", categoryColors[r.category] || "text-muted-foreground bg-muted")}>
+                  {r.category.substring(0,4)}
+                </span>
+              )}
+            </div>
+          ))}
+          {items.length === 0 && (
+            <div className="text-xs text-muted-foreground/50 italic py-2">Empty</div>
+          )}
+          {items.length > (spanClass.includes('row-span-2') ? 5 : 3) && (
+            <div className="text-[10px] font-bold text-muted-foreground/50 uppercase tracking-widest text-center mt-1">
+              + {items.length - (spanClass.includes('row-span-2') ? 5 : 3)} more
             </div>
           )}
-
-          {initialClusters.map(c => {
-            const items = grouped[c.id] || [];
-            if (items.length === 0) return null;
-            return (
-              <div key={c.id} className="flex flex-col gap-2">
-                <div className="flex items-end gap-3 border-b pb-2">
-                  <h3 className="font-semibold">{c.title}</h3>
-                  <span className="text-xs font-mono bg-muted px-1.5 py-0.5 rounded-md">{items.length}</span>
-                  {c.description && <span className="text-xs text-muted-foreground/60 hidden md:inline-block ml-2 truncate max-w-[400px]">— {c.description}</span>}
-                </div>
-                <div className="flex flex-col border rounded-lg divide-y bg-card overflow-hidden">
-                  {items.map(r => (
-                    <div key={r.id} onClick={() => handleResourceClick(r)} className="flex items-center gap-4 px-4 py-3 hover:bg-muted/50 cursor-pointer text-sm transition-colors">
-                      <div className="w-4 flex-shrink-0 opacity-50">{r.url ? <Globe className="h-4 w-4" /> : <FileText className="h-4 w-4" />}</div>
-                      <div className="flex-1 font-medium truncate">{getDisplayTitle(r)}</div>
-                      <div className="w-32 flex-shrink-0 text-muted-foreground/70 truncate">{r.hostname}</div>
-                      <div className="w-24 flex-shrink-0">
-                        {r.category && <span className={`text-[10px] px-2 py-0.5 rounded font-semibold uppercase ${categoryColors[r.category] || 'bg-muted text-muted-foreground'}`}>{r.category}</span>}
-                      </div>
-                      <div className="w-24 flex-shrink-0 text-right text-muted-foreground/50">{formatDate(r.created_at)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
         </div>
       </div>
     );
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-7.5rem)] lg:h-screen">
+    <div className="flex flex-col min-h-[calc(100vh-7.5rem)] lg:min-h-screen bg-muted/10 pb-12">
       {/* Header Area */}
-      <div className="flex flex-col gap-4 p-4 md:px-6 md:py-5 shrink-0 border-b bg-background/95 backdrop-blur z-10">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Knowledge Base</h1>
-            <p className="text-sm text-muted-foreground/70 mt-0.5">
-              Strategic clusters and vaulted resources
-            </p>
-          </div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 shrink-0 border-b bg-background/95 backdrop-blur sticky top-0 z-20">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Knowledge Base</h1>
+          <p className="text-sm text-muted-foreground/70 mt-1">
+            Visual cluster mapping & resource management
+          </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1 max-w-md">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Filter resources..."
-              className="pl-9 bg-muted/50 h-9 text-sm"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-          <div className="flex items-center bg-muted/50 p-1 rounded-lg border">
-            <button
-              onClick={() => setView('board')}
-              className={`p-1.5 rounded-md transition-colors ${view === 'board' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-              title="Board View"
-            >
-              <Kanban className="h-4 w-4" />
-            </button>
-            <button
-              onClick={() => setView('list')}
-              className={`p-1.5 rounded-md transition-colors ${view === 'list' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-              title="List View"
-            >
-              <List className="h-4 w-4" />
-            </button>
-          </div>
+        <div className="relative w-full sm:w-72">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search across all clusters..."
+            className="pl-9 bg-muted/50 border-border/50 rounded-xl"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
       </div>
 
-      {/* Main Content Area */}
-      {view === 'board' ? <BoardView /> : <ListView />}
+      {/* Bento Grid */}
+      <div className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 lg:p-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6 auto-rows-[220px]">
+          {renderBentoBox('unmapped', 'Inbox / Unmapped', unmapped, 'Floating resources awaiting categorization.')}
+          {initialClusters.map(c => renderBentoBox(c.id, c.title, grouped[c.id] || [], c.description))}
+        </div>
+      </div>
+
+      {/* Expanded Cluster Modal */}
+      <Dialog open={expandedClusterId !== null} onOpenChange={(open) => !open && setExpandedClusterId(null)}>
+        <DialogContent className="max-w-4xl max-h-[85vh] h-[85vh] flex flex-col p-0 gap-0 overflow-hidden bg-background/95 backdrop-blur-xl border-border/50 shadow-2xl rounded-2xl">
+          {activeCluster && (
+            <>
+              <DialogHeader className="p-6 pb-4 border-b shrink-0 bg-card/50">
+                <div className="flex items-center gap-3">
+                  <div className={cn("p-2 rounded-xl", expandedClusterId === 'unmapped' ? "bg-muted" : "bg-primary/10 text-primary")}>
+                    {expandedClusterId === 'unmapped' ? <Inbox className="h-6 w-6" /> : <LayoutGrid className="h-6 w-6" />}
+                  </div>
+                  <div>
+                    <DialogTitle className="text-2xl font-bold">{activeCluster.title}</DialogTitle>
+                    <p className="text-sm text-muted-foreground mt-0.5">{activeCluster.items.length} resources</p>
+                  </div>
+                </div>
+                {activeCluster.description && (
+                  <p className="text-sm text-muted-foreground mt-3 max-w-2xl">{activeCluster.description}</p>
+                )}
+              </DialogHeader>
+              
+              <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-muted/5">
+                <div className="flex flex-col gap-2">
+                  {activeCluster.items.map(r => (
+                    <div 
+                      key={r.id} 
+                      onClick={() => handleResourceClick(r)}
+                      className="group flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 p-4 rounded-xl border border-border/40 bg-card hover:bg-accent/50 hover:border-border cursor-pointer transition-all hover:shadow-sm"
+                    >
+                      <div className="hidden sm:flex w-8 h-8 rounded-full bg-muted/50 items-center justify-center shrink-0 group-hover:bg-background transition-colors">
+                        {r.url ? <Globe className="h-4 w-4 text-muted-foreground" /> : <FileText className="h-4 w-4 text-muted-foreground" />}
+                      </div>
+                      
+                      <div className="flex-1 min-w-0 flex flex-col gap-1">
+                        <div className="font-semibold text-base truncate pr-4">{getDisplayTitle(r)}</div>
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                          <span className="truncate max-w-[200px] font-mono opacity-80">{r.hostname || 'Local Document'}</span>
+                          <span className="hidden sm:inline-block border-l h-3 border-border/50"></span>
+                          <span>{formatDate(r.created_at)}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 sm:w-48 shrink-0 sm:justify-end">
+                        {r.category && (
+                          <span className={cn("text-[10px] px-2 py-1 rounded-md font-bold uppercase tracking-wider", categoryColors[r.category] || "text-muted-foreground bg-muted")}>
+                            {r.category}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {activeCluster.items.length === 0 && (
+                    <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
+                      <LayoutGrid className="h-12 w-12 opacity-20 mb-4" />
+                      <p>No resources found in this view.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <ResourceDetailSheet
         resource={selectedResource}
