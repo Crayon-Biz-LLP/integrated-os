@@ -259,6 +259,98 @@ async def process_decision_pulse(auth_secret: str = None):
         return {"error": str(e)}
 
 
+async def discover_new_clusters():
+    """Weekly cluster discovery. Analyzes unmapped resources for natural groupings
+    and creates new clusters when 3+ related resources form a coherent theme."""
+    try:
+        thirty_days_ago = (datetime.now(timezone(timedelta(hours=5, minutes=30))) - timedelta(days=30)).isoformat()
+        unclustered_res = supabase.table('resources').select(
+            'id, url, title, summary, strategic_note, category'
+        ).is_('cluster_id', None).gt('created_at', thirty_days_ago).limit(100).execute()
+        unclustered = unclustered_res.data or []
+        if len(unclustered) < 3:
+            print(f"📍 Cluster discovery: only {len(unclustered)} unmapped resources, need 3+.")
+            return []
+
+        existing_res = supabase.table('clusters').select('id, title').eq('status', 'active').execute()
+        existing_titles = set(m['title'].lower() for m in (existing_res.data or []))
+        existing_list = ", ".join(sorted(existing_titles)) or "None"
+
+        resources_json = json.dumps([{
+            "id": r['id'],
+            "url": r.get('url', ''),
+            "title": r.get('title', ''),
+            "summary": r.get('summary', ''),
+            "strategic_note": r.get('strategic_note', ''),
+            "category": r.get('category', '')
+        } for r in unclustered], indent=2)
+
+        prompt = f"""You are a cluster discoverer. Review these unclustered resources.
+
+Existing active clusters: {existing_list}
+
+Rules:
+- Identify any natural groupings of 3+ resources that form a coherent strategic theme NOT covered by existing active clusters.
+- Only suggest a new cluster if at least 3 resources clearly belong together under a single strategic theme.
+- If no such grouping exists, return an empty array.
+- Do not suggest clusters that overlap with existing cluster titles.
+
+Return ONLY valid JSON array:
+[
+  {{"cluster_title": "New Cluster Name", "resource_ids": [1, 2, 3], "description": "Strategic intent for this cluster"}}
+]
+
+Resources:
+{resources_json}"""
+
+        response = await call_llm_with_fallback(
+            prompt=prompt,
+            model="gemini-3.1-flash-lite",
+            config={'response_mime_type': 'application/json'},
+            is_critical=False,
+            require_json=True
+        )
+        discovered = parse_json_response(response.text)
+        if not isinstance(discovered, list):
+            return []
+
+        created = []
+        ist_ts = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        for item in discovered:
+            title = item.get('cluster_title', '').strip()
+            resource_ids = item.get('resource_ids', [])
+            if not title or len(resource_ids) < 3:
+                continue
+            norm = normalize_cluster_title(title)
+            if not norm or norm in existing_titles:
+                continue
+            description = item.get('description', f'Auto-discovered from {len(resource_ids)} related resources on {ist_ts.strftime("%Y-%m-%d")}.')
+            insert_res = supabase.table('clusters').insert({
+                "title": title,
+                "status": "active",
+                "description": description
+            }).execute()
+            if not insert_res.data:
+                continue
+            new_cluster_id = insert_res.data[0]['id']
+            existing_titles.add(norm)
+            supabase.table('resources').update({
+                "cluster_id": new_cluster_id
+            }).in_('id', resource_ids).execute()
+            created.append(title)
+            audit_log_sync("pulse", "INFO", f"🔗 Cluster discovery: created '{title}' with {len(resource_ids)} resources")
+
+        if created:
+            print(f"✅ Cluster discovery created {len(created)} new clusters: {', '.join(created)}")
+        else:
+            print("📍 Cluster discovery: no new clusters found.")
+        return created
+
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"⚠️ Cluster discovery error: {e}")
+        return []
+
+
 async def process_pulse(auth_secret: str = None, request_id: str = None):
     """
     Process pulse with optional request_id for idempotency.
@@ -313,7 +405,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         health_report = await check_pipeline_health()
         print(health_report)
         
-        # --- 0.2 CONVERSATION HISTORY (Phase 5) ---
+        # --- 0.3 CONVERSATION HISTORY (Phase 5) ---
         conversation_history = ""
         try:
             pulse_chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
@@ -326,6 +418,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         
         # --- 0.1 BATCH ENRICHMENT (One Gemini call for all unenriched resources) ---
         batch_enrich_results = await batch_enrich_resources()
+
+        # --- 0.2 PERIODIC CLUSTER DISCOVERY (Sundays only) ---
+        now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        if now_ist.weekday() == 6:
+            await discover_new_clusters()
         
         # --- 1. READ: Fetch and Lock ---
         # 1.1 Fetch pending, staged, and synced items
@@ -788,6 +885,24 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             newly_enriched_context = " | ".join(newly_enriched_lines)
         
         link_context = "None"
+
+        recent_urls_res = supabase.table('resources')\
+            .select('url, title, category, strategic_note, created_at')\
+            .gt('created_at', thirty_days_ago)\
+            .order('created_at', desc=True)\
+            .limit(30)\
+            .execute()
+
+        if recent_urls_res.data:
+            url_lines = []
+            for r in recent_urls_res.data:
+                label = r.get('title') or r.get('url', 'Unknown')
+                cat = r.get('category') or 'RAW'
+                note = r.get('strategic_note') or ''
+                url_lines.append(f"[{cat}] {label} | {note}".strip().rstrip('| '))
+            recent_urls_context = "\n".join(url_lines)
+        else:
+            recent_urls_context = "None"
         
         # 🧠 RECENT MEMORIES (semantic search based on today's tasks)
         recent_memories_context = await get_recent_memories_for_briefing(filtered_tasks)
@@ -932,6 +1047,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         - RECENT LIBRARY PATTERNS: {pattern_context}
         - NEWLY ENRICHED RESOURCES: {newly_enriched_context}
         - ENRICHED WEB LINKS: {link_context}
+        - RECENTLY VAULTED RESOURCES (for cluster detection):\n{recent_urls_context}
         - NEW INPUTS: {new_inputs_text}
         INSTRUCTIONS:
             HARD CONSTRAINTS (Non-Negotiable):
@@ -1098,7 +1214,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             STRATEGIC AUDIT INSTRUCTIONS:
             - BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects.
             - CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
-            - PATTERN DETECTION: If you see 3+ related URLs on a new topic, you MAY suggest a new cluster in the `new_clusters` JSON array. (Clusters are ONLY for grouping URLs).
+            - PATTERN DETECTION: Review RECENTLY VAULTED RESOURCES and NEW INPUTS. If you see 3+ related URLs on a new topic, you MAY suggest a new cluster in the `new_clusters` JSON array. (Clusters are ONLY for grouping URLs).
             - THE VAULT GATE: These updates go to the DATABASE only.
             - THE BRIEFING GATE: You are STRICTLY FORBIDDEN from mentioning new resources or new clusters in the briefing UNLESS Danny specifically used the word "Vault" or "Cluster" in the NEW INPUTS.
 

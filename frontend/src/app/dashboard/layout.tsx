@@ -41,8 +41,7 @@ const navItems = [
    { href: '/dashboard/memories', label: 'Memories', icon: Brain },
    { href: '/dashboard/calendar', label: 'Calendar', icon: Calendar },
    { href: '/dashboard/people', label: 'People', icon: Users },
-   { href: '/dashboard/resources', label: 'Resources', icon: BookOpen },
-   { href: '/dashboard/clusters', label: 'Clusters', icon: Target },
+   { href: '/dashboard/clusters', label: 'Clusters', icon: BookOpen },
    { href: '/dashboard/health', label: 'Health', icon: Activity },
 ];
 
@@ -58,7 +57,6 @@ const routeTitles: Record<string, string> = {
    '/dashboard/memories': 'Memories',
    '/dashboard/calendar': 'Calendar',
    '/dashboard/people': 'People',
-   '/dashboard/resources': 'Resources',
    '/dashboard/clusters': 'Clusters',
    '/dashboard/health': 'Health',
  };

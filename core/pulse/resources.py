@@ -115,29 +115,6 @@ async def batch_enrich_resources():
 
         print(f"✅ Batch enriched {len(parsed)} resources with embeddings.")
 
-        # CLUSTER RESOLVER: Link enriched resources to active clusters by name
-        try:
-            clusters_res = supabase.table('clusters').select('id, title').eq('status', 'active').execute()
-            active_clusters = clusters_res.data or []
-
-            unlinked = supabase.table('resources').select('id, title, strategic_note').is_('cluster_id', None).not_.is_('enriched_at', None).eq('is_current', True).execute()
-
-            for resource in (unlinked.data or []):
-                resource_text = f"{resource.get('title', '')} {resource.get('strategic_note', '')}".lower()
-                for cluster in active_clusters:
-                    cluster_keywords = cluster['title'].lower().split()
-                    match_score = sum(1 for kw in cluster_keywords if kw in resource_text)
-                    if match_score >= 2:
-                        # Direct update — resources are immutable bookmarks, no versioning needed
-                        supabase.table('resources').update({
-                            "cluster_id": cluster['id']
-                        }).eq('id', resource['id']).execute()
-                        audit_log_sync("pulse", "INFO",
-                            f"🔗 Linked resource '{resource.get('title')}' → cluster '{cluster['title']}'")
-                        break
-        except Exception as e:
-            audit_log_sync("pulse", "WARNING", f"⚠️ Cluster resolver error: {e}")
-
         return parsed
     except Exception as e:
         audit_log_sync("pulse", "ERROR", f"Batch enrichment error: {e}")
