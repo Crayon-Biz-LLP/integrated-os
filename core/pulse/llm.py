@@ -7,6 +7,10 @@ import random
 import httpx
 from pydantic import BaseModel
 from typing import Callable, Dict, Any, List
+from supabase import create_client, Client
+from google import genai
+from core.lib.audit_logger import audit_log_sync
+from core.lib.rate_limiter import flash_lite_limiter
 
 class ToolRegistry:
     def __init__(self):
@@ -39,10 +43,6 @@ class ToolRegistry:
 
 # Global tool registry
 rhodey_tools = ToolRegistry()
-from supabase import create_client, Client
-from google import genai
-from core.lib.audit_logger import audit_log_sync
-from core.lib.rate_limiter import flash_lite_limiter
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),

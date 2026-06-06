@@ -6,7 +6,6 @@ State machine: processing_completion -> awaiting_completion_match | completed | 
 
 import json
 import asyncio
-from datetime import datetime, timezone
 
 from core.lib.audit_logger import audit_log_sync
 from core.webhook.utils import supabase
@@ -172,7 +171,6 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
     """Extracted logic for idempotent closure to allow reuse by disambiguation resolver."""
     from core.pulse.memory import write_outcome_memory
     closed_ids      = []
-    now_utc         = datetime.now(timezone.utc).isoformat()
 
     from core.pulse.tools import update_task_status
     sync_failed = False

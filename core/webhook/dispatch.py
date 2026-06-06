@@ -54,9 +54,6 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
         day_offset = 1 if 'tomorrow' in lowtext else 0
         target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=day_offset)
         day_label = "Tomorrow" if day_offset else "Today"
-        target_end = target + timedelta(days=1)
-        now_utc = datetime.now(timezone.utc).isoformat()
-        since_utc = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
 
         # Unified Calendar events for target day
         try:
@@ -328,9 +325,11 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         return
 
     # ── Step 3b: If note contains a URL, also vault as resource ──
-    if re.search(r'https?://\S+', text):
+    match = re.search(r'https?://\S+', text)
+    if match:
+        actual_url = match.group(0).rstrip('.,;:!?)"\'')
         try:
-            supabase.table('resources').insert({"url": text}).execute()
+            supabase.table('resources').insert({"url": actual_url}).execute()
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Resource insert failed for URL: {e}")
 

@@ -572,9 +572,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                             except Exception as e:
                                 await add_to_failed_queue('memories', str(dump_id), 'memory_insert', str(e))
                                 audit_log_sync("pulse", "WARNING", f"⚠️ Note insert failed: {e}")
-                            if re.search(r'https?://\S+', dump_content):
+                            url_match = re.search(r'https?://\S+', dump_content)
+                            if url_match:
+                                actual_url = url_match.group(0).rstrip('.,;:!?)"\'')
                                 try:
-                                    supabase.table('resources').insert({"url": dump_content}).execute()
+                                    supabase.table('resources').insert({"url": actual_url}).execute()
                                 except Exception as e:
                                     audit_log_sync("pulse", "WARNING", f"Resource insert failed for URL in note: {e}")
                     
@@ -640,9 +642,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         print("📦 Step 4: Fetching clusters...")
         # Fetch Active Clusters for Context
-        clusters_res = supabase.table('clusters').select('id, title').eq('status', 'active').execute()
-        active_clusters = clusters_res.data or []
-        cluster_names = [m['title'] for m in active_clusters]
+        supabase.table('clusters').select('id, title').eq('status', 'active').execute()
 
         # --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         ist_offset = timezone(timedelta(hours=5, minutes=30))
@@ -753,8 +753,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             p_name = project.get('name') if project else "General"
             o_tag = project.get('org_tag') if project else "INBOX"
             compressed_tasks_list.append(f"[{o_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]")
-
-        compressed_tasks = " | ".join(compressed_tasks_list)
 
         # --- 1.5 SEASON EXPIRY LOGIC ---
         season_row = next((c for c in core if c.get('key') == 'current_season'), None)
@@ -1259,7 +1257,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         # --- AI GENERATION ---
         # 🛡️ Step 1: Initialize variables to prevent "UnboundLocalError"
-        response_text = ""
         ai_data = {
             "briefing": f"⚠️ FALLBACK MODE\n\n{len(dumps)} new inputs:\n{new_input_summary[:200]}",
             "new_tasks": [], "logs": [], "completed_task_ids": [], "new_projects": [], "new_people": [],

@@ -18,8 +18,12 @@ supabase = get_supabase()
 
 
 async def save_url_as_resource(text: str) -> bool:
+    match = re.search(r'https?://\S+', text)
+    if not match:
+        return False
+    actual_url = match.group(0).rstrip('.,;:!?)"\'')
     try:
-        supabase.table('resources').insert({"url": text.strip()}).execute()
+        supabase.table('resources').insert({"url": actual_url}).execute()
         return True
     except Exception as e:
         audit_log_sync("quick_process", "WARNING", f"Resource insert failed for URL: {e}")

@@ -15,6 +15,11 @@ supabase: Client = create_client(
 
 
 async def fetch_url_metadata(url: str):
+    # Belt-and-suspenders: extract actual URL in case the field has extra text
+    match = re.search(r'https?://\S+', url)
+    if match:
+        url = match.group(0).rstrip('.,;:!?)"\'')
+    
     try:
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as http_client:
             headers = {

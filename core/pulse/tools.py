@@ -128,8 +128,10 @@ def create_task(title: str, project_id: int = None, priority: str = "important",
                 
         if e_id or g_id:
             update = {}
-            if e_id: update['google_event_id'] = e_id
-            if g_id: update['google_task_id'] = g_id
+            if e_id:
+                update['google_event_id'] = e_id
+            if g_id:
+                update['google_task_id'] = g_id
             supabase.table('tasks').update(update).eq('id', task_id).execute()
             
         return f"Task created with ID {task_id}"

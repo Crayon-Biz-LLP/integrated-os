@@ -5,6 +5,14 @@ from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
 from core.lib.conversation import get_or_create_session, log_exchange, format_history_for_prompt
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
+from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS
+from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
+from core.webhook.email import process_email_pending_decision, handle_ed_command
+from core.webhook.call import process_call_pending_decision
+from core.webhook.whatsapp import process_whatsapp_pending_decision
+from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, ask_task_or_note_confirmation, resolve_task_note_confirmation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
+from core.webhook.commands import handle_command, handle_undo_command
+from core.webhook.multimodal import process_multimodal_content
 
 async def process_callback_query(callback_query: dict):
     from core.lib.audit_logger import audit_log_sync

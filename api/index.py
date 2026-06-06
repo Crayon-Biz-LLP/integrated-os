@@ -3,6 +3,7 @@ import hmac
 import hashlib
 import time
 import httpx
+import json
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -408,7 +409,13 @@ async def whatsapp_ingest_route(request: Request):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     try:
-        body = await request.json()
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            # MacroDroid sometimes sends payload with unescaped control characters (like newlines in text)
+            raw_bytes = await request.body()
+            body = json.loads(raw_bytes, strict=False)
+            
         sender_name = body.get("sender", "") or body.get("sender_name", "")
         sender_phone = body.get("phone", "") or body.get("sender_phone", "")
         message_text = body.get("text", "") or body.get("body", "") or body.get("message", "")

@@ -209,7 +209,7 @@ class ContextProvider:
                     score += 30
                 elif days_old > 14:
                     score -= 20
-            except:
+            except Exception:
                 pass
             item["score"] = score
             
