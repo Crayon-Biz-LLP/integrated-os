@@ -212,8 +212,16 @@ async def call_llm_with_fallback(
                     supabase = get_supabase()
                     input_tokens = len(prompt) // 4 if prompt else 0
                     output_tokens = 0
-                    if hasattr(response, 'text'):
-                        output_tokens = len(response.text) // 4
+                    response_text = ""
+                    try:
+                        if hasattr(response, 'text') and response.text:
+                            response_text = response.text
+                            output_tokens = len(response_text) // 4
+                    except ValueError:
+                        pass
+                        
+                    if getattr(response, 'function_calls', None):
+                        output_tokens += len(str(response.function_calls)) // 4
 
                     supabase.table('model_registry').insert({
                         "model_name": model_name,
@@ -226,10 +234,12 @@ async def call_llm_with_fallback(
                 except Exception:
                     pass
 
-                if hasattr(response, 'text'):
-                    response_text = response.text
-                else:
+                if not response_text:
                     response_text = str(response)
+
+                if getattr(response, 'function_calls', None):
+                    print(f"✓ LLM tool call success provider={provider_name} model={model_name} elapsed={elapsed:.1f}s")
+                    return response
 
                 if require_json:
                     try:

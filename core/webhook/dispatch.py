@@ -424,19 +424,15 @@ async def handle_clarification(text: str, question: str, chat_id: int, session_i
         audit_log_sync("webhook", "WARNING", f"Failed to log clarification to raw_dumps: {clar_err}")
 
 async def ask_intent_disambiguation(text: str, possible_intents: list, chat_id: int, session_id: str):
-    opts = []
+    keyboard = []
     for sc, (intent, label) in INTENT_OPTIONS.items():
         if intent in possible_intents:
-            opts.append(f"`{sc}` — {label}")
-    if not opts:
+            keyboard.append([{"text": label, "callback_data": sc}])
+    if not keyboard:
         return
-    reply = (
-        "🧐 *Not sure what to do with this.* Is it?\n\n"
-        + "\n".join(opts)
-        + "\n\n_Reply with a shortcode or just say it._"
-    )
+    reply = "🧐 *Not sure what to do with this.* Is it?"
     log_exchange(session_id, 'bot', 'CLARIFICATION', json.dumps({"possible_intents": possible_intents, "original": text}), chat_id)
-    await send_telegram(chat_id, reply)
+    await send_telegram(chat_id, reply, show_keyboard=False, inline_keyboard=keyboard)
 
 async def resolve_disambiguation(text: str, chat_id: int, session_id: str, last_clarification: dict) -> bool:
     cleaned = text.strip().lower()
@@ -453,12 +449,10 @@ async def resolve_disambiguation(text: str, chat_id: int, session_id: str, last_
     return True
 
 async def ask_task_or_note_confirmation(text: str, classification: dict, chat_id: int, session_id: str):
-    reply = (
-        f"🧐 *Is this a task or a note?*\n\n"
-        f"_{text[:200]}..._\n\n"
-        f"`t` — 📋 Task — something to do\n"
-        f"`n` — 📝 Note — record this"
-    )
+    reply = f"🧐 *Is this a task or a note?*\n\n_{text[:200]}..._"
+    keyboard = [
+        [{"text": "📋 Task", "callback_data": "t"}, {"text": "📝 Note", "callback_data": "n"}]
+    ]
     log_exchange(
         session_id, 'bot', 'CLARIFICATION',
         json.dumps({
@@ -469,7 +463,7 @@ async def ask_task_or_note_confirmation(text: str, classification: dict, chat_id
         }),
         chat_id
     )
-    await send_telegram(chat_id, reply)
+    await send_telegram(chat_id, reply, show_keyboard=False, inline_keyboard=keyboard)
 
 async def resolve_task_note_confirmation(text: str, chat_id: int, session_id: str, last_clarification: dict) -> bool:
     cleaned = text.strip().lower()
@@ -733,12 +727,11 @@ async def handle_noise(chat_id: int):
 async def ask_task_update_confirmation(text: str, classification: dict, chat_id: int, session_id: str, matched_tasks: list):
     """Ask user whether to update an existing task or create a new one."""
     task = matched_tasks[0]
-    reply = (
-        f"🧐 *This looks like it relates to an existing task:*\n\n"
-        f"_{task['title']}_\n\n"
-        f"`u` — 🔄 Update existing task\n"
-        f"`n` — ➕ Create new task"
-    )
+    reply = f"🧐 *This relates to an existing task:*\n\n_{task['title']}_"
+    keyboard = [
+        [{"text": "🔄 Update existing", "callback_data": "u"}],
+        [{"text": "➕ Create new task", "callback_data": "n"}]
+    ]
     log_exchange(
         session_id, 'bot', 'CLARIFICATION',
         json.dumps({
@@ -749,7 +742,7 @@ async def ask_task_update_confirmation(text: str, classification: dict, chat_id:
         }),
         chat_id
     )
-    await send_telegram(chat_id, reply)
+    await send_telegram(chat_id, reply, show_keyboard=False, inline_keyboard=keyboard)
 
 async def resolve_task_update_confirmation(text: str, chat_id: int, session_id: str, last_clarification: dict) -> bool:
     """Handle user response to update-vs-create question."""

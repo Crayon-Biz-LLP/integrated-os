@@ -21,7 +21,7 @@ def _chunk_message(text: str, max_len: int = 4000) -> list[str]:
         text = text[split_at:].lstrip()
     return chunks
 
-async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True):
+async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True, inline_keyboard: list = None):
     chunks = _chunk_message(message_text)
     total = len(chunks)
     telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -46,7 +46,9 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
                 "parse_mode": "Markdown",
                 "disable_web_page_preview": True,
             }
-            if show_keyboard and i == total - 1:
+            if inline_keyboard and i == total - 1:
+                payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+            elif show_keyboard and i == total - 1:
                 payload["reply_markup"] = {
                     "keyboard": [
                         [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
@@ -127,3 +129,18 @@ KEYBOARD = {
     "persistent": True
 }
 
+
+
+async def answer_callback_query(callback_query_id: str, text: str = None):
+    telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    url = f"https://api.telegram.org/bot{telegram_bot_token}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    
+    import httpx
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(url, json=payload)
+        except Exception as e:
+            print(f"Failed to answer callback query: {e}")

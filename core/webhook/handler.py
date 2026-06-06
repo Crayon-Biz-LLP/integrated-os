@@ -4,16 +4,66 @@ import re
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
 from core.lib.conversation import get_or_create_session, log_exchange, format_history_for_prompt
-from core.webhook.telegram import send_telegram, download_telegram_file
-from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS
-from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
-from core.webhook.email import process_email_pending_decision, handle_ed_command
-from core.webhook.call import process_call_pending_decision
-from core.webhook.whatsapp import process_whatsapp_pending_decision
-from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, ask_task_or_note_confirmation, resolve_task_note_confirmation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
-from core.webhook.commands import handle_command, handle_undo_command
-from core.webhook.multimodal import process_multimodal_content
+from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
 
+async def process_callback_query(callback_query: dict):
+    from core.lib.audit_logger import audit_log_sync
+    callback_id = callback_query.get('id')
+    data = callback_query.get('data', '')
+    message = callback_query.get('message', {})
+    chat_id = message.get('chat', {}).get('id')
+    
+    await answer_callback_query(callback_id)
+    
+    if not chat_id:
+        return {"success": True}
+
+    owner_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not owner_id or str(chat_id) != str(owner_id):
+        print(f"Unauthorized callback from Chat ID: {chat_id}")
+        return {"success": True}
+        
+    try:
+        # Example data: "approve_e123" or "reject_w45"
+        import re
+        match = re.match(r'^(approve|reject)_([ecwECW]?)(\d+)$', data)
+        if match:
+            action, prefix, shortcode = match.groups()
+            is_approve = (action == 'approve')
+            sc_int = int(shortcode)
+            
+            prefix = prefix.lower()
+            if prefix == 'e':
+                result = await process_email_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+            elif prefix == 'c':
+                result = await process_call_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+            elif prefix == 'w':
+                result = await process_whatsapp_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+            else:
+                # Unprefixed, try email then call then whatsapp
+                result = await process_email_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+                if result.get('action') == 'not_found':
+                    result = await process_call_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+                    if result.get('action') == 'not_found':
+                        result = await process_whatsapp_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+            
+            if result.get('success'):
+                await send_telegram(chat_id, f"✅ {result.get('message', 'Done')}")
+            else:
+                if result.get('action') != 'not_found':
+                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                else:
+                    await send_telegram(chat_id, f"⚠️ No pending item found matching [{shortcode}].")
+            return {"success": True}
+            
+        # If it didn't match the approve/reject regex, it's a state machine reply (e.g. "t", "n", "u", "1")
+        return {"fallback_text": data}
+        
+    except Exception as e:
+        audit_log_sync("webhook", "ERROR", f"Callback query processing failed: {e}")
+        await send_telegram(chat_id, "Something went wrong processing your button tap.")
+        
+    return {"success": True}
 
 async def process_webhook(update: dict):
     try:
@@ -55,13 +105,21 @@ async def process_webhook(update: dict):
             else:
                 return {"success": False, "message": "GitHub trigger failed"}
 
-        if not update or 'message' not in update:
-            return {"message": "No message"}
-
         message = update.get('message', {})
-        chat = message.get('chat', {})
-        chat_id = chat.get('id')
         text = message.get('text', '')
+        chat_id = message.get('chat', {}).get('id')
+        
+        if 'callback_query' in update:
+            cb_result = await process_callback_query(update['callback_query'])
+            if cb_result.get("fallback_text"):
+                text = cb_result["fallback_text"]
+                message = update['callback_query'].get('message', {})
+                chat_id = message.get('chat', {}).get('id')
+            else:
+                return cb_result
+
+        if not text and not message.get('photo') and not message.get('voice') and not message.get('audio') and not message.get('document'):
+            return {"message": "No message"}
 
         core_res = supabase.table('core_config').select('key, content').execute()
         core_json = json.dumps(core_res.data or [])

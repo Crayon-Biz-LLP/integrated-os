@@ -6,6 +6,39 @@ import time
 import random
 import httpx
 from pydantic import BaseModel
+from typing import Callable, Dict, Any, List
+
+class ToolRegistry:
+    def __init__(self):
+        self.tools: Dict[str, Callable] = {}
+        
+    def register(self, func: Callable):
+        """Register a python function as a tool."""
+        self.tools[func.__name__] = func
+        return func
+        
+    def get_tools_list(self) -> List[Callable]:
+        return list(self.tools.values())
+        
+    async def execute_tool_call(self, function_call: Any) -> Any:
+        """Execute a tool call returned by the LLM."""
+        name = function_call.name
+        if name not in self.tools:
+            raise ValueError(f"Unknown tool: {name}")
+            
+        # google-genai function_call.args is a dict
+        args = function_call.args
+        if hasattr(args, "model_dump"):
+            args = args.model_dump()
+            
+        func = self.tools[name]
+        if asyncio.iscoroutinefunction(func):
+            return await func(**args)
+        else:
+            return func(**args)
+
+# Global tool registry
+rhodey_tools = ToolRegistry()
 from supabase import create_client, Client
 from google import genai
 from core.lib.audit_logger import audit_log_sync
@@ -222,8 +255,16 @@ async def call_llm_with_fallback(
                 try:
                     input_tokens = len(current_prompt) // 4 if current_prompt else 0
                     output_tokens = 0
-                    if hasattr(response, 'text'):
-                        output_tokens = len(response.text) // 4
+                    response_text = ""
+                    try:
+                        if hasattr(response, 'text') and response.text:
+                            response_text = response.text
+                            output_tokens = len(response_text) // 4
+                    except ValueError:
+                        pass
+                        
+                    if getattr(response, 'function_calls', None):
+                        output_tokens += len(str(response.function_calls)) // 4
 
                     supabase.table('model_registry').insert({
                         "model_name": model_name,
@@ -236,10 +277,13 @@ async def call_llm_with_fallback(
                 except Exception:
                     pass  # Don't fail main flow if logging fails
 
-                if hasattr(response, 'text'):
-                    response_text = response.text
-                else:
+                if not response_text:
                     response_text = str(response)
+
+                # If the response contains function calls, we skip schema enforcement since we rely on tool schemas
+                if getattr(response, 'function_calls', None):
+                    print(f"✓ LLM tool call success provider={provider_name} model={model_name} elapsed={elapsed:.1f}s")
+                    return response
 
                 # Control Layer: Strict Schema Enforcement
                 if require_json or schema:

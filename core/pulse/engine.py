@@ -4,6 +4,7 @@ import re
 import random
 import asyncio
 import httpx
+from core.services.telegram import send_telegram
 import hashlib
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
@@ -176,19 +177,19 @@ async def process_decision_pulse(auth_secret: str = None):
         openers = [
             "Danny, you got some pending decisions based out of your emails, call logs and beeper messages — your call on each?",
             "Danny, you got some pending decisions from emails, calls, and beeper — your call on each?",
-            "Emails, call extracts, and texts waiting on a nod. Yes or drop.",
+            "Emails, call extracts, and texts waiting on a nod. Tap to approve or drop.",
         ]
         lines = [random.choice(openers), ""]
 
         if email_items:
-            lines.append(f"📨 EMAIL DECISIONS ({len(email_items)}) — reply [e{{id}}] yes/drop")
+            lines.append(f"📨 EMAIL DECISIONS ({len(email_items)}) — tap to approve/drop")
             for row in email_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                 lines.append(f"[e{row['id']}] {(row.get('suggested_title') or 'Untitled')[:60]}{proj}")
             lines.append("")
 
         if call_items:
-            lines.append(f"📞 CALL EXTRACTS ({len(call_items)}) — reply [c{{id}}] yes/drop")
+            lines.append(f"📞 CALL EXTRACTS ({len(call_items)}) — tap to approve/drop")
             for row in call_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                 prefix = "📋 " if row.get('action_type') == 'task' else "💡 "
@@ -196,7 +197,7 @@ async def process_decision_pulse(auth_secret: str = None):
             lines.append("")
 
         if whatsapp_items:
-            lines.append(f"💬 WHATSAPP EXTRACTS ({len(whatsapp_items)}) — reply [w{{id}}] yes/drop")
+            lines.append(f"💬 WHATSAPP EXTRACTS ({len(whatsapp_items)}) — tap to approve/drop")
             for row in whatsapp_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                 from_str = f" — {row['sender_name']}" if row.get('sender_name') else ""
@@ -207,19 +208,42 @@ async def process_decision_pulse(auth_secret: str = None):
 
         # Send via Telegram
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         send_success = False
 
         if telegram_chat_id and message:
-            url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
-            payload = {
-                "chat_id": telegram_chat_id,
-                "text": message,
-                "parse_mode": "Markdown"
-            }
-            async with httpx.AsyncClient() as tg_client:
-                await tg_client.post(url, json=payload)
-            send_success = True
+            # Build inline keyboards based on items
+            keyboard = []
+            
+            # E-mail decisions
+            for row in email_items:
+                sc = f"e{row['id']}"
+                keyboard.append([
+                    {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
+                    {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
+                ])
+                
+            # Call decisions
+            for row in call_items:
+                sc = f"c{row['id']}"
+                keyboard.append([
+                    {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
+                    {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
+                ])
+                
+            # WhatsApp decisions
+            for row in whatsapp_items:
+                sc = f"w{row['id']}"
+                keyboard.append([
+                    {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
+                    {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
+                ])
+            
+            send_success = await send_telegram(
+                chat_id=telegram_chat_id, 
+                message_text=message, 
+                show_keyboard=False, 
+                inline_keyboard=keyboard if keyboard else None
+            )
 
         # Mark shown_in_brief only after confirmed Telegram send
         shown_ids = []
@@ -1110,29 +1134,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
              - For the briefing output, you MUST bold the titles of these specific tasks to ensure Danny sees them immediately.
                 - STALE TASKS: If STALE_TASKS has items, include a short ⏳ Stale Loops section listing them with day count. Max 5. Cap with '...and X more stalled' if over 5.
              
-         OUTPUT JSON SCHEMA (WARNING: ONLY POPULATE ARRAYS IF EXPLICITLY COMMANDED IN NEW INPUTS. OTHERWISE RETURN []):
-        {{
-            "completed_task_ids": [
-                // Example ONLY: {{ "id": 123, "status": "done" }}, {{ "id": 456, "status": "todo", "reminder_at": "2026-03-20T10:00:00+05:30" }}, {{ "id": 789, "status": "todo", "reminder_at": "2026-03-21" }}
-            ],
-            "new_projects": [
-                // Example ONLY: {{ "name": "...", "importance": 8, "org_tag": "SOLVSTRAT" }}
-            ],
-            "new_people": [
-                // Example ONLY: {{ "name": "...", "role": "...", "strategic_weight": 9 }}
-            ],
-            "new_tasks": [
-                // Example ONLY: {{ "title": "...", "project_name": "...", "priority": "urgent", "estimated_duration": 15, "reminder_at": null, "recurrence": null }},
-                // Example ONLY: {{ "title": "...", "project_name": "Solvstrat", "priority": "important", "estimated_duration": 30, "reminder_at": "2026-03-21", "recurrence": "RRULE:FREQ=WEEKLY;BYDAY=MO" }},
-                // Example ONLY: {{ "title": "...", "project_name": "Qhord", "priority": "urgent", "estimated_duration": 45, "reminder_at": "2026-03-21T10:00:00+05:30", "recurrence": null }}
-            ],
-            "resources": [
-                // Example ONLY: {{ "url": "...", "title": "...", "summary": "...", "cluster_name": "...", "project_name": "...", "strategic_note": "..." }}
-            ],
-            "logs": [],
-            "new_clusters": [],
-            "briefing": "The formatted text string for Telegram."
-        }}
+         SYSTEM MUTATION TOOLS:
+        You have been provided with function tools (create_task, update_task_status, complete_tasks, create_project, etc).
+        If the NEW INPUTS explicitly command you to create tasks, complete tasks, or update tasks, you MUST call the appropriate function tools to execute those changes in the database.
+        NEVER populate tools unless explicitly commanded in NEW INPUTS.
+        After calling the necessary tools, your FINAL TEXT RESPONSE must be ONLY the formatted text string for the Telegram briefing.
         """
 
         # --- BUILD SYSTEM INSTRUCTION ---
@@ -1259,661 +1265,40 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         }
 
         try:
-            # 🛡️ Step 2: The Modern Call with fallback
-            response = await call_llm_with_fallback(
+            # 🛡️ Step 2: Agent Loop (Tool Registry + Fallback)
+            from core.pulse.agent import run_agent_loop
+            from core.pulse.tools import rhodey_tools
+            
+            config = {
+                'system_instruction': system_instruction_text,
+                'tools': rhodey_tools.get_tools_list()
+            }
+            
+            briefing_text = await run_agent_loop(
                 prompt=prompt,
                 model=BRIEFING_MODEL,
-                config={
-                    'response_mime_type': 'application/json',
-                    'response_schema': PulseOutput,
-                    'system_instruction': system_instruction_text
-                },
-                is_critical=True,
-                require_json=True,
-                schema=PulseOutput
+                config=config,
+                max_steps=10
             )
-            response_text = response.text
+            
+            print("✅ Agent loop completed successfully.")
 
-            # 🛡️ Step 3: Precise Extraction
-            # We move this inside the primary try block so it only runs if we HAVE text
-            json_str = re.sub(r'^```json\n?', '', response_text)
-            json_str = re.sub(r'\n?```$', '', json_str).strip()
+            # Formatting cleanup for Telegram
+            if briefing_text:
+                # Provide breathing room for section headers
+                headers = ['🚀 Work', '🏠 Home', '⛪ Church', '💡 Ideas', '✅ Done', '🛡️ WEEKEND RECON']
+                for header in headers:
+                    if header in briefing_text:
+                        briefing_text = briefing_text.replace(header, f"\n\n{header}\n")
 
-            # Sanitization (Trailing commas + empty values)
-            json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
-
-            match = re.search(r'\{[\s\S]*\}', json_str)
-            if match:
-                json_str = match.group(0)
-
-            ai_data = json.loads(json_str)
-            print("✅ AI Data Parsed Successfully:", list(ai_data.keys()))
+                briefing_text = briefing_text.replace('\\n', '\n').replace(' - ', '\n- ')
+                briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
+                briefing_text = re.sub(r'\b(\d{2,})\s+(?:is the|task|loop|item|#|ref|id)\b', r'\1', briefing_text, flags=re.IGNORECASE)
+                briefing_text = re.sub(r'\n{3,}', '\n\n', briefing_text)
 
         except Exception as e:
-            audit_log_sync("pulse", "ERROR", f"AI Execution or JSON Parse Error: {e}")
-            # The ai_data fallback is already set above, so the rest of the script won't crash
-
-        # --- 3. WRITE Phase (Database Updates) ---
-
-        # A. BATCH NEW PROJECTS (Deduplicated)
-        if ai_data.get('new_projects'):
-            valid_tags = ['SOLVSTRAT', 'QHORD', 'PERSONAL', 'CRAYON', 'ASHRAYA']
-
-            CONTEXT_MAP = {
-                'ASHRAYA':   'personal',
-                'PERSONAL':  'personal',
-                'SOLVSTRAT': 'work',
-                'QHORD':     'work',
-                'CRAYON':    'work',
-            }
-            filtered_new_projects = []
-
-            for new_p in ai_data['new_projects']:
-                p_name = new_p.get('name', 'Unnamed Project')
-                p_tag = new_p.get('org_tag', 'SOLVSTRAT')
-                already_exists = any(
-                    p_name.lower() in get_project_name(existing_p).lower() or
-                    get_project_name(existing_p).lower() in p_name.lower()
-                    for existing_p in projects
-                ) or any(
-                    p_name.lower() in get_project_name(lp).lower() or
-                    get_project_name(lp).lower() in p_name.lower()
-                    for lp in legacy_projects
-                )
-                if not already_exists:
-                    p_description = new_p.get('description')
-                    if not p_description:
-                        audit_log_sync("pulse", "WARNING", f"⚠️ New project '{p_name}' created without description — routing may be imprecise.")
-
-                    filtered_new_projects.append({
-                        "name": p_name,
-                        "org_tag": p_tag if p_tag in valid_tags else 'SOLVSTRAT',
-                        "status": "active",
-                        "context": CONTEXT_MAP.get(p_tag, 'work'),
-                        "is_active": True,
-                        "description": p_description,
-                        "keywords": new_p.get('keywords', []),
-                    })
-
-                    resolved_parent_id = None
-                    parent_name = new_p.get('parent_project_name', '').lower().strip()
-                    if parent_name:
-                        parent_match = next(
-                            (p for p in legacy_projects if p.get('name', '').lower() == parent_name),
-                            None
-                        )
-                        if parent_match:
-                            resolved_parent_id = parent_match['id']
-                            filtered_new_projects[-1]['parent_project_id'] = resolved_parent_id
-                            print(f"🔗 Will link '{p_name}' → parent '{parent_match['name']}' (id: {resolved_parent_id})")
-
-            if filtered_new_projects:
-                p_res = supabase.table('projects').insert(filtered_new_projects).execute()
-                if p_res.data:
-                    for new_proj in p_res.data:
-                        project_name = new_proj.get('name')
-                        node_metadata = {
-                            "source": "pulse_auto",
-                            "project_id": str(new_proj.get('id')),
-                            "org_tag": new_proj.get('org_tag'),
-                        }
-                        try:
-                            existing_node = (
-                                supabase.table('graph_nodes')
-                                .select('id', 'type')
-                                .ilike('label', project_name)
-                                .maybe_single()
-                                .execute()
-                            )
-                            if existing_node and existing_node.data:
-                                if existing_node.data['type'] != 'project':
-                                    supabase.table('graph_nodes').update({
-                                        'type': 'project',
-                                        'metadata': node_metadata
-                                    }).eq('id', existing_node.data['id']).execute()
-                                    print(f"⬆️ Upgraded node '{project_name}' from {existing_node.data['type']} → project")
-                                else:
-                                    audit_log_sync("pulse", "WARNING", f"⚠️ Project node '{project_name}' already exists, updating metadata.")
-                                    supabase.table('graph_nodes').update({
-                                        'metadata': node_metadata
-                                    }).eq('id', existing_node.data['id']).execute()
-                            else:
-                                supabase.table('graph_nodes').insert({
-                                    "label": project_name,
-                                    "type": "project",
-                                    "metadata": node_metadata
-                                }).execute()
-                        except Exception as gn_err:
-                            audit_log_sync("pulse", "WARNING", f"⚠️ Graph node sync failed (non-critical): {gn_err}")
-                    legacy_projects.extend(p_res.data)
-                    projects.extend(p_res.data)
-                    print(f"✅ Created {len(p_res.data)} new entity projects.")
-
-        # B. BATCH NEW PEOPLE
-        if ai_data.get('new_people'):
-            existing_people_res = supabase.table('people').select('name').execute()
-            existing_raw = {p['name'].lower().strip() for p in (existing_people_res.data or [])}
-            existing_norm = {normalize_person_name(p['name']) for p in (existing_people_res.data or []) if normalize_person_name(p['name'])}
-            existing_nodes_res = supabase.table('graph_nodes').select('label, type').execute()
-            existing_non_person_nodes = set()
-            for gn in (existing_nodes_res.data or []):
-                if gn.get('type') != 'person':
-                    norm = normalize_person_name(gn.get('label', ''))
-                    if norm:
-                        existing_non_person_nodes.add(norm)
-            deduped_people = []
-            for p in ai_data['new_people']:
-                name = p.get('name', '')
-                if not name:
-                    continue
-                if is_blocklisted_person(name):
-                    continue
-                name_raw = name.lower().strip()
-                name_norm = normalize_person_name(name)
-                if name_raw in existing_raw or (name_norm and name_norm in existing_norm):
-                    continue
-                if name_norm and name_norm in existing_non_person_nodes:
-                    continue
-                deduped_people.append({**p, "source": "pulse"})
-            if deduped_people:
-                supabase.table('people').insert(deduped_people).execute()
-
-        # C. BATCH TASK UPDATES (The Smart Rescheduler)
-        if ai_data.get('completed_task_ids'):
-            for item in ai_data['completed_task_ids']:
-                target_id = item.get('id')
-                item_status = item.get('status', 'done')
-                raw_reminder = item.get('reminder_at')
-                
-                # Record whether original input had explicit time before format_rfc3339() normalizes it
-                was_explicit_time = bool(raw_reminder and 'T' in str(raw_reminder))
-                
-                # 🛡️ RFC-3339 GUARD: Sanitize the timestamp immediately
-                # This fixes the "Space" bug before Google ever sees it
-                new_reminder = format_rfc3339(raw_reminder) if raw_reminder else None
-                
-                # 1. Fetch current IDs AND Status
-                task_ref = supabase.table('tasks').select('status', 'google_task_id', 'google_event_id', 'title', 'priority').eq('id', target_id).single().execute()
-
-                # 🛡️ GUARD: Safely extract data - check BEFORE calling .get()
-                task_data = task_ref.data if task_ref.data else {}
-                current_db_status = task_data.get('status')
-                g_id = task_data.get('google_task_id')
-                e_id = task_data.get('google_event_id')
-                task_title = task_data.get('title', "Untitled Task")
-
-                # 🛑 THE LOCKDOWN: Block AI resurrection of finished tasks
-                if current_db_status in ['done', 'cancelled']:
-                    print(f"🚫 Task {target_id} ('{task_title}') is already {current_db_status}. Skipping.")
-                    continue
-
-                # 2. THE SMART CALENDAR SYNC (With Radar)
-                cal_duration = item.get('duration_mins', 15)
-                if item_status in ['done', 'cancelled'] and e_id:
-                    delete_calendar_event(e_id)
-                    e_id = None
-                elif new_reminder and was_explicit_time:
-                    # 🛰️ RADAR: Check for conflict before moving the block
-                    conflict_name = await asyncio.to_thread(check_conflict, new_reminder, e_id)
-                    if conflict_name:
-                        # 🛡️ Safety: Assignment ensures we don't crash if 'briefing' key is missing
-                        current_briefing = ai_data.get('briefing', "")
-                        ai_data['briefing'] = current_briefing + f"\n\n⚠️ **SNOOZE CONFLICT:** Tried moving '{task_title}' to {new_reminder.split('T')[1][:5]}, but you have '{conflict_name}' then."
-                    
-                    # Edit or create the block
-                    e_id = sync_to_calendar(task_title, new_reminder, event_id=e_id, duration_mins=cal_duration, priority=task_data.get('priority', 'important'), recurrence=item.get('recurrence'))
-                elif e_id:
-                    # Snooze to DATE-ONLY -> Remove existing block
-                    delete_calendar_event(e_id)
-                    e_id = None
-
-                # 3. GOOGLE TASKS SYNC (Uses the same sanitized timestamp)
-                if g_id:
-                    try:
-                        sync_to_google(tasks_service, title=task_title, task_id=g_id, status=item_status, due_at=new_reminder)
-                    except Exception as g_err:
-                        audit_log_sync("pulse", "WARNING", f"⚠️ Google Tasks sync failed for '{task_title}': {g_err}")
-                        error_log.append(f"Google Tasks sync failed for: '{task_title}'")
-
-                # 4. SUPABASE UPDATE (Saves 'T' format and allows time removal)
-                update_payload = {"status": item_status, "google_event_id": e_id}
-                if item_status == 'done': 
-                    update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
-                
-                # REMOVE the 'if' here to allow clearing the time
-                update_payload["reminder_at"] = new_reminder 
-
-                # Propagate duration_mins update if provided
-                duration_update = item.get('duration_mins')
-                if duration_update is not None:
-                    update_payload["duration_mins"] = duration_update
-                    update_payload["estimated_minutes"] = duration_update
-
-                change_reason = f"Status: {item_status}, reminder: {new_reminder}"
-                if duration_update is not None:
-                    change_reason += f", duration: {duration_update}min"
-
-                # Use versioned_update for task status changes (creates history)
-                versioned_update(
-                    table_name='tasks',
-                    record_id=target_id,
-                    update_data=update_payload,
-                    user_id=None,
-                    change_source='pulse_task_update',
-                    change_reason=change_reason
-                )
-                
-                # 🧠 Outcome memory with project context
-                if item_status == 'done':
-                    proj_name = None
-                    proj_id = task_data.get('project_id')
-                    if proj_id:
-                        proj_lookup = supabase.table('projects').select('name').eq('id', proj_id).maybe_single().execute()
-                        proj_name = proj_lookup.data['name'] if proj_lookup.data else None
-                    await write_outcome_memory(task_title, proj_name)
-
-        # D. BATCH NEW TASKS (Checklist + Calendar Interruption + ID Tracking)
-        if ai_data.get('new_tasks'):
-            task_inserts = []
-            explicit_times = []
-            recurrences_list = []
-            
-            # PHASE 0: Time Tracker - Track explicit times from AI
-
-            # PHASE 0: Inbox Discovery - Two-stage fallback from graph nodes → legacy projects
-            inbox_from_graph = next(
-                (p.get('legacy_id') for p in projects
-                 if p.get('org_tag') == 'INBOX' and p.get('legacy_id') is not None),
-                None
-            )
-
-            inbox_from_legacy = next(
-                (p.get('id') for p in legacy_projects
-                 if p.get('org_tag') == 'INBOX' and p.get('status') == 'active'),
-                1
-            )
-
-            try:
-                actual_inbox_id = int(inbox_from_graph or inbox_from_legacy)
-            except (ValueError, TypeError):
-                actual_inbox_id = 1
-
-            audit_log_sync("pulse", "WARNING", f"⚠️ Inbox resolution: actual_inbox_id = {actual_inbox_id} (source: {'graph' if inbox_from_graph else 'legacy'})")
-
-            for task in ai_data['new_tasks']:
-                task_title = task.get('title', 'Untitled Task')
-
-                # Cross-pipeline duplicate guard
-                if is_already_in_email_queue(task_title):
-                    continue  # Skip — email ingest already flagged this for approval
-
-                ai_target = (task.get('project_name') or '').lower().strip()
-                task_project_id = actual_inbox_id
-
-                if ai_target:
-                    matched = None
-
-                    matched = next(
-                        (p for p in legacy_projects if p.get('name', '').lower() == ai_target),
-                        None
-                    )
-
-                    if not matched:
-                        for p in legacy_projects:
-                            kws = [k.lower() for k in (p.get('keywords') or [])]
-                            if any(kw in ai_target or ai_target in kw for kw in kws):
-                                matched = p
-                                break
-
-                    if not matched:
-                        for p in legacy_projects:
-                            desc = (p.get('description') or '').lower()
-                            if ai_target in desc or any(word in desc for word in ai_target.split() if len(word) > 3):
-                                matched = p
-                                break
-
-                    if not matched:
-                        matched = next(
-                            (p for p in legacy_projects
-                             if ai_target in p.get('name', '').lower()
-                             or p.get('name', '').lower() in ai_target),
-                            None
-                        )
-
-                    if not matched:
-                        gn_match = next(
-                            (p for p in graph_node_projects if ai_target in get_project_name(p).lower()
-                             or get_project_name(p).lower() in ai_target),
-                            None
-                        )
-                        if gn_match:
-                            try:
-                                task_project_id = int(
-                                    gn_match.get('legacy_id') or gn_match.get('id') or actual_inbox_id
-                                )
-                            except (ValueError, TypeError):
-                                pass
-
-                    if matched:
-                        try:
-                            task_project_id = int(matched.get('id') or actual_inbox_id)
-                        except (ValueError, TypeError):
-                            pass
-                    else:
-                        name_match = next(
-                            (p for p in legacy_projects 
-                             if p.get('status') == 'active' and
-                             any(word in (p.get('name', '').lower()) 
-                                 for word in ai_target.lower().split() if len(word) > 3)),
-                            None
-                        )
-                        if name_match:
-                            task_project_id = int(name_match['id'])
-                            audit_log_sync("pulse", "WARNING", f"⚠️ Task '{task.get('title')}' fuzzy-matched to '{name_match['name']}' (ai_target: '{ai_target}')")
-                        else:
-                            work_hints = ['client', 'nda', 'pilot', 'send', 'check', 'follow', 'call', 'meeting', 'project']
-                            is_work_context = any(hint in ai_target.lower() for hint in work_hints)
-                            if is_work_context:
-                                solvstrat_fallback = next(
-                                    (p for p in legacy_projects if p.get('org_tag') == 'SOLVSTRAT' and not p.get('parent_project_id')),
-                                    None
-                                )
-                                if solvstrat_fallback:
-                                    task_project_id = solvstrat_fallback['id']
-                                    audit_log_sync("pulse", "WARNING", f"⚠️ Task '{task.get('title')}' fell back to Solvstrat (no match for '{ai_target}')")
-                            else:
-                                error_log.append(f"Task routing failed for: '{task.get('title')}'")
-
-                # 🛡️ RFC-3339 GUARD: Sanitize the AI's time string immediately
-                raw_time = task.get('reminder_at')
-                sanitized_time = format_rfc3339(raw_time) if raw_time else None
-                    
-                # 🔄 DE-CLASH LOGIC
-                if raw_time and 'T' in str(raw_time) and sanitized_time:
-                    time_slot = sanitized_time.split('T')[0]
-                    existing_same_slot = [t for t in task_inserts if (t.get('reminder_at') or '').startswith(time_slot)]
-                    if existing_same_slot:
-                        stagger_count = len(existing_same_slot)
-                        original_time = datetime.fromisoformat(sanitized_time.replace('Z', '+00:00'))
-                        staggered_time = original_time + timedelta(minutes=15 * stagger_count)
-                        sanitized_time = staggered_time.strftime('%Y-%m-%dT%H:%M:%S+05:30')
-                        print(f"⏰ De-clash: Staggered '{task.get('title', 'Untitled Task')}' to {sanitized_time.split('T')[1][:5]}")
-
-                explicit_time = bool(raw_time and 'T' in str(raw_time))
-
-                # Semantic duplicate guard
-                combined_active_tasks = active_tasks + task_inserts
-                guard = check_duplicate(task_title, combined_active_tasks)
-                if guard['result'] in ['block', 'flag']:
-                    audit_log_sync("pulse", "WARNING", f"⚠️ AI Semantic Guard: '{task_title}' matches existing task '{guard['matched_title']}'. Skipping.")
-                    continue
-
-                # Idempotency guard using content hash
-                dedup_key = hashlib.md5(
-                    f"{task_title.lower().strip()}:{task_project_id}".encode()
-                ).hexdigest()[:16]
-                existing = supabase.table('tasks').select('id') \
-                    .eq('dedup_key', dedup_key) \
-                    .not_.in_('status', ['done', 'cancelled']) \
-                    .limit(1).execute()
-                if existing.data:
-                    audit_log_sync("pulse", "WARNING", f"⚠️ Idempotency guard: '{task_title}' already exists. Skipping.")
-                    continue
-
-                task_inserts.append({
-                    "title": task_title,
-                    "project_id": task_project_id,
-                    "priority": (task.get('priority') or 'important').lower(),
-                    "status": "todo",
-                    "estimated_minutes": task.get('estimated_duration', 15),
-                    "duration_mins": task.get('estimated_duration', 15),
-                    "reminder_at": sanitized_time,
-                    "is_revenue_critical": task.get('is_revenue_critical', False),
-                    "dedup_key": dedup_key,
-                })
-                explicit_times.append(explicit_time)
-                recurrences_list.append(task.get('recurrence'))
-            if task_inserts:
-                insert_res = supabase.table('tasks').insert(task_inserts).execute()
-                print(f"✅ Phase 1: Inserted {len(insert_res.data)} new tasks to Supabase.")
-
-                # PHASE 2: Side-Effect Orchestration - Google Sync after DB success
-                for db_task, expl_time, rrule in zip(insert_res.data, explicit_times, recurrences_list):
-                    task_id = db_task['id']
-                    task_title = db_task.get('title', 'Untitled Task')
-                    
-                    asyncio.create_task(
-                        write_graph_edges_for_task(
-                            task_id=task_id,
-                            task_title=task_title,
-                            project_id=db_task.get('project_id'),
-                            task_description=db_task.get('description'),
-                            people_cache=people
-                        )
-                    )
-                    
-                    # Read directly from the DB's safe return data, NOT the local array
-                    sanitized_time = db_task.get('reminder_at')
-                    duration_mins = db_task.get('duration_mins') or 15
-                    
-                    # Use explicit_time from zip (avoids title collision)
-                    explicit_time = expl_time
-                    
-                    g_id = None
-                    e_id = None
-
-                    # 2a. SYNC TO GOOGLE TASKS (run in thread to avoid blocking)
-                    if sanitized_time:
-                        try:
-                            g_id = await asyncio.to_thread(
-                                sync_to_google,
-                                tasks_service,
-                                task_title,
-                                sanitized_time,
-                                None,
-                                None,
-                                explicit_time
-                            )
-                            if g_id:
-                                print(f"📡 Google Task Created: {task_title}")
-                        except Exception as e:
-                            audit_log_sync("pulse", "WARNING", f"⚠️ Google Tasks Sync failed: {e}")
-                            error_log.append(f"Google Tasks sync failed for: '{task_title}'")
-
-                    # 2b. STRATEGIC GATE: SYNC TO CALENDAR (Only runs if explicit time was given)
-                    if sanitized_time and explicit_time:
-                        try:
-                            conflict_name = await asyncio.to_thread(check_conflict, sanitized_time)
-                            if conflict_name:
-                                briefing = ai_data.get('briefing', "")
-                                ai_data['briefing'] = briefing + f"\n\n⚠️ **CALENDAR CLASH:** '{task_title}' overlaps with '{conflict_name}'."
-                            
-                            e_id = await asyncio.to_thread(sync_to_calendar, task_title, sanitized_time, duration_mins, None, db_task.get('priority', 'important'), rrule)
-                            if e_id:
-                                print(f"🔥 Calendar block secured: {task_title} ({duration_mins}m)")
-                        except Exception as ce:
-                            audit_log_sync("pulse", "WARNING", f"⚠️ Calendar Sync failed for {task_title}: {ce}")
-                            error_log.append(f"Calendar sync failed for: '{task_title}'")
-
-                    # 2c. Store Google IDs back to Supabase (direct update, no version churn)
-                    if g_id or e_id:
-                        try:
-                            supabase.table('tasks').update({
-                                'google_task_id': g_id,
-                                'google_event_id': e_id,
-                            }).eq('id', task_id).execute()
-                            print(f"🔄 Updated task {task_id} with Google IDs.")
-                        except Exception as ve:
-                            audit_log_sync("pulse", "WARNING", f"⚠️ Google ID update failed for task {task_id}: {ve}")
-
-        # G. CLEANUP & LOGS
-        if ai_data.get('logs'):
-            supabase.table('logs').insert(ai_data['logs']).execute()
-
-        # H. NEW CLUSTERS
-        clusters_created_count = 0
-        if ai_data.get('new_clusters'):
-            # TITLE A0. BATCH NEW CLUSTERS Deduplicated...
-            # Fetch existing cluster titles for deduplication
-            existing_clusters_res = supabase.table('clusters').select('id, title').eq('status', 'active').execute()
-            existing_titles_normalized = {normalize_cluster_title(m['title']): m for m in (existing_clusters_res.data or [])}
-            run_dedup = set()
-
-            for cluster_title in ai_data['new_clusters']:
-                if not cluster_title or not isinstance(cluster_title, str):
-                    continue
-                norm = normalize_cluster_title(cluster_title)
-                if not norm or norm in run_dedup:
-                    continue
-                if norm in existing_titles_normalized:
-                    run_dedup.add(norm)
-                    continue
-                # Insert new cluster
-                ist_ts = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-                description = f"Auto-created by Pulse from recurring resource/input patterns on {ist_ts.strftime('%Y-%m-%d')}."
-                insert_res = supabase.table('clusters').insert({
-                    "title": cluster_title.strip(),
-                    "status": "active",
-                    "description": description
-                }).execute()
-                if insert_res.data:
-                    clusters_created_count += 1
-                    run_dedup.add(norm)
-                    active_clusters.append(insert_res.data[0])
-                    cluster_names.append(cluster_title.strip())
-                    print(f"🎯 Cluster auto-created: {cluster_title}")
-
-        if clusters_created_count > 0:
-            print(f"✅ Created {clusters_created_count} new clusters this run.")
-
-        # I. RESOURCES — Persist AI-generated bookmarks (deduplicated by URL)
-        if ai_data.get('resources'):
-            existing_resources_res = supabase.table('resources').select('url').execute()
-            existing_urls = set(r['url'] for r in (existing_resources_res.data or []) if r.get('url'))
-            resource_inserts = []
-            for res in ai_data['resources']:
-                url = res.get('url', '').strip()
-                if not url or url in existing_urls:
-                    continue
-                existing_urls.add(url)
-                resource_inserts.append({
-                    "url": url,
-                    "title": res.get('title'),
-                    "summary": res.get('summary'),
-                    "strategic_note": res.get('strategic_note'),
-                    "category": res.get('category', 'INBOX'),
-                })
-            if resource_inserts:
-                supabase.table('resources').insert(resource_inserts).execute()
-                print(f"✅ Vaulted {len(resource_inserts)} new resources.")
-
-        # TITLE A1. HISTORICAL RESOURCE CLUSTER BACKFILL...
-        # Only attempt backfill if there are active clusters to map against
-        if active_clusters:
-            try:
-                # Fetch resources with NULL cluster_id that have metadata to classify
-                null_resources_res = supabase.table('resources').select(
-                    'id, url, title, summary, strategic_note, category'
-                ).is_('cluster_id', None).execute()
-                null_resources = null_resources_res.data or []
-                if null_resources:
-                    # Build cluster title->id map
-                    cluster_map = {m['title']: m['id'] for m in active_clusters}
-                    # Limit batch size for safety
-                    batch_size = min(75, len(null_resources))
-                    backfill_batch = null_resources[:batch_size]
-                    print(f"🔄 Backfilling {len(backfill_batch)} historical resources with clusters...")
-
-                    # Build classifier prompt
-                    cluster_list_str = "\n".join([f"- {m['title']}" for m in active_clusters])
-                    resources_json = json.dumps([{
-                        "id": r['id'],
-                        "title": r.get('title', ''),
-                        "summary": r.get('summary', ''),
-                        "strategic_note": r.get('strategic_note', ''),
-                        "category": r.get('category', '')
-                    } for r in backfill_batch], indent=2)
-
-                    backfill_prompt = f"""You are a cluster classifier. Classify each resource against the ACTIVE clusters below.
-
-                    ACTIVE CLUSTERS:
-                    {cluster_list_str}
-
-                    STRICT RULES:
-                    - Only assign a cluster if the resource is a DIRECT BUILDING BLOCK for that cluster.
-                    - If it is a cool tool, general article, personal read, faith content, curiosity item, or interesting but non-core material, return cluster_name: null.
-                    - Never force a match. Exact cluster title only if assigning.
-                    - If ambiguous between two clusters, return null.
-                    - If confidence is below 0.70, return null.
-                    - It is okay to map loosely if the theme aligns well.
-
-                    Resources to classify:
-                    {resources_json}
-
-                    Return ONLY valid JSON array:
-                    [
-                    {{"id": 1, "clustername": "...", "reason": "...", "confidence": 0.85}},
-                    {{"id": 2, "clustername": null, "reason": "...", "confidence": 0.0}}
-                    ]"""
-
-                    try:
-                        backfill_response = await call_llm_with_fallback(
-                            prompt=backfill_prompt,
-                            model="gemini-3.1-flash-lite",
-                            config={'response_mime_type': 'application/json'},
-                            is_critical=False,
-                            require_json=True
-                        )
-                        backfill_result = parse_json_response(backfill_response.text)
-                        if not isinstance(backfill_result, list):
-                            audit_log_sync("pulse", "WARNING", "⚠️ Backfill classifier returned non-list, skipping.")
-                            backfill_result = []
-
-                        backfilled_count = 0
-                        for item in backfill_result:
-                            res_id = item.get('id')
-                            clustername = item.get('clustername')
-                            confidence = item.get('confidence', 0.0)
-
-                            # Only update if: clustername is non-null, title exists in map, confidence >= 0.70
-                            if clustername and clustername in cluster_map and confidence >= 0.70:
-                                cluster_id = cluster_map[clustername]
-                                supabase.table('resources').update({
-                                    "cluster_id": cluster_id
-                                }).eq('id', res_id).execute()
-                                backfilled_count += 1
-                                print(f"🔗 Backfilled resource {res_id} → cluster '{clustername}' (conf: {confidence})")
-
-                        print(f"✅ Backfilled {backfilled_count}/{len(backfill_batch)} historical resources with clusters.")
-
-                    except Exception as bc_err:
-                        audit_log_sync("pulse", "WARNING", f"⚠️ Resource backfill classification failed: {bc_err}")
-
-            except Exception as br_err:
-                audit_log_sync("pulse", "WARNING", f"⚠️ Resource backfill fetch error: {br_err}")
-
-        # --- 4. SPEAK Phase ---
-        briefing_text = ai_data.get('briefing', '')
-        if briefing_text:
-            # 🛡️ THE ARCHITECT'S FINAL REPAIR: Force double newlines before all section headers
-            # This ensures that even if the AI 'whispers', the grid stays intact.
-            headers = ['🚀 Work', '🏠 Home', '⛪ Church', '💡 Ideas', '✅ Done', '🛡️ WEEKEND RECON']
-            for header in headers:
-                if header in briefing_text:
-                    # Replace the header with a version that has breathing room above it
-                    briefing_text = briefing_text.replace(header, f"\n\n{header}\n")
-
-            # 🛡️ Fix escaping and enforce list breaks
-            briefing_text = briefing_text.replace('\\n', '\n').replace('\\\\n', '\n').replace(' - ', '\n- ')
-
-            # Existing logic: Remove internal system IDs from the user-facing text
-            briefing_text = re.sub(r'\[?ID:\s*\d+\]?', '', briefing_text, flags=re.IGNORECASE).strip()
-
-            # Strip bare task ID references in natural language (e.g. "117 is the last loop")
-            briefing_text = re.sub(r'\b(\d{2,})\s+(?:is the|task|loop|item|#|ref|id)\b', r'\1', briefing_text, flags=re.IGNORECASE)
-
-            # Final Clean: Remove any accidental triple-newlines created by the logic above
-            briefing_text = re.sub(r'\n{3,}', '\n\n', briefing_text)
+            audit_log_sync("pulse", "ERROR", f"Agent Execution Error: {e}")
+            briefing_text = f"Pulse failed during execution: {e}"
 
         # --- 🏃 RHYTHMS SECTION (Weekends only) ---
         if is_weekend:

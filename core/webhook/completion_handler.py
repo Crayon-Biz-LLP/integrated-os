@@ -130,12 +130,13 @@ Response: {{"matched_task_ids": [...]}}"""
             # Clarification Fallback (The Ambiguity Check)
             if candidates and len(candidates) <= 5:
                 # Ask user to pick which task they meant
-                opts = []
+                reply = "🧐 *Which task did you complete?*"
+                keyboard = []
                 for i, c in enumerate(candidates):
-                    opts.append(f"{i+1}️⃣ — {c['title']}")
-                opts.append("n — None of these (Leave open)")
-                
-                reply = "🧐 *Which task did you complete?*\n\n" + "\n".join(opts) + "\n\n_Reply with the number, or 'n' for none._"
+                    # Button text max 64 chars. Callback data is just the digit string (e.g. "1")
+                    title_short = c['title'][:50] + ("..." if len(c['title']) > 50 else "")
+                    keyboard.append([{"text": f"{i+1}️⃣ {title_short}", "callback_data": str(i+1)}])
+                keyboard.append([{"text": "None of these (Leave open)", "callback_data": "n"}])
                 
                 # Save clarification state to conversations
                 from core.lib.conversation import get_or_create_session, log_exchange
@@ -152,7 +153,8 @@ Response: {{"matched_task_ids": [...]}}"""
                 )
                 
                 _park(dump_id, STATUS_AWAITING, "awaiting_clarification")
-                await _send(chat_id, reply)
+                from core.webhook.telegram import send_telegram
+                await send_telegram(chat_id, reply, show_keyboard=False, inline_keyboard=keyboard)
                 return
             else:
                 _park(dump_id, STATUS_AWAITING, "no_match")
@@ -173,6 +175,9 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
     closed_ids      = []
     now_utc         = datetime.now(timezone.utc).isoformat()
 
+    from core.pulse.tools import update_task_status
+    sync_failed = False
+
     for task_id in validated_ids:
         # Read current row — skip if already terminal
         row_res = supabase.table("tasks").select("id, title, status, google_task_id, google_event_id").eq("id", task_id).maybe_single().execute()
@@ -184,15 +189,18 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
             continue
 
         try:
-            versioned_update("tasks", task_id, {
-                "status":       "done",
-                "completed_at": now_utc,
-            }, change_source='webhook_completion', change_reason='Inline completion')
-            closed_ids.append(task_id)
-            # Write outcome memory per closed task
-            asyncio.create_task(write_outcome_memory(row["title"], entity))
+            # Use the canonical tool to do the DB update, Calendar delete, and Google Tasks sync
+            result_msg = update_task_status(task_id=task_id, status="done")
+            if "Error" in result_msg:
+                audit_log_sync("completion", "ERROR", f"Tool failed for task {task_id}: {result_msg}")
+                sync_failed = True
+            else:
+                closed_ids.append(task_id)
+                # Write outcome memory per closed task
+                asyncio.create_task(write_outcome_memory(row["title"], entity))
         except Exception as close_err:
-            audit_log_sync("completion", "ERROR", f"versioned_update failed for task {task_id}: {close_err}")
+            audit_log_sync("completion", "ERROR", f"update_task_status tool failed for task {task_id}: {close_err}")
+            sync_failed = True
 
     if not closed_ids:
         # Matched but all were already terminal
@@ -200,31 +208,10 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
         await _send(chat_id, receipt or "Completion noted — those tasks were already closed.")
         return
 
-    # ── Stage 6: Isolated external sync ───────────────────────────────────
-    # DB is already committed. Sync failure does NOT roll back.
-    sync_failed = False
-    try:
-        from core.services.google_service import get_tasks_service, sync_to_google, delete_calendar_event
-        tasks_service = get_tasks_service()
-        for task_id in closed_ids:
-            row_res = supabase.table("tasks").select("title, google_task_id, google_event_id").eq("id", task_id).maybe_single().execute()
-            row = row_res.data
-            if row:
-                if row.get('google_event_id'):
-                    try:
-                        delete_calendar_event(row['google_event_id'])
-                    except Exception as ce:
-                        audit_log_sync("completion", "WARNING", f"Calendar delete failed for {task_id}: {ce}")
-                if row.get('google_task_id') and tasks_service:
-                    await asyncio.to_thread(sync_to_google, tasks_service, title=row['title'], task_id=row['google_task_id'], status="done")
-    except Exception as sync_err:
-        audit_log_sync("completion", "WARNING", f"External sync failed for dump {dump_id}: {sync_err}")
-        sync_failed = True
-
     if sync_failed:
         from core.services.pipeline_service import add_to_failed_queue
         for task_id in closed_ids:
-            await add_to_failed_queue("tasks", str(task_id), "google_sync", "Sync failed post-completion")
+            await add_to_failed_queue("tasks", str(task_id), "google_sync", "Sync failed post-completion via tool")
         _park(dump_id, STATUS_PARTIAL, "sync_failed")
     else:
         # ── Only seal to completed if we can prove DB mutations occurred ──

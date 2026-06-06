@@ -93,16 +93,15 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
     if matched is not None:
         return matched
 
-    result = supabase.table('people').insert({
-        "name": name_clean,
-        "role": None,
-        "strategic_weight": 5,
-        "source": source
-    }).execute()
-
-    if result.data:
-        print(f"Added new person from email: {name_clean}")
-        return result.data[0]['id']
+    from core.pulse.tools import create_person
+    result_msg = create_person(name=name_clean, context=source)
+    if "ID " in result_msg:
+        try:
+            new_id = int(result_msg.split("ID ")[1])
+            print(f"Added new person from email via tool: {name_clean}")
+            return new_id
+        except Exception:
+            pass
     return None
 
 
