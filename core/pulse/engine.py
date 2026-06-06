@@ -25,17 +25,18 @@ from core.pulse.llm import (
 )
 from core.pulse.utils import format_error, get_project_name, build_routing_context, normalize_cluster_title
 from core.pulse.memory import (
-    write_outcome_memory, get_recent_memories_for_briefing,
+    write_outcome_memory,
     detect_temporal_patterns, serendipity_engine, adaptive_briefing_learner,
     retrieve_hindsight_memories, generate_after_action_report,
 )
+from core.pulse.context import context_provider
 from core.pulse.graph import (
     write_graph_edges_for_task, check_task_dependencies,
     analyze_communication_patterns, fetch_hybrid_graph_context, fetch_graph_task_context,
 )
 from core.pulse.pipeline import update_heartbeat, check_pipeline_health
 from core.pulse.calendar import (
-    get_calendar_context, check_conflict, sync_to_calendar,
+    check_conflict, sync_to_calendar,
     sync_completed_tasks_from_google,
 )
 from core.pulse.practices import (
@@ -636,15 +637,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             })
 
         print("📦 Step 2: Fetching projects...")
-        projects_res = supabase.table('projects') \
-            .select('id, name, org_tag, description, parent_project_id, status, keywords') \
-            .eq('status', 'active') \
-            .execute()
-        legacy_projects = projects_res.data or []
+        legacy_projects = await context_provider.get_projects()
 
         print("📦 Step 3: Fetching people...")
-        people_res = supabase.table('people').select('name, strategic_weight').execute()
-        people = people_res.data or []
+        people = await context_provider.get_people()
 
         print("📦 Step 4: Fetching clusters...")
         # Fetch Active Clusters for Context
@@ -751,8 +747,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             except Exception:
                 recent_tasks.append(t) # Safety fallback
 
-        # This is the AI's "Visual Field"
-        universal_task_map = " | ".join([f"[ID:{t.get('id')}] {t.get('title')}" for t in recent_tasks])
+        # Universal task map is now handled by context_provider
 
         # B. BUILD COMPRESSED LIST (For the Briefing Context)
         # 🛡️ FIX: Defining 'compressed_tasks' so the prompt builder doesn't crash!
@@ -850,8 +845,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         task_inputs = [d['content'] for d in dumps] if dumps else []
 
         # 🕸️ ADD-ON: Graph-aware person→task context (non-blocking)
-        people_res = supabase.table('people').select('id, name').execute()
-        people = people_res.data or []
+        people = await context_provider.get_people()
         projects_res = supabase.table('graph_nodes').select('id', 'label').eq('type', 'project').execute()
         graph_node_projects = projects_res.data or []
         if people and active_tasks:
@@ -928,8 +922,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         else:
             recent_urls_context = "None"
         
-        # 🧠 RECENT MEMORIES (semantic search based on today's tasks)
-        recent_memories_context = await get_recent_memories_for_briefing(filtered_tasks)
+        # 🧠 RECENT MEMORIES (Phase 2 semantic search)
+        mem_query = " | ".join([t.get('title', '') for t in filtered_tasks[:5]])
+        recent_memories_context = await context_provider.hydrate_memories_context(mem_query, match_count=5)
         
         # 🤖 AGENT 1: DEPENDENCY AGENT (uses graph_edges for task dependencies)
         dependency_context = await check_task_dependencies(active_tasks)
@@ -953,16 +948,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         project_details = build_routing_context(legacy_projects)
 
         people_names = [p['name'] for p in people]
-        # Task-boundary-safe truncation: split on ' | ' delimiter and accumulate complete tasks
-        parts = compressed_tasks.split(' | ')
-        safe_parts = []
-        running_len = 0
-        for part in parts:
-            if running_len + len(part) + 3 > 3000:
-                break
-            safe_parts.append(part)
-            running_len += len(part) + 3
-        compressed_tasks_final = ' | '.join(safe_parts)
+        # Phase 2: Context Hydration Engine
+        query_focus = f"Briefing for {briefing_mode}"
+        compressed_tasks_final, universal_task_map = await context_provider.hydrate_tasks_context(query_focus)
         new_inputs_text = "\n---\n".join([_enrich(d) for d in dumps])
         new_input_summary = " | ".join([_enrich(d) for d in dumps[:5]])
 
@@ -1017,7 +1005,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         # 📅 Fetch calendar context (Google + Outlook) for today
         target_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        calendar_context = get_calendar_context(target_day)
+        calendar_context = await context_provider.get_calendar_context_formatted(target_day)
 
         prompt = f"""    
         ROLE: Danny's Rhodey. You are his most trusted advisor — the one who cuts through the noise and tells him exactly where he stands. You have full situational awareness of his work, family, and faith. You don't coach, motivate, or perform. You speak plainly, like a friend who has been in the room the whole time. Your job is to give Danny a clear picture of the board so he can make his next move.

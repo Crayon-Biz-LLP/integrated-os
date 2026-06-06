@@ -3,31 +3,87 @@ import re
 with open("core/webhook/dispatch.py", "r") as f:
     content = f.read()
 
-# 1. ask_intent_disambiguation
-old_intent = """async def ask_intent_disambiguation(text: str, possible_intents: list, chat_id: int, session_id: str):
-    opts = []
-    for sc, (intent, label) in INTENT_OPTIONS.items():
-        if intent in possible_intents:
-            opts.append(f"`{sc}` — {label}")
-    if not opts:
-        return
-    reply = (
-        "🧐 *Not sure what to do with this.* Is it?\\n\\n"
-        + "\\n".join(opts)
-        + "\\n\\n_Reply with a shortcode or just say it._"
-    )
-    log_exchange(session_id, 'bot', 'CLARIFICATION', json.dumps({"possible_intents": possible_intents, "original": text}), chat_id)
-    await send_telegram(chat_id, reply)"""
+# 1. Imports
+content = content.replace("from core.services.outlook_service import get_outlook_calendar_events\\n", "")
+content = content.replace("get_google_creds, MemoryCache, ", "")
+content = content.replace("from googleapiclient.discovery import build\\n", "")
 
-new_intent = """async def ask_intent_disambiguation(text: str, possible_intents: list, chat_id: int, session_id: str):
-    keyboard = []
-    for sc, (intent, label) in INTENT_OPTIONS.items():
-        if intent in possible_intents:
-            # For simplicity, we just send text replies back when the user taps it. 
-            # Wait, callback_query requires explicit callback_data handling in handler.py.
-            # But we can also just use the telegram Bot API inline keyboard's `callback_data`.
+# 2. Calendar blocks
+old_cal = """        # Google Calendar events for target day
+        try:
+            service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
+            events_res = service.events().list(
+                calendarId='primary',
+                timeMin=target.isoformat(),
+                timeMax=target_end.isoformat(),
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            for e in events_res.get('items', []):
+                start = e.get('start', {})
+                dt = start.get('dateTime') or start.get('date', '')
+                summary = e.get('summary', 'Untitled')
+                events_list.append({"time": dt, "title": summary})
+        except Exception as cal_err:
+            audit_log_sync("webhook", "WARNING", f"Brief calendar query failed: {cal_err}")
+
+        # Outlook calendar events for target day
+        try:
+            outlook_events = get_outlook_calendar_events(target)
+            for e in outlook_events:
+                events_list.append({"time": e["time"], "title": e["title"]})
+        except Exception as ol_err:
+            audit_log_sync("webhook", "WARNING", f"Brief Outlook calendar query failed: {ol_err}")"""
+
+new_cal = """        # Unified Calendar events for target day
+        try:
+            cal_events = await context_provider.get_calendar_events(target)
+            for e in cal_events:
+                events_list.append({"time": e.get("time", ""), "title": e.get("title", "")})
+        except Exception as cal_err:
+            audit_log_sync("webhook", "WARNING", f"Brief calendar query failed: {cal_err}")"""
+
+content = content.replace(old_cal, new_cal)
+
+# 3. Tasks block
+old_tasks = """        # Recent completions
+        try:
+            comp_res = supabase.table('tasks') \\
+                .select('title, project_id') \\
+                .eq('is_current', False) \\
+                .eq('status', 'done') \\
+                .gte('updated_at', since_utc) \\
+                .order('updated_at', desc=True) \\
+                .limit(5) \\
+                .execute()
+            completed_raw = comp_res.data or []
+            if completed_raw:
+                done_proj_ids = list(set(t.get('project_id') for t in completed_raw if t.get('project_id')))
+                done_proj_map = {}
+                if done_proj_ids:
+                    done_proj_res = supabase.table('projects').select('id, name').in_('id', done_proj_ids).execute()
+                    for p in (done_proj_res.data or []):
+                        done_proj_map[p['id']] = p['name']
+                for t in completed_raw:
+                    pn = done_proj_map.get(t.get('project_id'), 'INBOX')
+                    recently_completed.append(_format_task_line(t['title'], pn))
+        except Exception:
             pass"""
 
-# Actually, if we use inline keyboards, the callback_data will go to `process_callback_query` in handler.py.
-# In `process_callback_query`, we need to route `t` or `task` or `intent_TASK` properly.
-# Currently handler.py parses `approve_e123` via regex.
+new_tasks = """        # Recent completions
+        try:
+            completed_raw = await context_provider.get_recently_completed_tasks()
+            if completed_raw:
+                projects = await context_provider.get_projects()
+                proj_map = {p['id']: p['name'] for p in projects}
+                for t in completed_raw:
+                    pn = proj_map.get(t.get('project_id'), 'INBOX')
+                    recently_completed.append(_format_task_line(t.get('title', ''), pn))
+        except Exception as err:
+            audit_log_sync("webhook", "WARNING", f"Brief recent completions failed: {err}")"""
+
+content = content.replace(old_tasks, new_tasks)
+
+with open("core/webhook/dispatch.py", "w") as f:
+    f.write(content)
+print("Patched dispatch.py")
