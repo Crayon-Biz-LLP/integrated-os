@@ -1,4 +1,3 @@
-import re
 
 with open("core/pulse/engine.py", "r") as f:
     content = f.read()

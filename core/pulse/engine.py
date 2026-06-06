@@ -5,23 +5,19 @@ import random
 import asyncio
 import httpx
 from core.services.telegram import send_telegram
-import hashlib
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from core.lib.audit_logger import info, warning, error, audit_log_sync
-from core.lib.people_utils import normalize_person_name, is_blocklisted_person
-from core.lib.duplicate_guard import check_duplicate
 from core.lib.temporal_lineage import detect_drift
 from core.lib.conversation import get_or_create_session, format_history_for_prompt
 
-from core.services.db import versioned_update
-from core.services.google_service import get_tasks_service, format_rfc3339, delete_calendar_event, sync_to_google
+from core.services.google_service import get_tasks_service
 
 from core.pulse.llm import (
     supabase, parse_json_response, call_llm_with_fallback, get_embedding,
-    BRIEFING_MODEL, is_already_in_email_queue,
+    BRIEFING_MODEL,
 )
 from core.pulse.utils import format_error, get_project_name, build_routing_context, normalize_cluster_title
 from core.pulse.memory import (
@@ -31,12 +27,12 @@ from core.pulse.memory import (
 )
 from core.pulse.context import context_provider
 from core.pulse.graph import (
-    write_graph_edges_for_task, check_task_dependencies,
-    analyze_communication_patterns, fetch_hybrid_graph_context, fetch_graph_task_context,
+    check_task_dependencies,
+    analyze_communication_patterns, fetch_graph_task_context,
+    get_graph_centrality_context
 )
 from core.pulse.pipeline import update_heartbeat, check_pipeline_health
 from core.pulse.calendar import (
-    check_conflict, sync_to_calendar,
     sync_completed_tasks_from_google,
 )
 from core.pulse.practices import (
@@ -854,8 +850,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             graph_task_context = ""
 
         # --- 📦 HINDSIGHT: Graph-first, then vector ---
-        graph_context = await fetch_hybrid_graph_context(people, graph_node_projects, task_inputs)
-
         # Extract entity terms from people + projects for seeded vector search
         all_entity_terms = [p['name'] for p in people] + [p['label'] for p in graph_node_projects]
 
@@ -866,12 +860,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         )
 
         memory_lines = []
-        if graph_context:
-            memory_lines.append(graph_context)
         memory_lines.extend(hindsight_memories)
         hindsight_block = "\n".join(memory_lines)
 
-        if hindsight_memories or graph_context:
+        if hindsight_memories:
             hindsight_context = hindsight_block
             print(f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
 
@@ -922,9 +914,15 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         else:
             recent_urls_context = "None"
         
-        # 🧠 RECENT MEMORIES (Phase 2 semantic search)
+        # 🧠 RECENT MEMORIES & GRAPH CONTEXT (Cross-Referenced Hybrid Search)
         mem_query = " | ".join([t.get('title', '') for t in filtered_tasks[:5]])
-        recent_memories_context = await context_provider.hydrate_memories_context(mem_query, match_count=5)
+        recent_memories_context = await context_provider.get_cross_referenced_context(
+            mem_query, 
+            task_inputs, 
+            people, 
+            graph_node_projects, 
+            match_count=5
+        )
         
         # 🤖 AGENT 1: DEPENDENCY AGENT (uses graph_edges for task dependencies)
         dependency_context = await check_task_dependencies(active_tasks)
@@ -938,8 +936,18 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         # 🤖 AGENT 4: SERENDIPITY ENGINE (cross-domain connections)
         serendipity_context = await serendipity_engine(active_tasks, people, recent_lib.data or [])
         
+        # 🕸️ AGENT 4.5: GRAPH CENTRALITY (hub detection)
+        centrality_context = await get_graph_centrality_context()
+        
         # 🤖 AGENT 5: ADAPTIVE BRIEFING LEARNER (learns from briefing patterns)
         adaptive_context = await adaptive_briefing_learner()
+        
+        # 🧠 SESSION MEMORY: Fetch the summary of the last pulse
+        try:
+            last_pulse_res = supabase.table('core_config').select('content').eq('key', 'last_pulse_summary').execute()
+            session_memory = last_pulse_res.data[0]['content'] if last_pulse_res.data else "None"
+        except Exception:
+            session_memory = "None"
         
         print("📦 Step 5: Building context...")
         # --- 2. THINK Phase ---
@@ -1042,9 +1050,15 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         
         SERENDIPITY FINDS (cross-domain connections):
         {serendipity_context if serendipity_context else "None"}
+
+        GRAPH CENTRALITY (top connected entities):
+        {centrality_context if centrality_context else "None"}
         
         ADAPTIVE LEARNING (briefing optimization):
         {adaptive_context if adaptive_context else "None"}
+        
+        SESSION MEMORY (Last Briefing Summary):
+        {session_memory}
         
         CANONICAL STRATEGIC TRUTH (The synthesized 'Latest Version' of projects):
         {master_page_context if master_page_context else "No Master Pages yet. Rely on raw context."}
@@ -1334,8 +1348,19 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     "message_type": "briefing",
                     "metadata": {"source": "pulse", "hour": hour}
                 }]).execute()
+                
+                # Update Session Memory
+                summary_prompt = f"Summarize this briefing in 1-2 sentences. Focus on what was assigned, recommended, or asked. Briefing:\n{briefing_text}"
+                summary_res = await call_llm_with_fallback(prompt=summary_prompt, is_critical=False, require_json=False)
+                if summary_res and summary_res.text:
+                    # check if row exists
+                    chk = supabase.table('core_config').select('id').eq('key', 'last_pulse_summary').execute()
+                    if chk.data:
+                        supabase.table('core_config').update({"content": summary_res.text.strip()}).eq('key', 'last_pulse_summary').execute()
+                    else:
+                        supabase.table('core_config').insert({"key": "last_pulse_summary", "content": summary_res.text.strip()}).execute()
             except Exception as log_err:
-                audit_log_sync("pulse", "WARNING", f"Failed to log briefing to raw_dumps: {log_err}")
+                audit_log_sync("pulse", "WARNING", f"Failed to log/summarize briefing: {log_err}")
 
         # --- 📝 AFTER-ACTION REPORT ---
         if hour >= 20 or hour < 4:

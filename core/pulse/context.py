@@ -1,5 +1,3 @@
-import os
-import json
 import time
 import asyncio
 from datetime import datetime, timezone, timedelta
@@ -239,23 +237,28 @@ class ContextProvider:
         
         return compressed_tasks, universal[:4000]
 
-    async def hydrate_memories_context(self, query_text: str, match_count: int = 5):
-        """Uses pgvector to find semantically relevant memories."""
+    async def hydrate_memories_context(self, query_text: str, match_count: int = 5, return_raw: bool = False, recency_weight: float = 0.3):
+        """Uses pgvector to find semantically relevant memories, with recency weighting."""
         if not query_text:
-            return "None"
+            return [] if return_raw else "None"
             
         try:
             embedding = await asyncio.to_thread(get_embedding, query_text)
             if not embedding:
-                return "None"
+                return [] if return_raw else "None"
                 
-            res = supabase.rpc('match_memories', {
+            res = supabase.rpc('match_memories_hybrid', {
                 'query_embedding': embedding,
                 'match_count': match_count,
-                'match_threshold': 0.6
+                'match_threshold': 0.6,
+                'recency_weight': recency_weight,
+                'importance_weight': 0.2
             }).execute()
             
             memories = res.data or []
+            if return_raw:
+                return memories
+
             if not memories:
                 return "None"
                 
@@ -266,7 +269,54 @@ class ContextProvider:
             
         except Exception as e:
             print(f"Memory hydration failed: {e}")
-            return "None"
+            return [] if return_raw else "None"
 
+    async def get_cross_referenced_context(self, query_text: str, task_inputs: list, people: list, projects: list, match_count: int = 5):
+        """
+        Runs hybrid pgvector search and graph edge search in parallel,
+        and cross-references memories with graph connections.
+        """
+        from core.pulse.graph import fetch_hybrid_graph_context
+        
+        # 1. Fetch raw memories and graph context in parallel
+        memories_task = self.hydrate_memories_context(query_text, match_count=match_count, return_raw=True, recency_weight=0.3)
+        graph_task = fetch_hybrid_graph_context(people, projects, task_inputs)
+        
+        memories, graph_context = await asyncio.gather(memories_task, graph_task)
+        
+        if not memories and not graph_context:
+            return "None"
+            
+        # 2. Extract entity names from people and projects
+        entity_terms = set(p.get('name', '').lower() for p in people if p.get('name'))
+        entity_terms.update(p.get('name', '').lower() for p in projects if p.get('name'))
+        
+        # 3. Format and cross-reference
+        lines = []
+        for m in (memories or []):
+            content = m.get('content', '')
+            content_lower = content.lower()
+            
+            # Check if this memory mentions any known entities
+            found_entities = [term for term in entity_terms if term in content_lower and len(term) > 3]
+            
+            prefix = f"[{m.get('memory_type', 'note').upper()}]"
+            if found_entities:
+                # Highlight the entities it connects to
+                prefix += f" (Links to: {', '.join(found_entities).title()})"
+                
+            lines.append(f"{prefix} {content}")
+            
+        # 4. Merge results
+        result_blocks = []
+        if lines:
+            result_blocks.append("MEMORY CONTEXT:")
+            result_blocks.append("\n".join(lines))
+            
+        if graph_context:
+            result_blocks.append(graph_context)
+            
+        return "\n\n".join(result_blocks)
+        
 # Global instance
 context_provider = ContextProvider()

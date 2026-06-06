@@ -70,10 +70,12 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
         # Semantic search for relevant memories (last 30 days)
         from datetime import timedelta
 
-        memories_res = supabase.rpc('match_memories', {
+        memories_res = supabase.rpc('match_memories_hybrid', {
             'query_embedding': query_embedding,
             'match_threshold': 0.7,
             'match_count': max_memories,
+            'recency_weight': 0.4,
+            'importance_weight': 0.2
         }).execute()
         if memories_res.data:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
@@ -131,11 +133,13 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
                 if not any(embedding):
                     return []
                 res = supabase.rpc(
-                    'match_memories',
+                    'match_memories_hybrid',
                     {
                         'query_embedding': embedding,
                         'match_count': top_k,
-                        'match_threshold': 0.6
+                        'match_threshold': 0.6,
+                        'recency_weight': 0.4,
+                        'importance_weight': 0.2
                     }
                 ).execute()
                 return res.data if res.data else []

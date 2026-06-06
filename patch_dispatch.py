@@ -1,4 +1,3 @@
-import re
 
 with open("core/webhook/dispatch.py", "r") as f:
     content = f.read()

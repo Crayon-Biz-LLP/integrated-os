@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
+from typing import List
 
 from core.services.db import get_supabase, versioned_update
 from core.lib.audit_logger import audit_log_sync

@@ -31,10 +31,13 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - `core/pulse_cli.py` - CLI entry for pulse (used in CI)
 
 ### Core Modules
-- `core/webhook/handler.py` - Telegram command handling, raw dump capture, message classification
-- `core/pulse/engine.py` - AI briefing generation (`process_pulse`), task management, calendar sync, and **Decision Pulse** (`process_decision_pulse` — no AI, just pending email/call/whatsapp items). `format_rfc3339()` in `core/services/google_service.py`
+- `core/webhook/handler.py` - Telegram command handling, raw dump capture, message classification (Inline Keyboards replacing legacy shortcodes)
+- `core/pulse/engine.py` - AI briefing generation via `run_agent_loop` ToolRegistry, task management, calendar sync, and **Decision Pulse** (no AI, inline keyboard approvals).
+- `core/pulse/context.py` - **Phase 2 Context Hydration Engine**. Uses TTL caches (`SimpleCache`) and hybrid vector+graph cross-referencing.
+- `core/pulse/memory.py` - **Phase 3 Memory Engine**. Handles semantic retrieval with temporal decay and importance weighting (`match_memories_hybrid`).
+- `core/pulse/entity_extractor.py` - Real-time Flash Lite entity extraction during webhook ingestion.
 - `core/agents/research_agent.py` - Research and embedding tasks
-- `core/skills/` - Ingest (email, archive) and graph sync scripts (run via CI)
+- `core/skills/` - Ingest (email, archive), nightly canonical brain synthesis, and graph sync scripts (run via CI)
 
 ### Database (Supabase)
 - Uses `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)

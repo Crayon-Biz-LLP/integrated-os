@@ -3,9 +3,7 @@ import re
 import asyncio
 import hashlib
 from datetime import datetime, timezone, timedelta
-from googleapiclient.discovery import build
 from core.lib.audit_logger import audit_log_sync
-from core.services.outlook_service import get_outlook_calendar_events
 from core.services.pipeline_service import add_to_failed_queue
 from core.pulse.context import context_provider
 from core.lib.conversation import get_history, log_exchange, format_history_for_prompt

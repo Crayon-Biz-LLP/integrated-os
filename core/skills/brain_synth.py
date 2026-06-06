@@ -76,10 +76,12 @@ async def run_batch_sweep():
                 entity_embedding = get_embedding(entity_name)
 
                 if entity_embedding:
-                    mem = supabase.rpc('match_memories', {
+                    mem = supabase.rpc('match_memories_hybrid', {
                         'query_embedding': entity_embedding,
                         'match_threshold': 0.5,
-                        'match_count': 20
+                        'match_count': 20,
+                        'recency_weight': 0.3,
+                        'importance_weight': 0.2
                     }).execute()
                     if mem.data:
                         for f in filter_fragments_by_project(mem.data, entity_name):

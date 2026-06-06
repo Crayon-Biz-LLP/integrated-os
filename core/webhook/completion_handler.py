@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 
 from core.lib.audit_logger import audit_log_sync
 from core.webhook.utils import supabase
-from core.services.db import versioned_update
 
     # ── Constants ─────────────────────────────────────────────────────────────────
 COMPLETION_MESSAGE_TYPE = "completion"

@@ -12,6 +12,7 @@ from core.lib.duplicate_guard import check_duplicate
 from core.pulse.calendar import check_conflict
 from core.pulse.memory import write_outcome_memory
 from core.pulse.graph import write_graph_edges_for_task
+from core.pulse.entity_extractor import extract_and_link_entities
 
 supabase = get_supabase()
 
@@ -122,12 +123,14 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
     if category == 'NOTE':
         embedding = get_embedding(text)
         try:
-            supabase.table('memories').insert({
+            ins_res = supabase.table('memories').insert({
                 "content": text,
                 "memory_type": "note",
                 "embedding": embedding,
                 "source": "quick_process"
             }).execute()
+            memory_id = ins_res.data[0]['id']
+            asyncio.create_task(extract_and_link_entities(text, memory_id, 'memory'))
         except Exception as e:
             audit_log_sync("quick_process", "WARNING", f"Memory insert failed: {e}")
         return {"action": "filed", "type": "note"}
@@ -339,6 +342,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
     try:
         # Fire and forget graph edge creation
         asyncio.create_task(write_graph_edges_for_task(task_id, title, project_id))
+        asyncio.create_task(extract_and_link_entities(text, task_id, 'task'))
     except Exception as ge:
         audit_log_sync("quick_process", "WARNING", f"Failed to spawn graph edge task: {ge}")
 

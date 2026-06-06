@@ -20,17 +20,17 @@ This is the system's "ears." It handles real-time communication from Telegram.
 
     Stealth Routing: Automatically assigns inputs to specific entities (e.g., SOLVSTRAT, CRAYON, PERSONAL) using a "Stealth Status" report that confirms logging without cluttering the chat with technical metadata.
 
-    Intent Classification: Uses gemini-3.1-flash-lite to distinguish between a "Task" (to-do), a "Note" (memory), or "Noise" (ignore).
+    Intent Classification: Uses gemini-3.1-flash-lite to distinguish between a "Task", "Note", or "Noise". Also utilizes real-time Incremental Entity Extraction to update the Knowledge Graph during ingestion.
 
 2. core/pulse/engine.py (The Engine)
 
 This is the system's "brain" and "executor." It runs on a schedule via GitHub Actions.
 
-    The Pulse Engine: Synthesizes the current state of all projects into a dry, punchy Telegram briefing.
+    The Pulse Engine: Uses an Agent Loop with a ToolRegistry to process tasks, create entities, and write memories. Synthesizes the state into a dry, punchy Telegram briefing using a Context Hydration Engine.
 
     Calendar Guard: It checks for conflicts before booking time on Google Calendar. If a new task overlaps with an existing meeting, it flags a "Snooze Conflict."
 
-    Hindsight Memories: Performs a hybrid search (Vector + Graph) to recall past lessons or notes relevant to your current active tasks, preventing you from making the same mistake twice.
+    Hindsight Memories & Session Context: Performs a hybrid search (Vector + Graph) to recall past lessons relevant to active tasks. Features Exponential Recency Decay, Graph Centrality (hub detection), and Session Memory (cross-pulse continuity).
 
     Google Sync: Two-way synchronization between Supabase and Google Tasks/Calendar.
 

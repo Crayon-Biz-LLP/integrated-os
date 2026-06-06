@@ -171,6 +171,27 @@ async def hybrid_search_graph(query: str) -> str:
         audit_log_sync("pulse", "WARNING", f"⚠️ Graph task context fetch failed (non-critical): {e}")
         return ""
 
+async def get_graph_centrality_context() -> str:
+    """
+    GRAPH CENTRALITY: Analyzes the knowledge graph to find the most connected hubs.
+    Highlights people or topics bridging different domains.
+    """
+    try:
+        # Get the top 5 most connected nodes
+        res = supabase.rpc('get_most_connected_nodes', {'limit_count': 3}).execute()
+        
+        if not res.data:
+            return ""
+            
+        lines = ["🕸️ GRAPH CENTRALITY (Top Hubs):"]
+        for node in res.data:
+            lines.append(f"  - {node.get('label')} ({node.get('type')}): {node.get('edge_count')} connections")
+            
+        return "\n".join(lines)
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"⚠️ Centrality detection failed: {e}")
+        return ""
+
 async def check_task_dependencies(active_tasks: list) -> str:
     """
     DEPENDENCY AGENT: Uses graph_edges to detect when a task (B) has an uncompleted
