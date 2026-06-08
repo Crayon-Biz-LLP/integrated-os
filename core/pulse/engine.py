@@ -13,6 +13,7 @@ from core.lib.audit_logger import info, warning, error, audit_log_sync
 from core.lib.temporal_lineage import detect_drift
 from core.lib.conversation import get_or_create_session, format_history_for_prompt
 
+from core.services.db import versioned_update
 from core.services.google_service import get_tasks_service
 
 from core.pulse.llm import (
@@ -41,6 +42,91 @@ from core.pulse.practices import (
     sync_practice_canonical_pages, build_rhythms_section,
 )
 from core.pulse.resources import batch_enrich_resources
+
+
+# ──────────────────────────────────────────
+# RECURRING TASK AUTO-EXPIRY
+# ──────────────────────────────────────────
+def _auto_expire_recurring_tasks():
+    """Parse RRULE UNTIL/COUNT on active recurring tasks. If the recurrence has
+    ended, mark the task as auto-expired (status=cancelled) so it stops
+    appearing in briefings."""
+    try:
+        rows = supabase.table('tasks')\
+            .select('id, title, recurrence, reminder_at, created_at')\
+            .eq('status', 'todo')\
+            .eq('is_current', True)\
+            .not_.is_('recurrence', None)\
+            .execute()
+        if not rows.data:
+            return
+
+        now = datetime.now(timezone.utc)
+        expired = []
+        for task in rows.data:
+            rrule = (task.get('recurrence') or '').strip()
+
+            # Attempt 1: UNTIL=YYYYMMDDTHHMMSSZ (UTC datetime)
+            m = re.search(r'UNTIL=(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z', rrule)
+            if m:
+                until_dt = datetime(
+                    int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                    int(m.group(4)), int(m.group(5)), int(m.group(6)),
+                    tzinfo=timezone.utc
+                )
+                if now >= until_dt:
+                    expired.append(task['id'])
+                continue
+
+            # Attempt 2: UNTIL=YYYYMMDD (date only)
+            m = re.search(r'UNTIL=(\d{4})(\d{2})(\d{2})(?!T)', rrule)
+            if m:
+                until_dt = datetime(
+                    int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                    23, 59, 59, tzinfo=timezone.utc
+                )
+                if now >= until_dt:
+                    expired.append(task['id'])
+                continue
+
+            # Attempt 3: COUNT-based recurrence (e.g., RRULE:FREQ=WEEKLY;COUNT=10)
+            m_count = re.search(r'COUNT=(\d+)', rrule)
+            m_freq = re.search(r'FREQ=(\w+)', rrule)
+            if m_count and m_freq:
+                count = int(m_count.group(1))
+                freq = m_freq.group(1).upper()
+                # Use reminder_at as the first occurrence, fall back to created_at
+                start_str = task.get('reminder_at') or task.get('created_at')
+                if not start_str:
+                    continue
+                try:
+                    start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                except Exception:
+                    continue
+                # Calculate the last occurrence
+                if freq == 'DAILY':
+                    last_dt = start_dt + timedelta(days=count - 1)
+                elif freq == 'WEEKLY':
+                    last_dt = start_dt + timedelta(weeks=count - 1)
+                elif freq == 'MONTHLY':
+                    last_dt = start_dt + timedelta(days=30 * (count - 1))
+                elif freq == 'YEARLY':
+                    last_dt = start_dt + timedelta(days=365 * (count - 1))
+                else:
+                    continue
+                if now >= last_dt:
+                    expired.append(task['id'])
+                continue
+
+        if expired:
+            for tid in expired:
+                versioned_update('tasks', tid, {
+                    'status': 'cancelled',
+                    'completed_at': now.isoformat()
+                }, change_source='pulse_auto_expiry')
+            print(f"⏰ Auto-expired {len(expired)} recurring tasks (recurrence ended).")
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"Auto-expiry check failed: {e}")
 
 
 # 🛡️ CLEAN MODELS (Removed Config blocks to prevent API rejection)
@@ -1235,6 +1321,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             DYNAMIC TASK MATCHING:
             - Compare inputs against ALL SYSTEM TASKS.
             - If Danny says "I'm done" or "Completed," mark the status as `done`.
+            - RECURRING TASK: `done` skips this week's instance (deletes next occurrence from Calendar, writes an outcome memory, series continues). `cancelled` ends the entire series (deletes all from Calendar). NEVER use `update_task_status` with `status=cancelled` unless Danny explicitly says "cancel the series" or "end it forever".
+            - SKIP INSTANCE: If Danny says "skip next" or "cancel this week's" for a recurring event, call the `skip_recurring_instance` tool with the matching task_id. Do NOT mark the task as done or cancelled.
+            - RESCHEDULE AMBIGUITY: If Danny asks to "reschedule" or "move" a recurring event (e.g., "move the Armour meeting to Wednesday"), call `ask_user_approval` to clarify: does he want to (A) skip the next instance and create a standalone event for the new date, or (B) shift the entire series? Do NOT assume one or the other.
             - DURATION ASSIGNMENT: Assign `estimated_duration` based on task type:
             - 15 minutes for routine tasks (emails, quick replies, status updates)
             - 45 minutes for anything related to Pilots, Sales, or high-stakes Cluster 10 items
@@ -1369,6 +1458,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 print(f"✅ Sealed {len(completion_dump_ids)} completion dumps.")
             else:
                 print(f"Skipped sealing {len(completion_dump_ids)} completion dumps — no tasks matched.")
+
+        # --- AUTO-EXPIRY: End recurring tasks whose RRULE UNTIL has passed ---
+        _auto_expire_recurring_tasks()
 
         # --- PHASE 3: Processed Gate ---
         if dumps:

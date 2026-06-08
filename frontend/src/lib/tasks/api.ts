@@ -40,7 +40,10 @@ export async function updateTaskStatus(taskId: number, status: string): Promise<
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status }),
   });
-  if (!res.ok) throw new Error("Failed to update task status");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to update task status" }));
+    throw new Error(err.detail || "Failed to update task status");
+  }
 }
 
 export async function markTaskDone(taskId: number): Promise<void> {

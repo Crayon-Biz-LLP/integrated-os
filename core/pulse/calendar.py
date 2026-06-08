@@ -130,6 +130,7 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
             .eq('status', 'todo')\
             .eq('is_current', True)\
             .not_.is_('google_task_id', None)\
+            .is_('recurrence', None)\
             .execute()
 
         tasks_to_sync = result.data or []

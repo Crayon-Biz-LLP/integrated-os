@@ -106,6 +106,20 @@ def delete_calendar_event(event_id):
         audit_log_sync("google_service", "WARNING", f"Calendar event {event_id} delete failed (likely already gone): {e}")
 
 
+def delete_calendar_instance(recurring_event_id, instance_id):
+    """Delete a single instance of a recurring Google Calendar event.
+    recurring_event_id: the ID of the recurring series.
+    instance_id: the ID of the specific instance to delete."""
+    if not recurring_event_id or not instance_id:
+        return
+    service = build('calendar', 'v3', credentials=get_google_creds(), cache=_MemoryCache())
+    try:
+        service.events().delete(calendarId='primary', eventId=instance_id).execute()
+        audit_log_sync("google_service", "INFO", f"Deleted calendar instance {instance_id} of {recurring_event_id}")
+    except Exception as e:
+        audit_log_sync("google_service", "WARNING", f"Calendar instance {instance_id} delete failed: {e}")
+
+
 def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo', explicit_time=False):
     if task_id and status in ('done', 'cancelled'):
         try:

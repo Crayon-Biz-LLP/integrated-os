@@ -13,6 +13,7 @@ export interface Task {
   completed_at: string | null;
   reminder_at: string | null;
   duration_mins: number | null;
+  recurrence: string | null;
 }
 
 export interface Project {

@@ -30,6 +30,7 @@ from core.pulse import (
     get_google_creds,
     format_rfc3339,
 )
+from core.pulse.tools import skip_recurring_instance
 from core.services.db import get_supabase
 
 app = FastAPI(title="Integrated-OS")
@@ -259,6 +260,16 @@ async def update_task_status(request: Request, task_id: int):
         current_status = task.get('status')
         if current_status in ['done', 'cancelled']:
             return {"success": True, "task": task, "message": f"Task already {current_status}"}
+
+        # --- RECURRING TASK: done = skip instance, cancelled = end series ---
+        if task.get('recurrence') and new_status == 'done':
+            skip_msg = ""
+            if task.get('google_event_id'):
+                skip_msg = skip_recurring_instance(task_id)
+            else:
+                skip_msg = "No linked calendar event."
+            await write_outcome_memory(task.get('title', 'Untitled Task'))
+            return {"success": True, "task": task, "message": f"Marked this week's instance done. {skip_msg} Series continues."}
 
         g_id = task.get('google_task_id')
         e_id = task.get('google_event_id')

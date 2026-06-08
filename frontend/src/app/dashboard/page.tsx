@@ -23,6 +23,7 @@ function mapOpenTask(t: any): Task {
     completed_at: t.completed_at,
     reminder_at: t.reminder_at,
     duration_mins: t.duration_mins,
+    recurrence: t.recurrence ?? null,
   };
 }
 
@@ -35,7 +36,7 @@ export default async function DashboardPage() {
       .select(`
         id, title, status, priority, project_id, estimated_minutes,
         is_revenue_critical, deadline, created_at, completed_at,
-        reminder_at, duration_mins,
+        reminder_at, duration_mins, recurrence,
         projects ( id, name, org_tag )
       `)
       .eq("is_current", true)

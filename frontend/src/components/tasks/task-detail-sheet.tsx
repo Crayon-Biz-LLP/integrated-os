@@ -110,6 +110,12 @@ export function TaskDetailSheet({ task, open, onOpenChange, onChangeProjectClick
             </div>
           )}
 
+          {task.recurrence && (
+            <div className="text-xs text-amber-500 font-medium">
+              Recurring — marking done skips this week's instance, series continues
+            </div>
+          )}
+
           <Separator />
 
           <div className="flex gap-2">

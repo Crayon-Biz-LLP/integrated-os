@@ -124,7 +124,7 @@ export function RecentTasks() {
                   )}
                 </div>
               </div>
-              {task.status !== 'done' && (
+              {task.status !== 'done' ? (
                 <Button 
                   size="sm" 
                   variant="outline"
@@ -132,7 +132,7 @@ export function RecentTasks() {
                 >
                   ✓ Done
                 </Button>
-              )}
+              ) : null}
             </div>
           ))}
         </div>

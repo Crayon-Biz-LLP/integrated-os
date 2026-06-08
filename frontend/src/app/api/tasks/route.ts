@@ -26,6 +26,7 @@ export async function GET(req: NextRequest) {
       completed_at,
       reminder_at,
       duration_mins,
+      recurrence,
       projects (
         id,
         name,
@@ -64,6 +65,7 @@ export async function GET(req: NextRequest) {
     completed_at: t.completed_at,
     reminder_at: t.reminder_at,
     duration_mins: t.duration_mins,
+    recurrence: t.recurrence ?? null,
   }));
 
   if (dueWindow && dueWindow !== "all") {

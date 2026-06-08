@@ -49,6 +49,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 ### External Integrations
 - **Gemini AI**: Briefing (`gemini-3.5-flash`), Classification (`gemini-3.1-flash-lite`), Embeddings (`gemini-embedding-2-preview`)
 - **Native Control Layer**: Built-in to `core/pulse/llm.py` to enforce Pydantic JSON validation, targeted prompt mutations, and jittered exponential backoffs.
+- **LLM Timeout Config**: `core/llm/config.py` defines `WorkloadProfile` profiles: INTERACTIVE (55s), SYNTHESIS (300s), BATCH (300s), EMBEDDING (120s). Synced with Vercel's 60s serverless limit.
 - Google Calendar API (event blocks), Google Tasks API (checklist)
 - Telegram Bot API
 - WhatsApp via MacroDroid (Android notification → webhook to `/api/whatsapp-ingest`)
@@ -91,6 +92,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - NEVER mark tasks done unless input explicitly matches
 - Return empty arrays if no explicit commands in inputs
 - Filter tasks by 2-day horizon, 14-day creation window
+- **Recurring tasks**: `done` skips this week's instance (series continues). `cancelled` ends the series. If reschedule is ambiguous, ask via `ask_user_approval`.
 
 ### Data Deletion Safety (Non-Negotiable)
 - **NEVER delete any database records (people, tasks, graph_nodes, etc.) without explicit user approval.** Present what would be deleted and ask before executing.

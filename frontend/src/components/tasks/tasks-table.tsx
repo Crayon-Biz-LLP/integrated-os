@@ -128,8 +128,8 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick, onTaskDon
                   </span>
                 </TableCell>
                 <TableCell>
-                  <div className="flex gap-1">
-                    {task.status !== 'done' && (
+                  <div className="flex gap-1 items-center">
+                    {task.status !== 'done' ? (
                       <Button
                         variant="outline"
                         size="sm"
@@ -146,7 +146,7 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick, onTaskDon
                       >
                         ✓ Done
                       </Button>
-                    )}
+                    ) : null}
                     <Button
                       variant="ghost"
                       size="icon-sm"

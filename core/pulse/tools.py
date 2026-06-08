@@ -4,7 +4,7 @@ from typing import List
 
 from core.services.db import get_supabase, versioned_update
 from core.lib.audit_logger import audit_log_sync
-from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, format_rfc3339
+from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
 
 supabase = get_supabase()
 
@@ -107,7 +107,8 @@ def create_task(title: str, project_id: int = None, priority: str = "important",
         data = {
             "title": title, "project_id": project_id, "priority": priority.lower(),
             "status": "todo", "estimated_minutes": duration_mins, "duration_mins": duration_mins,
-            "reminder_at": new_reminder, "dedup_key": dedup_key
+            "reminder_at": new_reminder, "dedup_key": dedup_key,
+            "recurrence": recurrence
         }
         res = supabase.table('tasks').insert(data).execute()
         if not res.data:
@@ -121,8 +122,18 @@ def create_task(title: str, project_id: int = None, priority: str = "important",
                 e_id = sync_to_calendar(title, new_reminder, duration_mins, priority=priority, recurrence=recurrence)
             except Exception as e:
                 audit_log_sync("tools", "ERROR", f"Calendar sync failed: {e}")
+            # Recurring tasks with a time (calendar event) skip Google Tasks —
+            # the calendar series handles scheduling. Day-only recurring tasks
+            # (no reminder_at) still get a google_task_id for lightweight tracking.
+            if not recurrence:
+                try:
+                    g_id = sync_to_google(get_tasks_service(), title, new_reminder)
+                except Exception as e:
+                    audit_log_sync("tools", "ERROR", f"Tasks sync failed: {e}")
+        elif recurrence:
+            # Day-only recurring task — no calendar event, but create a Google Task
             try:
-                g_id = sync_to_google(get_tasks_service(), title, new_reminder)
+                g_id = sync_to_google(get_tasks_service(), title)
             except Exception as e:
                 audit_log_sync("tools", "ERROR", f"Tasks sync failed: {e}")
                 
@@ -149,6 +160,25 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
         td = task_ref.data
         if td.get('status') in ['done', 'cancelled'] and status in ['done', 'cancelled']:
             return f"Task {task_id} already {td.get('status')}."
+
+        # --- RECURRING TASK: done = skip instance, cancelled = end series ---
+        if td.get('recurrence') and status == 'done':
+            # Skip the next instance and record an outcome, but keep the series alive
+            skip_msg = ""
+            if td.get('google_event_id'):
+                skip_msg = skip_recurring_instance(task_id)
+            else:
+                skip_msg = "No linked calendar event — recorded as completed."
+            # Write an outcome memory
+            try:
+                supabase.table('memories').insert({
+                    'content': f"Completed instance of recurring task: {td['title']} (Task {task_id})",
+                    'memory_type': 'outcome',
+                    'source': 'pulse_tools'
+                }).execute()
+            except Exception:
+                pass
+            return f"Marked this week's instance done for '{td['title']}'. {skip_msg} The series continues — use 'cancelled' to end it entirely."
             
         new_reminder = format_rfc3339(reminder_at) if reminder_at else None
         g_id = td.get('google_task_id')
@@ -158,7 +188,7 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
             delete_calendar_event(e_id)
             e_id = None
         elif new_reminder:
-            e_id = sync_to_calendar(td['title'], new_reminder, event_id=e_id, duration_mins=duration_mins, priority=td.get('priority', 'important'), recurrence=recurrence)
+            e_id = sync_to_calendar(td['title'], new_reminder, event_id=e_id, duration_mins=duration_mins, priority=td.get('priority', 'important'), recurrence=recurrence or td.get('recurrence'))
         elif e_id:
             delete_calendar_event(e_id)
             e_id = None
@@ -216,4 +246,63 @@ def log_audit_message(message: str, level: str = "INFO"):
     """Logs an internal system message for observability."""
     audit_log_sync("pulse_agent", level, message)
     return "Logged."
+
+
+@rhodey_tools.register
+def skip_recurring_instance(task_id: int, date_str: str = None):
+    """Skip (delete) a single occurrence of a recurring event/task.
+    If no date_str is provided, the next upcoming instance is skipped.
+    date_str format: YYYY-MM-DD (optional, defaults to next instance)."""
+    try:
+        task_ref = supabase.table('tasks').select('id, title, recurrence, google_event_id').eq('id', task_id).maybe_single().execute()
+        if not task_ref.data:
+            return f"Task {task_id} not found."
+
+        td = task_ref.data
+        if not td.get('recurrence'):
+            return f"Task {task_id} is not a recurring event."
+
+        e_id = td.get('google_event_id')
+        if not e_id:
+            return f"Task {task_id} has no linked Google Calendar event."
+
+        from googleapiclient.discovery import build
+        from core.services.google_service import get_google_creds, _MemoryCache
+
+        service = build('calendar', 'v3', credentials=get_google_creds(), cache=_MemoryCache())
+
+        if date_str:
+            from datetime import datetime, timezone, timedelta
+            target = datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+            time_min = target.isoformat()
+            time_max = (target + timedelta(days=1)).isoformat()
+        else:
+            from datetime import datetime, timezone
+            time_min = datetime.now(timezone.utc).isoformat()
+            time_max = None
+
+        params = {
+            'calendarId': 'primary',
+            'eventId': e_id,
+            'timeMin': time_min,
+            'singleEvents': True,
+            'orderBy': 'startTime',
+            'maxResults': 1,
+        }
+        if time_max:
+            params['timeMax'] = time_max
+
+        instances = service.events().instances(**params).execute()
+        items = instances.get('items', [])
+        if not items:
+            return f"No upcoming instances found for recurring event '{td['title']}'."
+
+        instance = items[0]
+        instance_id = instance.get('id')
+        instance_start = instance.get('start', {}).get('dateTime', 'unknown')
+
+        delete_calendar_instance(e_id, instance_id)
+        return f"Skipped instance on {instance_start} of '{td['title']}'."
+    except Exception as e:
+        return f"Error skipping recurring instance: {e}"
 
