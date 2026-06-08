@@ -1,13 +1,15 @@
 import os
 import re
-import json
 from datetime import datetime, timezone, timedelta
 
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
 
 
-from core.llm.compat import call_gemini_with_retry, get_embedding_sync as get_embedding  # noqa: F401
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
+from core.llm.constants import SAFE_HOLD_CLASSIFICATION
+from core.llm.compat import get_embedding_sync as get_embedding  # noqa: F401
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -86,17 +88,17 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - META-SYSTEM CONTENT: Allow content that talks about 'Atna', 'Solvstrat', or 'Qhord' even if the message is long or complex. These are high-value strategic inputs."""
 
     try:
-        response = await call_gemini_with_retry(
+        resp = await generate_content_with_fallback(
             prompt=prompt,
-            model=CLASSIFICATION_MODEL,
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model=CLASSIFICATION_MODEL,
+            is_classification=True,
             config={'response_mime_type': 'application/json'}
         )
-        clean_json = response.text.replace('```json', '').replace('```', '').strip()
-        result = json.loads(clean_json)
-        return result
+        return resp.parse_json()
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Classification parse error: {e}")
-        return {"intent": "NOTE", "confidence": 0.8, "receipt": "Manual correction secured in the vault."}
+        return SAFE_HOLD_CLASSIFICATION
 
 OPPORTUNITY_PATTERNS = [
     r"new possible project",

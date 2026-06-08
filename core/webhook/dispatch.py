@@ -8,7 +8,9 @@ from core.services.pipeline_service import add_to_failed_queue
 from core.pulse.context import context_provider
 from core.lib.conversation import get_history, log_exchange, format_history_for_prompt
 from core.webhook.telegram import send_telegram
-from core.webhook.classify import call_gemini_with_retry, CLASSIFICATION_MODEL, get_embedding, INTENT_OPTIONS, INTENT_BY_KEYWORD
+from core.webhook.classify import CLASSIFICATION_MODEL, get_embedding, INTENT_OPTIONS, INTENT_BY_KEYWORD
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 from core.webhook.utils import is_recent_raw_dump, hybrid_search_graph, supabase
 
 try:
@@ -124,9 +126,10 @@ Example:
 
 Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or RESOURCE without brackets. Preserve the [Project] bracket from the task data exactly as shown."""
 
-        response = await call_gemini_with_retry(
+        response = await generate_content_with_fallback(
             prompt=prompt,
-            model=CLASSIFICATION_MODEL,
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model=CLASSIFICATION_MODEL,
             config={'response_mime_type': 'text/plain'}
         )
         reply = response.text.strip()
@@ -517,7 +520,11 @@ Example format:
 
 Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or RESOURCE without brackets. Preserve the [Project] bracket from the task data exactly as shown."""
 
-        response = await call_gemini_with_retry(prompt=prompt, model=CLASSIFICATION_MODEL)
+        response = await generate_content_with_fallback(
+            prompt=prompt,
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model=CLASSIFICATION_MODEL
+        )
 
         answer = response.text.strip()
 

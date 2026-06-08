@@ -7,7 +7,9 @@ from datetime import datetime, timedelta, timezone
 from core.lib.audit_logger import info, audit_log_sync
 from core.services.db import get_supabase, get_embedding, fetch_active_projects, zombie_recovery, versioned_update
 from core.services.google_service import format_rfc3339, sync_to_calendar, sync_to_google, delete_calendar_event, get_tasks_service
-from core.services.llm import call_gemini_classify, CLASSIFICATION_MODEL
+from core.webhook.classify import CLASSIFICATION_MODEL
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 from core.lib.duplicate_guard import check_duplicate
 from core.pulse.calendar import check_conflict
 from core.pulse.memory import write_outcome_memory
@@ -106,12 +108,14 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
     prompt = build_combined_prompt(text, projects, history_text)
 
     try:
-        response = await call_gemini_classify(
-            prompt,
-            model=CLASSIFICATION_MODEL,
+        response = await generate_content_with_fallback(
+            prompt=prompt,
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model=CLASSIFICATION_MODEL,
+            is_classification=True,
             config={'response_mime_type': 'application/json'}
         )
-        result = json.loads(response.text.strip().replace('```json', '').replace('```', '').strip())
+        result = response.parse_json()
     except Exception as e:
         audit_log_sync("quick_process", "ERROR", f"AI call failed: {e}")
         return {"action": "error", "reason": str(e)}

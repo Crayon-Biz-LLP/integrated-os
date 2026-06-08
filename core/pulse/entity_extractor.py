@@ -1,7 +1,7 @@
-import json
 from core.lib.audit_logger import audit_log_sync
 from core.services.db import get_supabase
-from core.services.llm import call_gemini_with_retry
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 
 supabase = get_supabase()
 
@@ -26,15 +26,16 @@ RULES:
 Text: "{text}"
 """
     try:
-        response = await call_gemini_with_retry(
+        response = await generate_content_with_fallback(
             prompt=prompt,
-            model="gemini-3.1-flash-lite",
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model="gemini-3.1-flash-lite",
             config={'response_mime_type': 'application/json'}
         )
         if not response or not response.text:
             return
 
-        data = json.loads(response.text)
+        data = response.parse_json()
         nodes = data.get("nodes", [])
         edges = data.get("edges", [])
         

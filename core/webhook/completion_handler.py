@@ -57,7 +57,7 @@ async def handle_confident_completion(
                 "content":          text,
                 "memory_type":      "note",
                 "embedding":        embedding if embed_valid else None,
-                "embedding_status": "embedded" if embed_valid else "failed",
+                "embedding_status": "success" if embed_valid else "failed",
                 "source":           "webhook_completion",
                 "metadata": {
                     "intent": "COMPLETION",
@@ -90,7 +90,8 @@ async def handle_confident_completion(
         ] or active_tasks[:10]   # fallback: send top 10 if prefilter returns nothing
 
         # ── Stage 4: Strict LLM matcher ───────────────────────────────────────
-        from core.webhook.classify import call_gemini_with_retry
+        from core.llm.fallback import generate_content_with_fallback
+        from core.llm.config import WorkloadProfile
         candidate_lines = "\n".join(f"ID {t['id']}: {t['title']}" for t in candidates)
         match_prompt = f"""You are a task-matching engine. Given the completion message and a list of open tasks,
 return ONLY a JSON object with one key: matched_task_ids (array of integers).
@@ -110,12 +111,14 @@ Rules:
 Response: {{"matched_task_ids": [...]}}"""
 
         try:
-            match_res = await call_gemini_with_retry(
+            match_res = await generate_content_with_fallback(
                 prompt=match_prompt,
+                workload=WorkloadProfile.INTERACTIVE,
+                primary_model="gemini-3.1-flash-lite",
                 config={"response_mime_type": "application/json"},
             )
-            parsed      = json.loads(match_res.text.strip().replace("```json", "").replace("```", ""))
-            raw_ids     = parsed.get("matched_task_ids", [])
+            parsed = match_res.parse_json()
+            raw_ids = parsed.get("matched_task_ids", [])
         except Exception as match_err:
             audit_log_sync("completion", "WARNING", f"LLM matcher failed for dump {dump_id}: {match_err}")
             raw_ids = []

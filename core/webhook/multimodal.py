@@ -2,7 +2,9 @@ from datetime import datetime, timezone, timedelta
 from google import genai
 from core.lib.audit_logger import audit_log_sync
 from core.webhook.telegram import send_telegram
-from core.webhook.classify import call_gemini_with_retry, CLASSIFICATION_MODEL, classify_intent
+from core.webhook.classify import CLASSIFICATION_MODEL, classify_intent
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 from core.webhook.dispatch import route_by_intent
 
 
@@ -28,10 +30,11 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
 
         content_parts = [genai.types.Content(parts=parts)]
 
-        response = await call_gemini_with_retry(
-            extraction_prompt,
+        response = await generate_content_with_fallback(
+            prompt=extraction_prompt,
+            workload=WorkloadProfile.INTERACTIVE,
             contents=content_parts,
-            model=CLASSIFICATION_MODEL,
+            primary_model=CLASSIFICATION_MODEL,
             config={'response_mime_type': 'text/plain'}
         )
         raw_text = response.text.strip()
