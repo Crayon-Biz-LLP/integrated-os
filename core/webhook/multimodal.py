@@ -8,6 +8,35 @@ from core.llm.config import WorkloadProfile
 from core.webhook.dispatch import route_by_intent
 
 
+def guess_mime_type(file_bytes: bytes, default_mime: str) -> str:
+    """Guess MIME type from file signatures (magic numbers) for common formats."""
+    if not file_bytes:
+        return default_mime
+        
+    if file_bytes.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    elif file_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    elif file_bytes.startswith(b'GIF87a') or file_bytes.startswith(b'GIF89a'):
+        return 'image/gif'
+    elif file_bytes.startswith(b'RIFF') and file_bytes[8:12] == b'WEBP':
+        return 'image/webp'
+    elif file_bytes.startswith(b'%PDF-'):
+        return 'application/pdf'
+    elif file_bytes.startswith(b'OggS'):
+        return 'audio/ogg'
+    elif file_bytes.startswith(b'ID3') or file_bytes.startswith(b'\xff\xfb') or file_bytes.startswith(b'\xff\xf3') or file_bytes.startswith(b'\xff\xf2'):
+        return 'audio/mpeg'
+    elif file_bytes.startswith(b'RIFF') and file_bytes[8:12] == b'WAVE':
+        return 'audio/wav'
+    elif len(file_bytes) > 8 and file_bytes[4:8] == b'ftyp':
+        # common for both video/mp4 and audio/mp4(m4a)
+        # Gemini handles 'audio/mp4' well for audio files
+        return 'audio/mp4'
+        
+    return default_mime
+
+
 async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int, ist_hour: int = None, core_json: str = "[]"):
     """Two-pass extraction: verbatim OCR → standard text pipeline."""
     ist_offset = timezone(timedelta(hours=5, minutes=30))
@@ -19,12 +48,23 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
         extraction_prompt = "Transcribe ALL visible text from this image exactly as shown. Preserve original line breaks, spacing, and punctuation. Do not summarize, normalize, or omit any content. Return ONLY the raw text — no explanations, no formatting."
         parts = [genai.types.Part(text=extraction_prompt)]
 
+        if mime_type == 'application/octet-stream' or not mime_type:
+            mime_type = guess_mime_type(file_bytes, mime_type)
+
         if mime_type.startswith('image/'):
             parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
-        elif mime_type.startswith('audio/') or mime_type == 'application/octet-stream':
+        elif mime_type.startswith('audio/'):
             parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
         elif mime_type in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']:
             parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+        elif mime_type == 'application/octet-stream':
+            # Still octet-stream even after guess? Try decoding as text, or send a generic failure
+            try:
+                text_content = file_bytes.decode('utf-8')
+                parts.append(genai.types.Part(text=text_content))
+            except UnicodeDecodeError:
+                await send_telegram(chat_id, "Unsupported file format (couldn't infer type).")
+                return
         else:
             parts.append(genai.types.Part(text=file_bytes.decode('utf-8', errors='ignore')))
 
