@@ -61,7 +61,7 @@ async def generate_content_with_fallback(
                 if not budget.has_budget_for_hop(1.0):
                     raise DeadlineExceeded("Insufficient budget for next attempt")
                     
-                timeout_s = min(budget.time_remaining(), 15.0)
+                timeout_s = budget.time_remaining()
                 
                 current_prompt = prompt
                 current_contents = contents
