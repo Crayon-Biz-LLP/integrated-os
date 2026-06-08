@@ -11,6 +11,7 @@ from supabase import create_client, Client
 from google import genai
 from core.lib.audit_logger import audit_log_sync
 from core.lib.rate_limiter import flash_lite_limiter
+from core.llm.compat import get_embedding_sync as get_embedding
 
 class ToolRegistry:
     def __init__(self):
@@ -85,39 +86,6 @@ def is_already_in_email_queue(title: str) -> bool:
         audit_log_sync("pulse", "WARNING", f"Duplicate guard check failed: {e}")
         return False
 
-async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
-    if model is None:
-        model = BRIEFING_MODEL
-
-    max_retries = 5
-    base_delay = 10
-
-    for attempt in range(max_retries):
-        try:
-            if contents is not None:
-                response = gemini_client.models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config=config or {}
-                )
-            else:
-                response = gemini_client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=config or {}
-                )
-            return response
-        except Exception as e:
-            error_str = str(e).lower()
-
-            should_retry = any(err in error_str for err in RETRYABLE_ERRORS)
-            if should_retry and attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                audit_log_sync("pulse", "WARNING", f"⚠️ API Hiccup ({error_str}), retrying in {delay}s...")
-                await asyncio.sleep(delay)
-                continue
-            else:
-                raise
 
 class SimpleResponse:
     """Simple response wrapper for OpenRouter responses."""
@@ -189,7 +157,7 @@ async def call_llm_with_fallback(
     if model is None:
         model = BRIEFING_MODEL
 
-    max_retries_per_provider = 3 if is_critical else 2
+    max_retries_per_provider = 4 if is_critical else 3
     base_delay = 10 if is_critical else 6
 
     providers = [
@@ -381,22 +349,7 @@ async def _call_openrouter(prompt: str, config: dict) -> any:
 
         return SimpleResponse(text=data.get('content', '') or json.dumps(data))
 
-def get_embedding(text: str) -> list:
-    """Generate embedding for text using gemini-embedding-2-preview."""
-    try:
-        # 🎯 FORCE 768 dimensions to match your Supabase schema
-        result = gemini_client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=text,
-            config={
-                'output_dimensionality': EMBEDDING_DIMENSION
-            }
-        )
-        return result.embeddings[0].values
-    except Exception as e:
-        # Fallback to zero-vector on error to prevent total system crash
-        audit_log_sync("pulse", "ERROR", f"Embedding error: {e}")
-        return [0] * EMBEDDING_DIMENSION
+
 
 def cosine_similarity(a: list, b: list) -> float:
     """Cosine similarity between two vectors."""

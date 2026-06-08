@@ -27,7 +27,7 @@ async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = 
             
     return LegacyResponse(resp.text)
 
-async def call_llm_with_fallback(prompt: str, **kwargs) -> str:
+async def call_llm_with_fallback(prompt: str, **kwargs) -> Any:
     """Compat wrapper for existing call_llm_with_fallback consumers."""
     resp = await generate_content_with_fallback(
         prompt=prompt,
@@ -35,7 +35,12 @@ async def call_llm_with_fallback(prompt: str, **kwargs) -> str:
         primary_model=kwargs.get('primary_model', "gemini-3.5-flash"),
         **kwargs
     )
-    return resp.text
+    
+    class LegacyResponse:
+        def __init__(self, text: str):
+            self.text = text
+            
+    return LegacyResponse(resp.text)
 
 async def get_embedding(text: str) -> list:
     """Compat wrapper for existing async get_embedding consumers."""

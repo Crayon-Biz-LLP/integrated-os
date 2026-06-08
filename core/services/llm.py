@@ -1,3 +1,5 @@
+from core.llm.compat import call_gemini_with_retry  # noqa: F401
+from core.llm.compat import call_gemini_with_retry as call_gemini_classify  # noqa: F401
 import os
 import json
 import re
@@ -45,73 +47,8 @@ def _jitter(delay: float) -> float:
     return delay * (0.75 + random.random() * 0.5)
 
 
-async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
-    if model is None:
-        model = BRIEFING_MODEL
-    gemini = get_gemini_client()
-    max_retries = 5
-    base_delay = 10
-
-    for attempt in range(max_retries):
-        try:
-            if contents is not None:
-                response = gemini.models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config=config or {}
-                )
-            else:
-                response = gemini.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=config or {}
-                )
-            return response
-        except Exception as e:
-            error_str = str(e).lower()
-            should_retry = any(err in error_str for err in RETRYABLE_ERRORS)
-            if should_retry and attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                audit_log_sync("llm", "WARNING", f"API Hiccup ({error_str}), retrying in {delay}s...")
-                await asyncio.sleep(delay)
-                continue
-            raise
 
 
-async def call_gemini_classify(prompt: str, model: str = None, config: dict = None, contents=None):
-    if model is None:
-        model = CLASSIFICATION_MODEL
-    gemini = get_gemini_client()
-    max_retries = 3
-    base_delay = 1
-
-    for attempt in range(max_retries):
-        try:
-            if "flash-lite" in model:
-                await flash_lite_limiter.acquire_async()
-            if contents is not None:
-                response = gemini.models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config=config or {}
-                )
-            else:
-                response = gemini.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=config or {}
-                )
-            return response
-        except Exception as e:
-            error_str = str(e).lower()
-            retryable = ['503', '504', '500', 'timeout', 'deadline exceeded']
-            should_retry = any(err in error_str for err in retryable)
-            if should_retry and attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                audit_log_sync("llm", "WARNING", f"Gemini error, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
-                await asyncio.sleep(delay)
-                continue
-            raise
 
 
 async def _call_openrouter(prompt: str, config: dict) -> SimpleResponse:

@@ -1,13 +1,13 @@
 import os
 import re
-import asyncio
 import json
 from datetime import datetime, timezone, timedelta
-from google import genai
+
 from supabase import create_client, Client
-from core.lib.rate_limiter import flash_lite_limiter
 from core.lib.audit_logger import audit_log_sync
 
+
+from core.llm.compat import call_gemini_with_retry, get_embedding_sync as get_embedding  # noqa: F401
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -15,7 +15,7 @@ supabase: Client = create_client(
 )
 
 
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
 
@@ -23,58 +23,6 @@ CLASSIFICATION_MODEL = "gemini-3.1-flash-lite"
 
 EMBEDDING_DIMENSION = 768
 
-async def call_gemini_with_retry(prompt: str, model: str = None, config: dict = None, contents=None):
-    """Call Gemini with retry logic (3 retries, exponential backoff for 503 errors)."""
-    if model is None:
-        model = CLASSIFICATION_MODEL
-
-    max_retries = 3
-    base_delay = 1
-
-    for attempt in range(max_retries):
-        try:
-            # Rate limit: only for flash-lite model
-            if "flash-lite" in model:
-                await flash_lite_limiter.acquire_async()
-            if contents is not None:
-                response = gemini_client.models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config=config or {}
-                )
-            else:
-                response = gemini_client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=config or {}
-                )
-            return response
-        except Exception as e:
-            error_str = str(e).lower()
-            retryable_errors = ['503', '504', '500', 'timeout', 'deadline exceeded']
-            should_retry = any(err in error_str for err in retryable_errors)
-            if should_retry and attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                audit_log_sync("webhook", "WARNING", f"⚠️ Gemini 503 error, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
-                await asyncio.sleep(delay)
-                continue
-            else:
-                raise
-
-def get_embedding(text: str) -> list:
-    try:
-        # 🎯 Force the model to return 768 dimensions to match Supabase
-        result = gemini_client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=text,
-            config={
-                'output_dimensionality': EMBEDDING_DIMENSION
-            }
-        )
-        return result.embeddings[0].values
-    except Exception as e:
-        audit_log_sync("webhook", "ERROR", f"Embedding error: {e}")
-        return [0] * EMBEDDING_DIMENSION
 
 async def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]", conversation_history: str = "") -> dict:
     ist_offset = timezone(timedelta(hours=5, minutes=30))

@@ -1,4 +1,5 @@
 import os
+from core.llm.compat import get_embedding_sync
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
 
@@ -15,19 +16,9 @@ def get_supabase() -> Client:
     return _supabase
 
 
+
 def get_embedding(text: str, model: str = "gemini-embedding-2-preview", dimension: int = 768) -> list:
-    from google import genai
-    gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    try:
-        result = gemini.models.embed_content(
-            model=model,
-            contents=text,
-            config={'output_dimensionality': dimension}
-        )
-        return result.embeddings[0].values
-    except Exception as e:
-        audit_log_sync("db", "ERROR", f"Embedding error: {e}")
-        return [0] * dimension
+    return get_embedding_sync(text)
 
 
 def fetch_active_projects() -> list:
