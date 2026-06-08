@@ -4,7 +4,6 @@ import json
 import re
 import random
 import asyncio
-import httpx
 from core.services.telegram import send_telegram
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
@@ -1320,22 +1319,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             briefing_text += "\n\n⚠️ " + str(len(error_log)) + " item(s) need attention — check logs."
         
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
         send_success = False
         if telegram_chat_id and briefing_text:
-            url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
-            payload = {
-                "chat_id": telegram_chat_id,
-                "text": briefing_text,
-                "parse_mode": "Markdown"
-            }
-            try:
-                async with httpx.AsyncClient() as tg_client:
-                    await tg_client.post(url, json=payload)
-                send_success = True
-            except Exception as e:
-                print(f"Telegram send failed: {e}")
+            send_success = await send_telegram(
+                chat_id=int(telegram_chat_id),
+                message_text=briefing_text,
+                show_keyboard=False
+            )
         
         # Log Pulse briefing to raw_dumps so it appears in web UI
         if send_success and briefing_text:
