@@ -52,12 +52,16 @@ async def get_embedding(text: str) -> EmbeddingResult:
             return resp
             
         except Exception as e:
+            is_timeout = isinstance(e, asyncio.TimeoutError) or isinstance(e, TimeoutError)
             error_str = str(e).lower()
             is_rate_limit = '429' in error_str or 'resource exhausted' in error_str or 'quota' in error_str or 'timeout' in error_str
+            is_retryable = is_rate_limit or is_timeout
             
-            if attempt < max_retries - 1 and is_rate_limit:
+            error_desc = "asyncio.TimeoutError" if is_timeout else str(e)
+            
+            if attempt < max_retries - 1 and is_retryable:
                 delay = get_jittered_backoff(attempt)
-                audit_log_sync("llm", "WARNING", f"Embedding rate limit/timeout (attempt {attempt+1}/{max_retries}), retrying in {delay:.1f}s... {e}")
+                audit_log_sync("llm", "WARNING", f"Embedding rate limit/timeout (attempt {attempt+1}/{max_retries}), retrying in {delay:.1f}s... {error_desc}")
                 await asyncio.sleep(delay)
                 continue
                 
@@ -65,7 +69,7 @@ async def get_embedding(text: str) -> EmbeddingResult:
                 vector=[0.0] * EMBEDDING_DIMENSION,
                 success=False,
                 degraded=True,
-                degraded_reason=f"gemini_embedding_failed: {e}",
+                degraded_reason=f"gemini_embedding_failed: {error_desc}",
                 provider="fallback_chain",
                 model="none",
                 latency_ms=int((time.time() - start_time) * 1000)
