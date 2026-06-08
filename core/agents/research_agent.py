@@ -6,7 +6,9 @@ from urllib.parse import quote
 
 from core.services.db import get_supabase, get_embedding
 from core.services.telegram import send_telegram
-from core.services.llm import call_gemini_with_retry, CLASSIFICATION_MODEL
+from core.webhook.classify import CLASSIFICATION_MODEL
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 
 supabase = get_supabase()
 
@@ -59,9 +61,10 @@ async def run_agent():
 Web Search Results:
 {search_results}"""
 
-                response = await call_gemini_with_retry(
+                response = await generate_content_with_fallback(
                     prompt=synthesis_prompt,
-                    model=CLASSIFICATION_MODEL
+                    workload=WorkloadProfile.SYNTHESIS,
+                    primary_model=CLASSIFICATION_MODEL
                 )
 
                 dossier = response.text.strip()

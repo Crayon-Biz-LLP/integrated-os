@@ -16,9 +16,11 @@ from core.lib.conversation import get_or_create_session, format_history_for_prom
 from core.services.google_service import get_tasks_service
 
 from core.pulse.llm import (
-    supabase, parse_json_response, call_llm_with_fallback, get_embedding,
+    supabase, get_embedding,
     BRIEFING_MODEL,
 )
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 from core.pulse.utils import format_error, get_project_name, build_routing_context, normalize_cluster_title
 from core.pulse.memory import (
     write_outcome_memory,
@@ -324,14 +326,15 @@ Return ONLY valid JSON array:
 Resources:
 {resources_json}"""
 
-        response = await call_llm_with_fallback(
+        response = await generate_content_with_fallback(
             prompt=prompt,
-            model="gemini-3.1-flash-lite",
+            workload=WorkloadProfile.SYNTHESIS,
+            primary_model="gemini-3.1-flash-lite",
             config={'response_mime_type': 'application/json'},
-            is_critical=False,
             require_json=True
         )
-        discovered = parse_json_response(response.text)
+
+        discovered = response.parse_json()
         if not isinstance(discovered, list):
             return []
 
@@ -512,14 +515,15 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             {json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
             
             try:
-                sort_response = await call_llm_with_fallback(
+                sort_response = await generate_content_with_fallback(
                     prompt=sort_prompt,
-                    model="gemini-3.1-flash-lite",
+                    workload=WorkloadProfile.SYNTHESIS,
+                    primary_model="gemini-3.1-flash-lite",
                     config={'response_mime_type': 'application/json'},
-                    is_critical=False,
                     require_json=True
                 )
-                sort_result = parse_json_response(sort_response.text)
+                
+                sort_result = sort_response.parse_json()
                 
                 task_dump_ids = []
                 note_dump_ids = []
@@ -1348,7 +1352,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                 
                 # Update Session Memory
                 summary_prompt = f"Summarize this briefing in 1-2 sentences. Focus on what was assigned, recommended, or asked. Briefing:\n{briefing_text}"
-                summary_res = await call_llm_with_fallback(prompt=summary_prompt, is_critical=False, require_json=False)
+                summary_res = await generate_content_with_fallback(
+                    prompt=summary_prompt, 
+                    workload=WorkloadProfile.SYNTHESIS,
+                    require_json=False
+                )
                 if summary_res and summary_res.text:
                     # check if row exists
                     chk = supabase.table('core_config').select('id').eq('key', 'last_pulse_summary').execute()

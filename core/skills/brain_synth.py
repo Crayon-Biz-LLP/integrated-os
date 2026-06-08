@@ -5,7 +5,8 @@ import httpx
 from datetime import datetime, timezone
 
 from core.services.db import get_supabase, get_embedding
-from core.services.llm import call_gemini_with_retry
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 
 supabase = get_supabase()
 
@@ -228,9 +229,10 @@ NEW FRAGMENTS:
 {json.dumps(entry['new_fragments'], indent=2)}
 """
             try:
-                response = await call_gemini_with_retry(
+                response = await generate_content_with_fallback(
                     prompt=per_prompt,
-                    model="gemini-3.1-flash-lite",
+                    workload=WorkloadProfile.SYNTHESIS,
+                    primary_model="gemini-3.1-flash-lite",
                     config={'response_mime_type': 'text/plain'}
                 )
                 if response and response.text:

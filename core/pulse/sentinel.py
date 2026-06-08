@@ -7,7 +7,8 @@ from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import get_google_creds
 from core.services.telegram import send_telegram
 from core.pulse.calendar import MemoryCache
-from core.pulse.llm import call_llm_with_fallback
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 
 def get_upcoming_events(minutes_ahead=25):
     """Fetch events starting between now and X minutes from now."""
@@ -124,12 +125,13 @@ async def process_sentinel(auth_secret: str):
             prompt = f"Write a 1-2 sentence maximum 'Pre-Flight Briefing' for a meeting called '{title}'. Here is some context from my system. Be extremely brief, do not use pleasantries. Just say what I need to know.\n\nContext:\n{context}"
             
             try:
-                ai_briefing = await call_llm_with_fallback(
+                ai_briefing = await generate_content_with_fallback(
                     prompt=prompt,
-                    model=os.getenv("GEMINI_FLASH_MODEL", "gemini-3.5-flash"),
+                    workload=WorkloadProfile.SYNTHESIS,
+                    primary_model=os.getenv("GEMINI_FLASH_MODEL", "gemini-3.5-flash"),
                     config={"temperature": 0.2}
                 )
-                msg += f"\n\n🧠 **Pre-Flight Context:**\n{ai_briefing.strip()}"
+                msg += f"\n\n🧠 **Pre-Flight Context:**\n{ai_briefing.text.strip()}"
             except Exception as e:
                 audit_log_sync("sentinel", "WARNING", f"AI context generation failed: {e}")
                 msg += f"\n\n🧠 **Context found:**\n{context}"

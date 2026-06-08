@@ -32,15 +32,17 @@ async def call_llm_with_fallback(prompt: str, **kwargs) -> Any:
     resp = await generate_content_with_fallback(
         prompt=prompt,
         workload=WorkloadProfile.SYNTHESIS,
-        primary_model=kwargs.get('primary_model', "gemini-3.5-flash"),
+        primary_model=kwargs.pop('model', "gemini-3.5-flash"),
         **kwargs
     )
     
     class LegacyResponse:
-        def __init__(self, text: str):
+        def __init__(self, text: str, function_calls: Any = None):
             self.text = text
+            if function_calls:
+                self.function_calls = function_calls
             
-    return LegacyResponse(resp.text)
+    return LegacyResponse(resp.text, getattr(resp, 'function_calls', None))
 
 async def get_embedding(text: str) -> list:
     """Compat wrapper for existing async get_embedding consumers."""

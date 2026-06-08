@@ -3,7 +3,9 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-from core.pulse.llm import call_llm_with_fallback, get_embedding
+from core.pulse.llm import get_embedding
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -187,9 +189,9 @@ async def generate_after_action_report() -> str:
         - Loops closed today: {completed_count}
         - Loops still open: {open_count}"""
 
-        response = await call_llm_with_fallback(
+        response = await generate_content_with_fallback(
             prompt=prompt,
-            is_critical=False,
+            workload=WorkloadProfile.SYNTHESIS,
             require_json=False
         )
 
@@ -277,7 +279,14 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list) 
         import random
         
         # 1. Gather all active task IDs
-        task_ids = [str(t.get('id')) for t in active_tasks if t.get('id')]
+        task_ids = []
+        for t in active_tasks:
+            tid = t.get('id')
+            if tid is not None:
+                tid_str = str(tid)
+                if tid_str.isdigit():
+                    task_ids.append(tid_str)
+                    
         if not task_ids:
             return "No active tasks to base serendipity queries on."
             

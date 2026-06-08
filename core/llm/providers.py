@@ -1,12 +1,12 @@
 import os
 import asyncio
-from typing import Any
+from typing import Any, Tuple, List, Optional
 from httpx import AsyncClient
 from .client import get_gemini_client
 from .errors import ProviderTimeout, NonRetryableError
 from core.lib.rate_limiter import flash_lite_limiter
 
-async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: float = 120.0, **kwargs) -> str:
+async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: float = 120.0, **kwargs) -> Tuple[str, Optional[List[Any]], Any]:
     """Make a call to Gemini, enforcing the timeout via asyncio.wait_for"""
     if "flash-lite" in model:
         await flash_lite_limiter.acquire_async()
@@ -30,7 +30,16 @@ async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: 
             asyncio.to_thread(_call),
             timeout=timeout_s
         )
-        return response.text
+        
+        response_text = ""
+        try:
+            if hasattr(response, 'text') and response.text:
+                response_text = response.text
+        except ValueError:
+            pass
+            
+        function_calls = getattr(response, 'function_calls', None)
+        return response_text, function_calls, response
     except asyncio.TimeoutError:
         raise ProviderTimeout(f"Gemini call timed out after {timeout_s}s")
     except Exception as e:
@@ -40,7 +49,7 @@ async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: 
         else:
             raise NonRetryableError(f"Gemini non-retryable error: {e}") from e
 
-async def call_openrouter(model: str, prompt: str, timeout_s: float = 120.0, **kwargs) -> str:
+async def call_openrouter(model: str, prompt: str, timeout_s: float = 120.0, **kwargs) -> Tuple[str, Optional[List[Any]], Any]:
     """Fallback OpenRouter call"""
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -73,7 +82,7 @@ async def call_openrouter(model: str, prompt: str, timeout_s: float = 120.0, **k
             
             data = response.json()
             if 'choices' in data and len(data['choices']) > 0:
-                return data['choices'][0]['message']['content']
+                return data['choices'][0]['message']['content'], None, data
             raise NonRetryableError("Invalid response format from OpenRouter")
             
     except asyncio.TimeoutError:

@@ -4,7 +4,9 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-from core.pulse.llm import call_llm_with_fallback, parse_json_response, get_embedding, cosine_similarity
+from core.pulse.llm import get_embedding, cosine_similarity
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -309,14 +311,14 @@ Return ONLY valid JSON:
 {{"is_same_activity": true, "is_personal_habit": true, "canonical_name": "Morning Run", "reject_reason": ""}}"""
 
             try:
-                response = await call_llm_with_fallback(
+                response = await generate_content_with_fallback(
                     prompt=verify_prompt,
-                    model="gemini-3.5-flash",
+                    workload=WorkloadProfile.SYNTHESIS,
+                    primary_model="gemini-3.5-flash",
                     config={'response_mime_type': 'application/json'},
-                    is_critical=False,
                     require_json=True
                 )
-                result = parse_json_response(response.text)
+                result = response.parse_json()
                 if not result.get('is_same_activity') or not result.get('canonical_name'):
                     continue
                 if not result.get('is_personal_habit'):

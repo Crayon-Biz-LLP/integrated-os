@@ -6,7 +6,9 @@ import httpx
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-from core.pulse.llm import call_llm_with_fallback, parse_json_response, get_embedding
+from core.pulse.llm import get_embedding
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -81,14 +83,14 @@ async def batch_enrich_resources():
     {json.dumps(enrichment_data, indent=2)}"""
 
     try:
-        response = await call_llm_with_fallback(
+        response = await generate_content_with_fallback(
             prompt=prompt,
-            model="gemini-3.1-flash-lite",
+            workload=WorkloadProfile.SYNTHESIS,
+            primary_model="gemini-3.1-flash-lite",
             config={'response_mime_type': 'application/json'},
-            is_critical=False,
             require_json=True
         )
-        parsed = parse_json_response(response.text)
+        parsed = response.parse_json()
 
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         enriched_at = datetime.now(ist_offset).isoformat()

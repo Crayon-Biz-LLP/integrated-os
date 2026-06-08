@@ -1,4 +1,6 @@
-from core.pulse.llm import call_llm_with_fallback, rhodey_tools
+from core.pulse.llm import rhodey_tools
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 
 class HitlInterrupt(Exception):
     def __init__(self, action: str, reason: str, context_data: dict = None):
@@ -24,20 +26,20 @@ async def run_agent_loop(prompt: str, model: str, config: dict, max_steps: int =
     messages = [{"role": "user", "parts": [{"text": prompt}]}]
     
     for step in range(max_steps):
-        response = await call_llm_with_fallback(
+        response = await generate_content_with_fallback(
             prompt=None,
+            workload=WorkloadProfile.SYNTHESIS,
             contents=messages,
-            model=model,
+            primary_model=model,
             config=config,
-            is_critical=True,
             require_json=False
         )
         
         # Append model response to history
-        if response.candidates and response.candidates[0].content:
-            messages.append({"role": "model", "parts": response.candidates[0].content.parts})
+        if response.raw_response and hasattr(response.raw_response, 'candidates') and response.raw_response.candidates and response.raw_response.candidates[0].content:
+            messages.append({"role": "model", "parts": response.raw_response.candidates[0].content.parts})
             
-        if getattr(response, 'function_calls', None):
+        if response.function_calls:
             responses_parts = []
             for call in response.function_calls:
                 try:
