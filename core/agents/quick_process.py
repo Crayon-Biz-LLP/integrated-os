@@ -1,3 +1,4 @@
+from core.llm.compat import get_embedding_sync
 import json
 import re
 import asyncio
@@ -5,7 +6,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 from core.lib.audit_logger import info, audit_log_sync
-from core.services.db import get_supabase, get_embedding, fetch_active_projects, zombie_recovery, versioned_update
+from core.services.db import get_supabase,  fetch_active_projects, zombie_recovery, versioned_update
 from core.services.google_service import format_rfc3339, sync_to_calendar, sync_to_google, delete_calendar_event, get_tasks_service
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.llm.fallback import generate_content_with_fallback
@@ -129,7 +130,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
         return {"action": "skipped", "reason": "noise"}
 
     if category == 'NOTE':
-        embedding = get_embedding(text)
+        embedding = get_embedding_sync(text)
         try:
             ins_res = supabase.table('memories').insert({
                 "content": text,

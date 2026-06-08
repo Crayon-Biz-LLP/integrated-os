@@ -1,9 +1,9 @@
+from core.llm import get_embedding
 import os
 import asyncio
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-from core.pulse.llm import get_embedding
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 
@@ -23,7 +23,7 @@ async def write_outcome_memory(task_title: str, project_name: str = None):
         if project_name:
             label += f" on {project_name}"
 
-        embedding = await asyncio.to_thread(get_embedding, label)
+        embedding = (await get_embedding(label)).vector
         status = 'success' if embedding and any(embedding) else 'failed'
         supabase.table('memories').insert({
             "content": label,
@@ -64,7 +64,7 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
 
     try:
         # Generate embedding for the query
-        query_embedding = await asyncio.to_thread(get_embedding, query_text)
+        query_embedding = (await get_embedding(query_text)).vector
 
         if not query_embedding or all(v == 0 for v in query_embedding):
             return ""
@@ -131,7 +131,7 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
 
         async def fetch_memories_for_query(query_name: str, query_text: str):
             try:
-                embedding = await asyncio.to_thread(get_embedding, query_text)
+                embedding = (await get_embedding(query_text)).vector
                 if not any(embedding):
                     return []
                 res = supabase.rpc(
@@ -198,7 +198,7 @@ async def generate_after_action_report() -> str:
         lesson = response.text.strip()
 
         if lesson and len(lesson) > 10:
-            embedding = await asyncio.to_thread(get_embedding, lesson)
+            embedding = (await get_embedding(lesson)).vector
             status = 'success' if embedding and any(embedding) else 'failed'
             if status == 'failed':
                 audit_log_sync("pulse", "WARNING", "Warning: zero-vector embedding for daily reflection — storing with failed status")

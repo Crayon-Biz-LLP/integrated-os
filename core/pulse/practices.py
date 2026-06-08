@@ -1,10 +1,11 @@
+from core.llm.compat import get_embedding_sync
+from core.llm import get_embedding
 import os
 import json
-import asyncio
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-from core.pulse.llm import get_embedding, cosine_similarity
+from core.pulse.llm import  cosine_similarity
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 
@@ -145,7 +146,7 @@ async def detect_practices():
         # ── Step 4: Generate embeddings for all candidates ──
         print(f"📍 detect_practices: Generating embeddings for {len(candidates)} candidates...")
         for c in candidates:
-            c['embedding'] = await asyncio.to_thread(get_embedding, c['text'])
+            c['embedding'] = (await get_embedding(c['text'])).vector
 
         # ── Step 5: Cluster by cosine similarity ──
         clusters = []
@@ -207,7 +208,7 @@ async def detect_practices():
 
             for pn in existing_practice_nodes:
                 pn_label = pn['label']
-                pn_embedding = await asyncio.to_thread(get_embedding, pn_label)
+                pn_embedding = (await get_embedding(pn_label)).vector
                 sim = cosine_similarity(cluster_centroid, pn_embedding)
                 if sim >= 0.75 and sim > best_sim:
                     best_sim = sim
@@ -329,10 +330,10 @@ Return ONLY valid JSON:
 
                 # ── Step 8: Create practice node ──
                 # Double-check: embedding overlap with existing nodes at tighter threshold
-                name_embedding = await asyncio.to_thread(get_embedding, canonical_name)
+                name_embedding = (await get_embedding(canonical_name)).vector
                 too_similar = False
                 for pn in existing_practice_nodes:
-                    pn_embedding = await asyncio.to_thread(get_embedding, pn['label'])
+                    pn_embedding = (await get_embedding(pn['label'])).vector
                     if cosine_similarity(name_embedding, pn_embedding) >= 0.85:
                         too_similar = True
                         print(f"📍 detect_practices: Skipping '{canonical_name}' — too similar to existing '{pn['label']}'")
@@ -818,7 +819,7 @@ async def sync_practice_canonical_pages():
                 lines.append(f"- Last Status Transition: {trans_at}")
 
             content = "\n".join(lines)
-            embedding = get_embedding(content)
+            embedding = get_embedding_sync(content)
 
             canonical_title = f"Practice: {label}"
             existing_res = supabase.table('canonical_pages') \

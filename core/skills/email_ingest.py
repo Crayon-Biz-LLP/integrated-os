@@ -1,3 +1,4 @@
+from core.llm import get_embedding
 import json
 import asyncio
 import base64
@@ -8,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from core.lib.constants import EmailStatus
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.duplicate_guard import check_duplicate
-from core.services.db import get_supabase, get_embedding
+from core.services.db import get_supabase
 from core.services.google_service import get_google_creds, _MemoryCache
 from core.services.llm import call_gemini_classify
 
@@ -117,7 +118,7 @@ Output ONLY a concise 1-2 sentence note about the relationship context."""
     try:
         response = await call_gemini_classify(prompt, model="gemini-3.1-flash-lite")
         note_content = response.text.strip()
-        embedding = await asyncio.to_thread(get_embedding, note_content)
+        embedding = (await get_embedding(note_content)).vector
 
         metadata = {}
         if people_id:

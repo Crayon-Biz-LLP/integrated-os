@@ -1,3 +1,4 @@
+from core.llm import get_embedding
 import os
 import json
 import re
@@ -16,8 +17,7 @@ from core.lib.conversation import get_or_create_session, format_history_for_prom
 from core.services.google_service import get_tasks_service
 
 from core.pulse.llm import (
-    supabase, get_embedding,
-    BRIEFING_MODEL,
+    supabase, BRIEFING_MODEL,
 )
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
@@ -558,7 +558,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                     if category == 'NOTE':
                         dump_content = raw_dump.get('content')
                         if dump_content:
-                            embedding = await asyncio.to_thread(get_embedding, dump_content)
+                            embedding = (await get_embedding(dump_content)).vector
                             status = 'success' if embedding and any(embedding) else 'failed'
                             try:
                                 result = supabase.table('memories').insert({

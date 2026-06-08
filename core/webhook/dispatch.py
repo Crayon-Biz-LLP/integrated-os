@@ -1,3 +1,4 @@
+from core.llm import get_embedding
 import json
 import re
 import asyncio
@@ -8,7 +9,7 @@ from core.services.pipeline_service import add_to_failed_queue
 from core.pulse.context import context_provider
 from core.lib.conversation import get_history, log_exchange, format_history_for_prompt
 from core.webhook.telegram import send_telegram
-from core.webhook.classify import CLASSIFICATION_MODEL, get_embedding, INTENT_OPTIONS, INTENT_BY_KEYWORD
+from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_BY_KEYWORD
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.webhook.utils import is_recent_raw_dump, hybrid_search_graph, supabase
@@ -283,7 +284,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             dump_id = None
 
     # ── Step 2: Attempt embedding ──
-    embedding = await asyncio.to_thread(get_embedding, text)
+    embedding = (await get_embedding(text)).vector
     embed_success = bool(embedding and any(embedding))
     embed_status = 'success' if embed_success else 'failed'
 
@@ -618,10 +619,10 @@ async def handle_declare_practice(text: str, chat_id: int, classification: dict)
         existing_practices = [p for p in (existing_res.data or []) if p.get('metadata', {}).get('status') in ['active', 'dormant']]
 
         if existing_practices:
-            name_embedding = await asyncio.to_thread(get_embedding, practice_name)
+            name_embedding = (await get_embedding(practice_name)).vector
             for p in existing_practices:
                 p_label = p.get('label', '')
-                p_embedding = await asyncio.to_thread(get_embedding, p_label)
+                p_embedding = (await get_embedding(p_label)).vector
                 dot = sum(a * b for a, b in zip(name_embedding, p_embedding))
                 n_a = sum(a * a for a in name_embedding) ** 0.5
                 n_b = sum(b * b for b in p_embedding) ** 0.5

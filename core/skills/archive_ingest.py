@@ -1,3 +1,4 @@
+from core.llm.compat import get_embedding_sync
 import os
 import time
 import json
@@ -5,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from core.services.db import get_supabase, get_embedding
+from core.services.db import get_supabase
 from core.services.google_service import get_google_creds
 
 supabase = get_supabase()
@@ -387,7 +388,7 @@ def run_ingest():
             skipped += 1
             continue
         
-        embedding = get_embedding(parsed["content"])
+        embedding = get_embedding_sync(parsed["content"])
         
         try:
             result = supabase.table("memories").insert({

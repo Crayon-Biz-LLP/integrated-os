@@ -1,10 +1,9 @@
+from core.llm import get_embedding
 import os
-import asyncio
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync, error
 from core.pulse.utils import format_error
-from core.pulse.llm import get_embedding
 from core.services.db import versioned_update
 
 supabase: Client = create_client(
@@ -137,7 +136,7 @@ async def retry_failed_operations(max_retries: int = 5):
                         .execute()
 
                     if mem_res and mem_res.data:
-                        embedding = await asyncio.to_thread(get_embedding, mem_res.data['content'])
+                        embedding = (await get_embedding(mem_res.data['content'])).vector
                         if embedding and any(embedding):
                             # Versioned update for memories
                             versioned_update('memories', int(source_id), {

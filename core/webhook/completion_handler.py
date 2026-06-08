@@ -3,6 +3,7 @@ completion_handler.py
 Owns the full lifecycle of COMPLETION dumps.
 State machine: processing_completion -> awaiting_completion_match | completed | partially_synced
 """
+from core.llm import get_embedding
 
 import json
 import asyncio
@@ -49,8 +50,7 @@ async def handle_confident_completion(
         dump_id = dump_res.data[0]["id"] if dump_res.data else None
 
         # ── Stage 2: Embed + write to memories immediately (zero data loss) ──
-        from core.webhook.classify import get_embedding
-        embedding = await asyncio.to_thread(get_embedding, text)
+        embedding = (await get_embedding(text)).vector
         embed_valid = bool(embedding and any(embedding))
         try:
             supabase.table("memories").insert({

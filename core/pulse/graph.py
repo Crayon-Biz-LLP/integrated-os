@@ -1,9 +1,9 @@
+from core.llm import get_embedding
 import os
 import json
 import asyncio
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-from core.pulse.llm import get_embedding
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -117,7 +117,7 @@ async def hybrid_search_graph(query: str) -> str:
         # create it mirroring the match_memories pattern for graph_nodes table.
         if not nodes_res.data:
             try:
-                query_embedding = await asyncio.to_thread(get_embedding, query)
+                query_embedding = (await get_embedding(query)).vector
                 vector_res = supabase.rpc('match_graph_nodes', {
                     'query_embedding': query_embedding,
                     'match_count': 1,

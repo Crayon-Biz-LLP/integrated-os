@@ -1,10 +1,11 @@
+from core.llm.compat import get_embedding_sync
 import os
 import json
 import asyncio
 import httpx
 from urllib.parse import quote
 
-from core.services.db import get_supabase, get_embedding
+from core.services.db import get_supabase
 from core.services.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.llm.fallback import generate_content_with_fallback
@@ -70,7 +71,7 @@ Web Search Results:
                 dossier = response.text.strip()
 
                 content = f"RESEARCH DOSSIER: {task_text}\n\n{dossier}"
-                embedding = get_embedding(content)
+                embedding = get_embedding_sync(content)
                 if not embedding:
                     embedding = None
                 supabase.table('raw_dumps').insert([{

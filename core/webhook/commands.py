@@ -1,10 +1,9 @@
+from core.llm import get_embedding
 import json
-import asyncio
 import re as _re
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
 from core.webhook.telegram import send_telegram
-from core.webhook.classify import get_embedding
 from core.webhook.utils import supabase, trigger_github_pulse
 from core.webhook.email import handle_ed_command
 
@@ -287,7 +286,7 @@ async def handle_undo_command(text: str, chat_id: int):
                 "status": "staged",
             }).eq('id', dump_id).execute()
             # Process as note inline
-            embedding = await asyncio.to_thread(get_embedding, content)
+            embedding = (await get_embedding(content)).vector
             if embedding and any(embedding):
                 try:
                     supabase.table('memories').insert({

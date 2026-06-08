@@ -1,7 +1,8 @@
+from core.llm import get_embedding
 import json
 import asyncio
 from datetime import datetime, timezone, timedelta
-from core.services.db import get_supabase, get_embedding
+from core.services.db import get_supabase
 from core.services.llm import call_gemini_classify
 
 supabase = get_supabase()
@@ -131,7 +132,7 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
         supabase.table('whatsapp_messages').insert(row).execute()
         if classification_data.get('has_memory_value'):
             mem_content = f"{sender_name or sender_phone}: {classification_data.get('summary', message_text[:200])}"
-            embedding = await asyncio.to_thread(get_embedding, mem_content)
+            embedding = (await get_embedding(mem_content)).vector
             supabase.table('memories').insert({
                 "content": mem_content,
                 "memory_type": "relationship_note",

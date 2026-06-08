@@ -1,3 +1,4 @@
+from core.llm.compat import get_embedding_sync
 import os
 import json
 import asyncio
@@ -7,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from core.lib.constants import EmailStatus
 from core.lib.duplicate_guard import check_duplicate
-from core.services.db import get_supabase, get_embedding
+from core.services.db import get_supabase
 from core.services.llm import call_gemini_classify
 import requests
 
@@ -346,7 +347,7 @@ async def ingest_outlook_messages(limit=25):
                 if is_human and has_memory:
                     _summary = classification_data.get("summary", "")
                     _mem_content = f"{sender} ({sender_email}): {_summary}"
-                    _emb = get_embedding(_mem_content)
+                    _emb = get_embedding_sync(_mem_content)
                     supabase.table('memories').insert({
                         "content": _mem_content,
                         "memory_type": "relationship_note",

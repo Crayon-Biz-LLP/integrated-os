@@ -1,10 +1,10 @@
+from core.llm.compat import get_embedding_sync
 import os
 import asyncio
 from typing import Callable, Dict, Any, List
 from supabase import create_client, Client
 from google import genai
 from core.lib.audit_logger import audit_log_sync
-from core.llm.compat import get_embedding_sync as get_embedding
 
 class ToolRegistry:
     def __init__(self):
@@ -62,7 +62,7 @@ def is_already_in_email_queue(title: str) -> bool:
                 return True
 
         # Semantic embedding check (high threshold to avoid false positives)
-        embedding = get_embedding(title)
+        embedding = get_embedding_sync(title)
         similarity_res = supabase.rpc('match_memories', {
             'query_embedding': embedding,
             'match_count': 1,

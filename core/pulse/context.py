@@ -1,8 +1,9 @@
+from core.llm import get_embedding
 import time
 import asyncio
 from datetime import datetime, timezone, timedelta
 
-from core.services.db import get_supabase, get_embedding
+from core.services.db import get_supabase
 from core.services.google_service import get_google_calendar_events
 from core.services.outlook_service import get_outlook_calendar_events
 
@@ -186,7 +187,7 @@ class ContextProvider:
                 
         # Semantic Ranking
         if query_text and semantic_pool:
-            query_emb = await asyncio.to_thread(get_embedding, query_text)
+            query_emb = (await get_embedding(query_text)).vector
             if query_emb:
                 # To avoid an embedding API call per task, we use a simple text overlap 
                 # or we pre-compute embeddings if we have them. 
@@ -243,7 +244,7 @@ class ContextProvider:
             return [] if return_raw else "None"
             
         try:
-            embedding = await asyncio.to_thread(get_embedding, query_text)
+            embedding = (await get_embedding(query_text)).vector
             if not embedding:
                 return [] if return_raw else "None"
                 

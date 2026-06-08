@@ -1,3 +1,4 @@
+from core.llm import get_embedding
 import os
 import re
 import json
@@ -6,7 +7,6 @@ import httpx
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-from core.pulse.llm import get_embedding
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 
@@ -106,7 +106,7 @@ async def batch_enrich_resources():
             title = item.get('title', '')
             strategic_note = item.get('strategic_note', '')
             embedding_text = f"{title}. {strategic_note}"
-            embedding = await asyncio.to_thread(get_embedding, embedding_text)
+            embedding = (await get_embedding(embedding_text)).vector
             if all(v == 0 for v in embedding):
                 audit_log_sync("pulse", "WARNING", "Warning: zero-vector embedding for daily reflection — storing anyway")
 

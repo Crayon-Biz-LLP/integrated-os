@@ -1,10 +1,11 @@
+from core.llm.compat import get_embedding_sync
 import asyncio
 import json
 import os
 import httpx
 from datetime import datetime, timezone
 
-from core.services.db import get_supabase, get_embedding
+from core.services.db import get_supabase
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 
@@ -74,7 +75,7 @@ async def run_batch_sweep():
                         seen_hashes.add(h)
                         all_fragments.append(f"[{prefix}] {text}")
 
-                entity_embedding = get_embedding(entity_name)
+                entity_embedding = get_embedding_sync(entity_name)
 
                 if entity_embedding:
                     mem = supabase.rpc('match_memories_hybrid', {
@@ -256,7 +257,7 @@ NEW FRAGMENTS:
                 print(f"Skipping {entity_name} — output too sparse ({len(markdown)} chars)")
                 continue
 
-            embedding = get_embedding(markdown)
+            embedding = get_embedding_sync(markdown)
             now_iso = datetime.now(timezone.utc).isoformat()
 
             try:
