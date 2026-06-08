@@ -19,7 +19,7 @@ async def generate_content_with_fallback(
     prompt: str,
     workload: LLMConfig = WorkloadProfile.INTERACTIVE,
     primary_model: str = "gemini-3.5-flash",
-    fallback_model: str = "gemma-4-31b-it",
+    fallback_model: str = "nvidia/nemotron-3-super-120b-a12b:free",
     contents: Any = None,
     is_classification: bool = False,
     require_json: bool = False,
@@ -161,7 +161,16 @@ async def generate_content_with_fallback(
     else:
         final_exc = BreakerOpenError("Gemini breaker is open")
 
-    # Fallback path (OpenRouter)
+    # Fallback path 1 (Gemma via Gemini SDK)
+    if budget.has_budget_for_hop(1.0):
+        try:
+            resp = await _try_provider("gemini_gemma", call_gemini, "gemma-4-31b-it", 1)
+            log_llm_outcome(resp, Outcome.FALLBACK_SUCCESS, prompt=prompt)
+            return resp
+        except Exception as e:
+            final_exc = e
+
+    # Fallback path 2 (OpenRouter)
     if budget.has_budget_for_hop(1.0):
         try:
             resp = await _try_provider("openrouter", call_openrouter, fallback_model, 1)

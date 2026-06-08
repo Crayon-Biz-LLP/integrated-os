@@ -44,7 +44,7 @@ async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: 
         raise ProviderTimeout(f"Gemini call timed out after {timeout_s}s")
     except Exception as e:
         error_str = str(e).lower()
-        if any(err in error_str for err in ['503', '504', '500', 'timeout', 'deadline exceeded', '429']):
+        if any(err in error_str for err in ['503', '504', '500', 'timeout', 'timed out', 'deadline exceeded', '429']):
             raise  # Retryable
         else:
             raise NonRetryableError(f"Gemini non-retryable error: {e}") from e
@@ -89,7 +89,7 @@ async def call_openrouter(model: str, prompt: str, timeout_s: float = 120.0, **k
         raise ProviderTimeout(f"OpenRouter call timed out after {timeout_s}s")
     except Exception as e:
         error_str = str(e).lower()
-        if any(err in error_str for err in ['503', '504', '500', 'timeout', '429']):
+        if any(err in error_str for err in ['503', '504', '500', 'timeout', 'timed out', '429']):
             raise  # Retryable
         else:
             raise NonRetryableError(f"OpenRouter non-retryable error: {e}") from e
