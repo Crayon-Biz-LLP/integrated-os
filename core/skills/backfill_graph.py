@@ -1,14 +1,14 @@
 import os
 import sys
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import uuid
 import httpx
-from supabase import create_client
 
 from core.lib.rate_limiter import flash_lite_limiter
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
-from core.lib.audit_logger import info, warning, audit_log_sync
+from core.lib.audit_logger import audit_log_sync
 from core.services.db import get_supabase
 from core.services.pipeline_service import add_to_failed_queue
 from core.services.llm import get_gemini_client
@@ -686,21 +686,84 @@ def run_backfill():
         batch_num = i // BATCH_SIZE + 1
         print(f"Processing batch {batch_num} ({len(batch)} memories)...")
         
-        for idx, memory in enumerate(batch):
-            try:
-                success = process_memory(memory, graph_entities)
-                if success:
-                    processed += 1
-                else:
-                    failed += 1
-            except Exception as e:
-                audit_log_sync("backfill_graph", "ERROR", f"Error processing memory {memory['id']}: {e}")
-                failed += 1
+        extracted_data = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_mem = {
+                executor.submit(
+                    extract_graph_elements, 
+                    synthesize_content(m), 
+                    m["id"]
+                ): m for m in batch if synthesize_content(m).strip()
+            }
             
-            # Rate limit: 4s delay between API calls to stay under 15 req/min
-            if idx < len(batch) - 1:
-                time.sleep(4)
+            for future in as_completed(future_to_mem):
+                mem = future_to_mem[future]
+                try:
+                    graph_data = future.result()
+                    nodes = graph_data.get("nodes", [])
+                    edges = graph_data.get("edges", [])
+                    if nodes or edges:
+                        extracted_data.append({"memory_id": mem["id"], "nodes": nodes, "edges": edges})
+                        processed += 1
+                    else:
+                        failed += 1
+                except Exception as e:
+                    audit_log_sync("backfill_graph", "ERROR", f"Error processing memory {mem['id']}: {e}")
+                    failed += 1
         
+        if not extracted_data:
+            continue
+            
+        all_nodes = []
+        all_edges = []
+        for data in extracted_data:
+            all_nodes.extend(data["nodes"])
+            for edge in data["edges"]:
+                all_edges.append({
+                    "source": edge.get("source", ""),
+                    "target": edge.get("target", ""),
+                    "relationship": edge.get("relationship", "relates_to").upper(),
+                    "memory_id": data["memory_id"]
+                })
+                
+        unique_nodes = {}
+        for node in all_nodes:
+            label = node.get("label", "")
+            if not label:
+                continue
+            unique_nodes[label] = node.get("type", "concept")
+            
+        if "Danny" not in unique_nodes:
+            unique_nodes["Danny"] = "person"
+            
+        # Batch upsert nodes using the existing upsert_nodes function
+        upsert_nodes([{"label": k, "type": v} for k, v in unique_nodes.items()], graph_entities, "batch")
+        
+        edges_to_insert = []
+        for edge in all_edges:
+            source_id = graph_entities.get(edge["source"], {}).get("id")
+            target_id = graph_entities.get(edge["target"], {}).get("id")
+            if source_id and target_id:
+                edges_to_insert.append({
+                    "source_node_id": source_id,
+                    "target_node_id": target_id,
+                    "relationship": edge["relationship"],
+                    "metadata": json.dumps({"memory_id": str(edge["memory_id"])})
+                })
+                
+        if edges_to_insert:
+            try:
+                # Upsert all edges in batches of 100 to avoid PostgREST limits
+                for j in range(0, len(edges_to_insert), 100):
+                    edge_batch = edges_to_insert[j:j+100]
+                    supabase.table("graph_edges").upsert(
+                        edge_batch, 
+                        on_conflict="source_node_id,relationship,target_node_id", 
+                        ignore_duplicates=True
+                    ).execute()
+            except Exception as e:
+                audit_log_sync("backfill_graph", "ERROR", f"Batch edge insert failed: {e}")
+                
         print(f"Completed batch {batch_num}")
     
     print(f"Graph backfill complete! Processed: {processed}, Skipped: {failed}")
@@ -719,13 +782,6 @@ def run_backfill():
             except Exception as e:
                 print(f"Telegram notify failed: {e}")
 
-    backfill_orphaned_tasks()
-
-    # ── Step 3: Sync graph project nodes → projects table ──────────────────
-    sync_project_nodes_to_projects_table()
-
-    # ── Step 4: Sync graph person nodes → people table ─────────────────────
-    sync_person_nodes_to_people_table()
 
 
 def backfill_orphaned_tasks():
@@ -1008,197 +1064,6 @@ def sync_person_nodes_to_people_table():
     print(f"Synced {synced} person nodes ({added} new people, {skipped} blocklisted).")
 
 
-def compact_memories(supabase):
-    """
-    Step 5: Memory Compaction
-    Merge duplicate memories with similar content
-    """
-    info("backfill_graph", "Starting memory compaction")
-    
-    # Fetch memories with same project_id and similar content
-    memories = supabase.table("memories").select("*").execute()
-    
-    if not memories.data:
-        return
-    
-    # Group by project_id
-    by_project = {}
-    for m in memories.data:
-        pid = m.get("project_id")
-        if pid:
-            by_project.setdefault(pid, []).append(m)
-    
-    merged = 0
-    for pid, mems in by_project.items():
-        if len(mems) <= 1:
-            continue
-        
-        # Simple deduplication: keep most recent, mark others as compacted
-        mems.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        keep = mems[0]
-        
-        for m in mems[1:]:
-            # Check if content is very similar (>90% overlap)
-            if m["content"][:100] == keep["content"][:100]:
-                # Mark as compacted (soft delete)
-                try:
-                    supabase.table("memories").update({
-                        "metadata": json.dumps({
-                            **json.loads(m.get("metadata") or "{}"),
-                            "compacted": True,
-                            "compacted_into": keep["id"]
-                        })
-                    }).eq("id", m["id"]).execute()
-                    merged += 1
-                except Exception as e:
-                    warning("backfill_graph", f"Compaction failed for {m['id']}: {e}")
-    
-    info("backfill_graph", f"Memory compaction complete: {merged} merged")
-
-
-def prune_memories(supabase):
-    """
-    Step 6: Forgetting/Pruning Mechanism
-    Remove old, irrelevant memories based on age and relevance
-    """
-    info("backfill_graph", "Starting memory pruning")
-    
-    from datetime import datetime, timedelta
-    
-    # Calculate cutoff (90 days ago)
-    cutoff = (datetime.now() - timedelta(days=90)).isoformat()
-    
-    # Fetch old memories that aren't heavily connected
-    old_memories = supabase.table("memories") \
-        .select("id, created_at, metadata") \
-        .lt("created_at", cutoff) \
-        .execute()
-    
-    if not old_memories.data:
-        return
-    
-    pruned = 0
-    for mem in old_memories.data:
-        # Check if memory is referenced in graph_edges via node metadata
-        # Nodes store memory_id in their metadata
-        nodes = supabase.table("graph_nodes") \
-            .select("id") \
-            .filter("metadata", "cs", json.dumps({"memory_id": str(mem["id"])})) \
-            .execute()
-        
-        if not nodes.data:
-            # No graph node references this memory, safe to prune
-            try:
-                supabase.table("memories").update({
-                    "metadata": json.dumps({
-                        **json.loads(mem.get("metadata") or "{}"),
-                        "pruned": True,
-                        "pruned_at": datetime.now().isoformat()
-                    })
-                }).eq("id", mem["id"]).execute()
-                pruned += 1
-            except Exception as e:
-                warning("backfill_graph", f"Pruning failed for {mem['id']}: {e}")
-            continue
-        
-        # Check if any of these nodes are referenced in edges
-        node_ids = [n["id"] for n in nodes.data]
-        edges = supabase.table("graph_edges") \
-            .select("id") \
-            .in_("source_node_id", node_ids) \
-            .execute()
-        
-        if not edges.data:
-            # Nodes not connected to graph, safe to prune
-            try:
-                supabase.table("memories").update({
-                    "metadata": json.dumps({
-                        **json.loads(mem.get("metadata") or "{}"),
-                        "pruned": True,
-                        "pruned_at": datetime.now().isoformat()
-                    })
-                }).eq("id", mem["id"]).execute()
-                pruned += 1
-            except Exception as e:
-                warning("backfill_graph", f"Pruning failed for {mem['id']}: {e}")
-    
-    info("backfill_graph", f"Memory pruning complete: {pruned} pruned")
-
-
-def reflexion_loop(supabase):
-    """
-    Step 7: Reflexion Loop Upgrade
-    Analyze past failures and improve future processing
-    """
-    info("backfill_graph", "Starting reflexion loop analysis")
-    
-    # Fetch failed operations from failed_queue
-    # Items with last_retry_at IS NULL or retry_count < 5 are "active" failures
-    failed = supabase.table("failed_queue") \
-        .select("*") \
-        .or_("last_retry_at.is.null,retry_count.lt.5") \
-        .execute()
-    
-    if not failed.data:
-        info("backfill_graph", "No failed operations to analyze")
-        return
-    
-    # Analyze failure patterns
-    patterns = {}
-    for f in failed.data:
-        error_msg = f.get('error_message') or ""
-        key = f"{f.get('operation')}:{error_msg[:50]}"
-        patterns[key] = patterns.get(key, 0) + 1
-    
-    # Log insights
-    for pattern, count in sorted(patterns.items(), key=lambda x: x[1], reverse=True)[:5]:
-        warning("backfill_graph", f"Failure pattern: {pattern} ({count} times)")
-    
-    info("backfill_graph", "Reflexion loop complete")
-
-
-def resolve_conflicts(supabase):
-    """
-    Step 8: Memory Conflict Resolution
-    Detect and resolve conflicting memories
-    """
-    info("backfill_graph", "Starting conflict resolution")
-    
-    # Fetch memories with same source_id but different content
-    memories = supabase.table("memories").select("*").execute()
-    
-    by_source = {}
-    for m in memories.data:
-        source_id = m.get("source_id")
-        if source_id:
-            by_source.setdefault(source_id, []).append(m)
-    
-    resolved = 0
-    for source_id, mems in by_source.items():
-        if len(mems) <= 1:
-            continue
-        
-        # Keep most recent version
-        mems.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        latest = mems[0]
-        
-        for old in mems[1:]:
-            if old["content"] != latest["content"]:
-                # Mark old version as superseded
-                try:
-                    supabase.table("memories").update({
-                        "metadata": json.dumps({
-                            **json.loads(old.get("metadata") or "{}"),
-                            "superseded": True,
-                            "superseded_by": latest["id"]
-                        })
-                    }).eq("id", old["id"]).execute()
-                    resolved += 1
-                except Exception as e:
-                    warning("backfill_graph", f"Conflict resolution failed for {old['id']}: {e}")
-    
-    info("backfill_graph", f"Conflict resolution complete: {resolved} resolved")
-
 
 if __name__ == "__main__":
     supabase_url = os.getenv("SUPABASE_URL")
@@ -1208,19 +1073,11 @@ if __name__ == "__main__":
         print("ERROR: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
         sys.exit(1)
     
-    supabase = create_client(supabase_url, supabase_key)
-    
     # Run backfill
     run_backfill()
     
     # Run graph→table sync
     sync_project_nodes_to_projects_table()
     sync_person_nodes_to_people_table()
-
-    # Run Phase-3 enhancements
-    compact_memories(supabase)
-    prune_memories(supabase)
-    reflexion_loop(supabase)
-    resolve_conflicts(supabase)
     
-    print("✅ All Phase-3 operations complete")
+    print("✅ All Phase-2 operations complete")
