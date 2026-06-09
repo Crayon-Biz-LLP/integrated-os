@@ -441,18 +441,21 @@ def extract_graph_elements(text: str, memory_id: str) -> dict:
     prompt = f"""Extract knowledge graph elements from this text.
     
 Return a JSON object with:
-- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"emotional_state"|"concept"}}
+- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"resource"|"emotional_state"|"concept"}}
 - "edges": array of objects with {{"source": string, "target": string, "relationship": string}}
     
 Text: {text}
     
 Rules:
-- Extract People (names), Organizations, Projects, Emotional States, Concepts as nodes
+- Extract People (names), Organizations, Projects, Resources, Emotional States, Concepts as nodes
 - Create edges for relationships between nodes
-- Use UPPERCASE relationship types: "RELATES_TO", "PARENT_OF", "WORKS_AT", "BELONGS_TO", "AUTHORED", "INTRODUCED", "VENDOR_TO", "DISCUSSED_WITH"
+- Use UPPERCASE relationship types: "RELATES_TO", "PARENT_OF", "WORKS_AT", "BELONGS_TO", "AUTHORED", "INTRODUCED", "VENDOR_TO", "DISCUSSED_WITH", "FEELS"
 - Include "AUTHORED" edge from "Danny" to indicate he wrote this memory
-- If no clear graph elements, return empty arrays
-- CRITICAL: Do NOT extract anything from URLs, file paths, or online handles. Ignore path segments in links like "github.com/username" or "bit.ly/handle". Only extract entities that appear as clear person names, organization names, or project names in natural language text.
+- CRITICAL RULE: EVERY node you extract MUST have at least one connecting edge. Do not output isolated nodes.
+- For EVERY emotional_state node you extract, ALWAYS create a 'Danny' -> 'FEELS' -> '{{emotion}}' edge. Never extract an emotional_state node without a corresponding FEELS edge.
+- Do NOT classify URLs, git repositories, or file paths as 'project'. Classify them as 'resource' instead. Examples: 'CopilotKit' -> resource, 'dsvpn' -> resource, 'opencodeCLI' -> resource.
+- Standardize labels to Title Case. Never create case-variant duplicates. 'guilt' and 'Guilt' are the same — use 'Guilt'.
+- CRITICAL: Do NOT extract anything from URLs, file paths, or online handles except to tag them as resources. Ignore path segments in links like "github.com/username".
 - CONSISTENCY: EVERY label referenced in an edge's "source" or "target" MUST also appear in the "nodes" array with its type."""
     
     try:
@@ -767,6 +770,13 @@ def run_backfill():
     
     print(f"Graph backfill complete! Processed: {processed}, Skipped: {failed}")
 
+    # Tier 1: Backfill orphaned tasks
+    backfill_orphaned_tasks()
+    
+    # Tier 1.5: Backfill emotion edges
+    backfill_emotion_edges()
+    backfill_orphaned_node_edges()
+
     # Notify on failure via Telegram
     if failed > 0:
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -781,7 +791,84 @@ def run_backfill():
             except Exception as e:
                 print(f"Telegram notify failed: {e}")
 
+def backfill_emotion_edges():
+    """
+    Tier 1.5: Backfills Danny -> FEELS -> emotional_state edges.
+    Runs every cycle to prevent orphaned emotion nodes.
+    """
+    print("\n❤️ Emotion backfill: Fixing orphaned emotional states...")
+    try:
+        # Step A: Reclassify emotional concepts
+        # 1. Exact match for high-severity nodes
+        supabase.table("graph_nodes").update({"type": "emotional_state"}).eq("type", "concept").in_(
+            "label", ['Suicidal Ideation', 'Suicidal', 'Depression', 'Broken', 'Desperate', 'Anxiety', 'anxiety']
+        ).execute()
 
+        # 2. ILIKE match for broader catch
+        emotional_patterns = [
+            '%suicidal%', '%depression%', '%hopeless%', '%helpless%',
+            '%loneliness%', '%lonely%', '%desperate%', '%frustrated%',
+            '%regret%', '%guilt%', '%crushed%', '%betrayed%', '%pain%',
+            '%nervous%', '%worried%', '%angry%', '%afraid%', '%ashamed%',
+            '%stressed%', '%overwhelmed%', '%exhausted%', '%tired%',
+            '%grief%', '%fear%', '%confused%', '%lost%'
+        ]
+        
+        for pattern in emotional_patterns:
+            supabase.table("graph_nodes").update({"type": "emotional_state"}).eq("type", "concept").ilike("label", pattern).execute()
+        
+        # Step B: Create Danny -> FEELS edges
+        # We need to do this via Postgres function or multiple calls since Supabase REST API doesn't support complex cross-joins.
+        # Alternatively, we can fetch all emotional_state nodes, fetch Danny's ID, and insert edges.
+        
+        danny_res = supabase.table("graph_nodes").select("id").eq("label", "Danny").eq("type", "person").maybe_single().execute()
+        if not danny_res or not danny_res.data:
+            print("Danny node not found, skipping emotion edge backfill.")
+            return
+        
+        danny_id = danny_res.data["id"]
+        
+        es_nodes = fetch_all_paginated("graph_nodes", "id, label", in_filter_col="type", in_filter_val=["emotional_state"])
+        if not es_nodes:
+            return
+            
+        feels_edges = []
+        page = 0
+        limit = 1000
+        while True:
+            res = supabase.table("graph_edges").select("target_node_id").eq("source_node_id", danny_id).eq("relationship", "FEELS").range(page*limit, (page+1)*limit - 1).execute()
+            data = res.data or []
+            feels_edges.extend([e["target_node_id"] for e in data])
+            if len(data) < limit:
+                break
+            page += 1
+            
+        existing_target_ids = set(feels_edges)
+        
+        edges_to_insert = []
+        for es in es_nodes:
+            if es["id"] not in existing_target_ids:
+                edges_to_insert.append({
+                    "source_node_id": danny_id,
+                    "target_node_id": es["id"],
+                    "relationship": "FEELS",
+                    "weight": 1.0,
+                    "metadata": json.dumps({"source": "backfill_emotions", "reason": "emotional state node without FEELS edge"})
+                })
+        
+        if edges_to_insert:
+            print(f"Creating {len(edges_to_insert)} FEELS edges...")
+            for j in range(0, len(edges_to_insert), 100):
+                edge_batch = edges_to_insert[j:j+100]
+                supabase.table("graph_edges").upsert(
+                    edge_batch, 
+                    on_conflict="source_node_id,relationship,target_node_id", 
+                    ignore_duplicates=True
+                ).execute()
+        
+        print("✅ Emotion backfill complete.")
+    except Exception as e:
+        audit_log_sync("backfill_graph", "ERROR", f"Emotion backfill failed: {e}")
 
 def backfill_orphaned_tasks():
     """Backfills graph nodes + edges for tasks with no corresponding graph_nodes entry."""
@@ -800,7 +887,30 @@ def backfill_orphaned_tasks():
         if tid:
             task_node_task_ids.add(int(tid))
     
+    # Find existing task nodes that have ZERO edges
+    all_edges = fetch_all_paginated("graph_edges", "source_node_id, target_node_id")
+    task_nodes_with_edges = set()
+    for e in (all_edges or []):
+        task_nodes_with_edges.add(e["source_node_id"])
+        task_nodes_with_edges.add(e["target_node_id"])
+        
+    edgeless_existing_tasks = []
+    for node in (existing_task_nodes or []):
+        if node["id"] not in task_nodes_with_edges:
+            meta = _normalize_meta(node.get("metadata"))
+            tid = meta.get("task_id")
+            if tid:
+                # Find original task data
+                t_data = next((t for t in all_tasks if t["id"] == int(tid)), None)
+                if t_data:
+                    edgeless_existing_tasks.append(t_data)
+
     orphaned_tasks = [t for t in all_tasks if t["id"] not in task_node_task_ids]
+    
+    # Combine both completely missing tasks AND existing edgeless tasks
+    combined_tasks_to_process = {t["id"]: t for t in orphaned_tasks + edgeless_existing_tasks}.values()
+    orphaned_tasks = list(combined_tasks_to_process)
+
     print(f"Found {len(orphaned_tasks)} orphaned tasks (no graph node).")
     
     if not orphaned_tasks:
@@ -843,9 +953,9 @@ def backfill_orphaned_tasks():
             try:
                 proj_node = supabase.table("graph_nodes") \
                     .select("id") \
-                    .eq("type", "project") \
+                    .in_("type", ["project", "cluster", "organization"]) \
                     .filter("metadata->>legacy_id", "eq", str(project_id)) \
-                    .maybe_single() \
+                    .limit(1).maybe_single() \
                     .execute()
             except Exception:
                 pass
@@ -854,9 +964,9 @@ def backfill_orphaned_tasks():
                 try:
                     proj_node = supabase.table("graph_nodes") \
                         .select("id") \
-                        .eq("type", "project") \
+                        .in_("type", ["project", "cluster", "organization"]) \
                         .filter("metadata->>project_id", "eq", str(project_id)) \
-                        .maybe_single() \
+                        .limit(1).maybe_single() \
                         .execute()
                 except Exception:
                     proj_node = None
@@ -866,9 +976,9 @@ def backfill_orphaned_tasks():
                 try:
                     proj_node = supabase.table("graph_nodes") \
                         .select("id") \
-                        .eq("type", "project") \
+                        .in_("type", ["project", "cluster", "organization"]) \
                         .ilike("label", proj_name) \
-                        .maybe_single() \
+                        .limit(1).maybe_single() \
                         .execute()
                 except Exception:
                     proj_node = None
@@ -965,6 +1075,114 @@ def _normalize_meta(raw) -> dict:
     if isinstance(raw, list):
         return {}
     return {}
+
+
+
+def backfill_orphaned_node_edges():
+    """
+    Tier 1.8: Re-wires isolated and semi-isolated nodes to Danny.
+    Handles:
+    1. Nodes with NO direct connection to Danny
+    2. Nodes where the ONLY connection to Danny is 'AUTHORED' (upgrades it/adds semantic link)
+    """
+    print("\n🕸️  Node Edge Backfill: Checking for isolated/semi-isolated nodes...")
+    
+    # Get Danny's node ID
+    danny_res = supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny").maybe_single().execute()
+    if not danny_res or not danny_res.data:
+        print("Could not find Danny node.")
+        return
+    danny_id = danny_res.data["id"]
+
+    # Delete garbage 'User' node
+    try:
+        supabase.table("graph_nodes").delete().eq("label", "User").execute()
+    except Exception:
+        pass
+
+    # Find 0-edge and AUTHORED-only nodes (excluding tasks)
+    all_nodes = fetch_all_paginated("graph_nodes", "id, label, type")
+    all_edges = fetch_all_paginated("graph_edges", "id, source_node_id, target_node_id, relationship")
+    
+    # Build degree map
+    node_edges = {n["id"]: [] for n in (all_nodes or [])}
+    for e in (all_edges or []):
+        if e["source_node_id"] in node_edges:
+            node_edges[e["source_node_id"]].append(e)
+        if e["target_node_id"] in node_edges:
+            node_edges[e["target_node_id"]].append(e)
+
+    fixed_count = 0
+    
+    type_to_rel = {
+        "project": "OWNS",
+        "person": "KNOWS",
+        "concept": "INTERESTED_IN",
+        "organization": "WORKS_WITH",
+        "pet/dog": "OWNS",
+        "emotional_state": "FEELS",
+        "resource": "USES",
+        "cluster": "OWNS"
+    }
+
+    edges_to_insert = []
+    edges_to_delete = []
+
+    for node in (all_nodes or []):
+        if node["id"] == danny_id or node["type"] == "task":
+            continue
+            
+        edges = node_edges.get(node["id"], [])
+        
+        # Find edges that connect directly to Danny
+        danny_edges = [
+            e for e in edges 
+            if e["source_node_id"] == danny_id or e["target_node_id"] == danny_id
+        ]
+        
+        needs_fix = False
+        
+        if not danny_edges:
+            # No direct connection to Danny at all
+            needs_fix = True
+        else:
+            # Has connections to Danny. Are they ALL just "AUTHORED"?
+            non_authored = [e for e in danny_edges if e["relationship"].upper() != "AUTHORED"]
+            if not non_authored:
+                # All edges to Danny are weak "AUTHORED" edges. Upgrade them.
+                needs_fix = True
+                edges_to_delete.extend([e["id"] for e in danny_edges])
+
+        if needs_fix:
+            rel = type_to_rel.get(node["type"], "RELATES_TO")
+            edges_to_insert.append({
+                "source_node_id": danny_id,
+                "target_node_id": node["id"],
+                "relationship": rel,
+                "weight": 1.0,
+                "metadata": '{"source": "backfill_orphaned_node_edges"}'
+            })
+            fixed_count += 1
+
+    # Execute deletions for upgraded AUTHORED edges
+    if edges_to_delete:
+        for i in range(0, len(edges_to_delete), 100):
+            batch = edges_to_delete[i:i+100]
+            try:
+                supabase.table("graph_edges").delete().in_("id", batch).execute()
+            except Exception as e:
+                print(f"Failed to delete batch of AUTHORED edges: {e}")
+
+    # Execute insertions
+    if edges_to_insert:
+        for i in range(0, len(edges_to_insert), 100):
+            batch = edges_to_insert[i:i+100]
+            try:
+                supabase.table("graph_edges").upsert(batch, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
+            except Exception as e:
+                print(f"Failed to insert batch of backfill edges: {e}")
+
+    print(f"✅ Fixed {fixed_count} isolated/AUTHORED-only nodes.")
 
 
 def sync_project_nodes_to_projects_table():
@@ -1064,6 +1282,99 @@ def sync_person_nodes_to_people_table():
 
 
 
+def dedup_graph_nodes(dry_run: bool = True):
+    """
+    Tier 3: Deduplicate case-variant graph nodes (e.g., guilt vs Guilt).
+    Canonical node selection:
+      1. Title Case variant
+      2. If tied, oldest created_at (or just first in sorted order if created_at not fetched)
+    """
+    print(f"\n🧹 Node Dedup {'(DRY RUN)' if dry_run else '(LIVE RUN)'}: Merging case-variant duplicates...")
+    
+    # Fetch all nodes
+    nodes = fetch_all_paginated("graph_nodes", "id, label, type")
+    if not nodes:
+        print("No nodes found.")
+        return
+        
+    # Group by lowercase label
+    groups = {}
+    for n in nodes:
+        key = n["label"].strip().lower()
+        if not key:
+            continue
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(n)
+        
+    merge_count = 0
+    edge_repoint_count = 0
+    deleted_nodes_count = 0
+    deleted_duplicate_edges = 0
+    
+    for key, group in groups.items():
+        if len(group) <= 1:
+            continue
+            
+        # Determine canonical node
+        # Sort by: Is Title Case? (True first), then ID (as stable fallback)
+        def sort_key(node):
+            is_title = node["label"] == node["label"].title()
+            return (not is_title, node["id"])
+            
+        group.sort(key=sort_key)
+        canonical = group[0]
+        duplicates = group[1:]
+        
+        print(f"\nGroup: '{key}' ({len(group)} nodes)")
+        print(f"  Canonical: {canonical['label']} ({canonical['id']}, type: {canonical['type']})")
+        
+        for dup in duplicates:
+            print(f"  Duplicate: {dup['label']} ({dup['id']}, type: {dup['type']}) -> merging into canonical")
+            merge_count += 1
+            
+            if not dry_run:
+                try:
+                    # 1. Repoint source edges
+                    source_edges_res = supabase.table("graph_edges").select("id, target_node_id, relationship").eq("source_node_id", dup["id"]).execute()
+                    if source_edges_res.data:
+                        for edge in source_edges_res.data:
+                            # Check if canonical already has this edge
+                            check = supabase.table("graph_edges").select("id").eq("source_node_id", canonical["id"]).eq("target_node_id", edge["target_node_id"]).eq("relationship", edge["relationship"]).execute()
+                            if check.data:
+                                # Conflict: delete the duplicate's edge
+                                supabase.table("graph_edges").delete().eq("id", edge["id"]).execute()
+                                deleted_duplicate_edges += 1
+                            else:
+                                # Safe to repoint
+                                supabase.table("graph_edges").update({"source_node_id": canonical["id"]}).eq("id", edge["id"]).execute()
+                                edge_repoint_count += 1
+                                
+                    # 2. Repoint target edges
+                    target_edges_res = supabase.table("graph_edges").select("id, source_node_id, relationship").eq("target_node_id", dup["id"]).execute()
+                    if target_edges_res.data:
+                        for edge in target_edges_res.data:
+                            check = supabase.table("graph_edges").select("id").eq("target_node_id", canonical["id"]).eq("source_node_id", edge["source_node_id"]).eq("relationship", edge["relationship"]).execute()
+                            if check.data:
+                                supabase.table("graph_edges").delete().eq("id", edge["id"]).execute()
+                                deleted_duplicate_edges += 1
+                            else:
+                                supabase.table("graph_edges").update({"target_node_id": canonical["id"]}).eq("id", edge["id"]).execute()
+                                edge_repoint_count += 1
+
+                    # 3. Delete duplicate node
+                    supabase.table("graph_nodes").delete().eq("id", dup["id"]).execute()
+                    deleted_nodes_count += 1
+                except Exception as e:
+                    audit_log_sync("backfill_graph", "ERROR", f"Dedup failed for {dup['id']}: {e}")
+                    
+    print("\n📊 Dedup Summary:")
+    print(f"Nodes merged: {merge_count}")
+    if not dry_run:
+        print(f"Edges repointed: {edge_repoint_count}")
+        print(f"Nodes deleted: {deleted_nodes_count}")
+        print(f"Duplicate edges deleted: {deleted_duplicate_edges}")
+        
 if __name__ == "__main__":
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
