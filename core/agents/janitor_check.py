@@ -56,6 +56,16 @@ def check_recent_errors():
         .execute()
     return res.count or 0
 
+def check_llm_degradations():
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    res = supabase.table('audit_logs') \
+        .select('id', count='exact') \
+        .eq('service', 'llm') \
+        .eq('level', 'WARNING') \
+        .gte('created_at', cutoff) \
+        .execute()
+    return res.count or 0
+
 
 def check_dlq_unresolved():
     res = supabase.table('failed_queue') \
@@ -83,6 +93,10 @@ async def main():
     errors = check_recent_errors()
     if errors > 0:
         issues.append(f"{errors} errors in last hour (audit_logs)")
+
+    llm_degraded = check_llm_degradations()
+    if llm_degraded > 0:
+        issues.append(f"{llm_degraded} LLM fallback/degradations (429s/timeouts) in last hour")
 
     dlq = check_dlq_unresolved()
     if dlq > 0:

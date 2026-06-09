@@ -10,3 +10,6 @@ python-dotenv
 upstash-redis
 # Development/Linting
 pre-commit==4.6.0
+pytest==9.0.3
+pytest-asyncio==1.4.0
+httpx==0.28.1

@@ -86,11 +86,12 @@ async def process_webhook(update: dict):
                     audit_log_sync("webhook", "WARNING", f"Dedup cleanup failed (non-critical): {cleanup_e}")
             except Exception as e:
                 error_msg = str(e)
-                if "23505" in error_msg or "already exists" in error_msg.lower():
+                if "23505" in error_msg or "already exists" in error_msg.lower() or "duplicate key" in error_msg.lower():
                     print(f"Telegram retry detected for update {update_id}. Skipping.")
                     return {"success": True, "message": "Already processed"}
                 else:
                     audit_log_sync("webhook", "WARNING", f"Deduplication check error: {error_msg}")
+                    # Fail open if it's a random DB timeout so we don't drop the message
                     pass
 
         ist_offset = timezone(timedelta(hours=5, minutes=30))
@@ -129,8 +130,12 @@ async def process_webhook(update: dict):
         if not text and not message.get('photo') and not message.get('voice') and not message.get('audio') and not message.get('document'):
             return {"message": "No message"}
 
-        core_res = supabase.table('core_config').select('key, content').execute()
-        core_json = json.dumps(core_res.data or [])
+        try:
+            core_res = supabase.table('core_config').select('key, content').execute()
+            core_json = json.dumps(core_res.data or [])
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING", f"core_config fetch failed: {e}")
+            core_json = "[]"
 
         if not chat_id:
             return {"success": True}

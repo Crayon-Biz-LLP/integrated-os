@@ -15,13 +15,13 @@ class Outcome(str, Enum):
     PARSE_ERROR = "parse_error"
 
 SAFE_HOLD_CLASSIFICATION = {
-    "intent": "CLARIFICATION_NEEDED",
-    "confidence": 0.0,
+    "intent": "NOTE",
+    "confidence": 1.0,
     "entity": "INBOX",
-    "title": "",
+    "title": "Fallback Note",
     "time_context": "",
-    "clarification_question": "Could you provide more details?",
-    "receipt": "Copy that. I need one more detail to log this.",
+    "clarification_question": "",
+    "receipt": "Message vaulted safely (AI classification temporarily unavailable).",
     "possible_intents": [],
     "reasoning": "safe_hold"
 }

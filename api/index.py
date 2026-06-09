@@ -4,10 +4,12 @@ import hashlib
 import time
 import httpx
 import json
+import uuid
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from core.lib.audit_logger import trace_id_var
 
 from core.webhook import (
     process_webhook,
@@ -52,6 +54,8 @@ def health_check():
 @app.post("/api/webhook")
 async def webhook_route(request: Request):
     update = await request.json()
+    req_id = f"tg_{update.get('update_id', uuid.uuid4().hex[:8])}"
+    trace_id_var.set(req_id)
     try:
         await process_webhook(update)
         return {"success": True}
@@ -74,6 +78,7 @@ def require_api_auth(request: Request):
 # --- THE PULSE ENGINE (Routes to pulse.py) ---
 @app.post("/api/pulse")
 async def pulse_route_post(request: Request):
+    trace_id_var.set(f"pulse_{uuid.uuid4().hex[:8]}")
     # HMAC-SHA256 verification for Pulse trigger requests
     raw_body = await request.body()
     sig_header = request.headers.get('X-Rhodey-Signature', '')
@@ -413,6 +418,7 @@ async def whatsapp_action_route(request: Request):
 # --- WHATSAPP INGEST (Receives MacroDroid webhook) ---
 @app.post("/api/whatsapp-ingest")
 async def whatsapp_ingest_route(request: Request):
+    trace_id_var.set(f"wa_{uuid.uuid4().hex[:8]}")
     expected_secret = os.getenv("WHATSAPP_INGEST_SECRET")
     if expected_secret:
         provided = request.headers.get("X-Ingest-Secret", "")

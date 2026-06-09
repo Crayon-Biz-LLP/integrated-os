@@ -4,18 +4,21 @@ Writes to Supabase audit_logs table for observability.
 """
 import os
 import json
+import contextvars
 import traceback
 from supabase import create_client, Client
-from dotenv import load_dotenv
 
-# Load env on import
-dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-load_dotenv(dotenv_path)
+# Optional context variable for request correlation
+trace_id_var = contextvars.ContextVar('trace_id', default=None)
 
 supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-supabase: Client = create_client(supabase_url, supabase_key)
 
+if not supabase_url or not supabase_key:
+    # Just mock it so tests and imports don't crash. Real writes will fail if it actually runs.
+    supabase = None
+else:
+    supabase: Client = create_client(supabase_url, supabase_key)
 
 async def audit_log(service: str, level: str, message: str, metadata: dict = None):
     """
@@ -28,11 +31,19 @@ async def audit_log(service: str, level: str, message: str, metadata: dict = Non
         metadata: Additional context (error stack, memory_id, etc.)
     """
     try:
+        if not supabase:
+            return
+            
+        meta = metadata or {}
+        tid = trace_id_var.get()
+        if tid:
+            meta['trace_id'] = tid
+            
         log_data = {
             "service": service,
             "level": level,
             "message": message[:500] if message else "(empty)",
-            "metadata": json.dumps(metadata or {})
+            "metadata": json.dumps(meta)
         }
         supabase.table('audit_logs').insert(log_data).execute()
     except Exception as e:
@@ -46,11 +57,19 @@ def audit_log_sync(service: str, level: str, message: str, metadata: dict = None
     Use in non-async contexts (e.g., webhook.py).
     """
     try:
+        if not supabase:
+            return
+            
+        meta = metadata or {}
+        tid = trace_id_var.get()
+        if tid:
+            meta['trace_id'] = tid
+            
         log_data = {
             "service": service,
             "level": level,
             "message": message[:500] if message else "(empty)",
-            "metadata": json.dumps(metadata or {})
+            "metadata": json.dumps(meta)
         }
         supabase.table('audit_logs').insert(log_data).execute()
     except Exception as e:

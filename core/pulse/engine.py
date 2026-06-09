@@ -505,14 +505,20 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         # --- 0. GOOGLE→SUPABASE SYNC (After auth check) ---
         tasks_service = get_tasks_service()
-        completed_from_google = await asyncio.to_thread(sync_completed_tasks_from_google, supabase, tasks_service)
-        for title, proj_name in (completed_from_google or []):
-            await write_outcome_memory(title, proj_name)
+        try:
+            completed_from_google = await asyncio.to_thread(sync_completed_tasks_from_google, supabase, tasks_service)
+            for title, proj_name in (completed_from_google or []):
+                await write_outcome_memory(title, proj_name)
+        except Exception as e:
+            error("pulse", f"Google tasks sync failed, continuing pulse: {e}", format_error(e))
         
         # --- 0.1 HEARTBEAT & HEALTH CHECK ---
-        await update_heartbeat()
-        health_report = await check_pipeline_health()
-        print(health_report)
+        try:
+            await update_heartbeat()
+            health_report = await check_pipeline_health()
+            print(health_report)
+        except Exception as e:
+            warning("pulse", f"Heartbeat/Health check failed: {e}", format_error(e))
         
         # --- 0.3 CONVERSATION HISTORY (Phase 5) ---
         conversation_history = ""
@@ -526,12 +532,19 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             warning("pulse", f"Conversation history fetch failed: {e}")
         
         # --- 0.1 BATCH ENRICHMENT (One Gemini call for all unenriched resources) ---
-        batch_enrich_results = await batch_enrich_resources()
+        try:
+            batch_enrich_results = await batch_enrich_resources()
+        except Exception as e:
+            error("pulse", f"Batch enrichment failed, continuing pulse: {e}", format_error(e))
+            batch_enrich_results = []
 
         # --- 0.2 PERIODIC CLUSTER DISCOVERY (Sundays only) ---
         now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
         if now_ist.weekday() == 6:
-            await discover_new_clusters()
+            try:
+                await discover_new_clusters()
+            except Exception as e:
+                error("pulse", f"Cluster discovery failed, continuing pulse: {e}", format_error(e))
         
         # --- 1. READ: Fetch and Lock ---
         # 1.1 Fetch pending, staged, and synced items
