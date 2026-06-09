@@ -3,7 +3,6 @@ import os
 import asyncio
 from typing import Callable, Dict, Any, List
 from supabase import create_client, Client
-from google import genai
 from core.lib.audit_logger import audit_log_sync
 
 class ToolRegistry:
@@ -117,8 +116,6 @@ OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
 
 NON_RETRYABLE_ERRORS = ['401', '403', '400', 'invalid']
-
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
 
