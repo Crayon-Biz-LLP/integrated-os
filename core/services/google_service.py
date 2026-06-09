@@ -191,36 +191,6 @@ def get_google_calendar_events(target_date):
         return []
 
 
-def get_google_calendar_events_range(start_date, end_date):
-    try:
-        service = get_cached_service("calendar", "v3")
-        start_dt = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_dt = end_date.replace(hour=23, minute=59, second=59)
-        rfc_start = format_rfc3339(start_dt.isoformat())
-        rfc_end = format_rfc3339(end_dt.isoformat())
-        events_res = service.events().list(
-            calendarId="primary",
-            timeMin=rfc_start,
-            timeMax=rfc_end,
-            singleEvents=True,
-            orderBy="startTime",
-            maxResults=100,
-        ).execute()
-        events = []
-        for e in events_res.get("items", []):
-            start = e.get("start", {})
-            dt = start.get("dateTime") or start.get("date", "")
-            events.append({
-                "time": dt,
-                "title": e.get("summary", "Untitled"),
-                "source": "google",
-                "id": e.get("id"),
-            })
-        return events
-    except Exception as e:
-        audit_log_sync("google_service", "WARNING", f"Google calendar range fetch failed: {e}")
-        return []
-
 
 def check_conflict(start_iso):
     try:
@@ -241,16 +211,3 @@ def check_conflict(start_iso):
         return None
 
 
-def get_calendar_context(target_date):
-    events = get_google_calendar_events(target_date)
-    if not events:
-        return "None"
-    events.sort(key=lambda x: x["time"])
-    lines = []
-    for e in events:
-        try:
-            t = e["time"][:16].replace("T", " ")
-            lines.append(f"- {t} - {e['title']} (Google)")
-        except Exception:
-            lines.append(f"- {e['title']}")
-    return "\n".join(lines)

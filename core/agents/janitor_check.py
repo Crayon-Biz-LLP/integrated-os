@@ -12,7 +12,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 from core.services.db import get_supabase
-from core.services.telegram import send_telegram
+from core.webhook.telegram import send_telegram
 
 supabase = get_supabase()
 

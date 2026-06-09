@@ -1,4 +1,4 @@
-from core.pulse.llm import rhodey_tools
+from core.pulse.tools import rhodey_tools
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 

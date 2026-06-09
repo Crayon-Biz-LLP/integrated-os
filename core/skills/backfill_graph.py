@@ -309,16 +309,6 @@ def synthesize_content(memory: dict) -> str:
     return content
 
 
-def gemini_with_retry_sync(prompt: str, model: str, config: dict = None, retries: int = 3, base_delay: int = 2):
-    """Legacy wrapper - delegates to call_llm_with_fallback_sync."""
-    return call_llm_with_fallback_sync(
-        prompt=prompt,
-        model=model,
-        config=config,
-        is_critical=False,
-        require_json=(config or {}).get('response_mime_type') == 'application/json'
-    )
-
 
 # ── EMBEDDING BACKFILL ──────────────────────────────────────────────────────
 

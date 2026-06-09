@@ -61,29 +61,6 @@ def cleanup_orphan_tasks(dry_run: bool = False):
         print("  No orphan tasks found.")
 
 
-def cleanup_orphan_memories(dry_run: bool = False):
-    audit_log_sync("cleanup_orphans", "INFO", "Starting orphan memory cleanup...")
-    all_mems = supabase.table("memories").select("id, people_ids, project_ids").execute()
-    orphans = 0
-    for mem in all_mems.data or []:
-        pids = mem.get("people_ids")
-        if pids and isinstance(pids, list):
-            for pid in pids:
-                person = supabase.table("people").select("id").eq("id", pid).execute()
-                if not person.data:
-                    orphans += 1
-                    if not dry_run:
-                        new_pids = [p for p in pids if p != pid]
-                        supabase.table("memories").update({"people_ids": new_pids}).eq("id", mem["id"]).execute()
-                        audit_log_sync("cleanup_orphans", "INFO",
-                                      f"Removed missing person {pid} from memory {mem['id']}")
-    if orphans:
-        msg = f"Cleaned {orphans} orphan person references from memories."
-        audit_log_sync("cleanup_orphans", "INFO", msg)
-        print(f"  {msg}")
-    else:
-        print("  No orphan memory references found.")
-
 
 def cleanup_orphan_raw_dumps(dry_run: bool = False):
     audit_log_sync("cleanup_orphans", "INFO", "Starting orphan raw_dumps cleanup...")
@@ -129,8 +106,6 @@ if __name__ == "__main__":
     cleanup_orphan_graph_edges(dry_run)
     print("Tasks:")
     cleanup_orphan_tasks(dry_run)
-    print("Memories:")
-    cleanup_orphan_memories(dry_run)
     print("Raw Dumps:")
     cleanup_orphan_raw_dumps(dry_run)
     print("\nCleanup complete.")

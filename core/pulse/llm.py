@@ -36,7 +36,7 @@ class ToolRegistry:
             return func(**args)
 
 # Global tool registry
-rhodey_tools = ToolRegistry()
+
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),

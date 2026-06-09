@@ -28,7 +28,4 @@ export interface WhatsAppPendingMessage {
   shown_in_brief: boolean | null;
 }
 
-export interface DecisionsStats {
-  pendingCalls: number;
-  pendingWhatsapp: number;
-}
+

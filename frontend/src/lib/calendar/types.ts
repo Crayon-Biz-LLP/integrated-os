@@ -13,16 +13,5 @@ export interface CalendarEvent {
   isPulseTask?: boolean;
 }
 
-export interface CalendarDay {
-  date: Date;
-  events: CalendarEvent[];
-  isToday: boolean;
-  isCurrentMonth: boolean;
-}
 
-export interface CalendarStats {
-  total: number;
-  google: number;
-  outlook: number;
-  pulseTasks: number;
-}
+

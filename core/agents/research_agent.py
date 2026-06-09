@@ -6,7 +6,7 @@ import httpx
 from urllib.parse import quote
 
 from core.services.db import get_supabase
-from core.services.telegram import send_telegram
+from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile

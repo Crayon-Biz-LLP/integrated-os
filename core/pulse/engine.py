@@ -4,7 +4,7 @@ import json
 import re
 import random
 import asyncio
-from core.services.telegram import send_telegram
+from core.webhook.telegram import send_telegram
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 from typing import List, Optional

@@ -5,7 +5,7 @@ from supabase import create_client
 
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import get_google_creds
-from core.services.telegram import send_telegram
+from core.webhook.telegram import send_telegram
 from core.pulse.calendar import MemoryCache
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
