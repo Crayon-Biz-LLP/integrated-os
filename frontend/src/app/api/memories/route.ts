@@ -15,6 +15,7 @@ export async function GET(req: NextRequest) {
       .select(
         "id,title,project_id,source_count,last_synth_at,updated_at,is_sparse,category",
       )
+      .limit(100000)
       .order("updated_at", { ascending: false });
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
@@ -53,6 +54,7 @@ export async function GET(req: NextRequest) {
     let query = supabase
       .from("graph_nodes")
       .select("id,label,type,canonical_page_id")
+      .limit(100000)
       .order("type", { ascending: true });
     if (pageId) {
       query = query.eq("canonical_page_id", Number(pageId));
@@ -74,7 +76,8 @@ export async function GET(req: NextRequest) {
       const { data: nodes, error: nodeError } = await supabase
         .from("graph_nodes")
         .select("id")
-        .eq("canonical_page_id", Number(pageId));
+        .eq("canonical_page_id", Number(pageId))
+        .limit(100000);
       if (nodeError || !nodes || nodes.length === 0) {
         return NextResponse.json([]);
       }
@@ -84,7 +87,8 @@ export async function GET(req: NextRequest) {
         .select("id,source_node_id,target_node_id,relationship")
         .or(
           `source_node_id.in.(${nodeIds.join(",")}),target_node_id.in.(${nodeIds.join(",")})`,
-        );
+        )
+        .limit(100000);
       if (error) {
         return NextResponse.json([], {
           status: 200,
@@ -102,7 +106,8 @@ export async function GET(req: NextRequest) {
 
     const { data, error } = await supabase
       .from("graph_edges")
-      .select("id,source_node_id,target_node_id,relationship");
+      .select("id,source_node_id,target_node_id,relationship")
+      .limit(100000);
     if (error) {
       return NextResponse.json([], {
         status: 200,
