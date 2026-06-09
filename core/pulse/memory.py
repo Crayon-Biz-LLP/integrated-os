@@ -227,20 +227,18 @@ async def detect_temporal_patterns() -> str:
         today_str = today.strftime("%B %d")
         month_day = f"-{today.month:02}-{today.day:02}"
 
-        # Fetch recent memories and filter for "On this day" in Python to avoid PostgREST cast issues
+        # Fetch recent memories with the specific month-day pattern
         memories_res = supabase.table('memories') \
             .select('content, memory_type, created_at') \
+            .like('created_at', f'%{month_day}%') \
             .order('created_at', desc=True) \
-            .limit(5000) \
+            .limit(50) \
             .execute()
 
         if not memories_res.data:
             return ""
 
-        on_this_day_memories = [
-            m for m in memories_res.data 
-            if m.get('created_at') and month_day in m['created_at']
-        ][:10]
+        on_this_day_memories = [m for m in memories_res.data][:10]
 
         if not on_this_day_memories:
             return ""
@@ -358,13 +356,19 @@ async def adaptive_briefing_learner(briefing_history: list = None) -> str:
                 .execute()
 
             if recent_memories.data:
-                morning_count = sum(1 for m in recent_memories.data
-                                   if m.get('created_at', '').startswith('0') or
-                                   m.get('created_at', '').startswith('1') or
-                                   m.get('created_at', '').startswith('2'))
-                evening_count = sum(1 for m in recent_memories.data
-                                  if m.get('created_at', '').startswith('1') or
-                                  m.get('created_at', '').startswith('2'))
+                morning_count = 0
+                evening_count = 0
+                for m in recent_memories.data:
+                    dt_str = m.get('created_at', '')
+                    if len(dt_str) >= 13:
+                        try:
+                            hour = int(dt_str[11:13])
+                            if hour < 12:
+                                morning_count += 1
+                            else:
+                                evening_count += 1
+                        except ValueError:
+                            pass
 
                 if morning_count > evening_count * 2:
                     insights.append("🌅 Morning briefings seem more reflective — consider adding deeper synthesis")

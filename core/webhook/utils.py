@@ -2,8 +2,6 @@ import os
 import httpx
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery_cache import base
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.audit_logger import audit_log_sync
 
@@ -12,23 +10,6 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
 
-
-class MemoryCache(base.Cache):
-    _cache = {}
-    def get(self, url):
-        return self._cache.get(url)
-    def set(self, url, content):
-        self._cache[url] = content
-
-def get_google_creds():
-    """Unified credential handshake for Google services."""
-    return Credentials(
-        None,
-        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
-        client_id=os.getenv("GOOGLE_CLIENT_ID"),
-        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-        token_uri="https://oauth2.googleapis.com/token"
-    )
 
 def is_already_in_tasks_table(title: str) -> dict:
     """Check if a similar task already exists in the tasks table.

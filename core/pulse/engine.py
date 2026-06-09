@@ -742,10 +742,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         print("📦 Step 3: Fetching people...")
         people = await context_provider.get_people()
 
-        print("📦 Step 4: Fetching clusters...")
-        # Fetch Active Clusters for Context
-        supabase.table('clusters').select('id, title').eq('status', 'active').execute()
-
+        print("📦 Step 4: Fetching clusters (skipped, unused)...")
         # --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist_offset)
@@ -941,9 +938,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         task_inputs = [d['content'] for d in dumps] if dumps else []
 
         # 🕸️ ADD-ON: Graph-aware person→task context (non-blocking)
-        people = await context_provider.get_people()
-        projects_res = supabase.table('graph_nodes').select('id', 'label').eq('type', 'project').execute()
-        graph_node_projects = projects_res.data or []
+        # Reusing people and graph_projects fetched earlier
+        graph_node_projects = graph_projects
         if people and active_tasks:
             graph_task_context = await fetch_graph_task_context(people, active_tasks)
         else:
@@ -996,16 +992,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         
         link_context = "None"
 
-        recent_urls_res = supabase.table('resources')\
-            .select('url, title, category, strategic_note, created_at')\
-            .gt('created_at', thirty_days_ago)\
-            .order('created_at', desc=True)\
-            .limit(30)\
-            .execute()
-
-        if recent_urls_res.data:
+        # Re-use recent_lib data for URLs instead of querying again
+        if recent_lib.data:
             url_lines = []
-            for r in recent_urls_res.data:
+            for r in recent_lib.data[:30]:  # Limit to 30 as before
                 label = r.get('title') or r.get('url', 'Unknown')
                 cat = r.get('category') or 'RAW'
                 note = r.get('strategic_note') or ''
@@ -1040,12 +1030,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         centrality_context = await get_graph_centrality_context()
         
         # 🤖 AGENT 5: ADAPTIVE BRIEFING LEARNER (learns from briefing patterns)
-        adaptive_context = await adaptive_briefing_learner()
+        adaptive_context = "None"
+        if now.weekday() == 6:  # Run only on Sundays
+            adaptive_context = await adaptive_briefing_learner()
         
         # 🧠 SESSION MEMORY: Fetch the summary of the last pulse
         try:
-            last_pulse_res = supabase.table('core_config').select('content').eq('key', 'last_pulse_summary').execute()
-            session_memory = last_pulse_res.data[0]['content'] if last_pulse_res.data else "None"
+            last_pulse_row = next((c for c in core if c.get('key') == 'last_pulse_summary'), None)
+            session_memory = last_pulse_row['content'] if last_pulse_row else "None"
         except Exception:
             session_memory = "None"
         

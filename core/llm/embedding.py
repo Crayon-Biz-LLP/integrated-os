@@ -1,5 +1,7 @@
 import time
 import asyncio
+import hashlib
+from collections import OrderedDict
 from .client import get_gemini_client
 from .response import EmbeddingResult
 from .constants import Outcome, EMBEDDING_MODEL
@@ -10,7 +12,21 @@ from core.lib.audit_logger import audit_log_sync
 
 EMBEDDING_DIMENSION = 768
 
+# LRU Cache for embeddings (process lifetime)
+_EMBEDDING_CACHE = OrderedDict()
+_MAX_CACHE_SIZE = 500
+
 async def get_embedding(text: str) -> EmbeddingResult:
+    if not text or not text.strip():
+        return EmbeddingResult(vector=[0.0] * EMBEDDING_DIMENSION, success=False, degraded=True, degraded_reason="empty_text", provider="none", model="none", latency_ms=0)
+        
+    text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+    if text_hash in _EMBEDDING_CACHE:
+        # Move to end to maintain LRU order
+        cached_resp = _EMBEDDING_CACHE.pop(text_hash)
+        _EMBEDDING_CACHE[text_hash] = cached_resp
+        return cached_resp
+
     start_time = time.time()
     workload = WorkloadProfile.EMBEDDING
     max_retries = 3
@@ -48,6 +64,11 @@ async def get_embedding(text: str) -> EmbeddingResult:
                 log_embedding_outcome(resp, Outcome.RETRY_SUCCESS)
             else:
                 log_embedding_outcome(resp, Outcome.SUCCESS)
+                
+            # Cache the successful result
+            _EMBEDDING_CACHE[text_hash] = resp
+            if len(_EMBEDDING_CACHE) > _MAX_CACHE_SIZE:
+                _EMBEDDING_CACHE.popitem(last=False)
                 
             return resp
             

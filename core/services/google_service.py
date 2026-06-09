@@ -1,4 +1,5 @@
 import os
+import functools
 from datetime import datetime, timedelta, timezone
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -16,6 +17,7 @@ class _MemoryCache(base.Cache):
         self._cache[url] = content
 
 
+@functools.lru_cache(maxsize=1)
 def get_google_creds():
     return Credentials(
         None,
@@ -25,9 +27,13 @@ def get_google_creds():
         token_uri="https://oauth2.googleapis.com/token"
     )
 
+@functools.lru_cache(maxsize=4)
+def get_cached_service(service_name, version):
+    return build(service_name, version, credentials=get_google_creds(), cache=_MemoryCache())
+
 
 def get_tasks_service():
-    return build('tasks', 'v1', credentials=get_google_creds(), cache=_MemoryCache())
+    return get_cached_service('tasks', 'v1')
 
 
 def format_rfc3339(date_str):
@@ -42,7 +48,7 @@ def format_rfc3339(date_str):
 
 
 def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority='important', recurrence=None):
-    service = build('calendar', 'v3', credentials=get_google_creds(), cache=_MemoryCache())
+    service = get_cached_service('calendar', 'v3')
     try:
         rfc_time = format_rfc3339(start_iso)
         start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
@@ -99,7 +105,7 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority
 def delete_calendar_event(event_id):
     if not event_id:
         return
-    service = build('calendar', 'v3', credentials=get_google_creds(), cache=_MemoryCache())
+    service = get_cached_service('calendar', 'v3')
     try:
         service.events().delete(calendarId='primary', eventId=event_id).execute()
     except Exception as e:
@@ -112,7 +118,7 @@ def delete_calendar_instance(recurring_event_id, instance_id):
     instance_id: the ID of the specific instance to delete."""
     if not recurring_event_id or not instance_id:
         return
-    service = build('calendar', 'v3', credentials=get_google_creds(), cache=_MemoryCache())
+    service = get_cached_service('calendar', 'v3')
     try:
         service.events().delete(calendarId='primary', eventId=instance_id).execute()
         audit_log_sync("google_service", "INFO", f"Deleted calendar instance {instance_id} of {recurring_event_id}")
@@ -157,7 +163,7 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
 
 def get_google_calendar_events(target_date):
     try:
-        service = build("calendar", "v3", credentials=get_google_creds(), cache=_MemoryCache())
+        service = get_cached_service("calendar", "v3")
         start_dt = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
         end_dt = start_dt + timedelta(days=1)
         rfc_start = format_rfc3339(start_dt.isoformat())
@@ -187,7 +193,7 @@ def get_google_calendar_events(target_date):
 
 def get_google_calendar_events_range(start_date, end_date):
     try:
-        service = build("calendar", "v3", credentials=get_google_creds(), cache=_MemoryCache())
+        service = get_cached_service("calendar", "v3")
         start_dt = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
         end_dt = end_date.replace(hour=23, minute=59, second=59)
         rfc_start = format_rfc3339(start_dt.isoformat())
@@ -218,7 +224,7 @@ def get_google_calendar_events_range(start_date, end_date):
 
 def check_conflict(start_iso):
     try:
-        service = build('calendar', 'v3', credentials=get_google_creds(), cache=_MemoryCache())
+        service = get_cached_service('calendar', 'v3')
         rfc_time = format_rfc3339(start_iso)
         start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
         end_dt = start_dt + timedelta(minutes=30)
