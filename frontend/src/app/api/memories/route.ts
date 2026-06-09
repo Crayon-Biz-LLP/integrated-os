@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const supabase = await createServerSupabaseClient();
@@ -16,7 +19,11 @@ export async function GET(req: NextRequest) {
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
-    return NextResponse.json(data || []);
+    return NextResponse.json(data || [], {
+      headers: {
+        "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
+      },
+    });
   }
 
   if (type === "page") {
@@ -34,7 +41,11 @@ export async function GET(req: NextRequest) {
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
-    return NextResponse.json(data);
+    return NextResponse.json(data, {
+      headers: {
+        "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
+      },
+    });
   }
 
   if (type === "nodes") {
@@ -50,7 +61,11 @@ export async function GET(req: NextRequest) {
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
-    return NextResponse.json(data || []);
+    return NextResponse.json(data || [], {
+      headers: {
+        "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
+      },
+    });
   }
 
   if (type === "edges") {
@@ -71,18 +86,36 @@ export async function GET(req: NextRequest) {
           `source_node_id.in.(${nodeIds.join(",")}),target_node_id.in.(${nodeIds.join(",")})`,
         );
       if (error) {
-        return NextResponse.json([], { status: 200 });
+        return NextResponse.json([], {
+          status: 200,
+          headers: {
+            "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
+          },
+        });
       }
-      return NextResponse.json(data || []);
+      return NextResponse.json(data || [], {
+        headers: {
+          "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
+        },
+      });
     }
 
     const { data, error } = await supabase
       .from("graph_edges")
       .select("id,source_node_id,target_node_id,relationship");
     if (error) {
-      return NextResponse.json([], { status: 200 });
+      return NextResponse.json([], {
+        status: 200,
+        headers: {
+          "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
+        },
+      });
     }
-    return NextResponse.json(data || []);
+    return NextResponse.json(data || [], {
+      headers: {
+        "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
+      },
+    });
   }
 
   return NextResponse.json({ error: "invalid type" }, { status: 400 });
