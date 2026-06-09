@@ -33,7 +33,7 @@ async def process_whatsapp_pending_decision(pending_id: int, decision: str, supa
             .limit(1)\
             .maybe_single()\
             .execute()
-        if decided.data:
+        if decided and decided.data:
             return {
                 "success": False, "action": "already_decided",
                 "message": f"[{pending_id}] was already {decided.data['danny_decision']}."

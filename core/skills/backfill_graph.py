@@ -723,6 +723,14 @@ def run_backfill():
                 continue
             unique_nodes[label] = node.get("type", "concept")
             
+        for edge in all_edges:
+            src = edge.get("source", "")
+            tgt = edge.get("target", "")
+            if src and src not in unique_nodes:
+                unique_nodes[src] = "concept"
+            if tgt and tgt not in unique_nodes:
+                unique_nodes[tgt] = "concept"
+            
         if "Danny" not in unique_nodes:
             unique_nodes["Danny"] = "person"
             

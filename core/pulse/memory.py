@@ -290,8 +290,11 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list) 
             
         # 2. Find the graph_node IDs for these tasks
         # Assuming metadata->>task_id is how task nodes are linked
-        nodes_res = supabase.table('graph_nodes').select('id').in_('metadata->>task_id', task_ids).execute()
-        start_node_ids = [n['id'] for n in nodes_res.data]
+        try:
+            nodes_res = supabase.table('graph_nodes').select('id').in_('metadata->>task_id', task_ids).execute()
+            start_node_ids = [n['id'] for n in nodes_res.data] if nodes_res and nodes_res.data else []
+        except Exception:
+            return "Graph nodes unavailable for serendipity query."
         
         if not start_node_ids:
             return "No graph nodes found for active tasks."

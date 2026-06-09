@@ -26,6 +26,7 @@ async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: 
                     config=kwargs.get('config')
                 )
         
+        timeout_s = min(timeout_s, 180.0)
         response = await asyncio.wait_for(
             asyncio.to_thread(_call),
             timeout=timeout_s

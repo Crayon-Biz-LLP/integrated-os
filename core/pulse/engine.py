@@ -659,6 +659,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
                             embedding = (await get_embedding(dump_content)).vector
                             status = 'success' if embedding and any(embedding) else 'failed'
                             try:
+                                existing = supabase.table('memories').select('id').eq('content', dump_content).execute()
+                                if existing.data:
+                                    note_dump_ids.append(dump_id)
+                                    continue
+
                                 result = supabase.table('memories').insert({
                                     "content": dump_content,
                                     "memory_type": "note",

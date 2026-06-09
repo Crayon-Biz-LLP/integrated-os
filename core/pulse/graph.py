@@ -390,10 +390,10 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         if not people or not active_tasks:
             return ""
 
-        task_map = {t['id']: t for t in active_tasks}
+        task_map = {t['id']: t for t in active_tasks if t and isinstance(t, dict) and 'id' in t}
 
         # Get all person nodes
-        people_ids = {p['id']: p['name'] for p in people}
+        people_ids = {p['id']: p['name'] for p in people if p and isinstance(p, dict) and 'id' in p and 'name' in p}
         person_nodes = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'person') \
