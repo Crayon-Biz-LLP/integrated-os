@@ -7,5 +7,6 @@ google-auth-oauthlib
 google-api-python-client
 google-genai
 python-dotenv
+upstash-redis
 # Development/Linting
 pre-commit==4.6.0

@@ -6,28 +6,43 @@ from datetime import datetime, timezone, timedelta
 from core.services.db import get_supabase
 from core.services.google_service import get_google_calendar_events
 from core.services.outlook_service import get_outlook_calendar_events
+from core.lib.redis_cache import cache_get, cache_set, cache_delete
 
 supabase = get_supabase()
 
 class SimpleCache:
-    """A lightweight TTL cache to avoid redundant DB queries."""
-    def __init__(self, ttl_seconds=60):
+    """A lightweight TTL cache to avoid redundant DB queries. Backed by Redis if configured."""
+    def __init__(self, ttl_seconds=60, redis_key=None):
         self.ttl = ttl_seconds
+        self.redis_key = redis_key
         self.data = None
         self.timestamp = 0
 
     def get(self):
         if self.data is not None and (time.time() - self.timestamp) < self.ttl:
             return self.data
+            
+        if self.redis_key:
+            redis_data = cache_get(self.redis_key)
+            if redis_data is not None:
+                self.data = redis_data
+                self.timestamp = time.time()
+                return redis_data
+                
         return None
 
     def set(self, data):
         self.data = data
         self.timestamp = time.time()
+        
+        if self.redis_key:
+            cache_set(self.redis_key, data, ttl=self.ttl)
 
     def invalidate(self):
         self.data = None
         self.timestamp = 0
+        if self.redis_key:
+            cache_delete(self.redis_key)
 
 
 class ContextProvider:
@@ -38,11 +53,11 @@ class ContextProvider:
     """
     def __init__(self):
         self.caches = {
-            'tasks': SimpleCache(ttl_seconds=30),
-            'projects': SimpleCache(ttl_seconds=300),
-            'people': SimpleCache(ttl_seconds=300),
-            'calendar': SimpleCache(ttl_seconds=300),
-            'recent_tasks': SimpleCache(ttl_seconds=60)
+            'tasks': SimpleCache(ttl_seconds=30, redis_key="rhodey:cache:tasks"),
+            'projects': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:projects"),
+            'people': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:people"),
+            'calendar': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:calendar"),
+            'recent_tasks': SimpleCache(ttl_seconds=60, redis_key="rhodey:cache:recent_tasks")
         }
         
     def cosine_similarity(self, vec_a, vec_b):
