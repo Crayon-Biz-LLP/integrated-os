@@ -1,5 +1,7 @@
 export type EmailClassification = 'actionable' | 'fyi' | 'ignored';
 export type EmailSource = 'gmail' | 'outlook';
+export type DraftStatus = 'pending' | 'approved' | 'rejected';
+export type TaskDecision = 'yes' | 'no' | 'expired' | null;
 
 export interface Email {
   id: number;
