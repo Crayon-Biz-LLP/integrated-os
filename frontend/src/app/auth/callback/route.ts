@@ -1,52 +1,36 @@
 import { NextResponse } from 'next/server';
-import { createServerClient } from '@supabase/ssr';
-
-const AUTHORIZED_EMAIL = 'danielyashwant@gmail.com';
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { cookies } from 'next/headers';
 
 export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const code = url.searchParams.get('code');
+  const { searchParams, origin } = new URL(request.url);
+  const code = searchParams.get('code');
+  const next = searchParams.get('next') ?? '/dashboard';
 
-  if (!code) {
-    return NextResponse.redirect(new URL('/login?error=auth_failed', url.origin));
-  }
-
-  const response = NextResponse.redirect(new URL('/dashboard/tasks', url.origin));
-
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.headers.get('cookie')?.split(';').map((c) => {
-            const [name, ...rest] = c.trim().split('=');
-            return { name, value: rest.join('=') };
-          }) ?? [];
+  if (code) {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value;
+          },
+          set(name: string, value: string, options: CookieOptions) {
+            cookieStore.set({ name, value, ...options });
+          },
+          remove(name: string, options: CookieOptions) {
+            cookieStore.delete({ name, ...options });
+          },
         },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options)
-          );
-        },
-      },
+      }
+    );
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (!error) {
+      return NextResponse.redirect(`${origin}${next}`);
     }
-  );
-
-  const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
-  if (sessionError) {
-    return NextResponse.redirect(new URL('/login?error=auth_failed', url.origin));
   }
 
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
-  if (userError || !user) {
-    return NextResponse.redirect(new URL('/login?error=auth_failed', url.origin));
-  }
-
-  if (user.email !== AUTHORIZED_EMAIL) {
-    await supabase.auth.signOut();
-    return NextResponse.redirect(new URL('/login?error=unauthorized', url.origin));
-  }
-
-  return response;
+  return NextResponse.redirect(`${origin}/login?error=Could not authenticate user`);
 }
