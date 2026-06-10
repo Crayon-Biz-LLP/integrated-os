@@ -61,7 +61,11 @@ Body:
 
     try:
         response = await call_gemini_classify(prompt, model="gemini-3.1-flash-lite")
-        return response.text.strip()
+        text = response.text.strip()
+        if text and '"reasoning": "safe_hold"' in text:
+            print(f"Draft generation returned safe_hold fallback for [{subject}]")
+            return ""
+        return text
     except Exception as e:
         print(f"Draft generation failed: {e}")
         return ""
