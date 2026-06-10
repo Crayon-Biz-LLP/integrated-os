@@ -275,6 +275,16 @@ def fetch_memories():
     return memories
     
 
+pending_entities_cache = set()
+
+def fetch_pending_entities():
+    global pending_entities_cache
+    try:
+        res = fetch_all_paginated("pending_graph_nodes", "label", in_filter_col="status", in_filter_val=["pending"])
+        pending_entities_cache = {n['label'] for n in res}
+    except Exception:
+        pass
+
 def fetch_graph_entities():
     nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata")
     return {row["label"]: {"id": row["id"], "type": row["type"]} for row in (nodes or [])}
@@ -528,16 +538,18 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
     
     # Node doesn't exist - create it
     if node_type in ['person', 'project', 'organization']:
-        try:
-            supabase.table("pending_graph_nodes").insert({
-                "label": label,
-                "type": node_type,
-                "source_text": memory_id,
-                "status": "pending"
-            }).execute()
-            audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval: {label} ({node_type})")
-        except Exception as e:
-            audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
+        if label not in pending_entities_cache:
+            try:
+                supabase.table("pending_graph_nodes").insert({
+                    "label": label,
+                    "type": node_type,
+                    "source_text": memory_id,
+                    "status": "pending"
+                }).execute()
+                pending_entities_cache.add(label)
+                audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval: {label} ({node_type})")
+            except Exception as e:
+                audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
         return None
 
     try:
@@ -593,16 +605,18 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         else:
             if node_type in ['person', 'project', 'organization']:
                 # Gated high-risk entity - send to pending
-                try:
-                    supabase.table("pending_graph_nodes").insert({
-                        "label": label,
-                        "type": node_type,
-                        "source_text": memory_id, # Can't easily pass full text here without signature change, so we pass memory_id
-                        "status": "pending"
-                    }).execute()
-                    audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval: {label} ({node_type})")
-                except Exception as e:
-                    audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
+                if label not in pending_entities_cache:
+                    try:
+                        supabase.table("pending_graph_nodes").insert({
+                            "label": label,
+                            "type": node_type,
+                            "source_text": memory_id,
+                            "status": "pending"
+                        }).execute()
+                        pending_entities_cache.add(label)
+                        audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval: {label} ({node_type})")
+                    except Exception as e:
+                        audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
             else:
                 record["id"] = str(uuid.uuid4())
                 node_records.append(record)
@@ -717,6 +731,8 @@ def run_backfill():
     print("Building graph entities lookup...")
     graph_entities = fetch_graph_entities()
     print(f"Found {len(graph_entities)} entities (people + projects)")
+    
+    fetch_pending_entities()
     
     processed = 0
     failed = 0
