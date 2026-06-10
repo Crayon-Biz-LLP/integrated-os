@@ -76,13 +76,27 @@ async def get_embedding(text: str) -> EmbeddingResult:
             is_timeout = isinstance(e, asyncio.TimeoutError) or isinstance(e, TimeoutError)
             error_str = str(e).lower()
             is_rate_limit = '429' in error_str or 'resource exhausted' in error_str or 'quota' in error_str or 'timeout' in error_str
-            is_retryable = is_rate_limit or is_timeout
+            is_ssl_or_connection = (
+                'ssl' in error_str
+                or 'wrong_version_number' in error_str
+                or 'decryption_failed' in error_str
+                or 'bad_record_mac' in error_str
+                or 'server disconnected' in error_str
+                or 'client has been closed' in error_str
+            )
+            is_retryable = is_rate_limit or is_timeout or is_ssl_or_connection
             
             error_desc = "asyncio.TimeoutError" if is_timeout else str(e)
             
+            # Invalidate the cached client on SSL/connection errors so
+            # the next attempt creates a fresh httpx connection pool.
+            if is_ssl_or_connection:
+                import core.llm.client as _client_mod
+                _client_mod._gemini_client = None
+            
             if attempt < max_retries - 1 and is_retryable:
                 delay = get_jittered_backoff(attempt)
-                audit_log_sync("llm", "WARNING", f"Embedding rate limit/timeout (attempt {attempt+1}/{max_retries}), retrying in {delay:.1f}s... {error_desc}")
+                audit_log_sync("llm", "WARNING", f"Embedding retry (attempt {attempt+1}/{max_retries}), retrying in {delay:.1f}s... {error_desc}")
                 await asyncio.sleep(delay)
                 continue
                 

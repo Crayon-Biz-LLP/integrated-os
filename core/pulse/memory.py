@@ -227,18 +227,21 @@ async def detect_temporal_patterns() -> str:
         today_str = today.strftime("%B %d")
         month_day = f"-{today.month:02}-{today.day:02}"
 
-        # Fetch recent memories with the specific month-day pattern
+        # Fetch all memories and filter by month-day in Python
+        # (PostgREST's LIKE operator cannot be applied to timestamptz columns)
         memories_res = supabase.table('memories') \
             .select('content, memory_type, created_at') \
-            .like('created_at', f'%{month_day}%') \
             .order('created_at', desc=True) \
-            .limit(50) \
+            .limit(500) \
             .execute()
 
         if not memories_res.data:
             return ""
 
-        on_this_day_memories = [m for m in memories_res.data][:10]
+        on_this_day_memories = [
+            m for m in memories_res.data
+            if month_day in m.get('created_at', '')
+        ][:10]
 
         if not on_this_day_memories:
             return ""
