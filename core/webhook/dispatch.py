@@ -793,6 +793,8 @@ CRITICAL INSTRUCTION - FOLLOW THIS EXACT ORDER:
    Do NOT start with bottlenecks, analysis, or context unless that is what was asked. If the context does not contain the answer, say "I don't have that information."
 2. CONTEXT (Optional): Only AFTER the direct answer, add a separate "**Context:**" section. In this section, identify what matters — dependencies, blockers, urgency, or patterns — and cut through the noise.
 
+IMPORTANT: Stop generating immediately after the Context section. Do NOT analyze your own response. Do NOT repeat the data. End the message cleanly.
+
 {context_str}{conversation_history}
 
 Question: {query}
@@ -806,7 +808,8 @@ Formatting rules:
         response = await generate_content_with_fallback(
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
-            primary_model=CLASSIFICATION_MODEL
+            primary_model=CLASSIFICATION_MODEL,
+            config={'max_output_tokens': 600}
         )
 
         answer = response.text.strip()
