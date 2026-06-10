@@ -63,7 +63,17 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
         try:
             cal_events = await context_provider.get_calendar_events(target)
             for e in cal_events:
-                events_list.append({"time": e.get("time", ""), "title": e.get("title", "")})
+                time_str = e.get("time", "")
+                title = e.get("title", "")
+                is_past = False
+                if time_str:
+                    try:
+                        event_dt = datetime.fromisoformat(time_str)
+                        if event_dt < now:
+                            is_past = True
+                    except Exception:
+                        pass
+                events_list.append({"time": time_str, "title": title, "is_past": is_past})
         except Exception as cal_err:
             audit_log_sync("webhook", "WARNING", f"Brief calendar query failed: {cal_err}")
 
@@ -112,12 +122,15 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
 
         prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
 
+CURRENT TIME: {now.strftime('%A, %d %B %Y, %H:%M %p IST')}
+
 Danny is asking for his daily brief for {day_label.lower()}. You have his calendar events, his full active task list, overdue items, and recent completions. Identify what matters and cut through the noise.
 
 CRITICAL OUTPUT FORMAT - YOU MUST USE EXACTLY THIS STRUCTURE:
 
 [Direct Answer / Schedule]
 - Start by listing the CALENDAR EVENTS as a simple bulleted list. 
+- If an event is marked [PAST], explicitly mention that it already happened, or group it separately from upcoming events. You know the current time.
 - DO NOT invent custom headings like 'Immediate Priorities', 'Scheduled', or 'Today's Bottleneck'. 
 - DO NOT sort by urgency. Calendar MUST come first.
 
@@ -132,7 +145,7 @@ IMPORTANT: Stop generating immediately after the Context section. Do NOT analyze
 {day_label.upper()} — {target.strftime('%A, %d %B')}
 
 CALENDAR EVENTS:
-{fmt_list(e['title'] + (' at ' + e['time'][:16].replace('T', ' ')) if e.get('time') else e['title'] for e in events_list) if events_list else "None"}
+{fmt_list(('[PAST] ' if e.get('is_past') else '') + e['title'] + (' at ' + e['time'][:16].replace('T', ' ')) if e.get('time') else e['title'] for e in events_list) if events_list else "None"}
 
 ACTIVE TASKS:
 {fmt_list(active_tasks_list) if active_tasks_list else "None"}
@@ -687,10 +700,23 @@ Query: {query}"""
             events = await context_provider.get_range_calendar_events(start_dt, end_dt)
             if not events:
                 return "None"
+            
+            now_local = datetime.now(timezone(timedelta(hours=5, minutes=30)))
             lines = []
             for e in events:
-                t = e.get("time", "")[:16].replace("T", " ") if e.get("time") else ""
-                lines.append(f"- {t} {e.get('title', '')} ({e.get('source', '')})")
+                time_str = e.get("time", "")
+                t_display = time_str[:16].replace("T", " ") if time_str else ""
+                
+                if time_str:
+                    try:
+                        event_dt = datetime.fromisoformat(time_str)
+                        if event_dt < now_local:
+                            lines.append(f"- [PAST] {t_display} {e.get('title', '')} ({e.get('source', '')})")
+                            continue
+                    except Exception:
+                        pass
+                
+                lines.append(f"- {t_display} {e.get('title', '')} ({e.get('source', '')})")
             return "\n".join(lines)
         calendar_task = safe_fetch(fetch_calendar(), "None") if (fetch_all or is_schedule or start_dt is not None) else safe_fetch(_empty_fetch("None"), "None")
 
@@ -791,7 +817,10 @@ Query: {query}"""
         else:
             header = "🧠 Here's what I found:"
 
+        now_str = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%A, %d %B %Y, %H:%M %p IST')
         prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
+
+CURRENT TIME: {now_str}
 
 Danny is asking a question. You have access to his: {sources_str}.
 
@@ -799,6 +828,7 @@ CRITICAL OUTPUT FORMAT - YOU MUST USE EXACTLY THIS STRUCTURE:
 
 [Answer to the question]
 - If asked about schedule/meetings: List the calendar events here as a simple bulleted list. 
+- If an event is marked [PAST], explicitly mention that it already happened, or separate it from upcoming events. You know the current time.
 - If asked about tasks: List the tasks.
 - DO NOT invent custom headings like 'Immediate Priorities', 'Scheduled', or 'Today's Bottleneck'. 
 - DO NOT sort by urgency unless asked. Answer the direct question FIRST.
