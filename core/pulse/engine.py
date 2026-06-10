@@ -202,20 +202,18 @@ async def add_to_failed_queue(source_table: str, source_id: str, operation: str,
 
 
 # --- 📋 DECISION PULSE (No AI, just pending decisions) ---
-async def process_decision_pulse(auth_secret: str = None):
-    """
-    Lightweight decision pulse — no AI, no briefing generation.
-    Fetches pending email/call/whatsapp items and sends a concise
-    Telegram message with interactive shortcodes for Danny's approval.
-    """
-    try:
-        pulse_secret = os.getenv("PULSE_SECRET")
-        if pulse_secret and auth_secret != pulse_secret:
-            return {"error": "Unauthorized.", "status": 401}
+async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
+    from core.pulse.run_logger import create_pulse_run, complete_pulse_run
 
+    pulse_secret = os.getenv("PULSE_SECRET")
+    if pulse_secret and auth_secret != pulse_secret:
+        return {"error": "Unauthorized.", "status": 401}
+
+    run_id = await create_pulse_run(supabase, "decision", trigger)
+
+    try:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
 
-        # Auto-expire items older than 7 days
         for table in ['email_pending_tasks', 'call_pending_items', 'whatsapp_messages']:
             try:
                 supabase.table(table)\
@@ -226,7 +224,6 @@ async def process_decision_pulse(auth_secret: str = None):
             except Exception:
                 pass
 
-        # Fetch pending items (max 5 per table)
         pending_email = supabase.table('email_pending_tasks')\
             .select('id, suggested_title, suggested_project')\
             .is_('danny_decision', 'null')\
@@ -255,9 +252,9 @@ async def process_decision_pulse(auth_secret: str = None):
 
         total = len(email_items) + len(call_items) + len(whatsapp_items)
         if total == 0:
+            await complete_pulse_run(supabase, run_id, status="completed", metadata={"reason": "no_pending"})
             return {"success": True, "message": "No pending decisions."}
 
-        # Build message with rotating Rhodey opener
         openers = [
             "Danny, you got some pending decisions based out of your emails, call logs and beeper messages — your call on each?",
             "Danny, you got some pending decisions from emails, calls, and beeper — your call on each?",
@@ -290,46 +287,36 @@ async def process_decision_pulse(auth_secret: str = None):
 
         message = "\n".join(lines).strip()
 
-        # Send via Telegram
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         send_success = False
 
         if telegram_chat_id and message:
-            # Build inline keyboards based on items
             keyboard = []
-            
-            # E-mail decisions
             for row in email_items:
                 sc = f"e{row['id']}"
                 keyboard.append([
                     {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
                     {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
                 ])
-                
-            # Call decisions
             for row in call_items:
                 sc = f"c{row['id']}"
                 keyboard.append([
                     {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
                     {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
                 ])
-                
-            # WhatsApp decisions
             for row in whatsapp_items:
                 sc = f"w{row['id']}"
                 keyboard.append([
                     {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
                     {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
                 ])
-            
             send_success = await send_telegram(
-                chat_id=telegram_chat_id, 
-                message_text=message, 
-                show_keyboard=False, 
+                chat_id=telegram_chat_id,
+                message_text=message,
+                show_keyboard=False,
                 inline_keyboard=keyboard if keyboard else None
             )
 
-        # Mark shown_in_brief only after confirmed Telegram send
         shown_ids = []
         if send_success:
             for row in email_items:
@@ -340,7 +327,6 @@ async def process_decision_pulse(auth_secret: str = None):
                     .in_('id', shown_ids)\
                     .execute()
                 shown_ids = []
-
             for row in call_items:
                 shown_ids.append(row['id'])
             if shown_ids:
@@ -349,7 +335,6 @@ async def process_decision_pulse(auth_secret: str = None):
                     .in_('id', shown_ids)\
                     .execute()
                 shown_ids = []
-
             for row in whatsapp_items:
                 shown_ids.append(row['id'])
             if shown_ids:
@@ -358,12 +343,15 @@ async def process_decision_pulse(auth_secret: str = None):
                     .in_('id', shown_ids)\
                     .execute()
 
+        await complete_pulse_run(supabase, run_id, status="completed",
+            metadata={"decision_count": total, "send_success": send_success})
         return {"success": True, "decision_count": total}
 
     except Exception as e:
         import traceback
         audit_log_sync("pulse", "CRITICAL", f"Decision Pulse Critical Error: {e}")
         traceback.print_exc()
+        await complete_pulse_run(supabase, run_id, status="failed", error_message=str(e))
         return {"error": str(e)}
 
 
@@ -460,7 +448,7 @@ Resources:
         return []
 
 
-async def process_pulse(auth_secret: str = None, request_id: str = None):
+async def process_pulse(auth_secret: str = None, request_id: str = None, trigger: str = "api"):
     """
     Process pulse with optional request_id for idempotency.
     
@@ -468,7 +456,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
         auth_secret: Pulse secret for auth
         request_id: Unique ID for idempotency (prevents duplicate processing)
     """
+    from core.pulse.run_logger import create_pulse_run, complete_pulse_run
+
     error_log = []
+    run_id = None
     try:
         # 🛡️ IDEMPOTENCY CHECK: If request_id provided, check if already processed
         # NOTE: Uses metadata->>request_id (JSONB) - works even without dedicated column
@@ -502,6 +493,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             return {"error": "Unauthorized manual trigger.", "status": 401}
         if not pulse_secret:
             warning("pulse", "PULSE_SECRET not set. Auth check bypassed.")
+
+        # --- 1.2 PULSE RUN LOGGING (after auth) ---
+        run_id = await create_pulse_run(supabase, "main", trigger)
 
         # --- 0. GOOGLE→SUPABASE SYNC (After auth check) ---
         tasks_service = get_tasks_service()
@@ -708,6 +702,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
 
         # 💡 Only silence the tool if BOTH new dumps AND open tasks are empty
         if not dumps and not active_tasks:
+            await complete_pulse_run(supabase, run_id, status="completed",
+                dumps_processed=0, tasks_created=0,
+                metadata={"reason": "nothing_to_process"})
             return {"message": "Nothing to process, nothing to nag about. Silence is golden."}
 
         print(f"🚀 PULSE START: Processing {len(dumps)} new dumps and {len(active_tasks)} active tasks.")
@@ -1489,10 +1486,15 @@ async def process_pulse(auth_secret: str = None, request_id: str = None):
             }).in_('id', synced_ids).execute()
             print(f"✅ Sealed {len(synced_ids)} synced dumps after briefing.")
 
+        tasks_created = len(ai_data.get("new_tasks", [])) if ai_data else 0
+        await complete_pulse_run(supabase, run_id, status="completed",
+            dumps_processed=len(dumps) if dumps else 0,
+            tasks_created=tasks_created)
         return {"success": True, "briefing": briefing_text}
 
     except Exception as e:
         import traceback
         audit_log_sync("pulse", "CRITICAL", f"Pulse Critical Error: {e}")
         traceback.print_exc()
+        await complete_pulse_run(supabase, run_id, status="failed", error_message=str(e))
         return {"error": str(e)}

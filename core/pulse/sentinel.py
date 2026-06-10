@@ -64,7 +64,9 @@ async def fetch_event_context(title: str, supabase):
         
     return context_str
 
-async def process_sentinel(auth_secret: str):
+async def process_sentinel(auth_secret: str, trigger: str = "cron"):
+    from core.pulse.run_logger import create_pulse_run, complete_pulse_run
+
     """Runs the Sentinel high-frequency scanner."""
     print("🛡️ Running Sentinel Nudge check...")
     supabase_url = os.getenv("SUPABASE_URL")
@@ -76,74 +78,83 @@ async def process_sentinel(auth_secret: str):
         return {"error": "Missing env vars", "status": 500}
 
     supabase = create_client(supabase_url, supabase_key)
-    
-    events = get_upcoming_events(minutes_ahead=25)
-    if not events:
-        print("No upcoming events in the next 25 mins.")
-        return {"success": True, "alerted": 0}
+    run_id = await create_pulse_run(supabase, "sentinel", trigger)
 
-    now = datetime.now(timezone.utc)
-    alerted_count = 0
-    
-    for event in events:
-        event_id = event.get('id')
-        title = event.get('summary', 'Untitled Event')
-        start_raw = event.get('start', {}).get('dateTime')
-        if not start_raw:
-            continue # All-day event
-            
-        # Is this event starting in exactly 1-20 minutes? (Skip if started)
-        start_dt = datetime.fromisoformat(start_raw.replace('Z', '+00:00'))
-        mins_until = int((start_dt - now).total_seconds() / 60)
-        
-        if mins_until < 0 or mins_until > 20:
-            continue
+    try:
+        events = get_upcoming_events(minutes_ahead=25)
+        if not events:
+            print("No upcoming events in the next 25 mins.")
+            await complete_pulse_run(supabase, run_id, status="completed",
+                metadata={"reason": "no_upcoming", "alerted": 0})
+            return {"success": True, "alerted": 0}
 
-        # Check if already alerted
-        # Dedup check using audit_logs metadata
-        # We look for a log where metadata contains "sentinel_event_id": event_id
-        # To avoid complex JSON querying in Supabase, we search message string
-        search_str = f"Sentinel_Sent:{event_id}"
+        now = datetime.now(timezone.utc)
+        alerted_count = 0
         
-        recent_log = supabase.table('audit_logs')\
-            .select('id')\
-            .eq('service', 'sentinel')\
-            .ilike('message', f"%{search_str}%")\
-            .limit(1)\
-            .execute()
-            
-        if recent_log.data:
-            print(f"Skipping {title} (already nudged).")
-            continue
-            
-        # 1. Fetch Context
-        context = await fetch_event_context(title, supabase)
-        
-        # 2. Build Briefing
-        msg = f"🚨 **ALARM: Meeting in {mins_until} mins!**\n📅 {title}"
-        if context:
-            prompt = f"Write a 1-2 sentence maximum 'Pre-Flight Briefing' for a meeting called '{title}'. Here is some context from my system. Be extremely brief, do not use pleasantries. Just say what I need to know.\n\nContext:\n{context}"
-            
+        for event in events:
             try:
-                ai_briefing = await generate_content_with_fallback(
-                    prompt=prompt,
-                    workload=WorkloadProfile.SYNTHESIS,
-                    primary_model=os.getenv("GEMINI_FLASH_MODEL", "gemini-3.5-flash"),
-                    config={"temperature": 0.2}
-                )
-                msg += f"\n\n🧠 **Pre-Flight Context:**\n{ai_briefing.text.strip()}"
-            except Exception as e:
-                audit_log_sync("sentinel", "WARNING", f"AI context generation failed: {e}")
-                msg += f"\n\n🧠 **Context found:**\n{context}"
+                event_id = event.get('id')
+                title = event.get('summary', 'Untitled Event')
+                start_raw = event.get('start', {}).get('dateTime')
+                if not start_raw:
+                    continue
+                    
+                start_dt = datetime.fromisoformat(start_raw.replace('Z', '+00:00'))
+                mins_until = int((start_dt - now).total_seconds() / 60)
+                
+                if mins_until < 0 or mins_until > 20:
+                    continue
 
-        # 3. Send Telegram Nudge
-        success = await send_telegram(int(telegram_chat_id), msg)
-        
-        if success:
-            audit_log_sync("sentinel", "INFO", f"{search_str} - Nudged for {title}")
-            alerted_count += 1
-            print(f"✅ Nudged for: {title}")
-        else:
-            audit_log_sync("sentinel", "ERROR", f"Failed to send Telegram nudge for {title}")
-            
-    return {"success": True, "alerted": alerted_count}
+                search_str = f"Sentinel_Sent:{event_id}"
+                
+                recent_log = supabase.table('audit_logs')\
+                    .select('id')\
+                    .eq('service', 'sentinel')\
+                    .ilike('message', f"%{search_str}%")\
+                    .limit(1)\
+                    .execute()
+                    
+                if recent_log.data:
+                    print(f"Skipping {title} (already nudged).")
+                    continue
+                    
+                context = await fetch_event_context(title, supabase)
+                
+                msg = f"🚨 **ALARM: Meeting in {mins_until} mins!**\n📅 {title}"
+                if context:
+                    prompt = f"Write a 1-2 sentence maximum 'Pre-Flight Briefing' for a meeting called '{title}'. Here is some context from my system. Be extremely brief, do not use pleasantries. Just say what I need to know.\n\nContext:\n{context}"
+                    
+                    try:
+                        ai_briefing = await generate_content_with_fallback(
+                            prompt=prompt,
+                            workload=WorkloadProfile.SYNTHESIS,
+                            primary_model=os.getenv("GEMINI_FLASH_MODEL", "gemini-3.5-flash"),
+                            config={"temperature": 0.2}
+                        )
+                        msg += f"\n\n🧠 **Pre-Flight Context:**\n{ai_briefing.text.strip()}"
+                    except Exception as e:
+                        audit_log_sync("sentinel", "WARNING", f"AI context generation failed: {e}")
+                        msg += f"\n\n🧠 **Context found:**\n{context}"
+
+                success = await send_telegram(int(telegram_chat_id), msg)
+                
+                if success:
+                    audit_log_sync("sentinel", "INFO", f"{search_str} - Nudged for {title}")
+                    alerted_count += 1
+                    print(f"✅ Nudged for: {title}")
+                else:
+                    audit_log_sync("sentinel", "ERROR", f"Failed to send Telegram nudge for {title}")
+            except Exception as event_err:
+                audit_log_sync("sentinel", "ERROR", f"Event processing failed for {event.get('summary', 'unknown')}: {event_err}")
+                print(f"❌ Event processing error: {event_err}")
+                
+        await complete_pulse_run(supabase, run_id, status="completed",
+            metadata={"alerted": alerted_count})
+        return {"success": True, "alerted": alerted_count}
+
+    except Exception as e:
+        import traceback
+        audit_log_sync("sentinel", "CRITICAL", f"Sentinel Critical Error: {e}")
+        traceback.print_exc()
+        await complete_pulse_run(supabase, run_id, status="failed", error_message=str(e))
+        return {"error": str(e)}

@@ -91,7 +91,7 @@ async def pulse_route_post(request: Request):
     secret = request.headers.get("x-pulse-secret")
     
     # Executes the strategic briefing logic
-    result = await process_pulse(auth_secret=secret)
+    result = await process_pulse(auth_secret=secret, trigger="api")
     
     # Gatekeeper error handling
     if result.get("error"):
@@ -113,7 +113,7 @@ async def sentinel_route(request: Request):
     if not auth_header.endswith(cron_secret) and request.headers.get("x-pulse-secret") != cron_secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
         
-    result = await process_sentinel(auth_secret=cron_secret)
+    result = await process_sentinel(auth_secret=cron_secret, trigger="cron")
     return result
 
 # --- SEND DRAFT REPLY (Routes to webhook.py) ---

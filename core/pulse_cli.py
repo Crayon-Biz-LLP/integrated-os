@@ -104,7 +104,7 @@ def run_sentinel():
         sys.exit(1)
         
     try:
-        result = asyncio.run(process_sentinel(auth_secret=pulse_secret))
+        result = asyncio.run(process_sentinel(auth_secret=pulse_secret, trigger="cli"))
         if result.get("success"):
             print(f"✓ Sentinel completed (Alerted: {result.get('alerted', 0)})")
             sys.exit(0)
@@ -132,7 +132,7 @@ def run_pulse():
     print("Running process_pulse...")
     
     try:
-        result = asyncio.run(process_pulse(auth_secret=pulse_secret))
+        result = asyncio.run(process_pulse(auth_secret=pulse_secret, trigger="cli"))
         
         if result.get("success"):
             print("✓ Pulse completed successfully")
@@ -165,7 +165,7 @@ def run_decisions():
     print("Running process_decision_pulse...")
     
     try:
-        result = asyncio.run(process_decision_pulse(auth_secret=pulse_secret))
+        result = asyncio.run(process_decision_pulse(auth_secret=pulse_secret, trigger="cli"))
         
         if result.get("success"):
             count = result.get("decision_count", 0)
