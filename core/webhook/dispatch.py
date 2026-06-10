@@ -772,11 +772,11 @@ Query: {query}"""
         sources_str = ", ".join(available_sources)
 
         # Smart Header Detection
-        if "calendar events" in available_sources and len(available_sources) <= 2:
+        if is_schedule and "calendar events" in available_sources:
             header = "📅 Here's your schedule:"
-        elif "active tasks" in available_sources and len(available_sources) <= 2:
+        elif is_action and "active tasks" in available_sources:
             header = "📋 Task status:"
-        elif "vault memories" in available_sources and len(available_sources) <= 2:
+        elif "vault memories" in available_sources and not is_action and not is_schedule and not is_comms:
             header = "🧠 From your vault:"
         else:
             header = "🧠 Here's what I found:"
@@ -785,16 +785,16 @@ Query: {query}"""
 
 Danny is asking a question. You have access to his: {sources_str}.
 
-FIRST: Answer Danny's question directly and factually based ONLY on the provided context. If the context does not contain the answer, say "I don't have that information."
-
-THEN: If you spot relevant context like dependencies, bottlenecks, patterns, or urgency, add a separate **Context:** section below your answer. Cut through the noise and only call out what matters.
+CRITICAL INSTRUCTION - FOLLOW THIS EXACT ORDER:
+1. DIRECT ANSWER: You MUST answer Danny's question directly in your first paragraph using ONLY the provided context. If asked about a schedule, list the calendar events immediately. Do NOT start with bottlenecks, analysis, or context. If the context does not contain the answer, say "I don't have that information."
+2. CONTEXT (Optional): Only AFTER the direct answer, add a separate "**Context:**" section. In this section, identify what matters — dependencies, blockers, urgency, or patterns — and cut through the noise.
 
 {context_str}{conversation_history}
 
 Question: {query}
 
 Formatting rules:
-- Emoji goes at the **start** of each task line
+- Emoji goes at the **start** of each task/event line
 - Do NOT use `###` headers — use **bold** or plain text
 - Bullet points only, no numbered lists
 - Always use [MEMORY] or [RESOURCE] brackets when citing."""
