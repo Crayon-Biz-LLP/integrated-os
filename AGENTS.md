@@ -31,7 +31,9 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - `core/pulse_cli.py` - CLI entry for pulse (used in CI)
 
 ### Core Modules
+- `core/webhook/dispatch.py` - `interrogate_brain()` — universal query engine, anaphora resolution, source selection heuristics, proactive signal checks, time-aware calendar formatting
 - `core/webhook/handler.py` - Telegram command handling, raw dump capture, message classification (Inline Keyboards replacing legacy shortcodes)
+- `core/webhook/classify.py` - LLM-based intent classifier. Schedule questions with date ranges ("meetings this week?") route to QUERY, not DAILY_BRIEF. DAILY_BRIEF reserved for explicit daily overview requests ("good morning", "what's my day look like?").
 - `core/pulse/engine.py` - AI briefing generation via `run_agent_loop` ToolRegistry, task management, calendar sync, and **Decision Pulse** (no AI, inline keyboard approvals).
 - `core/pulse/context.py` - **Phase 2 Context Hydration Engine**. Uses TTL caches (`SimpleCache`) and hybrid vector+graph cross-referencing.
 - `core/pulse/memory.py` - **Phase 3 Memory Engine**. Handles semantic retrieval with temporal decay and importance weighting (`match_memories_hybrid`).
@@ -63,7 +65,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 | `c{id}` | `call_pending_items` | Approve/reject call-extracted item |
 | `w{id}` | `whatsapp_messages` | Approve/reject WhatsApp-suggested task |
 | `g{id}` | `pending_graph_nodes` | Approve/reject new person/project node |
-| `{id}` (bare) | Tries email → call → whatsapp → practice | Fallback compat |
+| `{id}` (bare) | Tries email → call → whatsapp → graph → practice | Fallback compat |
 
 ## Project Routing Tags
 | Tag | Purpose |
@@ -96,6 +98,8 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - Return empty arrays if no explicit commands in inputs
 - Filter tasks by 2-day horizon, 14-day creation window
 - **Recurring tasks**: `done` skips this week's instance (series continues). `cancelled` ends the series. If reschedule is ambiguous, ask via `ask_user_approval`.
+- **Schedule queries** ("meetings this week?"): Route to QUERY (interrogate_brain), not DAILY_BRIEF. Calendar events are tagged [PAST] in Python before LLM input. The current time (IST) is injected into the prompt. Never invent headings like "Immediate Priorities" or "Today's Bottleneck" — answer the question directly first, then optional Context section.
+- **Query responses**: Max 600 tokens. Answer first (factual), Context section second (bottlenecks/patterns). Never self-analyze or repeat data after Context section.
 
 ### Data Deletion Safety (Non-Negotiable)
 - **NEVER delete any database records (people, tasks, graph_nodes, etc.) without explicit user approval.** Present what would be deleted and ask before executing.
