@@ -141,7 +141,7 @@ Response: {{"matched_task_ids": [...]}}"""
                 
                 # Save clarification state to conversations
                 from core.lib.conversation import get_or_create_session, log_exchange
-                session_id, _ = get_or_create_session(chat_id)
+                session_id, _, _ = get_or_create_session(chat_id)
                 log_exchange(
                     session_id, 'bot', 'CLARIFICATION',
                     json.dumps({

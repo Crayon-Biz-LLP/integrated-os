@@ -519,7 +519,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         try:
             pulse_chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
             if pulse_chat_id:
-                _, hist_pairs = get_or_create_session(pulse_chat_id)
+                session_id, hist_pairs, active_anchor = get_or_create_session(pulse_chat_id)
                 if hist_pairs:
                     conversation_history = format_history_for_prompt(hist_pairs)
         except Exception as e:

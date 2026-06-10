@@ -2,7 +2,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 
-SESSION_TIMEOUT_MINUTES = 5
+SESSION_TIMEOUT_MINUTES = 15
 MAX_HISTORY_TOKENS = 2000
 
 # Create supabase client with fallback (matching webhook.py import pattern)
@@ -29,25 +29,31 @@ def _approx_tokens(text: str) -> int:
 
 def get_or_create_session(chat_id: int) -> tuple:
     """
-    Returns (session_id, history_pairs) for this chat_id.
+    Returns (session_id, history_pairs, active_anchor) for this chat_id.
 
     History_pairs is a list of dicts: [{'user': {...}, 'bot': {...}}, ...]
     truncated to MAX_HISTORY_TOKENS via sliding window from tail.
+    active_anchor is a dict: {'id': '...', 'name': '...'} or None.
 
     Generates new UUID session_id if:
     - No prior session exists (first ever message)
     - Last exchange was > SESSION_TIMEOUT_MINUTES ago
     """
     res = _get_supabase().table('conversations') \
-        .select('session_id, created_at') \
+        .select('session_id, created_at, metadata') \
         .eq('chat_id', chat_id) \
         .order('created_at', desc=True) \
         .limit(1) \
         .execute()
 
+    active_anchor = None
+
     if res.data:
         last = res.data[0]
         last_time = last.get('created_at')
+        if last.get('metadata') and 'active_anchor' in last['metadata']:
+            active_anchor = last['metadata']['active_anchor']
+            
         if last_time:
             if isinstance(last_time, str):
                 last_time = datetime.fromisoformat(str(last_time).replace('Z', '+00:00'))
@@ -55,10 +61,10 @@ def get_or_create_session(chat_id: int) -> tuple:
             elapsed_min = (now - last_time).total_seconds() / 60
             if elapsed_min < SESSION_TIMEOUT_MINUTES:
                 session_id = last['session_id']
-                return session_id, get_history(session_id)
+                return session_id, get_history(session_id), active_anchor
 
     session_id = str(uuid.uuid4())
-    return session_id, []
+    return session_id, [], None
 
 
 def get_history(session_id: str, max_tokens: int = MAX_HISTORY_TOKENS) -> list:

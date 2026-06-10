@@ -145,6 +145,93 @@ class ContextProvider:
         self.caches['recent_tasks'].set(completed)
         return completed
 
+    async def get_range_calendar_events(self, start_date, end_date, max_days=14):
+        delta_days = (end_date - start_date).days
+        if delta_days > max_days:
+            end_date = start_date + timedelta(days=max_days)
+
+        events = []
+        try:
+            from core.services.google_service import get_cached_service, format_rfc3339
+            service = await asyncio.to_thread(get_cached_service, 'calendar', 'v3')
+            rfc_start = format_rfc3339(start_date.isoformat())
+            rfc_end = format_rfc3339(end_date.isoformat())
+            events_res = await asyncio.to_thread(
+                lambda: service.events().list(
+                    calendarId="primary",
+                    timeMin=rfc_start,
+                    timeMax=rfc_end,
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=50,
+                ).execute()
+            )
+            for e in events_res.get("items", []):
+                start = e.get("start", {})
+                dt = start.get("dateTime") or start.get("date", "")
+                events.append({
+                    "time": dt,
+                    "title": e.get("summary", "Untitled"),
+                    "source": "google",
+                })
+        except Exception:
+            pass
+
+        try:
+            from core.services.outlook_service import get_outlook_calendar_events_range
+            outlook_ev = await asyncio.to_thread(get_outlook_calendar_events_range, start_date, end_date)
+            events.extend(outlook_ev)
+        except Exception:
+            pass
+
+        events.sort(key=lambda x: x.get("time", ""))
+        
+        if delta_days > max_days and len(events) > 3:
+            events = events[:3]
+            events.append({"time": "", "title": f"...and {delta_days - max_days} more days. Output truncated to 14 days.", "source": "system"})
+
+        return events
+
+    async def get_resources_context(self, query_text: str, match_count: int = 5):
+        if not query_text:
+            return "None"
+        try:
+            embedding = (await get_embedding(query_text)).vector
+            if not embedding:
+                return "None"
+            res = supabase.rpc('match_resources', {
+                'query_embedding': embedding,
+                'match_threshold': 0.5,
+                'match_count': match_count
+            }).execute()
+            resources = res.data or []
+            if not resources:
+                return "None"
+            lines = []
+            for r in resources:
+                lines.append(f"- {r.get('url', '')}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"Resource hydration failed: {e}")
+            return "None"
+
+    async def get_practices_context(self):
+        try:
+            res = supabase.table('graph_nodes').select('label, metadata').eq('type', 'practice').execute()
+            practices = [p for p in (res.data or []) if p.get('metadata', {}).get('status') in ['active', 'dormant']]
+            if not practices:
+                return "None"
+            lines = []
+            for p in practices:
+                meta = p.get('metadata', {})
+                freq = meta.get('frequency_observed', '0/14days')
+                status = meta.get('status', 'active')
+                lines.append(f"- {p.get('label', '')} ({status}, {freq})")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"Practices hydration failed: {e}")
+            return "None"
+
     async def get_calendar_context_formatted(self, target_date):
         events = await self.get_calendar_events(target_date)
         if not events:
@@ -199,17 +286,6 @@ class ContextProvider:
                 always_include.append(formatted)
             else:
                 semantic_pool.append({"task": t, "formatted": formatted, "score": 0.0})
-                
-        # Semantic Ranking
-        if query_text and semantic_pool:
-            query_emb = (await get_embedding(query_text)).vector
-            if query_emb:
-                # To avoid an embedding API call per task, we use a simple text overlap 
-                # or we pre-compute embeddings if we have them. 
-                # Since tasks don't have embeddings stored currently, we'll do lexical ranking
-                # for now to save latency/tokens, or we skip semantic for tasks and rely on priority.
-                # Actually, wait. We can just use priority + recency boost instead of 50 embedding calls!
-                pass
                 
         # For tasks, lexical/recency ranking is faster and safer
         for item in semantic_pool:
@@ -286,6 +362,78 @@ class ContextProvider:
         except Exception as e:
             print(f"Memory hydration failed: {e}")
             return [] if return_raw else "None"
+
+    async def get_email_context(self, query_text: str, match_count: int = 3):
+        if not query_text:
+            return "None"
+        try:
+            embedding = (await get_embedding(query_text)).vector
+            if not embedding:
+                return "None"
+            res = supabase.rpc('match_emails_hybrid', {
+                'query_embedding': embedding,
+                'match_count': match_count,
+                'match_threshold': 0.5
+            }).execute()
+            emails = res.data or []
+            if not emails:
+                return "None"
+            lines = []
+            for e in emails:
+                lines.append(f"- From {e.get('sender', '')}: {e.get('subject', '')} ({e.get('body_summary', '')})")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"Email hydration failed: {e}")
+            return "None"
+
+    async def get_whatsapp_context(self, query_text: str, match_count: int = 5):
+        if not query_text:
+            return "None"
+        try:
+            embedding = (await get_embedding(query_text)).vector
+            if not embedding:
+                return "None"
+            res = supabase.rpc('match_whatsapp_hybrid', {
+                'query_embedding': embedding,
+                'match_count': match_count,
+                'match_threshold': 0.5
+            }).execute()
+            msgs = res.data or []
+            if not msgs:
+                return "None"
+            lines = []
+            for m in msgs:
+                lines.append(f"- {m.get('sender_name', '')}: {m.get('message_text', '')}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"WhatsApp hydration failed: {e}")
+            return "None"
+
+    async def get_pending_decisions_context(self):
+        try:
+            lines = []
+            
+            e_res = supabase.table('email_pending_tasks').select('id, suggested_title').is_('danny_decision', 'null').execute()
+            if e_res.data:
+                for t in e_res.data:
+                    lines.append(f"- [EMAIL] e{t['id']} - {t.get('suggested_title', '')}")
+                    
+            c_res = supabase.table('call_pending_items').select('id, suggested_title').is_('danny_decision', 'null').execute()
+            if c_res.data:
+                for t in c_res.data:
+                    lines.append(f"- [CALL] c{t['id']} - {t.get('suggested_title', '')}")
+                    
+            w_res = supabase.table('whatsapp_messages').select('id, suggested_title, sender_name').is_('danny_decision', 'null').is_('has_memory_value', False).execute()
+            if w_res.data:
+                for t in w_res.data:
+                    lines.append(f"- [WHATSAPP] w{t['id']} - {t.get('suggested_title', '')} (from {t.get('sender_name', '')})")
+                    
+            if not lines:
+                return "None"
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"Pending decisions hydration failed: {e}")
+            return "None"
 
     async def get_cross_referenced_context(self, query_text: str, task_inputs: list, people: list, projects: list, match_count: int = 5):
         """

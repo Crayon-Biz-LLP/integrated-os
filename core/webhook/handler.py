@@ -348,7 +348,7 @@ async def process_webhook(update: dict):
             await handle_ed_command(text, chat_id)
             return {"success": True}
 
-        session_id, history = get_or_create_session(chat_id)
+        session_id, history, active_anchor = get_or_create_session(chat_id)
 
         CLARIFICATION_REPLY_WORDS = {'u', 'update', 'n', 'new', 'create', 't', 'task', 'note',
                                       'q', 'query', 'b', 'daily_brief', 'r', 'delegate', 'p', 'declare_practice', 'x', 'noise', 'none'}
@@ -383,7 +383,7 @@ async def process_webhook(update: dict):
 
         if text.strip().lower() in ('/today', '/brief', '/day'):
             history_text = format_history_for_prompt(history)
-            log_exchange(session_id, 'user', 'DAILY_BRIEF', text, chat_id)
+            log_exchange(session_id, 'user', 'DAILY_BRIEF', text, chat_id, metadata={"active_anchor": active_anchor} if active_anchor else None)
             await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
             return {"success": True}
 
@@ -391,8 +391,8 @@ async def process_webhook(update: dict):
             query = text[1:].strip()
             if query:
                 history_text = format_history_for_prompt(history)
-                log_exchange(session_id, 'user', 'QUERY', text, chat_id)
-                await interrogate_brain(query, chat_id, session_id=session_id, conversation_history=history_text)
+                log_exchange(session_id, 'user', 'QUERY', text, chat_id, metadata={"active_anchor": active_anchor} if active_anchor else None)
+                await interrogate_brain(query, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
                 return {"success": True}
 
         _drop_match = re.match(r'^/drop-(.+)$', text.strip(), re.IGNORECASE)
@@ -460,7 +460,10 @@ async def process_webhook(update: dict):
 
         print(f"Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
 
-        log_exchange(session_id, 'user', intent, text, chat_id)
+        user_meta = {}
+        if active_anchor:
+            user_meta["active_anchor"] = active_anchor
+        log_exchange(session_id, 'user', intent, text, chat_id, metadata=user_meta)
 
         is_web_source = update.get('update_id') and str(update.get('update_id')).startswith('web_')
         source = "web" if is_web_source else "telegram"
@@ -500,7 +503,7 @@ async def process_webhook(update: dict):
                     return {"success": True}
 
         if confidence >= CONFIDENCE_HIGH:
-            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender)
+            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
         elif possible_intents and len(possible_intents) >= 2 and confidence >= CONFIDENCE_LOW:
             print(f"Ambiguous ({possible_intents}) — asking user")
             await ask_intent_disambiguation(text, possible_intents, chat_id, session_id)
@@ -513,7 +516,7 @@ async def process_webhook(update: dict):
                 receipt=receipt
             )
         elif confidence >= CONFIDENCE_LOW:
-            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender)
+            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
         else:
             await handle_clarification(
                 text,
