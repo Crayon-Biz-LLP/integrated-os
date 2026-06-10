@@ -112,9 +112,21 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
 
         prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
 
-Danny is asking about {day_label.lower()}. You have his calendar events for {day_label}, his full active task list, overdue items, and recent completions. Identify what matters and cut through the noise.
+Danny is asking for his daily brief for {day_label.lower()}. You have his calendar events, his full active task list, overdue items, and recent completions. Identify what matters and cut through the noise.
 
-Answer only what Danny asked. Do not list unrelated tasks or extra context.
+CRITICAL OUTPUT FORMAT - YOU MUST USE EXACTLY THIS STRUCTURE:
+
+[Direct Answer / Schedule]
+- Start by listing the CALENDAR EVENTS as a simple bulleted list. 
+- DO NOT invent custom headings like 'Immediate Priorities', 'Scheduled', or 'Today's Bottleneck'. 
+- DO NOT sort by urgency. Calendar MUST come first.
+
+**Context:**
+- Add 1-3 sentences about overdue tasks, blockers, or urgency.
+- NEVER put this section first.
+
+IMPORTANT: Stop generating immediately after the Context section. Do NOT analyze your own response. End the message cleanly.
+
 {conversation_history}
 
 {day_label.upper()} — {target.strftime('%A, %d %B')}
@@ -130,8 +142,6 @@ OVERDUE:
 
 RECENTLY COMPLETED (24h):
 {fmt_list(recently_completed) if recently_completed else "None"}
-
-Give a sharp, direct answer. If you spot a bottleneck or a pattern, call it out. If something is urgent, say so. If there's nothing useful, say that.
 
 Formatting rules:
 - Emoji goes at the **start** of each task line, not at the end
@@ -151,7 +161,7 @@ Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
             primary_model=CLASSIFICATION_MODEL,
-            config={'response_mime_type': 'text/plain'}
+            config={'max_output_tokens': 600}
         )
         reply = response.text.strip()
 
@@ -785,13 +795,17 @@ Query: {query}"""
 
 Danny is asking a question. You have access to his: {sources_str}.
 
-CRITICAL INSTRUCTION - FOLLOW THIS EXACT ORDER:
-1. DIRECT ANSWER: You MUST answer Danny's question directly in your first paragraph using ONLY the provided context. 
-   - If the question is about SCHEDULE/MEETINGS/CALENDAR: Start with the calendar events. List them immediately. The question is about the schedule.
-   - If the question is about TASKS/STATUS: Start with the task list.
-   - For any other question: Answer directly.
-   Do NOT start with bottlenecks, analysis, or context unless that is what was asked. If the context does not contain the answer, say "I don't have that information."
-2. CONTEXT (Optional): Only AFTER the direct answer, add a separate "**Context:**" section. In this section, identify what matters — dependencies, blockers, urgency, or patterns — and cut through the noise.
+CRITICAL OUTPUT FORMAT - YOU MUST USE EXACTLY THIS STRUCTURE:
+
+[Answer to the question]
+- If asked about schedule/meetings: List the calendar events here as a simple bulleted list. 
+- If asked about tasks: List the tasks.
+- DO NOT invent custom headings like 'Immediate Priorities', 'Scheduled', or 'Today's Bottleneck'. 
+- DO NOT sort by urgency unless asked. Answer the direct question FIRST.
+
+**Context:**
+- Only if relevant: 1-3 sentences about blockers, dependencies, or urgency found in tasks/tactical map.
+- NEVER put this section first.
 
 IMPORTANT: Stop generating immediately after the Context section. Do NOT analyze your own response. Do NOT repeat the data. End the message cleanly.
 
