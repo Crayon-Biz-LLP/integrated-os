@@ -11,6 +11,38 @@ supabase: Client = create_client(
 )
 
 
+async def process_graph_pending_decision(pending_id: int, decision: str) -> dict:
+    try:
+        pending_res = supabase.table('pending_graph_nodes').select('*').eq('id', pending_id).maybe_single().execute()
+        if not pending_res or not pending_res.data:
+            return {"success": False, "action": "not_found", "message": "Graph item not found."}
+        
+        pending_item = pending_res.data
+        if pending_item.get('status') != 'pending':
+            return {"success": False, "action": "already_processed", "message": "Already processed."}
+            
+        if decision == 'reject':
+            supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', pending_id).execute()
+            return {"success": True, "action": "rejected", "message": f"Rejected node {pending_item['label']}"}
+            
+        if decision == 'approve':
+            supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
+            
+            label = pending_item['label']
+            node_type = pending_item['type']
+            source_text = pending_item.get('source_text', '')
+            
+            supabase.table("graph_nodes").upsert(
+                {"label": label, "type": node_type, "metadata": json.dumps({"source": "pending_approval", "memory_id": source_text})},
+                on_conflict="label"
+            ).execute()
+            
+            return {"success": True, "action": "approved", "message": f"Approved node {label}"}
+            
+    except Exception as e:
+        audit_log_sync("pulse", "ERROR", f"Error processing graph decision: {e}")
+        return {"success": False, "action": "error", "message": str(e)}
+
 async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: int = None, task_description: str = None, people_cache=None):
     """
     Add-on: Writes graph edges after a task is created.
@@ -47,22 +79,23 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                 .execute()
 
             if proj_node and proj_node.data:
-                existing = supabase.table('graph_edges') \
-                    .select('id') \
-                    .eq('source_node_id', task_node_id) \
-                    .eq('target_node_id', proj_node.data['id']) \
-                    .eq('relationship', 'BELONGS_TO') \
-                    .maybe_single() \
-                    .execute()
+                try:
+                    # Clean up any existing BELONGS_TO edges for this task to avoid orphans
+                    supabase.table('graph_edges') \
+                        .delete() \
+                        .eq('relationship', 'BELONGS_TO') \
+                        .filter('metadata->>task_id', 'eq', str(task_id)) \
+                        .execute()
+                except Exception as e:
+                    audit_log_sync("pulse", "WARNING", f"Failed to clean up stale BELONGS_TO edges: {e}")
 
-                if not existing or not existing.data:
-                    supabase.table('graph_edges').insert({
-                        "source_node_id": task_node_id,
-                        "target_node_id": proj_node.data['id'],
-                        "relationship": "BELONGS_TO",
-                        "weight": 1.0,
-                        "metadata": {"source": "task_engine", "task_id": task_id}
-                    }).execute()
+                supabase.table('graph_edges').insert({
+                    "source_node_id": task_node_id,
+                    "target_node_id": proj_node.data['id'],
+                    "relationship": "BELONGS_TO",
+                    "weight": 1.0,
+                    "metadata": {"source": "task_engine", "task_id": task_id}
+                }).execute()
 
         search_text = f"{task_title} {task_description or ''}".lower()
 

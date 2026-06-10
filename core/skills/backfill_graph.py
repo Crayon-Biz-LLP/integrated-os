@@ -452,6 +452,7 @@ Rules:
 - Use UPPERCASE relationship types: "RELATES_TO", "PARENT_OF", "WORKS_AT", "BELONGS_TO", "AUTHORED", "INTRODUCED", "VENDOR_TO", "DISCUSSED_WITH", "FEELS"
 - Include "AUTHORED" edge from "Danny" to indicate he wrote this memory
 - CRITICAL RULE: EVERY node you extract MUST have at least one connecting edge. Do not output isolated nodes.
+- CRITICAL RULE: Only extract entities that are explicitly, verbatim stated in the text. Do NOT infer, guess, or add external knowledge. If the text doesn't mention a person, project, or relationship by name, do not extract it.
 - For EVERY emotional_state node you extract, ALWAYS create a 'Danny' -> 'FEELS' -> '{{emotion}}' edge. Never extract an emotional_state node without a corresponding FEELS edge.
 - Do NOT classify URLs, git repositories, or file paths as 'project'. Classify them as 'resource' instead. Examples: 'CopilotKit' -> resource, 'dsvpn' -> resource, 'opencodeCLI' -> resource.
 - Standardize labels to Title Case. Never create case-variant duplicates. 'guilt' and 'Guilt' are the same — use 'Guilt'.
@@ -470,7 +471,26 @@ Rules:
         if hasattr(response, 'text') and response.text:
             result = json.loads(response.text)
             if isinstance(result, dict) and ('nodes' in result or 'edges' in result):
-                print(f"    Extracted {len(result.get('nodes', []))} nodes, {len(result.get('edges', []))} edges from memory {memory_id}")
+                # Guard B: Text-anchoring validation
+                text_lower = text.lower()
+                valid_nodes = []
+                for n in result.get('nodes', []):
+                    label = n.get('label', '')
+                    if label.lower() in text_lower or label.lower() == 'danny':  # Danny is always valid for AUTHORED edges
+                        valid_nodes.append(n)
+                    else:
+                        audit_log_sync("backfill_graph", "WARNING", f"    ⚠️ Dropped hallucinated node: {label}")
+                
+                valid_labels = {n.get('label', '').lower() for n in valid_nodes}
+                valid_edges = []
+                for e in result.get('edges', []):
+                    if e.get('source', '').lower() in valid_labels and e.get('target', '').lower() in valid_labels:
+                        valid_edges.append(e)
+                
+                result['nodes'] = valid_nodes
+                result['edges'] = valid_edges
+
+                print(f"    Extracted {len(valid_nodes)} valid nodes, {len(valid_edges)} valid edges from memory {memory_id}")
                 return result
             else:
                 audit_log_sync("backfill_graph", "WARNING", f"    ⚠️ Invalid response format from memory {memory_id}: {str(result)[:100]}")
@@ -507,6 +527,19 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
         return node_id
     
     # Node doesn't exist - create it
+    if node_type in ['person', 'project', 'organization']:
+        try:
+            supabase.table("pending_graph_nodes").insert({
+                "label": label,
+                "type": node_type,
+                "source_text": memory_id,
+                "status": "pending"
+            }).execute()
+            audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval: {label} ({node_type})")
+        except Exception as e:
+            audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
+        return None
+
     try:
         result = supabase.table("graph_nodes").upsert(
             {"label": label, "type": node_type, "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})},
@@ -556,10 +589,23 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
             # If type changed, update it
             if existing_type != node_type:
                 record["type"] = node_type
+            node_records.append(record)
         else:
-            record["id"] = str(uuid.uuid4())
-            
-        node_records.append(record)
+            if node_type in ['person', 'project', 'organization']:
+                # Gated high-risk entity - send to pending
+                try:
+                    supabase.table("pending_graph_nodes").insert({
+                        "label": label,
+                        "type": node_type,
+                        "source_text": memory_id, # Can't easily pass full text here without signature change, so we pass memory_id
+                        "status": "pending"
+                    }).execute()
+                    audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval: {label} ({node_type})")
+                except Exception as e:
+                    audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
+            else:
+                record["id"] = str(uuid.uuid4())
+                node_records.append(record)
     
     if node_records:
         try:
@@ -986,22 +1032,23 @@ def backfill_orphaned_tasks():
             if proj_node is not None and proj_node.data is not None:
                 proj_node_id = proj_node.data["id"]
                 try:
-                    existing = supabase.table("graph_edges") \
-                        .select("id") \
-                        .eq("source_node_id", task_node_id) \
-                        .eq("target_node_id", proj_node_id) \
-                        .eq("relationship", "BELONGS_TO") \
-                        .maybe_single() \
-                        .execute()
-                    
-                    if existing is None or not existing.data:
-                        supabase.table("graph_edges").insert({
-                            "source_node_id": task_node_id,
-                            "target_node_id": proj_node_id,
-                            "relationship": "BELONGS_TO",
-                            "weight": 1.0,
-                            "metadata": json.dumps({"source": "task_engine", "task_id": task_id})
-                        }).execute()
+                    try:
+                        # Clean up any existing BELONGS_TO edges for this task to avoid orphans
+                        supabase.table('graph_edges') \
+                            .delete() \
+                            .eq('relationship', 'BELONGS_TO') \
+                            .filter('metadata->>task_id', 'eq', str(task_id)) \
+                            .execute()
+                    except Exception as clean_err:
+                        audit_log_sync("backfill_graph", "WARNING", f"Failed to clean up stale BELONGS_TO edges: {clean_err}")
+
+                    supabase.table("graph_edges").insert({
+                        "source_node_id": task_node_id,
+                        "target_node_id": proj_node_id,
+                        "relationship": "BELONGS_TO",
+                        "weight": 1.0,
+                        "metadata": json.dumps({"source": "task_engine", "task_id": task_id})
+                    }).execute()
                 except Exception as e:
                     audit_log_sync("backfill_graph", "WARNING", f"⚠️ BELONGS_TO edge failed for task {task_id}: {e}")
         

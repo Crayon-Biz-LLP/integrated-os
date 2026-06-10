@@ -10,6 +10,7 @@ from core.webhook.utils import supabase, trigger_github_pulse, get_recent_contex
 from core.webhook.email import process_email_pending_decision, handle_ed_command
 from core.webhook.call import process_call_pending_decision
 from core.webhook.whatsapp import process_whatsapp_pending_decision
+from core.pulse.graph import process_graph_pending_decision
 from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, ask_task_or_note_confirmation, resolve_task_note_confirmation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
 from core.webhook.commands import handle_command, handle_undo_command
 from core.webhook.multimodal import process_multimodal_content
@@ -34,7 +35,7 @@ async def process_callback_query(callback_query: dict):
     try:
         # Example data: "approve_e123" or "reject_w45"
         import re
-        match = re.match(r'^(approve|reject)_([ecwECW]?)(\d+)$', data)
+        match = re.match(r'^(approve|reject)_([ecwgECWG]?)(\d+)$', data)
         if match:
             action, prefix, shortcode = match.groups()
             is_approve = (action == 'approve')
@@ -47,6 +48,8 @@ async def process_callback_query(callback_query: dict):
                 result = await process_call_pending_decision(sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'w':
                 result = await process_whatsapp_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+            elif prefix == 'g':
+                result = await process_graph_pending_decision(sc_int, 'approve' if is_approve else 'reject')
             else:
                 # Unprefixed, try email then call then whatsapp
                 result = await process_email_pending_decision(sc_int, 'approve' if is_approve else 'reject')
