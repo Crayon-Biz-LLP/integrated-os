@@ -108,10 +108,15 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"⚠️ Graph edge write failed (non-critical): {e}")
 
-async def hybrid_search_graph(query: str) -> str:
+async def hybrid_search_graph(query: str, node_id: str = None) -> str:
     """Graph-first search: Find primary entity and its connections."""
     try:
-        nodes_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{query}%').limit(1).execute()
+        nodes_res = None
+        if node_id:
+            nodes_res = supabase.table('graph_nodes').select('id, label').eq('id', node_id).limit(1).execute()
+            
+        if not nodes_res or not nodes_res.data:
+            nodes_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{query}%').limit(1).execute()
 
         # TODO: If match_graph_nodes RPC does not exist yet in Supabase,
         # create it mirroring the match_memories pattern for graph_nodes table.

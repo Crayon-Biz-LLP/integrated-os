@@ -12,7 +12,8 @@ from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_BY_KEYWORD
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.webhook.utils import is_recent_raw_dump, hybrid_search_graph, supabase
+from core.webhook.utils import is_recent_raw_dump, supabase
+from core.pulse.graph import hybrid_search_graph
 
 try:
     from core.agents.quick_process import process_single_dump, get_tasks_service
@@ -72,6 +73,25 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
             active_tasks_list = compressed_tasks.split(" | ") if compressed_tasks else []
         except Exception as t_err:
             audit_log_sync("webhook", "WARNING", f"Brief tasks query failed: {t_err}")
+
+        # Overdue tasks
+        try:
+            now_iso = now.isoformat()
+            overdue_res = supabase.table('tasks') \
+                .select('title, project_id, priority') \
+                .eq('is_current', True) \
+                .not_.in_('status', ['done', 'cancelled']) \
+                .not_.is_('reminder_at', None) \
+                .lt('reminder_at', now_iso) \
+                .execute()
+            if overdue_res.data:
+                projects = await context_provider.get_projects()
+                proj_map = {p['id']: p['name'] for p in projects}
+                for t in overdue_res.data:
+                    pn = proj_map.get(t.get('project_id'), 'INBOX')
+                    overdue_tasks.append(_format_task_line(t.get('title', ''), pn, t.get('priority')))
+        except Exception as err:
+            audit_log_sync("webhook", "WARNING", f"Brief overdue query failed: {err}")
 
         # Recent completions
         try:
@@ -424,7 +444,7 @@ async def resolve_task_note_confirmation(text: str, chat_id: int, session_id: st
     await route_by_intent(intent, original, chat_id, session_id, classification=classification)
     return True
 
-async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None):
+async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None, active_anchor: dict = None):
     history_text = ""
     if session_id:
         pairs = get_history(session_id, max_tokens=5)
@@ -441,7 +461,7 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
     elif intent == 'DAILY_BRIEF':
         await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
     elif intent == 'QUERY':
-        await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text)
+        await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
     elif intent == 'COMPLETION':
         from core.webhook.completion_handler import handle_confident_completion
         receipt = classification.get('receipt') if classification else None
@@ -471,36 +491,317 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
     else:
         await handle_clarification(text, "Could you provide more details?", chat_id, session_id=session_id)
 
-async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = ""):
-    """On-Demand Brain Interrogation - Hybrid Graph + Vector Search."""
+_searching_locks = set()
+
+async def delayed_searching_msg(chat_id: int):
     try:
-        await send_telegram(chat_id, "🧠 *Searching your vault...*")
+        await asyncio.sleep(0.8)
+        if chat_id in _searching_locks:
+            await send_telegram(chat_id, "🧠 *Searching your vault...*")
+    except asyncio.CancelledError:
+        pass
 
-        tactical_map = await hybrid_search_graph(query)
-
-        compressed_tasks, _ = await context_provider.hydrate_tasks_context(query)
-        memories_context = await context_provider.hydrate_memories_context(query)
+def resolve_dates_from_query(query: str):
+    """Resolve date references in a query to start and end dates.
+    Returns (start_dt, end_dt) or (None, None) if unparsable."""
+    low = query.lower()
+    now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    if 'this week' in low:
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        return start, end
+    elif 'next week' in low:
+        start = today + timedelta(days=7 - today.weekday())
+        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        return start, end
+    elif 'tomorrow' in low:
+        start = today + timedelta(days=1)
+        end = start + timedelta(hours=23, minutes=59, seconds=59)
+        return start, end
+    elif 'yesterday' in low:
+        start = today - timedelta(days=1)
+        end = start + timedelta(hours=23, minutes=59, seconds=59)
+        return start, end
+    elif 'today' in low or 'tonight' in low or 'this morning' in low or 'this afternoon' in low:
+        return today, today + timedelta(hours=23, minutes=59, seconds=59)
         
+    day_map = {'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3, 'friday': 4, 'saturday': 5, 'sunday': 6}
+    for name, idx in day_map.items():
+        if name in low:
+            days_ahead = idx - today.weekday()
+            if days_ahead < 0:
+                days_ahead += 7
+            elif days_ahead == 0 and f"next {name}" in low:
+                days_ahead = 7
+            start = today + timedelta(days=days_ahead)
+            end = start + timedelta(hours=23, minutes=59, seconds=59)
+            return start, end
+            
+    return None, None
+
+async def safe_fetch(coro, default=None):
+    try:
+        res = await coro
+        return res if res is not None else default
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"Safe fetch failed: {e}")
+        return default
+
+async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None):
+    """On-Demand Brain Interrogation - Universal Question Answering."""
+    search_task = None
+    if chat_id not in _searching_locks:
+        _searching_locks.add(chat_id)
+        search_task = asyncio.create_task(delayed_searching_msg(chat_id))
+        
+    try:
+        # Anaphora & Entity Resolution
+        resolved_entity = None
+        try:
+            resolve_prompt = f"""You are Rhodey's query parser.
+Task 1: Rewrite the following query to be fully self-contained by replacing any pronouns or vague references (e.g. it, that, he, the first one) with the specific entities or context they refer to from the conversation history. If the query is already clear, output it unchanged.
+Task 2: Extract the primary entity (project, person, or organization) from the resolved query. If there is no clear entity, output "None".
+
+Output JSON format exactly like this:
+{{
+  "resolved_query": "...",
+  "primary_entity": "..."
+}}
+
+CONVERSATION HISTORY:
+{conversation_history if conversation_history else "None"}
+
+Query: {query}"""
+
+            resolve_response = await generate_content_with_fallback(
+                prompt=resolve_prompt,
+                workload=WorkloadProfile.INTERACTIVE,
+                primary_model=CLASSIFICATION_MODEL,
+                config={'response_mime_type': 'application/json'}
+            )
+            if resolve_response and resolve_response.text:
+                import json
+                try:
+                    data = json.loads(resolve_response.text.strip())
+                    resolved_query = data.get("resolved_query", "").strip()
+                    if resolved_query and resolved_query.lower() != query.lower() and resolved_query.lower() != "none":
+                        query = resolved_query
+                    ent = data.get("primary_entity", "").strip()
+                    if ent and ent.lower() != "none":
+                        resolved_entity = ent
+                except json.JSONDecodeError:
+                    pass
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING", f"Anaphora/Entity resolution failed: {e}")
+
+        # If we found a new entity, try to resolve it to a graph node to set as anchor
+        new_anchor = None
+        if resolved_entity:
+            try:
+                # Fast search for exact or partial match in graph_nodes
+                node_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{resolved_entity}%').execute()
+                if node_res.data:
+                    matches = node_res.data
+                    # Tiebreaker 1: exact match (case-insensitive)
+                    exact = [n for n in matches if n['label'].lower() == resolved_entity.lower()]
+                    if exact:
+                        chosen = exact[0]
+                    else:
+                        # Tiebreaker 2: highest edge count
+                        nids = [n['id'] for n in matches]
+                        source_edges = supabase.table('graph_edges').select('source_node_id, target_node_id').in_('source_node_id', nids).execute()
+                        target_edges = supabase.table('graph_edges').select('source_node_id, target_node_id').in_('target_node_id', nids).execute()
+                        all_edge_data = (source_edges.data or []) + (target_edges.data or [])
+                        ec = {}
+                        if all_edge_data:
+                            for e in all_edge_data:
+                                for nid in nids:
+                                    if e['source_node_id'] == nid or e['target_node_id'] == nid:
+                                        ec[nid] = ec.get(nid, 0) + 1
+                        chosen = max(matches, key=lambda n: ec.get(n['id'], 0))
+                    
+                    new_anchor = {"id": str(chosen['id']), "name": chosen['label']}
+                    active_anchor = new_anchor
+            except Exception as e:
+                audit_log_sync("webhook", "WARNING", f"Anchor node lookup failed: {e}")
+
+        # If we have an active_anchor, we can scope our hybrid_search_graph or other context
+        # For hybrid_search_graph, we can use the anchor's name instead of the query if we have it
+        search_term = active_anchor["name"] if active_anchor else query
+
+        start_dt, end_dt = resolve_dates_from_query(query)
+        
+        # Source Selection Heuristics (Tier 4d)
+        lq = query.lower()
+        is_schedule = any(w in lq for w in ['calendar', 'schedule', 'meeting', 'meet', 'today', 'tomorrow', 'week', 'when'])
+        is_comms = any(w in lq for w in ['email', 'message', 'said', 'told', 'chat', 'whatsapp', 'contact'])
+        is_action = any(w in lq for w in ['task', 'todo', 'block', 'status', 'progress', 'done', 'completed'])
+        
+        # Default to everything if no specific type is detected, otherwise filter
+        fetch_all = not (is_schedule or is_comms or is_action)
+
+        async def _empty_fetch(val): return val
+
+        # Parallel fetch context
+        tactical_map_task = safe_fetch(hybrid_search_graph(search_term, active_anchor["id"] if active_anchor else None), "")
+        tasks_task = safe_fetch(context_provider.hydrate_tasks_context(query), ("", "")) if (fetch_all or is_action or is_schedule) else safe_fetch(_empty_fetch(("", "")), ("", ""))
+        memories_task = safe_fetch(context_provider.hydrate_memories_context(query), "None") if (fetch_all or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
+        resources_task = safe_fetch(context_provider.get_resources_context(query), "None") if (fetch_all or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
+        practices_task = safe_fetch(context_provider.get_practices_context(), "None") if (fetch_all or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
+        emails_task = safe_fetch(context_provider.get_email_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None")
+        whatsapp_task = safe_fetch(context_provider.get_whatsapp_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None")
+        pending_decisions_task = safe_fetch(context_provider.get_pending_decisions_context(), "None")
+        
+        # People context
+        async def fetch_people():
+            people = await context_provider.get_people()
+            if not people:
+                return "None"
+            return ", ".join([p.get("name", "") for p in people if p.get("name")])
+        people_task = safe_fetch(fetch_people(), "None") if (fetch_all or is_comms or is_schedule) else safe_fetch(_empty_fetch("None"), "None")
+        
+        # Completed tasks context
+        async def fetch_completed():
+            completed = await context_provider.get_recently_completed_tasks()
+            if not completed:
+                return "None"
+            return "\n".join([f"- {t.get('title', '')}" for t in completed])
+        completed_task = safe_fetch(fetch_completed(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None")
+        
+        # Calendar context
+        async def fetch_calendar():
+            if start_dt is None or end_dt is None:
+                return "None"
+            events = await context_provider.get_range_calendar_events(start_dt, end_dt)
+            if not events:
+                return "None"
+            lines = []
+            for e in events:
+                t = e.get("time", "")[:16].replace("T", " ") if e.get("time") else ""
+                lines.append(f"- {t} {e.get('title', '')} ({e.get('source', '')})")
+            return "\n".join(lines)
+        calendar_task = safe_fetch(fetch_calendar(), "None") if (fetch_all or is_schedule or start_dt is not None) else safe_fetch(_empty_fetch("None"), "None")
+
+        # Temporal, Serendipity, Hindsight Contexts (Tier 3)
+        async def fetch_temporal():
+            from core.pulse.memory import detect_temporal_patterns
+            return await detect_temporal_patterns()
+        temporal_task = safe_fetch(fetch_temporal(), "None") if (fetch_all) else safe_fetch(_empty_fetch("None"), "None")
+
+        async def fetch_serendipity():
+            from core.pulse.memory import serendipity_engine
+            tasks = await context_provider.get_active_tasks()
+            return await serendipity_engine(tasks, [], [], max_paths=5)
+        serendipity_task = safe_fetch(fetch_serendipity(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None")
+
+        async def fetch_hindsight():
+            from core.pulse.memory import retrieve_hindsight_memories
+            tasks = await context_provider.get_active_tasks()
+            memories_raw, _ = await retrieve_hindsight_memories([query], tasks, top_k=5)
+            if memories_raw:
+                cleaned = [m.replace("[MEMORY CONTEXT ONLY — DO NOT LIST IN BRIEFING] ", "") for m in memories_raw]
+                return "\n".join(cleaned)
+            return "None"
+        hindsight_task = safe_fetch(fetch_hindsight(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None")
+
+        results = await asyncio.gather(
+            tactical_map_task, tasks_task, memories_task, resources_task,
+            practices_task, people_task, completed_task, calendar_task,
+            emails_task, whatsapp_task, pending_decisions_task,
+            temporal_task, serendipity_task, hindsight_task
+        )
+        tactical_map, (compressed_tasks, _), memories_context, resources_context, \
+            practices_context, people_context, completed_context, calendar_context, \
+            emails_context, whatsapp_context, pending_decisions_context, \
+            temporal_context, serendipity_context, hindsight_context = results
+
+        available_sources = []
         all_context = []
+        
+        if calendar_context != "None":
+            all_context.append(f"CALENDAR EVENTS:\n{calendar_context}")
+            available_sources.append("calendar events")
         if tactical_map:
             all_context.append(f"TACTICAL MAP:\n{tactical_map}")
-            
-        all_context.append(f"ACTIVE TASKS:\n{compressed_tasks}")
-        
-        if memories_context and memories_context != "None":
+            available_sources.append("tactical map")
+        if compressed_tasks:
+            all_context.append(f"ACTIVE TASKS:\n{compressed_tasks}")
+            available_sources.append("active tasks")
+        if pending_decisions_context != "None":
+            all_context.append(f"PENDING APPROVALS:\n{pending_decisions_context}")
+            available_sources.append("pending decisions")
+        if completed_context != "None":
+            all_context.append(f"RECENTLY COMPLETED TASKS:\n{completed_context}")
+            available_sources.append("completed tasks")
+        if memories_context != "None":
             all_context.append(f"RELEVANT MEMORIES:\n{memories_context}")
+            available_sources.append("vault memories")
+        if hindsight_context != "None" and hindsight_context != "":
+            all_context.append(f"HINDSIGHT MEMORIES (Multi-signal):\n{hindsight_context}")
+            available_sources.append("hindsight memories")
+        if temporal_context != "None" and temporal_context != "":
+            all_context.append(f"ON THIS DAY (Temporal patterns):\n{temporal_context}")
+            available_sources.append("temporal patterns")
+        if serendipity_context != "None" and "No multi-hop" not in serendipity_context and "No active tasks" not in serendipity_context and "Graph nodes unavailable" not in serendipity_context and "No graph nodes found" not in serendipity_context:
+            all_context.append(f"SERENDIPITY (Hidden graph connections):\n{serendipity_context}")
+            available_sources.append("serendipity connections")
+        if emails_context != "None":
+            all_context.append(f"EMAILS:\n{emails_context}")
+            available_sources.append("emails")
+        if whatsapp_context != "None":
+            all_context.append(f"WHATSAPP MESSAGES:\n{whatsapp_context}")
+            available_sources.append("whatsapp messages")
+        if resources_context != "None":
+            all_context.append(f"RESOURCES:\n{resources_context}")
+            available_sources.append("resources")
+        if practices_context != "None":
+            all_context.append(f"PRACTICES:\n{practices_context}")
+            available_sources.append("practices")
+        if people_context != "None":
+            all_context.append(f"PEOPLE:\n{people_context}")
+            available_sources.append("people network")
 
         if not all_context:
-            await send_telegram(chat_id, "🔍 *No relevant memories found.*\n\n_Try a different query._")
+            await send_telegram(chat_id, "🔍 *I don't have any relevant data to answer that.*\n\n_Try rephrasing._")
             return
 
         context_str = "\n\n".join(all_context)
+        sources_str = ", ".join(available_sources)
 
-        prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
+        # Factual vs Strategic prompt split
+        low_query = query.lower()
+        is_factual = any(low_query.startswith(w) for w in ['what', 'when', 'where', 'who', 'which', 'how many', 'how much', 'do i have', 'is there', 'am i'])
+        
+        if is_factual:
+            if "calendar events" in available_sources and len(available_sources) <= 2:
+                header = "📅 Here's your schedule:"
+            elif "active tasks" in available_sources and len(available_sources) <= 2:
+                header = "📋 Task status:"
+            elif "vault memories" in available_sources and len(available_sources) <= 2:
+                header = "🧠 From your vault:"
+            else:
+                header = "🧠 Here's what I found:"
+                
+            prompt = f"""You are Danny's Rhodey. Answer factually based ONLY on the provided context.
+Do NOT give strategic advice. Do NOT mention bottlenecks. Do NOT hallucinate.
+If the context does not contain the answer, say "I don't have that information."
 
-Danny is asking a question. You have access to his tactical map, memories, active tasks, and resources. Look at the data below, identify what matters — dependencies, blockers — and cut through the noise.
+Context sources successfully queried: {sources_str}
 
-Answer only what Danny asked. Do not list unrelated tasks or extra context.
+{context_str}{conversation_history}
+
+Question: {query}
+
+Give a sharp, direct answer. List exactly what was asked."""
+        else:
+            header = "🧠 Brain Interrogation:"
+            prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
+
+Danny is asking a question. You have access to his: {sources_str}. Look at the data below, identify what matters — dependencies, blockers — and cut through the noise.
+
+Answer what Danny asked. Do not list unrelated tasks or extra context.
 {context_str}{conversation_history}
 
 Question: {query}
@@ -509,17 +810,9 @@ Give a sharp, direct answer. If you spot a bottleneck or a pattern, call it out.
 
 Formatting rules:
 - Emoji goes at the **start** of each task line, not at the end
-- Pick emojis naturally: 💰 money, 🏠 home, 📋 admin, 🛠️ work, 🏛️ ashraya/church, etc.
-- Do NOT use `###` headers — use **bold** or just plain text for section breaks
-- Do NOT prefix tasks with "TASK" — just list them cleanly. Do NOT include intent labels like TASK, NOTE, or QUERY anywhere in your response.
+- Do NOT use `###` headers — use **bold** or plain text
 - Bullet points only, no numbered lists
-
-Example format:
-**Focus here** — clear bottleneck callout.
-* 💰 Task name [Project]
-* 📋 Another task [Project]
-
-Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or RESOURCE without brackets. Preserve the [Project] bracket from the task data exactly as shown."""
+- Always use [MEMORY] or [RESOURCE] brackets when citing."""
 
         response = await generate_content_with_fallback(
             prompt=prompt,
@@ -528,17 +821,34 @@ Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or
         )
 
         answer = response.text.strip()
-
-        await send_telegram(chat_id, f"🧠 *Brain Interrogation:*\n\n{answer}")
+        
+        proactive_msg = ""
+        if active_anchor:
+            from core.pulse.proactive import check_proactive_signals
+            try:
+                proactive_msg = await asyncio.wait_for(
+                    check_proactive_signals(active_anchor["name"]), timeout=1.5
+                )
+            except asyncio.TimeoutError:
+                proactive_msg = ""
+            
+        final_reply = f"{header}\n\n{answer}"
+        if proactive_msg:
+            final_reply += f"\n\n{proactive_msg}"
+            
+        await send_telegram(chat_id, final_reply)
 
         # Log bot reply to conversation history
         if session_id:
-            log_exchange(session_id, 'bot', 'QUERY', answer, chat_id)
+            meta = {}
+            if active_anchor:
+                meta["active_anchor"] = active_anchor
+            log_exchange(session_id, 'bot', 'QUERY', final_reply, chat_id, metadata=meta)
 
         # Log QUERY response to raw_dumps so it appears in web UI
         try:
             supabase.table('raw_dumps').insert([{
-                "content": answer,
+                "content": final_reply,
                 "status": "processed",
                 "is_processed": True,
                 "direction": "outgoing",
@@ -556,6 +866,10 @@ Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Interrogation error: {e}")
         await send_telegram(chat_id, "⚠️ *Search failed.*\n\n_Try again._")
+    finally:
+        if search_task:
+            search_task.cancel()
+        _searching_locks.discard(chat_id)
 
 async def handle_noise(chat_id: int):
     await send_telegram(chat_id, "👍")

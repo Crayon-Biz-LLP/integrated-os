@@ -9,7 +9,6 @@ from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.llm.constants import SAFE_HOLD_CLASSIFICATION
-from core.llm.compat import get_embedding_sync as get_embedding  # noqa: F401
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -70,12 +69,12 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - COMPLETION: If the message describes a task-referential has-happened action that closes a specific known item (e.g., "Finished the ERP plan", "Done with the Vasanth call", "Sent the proposal to SolvStrat"), classify as COMPLETION. Extract the closest matching task description into `title`. This is NOT a NOTE. NOTE is for general wins, observations, and milestones with no open task to close. COMPLETION implies there is a specific outstanding item being checked off.
     - TASK: Any message that implies an action, including adding calendar events, meetings, or recurring meetings (e.g. "Add a meeting every Monday"). Do not require a date or time.
     - NOTE: Ideas, insights, or learnings worth remembering.
-    - QUERY: The user is asking a question to retrieve information from their past notes, tasks, or the vault (e.g., "What did the analyst say?", "When is my meeting?").
+    - QUERY: The user is asking a question to retrieve information from their past notes, tasks, or the vault (e.g., "What did the analyst say?", "What's the status of Qhord?"). Any question about meetings, calendar, schedule, or what's on the agenda = DAILY_BRIEF, not QUERY.
     - DISAMBIGUATION: If confidence < 0.8 and you're torn between multiple intents, list alternatives in "possible_intents". For example, if a message could be either a QUERY or a TASK, set intent to your best guess and possible_intents to ["TASK", "QUERY"]. Leave as an empty array if you're confident.
     - CONVERSATION HISTORY: Use the CONVERSATION HISTORY block above to disambiguate vague follow-ups. If Danny says "what about tomorrow?" after having just asked about today, route as DAILY_BRIEF. If he says "reschedule the 2pm" after discussing calendar, route as TASK. The history tells you what the current topic is.
     - DELEGATE: Research, competitor audits, or autonomous web research.
     - DECLARE_PRACTICE: If Danny says "I want to [activity] every [timeframe]" (like a habit), "I'm going to start [activity]", "Track [activity] for me", "I want to build a practice of [activity]" — classify as DECLARE_PRACTICE. Extract the practice name into the title field. Route to the most relevant entity. NOTE: Explicit requests to schedule meetings or calendar blocks are TASKS, not practices.
-    - DAILY_BRIEF: Danny is asking about today's schedule, calendar, or what's on his plate. Examples: "what's today?", "what's on my calendar?", "what do I have today?", "give me my day", "what's happening today?". Extract into title: "Daily Briefing". Entity: INBOX.
+    - DAILY_BRIEF: Danny is asking about today's schedule, calendar, or what's on his plate. Examples: "what's today?", "what's on my calendar?", "what meetings do I have today?", "give me my day", "what's happening today?". Extract into title: "Daily Briefing". Entity: INBOX.
     - RECEIPT RULE: Receipts must be confirmation-only. Use: '[Subject] logged for [Time/Day].'
     - LITERAL SUBJECT RULE: Mirror Danny's verb. (e.g., 'Check with Vasanth' → 'Vasanth check-in logged').
     - ZERO DATA LOSS: Never drop qualifiers like 'Canadian project' or 'Zoho API'.

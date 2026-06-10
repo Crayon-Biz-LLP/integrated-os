@@ -70,7 +70,6 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
             return ""
 
         # Semantic search for relevant memories (last 30 days)
-        from datetime import timedelta
 
         memories_res = supabase.rpc('match_memories_hybrid', {
             'query_embedding': query_embedding,
@@ -232,7 +231,7 @@ async def detect_temporal_patterns() -> str:
         memories_res = supabase.table('memories') \
             .select('content, memory_type, created_at') \
             .order('created_at', desc=True) \
-            .limit(500) \
+            .limit(100) \
             .execute()
 
         if not memories_res.data:
@@ -269,14 +268,13 @@ async def detect_temporal_patterns() -> str:
         audit_log_sync("pulse", "WARNING", f"⚠️ Temporal Pattern Detector failed (non-critical): {e}")
         return ""
 
-async def serendipity_engine(active_tasks: list, people: list, resources: list) -> str:
+async def serendipity_engine(active_tasks: list, people: list, resources: list, max_paths: int = 30) -> str:
     """
     SERENDIPITY ENGINE: Surfaces unexpected multi-hop connections in the knowledge graph.
     Uses PostgreSQL Recursive CTEs to find hidden 2nd and 3rd degree links between today's tasks
     and historical projects, people, or resources.
     """
     try:
-        from core.pulse.llm import supabase
         import random
         
         # 1. Gather all active task IDs
@@ -309,9 +307,9 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list) 
         if not paths:
             return "No multi-hop connections found in the graph."
             
-        # 4. Sample up to 30 paths to prevent token bloat and guarantee novelty
-        if len(paths) > 30:
-            paths = random.sample(paths, 30)
+        # 4. Sample up to max_paths to prevent token bloat and guarantee novelty
+        if len(paths) > max_paths:
+            paths = random.sample(paths, max_paths)
             
         # 5. Format the paths beautifully for the LLM
         formatted_paths = []
