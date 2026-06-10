@@ -77,6 +77,17 @@
 **Rejected**: Vector-only RAG.
 **Why**: "What did I think about Solvstrat?" needs vector. "What are all people connected to Solvstrat?" needs graph. Combining both gives Danny interrogation that a pure RAG system cannot.
 
+### Decision 5: Entity extraction is best-effort + async
+**Chosen**: Extract entities and write graph edges in the background after the webhook response returns.
+**Rejected**: Inline LLM extraction during webhook response.
+**Why**: The webhook must respond to Telegram within a few seconds. Background processing handles LLM latency gracefully.
+
+### Decision 6: Human-in-the-loop for high-risk graph entities
+**Chosen**: New `person`, `project`, and `organization` nodes require Danny's explicit approval via Decision Pulse before creation.
+**Rejected**: Auto-create all extracted entities; post-hoc review with delete-only.
+**Why**: The graph is the backbone of Rhodey's intelligence — wrong nodes infect every query and brief. The Decision Pulse already exists as an approval layer for tasks/emails/WhatsApp, so the marginal review cost is low. Low-risk entity types (concepts, emotional_states, resources, practices) still auto-create.
+**Tradeoff**: Latency between extraction and graph availability (~0-12 hours depending on next Decision Pulse). Acceptable because query-time traversal uses the existing `graph_nodes`, and pending entities don't degrade existing results.
+
 ---
 
 ## Scale Assumptions

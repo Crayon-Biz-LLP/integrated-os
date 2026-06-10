@@ -241,3 +241,25 @@ T-003 (DLQ table) — parallel to T-002, required by T-006
 **File**: `core/pulse/memory.py`, `core/webhook/dispatch.py`
 **Status**: Completed
 **Details**: Mapped `people` and `resources` lists to `graph_nodes` via `label` matches. Appended to `start_node_ids` in `find_serendipity_paths` to enable true multi-hop serendipity across domains (not just task-based). Updated `dispatch.py` to pass `get_people()`.
+
+## Graph Integrity (Completed)
+
+### T-015: Guard A — Orphaned BELONGS_TO edge cleanup
+**File**: `core/pulse/graph.py`, `core/skills/backfill_graph.py`
+**Status**: Completed
+**Details**: Before inserting a new BELONGS_TO edge for a task, delete any existing BELONGS_TO edge with matching `metadata->>task_id`. Applied in both `write_graph_edges_for_task` (live pulse) and `sync_tasks_to_graph` within `backfill_graph.py` (batch task sync). 
+
+### T-016: Guard B — Text-anchoring hallucination prevention
+**File**: `core/skills/backfill_graph.py`
+**Status**: Completed
+**Details**: Added `"CRITICAL RULE: Only extract entities that are explicitly, verbatim stated in the text"` to the LLM prompt. Added Python-level validation that drops any extracted node whose label is not a substring of the source text (case-insensitive). Edges referencing dropped labels are also dropped. "Danny" is always permitted (for AUTHORED edges).
+
+### T-017: HITL — Pending approval for new person/project nodes
+**File**: `core/skills/backfill_graph.py`, `core/pulse/engine.py`, `core/webhook/handler.py`, `core/pulse/graph.py`
+**Status**: Completed
+**Details**: Created `pending_graph_nodes` table. `get_or_create_node()` and `upsert_nodes()` route new `person`, `project`, or `organization` nodes to `pending_graph_nodes` with `status: pending` instead of creating them directly. Decision Pulse queries and surfaces them with `g{id}` inline keyboard. `process_graph_pending_decision()` in `graph.py` handles approve/reject callbacks. In-memory `pending_entities_cache` prevents duplicates during batch runs.
+
+### T-018: Time-aware calendar events + fixed schedule query routing
+**File**: `core/webhook/dispatch.py`, `core/webhook/classify.py`
+**Status**: Completed
+**Details**: Fixed `classify.py` so schedule questions with time ranges (e.g. "meetings this week?") route to `QUERY` instead of `DAILY_BRIEF`, enabling proper date range resolution. Added current-time injection and `[PAST]` tagging for calendar events in both `interrogate_brain()` and `handle_daily_brief()`. Applied strict output formatting (no invented headings, max 600 tokens, mandatory stop sequence) to both code paths.

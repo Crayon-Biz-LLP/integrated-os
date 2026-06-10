@@ -41,10 +41,12 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 
 ### Database (Supabase)
 - Uses `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)
-- Tables: `tasks`, `raw_dumps`, `memories`, `graph_nodes`, `graph_edges`, `projects`, `resources`, `clusters`, `people`, `core_config`, `whatsapp_messages`
+- Tables: `tasks`, `raw_dumps`, `memories`, `graph_nodes`, `graph_edges`, `projects`, `resources`, `clusters`, `people`, `core_config`, `whatsapp_messages`, `pending_graph_nodes`
 - **Note**: `raw_dumps` does NOT store embeddings - only `memories` table has embeddings
+- **Note**: `pending_graph_nodes` holds new person/project nodes awaiting Danny's approval via Decision Pulse (`g{id}` shortcode)
 - `whatsapp_messages` holds WhatsApp chats with classification + approval status
 - `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter)
+- **Graph integrity**: Three layers protect against bad data — (1) Guard A deletes stale BELONGS_TO edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation; (3) HITL gates new person/project nodes through `pending_graph_nodes` for Danny's approval via Decision Pulse
 
 ### External Integrations
 - **Gemini AI**: Briefing (`gemini-3.5-flash`), Classification (`gemini-3.1-flash-lite`), Embeddings (`gemini-embedding-2-preview`)
@@ -60,6 +62,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 | `e{id}` | `email_pending_tasks` | Approve/reject email-suggested task |
 | `c{id}` | `call_pending_items` | Approve/reject call-extracted item |
 | `w{id}` | `whatsapp_messages` | Approve/reject WhatsApp-suggested task |
+| `g{id}` | `pending_graph_nodes` | Approve/reject new person/project node |
 | `{id}` (bare) | Tries email → call → whatsapp → practice | Fallback compat |
 
 ## Project Routing Tags

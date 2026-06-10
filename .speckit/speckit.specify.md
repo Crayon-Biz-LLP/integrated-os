@@ -118,3 +118,35 @@
 
 **Out of scope**: Re-classifying intent or entity on these records
 
+---
+
+### SPEC-006: Graph Integrity — Guards + Human-in-the-Loop
+
+**What**: Three-layer defence against bad graph data and LLM hallucination in the knowledge graph.
+
+**Why**: The graph is the backbone of Rhodey's intelligence. Two concrete bugs were found:
+- Orphaned `BELONGS_TO` edges persisting after tasks changed projects (task 161 → Solvstrat ghost)
+- LLM-extracted `WORKS_AT` edges hallucinating "Solvstrat" from a memory that never mentioned it
+
+**Acceptance Criteria**:
+
+**Guard A — Orphaned Edge Cleanup:**
+- Both `core/pulse/graph.py:write_graph_edges_for_task` and `core/skills/backfill_graph.py` delete any `BELONGS_TO` edge with matching `metadata->>task_id` before inserting a new one
+- No task can have more than one BELONGS_TO edge at any time
+
+**Guard B — Hallucination Prevention:**
+- `extract_graph_elements()` prompt includes: "Only extract entities explicitly, verbatim stated in the text"
+- After LLM extraction, Python validates each label: `label.lower()` must be a substring of `text.lower()`
+- Hallucinated nodes + their edges dropped with audit warning
+- "Danny" always valid (for AUTHORED edges)
+
+**HITL — Pending Approval:**
+- New table: `pending_graph_nodes(id, label, type, source_text, proposed_edges, status, created_at)`
+- `get_or_create_node()` and `upsert_nodes()` check `pending_entities_cache` before inserting
+- Decision Pulse (`core/pulse/engine.py`) queries pending items and renders inline keyboard with `g{id}` prefix
+- On approve → node upserted into `graph_nodes`
+- On reject → status set to `rejected`
+- In-memory cache (`pending_entities_cache`) prevents duplicate entries during batch runs
+
+**Out of scope**: Gating algorithmically-created edges (PRECEDES, FOLLOWED_BY) — low risk
+
