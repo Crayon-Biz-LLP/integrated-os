@@ -300,6 +300,23 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list, 
         if not start_node_ids:
             return "No graph nodes found for active tasks."
             
+        # Add people and resources as seed nodes
+        entity_labels = []
+        for p in people:
+            if p.get('name'):
+                entity_labels.append(p['name'])
+        for r in resources:
+            if r.get('title'):
+                entity_labels.append(r['title'])
+                
+        if entity_labels:
+            try:
+                entity_nodes = supabase.table('graph_nodes').select('id').in_('label', entity_labels).execute()
+                if entity_nodes.data:
+                    start_node_ids.extend([n['id'] for n in entity_nodes.data])
+            except Exception:
+                pass
+            
         # 3. Call the Supabase RPC
         rpc_res = supabase.rpc('find_serendipity_paths', {'start_node_ids': start_node_ids, 'max_depth': 3}).execute()
         paths = rpc_res.data

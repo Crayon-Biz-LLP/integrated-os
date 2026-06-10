@@ -693,7 +693,8 @@ Query: {query}"""
         async def fetch_serendipity():
             from core.pulse.memory import serendipity_engine
             tasks = await context_provider.get_active_tasks()
-            return await serendipity_engine(tasks, [], [], max_paths=5)
+            people = await context_provider.get_people()
+            return await serendipity_engine(tasks, people, [], max_paths=5)
         serendipity_task = safe_fetch(fetch_serendipity(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None")
 
         async def fetch_hindsight():

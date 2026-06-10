@@ -227,3 +227,17 @@ T-002 (audit table)
 T-003 (DLQ table) — parallel to T-002, required by T-006
 ```
 
+
+## Database Introspection (Completed)
+
+### T-013: Extract Supabase Schema
+**File**: `db/schema.sql`, `db/rpcs.sql`
+**Status**: Completed
+**Details**: Introspected live Supabase database via `supabase_execute_sql` and `supabase_list_tables`. Dumped tables, columns, defaults, primary keys, foreign keys, and RPC definitions to version control.
+
+## Serendipity Engine Fix (Completed)
+
+### T-014: Wire people and resources to Serendipity
+**File**: `core/pulse/memory.py`, `core/webhook/dispatch.py`
+**Status**: Completed
+**Details**: Mapped `people` and `resources` lists to `graph_nodes` via `label` matches. Appended to `start_node_ids` in `find_serendipity_paths` to enable true multi-hop serendipity across domains (not just task-based). Updated `dispatch.py` to pass `get_people()`.
