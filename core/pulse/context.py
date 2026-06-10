@@ -150,6 +150,11 @@ class ContextProvider:
         if delta_days > max_days:
             end_date = start_date + timedelta(days=max_days)
 
+        cache_key = f"rhodey:cache:calendar_range:{start_date.isoformat()}:{end_date.isoformat()}:{max_days}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         events = []
         try:
             from core.services.google_service import get_cached_service, format_rfc3339
@@ -190,6 +195,7 @@ class ContextProvider:
             events = events[:3]
             events.append({"time": "", "title": f"...and {delta_days - max_days} more days. Output truncated to 14 days.", "source": "system"})
 
+        cache_set(cache_key, events, ttl=120)
         return events
 
     async def get_resources_context(self, query_text: str, match_count: int = 5):
