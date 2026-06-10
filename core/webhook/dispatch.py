@@ -721,9 +721,6 @@ Query: {query}"""
         available_sources = []
         all_context = []
         
-        if calendar_context != "None":
-            all_context.append(f"CALENDAR EVENTS:\n{calendar_context}")
-            available_sources.append("calendar events")
         if tactical_map:
             all_context.append(f"TACTICAL MAP:\n{tactical_map}")
             available_sources.append("tactical map")
@@ -763,6 +760,9 @@ Query: {query}"""
         if people_context != "None":
             all_context.append(f"PEOPLE:\n{people_context}")
             available_sources.append("people network")
+        if calendar_context != "None":
+            all_context.append(f"CALENDAR EVENTS:\n{calendar_context}")
+            available_sources.append("calendar events")
 
         if not all_context:
             await send_telegram(chat_id, "🔍 *I don't have any relevant data to answer that.*\n\n_Try rephrasing._")
@@ -786,7 +786,11 @@ Query: {query}"""
 Danny is asking a question. You have access to his: {sources_str}.
 
 CRITICAL INSTRUCTION - FOLLOW THIS EXACT ORDER:
-1. DIRECT ANSWER: You MUST answer Danny's question directly in your first paragraph using ONLY the provided context. If asked about a schedule, list the calendar events immediately. Do NOT start with bottlenecks, analysis, or context. If the context does not contain the answer, say "I don't have that information."
+1. DIRECT ANSWER: You MUST answer Danny's question directly in your first paragraph using ONLY the provided context. 
+   - If the question is about SCHEDULE/MEETINGS/CALENDAR: Start with the calendar events. List them immediately. The question is about the schedule.
+   - If the question is about TASKS/STATUS: Start with the task list.
+   - For any other question: Answer directly.
+   Do NOT start with bottlenecks, analysis, or context unless that is what was asked. If the context does not contain the answer, say "I don't have that information."
 2. CONTEXT (Optional): Only AFTER the direct answer, add a separate "**Context:**" section. In this section, identify what matters — dependencies, blockers, urgency, or patterns — and cut through the noise.
 
 {context_str}{conversation_history}
