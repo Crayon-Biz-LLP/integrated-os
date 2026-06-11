@@ -12,6 +12,7 @@ from core.webhook.call import process_call_pending_decision
 from core.webhook.whatsapp import process_whatsapp_pending_decision
 from core.webhook.teams import process_teams_pending_decision
 from core.pulse.graph import process_graph_pending_decision
+from core.webhook.graph import interpret_graph_corrections, apply_graph_actions, active_sessions, get_active_session, clear_session
 from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, ask_task_or_note_confirmation, resolve_task_note_confirmation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
 from core.webhook.commands import handle_command, handle_undo_command
 from core.webhook.multimodal import process_multimodal_content
@@ -198,8 +199,56 @@ async def process_webhook(update: dict):
         _whatsapp_reject_match = re.match(r'^[wW](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
         _teams_approve_match = re.match(r'^[tT](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _teams_reject_match = re.match(r'^[tT](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
+        _graph_approve_match = re.match(r'^[gG](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
+        _graph_reject_match = re.match(r'^[gG](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
         _approve_match = re.match(r'^(\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _reject_match = re.match(r'^(\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
+
+        # ---------------------------------------------------------
+        # SESSION CONFIRMATION GUARD (NLP Graph Corrections)
+        # ---------------------------------------------------------
+        session = get_active_session(chat_id)
+        if session:
+            # Did they say yes to the proposal?
+            if text.strip().lower() in ('yes', 'confirm', 'looks good', 'do it', 'approve', 'y'):
+                await send_telegram(chat_id, "⏳ Applying corrections...")
+                results = await apply_graph_actions(session['actions'], session['original_items_map'])
+                clear_session(chat_id)
+                summary_text = f"Applied: {results['applied']} | Failed: {results['failed']}\n" + "\n".join(results['details'])
+                await send_telegram(chat_id, summary_text)
+                return {"success": True}
+            
+            # Did they cancel the session?
+            if text.strip().lower() in ('no', 'cancel', 'stop', 'drop', 'n'):
+                clear_session(chat_id)
+                await send_telegram(chat_id, "Session cancelled. Items remain pending.")
+                return {"success": True}
+            
+            # If they sent something else, assume it's a modification to the proposal.
+            # It will fall through to the NLP check below.
+
+        # ---------------------------------------------------------
+        # QUICK DECISION ROUTES (Binary Approve/Reject)
+        # ---------------------------------------------------------
+
+        # g-prefix: direct to pending_graph_nodes
+        if _graph_approve_match or _graph_reject_match:
+            try:
+                _sc = (_graph_approve_match or _graph_reject_match).group(1)
+                _is_approve = bool(_graph_approve_match)
+                result = await process_graph_pending_decision(
+                    pending_id=int(_sc),
+                    decision='approve' if _is_approve else 'reject'
+                )
+                if result['success']:
+                    await send_telegram(chat_id, f"✅ {result['message']}")
+                else:
+                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                return {"success": True}
+            except Exception as _sc_err:
+                audit_log_sync("webhook", "WARNING", f"Graph prefix shortcode error: {_sc_err}")
+                await send_telegram(chat_id, "Something went wrong. Try again.")
+                return {"success": True}
 
         # e-prefix: direct to messages(email)
         if _email_approve_match or _email_reject_match:
@@ -283,6 +332,59 @@ async def process_webhook(update: dict):
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Teams prefix shortcode error: {_sc_err}")
                 await send_telegram(chat_id, "Something went wrong. Try again.")
+                return {"success": True}
+
+        # ---------------------------------------------------------
+        # NLP GRAPH CORRECTIONS ROUTE (Catch-all for g{id} free-text)
+        # ---------------------------------------------------------
+        if re.search(r'[gG]\d+', text):
+            try:
+                # Fetch pending items
+                pending_res = supabase.table('pending_graph_nodes').select('id, label, type, source_text').eq('status', 'pending').execute()
+                pending_items = pending_res.data or []
+                
+                if pending_items:
+                    await send_telegram(chat_id, "⏳ Interpreting your corrections...")
+                    
+                    # Call Gemini
+                    actions = await interpret_graph_corrections(text, pending_items)
+                    
+                    if not actions:
+                        await send_telegram(chat_id, "⚠️ Couldn't parse any structured actions from that. Try again?")
+                        return {"success": True}
+                    
+                    # Store in session cache
+                    original_map = {item['id']: item for item in pending_items}
+                    active_sessions[chat_id] = {
+                        "actions": actions,
+                        "original_items_map": original_map,
+                        "expires_at": datetime.now() + timedelta(minutes=5)
+                    }
+                    
+                    # Format proposed actions for confirmation
+                    proposal_lines = ["*Here is what I understood:*"]
+                    for action in actions:
+                        node_id = action.get('id')
+                        orig = original_map.get(node_id)
+                        if not orig:
+                            continue
+                            
+                        act = action.get('action', '').upper()
+                        if act == 'APPROVE':
+                            new_label = action.get('corrected_label', orig['label'])
+                            new_type = action.get('corrected_type', orig['type'])
+                            proposal_lines.append(f"• g{node_id} ({orig['label']}) → {act} as \"{new_label}\" ({new_type})")
+                        elif act == 'REJECT':
+                            reason = action.get('reason', 'no reason provided')
+                            proposal_lines.append(f"• g{node_id} ({orig['label']}) → {act} ({reason})")
+                            
+                    proposal_lines.append("\nReply **yes** to confirm, or send modifications.")
+                    await send_telegram(chat_id, "\n".join(proposal_lines))
+                    return {"success": True}
+                    
+            except Exception as e:
+                audit_log_sync("webhook", "ERROR", f"Graph NLP route error: {e}")
+                await send_telegram(chat_id, "⚠️ Failed to process graph corrections.")
                 return {"success": True}
 
         # Unprefixed: backward-compatible — email first, then calls, then practice dismissal
