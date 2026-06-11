@@ -17,18 +17,20 @@ async def process_call_pending_decision(pending_id: int, decision: str, supabase
     """
     client = supabase_client or supabase
 
-    row_res = client.table('call_pending_items')\
+    row_res = client.table('messages')\
         .select('*')\
         .eq('id', pending_id)\
+        .eq('channel', 'call')\
         .is_('danny_decision', 'null')\
         .limit(1)\
         .maybe_single()\
         .execute()
 
     if not row_res.data:
-        decided = client.table('call_pending_items')\
+        decided = client.table('messages')\
             .select('id, danny_decision')\
             .eq('id', pending_id)\
+            .eq('channel', 'call')\
             .not_.is_('danny_decision', 'null')\
             .limit(1)\
             .maybe_single()\
@@ -46,7 +48,8 @@ async def process_call_pending_decision(pending_id: int, decision: str, supabase
     row = row_res.data
     title = row.get('suggested_title', '')
     recording_id = row.get('recording_id')
-    action_type = row.get('action_type', 'task')
+    metadata = row.get('metadata') or {}
+    action_type = metadata.get('action_type', 'task')
     summary = row.get('summary', '')
 
     if decision == 'approve':
@@ -72,7 +75,7 @@ async def process_call_pending_decision(pending_id: int, decision: str, supabase
                 "message": f"Task staging failed for [{row['id']}]. You can retry. ({e})"
             }
 
-        client.table('call_pending_items').update({
+        client.table('messages').update({
             'danny_decision': 'approved',
             'decided_at': datetime.now(timezone.utc).isoformat()
         }).eq('id', row['id']).execute()
@@ -81,7 +84,7 @@ async def process_call_pending_decision(pending_id: int, decision: str, supabase
         return {"success": True, "action": "approved", "message": f"Staged: {title}"}
 
     elif decision == 'reject':
-        client.table('call_pending_items').update({
+        client.table('messages').update({
             'danny_decision': 'rejected',
             'decided_at': datetime.now(timezone.utc).isoformat()
         }).eq('id', row['id']).execute()

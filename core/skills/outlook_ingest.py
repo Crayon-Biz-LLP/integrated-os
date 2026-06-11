@@ -29,8 +29,9 @@ def build_active_task_list() -> list:
 def fetch_rejected_email_tasks() -> list:
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-        result = supabase.table('email_pending_tasks')\
+        result = supabase.table('messages')\
             .select('id, suggested_title')\
+            .eq('channel', 'email')\
             .eq('danny_decision', 'rejected')\
             .gte('created_at', cutoff)\
             .execute()
@@ -309,7 +310,7 @@ async def ingest_outlook_messages(limit=25):
         seen_ids.add(msg_id)
 
         try:
-            existing = supabase.table('emails').select('id').eq('message_id', msg_id).maybe_single().execute()
+            existing = supabase.table('messages').select('id').eq('channel', 'email').eq('message_id', msg_id).maybe_single().execute()
             if existing is not None and getattr(existing, 'data', None):
                 skipped += 1
                 continue
@@ -348,39 +349,44 @@ async def ingest_outlook_messages(limit=25):
             classification = classification_data.get("classification", "ignored")
 
             if classification == "ignored":
-                supabase.table('emails').insert({
+                supabase.table('messages').insert({
+                    "channel": "email",
                     "message_id": msg_id,
                     "thread_id": normalized["thread_id"],
                     "source": "outlook",
-                    "sender": sender,
-                    "sender_email": sender_email,
+                    "sender_name": sender,
+                    "sender_id": sender_email,
                     "subject": subject,
                     "received_at": normalized["received_at"],
-                    "classification": EmailStatus.IGNORED,
-                    "status": EmailStatus.IGNORED
+                    "classification": "ignored",
+                    "processing_status": "completed",
+                    "danny_decision": "skipped"
                 }).execute()
                 print(f"⏭️ [ignored] {subject} | From: {sender_email}")
                 ignored += 1
                 continue
 
             email_row = {
+                "channel": "email",
                 "message_id": msg_id,
                 "thread_id": normalized["thread_id"],
                 "source": "outlook",
-                "sender": sender,
-                "sender_email": sender_email,
+                "sender_name": sender,
+                "sender_id": sender_email,
                 "subject": subject,
-                "body_summary": body[:2000],
-                "body_raw": normalized.get("body_raw", "")[:20000],
+                "body": normalized.get("body_raw", "")[:20000],
                 "received_at": normalized["received_at"],
                 "classification": classification,
-                "status": EmailStatus.NEW if classification == "actionable" else EmailStatus.PROCESSED,
+                "processing_status": "completed" if classification != "error" else "failed",
                 "linked_person_id": None,
-                "linked_project_id": None
+                "linked_project_id": None,
+                "metadata": {
+                    "body_summary": body[:2000]
+                }
             }
 
             if classification == "fyi":
-                insert_res = supabase.table('emails').insert(email_row).execute()
+                insert_res = supabase.table('messages').insert(email_row).execute()
                 if not getattr(insert_res, 'data', None):
                     print(f"⚠️ Email insert returned no data for {subject}")
                     continue
@@ -420,22 +426,20 @@ async def ingest_outlook_messages(limit=25):
                 email_row['linked_person_id'] = linked_person_id
                 email_row['linked_project_id'] = linked_project_id
                 
-                insert_res = supabase.table('emails').insert(email_row).execute()
-                if not getattr(insert_res, 'data', None):
-                    print(f"⚠️ Email insert returned no data for {subject}")
-                    continue
-                email_id = insert_res.data[0]['id']
-                
                 suggested_task = classification_data.get("suggested_task")
                 is_human = classification_data.get("is_human_sender", False)
+                email_row['is_human_sender'] = is_human
                 
                 if suggested_task:
                     suggested_title = suggested_task or ''
+                    email_row['suggested_title'] = suggested_task
+                    email_row['suggested_project'] = linked_project_name
                     
                     # Check rejected tasks first
                     rejected_guard = check_duplicate(suggested_title, rejected_task_list)
                     if rejected_guard['result'] in ['block', 'flag']:
                         print(f"⏭️  Skipping task as it matches previously rejected task: {rejected_guard['matched_title']}")
+                        email_row['danny_decision'] = 'skipped'
                     else:
                         guard = check_duplicate(suggested_title, active_task_list)
                         if guard['result'] == 'block':
@@ -443,37 +447,29 @@ async def ingest_outlook_messages(limit=25):
                                 try:
                                     supabase.table('tasks').update({'title': suggested_title}).eq('id', guard['matched_id']).execute()
                                     print(f"🔁 Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' → '{suggested_title}'")
+                                    email_row['danny_decision'] = 'merged'
                                 except Exception as upd_err:
                                     print(f"⚠️ Auto-update failed: {upd_err}")
+                                    email_row['danny_decision'] = 'skipped'
                             else:
                                 print(f"⚠️ Duplicate guard (block): '{suggested_title}' matches existing task [{guard['matched_id']}]. Skipping.")
+                                email_row['danny_decision'] = 'skipped'
                         elif guard['result'] == 'flag':
-                            supabase.table('email_pending_tasks').insert({
-                                "email_id": email_id,
-                                "suggested_title": suggested_task,
-                                "suggested_project": linked_project_name,
-                                "shown_in_brief": False,
-                                "danny_decision": None,
-                                "is_human_sender": is_human,
-                                "possible_duplicate": True,
-                                "duplicate_of_title": guard['matched_title']
-                            }).execute()
+                            email_row['possible_duplicate'] = True
+                            email_row['duplicate_of_title'] = guard['matched_title']
                             print(f"⚠️ Duplicate guard (flag): '{suggested_title}' may be similar to task '{guard['matched_title']}'. Created with flag.")
-                        else:
-                            supabase.table('email_pending_tasks').insert({
-                                "email_id": email_id,
-                                "suggested_title": suggested_task,
-                                "suggested_project": linked_project_name,
-                                "shown_in_brief": False,
-                                "danny_decision": None,
-                                "is_human_sender": is_human
-                            }).execute()
+
+                insert_res = supabase.table('messages').insert(email_row).execute()
+                if not getattr(insert_res, 'data', None):
+                    print(f"⚠️ Email insert returned no data for {subject}")
+                    continue
+                email_id = insert_res.data[0]['id']
                 
                 if classification_data.get("needs_draft"):
                     draft_body = await generate_draft(sender, subject, body)
                     if draft_body:
                         supabase.table('email_drafts').insert({
-                            "email_id": email_id,
+                            "message_id": email_id,
                             "draft_body": draft_body,
                             "status": "pending"
                         }).execute()
@@ -484,15 +480,16 @@ async def ingest_outlook_messages(limit=25):
         except Exception as e:
             print(f"❌ Error processing Outlook message {msg_id}: {e}")
             try:
-                supabase.table('emails').insert({
+                supabase.table('messages').insert({
+                    "channel": "email",
                     "message_id": msg_id,
                     "source": "outlook",
-                    "sender": (sender or "unknown"),
-                    "sender_email": (sender_email or "unknown"),
+                    "sender_name": sender or "unknown",
+                    "sender_id": sender_email or "unknown",
                     "classification": EmailStatus.ERROR,
-                    "status": EmailStatus.ERROR,
-                    "subject": (subject or "processing_error"),
-                    "received_at": (normalized.get("received_at") if normalized else None) or datetime.now(timezone.utc).isoformat()
+                    "processing_status": "failed",
+                    "subject": subject or "processing_error",
+                    "received_at": datetime.now(timezone.utc).isoformat()
                 }).execute()
             except Exception as insert_err:
                 print(f"⚠️ Failed to insert error record for {msg_id}: {insert_err}")
@@ -516,7 +513,7 @@ async def ingest_outlook_messages(limit=25):
                     continue
                 seen_ids.add(msg_id)
                 
-                existing = supabase.table('emails').select('id').eq('message_id', msg_id).maybe_single().execute()
+                existing = supabase.table('messages').select('id').eq('channel', 'email').eq('message_id', msg_id).maybe_single().execute()
                 if existing is not None and getattr(existing, 'data', None):
                     sent_skipped += 1
                     continue
@@ -539,21 +536,24 @@ async def ingest_outlook_messages(limit=25):
                     body_preview = body_content
                 
                 email_row = {
+                    "channel": "email",
                     "message_id": msg_id,
                     "thread_id": msg.get("conversationId", ""),
                     "source": "outlook",
                     "direction": "outgoing",
-                    "sender": to_header,
-                    "sender_email": to_header,
+                    "sender_name": to_header,
+                    "sender_id": to_header,
                     "subject": subject,
-                    "body_summary": body_preview[:2000],
-                    "body_raw": body_content[:20000],
+                    "body": body_content[:20000],
                     "received_at": msg.get("sentDateTime") or datetime.now(timezone.utc).isoformat(),
                     "classification": "fyi",
-                    "status": "processed"
+                    "processing_status": "completed",
+                    "metadata": {
+                        "body_summary": body_preview[:2000]
+                    }
                 }
                 
-                insert_res = supabase.table('emails').insert(email_row).execute()
+                insert_res = supabase.table('messages').insert(email_row).execute()
                 if getattr(insert_res, 'data', None):
                     sent_processed += 1
                     print(f"✅ [sent] {subject} | To: {to_header}")

@@ -44,14 +44,15 @@ supabase: Client = create_client(
 
 
 def is_already_in_email_queue(title: str) -> bool:
-    """Check if a task title already exists in email_pending_tasks."""
+    """Check if a task title already exists in pending emails."""
     try:
         keywords = [w for w in title.lower().split() if len(w) > 4]
         if not keywords:
             return False
         for kw in keywords[:3]:
-            result = supabase.table('email_pending_tasks')\
+            result = supabase.table('messages')\
                 .select('id')\
+                .eq('channel', 'email')\
                 .ilike('suggested_title', f'%{kw}%')\
                 .is_('danny_decision', 'null')\
                 .limit(1)\

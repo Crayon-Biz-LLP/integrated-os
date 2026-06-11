@@ -752,10 +752,11 @@ Query: {query}"""
                 
             lines = []
             try:
-                # Get both incoming and outgoing emails, searching subject, body_summary, and sender_email
-                e_res = supabase.table('emails').select('id, subject, sender, sender_email, body_summary, received_at, status, direction') \
-                    .or_(f"subject.ilike.%{search_val}%,body_summary.ilike.%{search_val}%,sender_email.ilike.%{search_val}%,body_raw.ilike.%{search_val}%") \
-                    .in_('status', ['new', 'processed']) \
+                # Get both incoming and outgoing emails, searching subject, body, and sender_id
+                e_res = supabase.table('messages').select('id, subject, sender_name, sender_id, body, received_at, processing_status, direction, metadata') \
+                    .eq('channel', 'email') \
+                    .or_(f"subject.ilike.%{search_val}%,body.ilike.%{search_val}%,sender_id.ilike.%{search_val}%") \
+                    .in_('processing_status', ['pending', 'completed']) \
                     .order('received_at', desc=True).limit(8).execute()
                 
                 found_sent = False
@@ -764,10 +765,10 @@ Query: {query}"""
                         direction = e.get('direction', 'incoming')
                         if direction == 'outgoing':
                             found_sent = True
-                            preview = (e.get('body_summary') or '').replace('\n', ' ')[:150]
-                            lines.append(f"- [YOUR REPLY] Re: {e.get('subject', '')}: \"{preview}\"... (to {e.get('sender_email', '')})")
+                            preview = (e.get('body') or '').replace('\n', ' ')[:150]
+                            lines.append(f"- [YOUR REPLY] Re: {e.get('subject', '')}: \"{preview}\"... (to {e.get('sender_id', '')})")
                         else:
-                            lines.append(f"- [EMAIL] {e.get('subject', '')} (from {e.get('sender', '')}, status: {e.get('status', '')})")
+                            lines.append(f"- [EMAIL] {e.get('subject', '')} (from {e.get('sender_name') or e.get('sender_id', '')}, status: {e.get('processing_status', '')})")
                             
                 # Fallback to API if we didn't find any sent replies
                 if not found_sent:
@@ -786,10 +787,10 @@ Query: {query}"""
                 pass
                 
             try:
-                w_res = supabase.table('whatsapp_messages').select('id, sender_name, message_text, received_at').ilike('message_text', f"%{search_val}%").order('received_at', desc=True).limit(3).execute()
+                w_res = supabase.table('messages').select('id, sender_name, body, received_at').eq('channel', 'whatsapp').ilike('body', f"%{search_val}%").order('received_at', desc=True).limit(3).execute()
                 if w_res.data:
                     for w in w_res.data:
-                        text = w.get('message_text', '').replace('\n', ' ')[:100]
+                        text = w.get('body', '').replace('\n', ' ')[:100]
                         lines.append(f"- [WHATSAPP] {text}... (from {w.get('sender_name', '')})")
             except Exception:
                 pass

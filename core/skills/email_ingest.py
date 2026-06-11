@@ -40,8 +40,9 @@ def build_active_task_list() -> list:
 def fetch_rejected_email_tasks() -> list:
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-        result = supabase.table('email_pending_tasks')\
+        result = supabase.table('messages')\
             .select('id, suggested_title')\
+            .eq('channel', 'email')\
             .eq('danny_decision', 'rejected')\
             .gte('created_at', cutoff)\
             .execute()
@@ -321,7 +322,7 @@ def process_sent_email(msg_data: dict, gmail_service) -> tuple:
     msg_id = msg_data['id']
     try:
         # Check if already exists to prevent duplicate processing
-        existing = supabase.table('emails').select('id').eq('message_id', msg_id).maybe_single().execute()
+        existing = supabase.table('messages').select('id').eq('channel', 'email').eq('message_id', msg_id).maybe_single().execute()
         if existing is not None and existing.data:
             return ('ignored', msg_data.get('snippet', '')[:50])
 
@@ -348,23 +349,25 @@ def process_sent_email(msg_data: dict, gmail_service) -> tuple:
         match = re.search(r'<(.+?)>', to_header)
         recipient_email = match.group(1).strip() if match else to_header.strip()
 
-        # We store sent emails with direction='outgoing'
         email_row = {
-            "message_id": msg_id,
-            "thread_id": full_msg.get('threadId', ''),
+            "channel": "email",
             "source": "gmail",
             "direction": "outgoing",
-            "sender": to_header,            # recipient name/email
-            "sender_email": recipient_email, # recipient email
+            "message_id": msg_id,
+            "thread_id": full_msg.get('threadId', ''),
+            "sender_name": to_header,
+            "sender_id": recipient_email,
             "subject": subject,
-            "body_summary": body[:2000],
-            "body_raw": raw_plain[:20000],
+            "body": raw_plain[:20000],
             "received_at": received_at,
             "classification": "fyi",
-            "status": "processed"
+            "processing_status": "completed",
+            "metadata": {
+                "body_summary": body[:2000]
+            }
         }
 
-        insert_res = supabase.table('emails').insert(email_row).execute()
+        insert_res = supabase.table('messages').insert(email_row).execute()
         if not insert_res.data:
             return ('error', 'insert returned no data')
 
@@ -382,7 +385,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
     subject = None
 
     try:
-        existing = supabase.table('emails').select('id').eq('message_id', msg_id).maybe_single().execute()
+        existing = supabase.table('messages').select('id').eq('channel', 'email').eq('message_id', msg_id).maybe_single().execute()
         if existing is not None and existing.data:
             return (EmailStatus.IGNORED, msg_data.get('snippet', '')[:50])
     except Exception as e:
@@ -423,38 +426,43 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
         classification = classification_data.get('classification', 'ignored')
 
         if classification == 'ignored':
-            supabase.table('emails').insert({
+            supabase.table('messages').insert({
+                "channel": "email",
                 "message_id": msg_id,
                 "thread_id": full_msg.get('threadId', ''),
                 "source": "gmail",
-                "sender": sender_name,
-                "sender_email": sender_email,
+                "sender_name": sender_name,
+                "sender_id": sender_email,
                 "subject": subject,
                 "received_at": received_at,
-                "classification": EmailStatus.IGNORED,
-                "status": EmailStatus.IGNORED
+                "classification": "ignored",
+                "processing_status": "completed",
+                "danny_decision": "skipped"
             }).execute()
             print(f"[ignored] {subject} | From: {sender_email}")
             return (EmailStatus.IGNORED, subject)
 
         email_row = {
+            "channel": "email",
             "message_id": msg_id,
             "thread_id": full_msg.get('threadId', ''),
             "source": "gmail",
-            "sender": sender_name,
-            "sender_email": sender_email,
+            "sender_name": sender_name,
+            "sender_id": sender_email,
             "subject": subject,
-            "body_summary": body[:2000],
-            "body_raw": raw_plain[:20000],
+            "body": raw_plain[:20000],
             "received_at": received_at,
             "classification": classification,
-            "status": EmailStatus.NEW if classification == "actionable" else EmailStatus.PROCESSED,
+            "processing_status": "completed" if classification != "error" else "failed",
             "linked_person_id": None,
-            "linked_project_id": None
+            "linked_project_id": None,
+            "metadata": {
+                "body_summary": body[:2000]
+            }
         }
 
         if classification == 'fyi':
-            insert_res = supabase.table('emails').insert(email_row).execute()
+            insert_res = supabase.table('messages').insert(email_row).execute()
             if not insert_res.data:
                 print(f"Email insert returned no data for {subject}")
                 return ('error', 'insert returned no data')
@@ -514,21 +522,19 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
             email_row['linked_person_id'] = linked_person_id
             email_row['linked_project_id'] = linked_project_id
 
-            insert_res = supabase.table('emails').insert(email_row).execute()
-            if not insert_res.data:
-                print(f"Email insert returned no data for {subject}")
-                return ('error', 'insert returned no data')
-            email_id = insert_res.data[0]['id']
-
             suggested_task = classification_data.get('suggested_task')
+            email_row['is_human_sender'] = is_human
 
             if suggested_task:
                 suggested_title = suggested_task or ''
+                email_row['suggested_title'] = suggested_task
+                email_row['suggested_project'] = linked_project_name
                 
                 # Check rejected tasks first
                 rejected_guard = check_duplicate(suggested_title, rejected_tasks)
                 if rejected_guard['result'] in ['block', 'flag']:
                     print(f"Skipping task as it matches previously rejected task: {rejected_guard['matched_title']}")
+                    email_row['danny_decision'] = 'skipped'
                 else:
                     guard = check_duplicate(suggested_title, active_tasks)
                     if guard['result'] == 'block':
@@ -536,31 +542,23 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
                             try:
                                 supabase.table('tasks').update({'title': suggested_title}).eq('id', guard['matched_id']).execute()
                                 print(f"Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' -> '{suggested_title}'")
+                                email_row['danny_decision'] = 'merged'
                             except Exception as upd_err:
                                 print(f"Auto-update failed: {upd_err}")
+                                email_row['danny_decision'] = 'skipped'
                         else:
                             print(f"Duplicate guard (block): '{suggested_title}' matches existing task [{guard['matched_id']}]. Skipping.")
+                            email_row['danny_decision'] = 'skipped'
                     elif guard['result'] == 'flag':
-                        supabase.table('email_pending_tasks').insert({
-                            "email_id": email_id,
-                            "suggested_title": suggested_task,
-                            "suggested_project": linked_project_name,
-                            "shown_in_brief": False,
-                            "danny_decision": None,
-                            "is_human_sender": is_human,
-                            "possible_duplicate": True,
-                            "duplicate_of_title": guard['matched_title']
-                        }).execute()
+                        email_row['possible_duplicate'] = True
+                        email_row['duplicate_of_title'] = guard['matched_title']
                         print(f"Duplicate guard (flag): '{suggested_title}' may be similar to task '{guard['matched_title']}'. Created with flag.")
-                    else:
-                        supabase.table('email_pending_tasks').insert({
-                            "email_id": email_id,
-                            "suggested_title": suggested_task,
-                            "suggested_project": linked_project_name,
-                            "shown_in_brief": False,
-                            "danny_decision": None,
-                            "is_human_sender": is_human
-                        }).execute()
+
+            insert_res = supabase.table('messages').insert(email_row).execute()
+            if not insert_res.data:
+                print(f"Email insert returned no data for {subject}")
+                return ('error', 'insert returned no data')
+            email_id = insert_res.data[0]['id']
 
             if is_human and classification_data.get('has_memory_value'):
                 await write_relationship_note(
@@ -575,7 +573,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
                 draft_body = await generate_draft(sender_name, subject, body)
                 if draft_body:
                     supabase.table('email_drafts').insert({
-                        "email_id": email_id,
+                        "message_id": email_id,
                         "draft_body": draft_body,
                         "status": "pending"
                     }).execute()
@@ -587,13 +585,14 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
     except Exception as e:
         print(f"Error processing email {msg_id}: {e}")
         try:
-            supabase.table('emails').insert({
+            supabase.table('messages').insert({
+                "channel": "email",
                 "message_id": msg_id,
                 "source": "gmail",
-                "sender": sender_name or "unknown",
-                "sender_email": sender_email or "unknown",
-                "classification": EmailStatus.ERROR,
-                "status": EmailStatus.ERROR,
+                "sender_name": sender_name or "unknown",
+                "sender_id": sender_email or "unknown",
+                "classification": "error",
+                "processing_status": "failed",
                 "subject": subject or "processing_error",
                 "received_at": datetime.now(timezone.utc).isoformat()
             }).execute()

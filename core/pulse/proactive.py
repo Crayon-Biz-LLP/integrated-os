@@ -14,12 +14,12 @@ async def check_proactive_signals(entity_name: str) -> str:
             signals.append(f"You have {len(drafts_res.data)} unsent email draft(s) mentioning {entity_name}.")
             
         # Check email pending tasks
-        email_tasks_res = supabase.table('email_pending_tasks').select('id').is_('danny_decision', 'null').ilike('suggested_task', f'%{entity_name}%').execute()
+        email_tasks_res = supabase.table('messages').select('id').eq('channel', 'email').is_('danny_decision', 'null').ilike('suggested_title', f'%{entity_name}%').execute()
         if email_tasks_res.data:
             signals.append(f"You have {len(email_tasks_res.data)} pending email task(s) related to {entity_name}.")
             
         # Check whatsapp pending
-        wa_res = supabase.table('whatsapp_messages').select('id').eq('status', 'pending').ilike('message_text', f'%{entity_name}%').execute()
+        wa_res = supabase.table('messages').select('id').eq('channel', 'whatsapp').eq('processing_status', 'pending').ilike('body', f'%{entity_name}%').execute()
         if wa_res.data:
             signals.append(f"You have {len(wa_res.data)} pending WhatsApp message(s) mentioning {entity_name}.")
             

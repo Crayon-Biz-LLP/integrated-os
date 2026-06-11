@@ -363,9 +363,10 @@ async def analyze_communication_patterns(people: list) -> str:
             # Get recent email count for this person
             email_count = 0
             try:
-                email_res = supabase.table('emails') \
+                email_res = supabase.table('messages') \
                     .select('id', count='exact') \
-                    .or_(f'sender.ilike.%{person_name}%,linked_person_id.eq.{person_id}') \
+                    .eq('channel', 'email') \
+                    .or_(f'sender_name.ilike.%{person_name}%,linked_person_id.eq.{person_id}') \
                     .execute()
                 email_count = email_res.count or 0
             except Exception:

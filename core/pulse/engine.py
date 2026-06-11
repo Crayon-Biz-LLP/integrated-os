@@ -214,37 +214,37 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
 
-        for table in ['email_pending_tasks', 'call_pending_items', 'whatsapp_messages']:
-            try:
-                supabase.table(table)\
-                    .update({'danny_decision': 'expired'})\
-                    .is_('danny_decision', 'null')\
-                    .lt('created_at', cutoff)\
-                    .execute()
-            except Exception:
-                pass
+        # Expire old pending decisions
+        try:
+            supabase.table('messages')\
+                .update({'danny_decision': 'expired'})\
+                .is_('danny_decision', 'null')\
+                .lt('created_at', cutoff)\
+                .execute()
+        except Exception:
+            pass
 
-        pending_email = supabase.table('email_pending_tasks')\
-            .select('id, suggested_title, suggested_project')\
+        # Fetch all pending messages
+        pending_res = supabase.table('messages')\
+            .select('id, channel, classification, suggested_title, suggested_project, sender_name, metadata')\
             .is_('danny_decision', 'null')\
+            .in_('channel', ['email', 'call', 'whatsapp'])\
             .order('created_at', desc=False)\
-            .limit(5)\
+            .limit(50)\
             .execute()
 
-        pending_call = supabase.table('call_pending_items')\
-            .select('id, suggested_title, suggested_project, action_type')\
-            .is_('danny_decision', 'null')\
-            .order('created_at', desc=False)\
-            .limit(5)\
-            .execute()
+        email_items = []
+        call_items = []
+        whatsapp_items = []
 
-        pending_whatsapp = supabase.table('whatsapp_messages')\
-            .select('id, suggested_title, suggested_project, sender_name')\
-            .is_('danny_decision', 'null')\
-            .eq('classification', 'actionable')\
-            .order('created_at', desc=False)\
-            .limit(5)\
-            .execute()
+        for row in (pending_res.data or []):
+            if row['channel'] == 'email' and len(email_items) < 5:
+                email_items.append(row)
+            elif row['channel'] == 'call' and len(call_items) < 5:
+                row['action_type'] = row.get('metadata', {}).get('action_type', 'task')
+                call_items.append(row)
+            elif row['channel'] == 'whatsapp' and row.get('classification') == 'actionable' and len(whatsapp_items) < 5:
+                whatsapp_items.append(row)
 
         pending_graph = supabase.table('pending_graph_nodes')\
             .select('id, label, type')\
@@ -253,9 +253,9 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             .limit(5)\
             .execute()
 
-        email_items = pending_email.data or []
-        call_items = pending_call.data or []
-        whatsapp_items = pending_whatsapp.data or []
+        email_items = email_items
+        call_items = call_items
+        whatsapp_items = whatsapp_items
         graph_items = pending_graph.data or []
 
         total = len(email_items) + len(call_items) + len(whatsapp_items) + len(graph_items)
@@ -339,26 +339,10 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         shown_ids = []
         if send_success:
-            for row in email_items:
+            for row in email_items + call_items + whatsapp_items:
                 shown_ids.append(row['id'])
             if shown_ids:
-                supabase.table('email_pending_tasks')\
-                    .update({'shown_in_brief': True})\
-                    .in_('id', shown_ids)\
-                    .execute()
-                shown_ids = []
-            for row in call_items:
-                shown_ids.append(row['id'])
-            if shown_ids:
-                supabase.table('call_pending_items')\
-                    .update({'shown_in_brief': True})\
-                    .in_('id', shown_ids)\
-                    .execute()
-                shown_ids = []
-            for row in whatsapp_items:
-                shown_ids.append(row['id'])
-            if shown_ids:
-                supabase.table('whatsapp_messages')\
+                supabase.table('messages')\
                     .update({'shown_in_brief': True})\
                     .in_('id', shown_ids)\
                     .execute()

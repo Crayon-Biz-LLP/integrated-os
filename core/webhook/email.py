@@ -26,18 +26,20 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
     client = supabase_client or supabase
 
     # Look up pending row
-    row_res = client.table('email_pending_tasks')\
+    row_res = client.table('messages')\
         .select('*')\
         .eq('id', pending_id)\
+        .eq('channel', 'email')\
         .is_('danny_decision', 'null')\
         .limit(1)\
         .maybe_single()\
         .execute()
 
     if not row_res.data:
-        decided = client.table('email_pending_tasks')\
+        decided = client.table('messages')\
             .select('id, danny_decision')\
             .eq('id', pending_id)\
+            .eq('channel', 'email')\
             .not_.is_('danny_decision', 'null')\
             .limit(1)\
             .maybe_single()\
@@ -54,7 +56,7 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
 
     row = row_res.data
     title = row.get('suggested_title', '')
-    email_id = row.get('email_id')
+    email_id = row.get('id')
     is_human = row.get('is_human_sender', False)
 
     if decision == 'approve':
@@ -64,7 +66,7 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
             if guard['is_superset'] and guard['matched_id']:
                 try:
                     client.table('tasks').update({'title': title}).eq('id', guard['matched_id']).execute()
-                    client.table('email_pending_tasks').update({'danny_decision': 'merged'}).eq('id', row['id']).execute()
+                    client.table('messages').update({'danny_decision': 'merged'}).eq('id', row['id']).execute()
                     print(f"Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' → '{title}'")
                     return {
                         "success": True, "action": "updated",
@@ -72,7 +74,7 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
                     }
                 except Exception:
                     pass
-            client.table('email_pending_tasks').update({'danny_decision': 'skipped'}).eq('id', row['id']).execute()
+            client.table('messages').update({'danny_decision': 'skipped'}).eq('id', row['id']).execute()
             return {
                 "success": False, "action": "duplicate",
                 "message": f"A similar task already exists on your board: [{title}]"
@@ -103,7 +105,7 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
                 "message": f"Task staging failed for [{row['id']}]. You can retry."
             }
 
-        client.table('email_pending_tasks').update({'danny_decision': 'approved'}).eq('id', row['id']).execute()
+        client.table('messages').update({'danny_decision': 'approved'}).eq('id', row['id']).execute()
 
         if guard['result'] == 'flag':
             print(f"Staged to raw_dumps with possible_duplicate flag: {title}")
@@ -116,11 +118,11 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
         return {"success": True, "action": "approved", "message": f"Task staged: {title}"}
 
     elif decision == 'reject':
-        client.table('email_pending_tasks').update({'danny_decision': 'rejected'}).eq('id', row['id']).execute()
+        client.table('messages').update({'danny_decision': 'rejected'}).eq('id', row['id']).execute()
         try:
             draft_res = supabase.table('email_drafts')\
                 .select('id')\
-                .eq('email_id', email_id)\
+                .eq('message_id', email_id)\
                 .maybe_single()\
                 .execute()
             if draft_res.data:
@@ -152,7 +154,7 @@ async def send_draft_reply(draft_id: int) -> tuple:
     """Send an approved draft via Gmail or Outlook based on email source. Returns (success: bool, error: str|None)."""
     try:
         draft_res = supabase.table('email_drafts')\
-            .select('id, email_id, draft_body, status, emails(sender_email, thread_id, source, subject, message_id)')\
+            .select('id, message_id, draft_body, status, messages(sender_id, thread_id, source, subject, message_id)')\
             .eq('id', draft_id)\
             .eq('status', 'pending')\
             .maybe_single()\
@@ -167,17 +169,21 @@ async def send_draft_reply(draft_id: int) -> tuple:
             lines = body.split('\n')
             draft['draft_body'] = '\n'.join(lines[1:]).lstrip('\n')
 
-        if not draft.get('emails'):
+        if not draft.get('messages'):
             return (False, "Associated email not found.")
 
-        source = draft['emails'].get('source', 'gmail')
+        # Map back to old expected names for internal logic
+        email = draft['messages']
+        email['sender_email'] = email.get('sender_id', '')
+
+        source = email.get('source', 'gmail')
 
         if source == 'outlook':
+            draft['emails'] = email  # map for send_outlook_draft
             return await send_outlook_draft(draft)
 
         # Gmail send logic
         gmail_service = get_gmail_service()
-        email = draft['emails']
 
         msg = MIMEText(draft['draft_body'], _charset='utf-8')
         msg['To'] = email['sender_email']
@@ -318,7 +324,7 @@ async def handle_ed_command(text: str, chat_id: int):
     if text.strip() == '/ed':
         try:
             drafts_res = supabase.table('email_drafts')\
-                .select('id, draft_body, status, email_id')\
+                .select('id, draft_body, status, message_id')\
                 .eq('status', 'pending')\
                 .order('created_at', desc=False)\
                 .execute()
@@ -327,20 +333,20 @@ async def handle_ed_command(text: str, chat_id: int):
                 await send_telegram(chat_id, "✅ No pending drafts.")
                 return
 
-            email_ids = [d['email_id'] for d in drafts if d.get('email_id')]
+            email_ids = [d['message_id'] for d in drafts if d.get('message_id')]
             emails_map = {}
             if email_ids:
-                emails_res = supabase.table('emails')\
-                    .select('id, subject, sender_email, sender, source')\
+                emails_res = supabase.table('messages')\
+                    .select('id, subject, sender_id, sender_name, source')\
                     .in_('id', email_ids)\
                     .execute()
                 emails_map = {e['id']: e for e in (emails_res.data or [])}
 
             lines = ["📝 *Pending Draft(s)* — Review below:\n"]
             for d in drafts:
-                email = emails_map.get(d.get('email_id'), {})
-                sender = email.get('sender') or email.get('sender_email', '')
-                email_addr = email.get('sender_email', '')
+                email = emails_map.get(d.get('message_id'), {})
+                sender = email.get('sender_name') or email.get('sender_id', '')
+                email_addr = email.get('sender_id', '')
                 subject = email.get('subject', '(No Subject)')
                 body = d.get('draft_body', '')
                 lines.append(
@@ -367,15 +373,15 @@ async def handle_ed_command(text: str, chat_id: int):
             success, error = await send_draft_reply(draft_id)
             if success:
                 draft_res = supabase.table('email_drafts')\
-                    .select('email_id')\
+                    .select('message_id')\
                     .eq('id', draft_id)\
                     .maybe_single().execute()
-                if draft_res and draft_res.data and draft_res.data.get('email_id'):
-                    email_res = supabase.table('emails')\
-                        .select('sender_email')\
-                        .eq('id', draft_res.data['email_id'])\
+                if draft_res and draft_res.data and draft_res.data.get('message_id'):
+                    email_res = supabase.table('messages')\
+                        .select('sender_id')\
+                        .eq('id', draft_res.data['message_id'])\
                         .maybe_single().execute()
-                    addr = email_res.data.get('sender_email', '') if email_res and email_res.data else ''
+                    addr = email_res.data.get('sender_id', '') if email_res and email_res.data else ''
                 else:
                     addr = ''
                 await send_telegram(chat_id, f"✅ Draft [{draft_id}] sent to {addr}.")
@@ -421,16 +427,16 @@ async def handle_ed_command(text: str, chat_id: int):
                 return
 
             draft_res = supabase.table('email_drafts')\
-                .select('email_id')\
+                .select('message_id')\
                 .eq('id', draft_id)\
                 .maybe_single().execute()
-            if not draft_res or not draft_res.data or not draft_res.data.get('email_id'):
+            if not draft_res or not draft_res.data or not draft_res.data.get('message_id'):
                 await send_telegram(chat_id, f"✅ Draft [{draft_id}] updated.")
                 return
 
-            email_res = supabase.table('emails')\
-                .select('subject, sender_email, sender')\
-                .eq('id', draft_res.data['email_id'])\
+            email_res = supabase.table('messages')\
+                .select('subject, sender_id, sender_name')\
+                .eq('id', draft_res.data['message_id'])\
                 .maybe_single().execute()
             if not email_res or not email_res.data:
                 await send_telegram(chat_id, f"✅ Draft [{draft_id}] updated.")
@@ -439,7 +445,7 @@ async def handle_ed_command(text: str, chat_id: int):
             e = email_res.data
             await send_telegram(chat_id,
                 f"📝 *Draft {draft_id}* — Pending Approval\n"
-                f"📧 *To:* {e.get('sender') or e.get('sender_email', '')} <{e.get('sender_email', '')}>\n"
+                f"📧 *To:* {e.get('sender_name') or e.get('sender_id', '')} <{e.get('sender_id', '')}>\n"
                 f"📌 *Re:* {e.get('subject', '(No Subject)')}\n\n"
                 f"{new_body}\n\n"
                 f"Draft updated. Reply `ed approve {draft_id}` to send."

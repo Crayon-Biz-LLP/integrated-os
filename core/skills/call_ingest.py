@@ -189,37 +189,58 @@ async def process_recordings():
                 task = ai.get("task", "").strip()
                 if task:
                     items.append({
+                        "channel": "call",
+                        "source": "call_recording",
                         "recording_id": recording_id,
+                        "classification": "actionable",
                         "suggested_title": task,
                         "suggested_project": ai.get("project"),
-                        "action_type": "task",
+                        "body": task,
                         "summary": extraction.get("summary", "")[:500],
-                        "people_mentioned": json.dumps(extraction.get("people_mentioned", []))
+                        "processing_status": "completed",
+                        "metadata": {
+                            "action_type": "task",
+                            "people_mentioned": extraction.get("people_mentioned", [])
+                        }
                     })
             for kd in extraction.get("key_decisions", []):
                 kd = kd.strip()
                 if kd:
                     items.append({
+                        "channel": "call",
+                        "source": "call_recording",
                         "recording_id": recording_id,
+                        "classification": "actionable",
                         "suggested_title": kd,
-                        "action_type": "decision",
+                        "body": kd,
                         "summary": extraction.get("summary", "")[:500],
-                        "people_mentioned": json.dumps(extraction.get("people_mentioned", []))
+                        "processing_status": "completed",
+                        "metadata": {
+                            "action_type": "decision",
+                            "people_mentioned": extraction.get("people_mentioned", [])
+                        }
                     })
             if extraction.get("has_memory_value") and extraction.get("summary"):
                 items.append({
+                    "channel": "call",
+                    "source": "call_recording",
                     "recording_id": recording_id,
+                    "classification": "actionable",
                     "suggested_title": f"Call summary: {extraction['summary'][:100]}",
-                    "action_type": "note",
+                    "body": f"Call summary: {extraction['summary'][:100]}",
                     "summary": extraction.get("summary", "")[:500],
-                    "people_mentioned": json.dumps(extraction.get("people_mentioned", []))
+                    "processing_status": "completed",
+                    "metadata": {
+                        "action_type": "note",
+                        "people_mentioned": extraction.get("people_mentioned", [])
+                    }
                 })
 
             if items:
-                supabase.table("call_pending_items").insert(items).execute()
+                supabase.table("messages").insert(items).execute()
 
-            task_count = sum(1 for i in items if i["action_type"] == "task")
-            decision_count = sum(1 for i in items if i["action_type"] == "decision")
+            task_count = sum(1 for i in items if i["metadata"]["action_type"] == "task")
+            decision_count = sum(1 for i in items if i["metadata"]["action_type"] == "decision")
             total_tasks += task_count
             total_decisions += decision_count
             processed_count += 1

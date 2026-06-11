@@ -77,10 +77,11 @@ Return ONLY valid JSON, NO markdown, NO explanation:
 async def process_whatsapp_message(sender_name: str, sender_phone: str, message_text: str, received_at: str = None) -> dict:
     print(f"Processing WhatsApp message from {sender_name or sender_phone}: {message_text[:60]}...")
 
-    existing = supabase.table('whatsapp_messages')\
+    existing = supabase.table('messages')\
         .select('id')\
-        .eq('sender_phone', sender_phone)\
-        .eq('message_text', message_text.strip())\
+        .eq('channel', 'whatsapp')\
+        .eq('sender_id', sender_phone)\
+        .eq('body', message_text.strip())\
         .gte('received_at', (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat())\
         .maybe_single()\
         .execute()
@@ -110,26 +111,32 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
     classification = classification_data.get('classification', 'ignored')
 
     row = {
+        "channel": "whatsapp",
+        "source": "whatsapp",
         "sender_name": sender_name or sender_phone,
-        "sender_phone": sender_phone,
-        "message_text": message_text.strip(),
+        "sender_id": sender_phone,
+        "body": message_text.strip(),
         "classification": classification,
         "summary": classification_data.get('summary', ''),
         "suggested_title": classification_data.get('suggested_title'),
         "suggested_project": classification_data.get('suggested_project'),
-        "linked_person_name": classification_data.get('linked_person_name'),
         "has_memory_value": classification_data.get('has_memory_value', False),
-        "received_at": now_iso
+        "received_at": now_iso,
+        "processing_status": "completed",
+        "metadata": {
+            "sender_phone": sender_phone,
+            "linked_person_name": classification_data.get('linked_person_name')
+        }
     }
 
     if classification == 'ignored':
         row['danny_decision'] = 'skipped'
-        supabase.table('whatsapp_messages').insert(row).execute()
+        supabase.table('messages').insert(row).execute()
         print(f"[ignored] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "ignored", "classification": classification}
 
     if classification == 'fyi':
-        supabase.table('whatsapp_messages').insert(row).execute()
+        supabase.table('messages').insert(row).execute()
         if classification_data.get('has_memory_value'):
             mem_content = f"{sender_name or sender_phone}: {classification_data.get('summary', message_text[:200])}"
             embedding = (await get_embedding(mem_content)).vector
@@ -144,7 +151,7 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
         return {"status": "fyi", "classification": classification}
 
     if classification == 'actionable':
-        supabase.table('whatsapp_messages').insert(row).execute()
+        supabase.table('messages').insert(row).execute()
         print(f"[actionable] {sender_name or sender_phone}: {classification_data.get('suggested_title', message_text[:60])}")
         return {
             "status": "actionable",

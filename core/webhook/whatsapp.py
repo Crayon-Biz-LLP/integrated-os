@@ -17,18 +17,20 @@ async def process_whatsapp_pending_decision(pending_id: int, decision: str, supa
     """
     client = supabase_client or supabase
 
-    row_res = client.table('whatsapp_messages')\
+    row_res = client.table('messages')\
         .select('*')\
         .eq('id', pending_id)\
+        .eq('channel', 'whatsapp')\
         .is_('danny_decision', 'null')\
         .limit(1)\
         .maybe_single()\
         .execute()
 
     if not row_res.data:
-        decided = client.table('whatsapp_messages')\
+        decided = client.table('messages')\
             .select('id, danny_decision')\
             .eq('id', pending_id)\
+            .eq('channel', 'whatsapp')\
             .not_.is_('danny_decision', 'null')\
             .limit(1)\
             .maybe_single()\
@@ -44,9 +46,9 @@ async def process_whatsapp_pending_decision(pending_id: int, decision: str, supa
         }
 
     row = row_res.data
-    title = row.get('suggested_title', row.get('message_text', ''))
+    title = row.get('suggested_title', row.get('body', ''))
     sender_name = row.get('sender_name', '')
-    sender_phone = row.get('sender_phone', '')
+    sender_phone = row.get('sender_id', '')
     summary = row.get('summary', '')
 
     if decision == 'approve':
@@ -72,7 +74,7 @@ async def process_whatsapp_pending_decision(pending_id: int, decision: str, supa
                 "message": f"Task staging failed for [{row['id']}]. You can retry. ({e})"
             }
 
-        client.table('whatsapp_messages').update({
+        client.table('messages').update({
             'danny_decision': 'approved',
             'decided_at': datetime.now(timezone.utc).isoformat()
         }).eq('id', row['id']).execute()
@@ -81,7 +83,7 @@ async def process_whatsapp_pending_decision(pending_id: int, decision: str, supa
         return {"success": True, "action": "approved", "message": f"Staged: {title}"}
 
     elif decision == 'reject':
-        client.table('whatsapp_messages').update({
+        client.table('messages').update({
             'danny_decision': 'rejected',
             'decided_at': datetime.now(timezone.utc).isoformat()
         }).eq('id', row['id']).execute()
