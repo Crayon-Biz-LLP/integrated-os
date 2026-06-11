@@ -93,7 +93,16 @@ Rules:
 2. "fyi" for announcements, links, or updates that are useful to remember but don't require an immediate task.
 3. "ignored" for "ok", "thanks", "thumbs up", meeting joined, automated notices.
 """
-    return await call_gemini_classify(prompt)
+    response = await call_gemini_classify(
+        prompt,
+        config={"response_mime_type": "application/json"}
+    )
+    import json
+    try:
+        return json.loads(response.text)
+    except Exception as e:
+        print(f"Failed to parse JSON: {e}")
+        return {"classification": "fyi", "summary": response.text[:200]}
 
 async def ingest_teams_messages(limit_chats=5, limit_messages=10):
     # 1. Get Token
