@@ -9,22 +9,36 @@ export default async function DecisionsPage() {
 
   const [callRes, whatsappRes] = await Promise.all([
     supabase
-      .from("call_pending_items")
+      .from("messages")
       .select("*")
+      .eq("channel", "call")
       .is("danny_decision", null)
       .order("created_at", { ascending: false })
       .limit(100),
     supabase
-      .from("whatsapp_messages")
+      .from("messages")
       .select("*")
+      .eq("channel", "whatsapp")
       .is("danny_decision", null)
-      .eq("classification", "actionable")
+      .in("classification", ["actionable", "fyi"])
       .order("created_at", { ascending: false })
       .limit(100),
   ]);
 
-  const callItems = (callRes.data ?? []) as unknown as CallPendingItem[];
-  const whatsappItems = (whatsappRes.data ?? []) as unknown as WhatsAppPendingMessage[];
+  const rawCallItems = callRes.data ?? [];
+  const callItems = rawCallItems.map((row: any) => ({
+    ...row,
+    action_type: row.metadata?.action_type ?? 'task',
+    people_mentioned: row.metadata?.people_mentioned ?? '[]',
+  })) as unknown as CallPendingItem[];
+
+  const rawWhatsappItems = whatsappRes.data ?? [];
+  const whatsappItems = rawWhatsappItems.map((row: any) => ({
+    ...row,
+    sender_phone: row.sender_id,
+    message_text: row.body,
+    linked_person_name: row.metadata?.linked_person_name,
+  })) as unknown as WhatsAppPendingMessage[];
 
   return (
     <DecisionsShell

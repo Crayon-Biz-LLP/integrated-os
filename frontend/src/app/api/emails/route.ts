@@ -10,14 +10,15 @@ export async function GET(req: NextRequest) {
   const search = searchParams.get("search");
 
   let query = supabase
-    .from("emails")
+    .from("messages")
     .select(`
-      id, subject, sender, sender_email, body_summary,
+      id, subject, sender_name, sender_id, metadata, body,
       classification, source, received_at,
       linked_project_id, linked_person_id,
       linked_project:projects(name),
       linked_person:people(name)
     `)
+    .eq("channel", "email")
     .order("received_at", { ascending: false })
     .limit(100);
 
@@ -29,7 +30,7 @@ export async function GET(req: NextRequest) {
   }
   if (search) {
     query = query.or(
-      `subject.ilike.%${search}%,sender_email.ilike.%${search}%,sender.ilike.%${search}%`,
+      `subject.ilike.%${search}%,sender_id.ilike.%${search}%,sender_name.ilike.%${search}%`,
     );
   }
 
@@ -37,5 +38,13 @@ export async function GET(req: NextRequest) {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  return NextResponse.json(data || []);
+  
+  const mappedData = (data || []).map((row: any) => ({
+    ...row,
+    sender: row.sender_name,
+    sender_email: row.sender_id,
+    body_summary: row.metadata?.body_summary ?? row.body,
+  }));
+  
+  return NextResponse.json(mappedData);
 }
