@@ -743,16 +743,47 @@ Query: {query}"""
             return "None"
         hindsight_task = safe_fetch(fetch_hindsight(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None")
 
+        async def fetch_raw_comms():
+            if not active_anchor and not resolved_entity:
+                return "None"
+            search_val = (active_anchor["name"] if active_anchor else resolved_entity).lower().replace(',', ' ')
+            if not search_val or search_val == "none" or len(search_val) < 3:
+                return "None"
+                
+            lines = []
+            try:
+                e_res = supabase.table('emails').select('id, subject, sender, received_at, status').or_(f"subject.ilike.%{search_val}%,body_summary.ilike.%{search_val}%").in_('status', ['new', 'processed']).order('received_at', desc=True).limit(5).execute()
+                if e_res.data:
+                    for e in e_res.data:
+                        lines.append(f"- [EMAIL] {e.get('subject', '')} (from {e.get('sender', '')}, status: {e.get('status', '')})")
+            except Exception:
+                pass
+                
+            try:
+                w_res = supabase.table('whatsapp_messages').select('id, sender_name, message_text, received_at').ilike('message_text', f"%{search_val}%").order('received_at', desc=True).limit(3).execute()
+                if w_res.data:
+                    for w in w_res.data:
+                        text = w.get('message_text', '').replace('\n', ' ')[:100]
+                        lines.append(f"- [WHATSAPP] {text}... (from {w.get('sender_name', '')})")
+            except Exception:
+                pass
+                
+            if not lines:
+                return "None"
+            return "\n".join(lines)
+            
+        raw_comms_task = safe_fetch(fetch_raw_comms(), "None")
+
         results = await asyncio.gather(
             tactical_map_task, tasks_task, memories_task, resources_task,
             practices_task, people_task, completed_task, calendar_task,
             emails_task, whatsapp_task, pending_decisions_task,
-            temporal_task, serendipity_task, hindsight_task
+            temporal_task, serendipity_task, hindsight_task, raw_comms_task
         )
         tactical_map, (compressed_tasks, _), memories_context, resources_context, \
             practices_context, people_context, completed_context, calendar_context, \
             emails_context, whatsapp_context, pending_decisions_context, \
-            temporal_context, serendipity_context, hindsight_context = results
+            temporal_context, serendipity_context, hindsight_context, raw_comms_context = results
 
         available_sources = []
         all_context = []
@@ -764,7 +795,7 @@ Query: {query}"""
             all_context.append(f"ACTIVE TASKS:\n{compressed_tasks}")
             available_sources.append("active tasks")
         if pending_decisions_context != "None":
-            all_context.append(f"PENDING APPROVALS:\n{pending_decisions_context}")
+            all_context.append(pending_decisions_context)
             available_sources.append("pending decisions")
         if completed_context != "None":
             all_context.append(f"RECENTLY COMPLETED TASKS:\n{completed_context}")
@@ -799,6 +830,9 @@ Query: {query}"""
         if calendar_context != "None":
             all_context.append(f"CALENDAR EVENTS:\n{calendar_context}")
             available_sources.append("calendar events")
+        if raw_comms_context != "None":
+            all_context.append(f"RAW EMAILS/MESSAGES (Exact match):\n{raw_comms_context}")
+            available_sources.append("raw comms")
 
         if not all_context:
             await send_telegram(chat_id, "🔍 *I don't have any relevant data to answer that.*\n\n_Try rephrasing._")
@@ -835,6 +869,7 @@ CRITICAL OUTPUT FORMAT - YOU MUST USE EXACTLY THIS STRUCTURE:
 
 **Context:**
 - Only if relevant: 1-3 sentences about blockers, dependencies, or urgency found in tasks/tactical map.
+- If you see previously rejected suggestions or raw emails matching the user's question, acknowledge them (e.g., "You rejected a suggestion to reply to Microsoft Support, but the email thread is still open. Want me to re-surface it?").
 - NEVER put this section first.
 
 IMPORTANT: Stop generating immediately after the Context section. Do NOT analyze your own response. Do NOT repeat the data. End the message cleanly.

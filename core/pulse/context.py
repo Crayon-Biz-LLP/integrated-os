@@ -417,26 +417,52 @@ class ContextProvider:
 
     async def get_pending_decisions_context(self):
         try:
-            lines = []
+            pending_lines = []
+            rejected_lines = []
             
+            seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            
+            # Pending
             e_res = supabase.table('email_pending_tasks').select('id, suggested_title').is_('danny_decision', 'null').execute()
             if e_res.data:
                 for t in e_res.data:
-                    lines.append(f"- [EMAIL] e{t['id']} - {t.get('suggested_title', '')}")
+                    pending_lines.append(f"- [EMAIL] e{t['id']} - {t.get('suggested_title', '')}")
                     
             c_res = supabase.table('call_pending_items').select('id, suggested_title').is_('danny_decision', 'null').execute()
             if c_res.data:
                 for t in c_res.data:
-                    lines.append(f"- [CALL] c{t['id']} - {t.get('suggested_title', '')}")
+                    pending_lines.append(f"- [CALL] c{t['id']} - {t.get('suggested_title', '')}")
                     
             w_res = supabase.table('whatsapp_messages').select('id, suggested_title, sender_name').is_('danny_decision', 'null').is_('has_memory_value', False).execute()
             if w_res.data:
                 for t in w_res.data:
-                    lines.append(f"- [WHATSAPP] w{t['id']} - {t.get('suggested_title', '')} (from {t.get('sender_name', '')})")
+                    pending_lines.append(f"- [WHATSAPP] w{t['id']} - {t.get('suggested_title', '')} (from {t.get('sender_name', '')})")
                     
-            if not lines:
+            # Rejected
+            e_rej = supabase.table('email_pending_tasks').select('id, suggested_title').eq('danny_decision', 'rejected').gte('created_at', seven_days_ago).order('created_at', desc=True).limit(5).execute()
+            if e_rej.data:
+                for t in e_rej.data:
+                    rejected_lines.append(f"- [EMAIL] e{t['id']} - {t.get('suggested_title', '')}")
+            
+            c_rej = supabase.table('call_pending_items').select('id, suggested_title').eq('danny_decision', 'rejected').gte('created_at', seven_days_ago).order('created_at', desc=True).limit(5).execute()
+            if c_rej.data:
+                for t in c_rej.data:
+                    rejected_lines.append(f"- [CALL] c{t['id']} - {t.get('suggested_title', '')}")
+                    
+            w_rej = supabase.table('whatsapp_messages').select('id, suggested_title, sender_name').eq('danny_decision', 'rejected').gte('created_at', seven_days_ago).order('created_at', desc=True).limit(5).execute()
+            if w_rej.data:
+                for t in w_rej.data:
+                    rejected_lines.append(f"- [WHATSAPP] w{t['id']} - {t.get('suggested_title', '')} (from {t.get('sender_name', '')})")
+            
+            result_blocks = []
+            if pending_lines:
+                result_blocks.append("PENDING APPROVALS:\n" + "\n".join(pending_lines))
+            if rejected_lines:
+                result_blocks.append("PREVIOUSLY REJECTED SUGGESTIONS (last 7d):\n" + "\n".join(rejected_lines))
+                
+            if not result_blocks:
                 return "None"
-            return "\n".join(lines)
+            return "\n\n".join(result_blocks)
         except Exception as e:
             print(f"Pending decisions hydration failed: {e}")
             return "None"
