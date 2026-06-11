@@ -163,6 +163,17 @@ This project is augmented with two local, persistent AI tools that opencode (and
 * **Usage:** Automatically captures tool usage and outputs. The agent should proactively use `memory_smart_search` to recall past context instead of asking the user to re-explain the stack.
 * **Status:** Runs persistently as a local PM2 background process (`agentmemory-server`) on `http://localhost:3111`. (Real-time viewer available at `http://localhost:3113`).
 
+
+## opencode Configuration Architecture (Project-Level)
+
+This project contains local opencode configuration that overrides or extends the global config.
+
+**Project Config (`Integrated-OS/`):**
+- `opencode.json` — Git safety guardrails (push=deny, commit=ask)
+- `.opencode/command/speckit.*.md` — Auto-discovered Speckit commands
+- `.opencode/skills/*/` — Auto-discovered project skills
+- `AGENTS.md` — Project domain knowledge
+
 ## Testing
 - CI: GitHub Actions (`workflow_dispatch` in `.github/workflows/pulse.yml`)
 - Local: Send POST to `/api/pulse` with header `x-pulse-secret: <PULSE_SECRET>`
