@@ -17,7 +17,7 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
     For 'reject': sets danny_decision='rejected' and cleans up orphan drafts.
 
     Args:
-        pending_id: ID in email_pending_tasks table.
+        pending_id: ID in messages table.
         decision: 'approve' or 'reject'.
         supabase_client: Optional supabase client (defaults to module-level).
 

@@ -201,7 +201,7 @@ async def process_webhook(update: dict):
         _approve_match = re.match(r'^(\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _reject_match = re.match(r'^(\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
 
-        # e-prefix: direct to email_pending_tasks
+        # e-prefix: direct to messages(email)
         if _email_approve_match or _email_reject_match:
             try:
                 _sc = (_email_approve_match or _email_reject_match).group(1)
@@ -222,7 +222,7 @@ async def process_webhook(update: dict):
                 await send_telegram(chat_id, "Something went wrong. Try again.")
                 return {"success": True}
 
-        # c-prefix: direct to call_pending_items
+        # c-prefix: direct to messages(call)
         if _call_approve_match or _call_reject_match:
             try:
                 _sc = (_call_approve_match or _call_reject_match).group(1)

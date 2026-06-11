@@ -9,7 +9,7 @@ async def process_whatsapp_pending_decision(pending_id: int, decision: str, supa
     For 'reject': sets danny_decision='rejected'.
 
     Args:
-        pending_id: ID in whatsapp_messages table.
+        pending_id: ID in messages table.
         decision: 'approve' or 'reject'.
         supabase_client: Optional supabase client (defaults to module-level).
 

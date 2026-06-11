@@ -10,7 +10,7 @@ async def backfill():
     supabase = get_supabase()
     
     print("Fetching whatsapp messages without embeddings...")
-    res = supabase.table('whatsapp_messages').select('id, sender_name, message_text').is_('embedding', 'null').execute()
+    res = supabase.table('messages').select('id, sender_name, body').eq('channel', 'whatsapp').is_('embedding', 'null').execute()
     messages = res.data or []
     print(f"Found {len(messages)} messages to embed.")
     
@@ -18,14 +18,14 @@ async def backfill():
     for msg in messages:
         id_ = msg['id']
         sender = msg.get('sender_name') or 'Unknown'
-        text = msg.get('message_text') or ''
+        text = msg.get('body') or ''
         
         content_to_embed = f"From {sender}: {text}"
         
         try:
             emb = await get_embedding(content_to_embed)
             if emb and emb.vector:
-                supabase.table('whatsapp_messages').update({'embedding': emb.vector}).eq('id', id_).execute()
+                supabase.table('messages').update({'embedding': emb.vector}).eq('id', id_).execute()
                 count += 1
                 if count % 20 == 0:
                     print(f"Embedded {count}/{len(messages)}")
