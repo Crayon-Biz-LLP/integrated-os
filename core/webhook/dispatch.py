@@ -752,8 +752,11 @@ Query: {query}"""
                 
             lines = []
             try:
-                # Get both incoming and outgoing emails
-                e_res = supabase.table('emails').select('id, subject, sender, sender_email, body_summary, received_at, status, direction').or_(f"subject.ilike.%{search_val}%,body_summary.ilike.%{search_val}%").in_('status', ['new', 'processed']).order('received_at', desc=True).limit(8).execute()
+                # Get both incoming and outgoing emails, searching subject, body_summary, and sender_email
+                e_res = supabase.table('emails').select('id, subject, sender, sender_email, body_summary, received_at, status, direction') \
+                    .or_(f"subject.ilike.%{search_val}%,body_summary.ilike.%{search_val}%,sender_email.ilike.%{search_val}%,body_raw.ilike.%{search_val}%") \
+                    .in_('status', ['new', 'processed']) \
+                    .order('received_at', desc=True).limit(8).execute()
                 
                 found_sent = False
                 if e_res.data:

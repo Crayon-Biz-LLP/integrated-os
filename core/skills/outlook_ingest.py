@@ -198,7 +198,7 @@ def fetch_outlook_sent_messages(limit=25):
     url = "https://graph.microsoft.com/v1.0/me/mailFolders/sentItems/messages"
     params = {
         "$top": limit,
-        "$select": "id,subject,sentDateTime,toRecipients,bodyPreview,conversationId,internetMessageId",
+        "$select": "id,subject,sentDateTime,toRecipients,bodyPreview,body,conversationId,internetMessageId",
         "$orderby": "sentDateTime DESC"
     }
 
@@ -223,7 +223,7 @@ def fetch_outlook_messages(limit=25):
     url = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
     params = {
         "$top": limit,
-        "$select": "id,subject,receivedDateTime,from,bodyPreview,conversationId,isRead,hasAttachments,internetMessageId,toRecipients,ccRecipients",
+        "$select": "id,subject,receivedDateTime,from,bodyPreview,body,conversationId,isRead,hasAttachments,internetMessageId,toRecipients,ccRecipients",
         "$orderby": "receivedDateTime DESC"
     }
 
@@ -247,10 +247,23 @@ def normalize_outlook_message(msg):
     sender_email = email_address.get("address", "unknown")
     sender_name = email_address.get("name") or sender_email
 
+    import re
     to_recipients = msg.get("toRecipients", [])
     cc_recipients = msg.get("ccRecipients", [])
     to_header = ", ".join(r.get("emailAddress", {}).get("address", "") for r in to_recipients if r.get("emailAddress", {}).get("address"))
     cc_header = ", ".join(r.get("emailAddress", {}).get("address", "") for r in cc_recipients if r.get("emailAddress", {}).get("address"))
+
+    body_data = msg.get("body", {})
+    body_content = body_data.get("content", "")
+    if body_data.get("contentType", "").lower() == "html":
+        # simple html tag strip
+        body_content = re.sub(r'<[^>]+>', ' ', body_content).strip()
+    else:
+        body_content = body_content.strip()
+
+    body_preview = msg.get("bodyPreview", "")
+    if len(body_content) > 50:
+        body_preview = body_content
 
     return {
         "source": "outlook",
@@ -260,7 +273,8 @@ def normalize_outlook_message(msg):
         "sender_email": sender_email,
         "sender": sender_name,
         "subject": msg.get("subject") or "(No Subject)",
-        "body_summary": msg.get("bodyPreview", ""),
+        "body_summary": body_preview[:2000],
+        "body_raw": body_content[:20000],
         "received_at": msg.get("receivedDateTime"),
         "is_read": msg.get("isRead", False),
         "has_attachments": msg.get("hasAttachments", False),
@@ -356,7 +370,8 @@ async def ingest_outlook_messages(limit=25):
                 "sender": sender,
                 "sender_email": sender_email,
                 "subject": subject,
-                "body_summary": body[:500],
+                "body_summary": body[:2000],
+                "body_raw": normalized.get("body_raw", "")[:20000],
                 "received_at": normalized["received_at"],
                 "classification": classification,
                 "status": EmailStatus.NEW if classification == "actionable" else EmailStatus.PROCESSED,
@@ -510,7 +525,18 @@ async def ingest_outlook_messages(limit=25):
                 to_header = ", ".join(r.get("emailAddress", {}).get("address", "") for r in to_recipients if r.get("emailAddress", {}).get("address"))
                 
                 subject = msg.get('subject', '(No Subject)')
-                body = msg.get('bodyPreview', '')
+                
+                body_data = msg.get("body", {})
+                body_content = body_data.get("content", "")
+                if body_data.get("contentType", "").lower() == "html":
+                    import re
+                    body_content = re.sub(r'<[^>]+>', ' ', body_content).strip()
+                else:
+                    body_content = body_content.strip()
+                    
+                body_preview = msg.get("bodyPreview", "")
+                if len(body_content) > 50:
+                    body_preview = body_content
                 
                 email_row = {
                     "message_id": msg_id,
@@ -520,7 +546,8 @@ async def ingest_outlook_messages(limit=25):
                     "sender": to_header,
                     "sender_email": to_header,
                     "subject": subject,
-                    "body_summary": body[:500],
+                    "body_summary": body_preview[:2000],
+                    "body_raw": body_content[:20000],
                     "received_at": msg.get("sentDateTime") or datetime.now(timezone.utc).isoformat(),
                     "classification": "fyi",
                     "status": "processed"

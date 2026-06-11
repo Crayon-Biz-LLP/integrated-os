@@ -325,7 +325,7 @@ def process_sent_email(msg_data: dict, gmail_service) -> tuple:
         if existing is not None and existing.data:
             return ('ignored', msg_data.get('snippet', '')[:50])
 
-        full_msg = gmail_service.users().messages().get(userId='me', id=msg_id, format='metadata', metadataHeaders=['To', 'Subject', 'Date']).execute()
+        full_msg = gmail_service.users().messages().get(userId='me', id=msg_id, format='full').execute()
         payload = full_msg.get('payload', {})
         headers = {h['name'].lower(): h['value'] for h in payload.get('headers', [])}
 
@@ -336,6 +336,13 @@ def process_sent_email(msg_data: dict, gmail_service) -> tuple:
             received_at = parsedate_to_datetime(received_at_raw).isoformat()
         except Exception:
             received_at = datetime.now(timezone.utc).isoformat()
+            
+        raw_plain = decode_body(payload)
+        body = raw_plain[:10000]
+        if not body.strip():
+            html_body = decode_html_body(payload)
+            raw_plain = re.sub(r'<[^>]+>', ' ', html_body).strip()
+            body = raw_plain[:10000]
             
         # Try to extract a clean email for the recipient
         match = re.search(r'<(.+?)>', to_header)
@@ -350,7 +357,8 @@ def process_sent_email(msg_data: dict, gmail_service) -> tuple:
             "sender": to_header,            # recipient name/email
             "sender_email": recipient_email, # recipient email
             "subject": subject,
-            "body_summary": full_msg.get('snippet', '')[:500],
+            "body_summary": body[:2000],
+            "body_raw": raw_plain[:20000],
             "received_at": received_at,
             "classification": "fyi",
             "status": "processed"
@@ -396,16 +404,19 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
         except Exception:
             received_at = datetime.now(timezone.utc).isoformat()
 
-        body = decode_body(payload)[:1500]
+        raw_plain = decode_body(payload)
+        body = raw_plain[:10000]
         if not body.strip():
             html_body = decode_html_body(payload)
-            body = re.sub(r'<[^>]+>', ' ', html_body).strip()[:1500]
+            raw_plain = re.sub(r'<[^>]+>', ' ', html_body).strip()
+            body = raw_plain[:10000]
 
         if any(p in sender_email.lower() for p in NOREPLY_PATTERNS):
             classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
         else:
             try:
-                classification_data = await classify_email(sender_header, subject, body, to_header, cc_header)
+                # We only pass the first 1500 chars to Gemini for classification to save tokens
+                classification_data = await classify_email(sender_header, subject, body[:1500], to_header, cc_header)
             except Exception:
                 print(f"[skipped - classification error] {subject} | Will retry on next run")
                 return ("skipped_api_error", subject)
@@ -433,7 +444,8 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
             "sender": sender_name,
             "sender_email": sender_email,
             "subject": subject,
-            "body_summary": body[:500],
+            "body_summary": body[:2000],
+            "body_raw": raw_plain[:20000],
             "received_at": received_at,
             "classification": classification,
             "status": EmailStatus.NEW if classification == "actionable" else EmailStatus.PROCESSED,
