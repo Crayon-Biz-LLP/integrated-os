@@ -10,6 +10,7 @@ from core.webhook.utils import supabase, trigger_github_pulse, get_recent_contex
 from core.webhook.email import process_email_pending_decision, handle_ed_command
 from core.webhook.call import process_call_pending_decision
 from core.webhook.whatsapp import process_whatsapp_pending_decision
+from core.webhook.teams import process_teams_pending_decision
 from core.pulse.graph import process_graph_pending_decision
 from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, ask_task_or_note_confirmation, resolve_task_note_confirmation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
 from core.webhook.commands import handle_command, handle_undo_command
@@ -195,6 +196,8 @@ async def process_webhook(update: dict):
         _call_reject_match = re.match(r'^[cC](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
         _whatsapp_approve_match = re.match(r'^[wW](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _whatsapp_reject_match = re.match(r'^[wW](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
+        _teams_approve_match = re.match(r'^[tT](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
+        _teams_reject_match = re.match(r'^[tT](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
         _approve_match = re.match(r'^(\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _reject_match = re.match(r'^(\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
 
@@ -240,7 +243,7 @@ async def process_webhook(update: dict):
                 await send_telegram(chat_id, "Something went wrong. Try again.")
                 return {"success": True}
 
-        # w-prefix: direct to whatsapp_messages
+        # w-prefix: direct to messages(whatsapp)
         if _whatsapp_approve_match or _whatsapp_reject_match:
             try:
                 _sc = (_whatsapp_approve_match or _whatsapp_reject_match).group(1)
@@ -258,6 +261,27 @@ async def process_webhook(update: dict):
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"WhatsApp prefix shortcode error: {_sc_err}")
+                await send_telegram(chat_id, "Something went wrong. Try again.")
+                return {"success": True}
+
+        # t-prefix: direct to messages(teams)
+        if _teams_approve_match or _teams_reject_match:
+            try:
+                _sc = (_teams_approve_match or _teams_reject_match).group(1)
+                _is_approve = bool(_teams_approve_match)
+                result = await process_teams_pending_decision(
+                    pending_id=int(_sc),
+                    decision='approve' if _is_approve else 'reject'
+                )
+                if result['success']:
+                    await send_telegram(chat_id, f"✅ {result['message']}")
+                else:
+                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                    if result['action'] in ('staging_failed',):
+                        raise Exception(result['message'])
+                return {"success": True}
+            except Exception as _sc_err:
+                audit_log_sync("webhook", "WARNING", f"Teams prefix shortcode error: {_sc_err}")
                 await send_telegram(chat_id, "Something went wrong. Try again.")
                 return {"success": True}
 

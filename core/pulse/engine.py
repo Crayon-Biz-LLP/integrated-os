@@ -229,7 +229,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
         pending_res = supabase.table('messages')\
             .select('id, channel, classification, suggested_title, suggested_project, sender_name, metadata')\
             .is_('danny_decision', 'null')\
-            .in_('channel', ['email', 'call', 'whatsapp'])\
+            .in_('channel', ['email', 'call', 'whatsapp', 'teams'])\
             .order('created_at', desc=False)\
             .limit(50)\
             .execute()
@@ -237,6 +237,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
         email_items = []
         call_items = []
         whatsapp_items = []
+        teams_items = []
 
         for row in (pending_res.data or []):
             if row['channel'] == 'email' and len(email_items) < 5:
@@ -246,6 +247,8 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                 call_items.append(row)
             elif row['channel'] == 'whatsapp' and row.get('classification') == 'actionable' and len(whatsapp_items) < 5:
                 whatsapp_items.append(row)
+            elif row['channel'] == 'teams' and row.get('classification') == 'actionable' and len(teams_items) < 5:
+                teams_items.append(row)
 
         pending_graph = supabase.table('pending_graph_nodes')\
             .select('id, label, type')\
@@ -254,12 +257,9 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             .limit(5)\
             .execute()
 
-        email_items = email_items
-        call_items = call_items
-        whatsapp_items = whatsapp_items
         graph_items = pending_graph.data or []
 
-        total = len(email_items) + len(call_items) + len(whatsapp_items) + len(graph_items)
+        total = len(email_items) + len(call_items) + len(whatsapp_items) + len(teams_items) + len(graph_items)
         if total == 0:
             await complete_pulse_run(supabase, run_id, status="completed", metadata={"reason": "no_pending"})
             return {"success": True, "message": "No pending decisions."}
@@ -294,6 +294,14 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                 lines.append(f"💬 [w{row['id']}] {(row.get('suggested_title') or 'Untitled')[:60]}{proj}{from_str}")
             lines.append("")
 
+        if teams_items:
+            lines.append(f"🟣 TEAMS CHATS ({len(teams_items)}) — tap to approve/drop")
+            for row in teams_items:
+                proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
+                from_str = f" — {row['sender_name']}" if row.get('sender_name') else ""
+                lines.append(f"🟣 [t{row['id']}] {(row.get('suggested_title') or 'Untitled')[:60]}{proj}{from_str}")
+            lines.append("")
+
         if graph_items:
             lines.append(f"🕸️ GRAPH NODES ({len(graph_items)}) — tap to approve/drop")
             for row in graph_items:
@@ -325,6 +333,12 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                     {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
                     {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
                 ])
+            for row in teams_items:
+                sc = f"t{row['id']}"
+                keyboard.append([
+                    {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
+                    {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
+                ])
             for row in graph_items:
                 sc = f"g{row['id']}"
                 keyboard.append([
@@ -340,7 +354,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         shown_ids = []
         if send_success:
-            for row in email_items + call_items + whatsapp_items:
+            for row in email_items + call_items + whatsapp_items + teams_items:
                 shown_ids.append(row['id'])
             if shown_ids:
                 supabase.table('messages')\

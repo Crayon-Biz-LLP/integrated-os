@@ -13,7 +13,7 @@ TENANT_ID = os.getenv("OUTLOOK_TENANT_ID")
 CLIENT_ID = os.getenv("OUTLOOK_CLIENT_ID")
 CLIENT_SECRET = os.getenv("OUTLOOK_CLIENT_SECRET")
 REFRESH_TOKEN = os.getenv("OUTLOOK_REFRESH_TOKEN")
-SCOPES = os.getenv("OUTLOOK_SCOPES", "offline_access User.Read Mail.Read Mail.Send")
+SCOPES = os.getenv("OUTLOOK_SCOPES", "offline_access User.Read Mail.Read Mail.Send Chat.Read Files.Read.All")
 
 TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 
