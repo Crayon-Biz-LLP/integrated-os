@@ -174,7 +174,7 @@ Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
             primary_model=CLASSIFICATION_MODEL,
-            config={'max_output_tokens': 600}
+            config={'max_output_tokens': 800}
         )
         reply = response.text.strip()
 
@@ -768,22 +768,61 @@ Query: {query}"""
             except Exception:
                 pass
                 
+            try:
+                c_res = supabase.table('call_recordings').select('id, drive_file_name, transcript, created_at').ilike('transcript', f"%{search_val}%").order('created_at', desc=True).limit(2).execute()
+                if c_res.data:
+                    for c in c_res.data:
+                        text = c.get('transcript', '').replace('\n', ' ')[:150]
+                        lines.append(f"- [CALL RECORDING] {c.get('drive_file_name', '')}: {text}...")
+            except Exception:
+                pass
+                
             if not lines:
                 return "None"
             return "\n".join(lines)
             
         raw_comms_task = safe_fetch(fetch_raw_comms(), "None")
 
+        async def fetch_canonical():
+            if not active_anchor and not resolved_entity:
+                return "None"
+            search_val = (active_anchor["name"] if active_anchor else resolved_entity)
+            if not search_val or search_val == "None":
+                return "None"
+            try:
+                res = supabase.table('canonical_pages').select('title, content').ilike('title', f"%{search_val}%").limit(1).execute()
+                if res.data:
+                    c = res.data[0].get('content', '')[:500]
+                    return f"{res.data[0].get('title')}:\n{c}..."
+            except Exception:
+                pass
+            return "None"
+        canonical_task = safe_fetch(fetch_canonical(), "None")
+
+        async def fetch_projects():
+            try:
+                res = supabase.table('projects').select('name, status, org_tag').eq('is_current', True).neq('status', 'archived').order('name').execute()
+                if res.data:
+                    lines = [f"- [{p.get('org_tag', 'INBOX')}] {p.get('name')} ({p.get('status')})" for p in res.data]
+                    return "\n".join(lines)
+            except Exception:
+                pass
+            return "None"
+        projects_task = safe_fetch(fetch_projects(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None")
+
+
         results = await asyncio.gather(
             tactical_map_task, tasks_task, memories_task, resources_task,
             practices_task, people_task, completed_task, calendar_task,
             emails_task, whatsapp_task, pending_decisions_task,
-            temporal_task, serendipity_task, hindsight_task, raw_comms_task
+            temporal_task, serendipity_task, hindsight_task, raw_comms_task,
+            canonical_task, projects_task
         )
         tactical_map, (compressed_tasks, _), memories_context, resources_context, \
             practices_context, people_context, completed_context, calendar_context, \
             emails_context, whatsapp_context, pending_decisions_context, \
-            temporal_context, serendipity_context, hindsight_context, raw_comms_context = results
+            temporal_context, serendipity_context, hindsight_context, raw_comms_context, \
+            canonical_context, projects_context = results
 
         available_sources = []
         all_context = []
@@ -833,6 +872,12 @@ Query: {query}"""
         if raw_comms_context != "None":
             all_context.append(f"RAW EMAILS/MESSAGES (Exact match):\n{raw_comms_context}")
             available_sources.append("raw comms")
+        if canonical_context != "None":
+            all_context.append(f"CANONICAL KNOWLEDGE:\n{canonical_context}")
+            available_sources.append("canonical knowledge")
+        if projects_context != "None":
+            all_context.append(f"ACTIVE PROJECTS:\n{projects_context}")
+            available_sources.append("active projects")
 
         if not all_context:
             await send_telegram(chat_id, "🔍 *I don't have any relevant data to answer that.*\n\n_Try rephrasing._")
@@ -861,18 +906,18 @@ Danny is asking a question. You have access to his: {sources_str}.
 CRITICAL OUTPUT FORMAT - YOU MUST USE EXACTLY THIS STRUCTURE:
 
 [Answer to the question]
-- If asked about schedule/meetings: List the calendar events here as a simple bulleted list. 
-- If an event is marked [PAST], explicitly mention that it already happened, or separate it from upcoming events. You know the current time.
-- If asked about tasks: List the tasks.
-- DO NOT invent custom headings like 'Immediate Priorities', 'Scheduled', or 'Today's Bottleneck'. 
-- DO NOT sort by urgency unless asked. Answer the direct question FIRST.
+- Answer the specific question directly in your first sentence.
+- If context includes emails, call recordings, or previously rejected items matching the query: summarize the relevant ones (who, what, when, key details) BEFORE listing tasks/events. If rejected items match, note they were rejected and ask to re-engage.
+- Otherwise, list the relevant tasks/events in bullet points directly.
+- If an event is marked [PAST], explicitly mention that it already happened.
+- DO NOT invent custom headings like 'Immediate Priorities' or 'Today's Bottleneck'.
 
 **Context:**
-- Only if relevant: 1-3 sentences about blockers, dependencies, or urgency found in tasks/tactical map.
-- If you see previously rejected suggestions or raw emails matching the user's question, acknowledge them (e.g., "You rejected a suggestion to reply to Microsoft Support, but the email thread is still open. Want me to re-surface it?").
+- Only if relevant: 1-3 sentences with deeper insight: patterns across sources, blockers, urgency, or previously rejected items still relevant to the question.
 - NEVER put this section first.
+- NEVER repeat data already covered in the Answer section.
 
-IMPORTANT: Stop generating immediately after the Context section. Do NOT analyze your own response. Do NOT repeat the data. End the message cleanly.
+IMPORTANT: Stop generating immediately after the Context section. Do NOT analyze your own response. End the message cleanly.
 
 {context_str}{conversation_history}
 
@@ -888,7 +933,7 @@ Formatting rules:
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
             primary_model=CLASSIFICATION_MODEL,
-            config={'max_output_tokens': 600}
+            config={'max_output_tokens': 800}
         )
 
         answer = response.text.strip()
