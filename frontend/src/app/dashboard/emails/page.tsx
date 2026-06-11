@@ -34,7 +34,7 @@ export default async function EmailsPage() {
       `)
       .eq("channel", "email")
       .is("danny_decision", null)
-      .in("classification", ["actionable", "fyi"])
+      .eq("classification", "actionable")
       .order("created_at", { ascending: false })
       .limit(100),
     supabase

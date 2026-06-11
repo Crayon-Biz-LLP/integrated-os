@@ -6,7 +6,7 @@ export async function GET() {
 
   const [emailsRes, pendingTasksRes, pendingDraftsRes] = await Promise.all([
     supabase.from("messages").select("classification").eq("channel", "email").limit(500),
-    supabase.from("messages").select("id", { count: "exact", head: true }).eq("channel", "email").is("danny_decision", null).in("classification", ["actionable", "fyi"]),
+    supabase.from("messages").select("id", { count: "exact", head: true }).eq("channel", "email").is("danny_decision", null).eq("classification", "actionable"),
     supabase.from("email_drafts").select("id", { count: "exact", head: true }).eq("status", "pending"),
   ]);
 

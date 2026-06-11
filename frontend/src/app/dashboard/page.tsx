@@ -57,7 +57,7 @@ export default async function DashboardPage() {
       `)
       .eq("channel", "email")
       .is("danny_decision", null)
-      .in("classification", ["actionable", "fyi"])
+      .eq("classification", "actionable")
       .limit(100),
     supabase
       .from("messages")

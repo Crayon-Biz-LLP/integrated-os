@@ -20,7 +20,7 @@ export default async function DecisionsPage() {
       .select("*")
       .eq("channel", "whatsapp")
       .is("danny_decision", null)
-      .in("classification", ["actionable", "fyi"])
+      .eq("classification", "actionable")
       .order("created_at", { ascending: false })
       .limit(100),
   ]);

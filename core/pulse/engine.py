@@ -219,6 +219,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             supabase.table('messages')\
                 .update({'danny_decision': 'expired'})\
                 .is_('danny_decision', 'null')\
+                .eq('classification', 'actionable')\
                 .lt('created_at', cutoff)\
                 .execute()
         except Exception:
