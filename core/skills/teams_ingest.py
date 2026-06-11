@@ -64,8 +64,18 @@ async def download_attachment(access_token: str, attachment: dict) -> bytes:
         return None
         
     headers = {"Authorization": f"Bearer {access_token}"}
+    
+    # If it's a SharePoint/OneDrive URL, we must route it through the Graph API /shares/ endpoint
+    if "sharepoint.com" in content_url or "onedrive.live.com" in content_url:
+        import base64
+        base64_value = base64.b64encode(content_url.encode('utf-8')).decode('utf-8')
+        encoded_url = "u!" + base64_value.replace('/', '_').replace('+', '-').rstrip('=')
+        download_url = f"https://graph.microsoft.com/v1.0/shares/{encoded_url}/driveItem/content"
+    else:
+        download_url = content_url
+        
     try:
-        response = requests.get(content_url, headers=headers, timeout=30)
+        response = requests.get(download_url, headers=headers, timeout=30)
         response.raise_for_status()
         return response.content
     except Exception as e:
