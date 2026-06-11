@@ -244,6 +244,9 @@ async def process_webhook(update: dict):
                     await send_telegram(chat_id, f"✅ {result['message']}")
                 else:
                     await send_telegram(chat_id, f"⚠️ {result['message']}")
+                
+                # Guard fix: Clear any stale session since we just processed a manual decision
+                clear_session(chat_id)
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Graph prefix shortcode error: {_sc_err}")
@@ -371,15 +374,27 @@ async def process_webhook(update: dict):
                             
                         act = action.get('action', '').upper()
                         if act == 'APPROVE':
-                            new_label = action.get('corrected_label', orig['label'])
-                            new_type = action.get('corrected_type', orig['type'])
+                            new_label = action.get('corrected_label')
+                            if not new_label or not new_label.strip():
+                                new_label = orig['label']
+                                
+                            new_type = action.get('corrected_type')
+                            if not new_type or not new_type.strip():
+                                new_type = orig['type']
+                                
                             proposal_lines.append(f"• g{node_id} ({orig['label']}) → {act} as \"{new_label}\" ({new_type})")
                         elif act == 'REJECT':
                             reason = action.get('reason', 'no reason provided')
                             proposal_lines.append(f"• g{node_id} ({orig['label']}) → {act} ({reason})")
                             
                     proposal_lines.append("\nReply **yes** to confirm, or send modifications.")
-                    await send_telegram(chat_id, "\n".join(proposal_lines))
+                    
+                    full_message = "\n".join(proposal_lines)
+                    # Protect against Telegram message length limits
+                    if len(full_message) > 4000:
+                        full_message = full_message[:3900] + "\n... [truncated due to length] ...\nReply **yes** to confirm."
+                        
+                    await send_telegram(chat_id, full_message)
                     return {"success": True}
                     
             except Exception as e:

@@ -71,7 +71,16 @@ Return format MUST be a valid JSON array:
             prompt,
             config={"response_mime_type": "application/json"}
         )
-        return json.loads(response.text)
+        # Strip markdown fences if present
+        text = response.text.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+            
+        return json.loads(text.strip())
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Failed to parse graph corrections: {e}")
         return []
@@ -121,8 +130,13 @@ async def apply_graph_actions(actions: list, original_items_map: dict) -> dict:
                 
             elif action_type == 'approve':
                 # Use corrected values or fall back to original
-                final_label = action.get('corrected_label') or original['label']
-                final_type = action.get('corrected_type') or original['type']
+                final_label = action.get('corrected_label')
+                if final_label is None or final_label.strip() == '':
+                    final_label = original['label']
+                    
+                final_type = action.get('corrected_type')
+                if final_type is None or final_type.strip() == '':
+                    final_type = original['type']
                 
                 # Update pending status
                 supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', node_id).execute()
