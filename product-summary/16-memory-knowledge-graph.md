@@ -129,7 +129,7 @@ Three layers protect the knowledge graph from bad data:
 
 2. **Guard B: Text-anchoring validation (`backfill_graph.py:extract_graph_elements`)** — After LLM extraction, every node label is verified against the source text (case-insensitive substring match). Hallucinated labels (e.g., extracting "Solvstrat" from a text that doesn't mention it) are dropped with an audit warning, along with their edges. "Danny" is always valid for AUTHORED edges.
 
-3. **HITL: Pending approval for high-risk entities (`pending_graph_nodes` table)** — New `person`, `project`, or `organization` nodes are routed to `pending_graph_nodes` with `status: pending`. The Decision Pulse (twice daily) surfaces them with `g{id}` inline keyboard approval. On approve → created in `graph_nodes`. On reject → marked `rejected`. An in-memory `pending_entities_cache` prevents duplicate entries during batch backfill.
+3. **HITL: Pending approval for high-risk entities (`pending_graph_nodes` table)** — New `person`, `project`, or `organization` nodes are routed to `pending_graph_nodes` with `status: pending`. The Decision Pulse surfaces them via Telegram. You can approve/drop them quickly (`g1 yes`), or use the **NLP Correction Loop** by replying with free-text (e.g., "g1 is actually an organization named Solvstrat"). The OS will interpret the correction and ask for your final confirmation (`yes`) before writing to the graph.
 
 **LLM Extraction Prompt Rule:** The entity extraction prompt includes a CRITICAL RULE: "EVERY node MUST have at least one connecting edge." This prevents the graph from accumulating floating nodes over time. Further, the prompt now includes: "Only extract entities that are explicitly, verbatim stated in the text."
 

@@ -140,10 +140,12 @@
 - Hallucinated nodes + their edges dropped with audit warning
 - "Danny" always valid (for AUTHORED edges)
 
-**HITL — Pending Approval:**
+**HITL — Pending Approval + NLP Correction Loop:**
 - New table: `pending_graph_nodes(id, label, type, source_text, proposed_edges, status, created_at)`
 - `get_or_create_node()` and `upsert_nodes()` check `pending_entities_cache` before inserting
 - Decision Pulse (`core/pulse/engine.py`) queries pending items and renders inline keyboard with `g{id}` prefix
+- User can use quick inline commands (`g1 yes`, `g1 drop`) or reply with free-text (e.g., "g1 is actually an organization")
+- Free-text is parsed by Gemini (`core/webhook/graph.py`), cached in an active session, and presented for explicit user confirmation (`yes`/`no`) before applying
 - On approve → node upserted into `graph_nodes`
 - On reject → status set to `rejected`
 - In-memory cache (`pending_entities_cache`) prevents duplicate entries during batch runs

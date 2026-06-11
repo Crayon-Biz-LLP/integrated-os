@@ -65,7 +65,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 | `c{id}` | `messages (call)` | Approve/reject call-extracted item |
 | `w{id}` | `messages (whatsapp)` | Approve/reject WhatsApp-suggested task |
 | `t{id}` | `messages (teams)` | Approve/reject Teams-suggested task |
-| `g{id}` | `pending_graph_nodes` | Approve/reject new person/project node |
+| `g{id}` | `pending_graph_nodes` | Approve/reject new person/project node. Supports **NLP corrections** (e.g. "g2 is an organization, not a person"). |
 | `{id}` (bare) | Tries email → call → whatsapp → graph → practice | Fallback compat |
 
 ## Project Routing Tags

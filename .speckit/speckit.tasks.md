@@ -228,7 +228,19 @@ T-003 (DLQ table) — parallel to T-002, required by T-006
 ```
 
 
-## Database Introspection (Completed)
+## Completed Features (Recent)
+
+### T-101: Unify Message Tables (Phase 1-4)
+- **Status**: Completed
+- **Details**: Dropped `emails`, `whatsapp_messages`, `email_pending_tasks`, `call_pending_items`. Created unified `messages` table with `channel` discriminator. Updated Python backend and Next.js frontend queries. Dropped old sequences.
+
+### T-102: Microsoft Teams Ingestion (Phase 5)
+- **Status**: Completed
+- **Details**: Added `core/skills/teams_ingest.py` for scheduled pull of Teams chats via Graph API. Includes full document extraction (PDF, DOCX, XLSX) and SharePoint attachment download fix using `/shares/` API.
+
+### T-103: Graph Node NLP Correction Flow
+- **Status**: Completed
+- **Details**: Built an interactive confirmation loop allowing the user to correct pending graph nodes via natural language (e.g. "g2 is Paulson"). System interprets via Gemini, presents a proposal, and waits for explicit `yes` confirmation before DB commit. Hardened against JSON parsing errors and stale sessions.
 
 ### T-013: Extract Supabase Schema
 **File**: `db/schema.sql`, `db/rpcs.sql`
