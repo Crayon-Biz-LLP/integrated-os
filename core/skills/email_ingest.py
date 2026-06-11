@@ -317,6 +317,56 @@ Return ONLY valid JSON, NO markdown, NO explanation:
     return json.loads(response.text)
 
 
+def process_sent_email(msg_data: dict, gmail_service) -> tuple:
+    msg_id = msg_data['id']
+    try:
+        # Check if already exists to prevent duplicate processing
+        existing = supabase.table('emails').select('id').eq('message_id', msg_id).maybe_single().execute()
+        if existing is not None and existing.data:
+            return ('ignored', msg_data.get('snippet', '')[:50])
+
+        full_msg = gmail_service.users().messages().get(userId='me', id=msg_id, format='metadata', metadataHeaders=['To', 'Subject', 'Date']).execute()
+        payload = full_msg.get('payload', {})
+        headers = {h['name'].lower(): h['value'] for h in payload.get('headers', [])}
+
+        subject = headers.get('subject', '(No Subject)')
+        to_header = headers.get('to', '')
+        received_at_raw = headers.get('date', '')
+        try:
+            received_at = parsedate_to_datetime(received_at_raw).isoformat()
+        except Exception:
+            received_at = datetime.now(timezone.utc).isoformat()
+            
+        # Try to extract a clean email for the recipient
+        match = re.search(r'<(.+?)>', to_header)
+        recipient_email = match.group(1).strip() if match else to_header.strip()
+
+        # We store sent emails with direction='outgoing'
+        email_row = {
+            "message_id": msg_id,
+            "thread_id": full_msg.get('threadId', ''),
+            "source": "gmail",
+            "direction": "outgoing",
+            "sender": to_header,            # recipient name/email
+            "sender_email": recipient_email, # recipient email
+            "subject": subject,
+            "body_summary": full_msg.get('snippet', '')[:500],
+            "received_at": received_at,
+            "classification": "fyi",
+            "status": "processed"
+        }
+
+        insert_res = supabase.table('emails').insert(email_row).execute()
+        if not insert_res.data:
+            return ('error', 'insert returned no data')
+
+        print(f"[sent] {subject} | To: {recipient_email}")
+        return ('processed', subject)
+    except Exception as e:
+        print(f"Error processing sent email {msg_id}: {e}")
+        return ('error', str(e))
+
+
 async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejected_tasks: list) -> tuple:
     msg_id = msg_data['id']
     sender_name = None
@@ -596,7 +646,39 @@ async def main():
             print(f"Fatal error processing message: {e}")
 
     print(f"Email ingest complete. {processed} processed, {ignored} ignored, {skipped} skipped (duplicates), {skipped_api_error} skipped (api error).")
-
+    
+    # --- FETCH SENT ITEMS ---
+    print("\nFetching Sent Items...")
+    sent_query = f'in:sent after:{after_timestamp}'
+    try:
+        sent_result = gmail_service.users().messages().list(userId='me', q=sent_query, maxResults=50).execute()
+        sent_messages = sent_result.get('messages', [])
+        
+        if not sent_messages:
+            print("No new sent emails found.")
+        else:
+            print(f"Found {len(sent_messages)} sent emails to process.")
+            sent_processed = 0
+            sent_skipped = 0
+            
+            for msg in sent_messages:
+                if not msg:
+                    continue
+                msg_id = msg.get('id')
+                if msg_id in seen_ids:
+                    sent_skipped += 1
+                    continue
+                seen_ids.add(msg_id)
+                
+                status, _ = process_sent_email(msg, gmail_service)
+                if status == 'processed':
+                    sent_processed += 1
+                else:
+                    sent_skipped += 1
+                    
+            print(f"Sent email ingest complete. {sent_processed} processed, {sent_skipped} skipped.")
+    except Exception as e:
+        print(f"Sent emails ingest failed: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())

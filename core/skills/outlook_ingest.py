@@ -191,6 +191,31 @@ Return ONLY valid JSON, NO markdown, NO explanation:
     return json.loads(response.text)
 
 
+def fetch_outlook_sent_messages(limit=25):
+    access_token = get_access_token()
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    url = "https://graph.microsoft.com/v1.0/me/mailFolders/sentItems/messages"
+    params = {
+        "$top": limit,
+        "$select": "id,subject,sentDateTime,toRecipients,bodyPreview,conversationId,internetMessageId",
+        "$orderby": "sentDateTime DESC"
+    }
+
+    response = requests.get(url, headers=headers, params=params, timeout=30)
+
+    if response.status_code == 401:
+        from core.skills.outlook_token_helper import refresh_outlook_token
+        result = refresh_outlook_token(write_back=True)
+        access_token = result["access_token"]
+        headers["Authorization"] = f"Bearer {access_token}"
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+
+    response.raise_for_status()
+    messages = response.json().get("value", [])
+    print(f"fetched {len(messages)} outlook sent messages")
+    return messages
+
 def fetch_outlook_messages(limit=25):
     access_token = get_access_token()
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -459,6 +484,59 @@ async def ingest_outlook_messages(limit=25):
             continue
 
     print(f"Outlook ingest complete. {processed} processed, {ignored} ignored, {skipped} skipped (duplicates), {skipped_api_error} skipped (api error).")
+    
+    # --- FETCH SENT ITEMS ---
+    print("\nFetching Outlook Sent Items...")
+    try:
+        sent_messages = fetch_outlook_sent_messages(limit=limit)
+        if not sent_messages:
+            print("No new Outlook sent messages found.")
+        else:
+            sent_processed = 0
+            sent_skipped = 0
+            for msg in sent_messages:
+                msg_id = msg.get("id")
+                if not msg_id or msg_id in seen_ids:
+                    sent_skipped += 1
+                    continue
+                seen_ids.add(msg_id)
+                
+                existing = supabase.table('emails').select('id').eq('message_id', msg_id).maybe_single().execute()
+                if existing is not None and getattr(existing, 'data', None):
+                    sent_skipped += 1
+                    continue
+                    
+                to_recipients = msg.get("toRecipients", [])
+                to_header = ", ".join(r.get("emailAddress", {}).get("address", "") for r in to_recipients if r.get("emailAddress", {}).get("address"))
+                
+                subject = msg.get('subject', '(No Subject)')
+                body = msg.get('bodyPreview', '')
+                
+                email_row = {
+                    "message_id": msg_id,
+                    "thread_id": msg.get("conversationId", ""),
+                    "source": "outlook",
+                    "direction": "outgoing",
+                    "sender": to_header,
+                    "sender_email": to_header,
+                    "subject": subject,
+                    "body_summary": body[:500],
+                    "received_at": msg.get("sentDateTime") or datetime.now(timezone.utc).isoformat(),
+                    "classification": "fyi",
+                    "status": "processed"
+                }
+                
+                insert_res = supabase.table('emails').insert(email_row).execute()
+                if getattr(insert_res, 'data', None):
+                    sent_processed += 1
+                    print(f"✅ [sent] {subject} | To: {to_header}")
+                else:
+                    sent_skipped += 1
+                    
+            print(f"Outlook sent ingest complete. {sent_processed} processed, {sent_skipped} skipped.")
+    except Exception as e:
+        print(f"Outlook sent ingest failed: {e}")
+
     return {"processed": processed, "ignored": ignored, "skipped": skipped, "skipped_api_error": skipped_api_error}
 
 async def main():

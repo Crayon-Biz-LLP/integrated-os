@@ -752,10 +752,31 @@ Query: {query}"""
                 
             lines = []
             try:
-                e_res = supabase.table('emails').select('id, subject, sender, received_at, status').or_(f"subject.ilike.%{search_val}%,body_summary.ilike.%{search_val}%").in_('status', ['new', 'processed']).order('received_at', desc=True).limit(5).execute()
+                # Get both incoming and outgoing emails
+                e_res = supabase.table('emails').select('id, subject, sender, sender_email, received_at, status, direction').or_(f"subject.ilike.%{search_val}%,body_summary.ilike.%{search_val}%").in_('status', ['new', 'processed']).order('received_at', desc=True).limit(8).execute()
+                
+                found_sent = False
                 if e_res.data:
                     for e in e_res.data:
-                        lines.append(f"- [EMAIL] {e.get('subject', '')} (from {e.get('sender', '')}, status: {e.get('status', '')})")
+                        direction = e.get('direction', 'incoming')
+                        if direction == 'outgoing':
+                            found_sent = True
+                            lines.append(f"- [YOUR REPLY] Re: {e.get('subject', '')} (to {e.get('sender_email', '')})")
+                        else:
+                            lines.append(f"- [EMAIL] {e.get('subject', '')} (from {e.get('sender', '')}, status: {e.get('status', '')})")
+                            
+                # Fallback to API if we didn't find any sent replies
+                if not found_sent:
+                    try:
+                        from core.email_search import search_gmail_sent, search_outlook_sent
+                        import asyncio
+                        g_task = asyncio.to_thread(search_gmail_sent, search_val, 2)
+                        o_task = asyncio.to_thread(search_outlook_sent, search_val, 2)
+                        g_res, o_res = await asyncio.gather(g_task, o_task)
+                        for msg in g_res + o_res:
+                            lines.append(f"- [YOUR REPLY] Re: {msg.get('subject', '')} (to {msg.get('sender_email', '')}) - REALTIME API FETCH")
+                    except Exception as e:
+                        print(f"Fallback realtime sent fetch failed: {e}")
             except Exception:
                 pass
                 

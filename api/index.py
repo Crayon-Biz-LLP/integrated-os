@@ -183,6 +183,33 @@ async def get_messages_route(request: Request, limit: int = 50, offset: int = 0)
         print(f"Get messages error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# --- SEARCH SENT EMAILS ---
+@app.post("/api/email-search/sent")
+async def search_sent_route(request: Request):
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        query = body.get("query", "")
+        max_results = body.get("max_results", 5)
+        
+        from core.email_search import search_gmail_sent, search_outlook_sent
+        import asyncio
+        
+        # Run both searches concurrently in threads since they are sync
+        g_task = asyncio.to_thread(search_gmail_sent, query, max_results)
+        o_task = asyncio.to_thread(search_outlook_sent, query, max_results)
+        
+        g_res, o_res = await asyncio.gather(g_task, o_task)
+        
+        # Sort combined results by received_at descending
+        combined = g_res + o_res
+        combined.sort(key=lambda x: x.get('received_at', ''), reverse=True)
+        
+        return {"success": True, "results": combined[:max_results]}
+    except Exception as e:
+        print(f"Sent email search error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 # --- CALENDAR EVENTS (Fetches from Google + Outlook) ---
 @app.get("/api/calendar-events")
 async def get_calendar_events(request: Request, date: str = None, start: str = None, end: str = None):
