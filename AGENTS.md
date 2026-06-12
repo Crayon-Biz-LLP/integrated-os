@@ -91,26 +91,31 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 
 ### Pulse Cron Schedule (UTC, matches `.github/workflows/pulse.yml`)
 - **Main briefing**: Weekdays `30 23 * * 1-5` + `0 2,6,9,12 * * 1-5` (5AM, 7:30AM, 11:30AM, 2:30PM, 5:30PM IST); Weekends `30 2,9 * * 0,6` (8AM, 3PM IST)
-- **Decision Pulse** (no AI, pending approvals): `30 4,10 * * *` (10AM, 3:30PM IST) — runs alongside main briefing on overlapping crons
+- **Decision Pulse** (no AI, pending approvals): Every 30 min via cron-job.org → `POST /api/decision-pulse`. Auth: `x-pulse-secret` header. See cron-job.org setup below.
 - **Sentinel Nudge** (upcoming event watcher): Every 5 min via cron-job.org → `POST /api/sentinel`. Lookahead: 60 min (nudges 0–45 min before). Auth: `x-pulse-secret` header. See cron-job.org setup below.
 
-### Sentinel Nudge (cron-job.org Setup)
+### External Cron Jobs (cron-job.org Setup)
 
-The sentinel uses an **external cron service** because GitHub Actions free plan and Vercel Hobby plan both throttle high-frequency schedules. [cron-job.org](https://cron-job.org) is free and reliable.
+Some workflows use an **external cron service** because GitHub Actions free plan and Vercel Hobby plan both throttle high-frequency schedules. [cron-job.org](https://cron-job.org) is free and reliable.
+
+**Auth:** Endpoints accept `x-pulse-secret` header matching the `PULSE_SECRET` environment variable. Returns 401 if missing.
+
+**Env vars required (already in Vercel):** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GEMINI_API_KEY`, `PULSE_SECRET`
+
+| Job | URL | Schedule | Timeout |
+|---|---|---|---|
+| **Sentinel Nudge** | `https://integrated-os.vercel.app/api/sentinel` | `*/5 * * * *` (every 5 min) | 30s |
+| **Decision Pulse** | `https://integrated-os.vercel.app/api/decision-pulse` | `*/30 * * * *` (every 30 min) | 30s |
 
 **Setup:**
 1. Go to [cron-job.org](https://cron-job.org) → sign up (free)
-2. Create a new cron job:
-   - **URL**: `https://integrated-os.vercel.app/api/sentinel`
-   - **Schedule**: `*/5 * * * *` (every 5 minutes)
+2. Create a new cron job for each row above:
+   - **URL**: as shown
+   - **Schedule**: as shown
    - **Method**: GET
    - **Headers**: Add `x-pulse-secret` with value matching your `PULSE_SECRET` env var
-   - **Timeout**: 30 seconds (sentinel completes in ~1-2 sec)
+   - **Timeout**: as shown
 3. Save and enable
-
-**Auth:** The endpoint accepts `x-pulse-secret` header matching the `PULSE_SECRET` environment variable (fallback `CRON_SECRET`). If neither header nor env var is set, returns 401.
-
-**Env vars required (already in Vercel):** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GEMINI_API_KEY`, `PULSE_SECRET`
 
 ### AI Briefing Rules
 - NEVER create tasks from URLs unless explicitly commanded

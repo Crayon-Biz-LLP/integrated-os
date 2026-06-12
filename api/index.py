@@ -22,6 +22,7 @@ from core.skills.whatsapp_ingest import process_whatsapp_message
 from core.pulse.sentinel import process_sentinel
 from core.pulse import (
     process_pulse,
+    process_decision_pulse,
     get_tasks_service,
     sync_to_google,
     delete_calendar_event,
@@ -114,6 +115,22 @@ async def sentinel_route(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
         
     result = await process_sentinel(auth_secret=cron_secret, trigger="cron")
+    return result
+
+# --- DECISION PULSE (Pending Approvals) ---
+@app.api_route("/api/decision-pulse", methods=["GET", "POST"])
+async def decision_pulse_route(request: Request):
+    """Triggered by cron-job.org — pending approvals (no AI)."""
+    auth_header = request.headers.get("Authorization", "")
+    cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
+
+    if not cron_secret:
+        raise HTTPException(status_code=500, detail="CRON_SECRET missing")
+
+    if not auth_header.endswith(cron_secret) and request.headers.get("x-pulse-secret") != cron_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    result = await process_decision_pulse(auth_secret=cron_secret, trigger="cron")
     return result
 
 # --- SEND DRAFT REPLY (Routes to webhook.py) ---

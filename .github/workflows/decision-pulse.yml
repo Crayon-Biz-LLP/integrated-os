@@ -1,8 +1,6 @@
 name: Decision Pulse
 on:
-  schedule:
-    - cron: '30 4,10 * * *'  # 10:00 AM & 3:30 PM IST
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger only — replaced by cron-job.org every 30 min
 
 jobs:
   run-decisions:
