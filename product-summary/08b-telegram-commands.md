@@ -71,3 +71,8 @@ Soft deletes the last entry. Cancels matching tasks (marks as cancelled), marks 
 
 ### `N:` or `Note:` prefix
 Skips Gemini intent classification entirely. The message is directly routed to note creation: embedded and saved to `memories` as `memory_type='note'`. Bypasses the full 6-stage pipeline for speed. See [Telegram Intake §Stage 6](06-telegram-intake.md).
+
+### `/note <text>`
+Explicit note capture with entity extraction. Runs the classifier normally (to extract entity/project/person metadata), then overrides `intent → NOTE` and `confidence → 1.0` before routing. Preserves ALL downstream processing: embedding, project linking, person linking, URL extraction, memory insert. Confirms with `🧠` emoji.
+
+**Empty state:** Bare `/note` with no text prompts "What's on your mind?" and sets a `WAITING_FOR_NOTE` session flag. Next message within 5 minutes is automatically treated as note content. After 5 minutes the flag clears silently.

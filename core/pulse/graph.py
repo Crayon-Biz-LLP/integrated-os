@@ -53,7 +53,7 @@ async def create_graph_node_with_db_record(
                 }
 
             existing = supabase.table('projects').select('id, name').ilike('name', label).maybe_single().execute()
-            if existing.data:
+            if existing and existing.data:
                 project_id = existing.data['id']
                 audit_log_sync("pulse", "INFO", f"Reusing existing project '{label}' (ID {project_id})")
             else:
@@ -64,6 +64,8 @@ async def create_graph_node_with_db_record(
                     "context": "from graph_approval",
                     "is_active": True,
                 }).execute()
+                if not result or not result.data:
+                    raise Exception("Supabase insert returned no data for projects")
                 project_id = result.data[0]['id']
 
             supabase.table("graph_nodes").upsert(
@@ -89,7 +91,8 @@ async def create_graph_node_with_db_record(
 
         elif node_type == 'person':
             norm_name = normalize_person_name(label)
-            existing_people = supabase.table('people').select('id, name').execute().data or []
+            existing_resp = supabase.table('people').select('id, name').execute()
+            existing_people = existing_resp.data if existing_resp else []
             matched_id = None
             for p in existing_people:
                 if normalize_person_name(p['name']) == norm_name or p['name'].lower() == label.lower():
@@ -104,6 +107,8 @@ async def create_graph_node_with_db_record(
                 if context:
                     insert_data["role"] = context.strip()
                 result = supabase.table('people').insert(insert_data).execute()
+                if not result or not result.data:
+                    raise Exception("Supabase insert returned no data for people")
                 people_id = result.data[0]['id']
 
             supabase.table("graph_nodes").upsert(

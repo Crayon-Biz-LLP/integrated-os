@@ -16,6 +16,7 @@
 - Graph nodes and edges — entity relationship tracking
 - Gmail + Outlook send via `senddraftreply()`
 - `JOURNALSYNC` signal handler — triggers GitHub Actions from Google Sheets
+- Personal capture pipeline — natural speech NOTE routing, `/note` command with entity extraction, `/api/roundup` evening check-in, voice memo→note pipeline
 
 ### What is broken or incomplete
 - **CRITICAL**: `raw_dumps` records are marked `completed` even when embedding fails → 41+ orphaned records with `embedding: null`

@@ -230,6 +230,30 @@ T-003 (DLQ table) — parallel to T-002, required by T-006
 
 ## Today's Changes (June 12, 2026)
 
+### T-021: Voice Memo → Note Pipeline
+**File**: `core/webhook/multimodal.py`
+**Status**: Completed
+**Change**: Audio files now use an audio-aware extraction prompt ("Transcribe this audio message exactly as spoken") instead of the image OCR prompt. Audio transcripts skip the `ALT IMAGE:` prefix and use `extraction_method: voice_memo`. This allows voice memos to flow cleanly through the NOTE classification pipeline.
+
+### T-022: Classifier Tuning for NOTE Intent
+**File**: `core/webhook/classify.py`
+**Status**: Completed
+**Change**: Added three explicit NOTE rules to the classification prompt:
+- MEETING NOTES & OBSERVATIONS → NOTE (not COMPLETION)
+- PROJECT UPDATES → NOTE (not TASK)
+- IDEAS → NOTE (not TASK)
+This enables natural-language note capture without special syntax.
+
+### T-023: Evening Roundup Endpoint
+**File**: `api/index.py` → `/api/roundup`
+**Status**: Completed
+**Change**: New scheduled endpoint that sends an evening Telegram prompt: "🌆 Evening roundup — any meeting notes, ideas, or project updates from today?" Includes anti-nag guard (skips if ≥3 notes already captured today). Secured via `x-pulse-secret`. Scheduled via cron-job.org at 2PM and 8PM IST.
+
+### T-024: `/note` Command with Entity Extraction
+**File**: `core/webhook/handler.py`
+**Status**: Completed
+**Change**: New `/note <text>` Telegram command. Runs classifier normally (extracts entity/project/person metadata), then overrides `intent → NOTE`, `confidence → 1.0`, `receipt → 🧠`. Preserves all downstream processing. Empty `/note` sets `WAITING_FOR_NOTE` session flag with 5-minute timeout for continuation.
+
 ### T-019: Fix pending graph node label-drift duplicates
 **File**: `core/skills/backfill_graph.py`, Supabase migration
 **Status**: Completed
@@ -267,6 +291,10 @@ T-003 (DLQ table) — parallel to T-002, required by T-006
 ### T-103: Graph Node NLP Correction Flow
 - **Status**: Completed
 - **Details**: Built an interactive confirmation loop allowing the user to correct pending graph nodes via natural language (e.g. "g2 is Paulson"). System interprets via Gemini, presents a proposal, and waits for explicit `yes` confirmation before DB commit. Hardened against JSON parsing errors and stale sessions.
+
+### T-104: Personal Capture Pipeline
+- **Status**: Completed
+- **Details**: Four-phase feature enabling capture of Danny's own thoughts (meeting notes, ideas, project updates, voice memos). Phase 1: classifier tuning for NOTE intent. Phase 2: `/api/roundup` evening check-in endpoint. Phase 3: voice memo → note pipeline. Phase 4: `/note` command with entity extraction and empty-state handling.
 
 ### T-013: Extract Supabase Schema
 **File**: `db/schema.sql`, `db/rpcs.sql`
