@@ -280,10 +280,29 @@ pending_entities_cache = set()
 def fetch_pending_entities():
     global pending_entities_cache
     try:
-        res = fetch_all_paginated("pending_graph_nodes", "label", in_filter_col="status", in_filter_val=["pending"])
+        res = fetch_all_paginated("pending_graph_nodes", "label", in_filter_col="status", in_filter_val=["pending", "approved", "rejected"])
         pending_entities_cache = {n['label'] for n in res}
     except Exception:
         pass
+
+def _check_pending_label_exists(label: str) -> bool:
+    label_clean = label.strip().lower()
+    existing = supabase.table("pending_graph_nodes") \
+        .select("id") \
+        .filter("label", "ilike", label_clean) \
+        .limit(1) \
+        .execute()
+    if existing.data:
+        return True
+    if len(label_clean) >= 6:
+        existing = supabase.table("pending_graph_nodes") \
+            .select("id") \
+            .filter("label", "ilike", f"%{label_clean}%") \
+            .limit(1) \
+            .execute()
+        if existing.data:
+            return True
+    return False
 
 def fetch_graph_entities():
     nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata")
@@ -538,7 +557,7 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
     
     # Node doesn't exist - create it
     if node_type in ['person', 'project', 'organization']:
-        if label not in pending_entities_cache:
+        if label not in pending_entities_cache and not _check_pending_label_exists(label):
             try:
                 supabase.table("pending_graph_nodes").insert({
                     "label": label,
@@ -550,6 +569,8 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
                 audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval: {label} ({node_type})")
             except Exception as e:
                 audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
+        elif label not in pending_entities_cache:
+            pending_entities_cache.add(label)
         return None
 
     try:
@@ -605,7 +626,7 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         else:
             if node_type in ['person', 'project', 'organization']:
                 # Gated high-risk entity - send to pending
-                if label not in pending_entities_cache:
+                if label not in pending_entities_cache and not _check_pending_label_exists(label):
                     try:
                         supabase.table("pending_graph_nodes").insert({
                             "label": label,
@@ -617,6 +638,8 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
                         audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval: {label} ({node_type})")
                     except Exception as e:
                         audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
+                elif label not in pending_entities_cache:
+                    pending_entities_cache.add(label)
             else:
                 record["id"] = str(uuid.uuid4())
                 node_records.append(record)

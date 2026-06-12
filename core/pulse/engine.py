@@ -232,7 +232,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         # Fetch all pending messages
         pending_res = supabase.table('messages')\
-            .select('id, channel, classification, suggested_title, suggested_project, sender_name, metadata')\
+            .select('id, channel, classification, suggested_title, suggested_project, sender_name, metadata, subject')\
             .is_('danny_decision', 'null')\
             .in_('channel', ['email', 'call', 'whatsapp', 'teams'])\
             .order('created_at', desc=False)\
@@ -280,7 +280,8 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             lines.append(f"📨 EMAIL DECISIONS ({len(email_items)}) — tap to approve/drop")
             for row in email_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
-                lines.append(f"[e{row['id']}] {(row.get('suggested_title') or 'Untitled')[:60]}{proj}")
+                title = row.get('suggested_title') or row.get('subject') or 'Untitled'
+                lines.append(f"[e{row['id']}] {title[:60]}{proj}")
             lines.append("")
 
         if call_items:
