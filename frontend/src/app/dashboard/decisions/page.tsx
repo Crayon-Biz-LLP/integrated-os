@@ -1,5 +1,5 @@
 import { createServerSupabaseClient } from "@/lib/supabase-server";
-import type { CallPendingItem, WhatsAppPendingMessage } from "@/lib/decisions/types";
+import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge } from "@/lib/decisions/types";
 import { DecisionsShell } from "./decisions-shell";
 
 export const dynamic = 'force-dynamic';
@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export default async function DecisionsPage() {
   const supabase = await createServerSupabaseClient();
 
-  const [callRes, whatsappRes] = await Promise.all([
+  const [callRes, whatsappRes, graphRes] = await Promise.all([
     supabase
       .from("messages")
       .select("*")
@@ -21,6 +21,12 @@ export default async function DecisionsPage() {
       .eq("channel", "whatsapp")
       .is("danny_decision", null)
       .eq("classification", "actionable")
+      .order("created_at", { ascending: false })
+      .limit(100),
+    supabase
+      .from("pending_graph_edges")
+      .select("*")
+      .eq("status", "pending")
       .order("created_at", { ascending: false })
       .limit(100),
   ]);
@@ -40,10 +46,13 @@ export default async function DecisionsPage() {
     linked_person_name: row.metadata?.linked_person_name,
   })) as unknown as WhatsAppPendingMessage[];
 
+  const graphItems = (graphRes.data ?? []) as GraphPendingEdge[];
+
   return (
     <DecisionsShell
       initialCallItems={callItems}
       initialWhatsappItems={whatsappItems}
+      initialGraphItems={graphItems}
     />
   );
 }

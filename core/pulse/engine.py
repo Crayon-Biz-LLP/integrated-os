@@ -274,7 +274,16 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         graph_items = pending_graph.data or []
 
-        total = len(email_items) + len(call_items) + len(whatsapp_items) + len(teams_items) + len(graph_items)
+        pending_edges_res = supabase.table('pending_graph_edges')\
+            .select('id, source_label, target_label, relationship')\
+            .eq('status', 'pending')\
+            .order('created_at', desc=False)\
+            .limit(5)\
+            .execute()
+            
+        pending_edges = pending_edges_res.data or []
+
+        total = len(email_items) + len(call_items) + len(whatsapp_items) + len(teams_items) + len(graph_items) + len(pending_edges)
         if total == 0:
             await complete_pulse_run(supabase, run_id, status="completed", metadata={"reason": "no_pending"})
             return {"success": True, "message": "No pending decisions."}
@@ -324,6 +333,12 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                 lines.append(f"👤 [g{row['id']}] {row['label']} ({row['type']})")
             lines.append("")
 
+        if pending_edges:
+            lines.append(f"🔗 GRAPH EDGES ({len(pending_edges)}) — tap to approve/edit/drop")
+            for row in pending_edges:
+                lines.append(f"🔗 [pe{row['id']}] {row['source_label']} → {row['relationship']} → {row['target_label']}")
+            lines.append("")
+
         # Show awaiting_details count so items stuck in clarification are visible
         try:
             awaiting_res = supabase.table('pending_graph_nodes').select('id', count='exact').eq('status', 'awaiting_details').execute()
@@ -370,6 +385,13 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                 keyboard.append([
                     {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
                     {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
+                ])
+            for row in pending_edges:
+                sc = f"pe{row['id']}"
+                keyboard.append([
+                    {"text": f"✅ {row['relationship']}", "callback_data": f"approve_{sc}"},
+                    {"text": "✏️ Edit", "callback_data": f"edit_{sc}"},
+                    {"text": "❌", "callback_data": f"reject_{sc}"}
                 ])
             send_success = await send_telegram(
                 chat_id=telegram_chat_id,

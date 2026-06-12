@@ -21,3 +21,15 @@ export async function decideWhatsAppMessage(id: number, decision: 'approve' | 'r
     throw new Error(err.detail || 'Failed to decide WhatsApp message');
   }
 }
+
+export async function decideGraphEdge(id: number, decision: 'approve' | 'reject', updates?: { new_source?: string; new_target?: string; new_rel?: string; }): Promise<void> {
+  const res = await fetch('/api/graph-edge-action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, action: decision, ...updates }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to decide graph edge' }));
+    throw new Error(err.detail || 'Failed to decide graph edge');
+  }
+}

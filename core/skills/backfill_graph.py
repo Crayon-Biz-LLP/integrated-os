@@ -657,49 +657,53 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
             audit_log_sync("backfill_graph", "ERROR", f"Node upsert error: {e}")
 
 
+def insert_pending_edges_batch(edges: list):
+    """Insert edges into pending_graph_edges in batches, ignoring duplicates."""
+    if not edges:
+        return
+    try:
+        # We can't use on_conflict with pending_graph_edges unless we have a unique constraint,
+        # but we can just insert and let duplicates exist (or filter them out in memory).
+        # To avoid massive duplicates, we filter out identical pending edges first.
+        existing_res = supabase.table("pending_graph_edges").select("source_label,target_label,relationship").eq("status", "pending").execute()
+        existing_set = {f"{r['source_label']}|{r['target_label']}|{r['relationship']}" for r in (existing_res.data or [])}
+        
+        to_insert = []
+        for edge in edges:
+            key = f"{edge['source_label']}|{edge['target_label']}|{edge['relationship']}"
+            if key not in existing_set:
+                to_insert.append(edge)
+                existing_set.add(key)
+                
+        if not to_insert:
+            return
+            
+        for i in range(0, len(to_insert), 100):
+            batch = to_insert[i:i+100]
+            supabase.table("pending_graph_edges").insert(batch).execute()
+    except Exception as e:
+        audit_log_sync("backfill_graph", "ERROR", f"Pending edge insert failed: {e}")
+
 def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
-    """Insert edges with validation - skip if source/target node doesn't exist."""
-    orphaned = 0
-    
+    """Queue extracted edges for human approval in pending_graph_edges."""
+    pending_batch = []
     for edge in edges:
         source_label = edge.get("source", "")
         target_label = edge.get("target", "")
         relationship = edge.get("relationship", "relates_to").upper()
         
-        source_id = node_label_to_id.get(source_label)
-        target_id = node_label_to_id.get(target_label)
-        
-        # VALIDATION: Skip if nodes don't exist in DB
-        if not source_id or not target_id:
-            audit_log_sync("backfill_graph", "WARNING", 
-                f"Skipping edge {source_label}->{target_label}: missing node ID")
-            orphaned += 1
-            continue
-        
-        # Additional validation: Check if nodes actually exist in DB
-        try:
-            source_check = supabase.table("graph_nodes").select("id").eq("id", source_id).execute()
-            target_check = supabase.table("graph_nodes").select("id").eq("id", target_id).execute()
-            
-            if not source_check.data or not target_check.data:
-                audit_log_sync("backfill_graph", "WARNING", 
-                    "Skipping edge: node doesn't exist in DB")
-                orphaned += 1
-                continue
-        except Exception as ve:
-            audit_log_sync("backfill_graph", "WARNING", f"Node validation failed: {ve}")
+        if not source_label or not target_label:
             continue
             
-        try:
-            supabase.table("graph_edges").upsert({
-                "source_node_id": source_id,
-                "target_node_id": target_id,
-                "relationship": relationship,
-                "metadata": json.dumps({"memory_id": memory_id})
-            }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
-        except Exception as e:
-            print(f"Edge insert failed ({source_label} -> {target_label}): {e}")
-            continue
+        pending_batch.append({
+            "source_label": source_label,
+            "target_label": target_label,
+            "relationship": relationship,
+            "source_text": str(memory_id),
+            "status": "pending"
+        })
+        
+    insert_pending_edges_batch(pending_batch)
 
 
 def process_memory(memory: dict, graph_entities: dict) -> bool:
@@ -826,30 +830,18 @@ def run_backfill():
         # Batch upsert nodes using the existing upsert_nodes function
         upsert_nodes([{"label": k, "type": v} for k, v in unique_nodes.items()], graph_entities, "batch")
         
-        edges_to_insert = []
+        pending_edges_to_insert = []
         for edge in all_edges:
-            source_id = graph_entities.get(edge["source"], {}).get("id")
-            target_id = graph_entities.get(edge["target"], {}).get("id")
-            if source_id and target_id:
-                edges_to_insert.append({
-                    "source_node_id": source_id,
-                    "target_node_id": target_id,
-                    "relationship": edge["relationship"],
-                    "metadata": json.dumps({"memory_id": str(edge["memory_id"])})
-                })
+            pending_edges_to_insert.append({
+                "source_label": edge["source"],
+                "target_label": edge["target"],
+                "relationship": edge["relationship"],
+                "source_text": str(edge["memory_id"]),
+                "status": "pending"
+            })
                 
-        if edges_to_insert:
-            try:
-                # Upsert all edges in batches of 100 to avoid PostgREST limits
-                for j in range(0, len(edges_to_insert), 100):
-                    edge_batch = edges_to_insert[j:j+100]
-                    supabase.table("graph_edges").upsert(
-                        edge_batch, 
-                        on_conflict="source_node_id,relationship,target_node_id", 
-                        ignore_duplicates=True
-                    ).execute()
-            except Exception as e:
-                audit_log_sync("backfill_graph", "ERROR", f"Batch edge insert failed: {e}")
+        if pending_edges_to_insert:
+            insert_pending_edges_batch(pending_edges_to_insert)
                 
         print(f"Completed batch {batch_num}")
     
@@ -934,22 +926,16 @@ def backfill_emotion_edges():
         for es in es_nodes:
             if es["id"] not in existing_target_ids:
                 edges_to_insert.append({
-                    "source_node_id": danny_id,
-                    "target_node_id": es["id"],
+                    "source_label": "Danny",
+                    "target_label": es["label"],
                     "relationship": "FEELS",
-                    "weight": 1.0,
-                    "metadata": json.dumps({"source": "backfill_emotions", "reason": "emotional state node without FEELS edge"})
+                    "source_text": "backfill_emotions",
+                    "status": "pending"
                 })
         
         if edges_to_insert:
-            print(f"Creating {len(edges_to_insert)} FEELS edges...")
-            for j in range(0, len(edges_to_insert), 100):
-                edge_batch = edges_to_insert[j:j+100]
-                supabase.table("graph_edges").upsert(
-                    edge_batch, 
-                    on_conflict="source_node_id,relationship,target_node_id", 
-                    ignore_duplicates=True
-                ).execute()
+            print(f"Queueing {len(edges_to_insert)} pending FEELS edges...")
+            insert_pending_edges_batch(edges_to_insert)
         
         print("✅ Emotion backfill complete.")
     except Exception as e:
@@ -1242,11 +1228,11 @@ def backfill_orphaned_node_edges():
         if needs_fix:
             rel = type_to_rel.get(node["type"], "RELATES_TO")
             edges_to_insert.append({
-                "source_node_id": danny_id,
-                "target_node_id": node["id"],
+                "source_label": "Danny",
+                "target_label": node["label"],
                 "relationship": rel,
-                "weight": 1.0,
-                "metadata": '{"source": "backfill_orphaned_node_edges"}'
+                "source_text": "backfill_orphaned_node_edges",
+                "status": "pending"
             })
             fixed_count += 1
 
@@ -1259,14 +1245,9 @@ def backfill_orphaned_node_edges():
             except Exception as e:
                 print(f"Failed to delete batch of AUTHORED edges: {e}")
 
-    # Execute insertions
+    # Queue insertions
     if edges_to_insert:
-        for i in range(0, len(edges_to_insert), 100):
-            batch = edges_to_insert[i:i+100]
-            try:
-                supabase.table("graph_edges").upsert(batch, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
-            except Exception as e:
-                print(f"Failed to insert batch of backfill edges: {e}")
+        insert_pending_edges_batch(edges_to_insert)
 
     print(f"✅ Fixed {fixed_count} isolated/AUTHORED-only nodes.")
 

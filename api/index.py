@@ -18,6 +18,7 @@ from core.webhook import (
     process_call_pending_decision,
     process_whatsapp_pending_decision,
 )
+from core.pulse.graph import process_pending_edge_decision
 from core.skills.whatsapp_ingest import process_whatsapp_message
 from core.pulse.sentinel import process_sentinel
 from core.pulse import (
@@ -505,6 +506,41 @@ async def whatsapp_action_route(request: Request):
 
 
 # --- WHATSAPP INGEST (Receives MacroDroid webhook) ---
+
+# --- GRAPH EDGE DECISIONS (approve/reject/edit from frontend) ---
+@app.post("/api/graph-edge-action")
+async def graph_edge_action_route(request: Request):
+    """Approve, reject, or edit graph pending edge via API (called from frontend)."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        pending_id = body.get('id')
+        action = body.get('action', '')
+        new_source = body.get('new_source')
+        new_target = body.get('new_target')
+        new_rel = body.get('new_rel')
+
+        if not pending_id or not action:
+            raise HTTPException(status_code=400, detail="id and action required")
+
+        result = await process_pending_edge_decision(
+            pending_id=int(pending_id),
+            decision=action,
+            new_source=new_source,
+            new_target=new_target,
+            new_rel=new_rel
+        )
+
+        if result['success']:
+            return {"success": True, "message": result['message'], "action": action}
+        else:
+            return {"success": False, "message": result['message'], "action": action}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/whatsapp-ingest")
 async def whatsapp_ingest_route(request: Request):
     trace_id_var.set(f"wa_{uuid.uuid4().hex[:8]}")

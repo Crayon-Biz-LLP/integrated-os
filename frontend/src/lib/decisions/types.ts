@@ -28,4 +28,15 @@ export interface WhatsAppPendingMessage {
   shown_in_brief: boolean | null;
 }
 
+export interface GraphPendingEdge {
+  id: number;
+  source_label: string;
+  target_label: string;
+  relationship: string;
+  source_text: string;
+  confidence: number;
+  status: 'pending' | 'approved' | 'rejected';
+  created_at: string;
+}
+
 

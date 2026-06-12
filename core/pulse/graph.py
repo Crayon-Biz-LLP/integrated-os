@@ -1,4 +1,5 @@
 from core.llm import get_embedding
+from core.llm.fallback import generate_content_with_fallback
 import os
 import json
 import asyncio
@@ -61,7 +62,7 @@ async def create_graph_node_with_db_record(
                     "name": label,
                     "org_tag": org_tag_upper,
                     "status": "active",
-                    "context": "from graph_approval",
+                    "context": context or "from graph_approval",
                     "is_active": True,
                 }).execute()
                 if not result or not result.data:
@@ -84,9 +85,14 @@ async def create_graph_node_with_db_record(
 
             await _ensure_danny_edge(label, node_type)
 
+            inferred = []
+            if source_text and source_text.strip() not in ("", "batch"):
+                inferred = await _infer_additional_edges(label, node_type, source_text)
+
             return {
                 "success": True, "action": "approved",
-                "message": f"Approved project '{label}' ({org_tag_upper})"
+                "message": f"Approved project '{label}' ({org_tag_upper})",
+                "inferred_edges": inferred
             }
 
         elif node_type == 'person':
@@ -126,10 +132,14 @@ async def create_graph_node_with_db_record(
 
             await _ensure_danny_edge(label, node_type)
 
+            inferred = []
+            if source_text and source_text.strip() not in ("", "batch"):
+                inferred = await _infer_additional_edges(label, node_type, source_text)
+
             msg = f"Approved person '{label}'"
             if context:
                 msg += f" ({context.strip()})"
-            return {"success": True, "action": "approved", "message": msg}
+            return {"success": True, "action": "approved", "message": msg, "inferred_edges": inferred}
 
         else:
             supabase.table("graph_nodes").upsert(
@@ -144,7 +154,11 @@ async def create_graph_node_with_db_record(
                 on_conflict="label"
             ).execute()
 
-            return {"success": True, "action": "approved", "message": f"Approved node '{label}' ({node_type})"}
+            inferred = []
+            if source_text and source_text.strip() not in ("", "batch"):
+                inferred = await _infer_additional_edges(label, node_type, source_text)
+
+            return {"success": True, "action": "approved", "message": f"Approved node '{label}' ({node_type})", "inferred_edges": inferred}
 
     except Exception as e:
         audit_log_sync("pulse", "ERROR", f"Error creating graph node with DB record: {e}")
@@ -185,6 +199,100 @@ async def _ensure_danny_edge(label: str, node_type: str):
         audit_log_sync("pulse", "WARNING", f"Failed to create Danny edge: {e}")
 
 
+def _extract_mentioned_labels(source_text: str, known_labels: list[str]) -> list[str]:
+    """Return only the known labels that appear (case-insensitive substring) in source_text."""
+    source_lower = source_text.lower()
+    return [lbl for lbl in known_labels if lbl.lower() in source_lower]
+
+
+async def _infer_additional_edges(label: str, node_type: str, source_text: str) -> list[str]:
+    """Call Gemini to extract additional relationships from the source text involving the new node or mentioned entities."""
+    try:
+        nodes_res = supabase.table("graph_nodes").select("label").execute()
+        if not nodes_res or not nodes_res.data:
+            return []
+            
+        all_labels = [n['label'] for n in nodes_res.data if n.get('label')]
+        mentioned = _extract_mentioned_labels(source_text, all_labels)
+        
+        if not mentioned:
+            return []
+            
+        prompt = f"""
+Source text: "{source_text}"
+New node being approved: {label} ({node_type})
+Other entities mentioned: {json.dumps(mentioned)}
+
+Return a JSON array of edges these entities have with each other or the new node. 
+Only include relationships explicitly stated or very strongly implied by the source text.
+
+Existing relationship types include: WORKS_AT, MANAGES, KNOWS, COLLABORATES_WITH,
+INVOLVED_IN, BELONGS_TO, LEADS, OWNS, CLIENT_OF, EMPLOYEE_OF, MEMBER_OF,
+PART_OF, SPOKE_WITH, ATTENDS, ASSOCIATED_WITH. You can invent others if highly appropriate.
+
+Format:
+[
+  {{"source_label": "...", "target_label": "...", "relationship": "..."}}
+]
+"""
+        response = await generate_content_with_fallback(
+            prompt=prompt,
+            system_instruction="You are a graph extraction engine. Output raw JSON array only. No markdown formatting. No explanation.",
+            model="gemini-3.5-flash",
+            temperature=0.0
+        )
+        
+        # Clean response and parse
+        content = response.strip()
+        if content.startswith("```json"):
+            content = content[7:-3]
+        elif content.startswith("```"):
+            content = content[3:-3]
+            
+        try:
+            edges_to_create = json.loads(content)
+        except json.JSONDecodeError:
+            audit_log_sync("pulse", "WARNING", f"Failed to parse inferred edges JSON: {content}")
+            return []
+            
+        inferred = []
+        for e in edges_to_create:
+            s_label = e.get('source_label')
+            t_label = e.get('target_label')
+            rel = e.get('relationship')
+            if not s_label or not t_label or not rel:
+                continue
+                
+            if s_label == t_label:
+                continue
+                
+            rel = rel.upper()
+                
+            # Check existing pending edge
+            existing = supabase.table("pending_graph_edges").select("id")\
+                .eq("source_label", s_label)\
+                .eq("target_label", t_label)\
+                .eq("relationship", rel)\
+                .in_("status", ["pending"])\
+                .maybe_single().execute()
+                
+            if not existing or not existing.data:
+                supabase.table("pending_graph_edges").insert({
+                    "source_label": s_label,
+                    "target_label": t_label,
+                    "relationship": rel,
+                    "source_text": "graph_approval_inference",
+                    "status": "pending"
+                }).execute()
+                
+            inferred.append(f"{s_label} → {rel} → {t_label}")
+                
+        return inferred
+    except Exception as err:
+        audit_log_sync("pulse", "WARNING", f"Error inferring edges: {err}")
+        return []
+
+
 async def process_graph_pending_decision(pending_id: int, decision: str, org_tag: str = None, context: str = None) -> dict:
     try:
         pending_res = supabase.table('pending_graph_nodes').select('*').eq('id', pending_id).maybe_single().execute()
@@ -220,6 +328,63 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
 
     except Exception as e:
         audit_log_sync("pulse", "ERROR", f"Error processing graph decision: {e}")
+        return {"success": False, "action": "error", "message": str(e)}
+
+async def process_pending_edge_decision(pending_id: int, decision: str, new_source: str = None, new_target: str = None, new_rel: str = None) -> dict:
+    try:
+        pe_res = supabase.table('pending_graph_edges').select('*').eq('id', pending_id).maybe_single().execute()
+        if not pe_res or not pe_res.data:
+            return {"success": False, "action": "not_found", "message": "Pending edge not found."}
+            
+        pe = pe_res.data
+        if pe.get('status') != 'pending':
+            return {"success": False, "action": "already_processed", "message": "Already processed."}
+            
+        if decision == 'reject':
+            supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('id', pending_id).execute()
+            return {"success": True, "action": "rejected", "message": "Rejected edge."}
+            
+        if decision == 'approve':
+            s_label = new_source or pe['source_label']
+            t_label = new_target or pe['target_label']
+            rel = (new_rel or pe['relationship']).upper()
+            
+            # Helper to resolve or create concept nodes
+            def _resolve_node(label):
+                res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
+                if res and res.data:
+                    return res.data['id']
+                ins = supabase.table('graph_nodes').insert({
+                    'label': label,
+                    'type': 'concept',
+                    'metadata': json.dumps({"source": "edge_approval_auto_create"})
+                }).execute()
+                return ins.data[0]['id']
+                
+            s_id = _resolve_node(s_label)
+            t_id = _resolve_node(t_label)
+            
+            supabase.table('graph_edges').upsert({
+                'source_node_id': s_id,
+                'target_node_id': t_id,
+                'relationship': rel,
+                'weight': 1.0,
+                'metadata': json.dumps({"source": "pending_edge_approval", "pending_id": pending_id})
+            }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
+            
+            supabase.table('pending_graph_edges').update({
+                'status': 'approved',
+                'source_label': s_label,
+                'target_label': t_label,
+                'relationship': rel,
+                'source_node_id': s_id,
+                'target_node_id': t_id
+            }).eq('id', pending_id).execute()
+            
+            return {"success": True, "action": "approved", "message": f"Approved edge: {s_label} → {rel} → {t_label}"}
+            
+    except Exception as e:
+        audit_log_sync("pulse", "ERROR", f"Error processing edge decision: {e}")
         return {"success": False, "action": "error", "message": str(e)}
 
 async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: int = None, task_description: str = None, people_cache=None):

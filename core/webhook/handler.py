@@ -29,7 +29,11 @@ async def resolve_graph_org_tag(chat_id: int, org_tag: str, pending_id: int, lab
         pending_id=pending_id, decision='approve', org_tag=org_tag_upper
     )
     if result.get('success'):
-        await send_telegram(chat_id, f"✅ {result.get('message', 'Done')}")
+        msg = f"✅ {result.get('message', 'Done')}"
+        inferred = result.get('inferred_edges', [])
+        if inferred:
+            msg += "\n🔗 " + "\n🔗 ".join(inferred)
+        await send_telegram(chat_id, msg)
     else:
         await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
     if chat_id in pending_graph_clarifications:
@@ -44,6 +48,9 @@ async def resolve_graph_person_context(chat_id: int, context_text: str, pending_
         msg = f"✅ Approved person '{label}'"
         if ctx:
             msg += f" ({ctx})"
+        inferred = result.get('inferred_edges', [])
+        if inferred:
+            msg += "\n🔗 " + "\n🔗 ".join(inferred)
         await send_telegram(chat_id, msg)
     else:
         await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
@@ -99,20 +106,34 @@ async def process_callback_query(callback_query: dict):
             await send_telegram(chat_id, "Cancelled. Node stays pending for next Decision Pulse.")
             return {"success": True}
 
-        # Example data: "approve_e123" or "reject_w45"
-        match = re.match(r'^(approve|reject)_([ecwgECWG]?)(\d+)$', data)
+        # Example data: "approve_e123" or "reject_w45" or "edit_pe12"
+        match = re.match(r'^(approve|reject|edit)_([ecwgpECWGP]+)?(\d+)$', data)
         if match:
             action, prefix, shortcode = match.groups()
             is_approve = (action == 'approve')
             sc_int = int(shortcode)
             
-            prefix = prefix.lower()
+            prefix = (prefix or "").lower()
             if prefix == 'e':
                 result = await process_email_pending_decision(sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'c':
                 result = await process_call_pending_decision(sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'w':
                 result = await process_whatsapp_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+            elif prefix == 'pe':
+                if action == 'edit':
+                    pending_graph_clarifications[chat_id] = {
+                        "pending_id": sc_int,
+                        "step": "awaiting_edge_edit",
+                        "type": "edge",
+                        "expires_at": datetime.now() + timedelta(minutes=15)
+                    }
+                    pe = supabase.table('pending_graph_edges').select('source_label, relationship, target_label').eq('id', sc_int).maybe_single().execute().data
+                    await send_telegram(chat_id, f"Editing edge: {pe['source_label']} → {pe['relationship']} → {pe['target_label']}\nReply with the corrected edge, e.g. `pe{sc_int} Danny KNOWS Alice` or `pe{sc_int} KNOWS`")
+                    return {"success": True}
+                else:
+                    from core.pulse.graph import process_pending_edge_decision
+                    result = await process_pending_edge_decision(sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'g':
                 if not is_approve:
                     if chat_id in pending_graph_clarifications:
@@ -301,6 +322,12 @@ async def process_webhook(update: dict):
         _teams_reject_match = re.match(r'^[tT](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
         _graph_approve_match = re.match(r'^[gG](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _graph_reject_match = re.match(r'^[gG](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
+        _graph_direct_match = re.match(r'^[gG](\d+)\s+(?!(?:yes|approve|do it|yep|add it|drop|no|reject|skip|dismiss|cancel)\b)(.+)$', text.strip(), re.IGNORECASE | re.DOTALL)
+        
+        _pe_approve_match = re.match(r'^pe(\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
+        _pe_reject_match = re.match(r'^pe(\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
+        _pe_edit_match = re.match(r'^pe(\d+)\s+(?!(?:yes|approve|do it|yep|add it|drop|no|reject|skip|dismiss|cancel)\b)(.+)$', text.strip(), re.IGNORECASE | re.DOTALL)
+        
         _approve_match = re.match(r'^(\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _reject_match = re.match(r'^(\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
 
@@ -349,6 +376,41 @@ async def process_webhook(update: dict):
                     return {"success": True}
                 elif step == 'awaiting_org_tag':
                     await resolve_graph_org_tag(chat_id, text, clar['pending_id'], clar['label'])
+                    return {"success": True}
+                elif step == 'awaiting_edge_edit':
+                    _sc = clar['pending_id']
+                    _value = text.strip()
+                    parts = _value.split()
+                    if len(parts) == 1:
+                        new_rel = parts[0]
+                        new_source, new_target = None, None
+                    elif len(parts) >= 3:
+                        rel_idx = -1
+                        for i, p in enumerate(parts):
+                            if p.isupper() and len(p) > 1:
+                                rel_idx = i
+                                break
+                        if rel_idx > 0 and rel_idx < len(parts) - 1:
+                            new_source = " ".join(parts[:rel_idx])
+                            new_rel = parts[rel_idx]
+                            new_target = " ".join(parts[rel_idx+1:])
+                        else:
+                            new_rel = parts[1]
+                            new_source = parts[0]
+                            new_target = " ".join(parts[2:])
+                    else:
+                        new_source, new_rel, new_target = parts[0], parts[1] if len(parts) > 1 else None, None
+                        
+                    from core.pulse.graph import process_pending_edge_decision
+                    result = await process_pending_edge_decision(
+                        pending_id=_sc, decision='approve',
+                        new_source=new_source, new_target=new_target, new_rel=new_rel
+                    )
+                    if result.get('success'):
+                        await send_telegram(chat_id, f"✅ {result['message']}")
+                    else:
+                        await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                    del pending_graph_clarifications[chat_id]
                     return {"success": True}
 
         # DB recovery: if in-memory state was lost (restart/cold start), check awaiting_details items directly
@@ -422,9 +484,14 @@ async def process_webhook(update: dict):
                     result = await process_graph_pending_decision(pending_id=int(_sc), decision='approve')
                 
                 if result and result.get('success'):
-                    await send_telegram(chat_id, f"✅ {result['message']}")
+                    msg = f"✅ {result.get('message', 'Done')}"
+                    inferred = result.get('inferred_edges', [])
+                    if inferred:
+                        msg += "\n🔗 " + "\n🔗 ".join(inferred)
+                    await send_telegram(chat_id, msg)
                 elif result:
-                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                
                 clear_session(chat_id)
                 return {"success": True}
             except Exception as _sc_err:
@@ -444,6 +511,121 @@ async def process_webhook(update: dict):
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Graph prefix shortcode error: {_sc_err}")
+                await send_telegram(chat_id, "Something went wrong. Try again.")
+                return {"success": True}
+
+        if _graph_direct_match:
+            try:
+                _sc = int(_graph_direct_match.group(1))
+                _value = _graph_direct_match.group(2)
+                pending_item = supabase.table('pending_graph_nodes').select('id, label, type').eq('id', _sc).maybe_single().execute()
+                if not pending_item or not pending_item.data:
+                    await send_telegram(chat_id, "⚠️ Pending item not found.")
+                    clear_session(chat_id)
+                    return {"success": True}
+                ptype = pending_item.data.get('type')
+                label = pending_item.data.get('label')
+                if ptype == 'project':
+                    parts = _value.strip().split(None, 1)
+                    first_word = parts[0].upper()
+                    rest = parts[1].strip() if len(parts) > 1 else None
+                    if first_word in VALID_ORG_TAGS:
+                        result = await process_graph_pending_decision(
+                            pending_id=_sc, decision='approve', org_tag=first_word, context=rest
+                        )
+                    else:
+                        await send_telegram(chat_id,
+                            f"⚠️ Couldn't parse an org tag from '{first_word}'.\n"
+                            f"Valid tags: {', '.join(sorted(VALID_ORG_TAGS))}\n"
+                            f"Reply 'g{_sc} yes' for the keyboard, or retry: g{_sc} QHORD <note>"
+                        )
+                        clear_session(chat_id)
+                        return {"success": True}
+                elif ptype == 'person':
+                    result = await process_graph_pending_decision(
+                        pending_id=_sc, decision='approve', context=_value.strip()
+                    )
+                else:
+                    result = await process_graph_pending_decision(pending_id=_sc, decision='approve')
+                
+                if result.get('success'):
+                    msg = f"✅ {result['message']}"
+                    inferred = result.get('inferred_edges', [])
+                    if inferred:
+                        msg += "\n🔗 " + "\n🔗 ".join(inferred)
+                    await send_telegram(chat_id, msg)
+                else:
+                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                    
+                clear_session(chat_id)
+                return {"success": True}
+            except Exception as _sc_err:
+                audit_log_sync("webhook", "WARNING", f"Graph direct shortcode error: {_sc_err}")
+                await send_telegram(chat_id, "Something went wrong. Try again.")
+                return {"success": True}
+
+        # pe-prefix: direct to pending_graph_edges
+        if _pe_approve_match or _pe_reject_match:
+            try:
+                _sc = (_pe_approve_match or _pe_reject_match).group(1)
+                _is_approve = bool(_pe_approve_match)
+                from core.pulse.graph import process_pending_edge_decision
+                result = await process_pending_edge_decision(
+                    pending_id=int(_sc),
+                    decision='approve' if _is_approve else 'reject'
+                )
+                if result.get('success'):
+                    await send_telegram(chat_id, f"✅ {result['message']}")
+                else:
+                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                return {"success": True}
+            except Exception as _sc_err:
+                audit_log_sync("webhook", "WARNING", f"Pending edge shortcode error: {_sc_err}")
+                await send_telegram(chat_id, "Something went wrong. Try again.")
+                return {"success": True}
+                
+        if _pe_edit_match:
+            try:
+                _sc = int(_pe_edit_match.group(1))
+                _value = _pe_edit_match.group(2).strip()
+                
+                # Try to parse the edit value.
+                # Format: "Danny KNOWS Alice" or just "KNOWS"
+                parts = _value.split()
+                if len(parts) == 1:
+                    new_rel = parts[0]
+                    new_source, new_target = None, None
+                elif len(parts) >= 3:
+                    # Find relationship (all caps word)
+                    rel_idx = -1
+                    for i, p in enumerate(parts):
+                        if p.isupper() and len(p) > 1:
+                            rel_idx = i
+                            break
+                            
+                    if rel_idx > 0 and rel_idx < len(parts) - 1:
+                        new_source = " ".join(parts[:rel_idx])
+                        new_rel = parts[rel_idx]
+                        new_target = " ".join(parts[rel_idx+1:])
+                    else:
+                        new_rel = parts[1]
+                        new_source = parts[0]
+                        new_target = " ".join(parts[2:])
+                else:
+                    new_source, new_rel, new_target = parts[0], parts[1], None
+                    
+                from core.pulse.graph import process_pending_edge_decision
+                result = await process_pending_edge_decision(
+                    pending_id=_sc, decision='approve',
+                    new_source=new_source, new_target=new_target, new_rel=new_rel
+                )
+                if result.get('success'):
+                    await send_telegram(chat_id, f"✅ {result['message']}")
+                else:
+                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                return {"success": True}
+            except Exception as _sc_err:
+                audit_log_sync("webhook", "WARNING", f"Pending edge edit error: {_sc_err}")
                 await send_telegram(chat_id, "Something went wrong. Try again.")
                 return {"success": True}
 
