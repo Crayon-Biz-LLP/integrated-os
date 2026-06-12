@@ -321,8 +321,15 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             dump_id = None
 
     # ── Step 2: Attempt embedding ──
-    embedding = (await get_embedding(text)).vector
-    embed_success = bool(embedding and any(embedding))
+    try:
+        embedding = (await get_embedding(text)).vector
+        embed_success = bool(embedding and any(embedding))
+    except Exception as e:
+        from core.lib.audit_logger import log_audit
+        log_audit("handle_confident_note", "error", f"Embedding failed with exception: {e}", raw_input=text)
+        embedding = None
+        embed_success = False
+        
     embed_status = 'success' if embed_success else 'failed'
 
     if not embed_success:
@@ -333,9 +340,10 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             except Exception as e:
                 audit_log_sync("webhook", "ERROR", f"Failed to update dump {dump_id} to embedding_failed: {e}")
         try:
-            await add_to_failed_queue('memories', str(dump_id or 'unknown'), 'embedding', 'Embedding returned null/zero vector')
+            from core.lib.audit_logger import write_dlq
+            write_dlq('raw_dumps', str(dump_id) if dump_id else None, text, 'Embedding failed or returned null vector')
         except Exception as e:
-            audit_log_sync("webhook", "ERROR", f"Failed to write to failed_queue: {e}")
+            audit_log_sync("webhook", "ERROR", f"Failed to write to DLQ: {e}")
         ack = receipt or "✅ Captured. Memory indexing will retry shortly."
         await send_telegram(chat_id, f"{ack}")
         return

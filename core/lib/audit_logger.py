@@ -136,3 +136,42 @@ def critical(service: str, message: str, metadata: dict = None):
             audit_log_sync(service, 'CRITICAL', message, metadata)
     except Exception:
         audit_log_sync(service, 'CRITICAL', message, metadata)
+
+def log_audit(function_name: str, event_type: str, message: str, raw_input=None):
+    """
+    T-004 implementation: Writes to system_audit_logs.
+    """
+    try:
+        if not supabase:
+            return
+        
+        log_data = {
+            "function_name": function_name,
+            "event_type": event_type,
+            "message": str(message)[:1000] if message else None,
+            "raw_input": str(raw_input)[:1000] if raw_input else None
+        }
+        supabase.table("system_audit_logs").insert(log_data).execute()
+    except Exception as e:
+        print(f"⚠️ SYSTEM AUDIT LOG FAILURE: {e} | {function_name} | {message}")
+
+def write_dlq(source_table: str, source_id: str, content: str, failure_reason: str):
+    """
+    T-003 implementation: Writes to dead_letter_queue.
+    """
+    try:
+        if not supabase:
+            return
+            
+        dlq_data = {
+            "source_table": source_table,
+            "source_id": str(source_id) if source_id else None,
+            "content": str(content)[:2000] if content else None,
+            "failure_reason": str(failure_reason)[:1000] if failure_reason else None
+        }
+        supabase.table("dead_letter_queue").insert(dlq_data).execute()
+        
+        # Also log to audit_logs
+        log_audit("write_dlq", "dlq_write", f"DLQ entry created for {source_table} {source_id}", raw_input=failure_reason)
+    except Exception as e:
+        print(f"⚠️ DLQ WRITE FAILURE: {e} | {source_table} | {failure_reason}")
