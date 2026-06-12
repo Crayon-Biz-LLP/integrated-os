@@ -5,7 +5,6 @@ import asyncio
 import hashlib
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
-from core.services.pipeline_service import add_to_failed_queue
 from core.pulse.context import context_provider
 from core.lib.conversation import get_history, log_exchange, format_history_for_prompt
 from core.webhook.telegram import send_telegram
@@ -358,6 +357,14 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             "source": "webhook",
             "metadata": {"entity": entity}
         }).execute()
+        
+        # Mark dump as processed
+        if dump_id:
+            try:
+                supabase.table('raw_dumps').update({"status": "processed"}).eq('id', dump_id).execute()
+            except Exception as e:
+                audit_log_sync("webhook", "ERROR", f"Failed to mark dump {dump_id} as processed: {e}")
+                
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Failed to save note to memory: {e}")
         if dump_id:
@@ -366,7 +373,8 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             except Exception:
                 pass
         try:
-            await add_to_failed_queue('memories', str(dump_id or 'unknown'), 'memory_insert', str(e))
+            from core.lib.audit_logger import write_dlq
+            write_dlq('raw_dumps', str(dump_id) if dump_id else None, text, f"Memory insert failed: {str(e)}")
         except Exception:
             pass
         ack = receipt or "✅ Captured. Memory indexing will retry shortly."
