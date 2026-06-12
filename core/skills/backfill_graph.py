@@ -467,7 +467,19 @@ def backfill_embeddings():
 
 
 def extract_graph_elements(text: str, memory_id: str) -> dict:
+    # Pre-process: strip URLs and resource/cluster fragments to prevent extracting entities from them
+    import re
+    cleaned_text = re.sub(r'\[RESOURCE\].*?(\n|$)', '', text, flags=re.IGNORECASE)
+    cleaned_text = re.sub(r'\[CLUSTER\].*?(\n|$)', '', cleaned_text, flags=re.IGNORECASE)
+    cleaned_text = re.sub(r'https?://\S+', '', cleaned_text)
+    
     prompt = f"""Extract knowledge graph elements from this text.
+    
+Return a JSON object with:
+- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"resource"|"emotional_state"|"concept"}}
+- "edges": array of objects with {{"source": string, "target": string, "relationship": string}}
+    
+Text: {cleaned_text}
     
 Return a JSON object with:
 - "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"resource"|"emotional_state"|"concept"}}
@@ -746,6 +758,41 @@ def process_memory(memory: dict, graph_entities: dict) -> bool:
     return True
 
 
+def cleanup_resource_edges():
+    """
+    One-time/routine cleanup: Rejects pending edges derived from memories containing resource/cluster content.
+    """
+    print("\n🧹 Cleaning up pending edges derived from resource/cluster content...")
+    try:
+        # Find memories containing [RESOURCE] or URLs
+        res1 = supabase.table('memories').select('id').eq('memory_type', 'canonical_page').ilike('content', '%[RESOURCE]%').execute()
+        res2 = supabase.table('memories').select('id').ilike('content', '%http%').execute()
+        
+        mem_ids_1 = [str(m['id']) for m in (res1.data or [])]
+        mem_ids_2 = [str(m['id']) for m in (res2.data or [])]
+        memory_ids = list(set(mem_ids_1 + mem_ids_2))
+        
+        if not memory_ids:
+            print("  No URL/resource-contaminated memories found.")
+            return
+            
+        print(f"  Found {len(memory_ids)} memories containing resources or URLs.")
+        
+        # Also clean up any edges from raw_dumps with URLs if needed, but focus on resources for now
+        rejected_count = 0
+        for i in range(0, len(memory_ids), 50):
+            batch = memory_ids[i:i+50]
+            update_res = supabase.table('pending_graph_edges') \
+                .update({"status": "rejected"}) \
+                .in_('source_text', batch) \
+                .eq('status', 'pending') \
+                .execute()
+            rejected_count += len(update_res.data or [])
+            
+        print(f"  ✅ Rejected {rejected_count} pending edges that came from resources.")
+    except Exception as e:
+        audit_log_sync("backfill_graph", "ERROR", f"Cleanup resource edges failed: {e}")
+
 def run_backfill():
     # ── Step 1: Patch missing embeddings first ──────────────────────────────
     backfill_embeddings()
@@ -846,6 +893,9 @@ def run_backfill():
         print(f"Completed batch {batch_num}")
     
     print(f"Graph backfill complete! Processed: {processed}, Skipped: {failed}")
+
+    # Cleanup step: reject any resource/cluster derived pending edges
+    cleanup_resource_edges()
 
     # Tier 1: Backfill orphaned tasks
     backfill_orphaned_tasks()
