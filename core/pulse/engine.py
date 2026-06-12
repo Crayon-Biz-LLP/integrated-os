@@ -245,9 +245,9 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
         teams_items = []
 
         for row in (pending_res.data or []):
-            if row['channel'] == 'email' and len(email_items) < 5:
+            if row['channel'] == 'email' and row.get('classification') == 'actionable' and len(email_items) < 5:
                 email_items.append(row)
-            elif row['channel'] == 'call' and len(call_items) < 5:
+            elif row['channel'] == 'call' and row.get('classification') == 'actionable' and len(call_items) < 5:
                 row['action_type'] = row.get('metadata', {}).get('action_type', 'task')
                 call_items.append(row)
             elif row['channel'] == 'whatsapp' and row.get('classification') == 'actionable' and len(whatsapp_items) < 5:

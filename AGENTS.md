@@ -48,7 +48,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - **Note**: `pending_graph_nodes` holds new person/project nodes awaiting Danny's approval via Decision Pulse (`g{id}` shortcode)
 - `messages` holds WhatsApp chats, Emails, and Call extracts with classification + approval status
 - `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter)
-- **Graph integrity**: Three layers protect against bad data — (1) Guard A deletes stale BELONGS_TO edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation; (3) HITL gates new person/project nodes through `pending_graph_nodes` for Danny's approval via Decision Pulse
+- **Graph integrity**: Four layers protect against bad data — (1) Guard A deletes stale BELONGS_TO edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation; (3) HITL gates new person/project nodes through `pending_graph_nodes` for Danny's approval via Decision Pulse; (4) Guard D dedup prevents label-drift re-insertion via all-statuses cache, ILIKE DB check, and unique index on `lower(trim(label))`
 
 ### External Integrations
 - **Gemini AI**: Briefing (`gemini-3.5-flash`), Classification (`gemini-3.1-flash-lite`), Embeddings (`gemini-embedding-2-preview`)
@@ -65,7 +65,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 | `c{id}` | `messages (call)` | Approve/reject call-extracted item |
 | `w{id}` | `messages (whatsapp)` | Approve/reject WhatsApp-suggested task |
 | `t{id}` | `messages (teams)` | Approve/reject Teams-suggested task |
-| `g{id}` | `pending_graph_nodes` | Approve/reject new person/project node. Supports **NLP corrections** (e.g. "g2 is an organization, not a person"). |
+| `g{id}` | `pending_graph_nodes` | Approve/reject new person/project node. Supports **NLP corrections** (e.g. "g2 is an organization, not a person"). Duplicate-re-insertion prevented by all-statuses cache, ILIKE dedup guard, and unique index on normalised label. |
 | `{id}` (bare) | Tries email → call → whatsapp → graph → practice | Fallback compat |
 
 ## Project Routing Tags

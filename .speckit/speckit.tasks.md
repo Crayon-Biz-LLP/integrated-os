@@ -228,6 +228,32 @@ T-003 (DLQ table) — parallel to T-002, required by T-006
 ```
 
 
+## Today's Changes (June 12, 2026)
+
+### T-019: Fix pending graph node label-drift duplicates
+**File**: `core/skills/backfill_graph.py`, Supabase migration
+**Status**: Completed
+**Trigger**: Five graph nodes (Paulsons Ledgers, Appa, Paulsons, Dev Team, Henry Dsouza) kept reappearing in the Decision Pulse even after approval.
+**Root cause**: Two independent triggers:
+- **Label drift**: Backfill re-extracted entities with slightly different labels ("Paulsons" vs "Paulsons Ledgers"). `pending_entities_cache` only tracked `status == 'pending'` with exact match, so it missed the approximate match and re-inserted.
+- **Silent upsert failure**: If the `graph_nodes` upsert after approval failed, the label was absent from `graph_entities` and the next backfill re-submitted it.
+**Fix**:
+1. `fetch_pending_entities()` now loads labels across all statuses (`pending`, `approved`, `rejected`)
+2. `_check_pending_label_exists()` does strict normalised `ILIKE` + fuzzy `ILIKE %label%` fallback (≥6 chars) before insert
+3. Unique index `idx_pending_graph_nodes_label_dedup` on `lower(trim(label))` provides hard DB-level constraint
+
+### T-020: Fix "Untitled" email rows + missing classification guard in Decision Pulse
+**File**: `core/pulse/engine.py`
+**Status**: Completed
+**Trigger**: (A) Email rows with NULL `suggested_title` showed as "Untitled" in the Decision Pulse. (B) 158 `fyi`/`ignored` emails flooded the pulse because the email channel had no classification filter.
+**Root cause**: Two bugs from the unified `messages` table merge:
+1. The old subject fallback was lost when `suggested_title` went NULL
+2. Email (and call) channels were missing the `classification == 'actionable'` guard that WhatsApp and Teams already had
+**Fix**:
+1. `engine.py`: Added `subject` to the Decision Pulse query, fallback chain: `suggested_title → subject → 'Untitled'`
+2. `engine.py`: Added `row.get('classification') == 'actionable'` filter to email and call channels
+3. Backfill: `UPDATE messages SET danny_decision = 'skipped' WHERE channel = 'email' AND classification IN ('fyi', 'ignored') AND danny_decision IS NULL;` (158 rows)
+
 ## Completed Features (Recent)
 
 ### T-101: Unify Message Tables (Phase 1-4)

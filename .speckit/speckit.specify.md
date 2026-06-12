@@ -150,5 +150,11 @@
 - On reject → status set to `rejected`
 - In-memory cache (`pending_entities_cache`) prevents duplicate entries during batch runs
 
+**Dedup Fix — Label-Drift Re-Insertion Prevention:**
+- `fetch_pending_entities()` loads labels across ALL statuses (`pending`, `approved`, `rejected`), not only `pending`
+- Before insert, `_check_pending_label_exists()` runs strict normalised `ILIKE` + fuzzy `ILIKE %label%` fallback (≥6 chars) against `pending_graph_nodes`
+- Unique index `idx_pending_graph_nodes_label_dedup` on `lower(trim(label))` provides a hard DB-level constraint
+- Together, these prevent approved/rejected labels from being re-submitted as new pending rows on subsequent backfill runs
+
 **Out of scope**: Gating algorithmically-created edges (PRECEDES, FOLLOWED_BY) — low risk
 

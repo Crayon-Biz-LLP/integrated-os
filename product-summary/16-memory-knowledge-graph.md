@@ -131,6 +131,11 @@ Three layers protect the knowledge graph from bad data:
 
 3. **HITL: Pending approval for high-risk entities (`pending_graph_nodes` table)** — New `person`, `project`, or `organization` nodes are routed to `pending_graph_nodes` with `status: pending`. The Decision Pulse surfaces them via Telegram. You can approve/drop them quickly (`g1 yes`), or use the **NLP Correction Loop** by replying with free-text (e.g., "g1 is actually an organization named Solvstrat"). The OS will interpret the correction and ask for your final confirmation (`yes`) before writing to the graph.
 
+4. **Guard D: Dedup defence against label-drift re-insertion (`backfill_graph.py:288-305`)** — Prevents the backfill pipeline from re-inserting already-approved/rejected labels as new pending rows. Three layers:
+   - **Cache scope fix**: `fetch_pending_entities()` now loads labels across ALL statuses (`pending`, `approved`, `rejected`) instead of only `pending`, so the in-memory cache knows about previously queued labels regardless of their current state.
+   - **DB-level ILIKE guard**: Before inserting a new pending row, `_check_pending_label_exists()` runs a two-step DB check: strict normalised `ILIKE` first, then fuzzy `ILIKE %label%` fallback for labels ≥ 6 characters. Catches label-drift cases like "Paulsons" vs "Paulsons Ledgers."
+   - **Unique index**: Migration `idx_pending_graph_nodes_label_dedup` — `CREATE UNIQUE INDEX ON pending_graph_nodes (lower(trim(label)))` — makes re-insertion a hard constraint violation regardless of code path. This is the only hard guarantee; the other two are defence-in-depth.
+
 **LLM Extraction Prompt Rule:** The entity extraction prompt includes a CRITICAL RULE: "EVERY node MUST have at least one connecting edge." This prevents the graph from accumulating floating nodes over time. Further, the prompt now includes: "Only extract entities that are explicitly, verbatim stated in the text."
 
 **Definition of orphaned:** Any non-task node that has no direct edge to Danny. This is broader than "zero edges" — nodes with edges to other non-Danny nodes but no Danny edge are reconnected.
