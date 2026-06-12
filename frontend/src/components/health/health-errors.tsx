@@ -24,7 +24,7 @@ export function ErrorsTable({ errors }: ErrorsTableProps) {
       <TableHeader>
         <TableRow>
           <TableHead>Time</TableHead>
-          <TableHead>Service</TableHead>
+          <TableHead>Function</TableHead>
           <TableHead>Message</TableHead>
         </TableRow>
       </TableHeader>
@@ -32,7 +32,7 @@ export function ErrorsTable({ errors }: ErrorsTableProps) {
         {errors.map((e, i) => (
           <TableRow key={i}>
             <TableCell className="text-xs whitespace-nowrap">{new Date(e.created_at).toLocaleString()}</TableCell>
-            <TableCell className="text-xs font-mono">{e.service}</TableCell>
+            <TableCell className="text-xs font-mono">{e.function_name}</TableCell>
             <TableCell className="text-xs max-w-[500px] truncate">{e.message}</TableCell>
           </TableRow>
         ))}

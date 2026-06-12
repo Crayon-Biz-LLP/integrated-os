@@ -22,23 +22,23 @@ export async function GET() {
 
     // failed_queue
     const { count: dlqTotal } = await supabase
-      .from('failed_queue')
+      .from('dead_letter_queue')
       .select('id', { count: 'exact', head: true });
     const { count: dlqUnresolved } = await supabase
-      .from('failed_queue')
+      .from('dead_letter_queue')
       .select('id', { count: 'exact', head: true })
-      .gte('retry_count', 5);
+      .eq('resolved', false);
     const { data: dlqItems } = await supabase
-      .from('failed_queue')
-      .select('id, source_table, operation, error_message, retry_count, created_at')
+      .from('dead_letter_queue')
+      .select('id, source_table, failure_reason, retry_count, created_at')
       .order('created_at', { ascending: false })
       .limit(20);
 
     // audit_logs recent errors
     const { data: recentErrors } = await supabase
-      .from('audit_logs')
-      .select('created_at, service, level, message')
-      .eq('level', 'ERROR')
+      .from('system_audit_logs')
+      .select('created_at, function_name, event_type, message')
+      .eq('event_type', 'error')
       .order('created_at', { ascending: false })
       .limit(20);
 

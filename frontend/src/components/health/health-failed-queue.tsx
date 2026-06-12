@@ -24,8 +24,8 @@ export function FailedQueueTable({ items }: FailedQueueTableProps) {
       <TableHeader>
         <TableRow>
           <TableHead>Source</TableHead>
-          <TableHead>Operation</TableHead>
-          <TableHead>Error</TableHead>
+          
+          <TableHead>Failure Reason</TableHead>
           <TableHead>Retries</TableHead>
           <TableHead>Created</TableHead>
         </TableRow>
@@ -34,8 +34,8 @@ export function FailedQueueTable({ items }: FailedQueueTableProps) {
         {items.map((item) => (
           <TableRow key={item.id}>
             <TableCell className="font-mono text-xs">{item.source_table}</TableCell>
-            <TableCell className="text-xs">{item.operation}</TableCell>
-            <TableCell className="text-xs max-w-[300px] truncate">{item.error_message}</TableCell>
+            
+            <TableCell className="text-xs max-w-[300px] truncate">{item.failure_reason}</TableCell>
             <TableCell className="text-xs">{item.retry_count}</TableCell>
             <TableCell className="text-xs">{new Date(item.created_at).toLocaleString()}</TableCell>
           </TableRow>

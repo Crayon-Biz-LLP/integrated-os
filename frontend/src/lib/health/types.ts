@@ -21,16 +21,16 @@ export interface HealthStats {
 export interface FailedQueueItem {
   id: number;
   source_table: string;
-  operation: string;
-  error_message: string;
+  failure_reason: string;
+  
   retry_count: number;
   created_at: string;
 }
 
 export interface AuditLogEntry {
   created_at: string;
-  service: string;
-  level: string;
+  function_name: string;
+  event_type: string;
   message: string;
 }
 
