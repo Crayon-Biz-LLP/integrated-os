@@ -10,7 +10,7 @@ from core.pulse.calendar import MemoryCache
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 
-def get_upcoming_events(minutes_ahead=25):
+def get_upcoming_events(minutes_ahead=60):
     """Fetch events starting between now and X minutes from now."""
     service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
     
@@ -81,9 +81,9 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
     run_id = await create_pulse_run(supabase, "sentinel", trigger)
 
     try:
-        events = get_upcoming_events(minutes_ahead=25)
+        events = get_upcoming_events(minutes_ahead=60)
         if not events:
-            print("No upcoming events in the next 25 mins.")
+            print("No upcoming events in the next 60 mins.")
             await complete_pulse_run(supabase, run_id, status="completed",
                 metadata={"reason": "no_upcoming", "alerted": 0})
             return {"success": True, "alerted": 0}
@@ -102,7 +102,7 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
                 start_dt = datetime.fromisoformat(start_raw.replace('Z', '+00:00'))
                 mins_until = int((start_dt - now).total_seconds() / 60)
                 
-                if mins_until < 0 or mins_until > 20:
+                if mins_until < 0 or mins_until > 45:
                     continue
 
                 search_str = f"Sentinel_Sent:{event_id}"
