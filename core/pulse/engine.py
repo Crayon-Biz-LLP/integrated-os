@@ -230,6 +230,16 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
         except Exception:
             pass
 
+        # Revert stale awaiting_details graph items back to pending
+        try:
+            supabase.table('pending_graph_nodes')\
+                .update({'status': 'pending'})\
+                .eq('status', 'awaiting_details')\
+                .lt('created_at', cutoff)\
+                .execute()
+        except Exception:
+            pass
+
         # Fetch all pending messages
         pending_res = supabase.table('messages')\
             .select('id, channel, classification, suggested_title, suggested_project, sender_name, metadata, subject')\
@@ -313,6 +323,16 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             for row in graph_items:
                 lines.append(f"👤 [g{row['id']}] {row['label']} ({row['type']})")
             lines.append("")
+
+        # Show awaiting_details count so items stuck in clarification are visible
+        try:
+            awaiting_res = supabase.table('pending_graph_nodes').select('id', count='exact').eq('status', 'awaiting_details').execute()
+            awaiting_count = awaiting_res.count if hasattr(awaiting_res, 'count') else len(awaiting_res.data or [])
+            if awaiting_count:
+                lines.append(f"⏳ {awaiting_count} node(s) waiting for details (tap ✅ to provide org_tag/context)")
+                lines.append("")
+        except Exception:
+            pass
 
         message = "\n".join(lines).strip()
 

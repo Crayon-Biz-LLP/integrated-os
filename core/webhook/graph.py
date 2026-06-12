@@ -5,6 +5,7 @@ from typing import Dict, Any
 from core.webhook.utils import supabase
 from core.services.llm import call_gemini_classify
 from core.lib.audit_logger import audit_log_sync
+from core.pulse.graph import create_graph_node_with_db_record
 
 # In-memory session cache
 # Structure: { chat_id: {"actions": [...], "expires_at": datetime, "pending_ids": [...]} }
@@ -50,20 +51,31 @@ Rules:
 4. If the user corrects the type (e.g. person, project, organization, team), include "corrected_type".
 5. If the user indicates the node is a duplicate, alias, or should be merged, map that to action="reject" and include a "reason" explaining why.
 6. Allowed actions: "approve", "reject", "skip".
+7. If approving a "project" type, check if the user specified an org tag (e.g. SOLVSTRAT, QHORD, PERSONAL, CRAYON, ASHRAYA) and include it as "org_tag".
+8. If approving a "person" type, check if the user provided context (e.g. role, relationship, organization) and include it as "context".
 
 Return format MUST be a valid JSON array:
 [
-  {{
+  {
     "id": 1,
     "action": "approve",
     "corrected_label": "Paulsons Ledgers",
     "corrected_type": "organization"
-  }},
-  {{
+  },
+  {
     "id": 2,
-    "action": "reject",
-    "reason": "duplicate of Paulson"
-  }}
+    "action": "approve",
+    "corrected_label": "Sarah Johnson",
+    "corrected_type": "person",
+    "context": "VP Engineering at Equisoft"
+  },
+  {
+    "id": 3,
+    "action": "approve",
+    "corrected_label": "Qhord Cloud Console",
+    "corrected_type": "project",
+    "org_tag": "QHORD"
+  }
 ]
 """
     try:
@@ -138,29 +150,29 @@ async def apply_graph_actions(actions: list, original_items_map: dict) -> dict:
                 if final_type is None or final_type.strip() == '':
                     final_type = original['type']
                 
-                # Update pending status
-                supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', node_id).execute()
-                
-                # Insert into graph_nodes
                 source_text = original.get('source_text', '')
-                supabase.table("graph_nodes").upsert(
-                    {
-                        "label": final_label, 
-                        "type": final_type, 
-                        "metadata": json.dumps({
-                            "source": "pending_approval_nlp", 
-                            "memory_id": source_text,
-                            "original_label": original['label'] if final_label != original['label'] else None
-                        })
-                    },
-                    on_conflict="label"
-                ).execute()
                 
-                # Audit log
-                audit_log_sync("webhook", "INFO", f"Graph NLP: Approved g{node_id}. Label: '{original['label']}' -> '{final_label}'. Type: '{original['type']}' -> '{final_type}'")
+                # Use shared helper to create DB record + graph_node + Danny edge
+                result = await create_graph_node_with_db_record(
+                    label=final_label,
+                    node_type=final_type,
+                    source_text=source_text,
+                    org_tag=action.get('org_tag'),
+                    context=action.get('context'),
+                    source_tag="pending_approval_nlp"
+                )
                 
-                results["applied"] += 1
-                results["details"].append(f"✅ g{node_id} approved as '{final_label}' ({final_type})")
+                if result.get('success'):
+                    # Update pending status
+                    supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', node_id).execute()
+                    
+                    audit_log_sync("webhook", "INFO", f"Graph NLP: Approved g{node_id}. Label: '{original['label']}' -> '{final_label}'. Type: '{original['type']}' -> '{final_type}'")
+                    results["applied"] += 1
+                    results["details"].append(f"✅ g{node_id} approved as '{final_label}' ({final_type})")
+                else:
+                    audit_log_sync("webhook", "WARNING", f"Graph NLP: g{node_id} helper returned: {result.get('message', 'unknown error')}")
+                    results["failed"] += 1
+                    results["details"].append(f"❌ g{node_id} failed: {result.get('message', 'unknown error')}")
                 
         except Exception as e:
             audit_log_sync("webhook", "ERROR", f"Graph NLP apply error for g{node_id}: {e}")

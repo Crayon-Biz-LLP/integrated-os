@@ -4,41 +4,215 @@ import json
 import asyncio
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
+from core.lib.people_utils import normalize_person_name
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
 
+VALID_ORG_TAGS = {'SOLVSTRAT', 'QHORD', 'PERSONAL', 'CRAYON', 'ASHRAYA'}
+TYPE_TO_DANNY_EDGE = {
+    'project': 'OWNS',
+    'person': 'KNOWS',
+    # Organizations and other types are linked through other relationships
+    # (e.g. WORKS_AT, BELONGS_TO). An OWNS/KNOWS edge is not semantically
+    # correct without explicit confirmation.
+}
 
-async def process_graph_pending_decision(pending_id: int, decision: str) -> dict:
+
+async def create_graph_node_with_db_record(
+    label: str,
+    node_type: str,
+    source_text: str = "",
+    org_tag: str = None,
+    context: str = None,
+    source_tag: str = "pending_approval"
+) -> dict:
+    """Create a people/projects table row + graph_nodes entry + Danny edge.
+    
+    Three modes:
+    - Person: creates people row → graph_nodes with people_id → Danny KNOWS edge
+    - Project: creates projects row (requires org_tag) → graph_nodes with project_id → Danny OWNS edge
+    - Other (org, concept, etc.): graph_nodes only, no DB table
+    """
+    try:
+        label = label.strip().title()
+
+        if node_type == 'project':
+            if not org_tag:
+                return {
+                    "success": False, "action": "needs_org_tag",
+                    "message": f"Project '{label}' needs an org tag ({', '.join(sorted(VALID_ORG_TAGS))})"
+                }
+            org_tag_upper = org_tag.upper().strip()
+            if org_tag_upper not in VALID_ORG_TAGS:
+                return {
+                    "success": False, "action": "invalid_org_tag",
+                    "message": f"Invalid org tag '{org_tag}'. Must be one of: {', '.join(sorted(VALID_ORG_TAGS))}"
+                }
+
+            existing = supabase.table('projects').select('id, name').ilike('name', label).maybe_single().execute()
+            if existing.data:
+                project_id = existing.data['id']
+                audit_log_sync("pulse", "INFO", f"Reusing existing project '{label}' (ID {project_id})")
+            else:
+                result = supabase.table('projects').insert({
+                    "name": label,
+                    "org_tag": org_tag_upper,
+                    "status": "active",
+                    "context": "from graph_approval",
+                    "is_active": True,
+                }).execute()
+                project_id = result.data[0]['id']
+
+            supabase.table("graph_nodes").upsert(
+                {
+                    "label": label,
+                    "type": "project",
+                    "metadata": json.dumps({
+                        "source": source_tag,
+                        "project_id": str(project_id),
+                        "org_tag": org_tag_upper,
+                        "memory_id": source_text,
+                    })
+                },
+                on_conflict="label"
+            ).execute()
+
+            await _ensure_danny_edge(label, node_type)
+
+            return {
+                "success": True, "action": "approved",
+                "message": f"Approved project '{label}' ({org_tag_upper})"
+            }
+
+        elif node_type == 'person':
+            norm_name = normalize_person_name(label)
+            existing_people = supabase.table('people').select('id, name').execute().data or []
+            matched_id = None
+            for p in existing_people:
+                if normalize_person_name(p['name']) == norm_name or p['name'].lower() == label.lower():
+                    matched_id = p['id']
+                    break
+
+            if matched_id:
+                people_id = matched_id
+                audit_log_sync("pulse", "INFO", f"Reusing existing person '{label}' (ID {people_id})")
+            else:
+                insert_data = {"name": label, "source": "graph_approval", "strategic_weight": 5}
+                if context:
+                    insert_data["role"] = context.strip()
+                result = supabase.table('people').insert(insert_data).execute()
+                people_id = result.data[0]['id']
+
+            supabase.table("graph_nodes").upsert(
+                {
+                    "label": label,
+                    "type": "person",
+                    "metadata": json.dumps({
+                        "source": source_tag,
+                        "people_id": str(people_id),
+                        "memory_id": source_text,
+                    })
+                },
+                on_conflict="label"
+            ).execute()
+
+            await _ensure_danny_edge(label, node_type)
+
+            msg = f"Approved person '{label}'"
+            if context:
+                msg += f" ({context.strip()})"
+            return {"success": True, "action": "approved", "message": msg}
+
+        else:
+            supabase.table("graph_nodes").upsert(
+                {
+                    "label": label,
+                    "type": node_type,
+                    "metadata": json.dumps({
+                        "source": source_tag,
+                        "memory_id": source_text,
+                    })
+                },
+                on_conflict="label"
+            ).execute()
+
+            return {"success": True, "action": "approved", "message": f"Approved node '{label}' ({node_type})"}
+
+    except Exception as e:
+        audit_log_sync("pulse", "ERROR", f"Error creating graph node with DB record: {e}")
+        return {"success": False, "action": "error", "message": str(e)}
+
+
+async def _ensure_danny_edge(label: str, node_type: str):
+    """Create OWNS/KNOWS edge from Danny to the node if one doesn't exist."""
+    rel = TYPE_TO_DANNY_EDGE.get(node_type)
+    if not rel:
+        return
+    try:
+        danny_res = supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny").maybe_single().execute()
+        if not danny_res or not danny_res.data:
+            return
+        danny_id = danny_res.data["id"]
+
+        target_res = supabase.table("graph_nodes").select("id").eq("label", label).maybe_single().execute()
+        if not target_res or not target_res.data:
+            return
+        target_id = target_res.data["id"]
+
+        existing = supabase.table("graph_edges").select("id")\
+            .eq("source_node_id", danny_id)\
+            .eq("target_node_id", target_id)\
+            .eq("relationship", rel)\
+            .maybe_single().execute()
+
+        if not existing or not existing.data:
+            supabase.table("graph_edges").insert({
+                "source_node_id": danny_id,
+                "target_node_id": target_id,
+                "relationship": rel,
+                "weight": 1.0,
+                "metadata": json.dumps({"source": "graph_approval"})
+            }).execute()
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"Failed to create Danny edge: {e}")
+
+
+async def process_graph_pending_decision(pending_id: int, decision: str, org_tag: str = None, context: str = None) -> dict:
     try:
         pending_res = supabase.table('pending_graph_nodes').select('*').eq('id', pending_id).maybe_single().execute()
         if not pending_res or not pending_res.data:
             return {"success": False, "action": "not_found", "message": "Graph item not found."}
-        
+
         pending_item = pending_res.data
-        if pending_item.get('status') != 'pending':
+        if pending_item.get('status') not in ('pending', 'awaiting_details'):
             return {"success": False, "action": "already_processed", "message": "Already processed."}
-            
+
         if decision == 'reject':
             supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', pending_id).execute()
             return {"success": True, "action": "rejected", "message": f"Rejected node {pending_item['label']}"}
-            
+
         if decision == 'approve':
-            supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
-            
             label = pending_item['label']
             node_type = pending_item['type']
             source_text = pending_item.get('source_text', '')
-            
-            supabase.table("graph_nodes").upsert(
-                {"label": label, "type": node_type, "metadata": json.dumps({"source": "pending_approval", "memory_id": source_text})},
-                on_conflict="label"
-            ).execute()
-            
-            return {"success": True, "action": "approved", "message": f"Approved node {label}"}
-            
+
+            result = await create_graph_node_with_db_record(
+                label=label,
+                node_type=node_type,
+                source_text=source_text,
+                org_tag=org_tag,
+                context=context,
+                source_tag="pending_approval"
+            )
+
+            if result.get('success'):
+                supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
+
+            return result
+
     except Exception as e:
         audit_log_sync("pulse", "ERROR", f"Error processing graph decision: {e}")
         return {"success": False, "action": "error", "message": str(e)}
