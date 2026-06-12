@@ -106,6 +106,7 @@ Some workflows use an **external cron service** because GitHub Actions free plan
 |---|---|---|---|
 | **Sentinel Nudge** | `https://integrated-os.vercel.app/api/sentinel` | `*/5 * * * *` (every 5 min) | 30s |
 | **Decision Pulse** | `https://integrated-os.vercel.app/api/decision-pulse` | `*/30 * * * *` (every 30 min) | 30s |
+| **Evening Roundup** | `https://integrated-os.vercel.app/api/roundup` | `0 14,20 * * *` (Assuming Asia/Kolkata timezone in cron-job.org: 2PM, 8PM) | 30s |
 
 **Setup:**
 1. Go to [cron-job.org](https://cron-job.org) → sign up (free)

@@ -133,6 +133,51 @@ async def decision_pulse_route(request: Request):
     result = await process_decision_pulse(auth_secret=cron_secret, trigger="cron")
     return result
 
+# --- EVENING ROUNDUP ---
+@app.api_route("/api/roundup", methods=["GET", "POST"])
+async def roundup_route(request: Request):
+    """Triggered by cron-job.org — evening roundup prompt."""
+    auth_header = request.headers.get("Authorization", "")
+    cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
+
+    if not cron_secret:
+        raise HTTPException(status_code=500, detail="CRON_SECRET missing")
+
+    if not auth_header.endswith(cron_secret) and request.headers.get("x-pulse-secret") != cron_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        from core.services.db import get_supabase
+        from datetime import datetime, timezone, timedelta
+        from core.webhook.telegram import send_telegram
+
+        supabase = get_supabase()
+        
+        # Check if 3+ notes were logged today
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist_offset)
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        notes_res = supabase.table('memories') \
+            .select('id') \
+            .in_('memory_type', ['note', 'Journal', 'relationship_note']) \
+            .gte('created_at', start_of_day.isoformat()) \
+            .execute()
+            
+        if notes_res.data and len(notes_res.data) >= 3:
+            return {"success": True, "message": "Already captured enough notes today. Skipping prompt."}
+            
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            raise HTTPException(status_code=500, detail="TELEGRAM_CHAT_ID missing")
+            
+        await send_telegram(int(chat_id), "🌆 Evening roundup — any meeting notes, ideas, or project updates from today?")
+        
+        return {"success": True, "message": "Roundup prompt sent"}
+    except Exception as e:
+        print(f"Roundup error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 # --- SEND DRAFT REPLY (Routes to webhook.py) ---
 @app.post("/api/send-draft")
 async def send_draft_route(request: Request):

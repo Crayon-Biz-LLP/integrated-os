@@ -494,6 +494,33 @@ async def process_webhook(update: dict):
 
         session_id, history, active_anchor = get_or_create_session(chat_id)
 
+        try:
+            # Check for empty /note continuation state
+            last_msg_res = supabase.table('conversations') \
+                .select('id, intent, created_at') \
+                .eq('session_id', session_id) \
+                .eq('role', 'bot') \
+                .order('created_at', desc=True) \
+                .limit(1) \
+                .execute()
+            if last_msg_res.data:
+                last_msg = last_msg_res.data[0]
+                if last_msg.get('intent') == 'WAITING_FOR_NOTE':
+                    # Check 5 min timeout
+                    msg_time_str = last_msg.get('created_at', '')
+                    if msg_time_str:
+                        if msg_time_str.endswith('Z'):
+                            msg_time_str = msg_time_str[:-1] + '+00:00'
+                        msg_time = datetime.fromisoformat(msg_time_str)
+                        if datetime.now(timezone.utc) - msg_time < timedelta(minutes=5):
+                            text = f"/note {text}"
+                            try:
+                                supabase.table('conversations').update({'intent': 'WAITING_FOR_NOTE_CONSUMED'}).eq('id', last_msg['id']).execute()
+                            except Exception:
+                                pass
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING", f"Error checking waiting_for_note state: {e}")
+
         CLARIFICATION_REPLY_WORDS = {'u', 'update', 'n', 'new', 'create', 't', 'task', 'note',
                                       'q', 'query', 'b', 'daily_brief', 'r', 'delegate', 'p', 'declare_practice', 'x', 'noise', 'none'}
         if text.strip().lower() in CLARIFICATION_REPLY_WORDS or text.strip().isdigit():
@@ -538,6 +565,35 @@ async def process_webhook(update: dict):
                 log_exchange(session_id, 'user', 'QUERY', text, chat_id, metadata={"active_anchor": active_anchor} if active_anchor else None)
                 await interrogate_brain(query, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
                 return {"success": True}
+
+        if text.strip().lower() == '/note':
+            await send_telegram(chat_id, "What's on your mind?")
+            log_exchange(session_id, 'bot', 'WAITING_FOR_NOTE', "What's on your mind?", chat_id)
+            return {"success": True}
+
+        _note_match = re.match(r'^/note\s+(.+)$', text.strip(), re.IGNORECASE | re.DOTALL)
+        if _note_match:
+            note_content = _note_match.group(1).strip()
+            
+            # 1. Run classifier to get entity extraction
+            context = await get_recent_context(limit=2)
+            history_text = format_history_for_prompt(history)
+            classification = await classify_intent(note_content, context, ist_hour=now.hour, core_json=core_json, conversation_history=history_text)
+            
+            # 2. Lock intent and confidence
+            classification['intent'] = 'NOTE'
+            classification['confidence'] = 1.0
+            classification['receipt'] = '🧠'
+            
+            # 3. Pass to route_by_intent
+            is_web_source = update.get('update_id') and str(update.get('update_id')).startswith('web_')
+            source = "web" if is_web_source else "telegram"
+            sender = "user"
+            
+            log_exchange(session_id, 'user', 'NOTE', text, chat_id, metadata={"active_anchor": active_anchor} if active_anchor else None)
+            
+            await route_by_intent('NOTE', note_content, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
+            return {"success": True}
 
         _drop_match = re.match(r'^/drop-(.+)$', text.strip(), re.IGNORECASE)
         if _drop_match:

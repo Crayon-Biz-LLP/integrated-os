@@ -45,11 +45,17 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
 
     try:
         # ── Pass 1: Pure verbatim extraction ──
-        extraction_prompt = "Transcribe ALL visible text from this image exactly as shown. Preserve original line breaks, spacing, and punctuation. Do not summarize, normalize, or omit any content. Return ONLY the raw text — no explanations, no formatting."
-        parts = [genai.types.Part(text=extraction_prompt)]
-
         if mime_type == 'application/octet-stream' or not mime_type:
             mime_type = guess_mime_type(file_bytes, mime_type)
+
+        is_audio = mime_type and mime_type.startswith('audio/')
+        
+        if is_audio:
+            extraction_prompt = "Transcribe this audio message exactly as spoken. Do not summarize, normalize, or omit any content. Return ONLY the raw text — no explanations, no formatting."
+        else:
+            extraction_prompt = "Transcribe ALL visible text from this document or image exactly as shown. Preserve original line breaks, spacing, and punctuation. Do not summarize, normalize, or omit any content. Return ONLY the raw text — no explanations, no formatting."
+
+        parts = [genai.types.Part(text=extraction_prompt)]
 
         if mime_type.startswith('image/'):
             parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
@@ -83,7 +89,8 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             await send_telegram(chat_id, "Couldn't extract any text from that.")
             return
 
-        raw_text = f"ALT IMAGE: {raw_text}"
+        if not is_audio:
+            raw_text = f"ALT IMAGE: {raw_text}"
 
         # ── Pass 2: Feed into standard text pipeline ──
         classification = await classify_intent(
@@ -92,7 +99,8 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             ist_hour=current_hour,
             core_json=core_json
         )
-        classification["extraction_method"] = "alt_image"
+        extraction_method = "voice_memo" if is_audio else "alt_image"
+        classification["extraction_method"] = extraction_method
 
         intent = classification.get('intent', 'NOTE')
         confidence = classification.get('confidence', 0.5)
@@ -107,7 +115,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             )
         else:
             from core.webhook.dispatch import handle_confident_note
-            await handle_confident_note(raw_text, chat_id, source=source, extraction_method="alt_image")
+            await handle_confident_note(raw_text, chat_id, source=source, extraction_method=extraction_method)
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Multimodal processing error: {e}")
