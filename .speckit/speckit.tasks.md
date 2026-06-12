@@ -209,6 +209,26 @@ Tables to surface:
 
 ---
 
+## Deferred Backlog
+
+### TF-001 (P3): Decisions Table
+**Status**: Deferred — not urgent
+**What**: Create a `decisions` table to track explicit decisions with lifecycle (active/superseded/reversed). Add DECISION category to classifier. Wire pulse to surface active decisions.
+**Why**: Currently decisions are implicit in task creation or pulse briefing text. A dedicated table enables querying "what did I decide about X?" without re-reading briefings.
+**Depends on**: Graph stabilization (let backfill run clean for 2-4 weeks)
+
+### TF-002 (P4): Graph Edge Expiry
+**Status**: Deferred — not urgent
+**What**: Add `last_confirmed_at`, `valid_until` columns to `graph_edges`. Monthly pulse check queries edges older than 6 months and asks Danny to verify or retire them.
+**Why**: Graph edges from months ago may be stale (e.g., someone changed jobs). Without expiry, the graph accumulates noise that degrades query results.
+**Depends on**: Graph running clean for 3+ months
+
+### TF-003 (P5): People Table Enrichment
+**Status**: Deferred — not urgent
+**What**: Add `org`, `last_interaction_date`, `notes` columns to `people` table. Backfill from WORKS_AT/CLIENT_OF graph edges and memory entities_mentioned data.
+**Why**: The people table currently has sparse fields beyond name and strategic weight. Enrichment would enable richer person profiles in the UI and pulse context.
+**Depends on**: Graph edge quality confirmed (happens naturally as part of P3 timeline)
+
 ## Dependency Map
 
 ```
@@ -279,6 +299,39 @@ This enables natural-language note capture without special syntax.
 3. Backfill: `UPDATE messages SET danny_decision = 'skipped' WHERE channel = 'email' AND classification IN ('fyi', 'ignored') AND danny_decision IS NULL;` (158 rows)
 
 ## Completed Features (Recent)
+
+### T-301: Graph Ontology Overhaul (Phase 0)
+- **Status**: Completed (June 12, 2026)
+- **Details**: Rebuilt the knowledge graph from scratch. Removed `concept`, `emotional_state`, `resource`, `task`, `practice`, `cluster` node types. Added `place`, `animal`. Removed `RELATES_TO`, `BELONGS_TO`, `AUTHORED`, `FEELS`, `INVOLVES` edge types. New 16-type ontology: `DISCUSSED_WITH`, `MET_WITH`, `INTRODUCED`, `FRIEND_OF`, `PARENT_OF`, `SPOUSE_OF`, `SIBLING_OF`, `FAMILY_OF`, `PET_OF`, `MENTORS`, `WORKS_AT`, `WORKS_ON`, `CLIENT_OF`, `VENDOR_TO`, `MEMBER_OF`, `SERVES_AT`. `OWNS` kept as programmatic-only for node approval flow. Banned all catch-all relationship types.
+- **Deployed**: Schema: `ALTER TABLE ... DROP CONSTRAINT` for removed types. Backfill prompt rebuilt. Graph cleaned: 0 junk edges (all old types deleted), orphaned concept/emotional_state/resource nodes deleted.
+
+### T-302: raw_dumps Excluded from Graph Extraction
+- **Status**: Completed (June 12, 2026)
+- **Details**: `FETCH_MEMORIES()` now excludes all `raw_dumps` source records — found to produce 100% hallucinated edges. `source_table` column added to `pending_graph_edges` and `graph_edges`. `source_text` formatted as `memories:{id}` instead of `raw:{id}`. MEMORY_TYPES filtered to `Journal, note, outcome, reflection, relationship_note` only.
+
+### T-303: Entity Grounding — No Concept Auto-Create
+- **Status**: Completed (June 12, 2026)
+- **Details**: `extract_graph_elements()` receives `fetch_known_entities()` list — prompt matches against approved person/org/project nodes. New entities outside the list only created if clearly identifiable place/animal. `_resolve_node()` in `graph.py` returns `None` instead of auto-creating `concept` nodes for missing labels during edge approval. Missing labels now generate a rejection with "create the node first" guidance.
+
+### T-304: People ↔ Graph Nodes Linkage
+- **Status**: Completed (June 12, 2026)
+- **Details**: `people.graph_node_id` FK → `graph_nodes.id` added. 89/99 people records backfilled via label matching. Enables bidirectional lookup: "who is this person in the graph?" and "what graph edges touch this person?"
+
+### T-305: Commitments on Tasks
+- **Status**: Completed (June 12, 2026)
+- **Details**: `tasks.direction` (inbound/outbound/waiting_on), `committed_to` (person name), `committed_on` (timestamp) columns added. `quick_process.py` enhanced to extract these during NOTE classification. Pulse engine queries tasks with direction/committed_to and highlights outbound and waiting_on commitments in briefing. Classifier updated: "meetings this week?" routes to QUERY (not DAILY_BRIEF).
+
+### T-306: Sentiment on Memories
+- **Status**: Completed (June 12, 2026)
+- **Details**: `memories.sentiment_score` (REAL, -1.0 to +1.0), `sentiment` (TEXT label), `entities_mentioned` (TEXT[]) columns added. Extracted at ingestion time by Flash Lite during NOTE classification. Emotions live on memory metadata, not graph nodes (the FEELS edge type was removed).
+
+### T-307: Decisions UI — Graph Edges Tab
+- **Status**: Completed (June 12, 2026)
+- **Details**: New Decisions dashboard module with Graph Edges tab. `graph-pending-list.tsx` component: inline editing for source_label, target_label, relationship before approving. Backend `POST /api/graph-edge-action` endpoint for Approve/Edit/Reject. Badge count on tab showing total pending.
+
+### T-308: RLS on Sensitive Tables
+- **Status**: Completed (June 12, 2026)
+- **Details**: RLS enabled and policies created for `pending_graph_edges`, `pending_graph_nodes`, `messages`, `system_audit_logs`, `dead_letter_queue`. Service role key bypasses RLS — server-side code unaffected.
 
 ### T-101: Unify Message Tables (Phase 1-4)
 - **Status**: Completed

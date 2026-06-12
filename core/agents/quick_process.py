@@ -70,8 +70,16 @@ If TASK or COMPLETION, extract these fields:
 - duration_mins: Estimated minutes (15 for quick tasks, 45 for meetings/calls)
 - priority: "urgent", "important", or "low"
 - recurrence: iCalendar RRULE string if recurring is mentioned (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO" or "RRULE:FREQ=WEEKLY;BYDAY=WE;UNTIL=20260831T000000Z"). Otherwise null.
+- direction: "inbound" | "outbound" | "waiting_on" (default: inbound)
+- committed_to: Person name if the task involves a commitment to or from someone
+
+If NOTE, extract as structured fields if clear from the text:
+- sentiment_score: -1.0 to 1.0 (null if unclear)
+- sentiment: single word label (e.g., "frustrated", "grateful", "neutral")
+- entities_mentioned: ["Marcus", "Equisoft"] (named entities only)
 
 If COMPLETION: set status to "done"
+
 
 STRICT RULES:
 - If the message is ONLY a URL with no instruction, classify as NOTE
@@ -88,7 +96,12 @@ Return ONLY valid JSON:
   "duration_mins": 15,
   "priority": "important",
   "status": "todo",
-  "clarification_question": "..."
+  "clarification_question": "...",
+  "direction": "inbound",
+  "committed_to": null,
+  "sentiment_score": null,
+  "sentiment": null,
+  "entities_mentioned": []
 }}"""
 
 
@@ -137,7 +150,10 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
                 "content": text,
                 "memory_type": "note",
                 "embedding": embedding,
-                "source": "quick_process"
+                "source": "quick_process",
+                "sentiment_score": result.get("sentiment_score"),
+                "sentiment": result.get("sentiment"),
+                "entities_mentioned": result.get("entities_mentioned") or []
             }).execute()
             memory_id = ins_res.data[0]['id']
         except Exception as e:
@@ -178,6 +194,10 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
             if result.get('duration_mins'):
                 update_payload["duration_mins"] = result.get('duration_mins')
                 update_payload["estimated_minutes"] = result.get('duration_mins')
+            if result.get('direction'):
+                update_payload["direction"] = result.get('direction')
+            if result.get('committed_to'):
+                update_payload["committed_to"] = result.get('committed_to')
                 
             if sanitized_time:
                 update_payload["reminder_at"] = sanitized_time
@@ -261,6 +281,10 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
             if result.get('duration_mins'):
                 update_payload["duration_mins"] = result.get('duration_mins')
                 update_payload["estimated_minutes"] = result.get('duration_mins')
+            if result.get('direction'):
+                update_payload["direction"] = result.get('direction')
+            if result.get('committed_to'):
+                update_payload["committed_to"] = result.get('committed_to')
                 
             conflict_warning = None
             if sanitized_time:
@@ -315,6 +339,8 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
         "duration_mins": result.get('duration_mins', 15),
         "reminder_at": sanitized_time,
         "dedup_key": dedup_key,
+        "direction": result.get("direction", "inbound"),
+        "committed_to": result.get("committed_to")
     }
 
     try:

@@ -662,7 +662,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             
             audit_log_sync("pulse", "INFO", f"🔒 Locked {len(dump_ids)} dumps for processing.")
 
-        active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at, reminder_at, google_event_id').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
+        active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at, reminder_at, google_event_id, direction, committed_to').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
         active_tasks = active_tasks_res.data or []
 
         # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
@@ -931,7 +931,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             project = next((p for p in legacy_projects if p.get('id') == t.get('project_id')), None)
             p_name = project.get('name') if project else "General"
             o_tag = project.get('org_tag') if project else "INBOX"
-            compressed_tasks_list.append(f"[{o_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]")
+            dir_str = ""
+            if t.get('direction') == 'waiting_on':
+                dir_str = f" [WAITING ON: {t.get('committed_to', 'someone')}]"
+            elif t.get('direction') == 'outbound':
+                dir_str = f" [OWED TO: {t.get('committed_to', 'someone')}]"
+            
+            compressed_tasks_list.append(f"[{o_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}){dir_str} [ID:{t.get('id')}]")
 
         # --- 1.5 SEASON EXPIRY LOGIC ---
         season_row = next((c for c in core if c.get('key') == 'current_season'), None)
@@ -1300,7 +1306,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             - NEVER combine tasks into a paragraph. NEVER use hyphens or dashes as separators between tasks on the same line.
             - **STRICT JSON RULE:** Do NOT use literal '\n' text characters. Use actual carriage returns (real newlines) within the briefing string.
             - Every task MUST start with a newline and follow this exact format: '- [ICON] [Task Title]'.
-            - THE LINK RULE: If a task is derived from a URL in NEW INPUTS, you MUST embed that URL into the task title using Markdown: "- [ICON] [Action] using [Source Title](URL)".
+                        - THE LINK RULE: If a task is derived from a URL in NEW INPUTS, you MUST embed that URL into the task title using Markdown: "- [ICON] [Action] using [Source Title](URL)".
+            - COMMITMENT HIGHLIGHTING: If a task is marked [OWED TO: person], surface it clearly (e.g. "Owed to Marcus: contract"). If a task is marked [WAITING ON: person], flag it as blocked (e.g. "Waiting on Marcus for 6 days: contract").
             - NEGATIVE CONSTRAINTS: NEVER include task numbers, IDs, weights, scores, parentheses, or metadata in the briefing string. NEVER mention "Monday" unless it is actually the weekend.
             - REVENUE IDENTIFICATION & FORMATTING:
             - If a NEW INPUT is "Revenue Critical" (involves payments, quotes, or high-ticket items like the ₹30L recovery), set is_revenue_critical: true in the new_tasks array.

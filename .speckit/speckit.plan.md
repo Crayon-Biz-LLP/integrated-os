@@ -82,11 +82,12 @@
 **Rejected**: Inline LLM extraction during webhook response.
 **Why**: The webhook must respond to Telegram within a few seconds. Background processing handles LLM latency gracefully.
 
-### Decision 6: Human-in-the-loop for high-risk graph entities
-**Chosen**: New `person`, `project`, and `organization` nodes require Danny's explicit approval via Decision Pulse before creation.
-**Rejected**: Auto-create all extracted entities; post-hoc review with delete-only.
-**Why**: The graph is the backbone of Rhodey's intelligence — wrong nodes infect every query and brief. The Decision Pulse already exists as an approval layer for tasks/emails/WhatsApp, so the marginal review cost is low. Low-risk entity types (concepts, emotional_states, resources, practices) still auto-create.
-**Tradeoff**: Latency between extraction and graph availability (~0-12 hours depending on next Decision Pulse). Acceptable because query-time traversal uses the existing `graph_nodes`, and pending entities don't degrade existing results.
+### Decision 6: Human-in-the-loop for ALL graph entities AND edges
+**Chosen**: Every new node (person, organization, project, place, animal) requires HITL approval — `concept`, `emotional_state`, `resource`, `practice` node types were removed entirely. All extracted edges (16 types) flow through `pending_graph_edges` for approval.
+**Rejected**: Auto-create all extracted entities; auto-create low-risk entity types.
+**Why**: The graph is the backbone of Rhodey's intelligence — wrong nodes infect every query and brief. The "low-risk auto-create" approach created 699 junk nodes (concept, emotional_state, resource). Every edge is now staged in `pending_graph_edges` with inline editing in the Decisions UI before approval. `pending_graph_nodes` and `pending_graph_edges` both have RLS enabled for extra safety.
+**Change from previous**: All 4 removed node types (concept, emotional_state, resource, practice) together formed a junk drawer of 699 hallucinated nodes. The new ontology has 5 precise types. Emotions live on memory metadata instead.
+**Tradeoff**: Latency between extraction and graph availability — but the Decisions UI Graph Edges tab makes batch approval fast.
 
 ---
 

@@ -226,9 +226,10 @@ Other entities mentioned: {json.dumps(mentioned)}
 Return a JSON array of edges these entities have with each other or the new node. 
 Only include relationships explicitly stated or very strongly implied by the source text.
 
-Existing relationship types include: WORKS_AT, MANAGES, KNOWS, COLLABORATES_WITH,
-INVOLVED_IN, BELONGS_TO, LEADS, OWNS, CLIENT_OF, EMPLOYEE_OF, MEMBER_OF,
-PART_OF, SPOKE_WITH, ATTENDS, ASSOCIATED_WITH. You can invent others if highly appropriate.
+Existing relationship types include: DISCUSSED_WITH, WORKS_AT, WORKS_ON,
+CLIENT_OF, VENDOR_TO, MEMBER_OF, PARENT_OF, SPOUSE_OF, SIBLING_OF,
+FAMILY_OF, PET_OF, FRIEND_OF, MET_WITH, INTRODUCED, MENTORS, SERVES_AT.
+You can invent new types only if none of these fit — prefer reuse.
 
 Format:
 [
@@ -349,20 +350,19 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             t_label = new_target or pe['target_label']
             rel = (new_rel or pe['relationship']).upper()
             
-            # Helper to resolve or create concept nodes
             def _resolve_node(label):
                 res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
                 if res and res.data:
                     return res.data['id']
-                ins = supabase.table('graph_nodes').insert({
-                    'label': label,
-                    'type': 'concept',
-                    'metadata': json.dumps({"source": "edge_approval_auto_create"})
-                }).execute()
-                return ins.data[0]['id']
+                return None
                 
             s_id = _resolve_node(s_label)
             t_id = _resolve_node(t_label)
+            
+            if not s_id or not t_id:
+                missing = s_label if not s_id else t_label
+                supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('id', pending_id).execute()
+                return {"success": False, "action": "missing_node", "message": f"Node '{missing}' doesn't exist. Create it first via the Pending Nodes flow."}
             
             supabase.table('graph_edges').upsert({
                 'source_node_id': s_id,

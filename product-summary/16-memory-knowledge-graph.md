@@ -4,24 +4,28 @@
 
 ### What Gets Stored
 
-The `memories` table stores 5 distinct types of memories, each with its own source lifecycle:
+The `memories` table stores 6 distinct types of memories, each with its own source lifecycle:
 
 | Memory Type | Source | How It's Created |
 |-------------|--------|-----------------|
 | `note` | Telegram, Pulse | Messages classified as NOTE → embedded → stored |
 | `outcome` | Pulse, API | Task completion triggers `write_outcome_memory()` |
-| `archive` | Journal | Google Sheets journal entries via `archive_ingest.py` |
 | `reflection` | Pulse | After-action report generated nightly |
 | `relationship_note` | Email | FYI emails with `has_memory_value=true` |
+| `Journal` | Journal | Google Sheets journal entries via `archive_ingest.py` |
+| `archive` | Journal | Google Sheets journal entries via `archive_ingest.py` |
 
-### Memory Creation & Entity Extraction Flow
+### Emotional Metadata
 
-When a note or task enters the system (via Telegram or quick processing):
+Each memory now stores emotional context as structured fields to enable temporal sentiment queries without polluting the graph:
 
-1. Content is sent to Gemini Embedding 2 → 768-dim vector.
-2. Vector + content + metadata inserted to `memories` or `tasks` table.
-3. **Incremental Entity Extraction:** In real-time, `extract_and_link_entities` runs via Flash Lite. It extracts people, projects, and concepts, automatically inserting `graph_nodes` and creating `MENTIONS` or `RELATED_TO` edges to the source note/task.
-4. If embedding fails → failed_queue with retry.
+| Field | Type | Purpose |
+|-------|------|---------|
+| `sentiment_score` | REAL | -1.0 to +1.0, machine-readable for aggregation |
+| `sentiment` | TEXT | Single-word label (e.g., "frustrated", "grateful") |
+| `entities_mentioned` | TEXT[] | Named entities found in the text (e.g., ["Atna", "Shirley"]) |
+
+Extracted at ingestion time by Flash Lite during NOTE classification. Enables queries like "how do I feel about Atna?" → aggregate sentiment_score over time → trajectory.
 
 ### Memory Decay & Importance Weighting
 
@@ -63,84 +67,100 @@ All queries run concurrently via `asyncio.gather()`. Results are deduplicated by
 ### Structure
 
 The graph is stored in two tables:
-- `graph_nodes` — vertices with type, label, and rich metadata
+- `graph_nodes` — vertices with type and label
 - `graph_edges` — directed edges with relationship type and weight
 
-### Node Types
+### Node Types (5 types only)
 
 | Type | Created By | Metadata |
 |------|-----------|----------|
-| `task` | Pulse batch INSERT, Entity Extractor | task_id, project_id, source |
-| `project` | Pulse project sync, Entity Extractor | project_id, org_tag, legacy_id |
-| `person` | Archive ingest, Entity Extractor | people_id, source |
-| `practice` | Practice detection, Telegram `/practice` | health_score, frequency, status, variants |
-| `cluster` | Telegram `/cluster` command | status, origin |
-| `concept` | Entity Extractor (Real-time) | source: entity_extractor |
-| `emotional_state` | Entity Extractor (Real-time) | source: entity_extractor |
-| `resource` | Pulse resource enrichment | url, category, strategic_note |
-| `organization` | Archive ingest, Entity Extractor | source, people_id |
+| `person` | Graph approval flow (pending → approved) | people_id, source |
+| `organization` | Graph approval flow | source |
+| `project` | Graph approval flow | project_id, org_tag |
+| `place` | Backfill extraction | source |
+| `animal` | Backfill extraction | source |
 
-### Edge Types
+**Removed types:** `concept`, `emotional_state`, `resource`, `task`, `practice`, `cluster` — these were either junk drawers (concept, emotional_state) or have dedicated tables (resource, task).
 
-| Relationship | Source → Target | Created By |
+### Edge Types (16 types only)
+
+| Relationship | Source → Target | Valid For |
 |-------------|----------------|-----------|
-| `BELONGS_TO` | Task → Project | Pulse batch, Backfill |
-| `INVOLVES` | Task → Person | Pulse batch |
-| `DEPENDS_ON` | Task → Task | Pulse dependency agent |
-| `MENTIONS` | Task/Note → Node | Entity Extractor (Real-time) |
-| `RELATES_TO` | Node → Node | Entity Extractor (Real-time), Backfill |
-| `INTERESTED_IN` | Person → Node | Backfill (orphaned node edges) |
-| `OWNS` | Person → Node | Backfill (orphaned node edges) |
-| `WORKS_WITH` | Person → Node | Backfill (orphaned node edges) |
-| `KNOWS` | Person → Person | Backfill (orphaned node edges) |
-| `FEELS` | Person → emotional_state | Backfill (emotion edges) |
-| `WORKS_AT` | Person → Organization | Archive ingest / Extractor |
-| `PARENT_OF` | Person → Person | Archive ingest / Extractor |
-| `PRACTICES` | Person → Practice | Pulse practice detection |
-| `ASSOCIATED_WITH` | Practice → Entity | Pulse practice detection |
-| `PRECEDES` | Practice → Practice | Pulse practice detection (temporal) |
-| `FOLLOWED_BY` | Practice → Practice | Pulse practice detection (temporal) |
+| `DISCUSSED_WITH` | Person → Person | Conversations |
+| `MET_WITH` | Person → Person | In-person meetings |
+| `INTRODUCED` | Person → Person | Someone introduced someone |
+| `FRIEND_OF` | Person → Person | Personal friendships |
+| `PARENT_OF` | Person → Person | Family |
+| `SPOUSE_OF` | Person → Person | Marriage |
+| `SIBLING_OF` | Person → Person | Siblings |
+| `FAMILY_OF` | Person → Person | Extended family |
+| `PET_OF` | Person → Animal | Pet ownership |
+| `MENTORS` | Person → Person | Mentorship |
+| `WORKS_AT` | Person → Organization | Employment |
+| `WORKS_ON` | Person → Project | Project involvement |
+| `CLIENT_OF` | Organization → Organization | Client relationship |
+| `VENDOR_TO` | Organization → Organization | Vendor relationship |
+| `MEMBER_OF` | Person → Organization | Formal membership |
+| `SERVES_AT` | Person → Organization | Ministry / volunteer role |
 
-### Graph Health & Backfill Pipeline (CI)
+**Banned types (removed):** `RELATES_TO`, `BELONGS_TO`, `AUTHORED`, `FEELS`, `INVOLVES`, `OWNS` — these were catch-all junk drawers. `OWNS` is still used programmatically by the node approval flow (Danny → OWNS → Project), but is excluded from the extraction prompt.
 
-A post-extraction backfill pipeline runs at the end of every CI cycle (`run_backfill()` in `core/skills/backfill_graph.py`). It keeps the graph connected and accurate:
+### Human-in-the-Loop Approval Pipeline
 
-1. **`backfill_orphaned_tasks()`** — Scans for task nodes in the graph that lack a `BELONGS_TO` edge to any project node. Re-creates `BELONGS_TO` edges by looking up parent projects (type in `project`, `cluster`, or `organization`) via metadata. Uses `.limit(1).maybe_single()` to handle duplicate legacy_ids.
+All new edges flow through a staging table before reaching the live graph:
 
-2. **`backfill_emotion_edges()`** — Finds `emotional_state` nodes with zero edges and creates `Danny → FEELS → {emotion}` edges, ensuring emotional concepts (e.g., "Suicidal Ideation", "Depression", "Broken") are connected to Danny and visible to retrieval flows.
+```
+Backfill extraction
+    → pending_graph_edges (status: pending)
+    → Decisions UI or Telegram pe{id} callback
+    → process_pending_edge_decision() in graph.py
+        → approve: resolve node IDs, insert into graph_edges
+        → reject: set status = 'rejected' (kept as diagnostic snapshot)
+        → edit: update source/target/relationship before approving
+```
 
-3. **`backfill_orphaned_node_edges()`** — Finds any non-task node that has NO direct edge to Danny (zero degree or only edges to other non-Danny nodes) and creates a type-appropriate edge:
-   - Projects → `OWNS`
-   - Concepts → `INTERESTED_IN`
-   - People → `KNOWS`
-   - Organizations → `WORKS_WITH`
-   - Emotional states → `FEELS`
-   - Practices → `PRACTICES`
-   
-   Also deletes garbage "User" nodes. Idempotent — checks for existing Danny edge before inserting.
+**`pending_graph_edges` columns:**
 
-4. **Dedup** — One-shot dedup at project initialization. Merges duplicate nodes (case-insensitive label match, same type). Repoints affected edges, deletes redundant edges, handles unique constraint conflicts.
+| Column | Type | Purpose |
+|--------|------|---------|
+| `id` | INTEGER (PK) | For Telegram `pe{id}` shortcodes |
+| `source_label` | TEXT | Entity label (resolved to node_id on approve) |
+| `target_label` | TEXT | Entity label (resolved to node_id on approve) |
+| `relationship` | TEXT | One of 16 valid types |
+| `source_text` | TEXT | `{table}:{id}` — which source record generated this edge |
+| `source_table` | TEXT | `memories` (or `raw_dumps` in legacy data) |
+| `status` | TEXT | `pending` | `approved` | `rejected` |
+| `confidence` | REAL | Extraction confidence score |
+
+If a label doesn't exist as a `graph_nodes` entry at approval time, the edge is rejected with a message to create the node first — no more auto-created `concept` nodes.
+
+### Graph Edge Expiry (Planned)
+
+`last_confirmed_at` and `valid_until` columns will be added to `graph_edges`. A monthly pulse check will query edges older than 6 months and ask Danny to verify or retire them. Deferred until the graph has been running clean for 3+ months.
+
+### Graph Extraction Backfill (`backfill_graph.py`)
+
+The backfill pipeline processes memories with the following constraints:
+
+**Source filter (MEMORY_TYPES):** Only `Journal`, `note`, `outcome`, `reflection`, `relationship_note`. Excludes: `Prophecy`, `Psalm`, `Prayer`, `Sermon`, `archive`, `canonical_page`, and **all** `raw_dumps` — raw dumps were found to produce 100% hallucinated edges.
+
+**Prompt ontology:** Strict 5 node types and 16 edge types. No catch-all relationship types (no RELATES_TO, BELONGS_TO, AUTHORED, FEELS). No forced AUTHORED or FEELS edges.
+
+**Entity grounding:** The extraction prompt receives the full list of approved `graph_nodes` (person, organization, project) to match against. New entities outside this list are only created if they are clearly identifiable places or animals.
+
+**Text-anchoring validation:** After LLM extraction, every node label is verified against the source text (case-insensitive substring match). Hallucinated labels are dropped with an audit warning, along with their edges.
+
+### People Table Linkage
+
+The `people` table now has a `graph_node_id` FK → `graph_nodes.id` for person-type nodes. This bridges the two registries — the graph knows the relationship (Marcus → CLIENT_OF → Equisoft), the people table knows the context (role, strategic_weight, last_interaction_date). 89/99 people records were backfilled via label matching.
 
 ### Graph Integrity Safeguards
 
-Three layers protect the knowledge graph from bad data:
-
-1. **Guard A: Orphaned BELONGS_TO edge cleanup (`graph.py`, `backfill_graph.py`)** — When a task's `project_id` changes, any stale `BELONGS_TO` edge for that task (`metadata->>task_id`) is deleted before the new one is inserted. Guarantees exactly one project edge per task, preventing people from ghost-appearing under old projects.
-
-2. **Guard B: Text-anchoring validation (`backfill_graph.py:extract_graph_elements`)** — After LLM extraction, every node label is verified against the source text (case-insensitive substring match). Hallucinated labels (e.g., extracting "Solvstrat" from a text that doesn't mention it) are dropped with an audit warning, along with their edges. "Danny" is always valid for AUTHORED edges.
-
-3. **HITL: Pending approval for high-risk entities (`pending_graph_nodes` table)** — New `person`, `project`, or `organization` nodes are routed to `pending_graph_nodes` with `status: pending`. The Decision Pulse surfaces them via Telegram. You can approve/drop them quickly (`g1 yes`), or use the **NLP Correction Loop** by replying with free-text (e.g., "g1 is actually an organization named Solvstrat"). The OS will interpret the correction and ask for your final confirmation (`yes`) before writing to the graph.
-
-4. **Guard D: Dedup defence against label-drift re-insertion (`backfill_graph.py:288-305`)** — Prevents the backfill pipeline from re-inserting already-approved/rejected labels as new pending rows. Three layers:
-   - **Cache scope fix**: `fetch_pending_entities()` now loads labels across ALL statuses (`pending`, `approved`, `rejected`) instead of only `pending`, so the in-memory cache knows about previously queued labels regardless of their current state.
-   - **DB-level ILIKE guard**: Before inserting a new pending row, `_check_pending_label_exists()` runs a two-step DB check: strict normalised `ILIKE` first, then fuzzy `ILIKE %label%` fallback for labels ≥ 6 characters. Catches label-drift cases like "Paulsons" vs "Paulsons Ledgers."
-   - **Unique index**: Migration `idx_pending_graph_nodes_label_dedup` — `CREATE UNIQUE INDEX ON pending_graph_nodes (lower(trim(label)))` — makes re-insertion a hard constraint violation regardless of code path. This is the only hard guarantee; the other two are defence-in-depth.
-
-**LLM Extraction Prompt Rule:** The entity extraction prompt includes a CRITICAL RULE: "EVERY node MUST have at least one connecting edge." This prevents the graph from accumulating floating nodes over time. Further, the prompt now includes: "Only extract entities that are explicitly, verbatim stated in the text."
-
-**Definition of orphaned:** Any non-task node that has no direct edge to Danny. This is broader than "zero edges" — nodes with edges to other non-Danny nodes but no Danny edge are reconnected.
-
-### Graph Centrality (Hub Detection)
+1. **Guard A: Orphaned BELONGS_TO edge cleanup** — When a task's project_id changes, stale edges are deleted before new ones are inserted.
+2. **Guard B: Text-anchoring validation** — Node labels must appear verbatim in source text.
+3. **HITL: Pending approval** — All edges and high-risk nodes (person, organization, project) require manual approval before reaching the live graph.
+4. **Guard D: Dedup** — Unique index on `lower(trim(label))` prevents label-drift re-insertion in `pending_graph_nodes`.
+5. **No auto-created concept nodes:** Edge approval no longer creates `concept` nodes for missing labels — missing labels generate a rejection with guidance to create the node first.
 
 ### Session Memory (Cross-Pulse Continuity)
 
@@ -153,11 +173,9 @@ This gives the agent "cross-pulse continuity," allowing it to refer to what it r
 ### Visual Exploration
 
 The frontend renders the knowledge graph as an interactive D3.js force-directed visualization with:
-- 9 node colors (person, organization, project, cluster, task, concept, emotional_state, resource, practice)
+- 6 node colors (person, organization, project, place, animal, danny)
 - Zoom (0.2x-4x scale)
 - Drag with force reheat
 - Hover effects (node enlargement, edge highlighting)
 - Click to open NodeFlyout detail panel
 - 250-tick simulation with auto-stop
-
-**Note:** The frontend API route (`/api/memories`) uses `fetchAllPaginated()` helper to bypass Supabase's 1000-row default limit. All node and edge queries chunk requests in steps of 1000 and concatenate results, ensuring the full graph (~2350+ edges) loads on initial page render.

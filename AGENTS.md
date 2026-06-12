@@ -43,12 +43,12 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 
 ### Database (Supabase)
 - Uses `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)
-- Tables: `tasks`, `raw_dumps`, `memories`, `graph_nodes`, `graph_edges`, `projects`, `resources`, `clusters`, `people`, `core_config`, `messages`, `pending_graph_nodes`
+- Tables: `tasks`, `raw_dumps`, `memories`, `graph_nodes`, `graph_edges`, `projects`, `resources`, `clusters`, `people`, `core_config`, `messages`, `pending_graph_nodes`, `pending_graph_edges`
 - **Note**: `raw_dumps` does NOT store embeddings - only `memories` table has embeddings
-- **Note**: `pending_graph_nodes` holds new person/project nodes awaiting Danny's approval via Decision Pulse (`g{id}` shortcode)
+- **Note**: `pending_graph_nodes` holds new person/project nodes awaiting approval via Decision Pulse (`g{id}` shortcode). `pending_graph_edges` holds all extracted edges awaiting approve/edit/reject via Decisions UI or Telegram (`pe{id}` shortcode).
 - `messages` holds WhatsApp chats, Emails, and Call extracts with classification + approval status
-- `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter)
-- **Graph integrity**: Four layers protect against bad data — (1) Guard A deletes stale BELONGS_TO edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation; (3) HITL gates new person/project nodes through `pending_graph_nodes` for Danny's approval via Decision Pulse; (4) Guard D dedup prevents label-drift re-insertion via all-statuses cache, ILIKE DB check, and unique index on `lower(trim(label))`
+- `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter). Excludes `raw_dumps` from extraction. Uses strict 5-node-type / 16-edge-type ontology with entity grounding.
+- **Graph integrity**: Five layers — (1) Guard A deletes stale project edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation (no AUTHORED exception); (3) HITL gates ALL edges through `pending_graph_edges` + person/org/project nodes through `pending_graph_nodes`; (4) Guard D dedup prevents label-drift re-insertion; (5) No auto-created concept nodes — missing labels generate a "create node first" rejection.
 
 ### External Integrations
 - **Gemini AI**: Briefing (`gemini-3.5-flash`), Classification (`gemini-3.1-flash-lite`), Embeddings (`gemini-embedding-2-preview`)
@@ -66,6 +66,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 | `w{id}` | `messages (whatsapp)` | Approve/reject WhatsApp-suggested task |
 | `t{id}` | `messages (teams)` | Approve/reject Teams-suggested task |
 | `g{id}` | `pending_graph_nodes` | Approve/reject new person/project node. Supports **NLP corrections** (e.g. "g2 is an organization, not a person"). Duplicate-re-insertion prevented by all-statuses cache, ILIKE dedup guard, and unique index on normalised label. |
+| `pe{id}` | `pending_graph_edges` | Approve/reject pending graph edge. Supports new 16 edge types. |
 | `{id}` (bare) | Tries email → call → whatsapp → graph → practice | Fallback compat |
 
 ## Project Routing Tags
@@ -124,6 +125,7 @@ Some workflows use an **external cron service** because GitHub Actions free plan
 - Return empty arrays if no explicit commands in inputs
 - Filter tasks by 2-day horizon, 14-day creation window
 - **Recurring tasks**: `done` skips this week's instance (series continues). `cancelled` ends the series. If reschedule is ambiguous, ask via `ask_user_approval`.
+- **Commitment highlighting**: Tasks with `direction=outbound` are Danny's promises to others — highlight them. Tasks with `direction=waiting_on` are blockers — flag them. Show `committed_to` name when available.
 - **Schedule queries** ("meetings this week?"): Route to QUERY (interrogate_brain), not DAILY_BRIEF. Calendar events are tagged [PAST] in Python before LLM input. The current time (IST) is injected into the prompt. Never invent headings like "Immediate Priorities" or "Today's Bottleneck" — answer the question directly first, then optional Context section.
 - **Query responses**: Max 600 tokens. Answer first (factual), Context section second (bottlenecks/patterns). Never self-analyze or repeat data after Context section.
 

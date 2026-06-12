@@ -168,9 +168,7 @@ def call_llm_with_fallback_sync(
 
 BATCH_SIZE = 50  # Process more memories per batch
 MEMORY_TYPES = [
-    "Prophecy", "Psalm", "Prayer", "Journal", "Sermon",
-    "archive", "canonical_page", "note", "outcome", "reflection",
-    "relationship_note"
+    "Journal", "note", "outcome", "reflection", "relationship_note"
 ]
 
 
@@ -250,27 +248,9 @@ def fetch_memories():
     print(f"    Already in graph edges (skipped): {len(processed_memory_ids)}")
     print(f"    New memories to process: {len(memories)}")
     
-    known_entities = fetch_known_entities()
-
-    raw_dumps = fetch_all_paginated("raw_dumps", "id, content, created_at, metadata")
-    qualifying_dumps = []
-    for d in (raw_dumps or []):
-        if d["id"] in processed_memory_ids:
-            continue
-        content = d.get("content", "")
-        meta = _normalize_meta(d.get("metadata"))
-        # Include if it has NOTE intent OR contains known entity
-        is_note = meta.get("intent") == "NOTE"
-        has_entity = dump_contains_known_entity(content, known_entities)
-        if is_note or has_entity:
-            qualifying_dumps.append({
-                "id": d["id"],
-                "content": content,
-                "memory_type": "raw_dump",
-                "metadata": meta,
-                "created_at": d.get("created_at")
-            })
-    memories = memories + qualifying_dumps
+    # Tag source table
+    for m in memories:
+        m['_source_table'] = 'memories'
 
     return memories
     
@@ -466,39 +446,34 @@ def backfill_embeddings():
 # ── END EMBEDDING BACKFILL ──────────────────────────────────────────────────
 
 
-def extract_graph_elements(text: str, memory_id: str) -> dict:
+def extract_graph_elements(text: str, memory_id: str, known_entities: set = None) -> dict:
+    known_entities = known_entities or set()
     # Pre-process: strip URLs and resource/cluster fragments to prevent extracting entities from them
     import re
     cleaned_text = re.sub(r'\[RESOURCE\].*?(\n|$)', '', text, flags=re.IGNORECASE)
     cleaned_text = re.sub(r'\[CLUSTER\].*?(\n|$)', '', cleaned_text, flags=re.IGNORECASE)
     cleaned_text = re.sub(r'https?://\S+', '', cleaned_text)
     
+    known_list = ", ".join(sorted(known_entities)) if known_entities else "None"
     prompt = f"""Extract knowledge graph elements from this text.
     
 Return a JSON object with:
-- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"resource"|"emotional_state"|"concept"}}
+- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"place"|"animal"}}
 - "edges": array of objects with {{"source": string, "target": string, "relationship": string}}
     
 Text: {cleaned_text}
     
-Return a JSON object with:
-- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"resource"|"emotional_state"|"concept"}}
-- "edges": array of objects with {{"source": string, "target": string, "relationship": string}}
-    
-Text: {text}
-    
 Rules:
-- Extract People (names), Organizations, Projects, Resources, Emotional States, Concepts as nodes
+- Extract People (names), Organizations, Projects, Places, and Animals as nodes
 - Create edges for relationships between nodes
-- Use UPPERCASE relationship types: "RELATES_TO", "PARENT_OF", "WORKS_AT", "BELONGS_TO", "AUTHORED", "INTRODUCED", "VENDOR_TO", "DISCUSSED_WITH", "FEELS"
-- Include "AUTHORED" edge from "Danny" to indicate he wrote this memory
+- Use UPPERCASE relationship types: "DISCUSSED_WITH", "WORKS_AT", "WORKS_ON", "CLIENT_OF", "VENDOR_TO", "MEMBER_OF", "PARENT_OF", "SPOUSE_OF", "SIBLING_OF", "FAMILY_OF", "PET_OF", "FRIEND_OF", "MET_WITH", "INTRODUCED", "MENTORS", "SERVES_AT"
 - CRITICAL RULE: EVERY node you extract MUST have at least one connecting edge. Do not output isolated nodes.
-- CRITICAL RULE: Only extract entities that are explicitly, verbatim stated in the text. Do NOT infer, guess, or add external knowledge. If the text doesn't mention a person, project, or relationship by name, do not extract it.
-- For EVERY emotional_state node you extract, ALWAYS create a 'Danny' -> 'FEELS' -> '{{emotion}}' edge. Never extract an emotional_state node without a corresponding FEELS edge.
-- Do NOT classify URLs, git repositories, or file paths as 'project'. Classify them as 'resource' instead. Examples: 'CopilotKit' -> resource, 'dsvpn' -> resource, 'opencodeCLI' -> resource.
-- Standardize labels to Title Case. Never create case-variant duplicates. 'guilt' and 'Guilt' are the same — use 'Guilt'.
-- CRITICAL: Do NOT extract anything from URLs, file paths, or online handles except to tag them as resources. Ignore path segments in links like "github.com/username".
-- CONSISTENCY: EVERY label referenced in an edge's "source" or "target" MUST also appear in the "nodes" array with its type."""
+- CRITICAL RULE: Only extract entities that are explicitly, verbatim stated in the text. Do NOT infer, guess, or add external knowledge.
+- Standardize labels to Title Case.
+- CRITICAL: Do NOT extract anything from URLs, file paths, or online handles except to tag them as resources.
+- CONSISTENCY: EVERY label referenced in an edge's "source" or "target" MUST also appear in the "nodes" array with its type.
+- Existing approved entities (person, org, project): {known_list}
+- Do NOT create nodes for entities not in this list unless they are a clearly identifiable place or animal."""
     
     try:
         response = call_llm_with_fallback_sync(
@@ -696,7 +671,7 @@ def insert_pending_edges_batch(edges: list):
     except Exception as e:
         audit_log_sync("backfill_graph", "ERROR", f"Pending edge insert failed: {e}")
 
-def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
+def insert_edges(edges: list, node_label_to_id: dict, memory_id: str, source_table: str = "memories"):
     """Queue extracted edges for human approval in pending_graph_edges."""
     pending_batch = []
     for edge in edges:
@@ -711,14 +686,15 @@ def insert_edges(edges: list, node_label_to_id: dict, memory_id: str):
             "source_label": source_label,
             "target_label": target_label,
             "relationship": relationship,
-            "source_text": str(memory_id),
+            "source_text": f"{source_table}:{memory_id}",
+            "source_table": source_table,
             "status": "pending"
         })
         
     insert_pending_edges_batch(pending_batch)
 
 
-def process_memory(memory: dict, graph_entities: dict) -> bool:
+def process_memory(memory: dict, graph_entities: dict, source_table: str = "memories") -> bool:
     memory_id = memory["id"]
     synthesized = synthesize_content(memory)
     
@@ -753,7 +729,7 @@ def process_memory(memory: dict, graph_entities: dict) -> bool:
         if danny_id:
             node_label_to_id["Danny"] = danny_id
     
-    insert_edges(edges, node_label_to_id, memory_id)
+    insert_edges(edges, node_label_to_id, memory_id, source_table)
     
     return True
 
@@ -820,9 +796,7 @@ def run_backfill():
         with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_mem = {
                 executor.submit(
-                    extract_graph_elements, 
-                    synthesize_content(m), 
-                    m["id"]
+                    extract_graph_elements, synthesize_content(m), m["id"], fetch_known_entities()
                 ): m for m in batch if synthesize_content(m).strip()
             }
             
@@ -833,7 +807,7 @@ def run_backfill():
                     nodes = graph_data.get("nodes", [])
                     edges = graph_data.get("edges", [])
                     if nodes or edges:
-                        extracted_data.append({"memory_id": mem["id"], "nodes": nodes, "edges": edges})
+                        extracted_data.append({"memory_id": mem["id"], "source_table": mem.get("_source_table", "memories"), "nodes": nodes, "edges": edges})
                         processed += 1
                     else:
                         failed += 1
@@ -853,7 +827,7 @@ def run_backfill():
                     "source": edge.get("source", ""),
                     "target": edge.get("target", ""),
                     "relationship": edge.get("relationship", "relates_to").upper(),
-                    "memory_id": data["memory_id"]
+                    "memory_id": data["memory_id"], "source_table": data["source_table"]
                 })
                 
         unique_nodes = {}
@@ -883,7 +857,8 @@ def run_backfill():
                 "source_label": edge["source"],
                 "target_label": edge["target"],
                 "relationship": edge["relationship"],
-                "source_text": str(edge["memory_id"]),
+                "source_text": f"{edge['source_table']}:{edge['memory_id']}",
+                "source_table": edge['source_table'],
                 "status": "pending"
             })
                 

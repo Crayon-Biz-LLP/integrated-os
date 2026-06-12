@@ -3,29 +3,31 @@
 
 ---
 
-## Current System State (as of May 2026)
+## Current System State (as of June 2026)
 
 ### What is built and working
 - Telegram webhook intake (`core/webhook/handler.py`) — classification, task/note routing, multimodal support
 - Email ingestion — Gmail + Outlook → Supabase (`email_ingest.yml` GitHub Action)
 - Email draft generation and approval via `ed` commands
 - Pulse briefing — triggered via GitHub Actions, sends daily SITREP to Telegram
-- Sentinel Watcher — 5-minute cron (`sentinel.yml`) checks Google Calendar to send JIT AI-driven pre-flight briefs to Telegram
+- Sentinel Watcher — 5-minute cron checks Google Calendar to send JIT AI-driven pre-flight briefs to Telegram
 - Conversational Task Intake — disambiguation gate and Quick Pulse `CLARIFY` loops via Telegram (with conversation history support)
 - Brain interrogation — hybrid Graph + Vector search (`interrogate_brain()`)
-- Graph nodes and edges — entity relationship tracking
+- Knowledge graph with 5 node types (person, organization, project, place, animal) and 16 edge types — all edges flow through HITL approval
+- Pending graph edges/ nodes with inline editing UI in Decisions dashboard module
+- Commitment tracking on tasks (direction, committed_to, committed_on)
+- Sentiment extraction on memories (sentiment_score, sentiment, entities_mentioned)
+- People ↔ graph_nodes linkage via graph_node_id FK
 - Gmail + Outlook send via `senddraftreply()`
 - `JOURNALSYNC` signal handler — triggers GitHub Actions from Google Sheets
 - Personal capture pipeline — natural speech NOTE routing, `/note` command with entity extraction, `/api/roundup` evening check-in, voice memo→note pipeline
+- RLS on sensitive tables (pending_graph_edges, pending_graph_nodes, messages, system_audit_logs, dead_letter_queue)
 
 ### What is broken or incomplete
-- **CRITICAL**: `raw_dumps` records are marked `completed` even when embedding fails → 41+ orphaned records with `embedding: null`
-- **CRITICAL**: `handle_confident_note()` in `core/webhook/handler.py` runs embedding synchronously in the webhook response path — if Gemini is slow, the webhook times out
-- **MISSING**: No `system_audit_logs` table — errors go to `print()` and disappear
-- **MISSING**: No `dead_letter_queue` for failed embeddings
-- **MISSING**: No Janitor/heartbeat monitoring the pipeline health
-- **MISSING**: `raw_dumps` → `tasks` enrichment (project linking, priority assignment) in Pulse is not verified as complete
-- **PARTIAL**: Temporal lineage (is_current pattern) not implemented on any table
+- **PARTIAL**: Graph backfill running — ~77 clean pending edges currently; prior 699 junk nodes (concept, emotional_state, resource) deleted
+- **MISSING**: No Decisions table (P3) — decisions are implicit in tasks/briefings
+- **MISSING**: No graph edge expiry (P4) — edges older than 6 months may be stale
+- **MISSING**: People table enrichment (P5) — org, last_interaction_date, notes columns not yet populated
 
 ---
 
@@ -121,41 +123,42 @@
 
 ---
 
-### SPEC-006: Graph Integrity — Guards + Human-in-the-Loop
+### SPEC-006: Graph Integrity — Guards + Human-in-the-Loop (OVERHAULED June 12)
 
-**What**: Three-layer defence against bad graph data and LLM hallucination in the knowledge graph.
+**What**: Four-layer defence against bad graph data, plus HITL for ALL pending edges and high-risk nodes.
 
-**Why**: The graph is the backbone of Rhodey's intelligence. Two concrete bugs were found:
-- Orphaned `BELONGS_TO` edges persisting after tasks changed projects (task 161 → Solvstrat ghost)
-- LLM-extracted `WORKS_AT` edges hallucinating "Solvstrat" from a memory that never mentioned it
+**Why**: The original spec (Guard A/B/HITL) was insufficient — 699 junk nodes (concept, emotional_state, resource) accumulated via auto-create. The ontology has been rebuilt from scratch. Key problems fixed:
+- `raw_dumps` excluded from graph extraction (100% hallucinated edges)
+- Catch-all relationship types removed (RELATES_TO, BELONGS_TO, AUTHORED, FEELS, INVOLVES)
+- No more concept/emotional_state auto-creation during edge approval
+- Emotions moved to memory metadata (sentiment fields), not graph
+- Edge approval flow also added: all edges go through `pending_graph_edges` table with inline editing UI
 
 **Acceptance Criteria**:
 
-**Guard A — Orphaned Edge Cleanup:**
-- Both `core/pulse/graph.py:write_graph_edges_for_task` and `core/skills/backfill_graph.py` delete any `BELONGS_TO` edge with matching `metadata->>task_id` before inserting a new one
-- No task can have more than one BELONGS_TO edge at any time
+**Guard A — Orphaned Edge Cleanup (unchanged):**
+- Both `core/pulse/graph.py:write_graph_edges_for_task` and `core/skills/backfill_graph.py` delete any edge with matching `metadata->>task_id` before inserting a new one
+- No task can have more than one project edge at any time
 
-**Guard B — Hallucination Prevention:**
+**Guard B — Text-Anchored Hallucination Prevention (updated):**
 - `extract_graph_elements()` prompt includes: "Only extract entities explicitly, verbatim stated in the text"
 - After LLM extraction, Python validates each label: `label.lower()` must be a substring of `text.lower()`
 - Hallucinated nodes + their edges dropped with audit warning
-- "Danny" always valid (for AUTHORED edges)
+- "Danny" NOT automatically permitted — AUTHORED edge type was removed from the ontology
 
-**HITL — Pending Approval + NLP Correction Loop:**
-- New table: `pending_graph_nodes(id, label, type, source_text, proposed_edges, status, created_at)`
-- `get_or_create_node()` and `upsert_nodes()` check `pending_entities_cache` before inserting
-- Decision Pulse (`core/pulse/engine.py`) queries pending items and renders inline keyboard with `g{id}` prefix
-- User can use quick inline commands (`g1 yes`, `g1 drop`) or reply with free-text (e.g., "g1 is actually an organization")
-- Free-text is parsed by Gemini (`core/webhook/graph.py`), cached in an active session, and presented for explicit user confirmation (`yes`/`no`) before applying
-- On approve → node upserted into `graph_nodes`
-- On reject → status set to `rejected`
-- In-memory cache (`pending_entities_cache`) prevents duplicate entries during batch runs
+**HITL — Pending Approval for ALL Edges + Nodes (expanded):**
+- Two staging tables: `pending_graph_nodes` + `pending_graph_edges`
+- `pending_graph_nodes`: person/org/project nodes require HITL approval via Telegram `g{id}` flow
+- `pending_graph_edges`: ALL extracted edges go through pending approval with inline editing UI
+- Decisions UI (`/dashboard/decisions`) shows Graph Edges tab with Approve/Edit/Reject
+- `_resolve_node()` in `graph.py` returns None instead of auto-creating `concept` nodes for missing labels
+- Both tables have RLS enabled
 
-**Dedup Fix — Label-Drift Re-Insertion Prevention:**
-- `fetch_pending_entities()` loads labels across ALL statuses (`pending`, `approved`, `rejected`), not only `pending`
-- Before insert, `_check_pending_label_exists()` runs strict normalised `ILIKE` + fuzzy `ILIKE %label%` fallback (≥6 chars) against `pending_graph_nodes`
-- Unique index `idx_pending_graph_nodes_label_dedup` on `lower(trim(label))` provides a hard DB-level constraint
-- Together, these prevent approved/rejected labels from being re-submitted as new pending rows on subsequent backfill runs
+**Guard D — Label-Drift Dedup (unchanged, extended to edges):**
+- `fetch_pending_entities()` loads labels across ALL statuses
+- Before insert: `ILIKE` exact + `ILIKE %label%` fuzzy fallback (≥6 chars)
+- Unique index on `lower(trim(label))` prevents re-insertion
+- `pending_graph_edges` deduped via normalised ILIKE matching with status-awareness
 
-**Out of scope**: Gating algorithmically-created edges (PRECEDES, FOLLOWED_BY) — low risk
+**Out of scope**: Graph edge expiry (P4 — deferred), decisions table (P3 — deferred)
 
