@@ -124,7 +124,7 @@ def _auto_expire_recurring_tasks():
                     'status': 'cancelled',
                     'completed_at': now.isoformat()
                 }, change_source='pulse_auto_expiry')
-            print(f"⏰ Auto-expired {len(expired)} recurring tasks (recurrence ended).")
+            audit_log_sync("pulse", "INFO", f"⏰ Auto-expired {len(expired)} recurring tasks (recurrence ended).")
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Auto-expiry check failed: {e}")
 
@@ -194,7 +194,7 @@ async def add_to_failed_queue(source_table: str, source_id: str, operation: str,
             "operation": operation,
             "error_message": error_message[:500] if error_message else None,
         }).execute()
-        print(f"🗃️ Added to failed_queue: {source_table}:{source_id} ({operation})")
+        audit_log_sync("pulse", "INFO", f"🗃️ Added to failed_queue: {source_table}:{source_id} ({operation})")
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"⚠️ Failed to add to failed_queue: {e}")
 
@@ -204,10 +204,15 @@ async def add_to_failed_queue(source_table: str, source_id: str, operation: str,
 # --- 📋 DECISION PULSE (No AI, just pending decisions) ---
 async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
     from core.pulse.run_logger import create_pulse_run, complete_pulse_run
+    from core.lib.redis_cache import acquire_lock, release_lock
 
     pulse_secret = os.getenv("PULSE_SECRET")
     if pulse_secret and auth_secret != pulse_secret:
         return {"error": "Unauthorized.", "status": 401}
+        
+    lock_key = "pulse_concurrency_lock"
+    if not acquire_lock(lock_key, ttl=300):
+        return {"success": False, "message": "Pulse or Decision Pulse already running. Concurrency lock active."}
 
     run_id = await create_pulse_run(supabase, "decision", trigger)
 
@@ -364,6 +369,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         await complete_pulse_run(supabase, run_id, status="completed",
             metadata={"decision_count": total, "send_success": send_success})
+        release_lock(lock_key)
         return {"success": True, "decision_count": total}
 
     except Exception as e:
@@ -371,6 +377,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
         audit_log_sync("pulse", "CRITICAL", f"Decision Pulse Critical Error: {e}")
         traceback.print_exc()
         await complete_pulse_run(supabase, run_id, status="failed", error_message=str(e))
+        release_lock(lock_key)
         return {"error": str(e)}
 
 
@@ -384,7 +391,7 @@ async def discover_new_clusters():
         ).is_('cluster_id', None).gt('created_at', thirty_days_ago).limit(100).execute()
         unclustered = unclustered_res.data or []
         if len(unclustered) < 3:
-            print(f"📍 Cluster discovery: only {len(unclustered)} unmapped resources, need 3+.")
+            audit_log_sync("pulse", "INFO", f"📍 Cluster discovery: only {len(unclustered)} unmapped resources, need 3+.")
             return []
 
         existing_res = supabase.table('clusters').select('id, title').eq('status', 'active').execute()
@@ -457,9 +464,9 @@ Resources:
             audit_log_sync("pulse", "INFO", f"🔗 Cluster discovery: created '{title}' with {len(resource_ids)} resources")
 
         if created:
-            print(f"✅ Cluster discovery created {len(created)} new clusters: {', '.join(created)}")
+            audit_log_sync("pulse", "INFO", f"✅ Cluster discovery created {len(created)} new clusters: {', '.join(created)}")
         else:
-            print("📍 Cluster discovery: no new clusters found.")
+            audit_log_sync("pulse", "INFO", "📍 Cluster discovery: no new clusters found.")
         return created
 
     except Exception as e:
@@ -473,15 +480,24 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
     
     Args:
         auth_secret: Pulse secret for auth
-        request_id: Unique ID for idempotency (prevents duplicate processing)
+        request_id: Unique ID for idempotency (e.g. from GitHub Actions)
+        trigger: The source trigger (e.g. 'api', 'cron', 'github_action')
     """
     from core.pulse.run_logger import create_pulse_run, complete_pulse_run
+    from core.lib.redis_cache import acquire_lock, release_lock
+
+    pulse_secret = os.getenv("PULSE_SECRET")
+    if pulse_secret and auth_secret != pulse_secret:
+        return {"error": "Unauthorized.", "status": 401}
+        
+    lock_key = "pulse_concurrency_lock"
+    if not acquire_lock(lock_key, ttl=300):
+        return {"success": False, "message": "Pulse or Decision Pulse already running. Concurrency lock active."}
 
     error_log = []
     run_id = None
     try:
-        # 🛡️ IDEMPOTENCY CHECK: If request_id provided, check if already processed
-        # NOTE: Uses metadata->>request_id (JSONB) - works even without dedicated column
+        # 1. Idempotency Check
         if request_id:
             # Always use metadata->>request_id (JSONB) for idempotency
             # This works whether or not the dedicated column exists
@@ -529,7 +545,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         try:
             await update_heartbeat()
             health_report = await check_pipeline_health()
-            print(health_report)
+            audit_log_sync("pulse", "INFO", str(health_report))
         except Exception as e:
             warning("pulse", f"Heartbeat/Health check failed: {e}", format_error(e))
         
@@ -601,7 +617,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 .in_('id', dump_ids) \
                 .execute()
             
-            print(f"🔒 Locked {len(dump_ids)} dumps for processing.")
+            audit_log_sync("pulse", "INFO", f"🔒 Locked {len(dump_ids)} dumps for processing.")
 
         active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at, reminder_at, google_event_id').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
         active_tasks = active_tasks_res.data or []
@@ -686,7 +702,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                                 }).execute()
                                 if result.data:
                                     note_dump_ids.append(dump_id)
-                                    print(f"📝 Note filed to memory: {dump_content[:50]}...")
+                                    audit_log_sync("pulse", "INFO", f"📝 Note filed to memory: {dump_content[:50]}...")
                                 else:
                                     raise Exception("Insert returned no data")
                             except Exception as e:
@@ -712,7 +728,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 
                 if note_dump_ids:
                     supabase.table('raw_dumps').update({"status": "completed", "is_processed": True}).in_('id', note_dump_ids).execute()
-                    print(f"🗃️ Staging Area: {len(task_dump_ids)} tasks, {len(note_dump_ids)} notes/noise")
+                    audit_log_sync("pulse", "INFO", f"🗃️ Staging Area: {len(task_dump_ids)} tasks, {len(note_dump_ids)} notes/noise")
                 
                 dumps = [d for d in dumps if d['id'] in task_dump_ids]
             
@@ -726,8 +742,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 metadata={"reason": "nothing_to_process"})
             return {"message": "Nothing to process, nothing to nag about. Silence is golden."}
 
-        print(f"🚀 PULSE START: Processing {len(dumps)} new dumps and {len(active_tasks)} active tasks.")
-        print("📦 Step 1: Fetching metadata...")
+        audit_log_sync("pulse", "INFO", f"🚀 PULSE START: Processing {len(dumps)} new dumps and {len(active_tasks)} active tasks.")
+        audit_log_sync("pulse", "INFO", "📦 Step 1: Fetching metadata...")
 
         # Fetch supporting metadata
         core_res = supabase.table('core_config').select('key, content').execute()
@@ -757,13 +773,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 'legacy_id': metadata.get('legacy_id')
             })
 
-        print("📦 Step 2: Fetching projects...")
+        audit_log_sync("pulse", "INFO", "📦 Step 2: Fetching projects...")
         legacy_projects = await context_provider.get_projects()
 
-        print("📦 Step 3: Fetching people...")
+        audit_log_sync("pulse", "INFO", "📦 Step 3: Fetching people...")
         people = await context_provider.get_people()
 
-        print("📦 Step 4: Fetching clusters (skipped, unused)...")
+        audit_log_sync("pulse", "INFO", "📦 Step 4: Fetching clusters (skipped, unused)...")
         # --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist_offset)
@@ -982,7 +998,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
 
         if hindsight_memories:
             hindsight_context = hindsight_block
-            print(f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
+            audit_log_sync("pulse", "INFO", f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
 
         is_hindsight_stale = False
         if hindsight_timestamp:
@@ -1062,9 +1078,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         except Exception:
             session_memory = "None"
         
-        print("📦 Step 5: Building context...")
+        audit_log_sync("pulse", "INFO", "📦 Step 5: Building context...")
         # --- 2. THINK Phase ---
-        print('🤖 Building prompt...')
+        audit_log_sync("pulse", "INFO", '🤖 Building prompt...')
 
         project_details = build_routing_context(legacy_projects)
 
@@ -1091,7 +1107,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             if pages_res.data:
                 page_entries = [f"[CANONICAL CONTEXT ONLY — DO NOT LIST IN BRIEFING]\n### MASTER PAGE: {p['title']}\n{p['content']}" for p in pages_res.data]
                 master_page_context = "\n\n".join(page_entries)
-                print(f"🧠 Canonical: Loaded {len(pages_res.data)} Master Pages for context.")
+                audit_log_sync("pulse", "INFO", f"🧠 Canonical: Loaded {len(pages_res.data)} Master Pages for context.")
 
         # --- 🏃 PRACTICE DETECTION (Weekends only, before brief) ---
         new_practice_ids = {}
@@ -1101,7 +1117,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             # Practice detection runs once a week — Saturday before 2PM IST (accounts for GH Actions delay)
             is_discovery_pulse = now.weekday() == 5 and now.hour < 14
             if is_discovery_pulse:
-                print("📍 Weekend pulse: Running practice detection...")
+                audit_log_sync("pulse", "INFO", "📍 Weekend pulse: Running practice detection...")
                 before_labels = set()
                 before_res = supabase.table('graph_nodes').select('label').eq('type', 'practice').execute()
                 for r in (before_res.data or []):
@@ -1111,7 +1127,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 after_labels = set(r['label'] for r in (after_res.data or []))
                 new_practice_labels = sorted(after_labels - before_labels)
                 if new_practice_labels:
-                    print(f"📍 New practices detected: {new_practice_labels}")
+                    audit_log_sync("pulse", "INFO", f"📍 New practices detected: {new_practice_labels}")
 
             # 🕸️ Build PRECEDES/FOLLOWED_BY edges between practices
             await build_practice_edges()
@@ -1119,7 +1135,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             # 📊 Build task-practice correlations
             correlation_insights = await build_practice_correlations()
             if correlation_insights:
-                print(f"📍 Practice correlations: {len(correlation_insights)} insights")
+                audit_log_sync("pulse", "INFO", f"📍 Practice correlations: {len(correlation_insights)} insights")
 
             # 📝 Sync canonical pages for practices
             await sync_practice_canonical_pages()
@@ -1398,7 +1414,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 max_steps=10
             )
             
-            print("✅ Agent loop completed successfully.")
+            audit_log_sync("pulse", "INFO", "✅ Agent loop completed successfully.")
 
             # Formatting cleanup for Telegram
             if briefing_text:
@@ -1481,9 +1497,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         if completion_dump_ids:
             if ai_data.get('completed_task_ids'): # At least one task was closed
                 supabase.table('raw_dumps').update({"status": "completed", "is_processed": True}).in_('id', completion_dump_ids).execute()
-                print(f"✅ Sealed {len(completion_dump_ids)} completion dumps.")
+                audit_log_sync("pulse", "INFO", f"✅ Sealed {len(completion_dump_ids)} completion dumps.")
             else:
-                print(f"Skipped sealing {len(completion_dump_ids)} completion dumps — no tasks matched.")
+                audit_log_sync("pulse", "INFO", f"Skipped sealing {len(completion_dump_ids)} completion dumps — no tasks matched.")
 
         # --- AUTO-EXPIRY: End recurring tasks whose RRULE UNTIL has passed ---
         _auto_expire_recurring_tasks()
@@ -1495,7 +1511,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 "status": "completed",
                 "is_processed": True 
             }).in_('id', dump_ids).execute()
-            print(f"✅ Phase 3: Marked {len(dump_ids)} dumps as completed.")
+            audit_log_sync("pulse", "INFO", f"✅ Phase 3: Marked {len(dump_ids)} dumps as completed.")
 
         if synced_dumps:
             synced_ids = [d['id'] for d in synced_dumps]
@@ -1503,12 +1519,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 "status": "completed",
                 "is_processed": True
             }).in_('id', synced_ids).execute()
-            print(f"✅ Sealed {len(synced_ids)} synced dumps after briefing.")
+            audit_log_sync("pulse", "INFO", f"✅ Sealed {len(synced_ids)} synced dumps after briefing.")
 
         tasks_created = len(ai_data.get("new_tasks", [])) if ai_data else 0
         await complete_pulse_run(supabase, run_id, status="completed",
             dumps_processed=len(dumps) if dumps else 0,
             tasks_created=tasks_created)
+        release_lock(lock_key)
         return {"success": True, "briefing": briefing_text}
 
     except Exception as e:
@@ -1516,4 +1533,5 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         audit_log_sync("pulse", "CRITICAL", f"Pulse Critical Error: {e}")
         traceback.print_exc()
         await complete_pulse_run(supabase, run_id, status="failed", error_message=str(e))
+        release_lock(lock_key)
         return {"error": str(e)}

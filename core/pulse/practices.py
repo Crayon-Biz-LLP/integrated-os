@@ -1,4 +1,3 @@
-from core.llm.compat import get_embedding_sync
 from core.llm import get_embedding
 import os
 import json
@@ -819,7 +818,8 @@ async def sync_practice_canonical_pages():
                 lines.append(f"- Last Status Transition: {trans_at}")
 
             content = "\n".join(lines)
-            embedding = get_embedding_sync(content)
+            embedding_res = await get_embedding(content)
+            embedding = embedding_res.vector if embedding_res else None
 
             canonical_title = f"Practice: {label}"
             existing_res = supabase.table('canonical_pages') \

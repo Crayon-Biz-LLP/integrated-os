@@ -1,4 +1,4 @@
-from core.llm.compat import get_embedding_sync
+from core.llm.compat import get_embedding
 import os
 import json
 import asyncio
@@ -397,7 +397,8 @@ async def ingest_outlook_messages(limit=25):
                 if is_human and has_memory:
                     _summary = classification_data.get("summary", "")
                     _mem_content = f"{sender} ({sender_email}): {_summary}"
-                    _emb = get_embedding_sync(_mem_content)
+                    _emb_res = await get_embedding(_mem_content)
+                    _emb = _emb_res.vector if _emb_res else None
                     supabase.table('memories').insert({
                         "content": _mem_content,
                         "memory_type": "relationship_note",

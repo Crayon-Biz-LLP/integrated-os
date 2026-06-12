@@ -67,6 +67,23 @@ def cache_delete(key: str):
     except Exception as e:
         audit_log_sync("redis", "WARNING", f"cache_delete failed for {key}: {e}")
 
+def acquire_lock(key: str, ttl: int = 60) -> bool:
+    """Try to acquire a lock via Redis. Returns True if acquired, False if locked by another process. Returns True if Redis is unavailable (fail open)."""
+    client = get_redis()
+    if client is None:
+        return True # Fail open if no redis
+    try:
+        # upstash_redis supports nx=True for Set if Not eXists
+        res = client.set(key, "locked", ex=ttl, nx=True)
+        return bool(res)
+    except Exception as e:
+        audit_log_sync("redis", "WARNING", f"acquire_lock failed for {key}: {e}")
+        return True # Fail open
+
+def release_lock(key: str):
+    """Release a lock."""
+    cache_delete(key)
+
 def redis_rate_limit_check(key: str, max_calls: int, window_seconds: int):
     """
     Distributed sliding window via Redis sorted set.

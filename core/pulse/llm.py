@@ -1,4 +1,4 @@
-from core.llm.compat import get_embedding_sync
+from core.llm.compat import get_embedding
 import os
 import asyncio
 from typing import Callable, Dict, Any, List
@@ -43,7 +43,7 @@ supabase: Client = create_client(
 )
 
 
-def is_already_in_email_queue(title: str) -> bool:
+async def is_already_in_email_queue(title: str) -> bool:
     """Check if a task title already exists in pending emails."""
     try:
         keywords = [w for w in title.lower().split() if len(w) > 4]
@@ -62,7 +62,8 @@ def is_already_in_email_queue(title: str) -> bool:
                 return True
 
         # Semantic embedding check (high threshold to avoid false positives)
-        embedding = get_embedding_sync(title)
+        embedding_res = await get_embedding(title)
+        embedding = embedding_res.vector if embedding_res else None
         similarity_res = supabase.rpc('match_memories', {
             'query_embedding': embedding,
             'match_count': 1,

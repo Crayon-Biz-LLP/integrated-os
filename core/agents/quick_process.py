@@ -1,4 +1,4 @@
-from core.llm.compat import get_embedding_sync
+from core.llm.compat import get_embedding
 import json
 import re
 import asyncio
@@ -130,7 +130,8 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
         return {"action": "skipped", "reason": "noise"}
 
     if category == 'NOTE':
-        embedding = get_embedding_sync(text)
+        embedding_res = await get_embedding(text)
+        embedding = embedding_res.vector if embedding_res else None
         try:
             ins_res = supabase.table('memories').insert({
                 "content": text,
@@ -139,9 +140,15 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
                 "source": "quick_process"
             }).execute()
             memory_id = ins_res.data[0]['id']
-            asyncio.create_task(extract_and_link_entities(text, memory_id, 'memory'))
         except Exception as e:
             audit_log_sync("quick_process", "WARNING", f"Memory insert failed: {e}")
+            
+        try:
+            if memory_id:
+                await extract_and_link_entities(text, memory_id, 'memory')
+        except Exception as e:
+            audit_log_sync("quick_process", "WARNING", f"extract_and_link_entities failed: {e}")
+            
         return {"action": "filed", "type": "note"}
 
     title = result.get('title', text[:80])
@@ -234,7 +241,10 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
                                  change_source='quick_process', change_reason="Completed via quick_process")
                 
                 # 🧠 Write outcome memory
-                asyncio.create_task(write_outcome_memory(td['title'], project_name))
+                try:
+                    await write_outcome_memory(td['title'], project_name)
+                except Exception as oe:
+                    audit_log_sync("quick_process", "WARNING", f"Failed to write outcome memory: {oe}")
                 
                 return {"action": "completed", "task_id": td['id']}
         return {"action": "skipped", "reason": "no_matching_task"}
@@ -349,11 +359,11 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
             
     # 🧠 Write graph edges for new task
     try:
-        # Fire and forget graph edge creation
-        asyncio.create_task(write_graph_edges_for_task(task_id, title, project_id))
-        asyncio.create_task(extract_and_link_entities(text, task_id, 'task'))
+        t1 = write_graph_edges_for_task(task_id, title, project_id)
+        t2 = extract_and_link_entities(text, task_id, 'task')
+        await asyncio.gather(t1, t2, return_exceptions=True)
     except Exception as ge:
-        audit_log_sync("quick_process", "WARNING", f"Failed to spawn graph edge task: {ge}")
+        audit_log_sync("quick_process", "WARNING", f"Failed to run graph edge tasks: {ge}")
 
     ret = {"action": "created", "task_id": task_id, "google_event_id": e_id, "google_task_id": g_id}
     if conflict_warning:

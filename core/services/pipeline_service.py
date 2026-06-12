@@ -102,12 +102,96 @@ async def retry_failed_operations(max_retries: int = 5):
 
         for item in failed_items.data:
             try:
-                audit_log_sync("pipeline_service", "INFO", f"Retrying {item['source_table']}:{item['source_id']}")
-                supabase.table('failed_queue') \
-                    .update({'retry_count': item.get('retry_count', 0) + 1, 'last_retry_at': datetime.now(timezone.utc).isoformat()}) \
-                    .eq('id', item['id']) \
-                    .execute()
+                audit_log_sync("pipeline_service", "INFO", f"Retrying {item['source_table']}:{item['source_id']} ({item['operation']})")
+                success = await _execute_retry(item)
+                
+                if success:
+                    # Remove from queue or mark completed
+                    supabase.table('failed_queue').delete().eq('id', item['id']).execute()
+                    audit_log_sync("pipeline_service", "INFO", f"Retry SUCCESS for {item['id']}")
+                else:
+                    supabase.table('failed_queue') \
+                        .update({'retry_count': item.get('retry_count', 0) + 1, 'last_retry_at': datetime.now(timezone.utc).isoformat()}) \
+                        .eq('id', item['id']) \
+                        .execute()
             except Exception as retry_e:
                 audit_log_sync("pipeline_service", "ERROR", f"Retry failed for {item['id']}: {retry_e}")
+                supabase.table('failed_queue') \
+                    .update({'retry_count': item.get('retry_count', 0) + 1, 'last_retry_at': datetime.now(timezone.utc).isoformat(), 'error_message': str(retry_e)[:500]}) \
+                    .eq('id', item['id']) \
+                    .execute()
     except Exception as e:
         audit_log_sync("pipeline_service", "WARNING", f"retry_failed_operations failed: {e}")
+
+async def _execute_retry(item: dict) -> bool:
+    """Executes the actual retry logic for a failed queue item."""
+    supabase = get_supabase()
+    table = item.get("source_table")
+    op = item.get("operation")
+    sid = item.get("source_id")
+    
+    if table == "memories" and op in ["memory_insert", "embedding"]:
+        # We need the raw dump content
+        dump = supabase.table("raw_dumps").select("content, metadata").eq("id", sid).maybe_single().execute()
+        if not dump.data:
+            return False # Original dump gone, can't retry
+            
+        text = dump.data.get("content", "")
+        from core.llm.compat import get_embedding
+        emb_res = await get_embedding(text)
+        embedding = emb_res.vector if emb_res else None
+        
+        if not embedding:
+            raise Exception("Retry failed: Embedding still returned None")
+            
+        supabase.table("memories").insert({
+            "content": text,
+            "memory_type": "note",
+            "embedding": embedding,
+            "embedding_status": "success",
+            "source": "retry_queue",
+            "metadata": dump.data.get("metadata", {})
+        }).execute()
+        return True
+        
+    elif table == "tasks" and op == "google_sync":
+        task = supabase.table("tasks").select("title, status, google_task_id, reminder_at").eq("id", sid).maybe_single().execute()
+        if not task.data:
+            return False
+            
+        from core.services.google_service import get_tasks_service, sync_to_google
+        import asyncio
+        tasks_service = await asyncio.to_thread(get_tasks_service)
+        if tasks_service:
+            g_id = await asyncio.to_thread(
+                sync_to_google, 
+                tasks_service, 
+                title=task.data["title"], 
+                task_id=task.data.get("google_task_id"), 
+                status=task.data["status"], 
+                due_at=task.data.get("reminder_at")
+            )
+            if g_id:
+                if not task.data.get("google_task_id"):
+                    supabase.table("tasks").update({"google_task_id": g_id}).eq("id", sid).execute()
+                return True
+        return False
+        
+    elif table == "memories" and op == "embedding_backfill":
+        mem = supabase.table("memories").select("content").eq("id", sid).maybe_single().execute()
+        if not mem.data:
+            return False
+            
+        from core.llm.compat import get_embedding
+        emb_res = await get_embedding(mem.data["content"])
+        embedding = emb_res.vector if emb_res else None
+        
+        if embedding:
+            supabase.table("memories").update({
+                "embedding": embedding,
+                "embedding_status": "success"
+            }).eq("id", sid).execute()
+            return True
+        return False
+        
+    return False # Unknown operation

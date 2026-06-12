@@ -80,7 +80,15 @@ def versioned_update(table_name: str, record_id: int, update_data: dict, user_id
                 new_id = result.data[0].get('id')
                 if new_id:
                     # Rollback the insert to prevent duplicate is_current=True records
-                    supabase.table(table_name).delete().eq('id', new_id).execute()
+                    try:
+                        supabase.table(table_name).delete().eq('id', new_id).execute()
+                    except Exception as del_err:
+                        audit_log_sync("db", "CRITICAL", f"Failed to rollback version insert {new_id}: {del_err}. You now have duplicate is_current=True records!")
+                        # Try to soft-delete the new one as a desperate measure
+                        try:
+                            supabase.table(table_name).update({"is_current": False}).eq('id', new_id).execute()
+                        except Exception:
+                            pass
             raise update_err
 
         if change_source or change_reason:

@@ -74,6 +74,14 @@ async def generate_content_with_fallback(
                         current_contents = current_contents + [hint_text]
                     elif isinstance(current_contents, str):
                         current_contents += hint_text
+                        
+                # Apply rate limiter for flash-lite
+                if model_name == "gemini-3.1-flash-lite":
+                    from core.lib.rate_limiter import flash_lite_limiter
+                    await flash_lite_limiter.acquire_async()
+                    # Re-check deadline after potentially waiting for rate limit
+                    budget.check_deadline()
+                    timeout_s = budget.time_remaining()
                 
                 text, function_calls, raw_response = await provider_fn(
                     model=model_name,

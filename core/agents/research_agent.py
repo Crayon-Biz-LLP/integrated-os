@@ -1,4 +1,4 @@
-from core.llm.compat import get_embedding_sync
+from core.llm.compat import get_embedding
 import os
 import json
 import asyncio
@@ -71,7 +71,8 @@ Web Search Results:
                 dossier = response.text.strip()
 
                 content = f"RESEARCH DOSSIER: {task_text}\n\n{dossier}"
-                embedding = get_embedding_sync(content)
+                embedding_res = await get_embedding(content)
+                embedding = embedding_res.vector if embedding_res else None
                 if not embedding:
                     embedding = None
                 supabase.table('raw_dumps').insert([{

@@ -15,13 +15,7 @@ from core.llm.config import WorkloadProfile
 from core.webhook.utils import is_recent_raw_dump, supabase
 from core.pulse.graph import hybrid_search_graph
 
-try:
-    from core.agents.quick_process import process_single_dump, get_tasks_service
-except ImportError:
-    async def process_single_dump(text, metadata, tasks_service=None):
-        return {"action": "skipped", "reason": "import_failed"}
-    def get_tasks_service():
-        return None
+from core.agents.quick_process import process_single_dump, get_tasks_service
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "") -> str:
@@ -782,7 +776,7 @@ Query: {query}"""
                             preview = (msg.get('body_summary') or '').replace('\n', ' ')[:150]
                             lines.append(f"- [YOUR REPLY] Re: {msg.get('subject', '')}: \"{preview}\"... (to {msg.get('sender_email', '')}) - REALTIME API")
                     except Exception as e:
-                        print(f"Fallback realtime sent fetch failed: {e}")
+                        audit_log_sync("webhook", "WARNING", f"Fallback realtime sent fetch failed: {e}")
             except Exception:
                 pass
                 
@@ -1121,7 +1115,7 @@ async def handle_declare_practice(text: str, chat_id: int, classification: dict)
 
         if node_res.data:
             await send_telegram(chat_id, f"Tracking: {practice_name}")
-            print(f"📍 DECLARE_PRACTICE: Created practice node '{practice_name}'")
+            audit_log_sync("webhook", "INFO", f"DECLARE_PRACTICE: Created practice node '{practice_name}'")
         else:
             await send_telegram(chat_id, "⚠️ Could not create practice. Try again.")
 
