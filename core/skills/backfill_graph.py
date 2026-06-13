@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import uuid
 import httpx
+from dotenv import load_dotenv
 
 from core.lib.rate_limiter import flash_lite_limiter
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
@@ -13,6 +14,8 @@ from core.lib.graph_rules import validate_edge
 from core.services.db import get_supabase
 from core.services.pipeline_service import add_to_failed_queue
 from core.services.llm import get_gemini_client
+
+load_dotenv()
 
 supabase = get_supabase()
 gemini_client = get_gemini_client()
@@ -120,7 +123,7 @@ def call_llm_with_fallback_sync(
         for attempt in range(max_retries_per_provider):
             try:
                 # Rate limit: only for Gemini flash-lite model
-                if provider_name == "gemini" and "flash-lite" in model_name:
+                if provider_name in ["gemini", "gemma"]:
                     flash_lite_limiter.acquire()
                 response = prov["fn"](prompt, config)
                 
@@ -227,6 +230,16 @@ def fetch_memories():
                     audit_log_sync("backfill_graph", "WARNING", f"⚠️ memory_id parse error: {e}")
         except Exception as e:
             audit_log_sync("backfill_graph", "WARNING", f"⚠️ Metadata processing error: {e}")
+            
+    # Also check pending_graph_edges to prevent reprocessing memories that are staged for approval
+    pending_edges = fetch_all_paginated("pending_graph_edges", "source_text")
+    for row in pending_edges or []:
+        st = row.get("source_text", "")
+        if st and st.startswith("memories:"):
+            try:
+                processed_memory_ids.add(int(st.split(":")[1]))
+            except (ValueError, IndexError):
+                pass
     
     total_memories = fetch_all_paginated("memories", "id, memory_type, created_at")
     print("  MEMORY DIAGNOSTICS:")
@@ -862,7 +875,7 @@ def run_backfill():
         print(f"Processing batch {batch_num} ({len(batch)} memories)...")
         
         extracted_data = []
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             future_to_mem = {
                 executor.submit(
                     extract_graph_elements, synthesize_content(m), m["id"], fetch_known_entities()
