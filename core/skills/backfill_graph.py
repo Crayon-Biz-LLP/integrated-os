@@ -233,27 +233,28 @@ def fetch_memories():
     print(f"    Total memories in DB: {len(total_memories) if total_memories else 0}")
     
     memories = fetch_all_paginated("memories", "id, content, memory_type, metadata, created_at", "memory_type", MEMORY_TYPES)
+    
+    # URL FILTER: Strip out any memory that contains a URL
+    filtered_memories = [m for m in (memories or []) if 'http://' not in str(m.get('content', '')).lower() and 'https://' not in str(m.get('content', '')).lower()]
+    
     print(f"    Memories matching MEMORY_TYPES filter: {len(memories) if memories else 0}")
+    print(f"    Memories after URL filtering: {len(filtered_memories)}")
     
     # Count by type
-    if memories:
+    if filtered_memories:
         type_counts = {}
-        for m in memories:
+        for m in filtered_memories:
             t = m.get("memory_type", "unknown")
             type_counts[t] = type_counts.get(t, 0) + 1
         for t, c in sorted(type_counts.items(), key=lambda x: -x[1]):
             print(f"      {t}: {c}")
     
     # Filter to only unprocessed memories (fix int/string type mismatch)
-    memories = [m for m in (memories or []) if m["id"] not in processed_memory_ids]
+    final_memories = [m for m in filtered_memories if m["id"] not in processed_memory_ids]
     print(f"    Already in graph edges (skipped): {len(processed_memory_ids)}")
-    print(f"    New memories to process: {len(memories)}")
+    print(f"    New memories to process: {len(final_memories)}")
     
-    # Tag source table
-    for m in memories:
-        m['_source_table'] = 'memories'
-
-    return memories
+    return final_memories
     
 
 pending_entities_cache = set()

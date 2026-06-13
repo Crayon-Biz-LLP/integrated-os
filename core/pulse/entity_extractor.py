@@ -11,6 +11,12 @@ async def extract_and_link_entities(text: str, source_id: str, source_type: str 
     Extracts entities and updates the graph immediately during ingestion.
     source_type: 'task', 'memory', or 'raw_dump'
     """
+    # URL FILTER: Do not extract entities from text containing URLs
+    import re
+    if re.search(r'https?://', text, re.IGNORECASE):
+        audit_log_sync("pulse", "INFO", "Skipped entity extraction: text contains URL")
+        return
+
     prompt = f"""Extract knowledge graph elements from this text.
     
 Return a JSON object with:

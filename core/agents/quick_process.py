@@ -143,6 +143,10 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
         return {"action": "skipped", "reason": "noise"}
 
     if category == 'NOTE':
+        if re.search(r'https?://', text):
+            await save_url_as_resource(text)
+            return {"action": "filed", "type": "resource"}
+            
         embedding_res = await get_embedding(text)
         embedding = embedding_res.vector if embedding_res else None
         try:
