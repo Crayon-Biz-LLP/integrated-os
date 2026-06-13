@@ -351,7 +351,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
         audit_log_sync("pulse", "ERROR", f"Error processing graph decision: {e}")
         return {"success": False, "action": "error", "message": str(e)}
 
-async def process_pending_edge_decision(pending_id: int, decision: str, new_source: str = None, new_target: str = None, new_rel: str = None) -> dict:
+async def process_pending_edge_decision(pending_id: int, decision: str, new_source: str = None, new_target: str = None, new_rel: str = None, context: str | None = None) -> dict:
     try:
         pe_res = supabase.table('pending_graph_edges').select('*').eq('id', pending_id).maybe_single().execute()
         if not pe_res or not pe_res.data:
@@ -392,12 +392,16 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                 elif vr["action"] == "auto_correct":
                     rel = vr["reason"]
 
+            meta = {"source": "pending_edge_approval", "pending_id": pending_id}
+            if context:
+                meta["context"] = context
+
             supabase.table('graph_edges').upsert({
                 'source_node_id': s_id,
                 'target_node_id': t_id,
                 'relationship': rel,
                 'weight': 1.0,
-                'metadata': {"source": "pending_edge_approval", "pending_id": pending_id}
+                'metadata': meta
             }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
             
             supabase.table('pending_graph_edges').update({

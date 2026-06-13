@@ -519,6 +519,7 @@ async def graph_edge_action_route(request: Request):
         new_source = body.get('new_source')
         new_target = body.get('new_target')
         new_rel = body.get('new_rel')
+        new_context = body.get('new_context')
 
         if not pending_id or not action:
             raise HTTPException(status_code=400, detail="id and action required")
@@ -528,7 +529,8 @@ async def graph_edge_action_route(request: Request):
             decision=action,
             new_source=new_source,
             new_target=new_target,
-            new_rel=new_rel
+            new_rel=new_rel,
+            context=new_context
         )
 
         if result['success']:

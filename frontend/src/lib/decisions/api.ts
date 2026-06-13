@@ -22,7 +22,7 @@ export async function decideWhatsAppMessage(id: number, decision: 'approve' | 'r
   }
 }
 
-export async function decideGraphEdge(id: number, decision: 'approve' | 'reject', updates?: { new_source?: string; new_target?: string; new_rel?: string; }): Promise<void> {
+export async function decideGraphEdge(id: number, decision: 'approve' | 'reject', updates?: { new_source?: string; new_target?: string; new_rel?: string; new_context?: string; }): Promise<void> {
   const res = await fetch('/api/graph-edge-action', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

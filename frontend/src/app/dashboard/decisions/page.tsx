@@ -55,6 +55,25 @@ export default async function DecisionsPage() {
   const graphItems = (graphRes.data ?? []) as GraphPendingEdge[];
   const mergeProposals = (mergeRes.data ?? []) as GraphMergeProposal[];
 
+  const memIds = [...new Set(
+    graphItems
+      .map(i => i.source_text?.match(/^memories:(\d+)$/))
+      .filter(Boolean)
+      .map(m => parseInt(m![1]))
+  )];
+  if (memIds.length > 0) {
+    const memRes = await supabase.from("memories").select("id, content").in("id", memIds);
+    if (memRes.error) console.error('Failed to resolve memory sources:', memRes.error);
+    const memMap = new Map((memRes.data ?? []).map(m => [m.id, m.content]));
+    for (const item of graphItems) {
+      const match = item.source_text?.match(/^memories:(\d+)$/);
+      if (match) {
+        const content = memMap.get(parseInt(match[1]));
+        if (content) item.source_text = content;
+      }
+    }
+  }
+
   return (
     <DecisionsShell
       initialCallItems={callItems}

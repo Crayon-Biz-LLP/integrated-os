@@ -14,6 +14,8 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
   const [items, setItems] = useState<GraphPendingEdge[]>(initialItems);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ source: '', target: '', rel: '' });
+  const [contextOpen, setContextOpen] = useState<number | null>(null);
+  const [contextText, setContextText] = useState('');
 
   useEffect(() => {
     setItems(initialItems);
@@ -22,8 +24,13 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
   const handleDecision = async (id: number, decision: 'approve' | 'reject') => {
     const item = items.find((i) => i.id === id);
     setItems((prev) => prev.filter((i) => i.id !== id));
+    setContextOpen((prev) => prev === id ? null : prev);
+    setContextText('');
     try {
-      await decideGraphEdge(id, decision);
+      const contextPayload = decision === 'approve' && contextOpen === id && contextText.trim()
+        ? { new_context: contextText.trim() }
+        : undefined;
+      await decideGraphEdge(id, decision, contextPayload);
       toast.success(decision === 'approve' ? 'Edge approved' : 'Edge rejected');
     } catch (error) {
       console.error('Failed to decide graph edge:', error);
@@ -52,6 +59,8 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
 
   const startEdit = (item: GraphPendingEdge) => {
     setEditingId(item.id);
+    setContextOpen(null);
+    setContextText('');
     setEditForm({
       source: item.source_label,
       target: item.target_label,
@@ -122,14 +131,37 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
                 <div className="flex flex-wrap items-center gap-2 mb-3 bg-zinc-900/50 p-3 rounded-md font-mono text-sm">
                   <span className="text-blue-400 font-semibold">{item.source_label}</span>
                   <span className="text-zinc-500">→</span>
-                  <span className="text-green-400 font-bold">{item.relationship}</span>
+                  <span className="text-amber-400 font-bold">{item.relationship}</span>
                   <span className="text-zinc-500">→</span>
-                  <span className="text-purple-400 font-semibold">{item.target_label}</span>
+                  <span className="text-cyan-400 font-semibold">{item.target_label}</span>
                 </div>
                 {item.source_text && (
                   <p className="text-sm text-muted-foreground mb-3 italic border-l-2 border-zinc-700 pl-2">
-                    Source text: "{item.source_text}"
+                    Source text: "{item.source_text.length > 200 ? item.source_text.slice(0, 200) + '…' : item.source_text}"
                   </p>
+                )}
+                {contextOpen === item.id ? (
+                  <div className="mb-3">
+                    <textarea
+                      className="w-full h-16 rounded-md border border-zinc-700 bg-zinc-900/50 p-2 text-xs text-zinc-300 resize-none placeholder:text-zinc-600"
+                      placeholder="Why are you approving this? (optional)"
+                      value={contextText}
+                      onChange={(e) => setContextText(e.target.value)}
+                    />
+                    <button
+                      className="text-xs text-zinc-500 hover:text-zinc-300 mt-1"
+                      onClick={() => { setContextOpen(null); setContextText(''); }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="text-xs text-zinc-500 hover:text-zinc-300 mb-3"
+                    onClick={() => setContextOpen(item.id)}
+                  >
+                    + Add context
+                  </button>
                 )}
                 <div className="flex items-center justify-between mt-4">
                   <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
