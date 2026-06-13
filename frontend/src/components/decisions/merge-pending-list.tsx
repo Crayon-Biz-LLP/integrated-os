@@ -54,8 +54,8 @@ export function MergePendingList({ items: initialItems }: { items: GraphMergePro
               <span className="text-yellow-400 font-semibold">{item.label}</span>
               <span className="text-zinc-500">({item.type})</span>
               <span className="text-zinc-500">→</span>
-              <span className="text-green-400 font-semibold">canonical</span>
-              <span className="text-zinc-500">(id: {item.merge_candidate_id.slice(0, 8)}...)</span>
+              <span className="text-green-400 font-semibold">{item.merge_candidate_label || 'canonical'}</span>
+              <span className="text-zinc-500">({item.type})</span>
             </div>
             <p className="text-sm text-muted-foreground mb-3">
               This node appears to be a duplicate of an existing node. Merge to consolidate or keep both as separate entries.

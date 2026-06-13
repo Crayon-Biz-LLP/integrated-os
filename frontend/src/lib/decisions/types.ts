@@ -44,6 +44,7 @@ export interface GraphMergeProposal {
   label: string;
   type: string;
   merge_candidate_id: string;
+  merge_candidate_label?: string;
   status: 'merge_proposed';
   created_at: string;
 }
