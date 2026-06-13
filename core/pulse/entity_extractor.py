@@ -72,11 +72,41 @@ Text: "{text}"
             n_type = node.get('type', 'concept')
             if not label:
                 continue
+
+            # GUARD 2: Entity Grounding for projects
+            if n_type == 'project':
+                proj_check = supabase.table('projects').select('id').ilike('name', label.strip()).execute()
+                if not proj_check.data:
+                    audit_log_sync("pulse", "WARNING", f"Skipped ungrounded project node: {label}")
+                    continue
                 
             existing_res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
             if existing_res and existing_res.data:
                 node_id_map[label] = existing_res.data['id']
             else:
+                # GUARD 3: Entity Grounding check for other types
+                status = "pending"
+                if n_type == 'person':
+                    p_check = supabase.table('people').select('id').ilike('name', label.strip()).execute()
+                    if not p_check.data:
+                        status = "flagged"
+                        
+                # Instead of inserting to graph_nodes immediately, if it's flagged, send to pending and skip edge
+                if status == "flagged":
+                    try:
+                        # Only insert if it doesn't already exist in pending
+                        pend_check = supabase.table('pending_graph_nodes').select('id').eq('label', label).maybe_single().execute()
+                        if not pend_check.data:
+                            supabase.table('pending_graph_nodes').insert({
+                                "label": label,
+                                "type": n_type,
+                                "source_text": f"{source_type}:{source_id}",
+                                "status": "flagged"
+                            }).execute()
+                    except Exception:
+                        pass
+                    continue # Skip edge creation because node isn't in graph_nodes yet
+                
                 ins_res = supabase.table('graph_nodes').insert({
                     "label": label,
                     "type": n_type,

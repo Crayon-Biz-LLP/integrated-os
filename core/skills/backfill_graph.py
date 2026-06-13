@@ -523,6 +523,29 @@ Rules:
         audit_log_sync("backfill_graph", "ERROR", f"    ❌ Graph extraction failed for memory {memory_id}: {e}")
         return {"nodes": [], "edges": []}
 
+def is_real_project(label: str) -> bool:
+    try:
+        result = supabase.table('projects').select('id').ilike('name', label.strip()).execute()
+        return len(result.data) > 0
+    except Exception:
+        return False
+
+GROUNDED_TYPES = {
+    'project': ('projects', 'name'),
+    'person': ('people', 'name'),
+    'organization': None,  # no structured table yet — skip check
+}
+
+def has_structural_anchor(label: str, node_type: str) -> bool:
+    if node_type not in GROUNDED_TYPES or GROUNDED_TYPES[node_type] is None:
+        return True  # no check available — allow through
+    table, column = GROUNDED_TYPES[node_type]
+    try:
+        result = supabase.table(table).select('id').ilike(column, label.strip()).execute()
+        return len(result.data) > 0
+    except Exception:
+        return True
+
 def get_or_create_node(label: str, node_type: str, graph_entities: dict, created_nodes: dict, memory_id: str = None) -> str:
     """
     Get or create a graph node with proper type handling.
@@ -531,6 +554,11 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
     if label in created_nodes:
         return created_nodes[label]
     
+    # GUARD 2: Entity Grounding for projects
+    if node_type == 'project' and not is_real_project(label):
+        audit_log_sync("backfill_graph", "WARNING", f"Skipped ungrounded project node: {label}")
+        return None
+
     # Check if already in graph_entities (DB cache)
     if label in graph_entities:
         node_id = graph_entities[label]["id"]
@@ -551,14 +579,15 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
     if node_type in ['person', 'project', 'organization']:
         if label not in pending_entities_cache and not _check_pending_label_exists(label):
             try:
+                status = "pending" if has_structural_anchor(label, node_type) else "flagged"
                 supabase.table("pending_graph_nodes").insert({
                     "label": label,
                     "type": node_type,
                     "source_text": memory_id,
-                    "status": "pending"
+                    "status": status
                 }).execute()
                 pending_entities_cache.add(label)
-                audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval: {label} ({node_type})")
+                audit_log_sync("backfill_graph", "INFO", f"Queued new entity for approval ({status}): {label} ({node_type})")
             except Exception as e:
                 audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
         elif label not in pending_entities_cache:
