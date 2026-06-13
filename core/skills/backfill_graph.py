@@ -468,6 +468,10 @@ Rules:
 - Extract People (names), Organizations, Projects, Places, and Animals as nodes
 - Create edges for relationships between nodes
 - Use UPPERCASE relationship types: "DISCUSSED_WITH", "WORKS_AT", "WORKS_ON", "CLIENT_OF", "VENDOR_TO", "MEMBER_OF", "PARENT_OF", "SPOUSE_OF", "SIBLING_OF", "FAMILY_OF", "PET_OF", "FRIEND_OF", "MET_WITH", "INTRODUCED", "MENTORS", "SERVES_AT"
+- PROJECT DEFINITION: A named initiative with a defined goal and stakeholders.
+  ✓ QHORD, Ashraya, Solvstrat, Rhodey OS
+  ✗ "Church cash rotation incident" (event), "New Habit" (intention), "Journaling tool" (concept), "Call Marcus" (task)
+  If it doesn't have a formal name someone would use to refer to an ongoing initiative — skip it.
 - CRITICAL RULE: EVERY node you extract MUST have at least one connecting edge. Do not output isolated nodes.
 - CRITICAL RULE: Only extract entities that are explicitly, verbatim stated in the text. Do NOT infer, guess, or add external knowledge.
 - Standardize labels to Title Case.

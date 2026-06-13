@@ -20,6 +20,10 @@ Return a JSON object with:
 RULES:
 - Only extract explicitly mentioned entities.
 - Keep labels concise (e.g. "Danny", "Qhord").
+- PROJECT DEFINITION: A named initiative with a defined goal and stakeholders.
+  ✓ QHORD, Ashraya, Solvstrat, Rhodey OS
+  ✗ "Church cash rotation incident" (event), "New Habit" (intention), "Journaling tool" (concept), "Call Marcus" (task)
+  If it doesn't have a formal name someone would use to refer to an ongoing initiative — skip it.
 - If no clear entities/relationships, return empty arrays.
 - Normalize person names to First Last if obvious.
     
