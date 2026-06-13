@@ -59,14 +59,41 @@ def get_canonical_id(node_id: str) -> str:
 
 
 def propose_merge(source_node_id: str, target_node_id: str) -> dict:
-    existing = supabase.table("pending_graph_nodes").select("id").eq("id", source_node_id).maybe_single().execute()
-    if not existing.data:
-        return {"success": False, "message": "Source node not found"}
-    supabase.table("pending_graph_nodes").update({
-        "status": "merge_proposed",
-        "merge_candidate_id": target_node_id
-    }).eq("id", source_node_id).execute()
-    return {"success": True, "message": f"Merge proposed: {source_node_id} → {target_node_id}"}
+    src_res = supabase.table("graph_nodes").select("label, type").eq("id", source_node_id).maybe_single().execute()
+    tgt_res = supabase.table("graph_nodes").select("label").eq("id", target_node_id).maybe_single().execute()
+    
+    if not src_res or not src_res.data or not tgt_res or not tgt_res.data:
+        return {"success": False, "message": "Node not found"}
+        
+    src_label = src_res.data["label"]
+    tgt_label = tgt_res.data["label"]
+    
+    # Check if already proposed
+    existing = supabase.table("pending_graph_nodes")\
+        .select("id, status, merge_candidate_id")\
+        .ilike("label", src_label)\
+        .maybe_single().execute()
+        
+    if existing and existing.data:
+        if existing.data.get("status") == "merge_proposed" and existing.data.get("merge_candidate_id") == target_node_id:
+            return {"success": False, "message": "Already proposed"}
+        # Update existing record
+        supabase.table("pending_graph_nodes").update({
+            "status": "merge_proposed",
+            "merge_candidate_id": target_node_id,
+            "source_text": "dedup_scan"
+        }).eq("id", existing.data["id"]).execute()
+    else:
+        # Insert new merge proposal
+        supabase.table("pending_graph_nodes").insert({
+            "label": src_label,
+            "type": src_res.data["type"],
+            "status": "merge_proposed",
+            "merge_candidate_id": target_node_id,
+            "source_text": "dedup_scan"
+        }).execute()
+        
+    return {"success": True, "message": f"Merge proposed: {src_label} → {tgt_label}"}
 
 
 def validate_edge(source_type: str, relationship: str, target_type: str) -> dict:
