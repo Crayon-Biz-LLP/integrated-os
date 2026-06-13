@@ -579,11 +579,20 @@ async def graph_merge_action_route(request: Request):
         from core.lib.graph_rules import get_canonical_id
         target_canonical = get_canonical_id(target_id)
         
-        if new_label:
-            supabase.table('graph_nodes').update({'label': new_label.strip()}).eq('id', target_canonical).execute()
-
         source_node_res = supabase.table('graph_nodes').select('id').eq('label', pr['label']).maybe_single().execute()
         source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
+
+        if new_label:
+            desired_label = new_label.strip()
+            
+            # If renaming target to source's label, rename source first to avoid UNIQUE conflict
+            if source_node_id and desired_label == pr['label']:
+                temp_label = f"{pr['label']} (merged)"
+                supabase.table('graph_nodes').update({'label': temp_label}).eq('id', source_node_id).execute()
+
+            # Now safe to rename the target node
+            supabase.table('graph_nodes').update({'label': desired_label}).eq('id', target_canonical).execute()
+
         if source_node_id:
             supabase.table('graph_nodes').update({'canonical_id': target_canonical}).eq('id', source_node_id).execute()
             supabase.table('graph_edges').update({'source_node_id': target_canonical}).eq('source_node_id', source_node_id).execute()
