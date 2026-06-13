@@ -67,6 +67,7 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | File | What It Covers |
 |------|---------------|
 | [27-personal-capture-pipeline.md](27-personal-capture-pipeline.md) | Personal notes, meeting notes, ideas, voice memos — capture from natural speech, /note command, and evening roundup |
+| [28-clarification-loop-guards.md](28-clarification-loop-guards.md) | Entity grounding guards, URL quarantine, clarification loop architecture, organizations table, validation window |
 
 ### Use Cases
 | File | What It Covers |

@@ -37,7 +37,8 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - `core/pulse/engine.py` - AI briefing generation via `run_agent_loop` ToolRegistry, task management, calendar sync, and **Decision Pulse** (no AI, inline keyboard approvals).
 - `core/pulse/context.py` - **Phase 2 Context Hydration Engine**. Uses TTL caches (`SimpleCache`) and hybrid vector+graph cross-referencing.
 - `core/pulse/memory.py` - **Phase 3 Memory Engine**. Handles semantic retrieval with temporal decay and importance weighting (`match_memories_hybrid`).
-- `core/pulse/entity_extractor.py` - Real-time Flash Lite entity extraction during webhook ingestion.
+- `core/pulse/entity_extractor.py` - Real-time Flash Lite entity extraction during webhook ingestion. Routes organizations and all LLM-extracted edges to pending tables (Step 1.5).
+- `core/clarifier.py` - Clarification loop engine. 6-function interface (`evaluate_node`, `evaluate_edge`, `build_batch`, `handle_response`, `next_shortcode`, `dedupe_batch`). Phase 1 returns `None` for all evaluations. Phase 2 will generate Telegram questions for low-confidence extractions.
 - `core/agents/research_agent.py` - Research and embedding tasks
 - `core/skills/` - Ingest (email, archive), nightly canonical brain synthesis, and graph sync scripts (run via CI)
 
@@ -45,10 +46,11 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - Uses `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)
 - Tables: `tasks`, `raw_dumps`, `memories`, `graph_nodes`, `graph_edges`, `projects`, `resources`, `clusters`, `people`, `core_config`, `messages`, `pending_graph_nodes`, `pending_graph_edges`
 - **Note**: `raw_dumps` does NOT store embeddings - only `memories` table has embeddings
-- **Note**: `pending_graph_nodes` holds new person/project nodes awaiting approval via Decision Pulse (`g{id}` shortcode). `pending_graph_edges` holds all extracted edges awaiting approve/edit/reject via Decisions UI or Telegram (`pe{id}` shortcode).
+- **Note**: `pending_graph_nodes` holds new person/project nodes awaiting approval via Decision Pulse (`g{id}` shortcode). Also holds organization nodes and `status='flagged'` for ungrounded people awaiting clarification loop questions (`c{id}` shortcode).
+- **Note**: `pending_graph_edges` holds all extracted edges awaiting approve/edit/reject via Decisions UI or Telegram (`pe{id}` shortcode). Since Step 1.5, entity_extractor.py routes ALL LLM-extracted edges here instead of direct graph_edges inserts.
 - `messages` holds WhatsApp chats, Emails, and Call extracts with classification + approval status
 - `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter). Excludes `raw_dumps` from extraction. Uses strict 5-node-type / 16-edge-type ontology with entity grounding.
-- **Graph integrity**: Five layers — (1) Guard A deletes stale project edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation (no AUTHORED exception); (3) HITL gates ALL edges through `pending_graph_edges` + person/org/project nodes through `pending_graph_nodes`; (4) Guard D dedup prevents label-drift re-insertion; (5) No auto-created concept nodes — missing labels generate a "create node first" rejection.
+- **Graph integrity**: Five layers — (1) Guard A deletes stale project edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation (no AUTHORED exception); (3) Guard C (HITL) gates ALL edges through `pending_graph_edges` + high-risk nodes through `pending_graph_nodes`; (4) Guard D dedup prevents label-drift re-insertion; (5) No auto-created concept nodes. **Phase 1 Guards**: Guard 2 (`is_real_project`) hard-rejects ungrounded projects, Guard 3 (`has_structural_anchor`) flags ungrounded people/orgs.
 
 ### External Integrations
 - **Gemini AI**: Briefing (`gemini-3.5-flash`), Classification (`gemini-3.1-flash-lite`), Embeddings (`gemini-embedding-2-preview`)
@@ -67,6 +69,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 | `t{id}` | `messages (teams)` | Approve/reject Teams-suggested task |
 | `g{id}` | `pending_graph_nodes` | Approve/reject new person/project node. Supports **NLP corrections** (e.g. "g2 is an organization, not a person"). Duplicate-re-insertion prevented by all-statuses cache, ILIKE dedup guard, and unique index on normalised label. |
 | `pe{id}` | `pending_graph_edges` | Approve/reject pending graph edge. Supports new 16 edge types. |
+| `c{id}` | `pending_graph_nodes` / `pending_graph_edges` (clarification_feedback) | Clarification loop question — reply with answer or context (e.g. "c3 Reginald Paulson — client from Equisoft"). |
 | `{id}` (bare) | Tries email → call → whatsapp → graph → practice | Fallback compat |
 
 ## Project Routing Tags
@@ -128,6 +131,7 @@ Some workflows use an **external cron service** because GitHub Actions free plan
 - **Commitment highlighting**: Tasks with `direction=outbound` are Danny's promises to others — highlight them. Tasks with `direction=waiting_on` are blockers — flag them. Show `committed_to` name when available.
 - **Schedule queries** ("meetings this week?"): Route to QUERY (interrogate_brain), not DAILY_BRIEF. Calendar events are tagged [PAST] in Python before LLM input. The current time (IST) is injected into the prompt. Never invent headings like "Immediate Priorities" or "Today's Bottleneck" — answer the question directly first, then optional Context section.
 - **Query responses**: Max 600 tokens. Answer first (factual), Context section second (bottlenecks/patterns). Never self-analyze or repeat data after Context section.
+- **URL quarantine**: Any text containing http/https is saved as a resource only, never as a memory or graph entity. backfill_graph.py fetch_memories() filters URL memories; quick_process.py routes URL NOTES to resources only; entity_extractor.py returns early if text contains URL.
 
 ### Data Deletion Safety (Non-Negotiable)
 - **NEVER delete any database records (people, tasks, graph_nodes, etc.) without explicit user approval.** Present what would be deleted and ask before executing.
