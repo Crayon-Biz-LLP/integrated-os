@@ -382,8 +382,8 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             s_node_res = supabase.table('graph_nodes').select('id, type').eq('label', s_label).maybe_single().execute()
             t_node_res = supabase.table('graph_nodes').select('id, type').eq('label', t_label).maybe_single().execute()
 
-            s_data = s_node_res.data if s_node_res else None
-            t_data = t_node_res.data if t_node_res else None
+            s_data = getattr(s_node_res, 'data', None)
+            t_data = getattr(t_node_res, 'data', None)
 
             if not s_data or not t_data:
                 missing = s_label if not s_data else t_label

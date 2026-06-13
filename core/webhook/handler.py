@@ -155,13 +155,18 @@ async def process_callback_query(callback_query: dict):
                 result = await process_whatsapp_pending_decision(sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'pe':
                 if action == 'edit':
+                    pe_res = supabase.table('pending_graph_edges').select('source_label, relationship, target_label').eq('id', sc_int).maybe_single().execute()
+                    if not getattr(pe_res, 'data', None):
+                        await send_telegram(chat_id, "Edge not found or already processed.")
+                        return {"success": True}
+                        
+                    pe = pe_res.data
                     pending_graph_clarifications[chat_id] = {
                         "pending_id": sc_int,
                         "step": "awaiting_edge_edit",
                         "type": "edge",
                         "expires_at": datetime.now() + timedelta(minutes=15)
                     }
-                    pe = supabase.table('pending_graph_edges').select('source_label, relationship, target_label').eq('id', sc_int).maybe_single().execute().data
                     await send_telegram(chat_id, f"Editing edge: {pe['source_label']} → {pe['relationship']} → {pe['target_label']}\nReply with the corrected edge, e.g. `pe{sc_int} Danny KNOWS Alice` or `pe{sc_int} KNOWS`")
                     return {"success": True}
                 else:
