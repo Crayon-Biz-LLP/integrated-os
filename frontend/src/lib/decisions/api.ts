@@ -34,11 +34,11 @@ export async function decideGraphEdge(id: number, decision: 'approve' | 'reject'
   }
 }
 
-export async function decideMergeProposal(id: number, decision: 'accept' | 'reject', updates?: { new_label?: string }): Promise<void> {
+export async function decideMergeProposal(id: number, decision: 'accept' | 'reject', swap?: boolean): Promise<void> {
   const res = await fetch('/api/graph-merge-action', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, action: decision, ...updates }),
+    body: JSON.stringify({ id, action: decision, swap }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Failed to decide merge proposal' }));

@@ -115,7 +115,7 @@ async def hybrid_search_graph(query: str, node_id: str = None) -> str:
             primary_node = node_res.data[0]
             primary_id = primary_node['id']
 
-        edges_res = supabase.table('graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').execute()
+        edges_res = supabase.table('resolved_graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').execute()
 
         if not edges_res.data:
             return ""

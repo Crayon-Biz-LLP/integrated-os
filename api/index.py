@@ -574,29 +574,33 @@ async def graph_merge_action_route(request: Request):
         if not target_id:
             return {"success": False, "message": "Merge candidate not found in proposal."}
             
-        new_label = body.get('new_label')
-
+        swap = body.get('swap', False)
+        
         from core.lib.graph_rules import get_canonical_id
+        
+        source_node_res = supabase.table('graph_nodes').select('id, label').eq('label', pr['label']).maybe_single().execute()
+        source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
+        
+        if not source_node_id:
+            return {"success": False, "message": "Source node no longer exists."}
+            
         target_canonical = get_canonical_id(target_id)
         
-        source_node_res = supabase.table('graph_nodes').select('id').eq('label', pr['label']).maybe_single().execute()
-        source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
+        if swap:
+            # Swap direction: the original target becomes the loser, the original source becomes the canonical winner
+            loser_id = target_canonical
+            winner_id = source_node_id
+        else:
+            # Normal direction
+            loser_id = source_node_id
+            winner_id = target_canonical
 
-        if new_label:
-            desired_label = new_label.strip()
-            
-            # If renaming target to source's label, rename source first to avoid UNIQUE conflict
-            if source_node_id and desired_label == pr['label']:
-                temp_label = f"{pr['label']} (merged)"
-                supabase.table('graph_nodes').update({'label': temp_label}).eq('id', source_node_id).execute()
-
-            # Now safe to rename the target node
-            supabase.table('graph_nodes').update({'label': desired_label}).eq('id', target_canonical).execute()
-
-        if source_node_id:
-            supabase.table('graph_nodes').update({'canonical_id': target_canonical}).eq('id', source_node_id).execute()
-            supabase.table('graph_edges').update({'source_node_id': target_canonical}).eq('source_node_id', source_node_id).execute()
-            supabase.table('graph_edges').update({'target_node_id': target_canonical}).eq('target_node_id', source_node_id).execute()
+        supabase.table('graph_nodes').update({'canonical_id': winner_id}).eq('id', loser_id).execute()
+        
+        # Rewire edges to point to the winner
+        supabase.table('graph_edges').update({'source_node_id': winner_id}).eq('source_node_id', loser_id).execute()
+        supabase.table('graph_edges').update({'target_node_id': winner_id}).eq('target_node_id', loser_id).execute()
+        
         supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', int(pending_id)).execute()
 
         return {"success": True, "message": f"Merged '{pr['label']}' into canonical node."}

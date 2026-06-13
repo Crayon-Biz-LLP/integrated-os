@@ -644,8 +644,8 @@ Query: {query}"""
                     else:
                         # Tiebreaker 2: highest edge count
                         nids = [n['id'] for n in matches]
-                        source_edges = supabase.table('graph_edges').select('source_node_id, target_node_id').in_('source_node_id', nids).execute()
-                        target_edges = supabase.table('graph_edges').select('source_node_id, target_node_id').in_('target_node_id', nids).execute()
+                        source_edges = supabase.table('resolved_graph_edges').select('source_node_id, target_node_id').in_('source_node_id', nids).execute()
+                        target_edges = supabase.table('resolved_graph_edges').select('source_node_id, target_node_id').in_('target_node_id', nids).execute()
                         all_edge_data = (source_edges.data or []) + (target_edges.data or [])
                         ec = {}
                         if all_edge_data:

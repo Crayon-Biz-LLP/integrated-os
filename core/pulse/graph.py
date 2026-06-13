@@ -522,7 +522,7 @@ async def hybrid_search_graph(query: str, node_id: str = None) -> str:
         primary_node = nodes_res.data[0]
         primary_id = primary_node['id']
 
-        edges_res = supabase.table('graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').execute()
+        edges_res = supabase.table('resolved_graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').execute()
 
         if not edges_res.data:
             return ""
@@ -702,7 +702,7 @@ async def analyze_communication_patterns(people: list) -> str:
             person_node_id = person_node_res.data['id']
 
             # Count INVOLVES edges (task involvements)
-            involves_edges = supabase.table('graph_edges') \
+            involves_edges = supabase.table('resolved_graph_edges') \
                 .select('source_node_id, target_node_id') \
                 .eq('relationship', 'INVOLVES') \
                 .or_(f'source_node_id.eq.{person_node_id},target_node_id.eq.{person_node_id}') \
@@ -835,7 +835,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
             return ""
 
         # Get INVOLVES edges
-        edges_res = supabase.table('graph_edges') \
+        edges_res = supabase.table('resolved_graph_edges') \
             .select('source_node_id, target_node_id, relationship') \
             .in_('relationship', ['INVOLVES', 'MANAGES', 'ASSIGNED_TO']) \
             .execute()
