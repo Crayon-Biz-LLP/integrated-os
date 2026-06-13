@@ -534,7 +534,7 @@ def is_real_project(label: str) -> bool:
 GROUNDED_TYPES = {
     'project': ('projects', 'name'),
     'person': ('people', 'name'),
-    'organization': None,  # no structured table yet — skip check
+    'organization': ('organizations', 'name'),
 }
 
 def has_structural_anchor(label: str, node_type: str) -> bool:
@@ -554,6 +554,10 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
     """
     if label in created_nodes:
         return created_nodes[label]
+        
+    # PHASE 2 HOOK
+    from core.clarifier import evaluate_node
+    evaluate_node({"label": label, "type": node_type})
     
     # GUARD 2: Entity Grounding for projects
     if node_type == 'project' and not is_real_project(label):
@@ -629,6 +633,10 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         label = node.get("label", "")
         node_type = node.get("type", "concept")
         
+        # PHASE 2 HOOK
+        from core.clarifier import evaluate_node
+        evaluate_node(node)
+        
         existing = graph_entities.get(label, {})
         existing_id = existing.get("id")
         existing_type = existing.get("type", "concept")
@@ -646,18 +654,23 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
                 record["type"] = node_type
             node_records.append(record)
         else:
+            if node_type == 'project' and not is_real_project(label):
+                audit_log_sync("backfill_graph", "WARNING", f"Skipped ungrounded project node: {label}")
+                continue
+
             if node_type in ['person', 'project', 'organization']:
                 # Gated high-risk entity - send to pending
                 if label not in pending_entities_cache and not _check_pending_label_exists(label):
                     try:
+                        status = "pending" if has_structural_anchor(label, node_type) else "flagged"
                         supabase.table("pending_graph_nodes").insert({
                             "label": label,
                             "type": node_type,
                             "source_text": memory_id,
-                            "status": "pending"
+                            "status": status
                         }).execute()
                         pending_entities_cache.add(label)
-                        audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval: {label} ({node_type})")
+                        audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval ({status}): {label} ({node_type})")
                     except Exception as e:
                         audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
                 elif label not in pending_entities_cache:

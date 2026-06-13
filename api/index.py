@@ -543,6 +543,28 @@ async def graph_edge_action_route(request: Request):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/clarification")
+async def clarification_action_route(request: Request):
+    """Handle clarification responses."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        shortcode = body.get("shortcode")
+        answer = body.get("answer")
+        
+        if not shortcode or not answer:
+            raise HTTPException(status_code=400, detail="Missing shortcode or answer")
+            
+        from core.clarifier import handle_response
+        result = handle_response(shortcode, answer)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.error(f"Clarification API error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/graph-merge-action")
 async def graph_merge_action_route(request: Request):
     """Accept or reject a node merge proposal via API (called from frontend)."""

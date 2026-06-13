@@ -232,6 +232,10 @@ Source text: "{source_text}"
 New node being approved: {label} ({node_type})
 Other entities mentioned: {json.dumps(mentioned)}
 
+PROJECT DEFINITION:
+- What is NOT a project: GitHub repos, open-source libraries (e.g. Supabase, React), theoretical concepts, events/conferences, generic work terms (e.g. 'code review', 'frontend').
+- What IS a project: Specific professional work streams, client engagements, side projects with structure (e.g. Qhord, SOLVSTRAT, Ashraya, Integrated OS).
+
 Return a JSON array of edges these entities have with each other or the new node. 
 Only include relationships explicitly stated or very strongly implied by the source text.
 
@@ -272,6 +276,10 @@ Format:
             rel = e.get('relationship')
             if not s_label or not t_label or not rel:
                 continue
+                
+            # PHASE 2 HOOK
+            from core.clarifier import evaluate_edge
+            evaluate_edge(e)
                 
             if s_label == t_label:
                 continue

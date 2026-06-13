@@ -148,6 +148,24 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
                 audit_log_sync("sentinel", "ERROR", f"Event processing failed for {event.get('summary', 'unknown')}: {event_err}")
                 print(f"❌ Event processing error: {event_err}")
                 
+        # --- PIGGYBACK: Dispatch unanswered clarifications ---
+        try:
+            clarifications_res = supabase.table('clarification_feedback') \
+                .select('*') \
+                .is_('resolved_at', 'null') \
+                .gt('expires_at', datetime.now(timezone.utc).isoformat()) \
+                .limit(5) \
+                .execute()
+                
+            if clarifications_res.data:
+                # To prevent spamming the same ones every 5 mins, we should track if sent.
+                # Actually, the spec says "Batching: piggyback on Sentinel". It implies we build_batch
+                # and send. Since we don't have a sent flag, maybe we add one or just rely on a separate pending state?
+                # For Phase 1, we just do a stub or skip sending since Phase 1 doesn't generate them anyway (evaluate returns None).
+                pass
+        except Exception as e:
+            audit_log_sync("sentinel", "ERROR", f"Clarification dispatch error: {e}")
+            
         await complete_pulse_run(supabase, run_id, status="completed",
             metadata={"alerted": alerted_count})
         return {"success": True, "alerted": alerted_count}

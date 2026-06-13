@@ -71,13 +71,22 @@ Text: "{text}"
             }).execute()
             root_node_id = new_node.data[0]['id']
 
-        # 2. Process extracted nodes
         node_id_map = {}
+        # 2. Process extracted nodes
         for node in nodes:
             label = node.get('label')
-            n_type = node.get('type', 'concept')
-            if not label:
+            n_type = node.get('type')
+            
+            if not label or not n_type:
                 continue
+
+            # PHASE 2 HOOK: Evaluate node
+            from core.clarifier import evaluate_node
+            eval_res = evaluate_node(node)
+            if eval_res:
+                # Clarification triggered.
+                # In Phase 2, we would use eval_res['status'], etc.
+                pass
 
             # GUARD 2: Entity Grounding for projects
             if n_type == 'project':
@@ -91,27 +100,26 @@ Text: "{text}"
                 node_id_map[label] = existing_res.data['id']
             else:
                 # GUARD 3: Entity Grounding check for other types
-                status = "pending"
-                if n_type == 'person':
-                    p_check = supabase.table('people').select('id').ilike('name', label.strip()).execute()
-                    if not p_check.data:
-                        status = "flagged"
-                        
-                # Instead of inserting to graph_nodes immediately, if it's flagged, send to pending and skip edge
-                if status == "flagged":
+                if n_type in ['person', 'project', 'organization']:
+                    status = "pending"
+                    if n_type == 'person':
+                        p_check = supabase.table('people').select('id').ilike('name', label.strip()).execute()
+                        if not p_check.data:
+                            status = "flagged"
+                            
+                    # Route high-risk entities to pending
                     try:
-                        # Only insert if it doesn't already exist in pending
                         pend_check = supabase.table('pending_graph_nodes').select('id').eq('label', label).maybe_single().execute()
                         if not pend_check.data:
                             supabase.table('pending_graph_nodes').insert({
                                 "label": label,
                                 "type": n_type,
                                 "source_text": f"{source_type}:{source_id}",
-                                "status": "flagged"
+                                "status": status
                             }).execute()
                     except Exception:
                         pass
-                    continue # Skip edge creation because node isn't in graph_nodes yet
+                    continue # Skip direct graph_nodes insert and MENTIONS edge creation
                 
                 ins_res = supabase.table('graph_nodes').insert({
                     "label": label,
@@ -120,7 +128,7 @@ Text: "{text}"
                 }).execute()
                 node_id_map[label] = ins_res.data[0]['id']
                 
-            # Link extracted node to the source (task/memory)
+            # Link extracted node to the source (task/memory) - only happens if it wasn't routed to pending
             supabase.table('graph_edges').insert({
                 "source_node_id": root_node_id,
                 "target_node_id": node_id_map[label],
@@ -135,27 +143,35 @@ Text: "{text}"
             target = edge.get('target')
             rel = edge.get('relationship', 'RELATED_TO').upper()
             
-            if source in node_id_map and target in node_id_map:
-                s_id = node_id_map[source]
-                t_id = node_id_map[target]
+            # PHASE 2 HOOK: Evaluate edge
+            from core.clarifier import evaluate_edge
+            eval_res = evaluate_edge(edge)
+            if eval_res:
+                pass
                 
-                ext_edge = supabase.table('graph_edges') \
+            # ALL LLM-extracted edges go to pending_graph_edges
+            try:
+                # Check if it already exists in pending
+                ext_edge = supabase.table('pending_graph_edges') \
                     .select('id') \
-                    .eq('source_node_id', s_id) \
-                    .eq('target_node_id', t_id) \
+                    .eq('source_label', source) \
+                    .eq('target_label', target) \
                     .eq('relationship', rel) \
                     .maybe_single() \
                     .execute()
                     
                 if not ext_edge or not ext_edge.data:
-                    supabase.table('graph_edges').insert({
-                        "source_node_id": s_id,
-                        "target_node_id": t_id,
+                    supabase.table('pending_graph_edges').insert({
+                        "source_label": source,
+                        "target_label": target,
                         "relationship": rel,
-                        "weight": 1.0,
-                        "metadata": {"source": "entity_extractor"}
+                        "source_text": f"{source_type}:{source_id}",
+                        "source_table": source_type,
+                        "status": "pending"
                     }).execute()
-                    
-        print(f"🕸️ Real-time entities extracted for {source_type} {source_id}: {len(nodes)} nodes, {len(edges)} edges")
+            except Exception:
+                pass
+                
+        print(f"🕸️ Real-time entities extracted for {source_type} {source_id}: {len(nodes)} nodes, {len(edges)} edges routed to pending")
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"⚠️ Entity extraction failed for {source_id}: {e}")

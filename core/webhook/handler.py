@@ -356,6 +356,7 @@ async def process_webhook(update: dict):
         _graph_approve_match = re.match(r'^[gG](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _graph_reject_match = re.match(r'^[gG](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
         _graph_direct_match = re.match(r'^[gG](\d+)\s+(?!(?:yes|approve|do it|yep|add it|drop|no|reject|skip|dismiss|cancel)\b)(.+)$', text.strip(), re.IGNORECASE | re.DOTALL)
+        _clarification_match = re.match(r'^[cC](\d+)\s+(.+)$', text.strip(), re.IGNORECASE)
         
         _pe_approve_match = re.match(r'^pe(\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _pe_reject_match = re.match(r'^pe(\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
@@ -478,6 +479,23 @@ async def process_webhook(update: dict):
         # ---------------------------------------------------------
         # QUICK DECISION ROUTES (Binary Approve/Reject)
         # ---------------------------------------------------------
+
+        # c-prefix: clarification loop responses
+        if _clarification_match:
+            try:
+                _sc = f"c{_clarification_match.group(1)}"
+                _ans = _clarification_match.group(2).strip()
+                from core.clarifier import handle_response
+                res = handle_response(_sc, _ans)
+                if res.get("status") == "ok":
+                    action = res.get("action", "processed")
+                    await send_telegram(chat_id, f"✅ Clarification resolved: {action}")
+                else:
+                    await send_telegram(chat_id, f"⚠️ {res.get('message', 'Error handling clarification')}")
+                return {"success": True}
+            except Exception as e:
+                audit_log_sync("webhook", "ERROR", f"Error handling c-shortcode: {e}")
+                return {"success": False, "message": str(e)}
 
         # g-prefix: direct to pending_graph_nodes
         if _graph_approve_match:
