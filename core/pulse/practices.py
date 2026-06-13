@@ -769,7 +769,7 @@ async def sync_practice_canonical_pages():
             label = p.get('label', '')
             practice_id = p.get('id')
 
-            entities_res = supabase.table('resolved_graph_edges') \
+            entities_res = supabase.table('graph_edges') \
                 .select('target_node_id') \
                 .eq('source_node_id', practice_id) \
                 .eq('relationship', 'ASSOCIATED_WITH') \

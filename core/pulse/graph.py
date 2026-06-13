@@ -374,15 +374,18 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             s_node_res = supabase.table('graph_nodes').select('id, type').eq('label', s_label).maybe_single().execute()
             t_node_res = supabase.table('graph_nodes').select('id, type').eq('label', t_label).maybe_single().execute()
 
-            if not s_node_res.data or not t_node_res.data:
-                missing = s_label if not s_node_res.data else t_label
+            s_data = s_node_res.data if s_node_res else None
+            t_data = t_node_res.data if t_node_res else None
+
+            if not s_data or not t_data:
+                missing = s_label if not s_data else t_label
                 supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('id', pending_id).execute()
                 return {"success": False, "action": "missing_node", "message": f"Node '{missing}' doesn't exist."}
 
-            s_id = s_node_res.data['id']
-            t_id = t_node_res.data['id']
-            s_type = s_node_res.data.get('type')
-            t_type = t_node_res.data.get('type')
+            s_id = s_data['id']
+            t_id = t_data['id']
+            s_type = s_data.get('type')
+            t_type = t_data.get('type')
 
             if s_type and t_type:
                 vr = validate_edge(s_type, rel, t_type)
@@ -522,7 +525,7 @@ async def hybrid_search_graph(query: str, node_id: str = None) -> str:
         primary_node = nodes_res.data[0]
         primary_id = primary_node['id']
 
-        edges_res = supabase.table('resolved_graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').execute()
+        edges_res = supabase.table('graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').execute()
 
         if not edges_res.data:
             return ""
@@ -702,7 +705,7 @@ async def analyze_communication_patterns(people: list) -> str:
             person_node_id = person_node_res.data['id']
 
             # Count INVOLVES edges (task involvements)
-            involves_edges = supabase.table('resolved_graph_edges') \
+            involves_edges = supabase.table('graph_edges') \
                 .select('source_node_id, target_node_id') \
                 .eq('relationship', 'INVOLVES') \
                 .or_(f'source_node_id.eq.{person_node_id},target_node_id.eq.{person_node_id}') \
@@ -835,7 +838,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
             return ""
 
         # Get INVOLVES edges
-        edges_res = supabase.table('resolved_graph_edges') \
+        edges_res = supabase.table('graph_edges') \
             .select('source_node_id, target_node_id, relationship') \
             .in_('relationship', ['INVOLVES', 'MANAGES', 'ASSIGNED_TO']) \
             .execute()
