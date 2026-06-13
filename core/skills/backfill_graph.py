@@ -9,6 +9,7 @@ import httpx
 from core.lib.rate_limiter import flash_lite_limiter
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
+from core.lib.graph_rules import validate_edge
 from core.services.db import get_supabase
 from core.services.pipeline_service import add_to_failed_queue
 from core.services.llm import get_gemini_client
@@ -562,7 +563,7 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
 
     try:
         result = supabase.table("graph_nodes").upsert(
-            {"label": label, "type": node_type, "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})},
+            {"label": label, "type": node_type, "metadata": {"source": "backfill_graph", "memory_id": memory_id}},
             on_conflict="label"
         ).execute()
         
@@ -601,7 +602,7 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         record = {
             "label": label,
             "type": node_type,  # Always use latest extracted type
-            "metadata": json.dumps({"source": "backfill_graph", "memory_id": memory_id})
+            "metadata": {"source": "backfill_graph", "memory_id": memory_id}
         }
         
         if existing_id:
@@ -644,27 +645,48 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
             audit_log_sync("backfill_graph", "ERROR", f"Node upsert error: {e}")
 
 
+def _build_label_type_cache() -> dict:
+    result = supabase.table("graph_nodes").select("label, type").execute()
+    cache = {}
+    for n in result.data or []:
+        cache[n["label"].lower().strip()] = n["type"]
+    return cache
+
+
 def insert_pending_edges_batch(edges: list):
-    """Insert edges into pending_graph_edges in batches, ignoring duplicates."""
+    """Insert edges into pending_graph_edges in batches, ignoring duplicates.
+    Runs Phase 3 validation: auto-rejects banned relationships, auto-corrects INVALID_COMBOS."""
     if not edges:
         return
     try:
-        # We can't use on_conflict with pending_graph_edges unless we have a unique constraint,
-        # but we can just insert and let duplicates exist (or filter them out in memory).
-        # To avoid massive duplicates, we filter out identical pending edges first.
+        label_type_cache = _build_label_type_cache()
         existing_res = supabase.table("pending_graph_edges").select("source_label,target_label,relationship").eq("status", "pending").execute()
         existing_set = {f"{r['source_label']}|{r['target_label']}|{r['relationship']}" for r in (existing_res.data or [])}
-        
+
         to_insert = []
         for edge in edges:
-            key = f"{edge['source_label']}|{edge['target_label']}|{edge['relationship']}"
+            s_label = edge.get("source_label", "")
+            t_label = edge.get("target_label", "")
+            rel = edge.get("relationship", "").upper()
+            s_type = label_type_cache.get(s_label.lower().strip())
+            t_type = label_type_cache.get(t_label.lower().strip())
+            if s_type and t_type:
+                vr = validate_edge(s_type, rel, t_type)
+                if vr["action"] == "auto_reject":
+                    audit_log_sync("backfill_graph", "INFO", f"Auto-rejected {s_label} --[{rel}]--> {t_label}: {vr['reason']}")
+                    continue
+                elif vr["action"] == "auto_correct":
+                    edge["relationship"] = vr["reason"]
+                    rel = vr["reason"]
+                    audit_log_sync("backfill_graph", "INFO", f"Auto-corrected {s_label} --[{rel}]--> {t_label}")
+            key = f"{s_label}|{t_label}|{rel}"
             if key not in existing_set:
                 to_insert.append(edge)
                 existing_set.add(key)
-                
+
         if not to_insert:
             return
-            
+
         for i in range(0, len(to_insert), 100):
             batch = to_insert[i:i+100]
             supabase.table("pending_graph_edges").insert(batch).execute()
@@ -1032,7 +1054,7 @@ def backfill_orphaned_tasks():
             supabase.table("graph_nodes").upsert({
                 "label": task_title,
                 "type": "task",
-                "metadata": json.dumps({"source": "tasks_table", "task_id": task_id, **meta})
+                "metadata": {"source": "tasks_table", "task_id": task_id, **meta}
             }, on_conflict="label").execute()
             node_res = supabase.table("graph_nodes").select("id").eq("label", task_title).maybe_single().execute()
             if not node_res or not node_res.data:
@@ -1097,7 +1119,7 @@ def backfill_orphaned_tasks():
                         "target_node_id": proj_node_id,
                         "relationship": "BELONGS_TO",
                         "weight": 1.0,
-                        "metadata": json.dumps({"source": "task_engine", "task_id": task_id})
+                        "metadata": {"source": "task_engine", "task_id": task_id}
                     }).execute()
                 except Exception as e:
                     audit_log_sync("backfill_graph", "WARNING", f"⚠️ BELONGS_TO edge failed for task {task_id}: {e}")
@@ -1146,11 +1168,11 @@ def backfill_orphaned_tasks():
                                 "target_node_id": person_node_id,
                                 "relationship": "INVOLVES",
                                 "weight": 1.0,
-                                "metadata": json.dumps({
+                                "metadata": {
                                     "source": "task_engine",
                                     "task_id": task_id,
                                     "matched_name": pname
-                                })
+                                }
                             }).execute()
                     except Exception as e:
                         audit_log_sync("backfill_graph", "WARNING", f"⚠️ INVOLVES edge failed for task {task_id}: {e}")
@@ -1300,7 +1322,7 @@ def sync_project_nodes_to_projects_table():
         if legacy_id:
             meta["legacy_id"] = legacy_id
             try:
-                supabase.table("graph_nodes").update({"metadata": json.dumps(meta)}).eq("id", n["id"]).execute()
+                supabase.table("graph_nodes").update({"metadata": meta}).eq("id", n["id"]).execute()
                 synced += 1
             except Exception as e:
                 audit_log_sync("backfill_graph", "WARNING", f"Failed to sync project node {n['id']}: {e}")
@@ -1365,7 +1387,7 @@ def sync_person_nodes_to_people_table():
                 audit_log_sync("backfill_graph", "WARNING", f"Failed to create person '{n['label']}': {e}")
                 continue
         try:
-            supabase.table("graph_nodes").update({"metadata": json.dumps(meta)}).eq("id", n["id"]).execute()
+            supabase.table("graph_nodes").update({"metadata": meta}).eq("id", n["id"]).execute()
             synced += 1
         except Exception as e:
             audit_log_sync("backfill_graph", "WARNING", f"Failed to update person node {n['id']}: {e}")

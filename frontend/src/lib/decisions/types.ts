@@ -39,4 +39,13 @@ export interface GraphPendingEdge {
   created_at: string;
 }
 
+export interface GraphMergeProposal {
+  id: number;
+  label: string;
+  type: string;
+  merge_candidate_id: string;
+  status: 'merge_proposed';
+  created_at: string;
+}
+
 

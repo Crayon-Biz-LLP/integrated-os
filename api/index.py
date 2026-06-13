@@ -541,6 +541,55 @@ async def graph_edge_action_route(request: Request):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/graph-merge-action")
+async def graph_merge_action_route(request: Request):
+    """Accept or reject a node merge proposal via API (called from frontend)."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        pending_id = body.get('id')
+        action = body.get('action', '')
+
+        if not pending_id or action not in ('accept', 'reject'):
+            raise HTTPException(status_code=400, detail="id and valid action (accept/reject) required")
+
+        from core.services.db import get_supabase
+        supabase = get_supabase()
+
+        pending_row = supabase.table('pending_graph_nodes').select('*').eq('id', int(pending_id)).maybe_single().execute()
+        if not pending_row or not pending_row.data:
+            return {"success": False, "message": "Merge proposal not found."}
+
+        pr = pending_row.data
+        if pr.get('status') != 'merge_proposed':
+            return {"success": False, "message": "Merge proposal already processed."}
+
+        if action == 'reject':
+            supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', int(pending_id)).execute()
+            return {"success": True, "message": f"Merge rejected for '{pr['label']}'."}
+
+        target_id = pr.get('merge_candidate_id')
+        if not target_id:
+            return {"success": False, "message": "Merge candidate not found in proposal."}
+
+        from core.lib.graph_rules import get_canonical_id
+        target_canonical = get_canonical_id(target_id)
+        source_node_res = supabase.table('graph_nodes').select('id').eq('label', pr['label']).maybe_single().execute()
+        source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
+        if source_node_id:
+            supabase.table('graph_nodes').update({'canonical_id': target_canonical}).eq('id', source_node_id).execute()
+            supabase.table('graph_edges').update({'source_node_id': target_canonical}).eq('source_node_id', source_node_id).execute()
+            supabase.table('graph_edges').update({'target_node_id': target_canonical}).eq('target_node_id', source_node_id).execute()
+        supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', int(pending_id)).execute()
+
+        return {"success": True, "message": f"Merged '{pr['label']}' into canonical node."}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/whatsapp-ingest")
 async def whatsapp_ingest_route(request: Request):
     trace_id_var.set(f"wa_{uuid.uuid4().hex[:8]}")

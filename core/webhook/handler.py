@@ -106,6 +106,39 @@ async def process_callback_query(callback_query: dict):
             await send_telegram(chat_id, "Cancelled. Node stays pending for next Decision Pulse.")
             return {"success": True}
 
+        # Merge proposal callback: "merge_accept_123" or "merge_reject_123"
+        merge_match = re.match(r'^merge_(accept|reject)_(\d+)$', data)
+        if merge_match:
+            merge_action = merge_match.group(1)
+            pending_id = int(merge_match.group(2))
+            pending_row = supabase.table('pending_graph_nodes').select('*').eq('id', pending_id).maybe_single().execute()
+            if not pending_row or not pending_row.data:
+                await send_telegram(chat_id, "Merge proposal not found.")
+                return {"success": True}
+            pr = pending_row.data
+            if pr.get('status') != 'merge_proposed':
+                await send_telegram(chat_id, "Merge proposal already processed.")
+                return {"success": True}
+            if merge_action == 'reject':
+                supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', pending_id).execute()
+                await send_telegram(chat_id, f"Merge rejected for '{pr['label']}'.")
+                return {"success": True}
+            target_id = pr.get('merge_candidate_id')
+            if not target_id:
+                await send_telegram(chat_id, "Merge candidate not found in proposal.")
+                return {"success": True}
+            from core.lib.graph_rules import get_canonical_id
+            target_canonical = get_canonical_id(target_id)
+            source_node_res = supabase.table('graph_nodes').select('id').eq('label', pr['label']).maybe_single().execute()
+            source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
+            if source_node_id:
+                supabase.table('graph_nodes').update({'canonical_id': target_canonical}).eq('id', source_node_id).execute()
+                supabase.table('graph_edges').update({'source_node_id': target_canonical}).eq('source_node_id', source_node_id).execute()
+                supabase.table('graph_edges').update({'target_node_id': target_canonical}).eq('target_node_id', source_node_id).execute()
+            supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
+            await send_telegram(chat_id, f"✅ Merged '{pr['label']}' → {target_canonical[:8]}... Edges reassigned.")
+            return {"success": True}
+
         # Example data: "approve_e123" or "reject_w45" or "edit_pe12"
         match = re.match(r'^(approve|reject|edit)_([ecwgpECWGP]+)?(\d+)$', data)
         if match:

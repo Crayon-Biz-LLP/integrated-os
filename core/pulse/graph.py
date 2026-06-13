@@ -6,6 +6,7 @@ import asyncio
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.people_utils import normalize_person_name
+from core.lib.graph_rules import find_similar_node, validate_edge
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -40,6 +41,14 @@ async def create_graph_node_with_db_record(
     try:
         label = label.strip().title()
 
+        similar = find_similar_node(label, node_type)
+        if similar:
+            top = similar[0]
+            return {"success": True, "action": "merge_proposed",
+                    "message": f"Found similar {node_type} '{top['label']}' (score={top['score']}). "
+                               f"Merge proposed — review in Decisions UI.",
+                    "merge_candidate_id": top["id"]}
+
         if node_type == 'project':
             if not org_tag:
                 return {
@@ -73,12 +82,12 @@ async def create_graph_node_with_db_record(
                 {
                     "label": label,
                     "type": "project",
-                    "metadata": json.dumps({
+                    "metadata": {
                         "source": source_tag,
                         "project_id": str(project_id),
                         "org_tag": org_tag_upper,
                         "memory_id": source_text,
-                    })
+                    }
                 },
                 on_conflict="label"
             ).execute()
@@ -121,11 +130,11 @@ async def create_graph_node_with_db_record(
                 {
                     "label": label,
                     "type": "person",
-                    "metadata": json.dumps({
+                    "metadata": {
                         "source": source_tag,
                         "people_id": str(people_id),
                         "memory_id": source_text,
-                    })
+                    }
                 },
                 on_conflict="label"
             ).execute()
@@ -146,10 +155,10 @@ async def create_graph_node_with_db_record(
                 {
                     "label": label,
                     "type": node_type,
-                    "metadata": json.dumps({
+                    "metadata": {
                         "source": source_tag,
                         "memory_id": source_text,
-                    })
+                    }
                 },
                 on_conflict="label"
             ).execute()
@@ -193,7 +202,7 @@ async def _ensure_danny_edge(label: str, node_type: str):
                 "target_node_id": target_id,
                 "relationship": rel,
                 "weight": 1.0,
-                "metadata": json.dumps({"source": "graph_approval"})
+                "metadata": {"source": "graph_approval"}
             }).execute()
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Failed to create Danny edge: {e}")
@@ -278,6 +287,17 @@ Format:
                 .maybe_single().execute()
                 
             if not existing or not existing.data:
+                s_node_res = supabase.table("graph_nodes").select("type").eq("label", s_label).maybe_single().execute()
+                t_node_res = supabase.table("graph_nodes").select("type").eq("label", t_label).maybe_single().execute()
+                s_type = s_node_res.data.get("type") if s_node_res.data else None
+                t_type = t_node_res.data.get("type") if t_node_res.data else None
+                if s_type and t_type:
+                    vr = validate_edge(s_type, rel, t_type)
+                    if vr["action"] == "auto_reject":
+                        audit_log_sync("pulse", "INFO", f"Auto-rejected inferred edge {s_label} --[{rel}]--> {t_label}: {vr['reason']}")
+                        continue
+                    elif vr["action"] == "auto_correct":
+                        rel = vr["reason"]
                 supabase.table("pending_graph_edges").insert({
                     "source_label": s_label,
                     "target_label": t_label,
@@ -349,27 +369,35 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             s_label = new_source or pe['source_label']
             t_label = new_target or pe['target_label']
             rel = (new_rel or pe['relationship']).upper()
-            
-            def _resolve_node(label):
-                res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
-                if res and res.data:
-                    return res.data['id']
-                return None
-                
-            s_id = _resolve_node(s_label)
-            t_id = _resolve_node(t_label)
-            
-            if not s_id or not t_id:
-                missing = s_label if not s_id else t_label
+
+            from core.lib.graph_rules import validate_edge
+            s_node_res = supabase.table('graph_nodes').select('id, type').eq('label', s_label).maybe_single().execute()
+            t_node_res = supabase.table('graph_nodes').select('id, type').eq('label', t_label).maybe_single().execute()
+
+            if not s_node_res.data or not t_node_res.data:
+                missing = s_label if not s_node_res.data else t_label
                 supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('id', pending_id).execute()
-                return {"success": False, "action": "missing_node", "message": f"Node '{missing}' doesn't exist. Create it first via the Pending Nodes flow."}
-            
+                return {"success": False, "action": "missing_node", "message": f"Node '{missing}' doesn't exist."}
+
+            s_id = s_node_res.data['id']
+            t_id = t_node_res.data['id']
+            s_type = s_node_res.data.get('type')
+            t_type = t_node_res.data.get('type')
+
+            if s_type and t_type:
+                vr = validate_edge(s_type, rel, t_type)
+                if vr["action"] == "auto_reject":
+                    supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('id', pending_id).execute()
+                    return {"success": False, "action": "rejected", "message": f"Auto-rejected: {vr['reason']}"}
+                elif vr["action"] == "auto_correct":
+                    rel = vr["reason"]
+
             supabase.table('graph_edges').upsert({
                 'source_node_id': s_id,
                 'target_node_id': t_id,
                 'relationship': rel,
                 'weight': 1.0,
-                'metadata': json.dumps({"source": "pending_edge_approval", "pending_id": pending_id})
+                'metadata': {"source": "pending_edge_approval", "pending_id": pending_id}
             }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
             
             supabase.table('pending_graph_edges').update({
@@ -393,30 +421,19 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
     Non-blocking. If this fails, the task is already saved — no rollback needed.
     """
     try:
-        task_node = supabase.table('graph_nodes') \
-            .select('id') \
-            .eq('type', 'task') \
-            .filter('metadata->>task_id', 'eq', str(task_id)) \
-            .maybe_single() \
-            .execute()
-
-        if task_node and task_node.data:
-            task_node_id = task_node.data['id']
-        else:
-            new_node = supabase.table('graph_nodes').insert({
-                "label": task_title,
-                "type": "task",
-                "metadata": {
-                    "source": "tasks_table",
-                    "task_id": task_id,
-                    "project_id": project_id
-                }
-            }).execute()
-            task_node_id = new_node.data[0]['id']
+        supabase.table('graph_nodes').upsert({
+            "label": task_title,
+            "type": "task",
+            "metadata": {
+                "source": "tasks_table",
+                "task_id": task_id,
+                "project_id": project_id
+            }
+        }, on_conflict="label").execute()
 
         if project_id:
             proj_node = supabase.table('graph_nodes') \
-                .select('id') \
+                .select('id, label') \
                 .eq('type', 'project') \
                 .filter('metadata->>project_id', 'eq', str(project_id)) \
                 .maybe_single() \
@@ -424,22 +441,16 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
 
             if proj_node and proj_node.data:
                 try:
-                    # Clean up any existing BELONGS_TO edges for this task to avoid orphans
-                    supabase.table('graph_edges') \
-                        .delete() \
-                        .eq('relationship', 'BELONGS_TO') \
-                        .filter('metadata->>task_id', 'eq', str(task_id)) \
-                        .execute()
+                    supabase.table("pending_graph_edges").insert({
+                        "source_label": task_title,
+                        "target_label": proj_node.data.get('label', str(project_id)),
+                        "relationship": "WORKS_ON",
+                        "source_text": f"tasks:{task_id}",
+                        "source_table": "task_engine",
+                        "status": "pending"
+                    }).execute()
                 except Exception as e:
-                    audit_log_sync("pulse", "WARNING", f"Failed to clean up stale BELONGS_TO edges: {e}")
-
-                supabase.table('graph_edges').insert({
-                    "source_node_id": task_node_id,
-                    "target_node_id": proj_node.data['id'],
-                    "relationship": "BELONGS_TO",
-                    "weight": 1.0,
-                    "metadata": {"source": "task_engine", "task_id": task_id}
-                }).execute()
+                    audit_log_sync("pulse", "WARNING", f"Failed to insert WORKS_ON pending edge: {e}")
 
         search_text = f"{task_title} {task_description or ''}".lower()
 
@@ -459,26 +470,17 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                     .execute()
 
                 if person_node and person_node.data:
-                    existing_edge = supabase.table('graph_edges') \
-                        .select('id') \
-                        .eq('source_node_id', task_node_id) \
-                        .eq('target_node_id', person_node.data['id']) \
-                        .eq('relationship', 'INVOLVES') \
-                        .maybe_single() \
-                        .execute()
-
-                    if not existing_edge or not existing_edge.data:
-                        supabase.table('graph_edges').insert({
-                            "source_node_id": task_node_id,
-                            "target_node_id": person_node.data['id'],
-                            "relationship": "INVOLVES",
-                            "weight": 1.0,
-                            "metadata": {
-                                "source": "task_engine",
-                                "task_id": task_id,
-                                "matched_name": person['name']
-                            }
+                    try:
+                        supabase.table("pending_graph_edges").insert({
+                            "source_label": task_title,
+                            "target_label": person['name'],
+                            "relationship": "DISCUSSED_WITH",
+                            "source_text": f"tasks:{task_id}",
+                            "source_table": "task_engine",
+                            "status": "pending"
                         }).execute()
+                    except Exception as e:
+                        audit_log_sync("pulse", "WARNING", f"Failed to insert DISCUSSED_WITH pending edge: {e}")
 
         print(f"🕸️ Graph edges written for task {task_id}: '{task_title}'")
 

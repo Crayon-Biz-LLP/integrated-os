@@ -1,5 +1,5 @@
 import { createServerSupabaseClient } from "@/lib/supabase-server";
-import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge } from "@/lib/decisions/types";
+import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphMergeProposal } from "@/lib/decisions/types";
 import { DecisionsShell } from "./decisions-shell";
 
 export const dynamic = 'force-dynamic';
@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export default async function DecisionsPage() {
   const supabase = await createServerSupabaseClient();
 
-  const [callRes, whatsappRes, graphRes] = await Promise.all([
+  const [callRes, whatsappRes, graphRes, mergeRes] = await Promise.all([
     supabase
       .from("messages")
       .select("*")
@@ -29,6 +29,12 @@ export default async function DecisionsPage() {
       .eq("status", "pending")
       .order("created_at", { ascending: false })
       .limit(100),
+    supabase
+      .from("pending_graph_nodes")
+      .select("*")
+      .eq("status", "merge_proposed")
+      .order("created_at", { ascending: false })
+      .limit(50),
   ]);
 
   const rawCallItems = callRes.data ?? [];
@@ -47,12 +53,14 @@ export default async function DecisionsPage() {
   })) as unknown as WhatsAppPendingMessage[];
 
   const graphItems = (graphRes.data ?? []) as GraphPendingEdge[];
+  const mergeProposals = (mergeRes.data ?? []) as GraphMergeProposal[];
 
   return (
     <DecisionsShell
       initialCallItems={callItems}
       initialWhatsappItems={whatsappItems}
       initialGraphItems={graphItems}
+      initialMergeProposals={mergeProposals}
     />
   );
 }
