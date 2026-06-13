@@ -13,21 +13,21 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 
 const RELATIONSHIP_OPTIONS = [
   { value: 'DISCUSSED_WITH', group: 'Person → Person', desc: 'Conversations' },
-  { value: 'MET_WITH',       group: 'Person → Person', desc: 'In-person meetings' },
-  { value: 'INTRODUCED',     group: 'Person → Person', desc: 'Someone introduced someone' },
-  { value: 'FRIEND_OF',      group: 'Person → Person', desc: 'Personal friendships' },
-  { value: 'PARENT_OF',      group: 'Person → Person', desc: 'Family' },
-  { value: 'SPOUSE_OF',      group: 'Person → Person', desc: 'Marriage' },
-  { value: 'SIBLING_OF',     group: 'Person → Person', desc: 'Siblings' },
-  { value: 'FAMILY_OF',      group: 'Person → Person', desc: 'Extended family' },
-  { value: 'PET_OF',         group: 'Person → Person', desc: 'Pet ownership' },
-  { value: 'MENTORS',        group: 'Person → Person', desc: 'Mentorship' },
-  { value: 'WORKS_AT',       group: 'Person → Org',    desc: 'Employment' },
-  { value: 'WORKS_ON',       group: 'Person → Org',    desc: 'Project involvement' },
-  { value: 'MEMBER_OF',      group: 'Person → Org',    desc: 'Formal membership' },
-  { value: 'SERVES_AT',      group: 'Person → Org',    desc: 'Ministry / volunteer' },
-  { value: 'CLIENT_OF',      group: 'Org → Org',       desc: 'Client relationship' },
-  { value: 'VENDOR_TO',      group: 'Org → Org',       desc: 'Vendor relationship' },
+  { value: 'MET_WITH', group: 'Person → Person', desc: 'In-person meetings' },
+  { value: 'INTRODUCED', group: 'Person → Person', desc: 'Someone introduced someone' },
+  { value: 'FRIEND_OF', group: 'Person → Person', desc: 'Personal friendships' },
+  { value: 'PARENT_OF', group: 'Person → Person', desc: 'Family' },
+  { value: 'SPOUSE_OF', group: 'Person → Person', desc: 'Marriage' },
+  { value: 'SIBLING_OF', group: 'Person → Person', desc: 'Siblings' },
+  { value: 'FAMILY_OF', group: 'Person → Person', desc: 'Extended family' },
+  { value: 'PET_OF', group: 'Person → Person', desc: 'Pet ownership' },
+  { value: 'MENTORS', group: 'Person → Person', desc: 'Mentorship' },
+  { value: 'WORKS_AT', group: 'Person → Org', desc: 'Employment' },
+  { value: 'WORKS_ON', group: 'Person → Org', desc: 'Project involvement' },
+  { value: 'MEMBER_OF', group: 'Person → Org', desc: 'Formal membership' },
+  { value: 'SERVES_AT', group: 'Person → Org', desc: 'Ministry / volunteer' },
+  { value: 'CLIENT_OF', group: 'Org → Org', desc: 'Client relationship' },
+  { value: 'VENDOR_TO', group: 'Org → Org', desc: 'Vendor relationship' },
 ];
 
 const REL_GROUPS = [...new Set(RELATIONSHIP_OPTIONS.map(o => o.group))];
@@ -116,15 +116,15 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
                 <div className="grid grid-cols-3 gap-2">
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">Source</label>
-                    <Input 
-                      value={editForm.source} 
+                    <Input
+                      value={editForm.source}
                       onChange={(e) => setEditForm(prev => ({ ...prev, source: e.target.value }))}
                       className="h-8 text-sm"
                     />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">Relationship</label>
-                    <Select value={editForm.rel} onValueChange={(v) => setEditForm(prev => ({ ...prev, rel: v }))}>
+                    <Select value={editForm.rel} onValueChange={(v) => setEditForm(prev => ({ ...prev, rel: v ?? '' }))}>
                       <SelectTrigger className="w-full h-8 text-sm">
                         <SelectValue />
                       </SelectTrigger>
@@ -144,8 +144,8 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">Target</label>
-                    <Input 
-                      value={editForm.target} 
+                    <Input
+                      value={editForm.target}
                       onChange={(e) => setEditForm(prev => ({ ...prev, target: e.target.value }))}
                       className="h-8 text-sm"
                     />
