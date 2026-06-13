@@ -573,9 +573,15 @@ async def graph_merge_action_route(request: Request):
         target_id = pr.get('merge_candidate_id')
         if not target_id:
             return {"success": False, "message": "Merge candidate not found in proposal."}
+            
+        new_label = body.get('new_label')
 
         from core.lib.graph_rules import get_canonical_id
         target_canonical = get_canonical_id(target_id)
+        
+        if new_label:
+            supabase.table('graph_nodes').update({'label': new_label.strip()}).eq('id', target_canonical).execute()
+
         source_node_res = supabase.table('graph_nodes').select('id').eq('label', pr['label']).maybe_single().execute()
         source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
         if source_node_id:

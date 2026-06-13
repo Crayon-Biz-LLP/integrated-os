@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { decideMergeProposal } from '@/lib/decisions/api';
 import type { GraphMergeProposal } from '@/lib/decisions/types';
 import { toast } from 'sonner';
@@ -11,16 +12,25 @@ import { GitMerge, X, Check } from 'lucide-react';
 
 export function MergePendingList({ items: initialItems }: { items: GraphMergeProposal[] }) {
   const [items, setItems] = useState<GraphMergeProposal[]>(initialItems);
+  const [renameValues, setRenameValues] = useState<Record<number, string>>({});
 
   useEffect(() => {
     setItems(initialItems);
+    const initials: Record<number, string> = {};
+    initialItems.forEach(i => {
+      initials[i.id] = i.merge_candidate_label || 'canonical';
+    });
+    setRenameValues(initials);
   }, [initialItems]);
 
   const handleDecision = async (id: number, decision: 'accept' | 'reject') => {
     const item = items.find((i) => i.id === id);
     setItems((prev) => prev.filter((i) => i.id !== id));
     try {
-      await decideMergeProposal(id, decision);
+      const newLabel = decision === 'accept' && renameValues[id] && renameValues[id] !== item?.merge_candidate_label 
+        ? renameValues[id] 
+        : undefined;
+      await decideMergeProposal(id, decision, newLabel ? { new_label: newLabel } : undefined);
       toast.success(decision === 'accept' ? 'Nodes merged' : 'Merge rejected');
     } catch (error) {
       console.error('Failed to decide merge proposal:', error);
@@ -60,6 +70,14 @@ export function MergePendingList({ items: initialItems }: { items: GraphMergePro
             <p className="text-sm text-muted-foreground mb-3">
               This node appears to be a duplicate of an existing node. Merge to consolidate or keep both as separate entries.
             </p>
+            <div className="flex items-center gap-2 mb-4 mt-2 bg-zinc-900/30 p-2 rounded-md border border-zinc-800">
+              <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">Merge as:</label>
+              <Input 
+                value={renameValues[item.id] !== undefined ? renameValues[item.id] : (item.merge_candidate_label || 'canonical')} 
+                onChange={(e) => setRenameValues(prev => ({ ...prev, [item.id]: e.target.value }))}
+                className="h-8 text-sm max-w-sm bg-background"
+              />
+            </div>
             <div className="flex items-center justify-between mt-4">
               <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
                 <span>m{item.id}</span>
