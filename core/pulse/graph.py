@@ -6,7 +6,7 @@ import asyncio
 from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.people_utils import normalize_person_name
-from core.lib.graph_rules import find_similar_node, validate_edge
+from core.lib.graph_rules import find_similar_node, validate_edge, resolve_alias
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -40,6 +40,10 @@ async def create_graph_node_with_db_record(
     """
     try:
         label = label.strip().title()
+        
+        # Apply alias resolution (e.g. Yashwant Daniel -> Danny)
+        if node_type == 'person':
+            label = resolve_alias(label)
 
         similar = find_similar_node(label, node_type)
         if similar:

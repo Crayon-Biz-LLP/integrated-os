@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from core.lib.rate_limiter import flash_lite_limiter
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
-from core.lib.graph_rules import validate_edge
+from core.lib.graph_rules import validate_edge, resolve_alias
 from core.services.db import get_supabase
 from core.services.pipeline_service import add_to_failed_queue
 from core.services.llm import get_gemini_client
@@ -577,6 +577,9 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
     Get or create a graph node with proper type handling.
     If node exists, updates its type to match the latest extracted type.
     """
+    if node_type == 'person':
+        label = resolve_alias(label)
+        
     if label in created_nodes:
         return created_nodes[label]
         
@@ -658,6 +661,10 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
         label = node.get("label", "")
         node_type = node.get("type", "concept")
         
+        if node_type == 'person':
+            label = resolve_alias(label)
+            node["label"] = label
+            
         # PHASE 2 HOOK
         from core.clarifier import evaluate_node
         evaluate_node(node)

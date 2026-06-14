@@ -24,6 +24,22 @@ INVALID_COMBOS = {
     ("project", "OWNS", "person"): ("auto_reject", "OWNS is programmatic-only"),
 }
 
+_alias_cache = None
+
+def resolve_alias(label: str) -> str:
+    """Check if the label matches a known alias, and return the canonical name. 
+    Otherwise return the original label."""
+    global _alias_cache
+    if _alias_cache is None:
+        try:
+            res = supabase.table("person_aliases").select("canonical_name, alias").execute()
+            _alias_cache = {r["alias"].lower().strip(): r["canonical_name"] for r in (res.data or [])}
+        except Exception:
+            _alias_cache = {}
+            
+    lookup = label.lower().strip()
+    return _alias_cache.get(lookup, label)
+
 
 def find_similar_node(label: str, node_type: str, threshold: float = 0.55) -> list[dict]:
     result = supabase.table("graph_nodes").select("id, label, type").execute()

@@ -57,3 +57,27 @@ export async function decideGraphNode(id: number, decision: 'approve' | 'reject'
     throw new Error(err.detail || 'Failed to decide graph node');
   }
 }
+
+export async function mergeGraphNodeIntoExisting(pendingId: number, targetId: string, orgTag?: string): Promise<void> {
+  const res = await fetch('/api/graph-node-merge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: pendingId, target_id: targetId, org_tag: orgTag }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to merge graph node' }));
+    throw new Error(err.detail || 'Failed to merge graph node');
+  }
+}
+
+export async function searchGraphNodes(query: string, type?: string): Promise<{ id: string; label: string; type: string }[]> {
+  const params = new URLSearchParams({ q: query });
+  if (type) params.append('type', type);
+  
+  const res = await fetch(`/api/graph-nodes/search?${params.toString()}`);
+  if (!res.ok) {
+    return [];
+  }
+  const json = await res.json();
+  return json.data || [];
+}

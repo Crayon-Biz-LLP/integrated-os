@@ -660,6 +660,99 @@ async def graph_node_action_route(request: Request):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/graph-nodes/search")
+async def graph_nodes_search_route(request: Request):
+    require_api_auth(request)
+    q = request.query_params.get('q', '').strip()
+    node_type = request.query_params.get('type')
+    if not q or len(q) < 2:
+        return {"data": []}
+    
+    from core.services.db import get_supabase
+    supabase = get_supabase()
+    query = supabase.table('graph_nodes').select('id, label, type').ilike('label', f"%{q}%")
+    if node_type:
+        query = query.eq('type', node_type)
+    
+    res = query.order('label').limit(10).execute()
+    return {"data": res.data or []}
+
+@app.post("/api/graph-node-merge")
+async def graph_node_merge_route(request: Request):
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        pending_id = body.get('id')
+        target_id = body.get('target_id')
+        org_tag = body.get('org_tag')
+        
+        if not pending_id or not target_id:
+            raise HTTPException(status_code=400, detail="id and target_id required")
+            
+        from core.pulse.graph import process_graph_pending_decision
+        from core.lib.graph_rules import propose_merge
+        from core.services.db import get_supabase
+        supabase = get_supabase()
+        
+        target_res = supabase.table('graph_nodes').select('id, label').eq('id', target_id).maybe_single().execute()
+        if not target_res or not target_res.data:
+            raise HTTPException(status_code=400, detail="Target node not found")
+        
+        # Check if already approved/created somehow
+        pending_res = supabase.table('pending_graph_nodes').select('label, type').eq('id', int(pending_id)).maybe_single().execute()
+        if not pending_res or not pending_res.data:
+            raise HTTPException(status_code=404, detail="Pending node not found")
+            
+        label = pending_res.data['label']
+        
+        source_res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
+        if not source_res or not source_res.data:
+            # Need to approve it first
+            result = await process_graph_pending_decision(int(pending_id), 'approve', org_tag=org_tag)
+            if not result.get("success"):
+                if result.get("action") == "merge_proposed":
+                    # It proposed a merge on its own during creation! 
+                    # If it's a different target, we can override it by updating the pending_graph_nodes merge_candidate_id
+                    supabase.table('pending_graph_nodes').update({
+                        'merge_candidate_id': target_id,
+                        'source_text': 'manual_merge_override'
+                    }).eq('id', int(pending_id)).execute()
+                    return {"success": True, "message": "Merge proposed successfully."}
+                raise HTTPException(status_code=400, detail=result.get("message", "Failed to approve node before merge"))
+                
+            source_res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
+            
+        if not source_res or not source_res.data:
+            raise HTTPException(status_code=500, detail="Failed to locate newly approved node")
+            
+        source_id = source_res.data['id']
+        
+        merge_res = propose_merge(source_id, target_id)
+        if not merge_res.get("success"):
+            # If propose_merge says "Already proposed", just update pending_graph_nodes to point to our target
+            if merge_res.get("message") == "Already proposed":
+                 supabase.table('pending_graph_nodes').update({
+                    'status': 'merge_proposed',
+                    'merge_candidate_id': target_id
+                }).eq('id', int(pending_id)).execute()
+                 return {"success": True, "message": "Merge updated."}
+            raise HTTPException(status_code=400, detail=merge_res.get("message", "Merge proposal failed"))
+            
+        # Update the original pending node to reflect the merge proposal instead of 'approved' 
+        # so it moves to the Merges tab in UI
+        supabase.table('pending_graph_nodes').update({
+            'status': 'merge_proposed',
+            'merge_candidate_id': target_id
+        }).eq('id', int(pending_id)).execute()
+            
+        return merge_res
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/whatsapp-ingest")
 async def whatsapp_ingest_route(request: Request):
     trace_id_var.set(f"wa_{uuid.uuid4().hex[:8]}")

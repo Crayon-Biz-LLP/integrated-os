@@ -1,20 +1,84 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { decideGraphNode } from '@/lib/decisions/api';
+import { Input } from '@/components/ui/input';
+import { decideGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes } from '@/lib/decisions/api';
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
-import { Check, X, Box } from 'lucide-react';
+import { Check, X, Box, GitMerge, Loader2 } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const VALID_ORG_TAGS = ['PERSONAL', 'QHORD', 'SOLVSTRAT', 'ASHRAYA', 'CRAYON'];
 
+function MergeDropdown({ 
+  nodeType, 
+  onSelect 
+}: { 
+  nodeType: string; 
+  onSelect: (targetId: string) => void 
+}) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<{id: string; label: string}[]>([]);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef<NodeJS.Timeout>();
+
+  useEffect(() => {
+    if (query.length < 2) {
+      setResults([]);
+      return;
+    }
+    
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const data = await searchGraphNodes(query, nodeType);
+        setResults(data);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    }, 300);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query, nodeType]);
+
+  return (
+    <div className="relative w-full max-w-sm mt-3">
+      <Input
+        placeholder="Type to search existing nodes..."
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        className="h-8 text-sm pr-8"
+      />
+      {loading && <Loader2 className="absolute right-2 top-2 h-4 w-4 animate-spin text-muted-foreground" />}
+      {results.length > 0 && (
+        <div className="absolute top-full left-0 mt-1 w-full bg-popover border rounded-md shadow-md z-10 max-h-48 overflow-y-auto">
+          {results.map(r => (
+            <button
+              key={r.id}
+              className="w-full text-left px-3 py-2 text-sm hover:bg-muted focus:bg-muted outline-none"
+              onClick={() => onSelect(r.id)}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function NodePendingList({ items: initialItems }: { items: GraphPendingNode[] }) {
   const [items, setItems] = useState<GraphPendingNode[]>(initialItems);
   const [projectOrgTags, setProjectOrgTags] = useState<Record<number, string>>({});
+  const [mergingId, setMergingId] = useState<number | null>(null);
 
   useEffect(() => {
     setItems(initialItems);
@@ -42,6 +106,31 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
       console.error('Failed to decide graph node:', error);
       if (item) setItems((prev) => [...prev, item]);
       toast.error('Failed to save decision. Item has been restored.');
+    }
+  };
+
+  const handleMerge = async (id: number, targetId: string) => {
+    const item = items.find((i) => i.id === id);
+    if (!item) return;
+
+    let orgTag: string | undefined = undefined;
+    if (item.type === 'project') {
+      orgTag = projectOrgTags[id];
+      if (!orgTag) {
+        toast.error('Please select an Org Tag before merging a project');
+        return;
+      }
+    }
+
+    setItems((prev) => prev.filter((i) => i.id !== id));
+    setMergingId(null);
+    try {
+      await mergeGraphNodeIntoExisting(id, targetId, orgTag);
+      toast.success('Merge proposed. Check the Merges tab to finalize.');
+    } catch (error) {
+      console.error('Failed to merge graph node:', error);
+      if (item) setItems((prev) => [...prev, item]);
+      toast.error('Failed to merge node. Item has been restored.');
     }
   };
 
@@ -98,6 +187,23 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                       </Select>
                     </div>
                   )}
+                  {mergingId === item.id && (
+                    <div className="mt-3 bg-muted/50 p-3 rounded-md border">
+                      <p className="text-xs font-medium mb-1">Merge into existing node:</p>
+                      <MergeDropdown 
+                        nodeType={item.type} 
+                        onSelect={(targetId) => handleMerge(item.id, targetId)} 
+                      />
+                      <Button 
+                        variant="ghost" 
+                        size="sm" 
+                        className="mt-2 h-7 text-xs"
+                        onClick={() => setMergingId(null)}
+                      >
+                        Cancel Merge
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="flex items-start gap-2 sm:ml-auto">
@@ -110,6 +216,17 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                   <X className="h-4 w-4 mr-1" />
                   Reject
                 </Button>
+                {mergingId !== item.id && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 hover:text-indigo-700"
+                    onClick={() => setMergingId(item.id)}
+                  >
+                    <GitMerge className="h-4 w-4 mr-1" />
+                    Merge into...
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   variant="default"
