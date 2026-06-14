@@ -49,4 +49,13 @@ export interface GraphMergeProposal {
   created_at: string;
 }
 
+export interface GraphPendingNode {
+  id: number;
+  label: string;
+  type: string;
+  source_text: string;
+  status: 'pending' | 'flagged' | 'approved' | 'rejected';
+  created_at: string;
+}
+
 

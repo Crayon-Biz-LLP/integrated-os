@@ -1,5 +1,5 @@
 import { createServerSupabaseClient } from "@/lib/supabase-server";
-import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphMergeProposal } from "@/lib/decisions/types";
+import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphPendingNode, GraphMergeProposal } from "@/lib/decisions/types";
 import { DecisionsShell } from "./decisions-shell";
 
 export const dynamic = 'force-dynamic';
@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export default async function DecisionsPage() {
   const supabase = await createServerSupabaseClient();
 
-  const [callRes, whatsappRes, graphRes, mergeRes] = await Promise.all([
+  const [callRes, whatsappRes, graphRes, nodeRes, mergeRes] = await Promise.all([
     supabase
       .from("messages")
       .select("*")
@@ -27,6 +27,12 @@ export default async function DecisionsPage() {
       .from("pending_graph_edges")
       .select("*")
       .eq("status", "pending")
+      .order("created_at", { ascending: false })
+      .limit(100),
+    supabase
+      .from("pending_graph_nodes")
+      .select("*")
+      .in("status", ["pending", "flagged"])
       .order("created_at", { ascending: false })
       .limit(100),
     supabase
@@ -53,14 +59,13 @@ export default async function DecisionsPage() {
   })) as unknown as WhatsAppPendingMessage[];
 
   const graphItems = (graphRes.data ?? []) as GraphPendingEdge[];
+  const graphNodes = (nodeRes.data ?? []) as GraphPendingNode[];
   const mergeProposals = (mergeRes.data ?? []) as GraphMergeProposal[];
 
-  const memIds = [...new Set(
-    graphItems
-      .map(i => i.source_text?.match(/^memories:(\d+)$/))
-      .filter(Boolean)
-      .map(m => parseInt(m![1]))
-  )];
+  const memIds = [...new Set([
+    ...graphItems.map(i => i.source_text?.match(/^memories:(\d+)$/)).filter(Boolean).map(m => parseInt(m![1])),
+    ...graphNodes.map(n => n.source_text?.match(/^memories:(\d+)$/)).filter(Boolean).map(m => parseInt(m![1]))
+  ])];
   if (memIds.length > 0) {
     const memRes = await supabase.from("memories").select("id, content").in("id", memIds);
     if (memRes.error) console.error('Failed to resolve memory sources:', memRes.error);
@@ -70,6 +75,13 @@ export default async function DecisionsPage() {
       if (match) {
         const content = memMap.get(parseInt(match[1]));
         if (content) item.source_text = content;
+      }
+    }
+    for (const node of graphNodes) {
+      const match = node.source_text?.match(/^memories:(\d+)$/);
+      if (match) {
+        const content = memMap.get(parseInt(match[1]));
+        if (content) node.source_text = content;
       }
     }
   }
@@ -90,6 +102,7 @@ export default async function DecisionsPage() {
       initialCallItems={callItems}
       initialWhatsappItems={whatsappItems}
       initialGraphItems={graphItems}
+      initialGraphNodes={graphNodes}
       initialMergeProposals={mergeProposals}
     />
   );

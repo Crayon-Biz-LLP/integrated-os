@@ -53,18 +53,30 @@ def call_llm_with_fallback_sync(
     base_delay = 8 if is_critical else 4
     
     def _call_gemini(p, cfg):
-        return gemini_client.models.generate_content(
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(
+            gemini_client.models.generate_content,
             model=model,
             contents=p,
             config=cfg or {}
         )
+        try:
+            return future.result(timeout=90.0)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
     
     def _call_gemma(p, cfg):
-        return gemini_client.models.generate_content(
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(
+            gemini_client.models.generate_content,
             model=GEMMA_FALLBACK_MODEL,
             contents=p,
             config=cfg or {}
         )
+        try:
+            return future.result(timeout=90.0)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
     
     def _call_openrouter(p, cfg):
         headers = {
@@ -745,6 +757,8 @@ def insert_pending_edges_batch(edges: list):
                 existing_set.add(key)
 
         if not to_insert:
+            if edges:
+                audit_log_sync("backfill_graph", "INFO", f"All {len(edges)} pending edges in batch were filtered or auto-rejected (to_insert is empty).")
             return
 
         for i in range(0, len(to_insert), 100):
@@ -946,6 +960,26 @@ def run_backfill():
                 
         if pending_edges_to_insert:
             insert_pending_edges_batch(pending_edges_to_insert)
+            
+        # ⚠️ GUARANTEED SENTINEL FIX ⚠️
+        # Ensure every processed memory gets a sentinel record in case all edges were auto-rejected
+        guaranteed_sentinels = []
+        for data in extracted_data:
+            guaranteed_sentinels.append({
+                "source_label": "",
+                "target_label": "",
+                "relationship": "SENTINEL",
+                "source_text": f"{data['source_table']}:{data['memory_id']}",
+                "source_table": data['source_table'],
+                "status": "skipped"
+            })
+        if guaranteed_sentinels:
+            try:
+                for i in range(0, len(guaranteed_sentinels), 100):
+                    batch_sentinels = guaranteed_sentinels[i:i+100]
+                    supabase.table("pending_graph_edges").insert(batch_sentinels).execute()
+            except Exception as e:
+                audit_log_sync("backfill_graph", "WARNING", f"Failed to insert guaranteed sentinels: {e}")
                 
         print(f"Completed batch {batch_num}")
     

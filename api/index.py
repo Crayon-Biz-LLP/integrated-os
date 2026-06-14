@@ -633,6 +633,33 @@ async def graph_merge_action_route(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/graph-node-action")
+async def graph_node_action_route(request: Request):
+    """Approve or reject a pending graph node via UI."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        pending_id = body.get('id')
+        action = body.get('action')
+        org_tag = body.get('org_tag')
+        
+        if not pending_id or action not in ('approve', 'reject'):
+            raise HTTPException(status_code=400, detail="id and valid action (approve/reject) required")
+            
+        from core.pulse.graph import process_graph_pending_decision
+        result = await process_graph_pending_decision(int(pending_id), action, org_tag=org_tag)
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("message", "Failed to process node decision"))
+            
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/whatsapp-ingest")
 async def whatsapp_ingest_route(request: Request):
     trace_id_var.set(f"wa_{uuid.uuid4().hex[:8]}")

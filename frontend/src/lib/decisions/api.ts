@@ -45,3 +45,15 @@ export async function decideMergeProposal(id: number, decision: 'accept' | 'reje
     throw new Error(err.detail || 'Failed to decide merge proposal');
   }
 }
+
+export async function decideGraphNode(id: number, decision: 'approve' | 'reject', updates?: { org_tag?: string; context?: string }): Promise<void> {
+  const res = await fetch('/api/graph-node-action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, action: decision, ...updates }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to decide graph node' }));
+    throw new Error(err.detail || 'Failed to decide graph node');
+  }
+}

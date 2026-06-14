@@ -4,19 +4,22 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { CallPendingList } from '@/components/decisions/call-pending-list';
 import { WhatsAppPendingList } from '@/components/decisions/whatsapp-pending-list';
 import { GraphPendingList } from '@/components/decisions/graph-pending-list';
+import { NodePendingList } from '@/components/decisions/node-pending-list';
 import { MergePendingList } from '@/components/decisions/merge-pending-list';
-import { Phone, MessageSquare, Network, GitMerge } from 'lucide-react';
-import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphMergeProposal } from '@/lib/decisions/types';
+import { Phone, MessageSquare, Network, Box, GitMerge } from 'lucide-react';
+import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphPendingNode, GraphMergeProposal } from '@/lib/decisions/types';
 
 export function DecisionsShell({
   initialCallItems,
   initialWhatsappItems,
   initialGraphItems,
+  initialGraphNodes,
   initialMergeProposals,
 }: {
   initialCallItems: CallPendingItem[];
   initialWhatsappItems: WhatsAppPendingMessage[];
   initialGraphItems: GraphPendingEdge[];
+  initialGraphNodes: GraphPendingNode[];
   initialMergeProposals: GraphMergeProposal[];
 }) {
   return (
@@ -54,6 +57,15 @@ export function DecisionsShell({
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="nodes">
+            <Box className="h-4 w-4 mr-2" />
+            Graph Nodes
+            {initialGraphNodes.length > 0 && (
+              <span className="ml-1.5 text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full tabular-nums">
+                {initialGraphNodes.length}
+              </span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="merge">
             <GitMerge className="h-4 w-4 mr-2" />
             Merges
@@ -72,6 +84,9 @@ export function DecisionsShell({
         </TabsContent>
         <TabsContent value="graph" className="mt-4">
           <GraphPendingList items={initialGraphItems} />
+        </TabsContent>
+        <TabsContent value="nodes" className="mt-4">
+          <NodePendingList items={initialGraphNodes} />
         </TabsContent>
         <TabsContent value="merge" className="mt-4">
           <MergePendingList items={initialMergeProposals} />
