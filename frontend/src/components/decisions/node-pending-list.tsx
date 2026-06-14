@@ -23,7 +23,7 @@ function MergeDropdown({
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<{id: string; label: string}[]>([]);
   const [loading, setLoading] = useState(false);
-  const debounceRef = useRef<NodeJS.Timeout>();
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (query.length < 2) {
