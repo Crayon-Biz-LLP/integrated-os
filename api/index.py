@@ -603,11 +603,14 @@ async def graph_merge_action_route(request: Request):
         source_node_res = supabase.table('graph_nodes').select('id, label').eq('label', pr['label']).maybe_single().execute()
         source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
         
-        if not source_node_id:
-            return {"success": False, "message": "Source node no longer exists."}
-            
         target_canonical = get_canonical_id(target_id)
         
+        if not source_node_id:
+            # The pending label was merged before it was ever created as a graph node.
+            # No graph_nodes to rewire, just mark the pending proposal as approved (resolved).
+            supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', int(pending_id)).execute()
+            return {"success": True, "message": f"Pending label '{pr['label']}' is now aliased to the target node."}
+            
         if swap:
             # Swap direction: the original target becomes the loser, the original source becomes the canonical winner
             loser_id = target_canonical
@@ -684,12 +687,10 @@ async def graph_node_merge_route(request: Request):
         body = await request.json()
         pending_id = body.get('id')
         target_id = body.get('target_id')
-        org_tag = body.get('org_tag')
         
         if not pending_id or not target_id:
             raise HTTPException(status_code=400, detail="id and target_id required")
             
-        from core.pulse.graph import process_graph_pending_decision
         from core.lib.graph_rules import propose_merge
         from core.services.db import get_supabase
         supabase = get_supabase()
@@ -707,23 +708,17 @@ async def graph_node_merge_route(request: Request):
         
         source_res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
         if not source_res or not source_res.data:
-            # Need to approve it first
-            result = await process_graph_pending_decision(int(pending_id), 'approve', org_tag=org_tag)
-            if not result.get("success"):
-                if result.get("action") == "merge_proposed":
-                    # It proposed a merge on its own during creation! 
-                    # If it's a different target, we can override it by updating the pending_graph_nodes merge_candidate_id
-                    supabase.table('pending_graph_nodes').update({
-                        'merge_candidate_id': target_id,
-                        'source_text': 'manual_merge_override'
-                    }).eq('id', int(pending_id)).execute()
-                    return {"success": True, "message": "Merge proposed successfully."}
-                raise HTTPException(status_code=400, detail=result.get("message", "Failed to approve node before merge"))
-                
-            source_res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
+            # The pending node doesn't exist in graph_nodes yet.
+            # Instead of trying to approve it (which might fail via dedup),
+            # just directly update its status and skip graph_node creation entirely.
+            supabase.table('pending_graph_nodes').update({
+                'status': 'merge_proposed',
+                'merge_candidate_id': target_id,
+                'source_text': 'manual_merge_override'
+            }).eq('id', int(pending_id)).execute()
+            return {"success": True, "message": "Merge proposed successfully (alias created)."}
             
-        if not source_res or not source_res.data:
-            raise HTTPException(status_code=500, detail="Failed to locate newly approved node")
+        # If it DOES exist in graph_nodes already, propose the merge normally
             
         source_id = source_res.data['id']
         
