@@ -856,12 +856,20 @@ async def graph_node_manual_merge_route(request: Request):
         # Target node - check if it's live graph_nodes or pending_graph_nodes
         target_label = None
         
-        # Usually frontend search returns string IDs for live nodes, int for pending. Or we just search both.
-        # But wait, searchGraphNodes returns IDs from `graph_nodes`. Let's check search API.
-        target_res = supabase.table('graph_nodes').select('label').eq('id', target_id).maybe_single().execute()
-        if target_res and target_res.data:
-            target_label = target_res.data['label']
-        else:
+        import uuid
+        def _is_uuid(val):
+            try:
+                uuid.UUID(str(val))
+                return True
+            except (ValueError, AttributeError):
+                return False
+
+        if _is_uuid(target_id):
+            target_res = supabase.table('graph_nodes').select('label').eq('id', target_id).maybe_single().execute()
+            if target_res and target_res.data:
+                target_label = target_res.data['label']
+                
+        if not target_label:
             # Maybe it's a pending node ID?
             try:
                 t_id = int(target_id)
