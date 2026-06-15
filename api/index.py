@@ -695,6 +695,17 @@ async def graph_node_rename_route(pending_id: str, request: Request):
                         ctx['linked_entity'] = new_label
                         supabase.table('pending_graph_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
             
+            # Cascade to type overrides table
+            override_res = supabase.table('graph_type_overrides').select('*').eq('label', old_label).maybe_single().execute()
+            if override_res and override_res.data:
+                override_data = override_res.data
+                supabase.table('graph_type_overrides').delete().eq('label', old_label).execute()
+                supabase.table('graph_type_overrides').upsert({
+                    'label': new_label,
+                    'node_type': override_data['node_type'],
+                    'created_at': override_data['created_at']
+                }).execute()
+            
             # Note: graph_edges use IDs, so no need to cascade rename on edges
             return {"success": True, "message": "Renamed live node"}
 
@@ -730,6 +741,17 @@ async def graph_node_rename_route(pending_id: str, request: Request):
                     ctx['linked_entity'] = new_label
                     supabase.table('pending_graph_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
 
+        # Cascade to type overrides table
+        override_res = supabase.table('graph_type_overrides').select('*').eq('label', old_label).maybe_single().execute()
+        if override_res and override_res.data:
+            override_data = override_res.data
+            supabase.table('graph_type_overrides').delete().eq('label', old_label).execute()
+            supabase.table('graph_type_overrides').upsert({
+                'label': new_label,
+                'node_type': override_data['node_type'],
+                'created_at': override_data['created_at']
+            }).execute()
+
         return {"success": True, "message": f"Renamed to '{new_label}'"}
     except Exception as e:
         import traceback
@@ -751,10 +773,12 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         supabase = get_supabase()
         
         if scope == 'live':
-            live_res = supabase.table('graph_nodes').select('id').eq('id', pending_id).maybe_single().execute()
+            live_res = supabase.table('graph_nodes').select('id, label').eq('id', pending_id).maybe_single().execute()
             if not live_res or not live_res.data:
                 return {"success": False, "message": "Live node not found"}
+            label = live_res.data['label']
             supabase.table('graph_nodes').update({'type': new_type}).eq('id', pending_id).execute()
+            supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
             return {"success": True, "message": f"Changed type to {new_type}"}
             
         try:
@@ -762,11 +786,13 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         except ValueError:
             return {"success": False, "message": "Invalid pending ID"}
             
-        pending_res = supabase.table('pending_graph_nodes').select('id').eq('id', pending_id_int).maybe_single().execute()
+        pending_res = supabase.table('pending_graph_nodes').select('id, label').eq('id', pending_id_int).maybe_single().execute()
         if not pending_res or not pending_res.data:
             return {"success": False, "message": "Pending node not found"}
             
+        label = pending_res.data['label']
         supabase.table('pending_graph_nodes').update({'type': new_type}).eq('id', pending_id_int).execute()
+        supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
         return {"success": True, "message": f"Changed type to {new_type}"}
     except Exception as e:
         import traceback

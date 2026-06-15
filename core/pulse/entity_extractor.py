@@ -72,6 +72,10 @@ Text: "{text}"
             root_node_id = new_node.data[0]['id']
 
         node_id_map = {}
+        # 1.5 Fetch type overrides
+        overrides_res = supabase.table('graph_type_overrides').select('*').execute()
+        overrides_map = {r['label'].lower(): r['node_type'] for r in overrides_res.data} if overrides_res.data else {}
+
         # 2. Process extracted nodes
         for node in nodes:
             label = node.get('label')
@@ -79,6 +83,12 @@ Text: "{text}"
             
             if not label or not n_type:
                 continue
+                
+            label = label.strip()
+            # Apply type override if exists
+            if label.lower() in overrides_map:
+                n_type = overrides_map[label.lower()]
+                node['type'] = n_type
 
             # PHASE 2 HOOK: Evaluate node
             from core.clarifier import evaluate_node
