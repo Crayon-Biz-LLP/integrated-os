@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { checkSimilarGraphNodes, renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes } from '@/lib/decisions/api';
+import { checkSimilarGraphNodes, renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes } from '@/lib/decisions/api';
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -82,6 +82,8 @@ function MergeSearchInput({
 
 export function EntityTableList({ items: initialItems }: { items: GraphPendingNode[] }) {
   const [items, setItems] = useState<GraphPendingNode[]>(initialItems);
+  const [scope, setScope] = useState<'pending' | 'live'>('pending');
+  const [loading, setLoading] = useState(false);
   
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editLabel, setEditLabel] = useState("");
@@ -92,14 +94,25 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
   useEffect(() => {
-    setItems(initialItems);
-  }, [initialItems]);
+    if (scope === 'pending') {
+      setItems(initialItems);
+    } else {
+      setLoading(true);
+      fetchLiveGraphNodes().then(data => {
+        setItems(data);
+        setLoading(false);
+      }).catch(e => {
+        console.error(e);
+        setLoading(false);
+      });
+    }
+  }, [initialItems, scope]);
 
   const handleRename = async (id: number) => {
     if (!editLabel.trim()) return;
     
     try {
-      await renamePendingGraphNode(id, editLabel);
+      await renamePendingGraphNode(id, editLabel, scope);
       setItems(prev => prev.map(i => i.id === id ? { ...i, label: editLabel } : i));
       setEditingId(null);
       toast.success("Renamed successfully");
@@ -110,7 +123,7 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
 
   const handleMerge = async (sourceId: number, targetId: string, targetLabel: string) => {
     try {
-      await mergeGraphNodeIntoExisting(sourceId, targetId);
+      await mergeGraphNodeIntoExisting(sourceId, targetId, scope);
       setItems(prev => prev.filter(i => i.id !== sourceId));
       setMergingId(null);
       toast.success(`Merged into ${targetLabel}`);
@@ -122,7 +135,7 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
   const handleDelete = async () => {
     if (!deleteId) return;
     try {
-      const res = await deletePendingGraphNode(deleteId);
+      const res = await deletePendingGraphNode(deleteId, scope);
       setItems(prev => prev.filter(i => i.id !== deleteId));
       setDeleteId(null);
       setDeleteConfirmText("");
@@ -132,16 +145,33 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
     }
   };
 
-  if (items.length === 0) {
-    return (
-      <div className="rounded-md border p-8 text-center text-muted-foreground">
-        No pending entities found.
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-4">
+      <div className="flex justify-end border-b pb-4 mb-4">
+        <div className="inline-flex items-center rounded-md bg-muted p-1 text-muted-foreground">
+          <button
+            onClick={() => setScope('pending')}
+            className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all ${scope === 'pending' ? 'bg-background text-foreground shadow-sm' : 'hover:bg-background/50 hover:text-foreground'}`}
+          >
+            Pending
+          </button>
+          <button
+            onClick={() => setScope('live')}
+            className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all ${scope === 'live' ? 'bg-background text-foreground shadow-sm' : 'hover:bg-background/50 hover:text-foreground'}`}
+          >
+            Live
+          </button>
+        </div>
+      </div>
+      
+      {loading ? (
+        <div className="p-8 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" /></div>
+      ) : items.length === 0 ? (
+        <div className="rounded-md border p-8 text-center text-muted-foreground">
+          No entities found in {scope} view.
+        </div>
+      ) : (
+        <>
       <div className="rounded-md border">
         <Table>
           <TableHeader>
@@ -268,6 +298,8 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      </>
+      )}
     </div>
   );
 }

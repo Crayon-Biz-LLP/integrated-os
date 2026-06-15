@@ -58,11 +58,11 @@ export async function decideGraphNode(id: number, decision: 'approve' | 'reject'
   }
 }
 
-export async function mergeGraphNodeIntoExisting(pendingId: number, targetId: string): Promise<void> {
+export async function mergeGraphNodeIntoExisting(pendingId: number, targetId: string, scope: 'pending' | 'live' = 'pending'): Promise<void> {
   const res = await fetch('/api/graph-node-merge', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: pendingId, target_id: targetId }),
+    body: JSON.stringify({ id: pendingId, target_id: targetId, scope }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Failed to merge graph node' }));
@@ -83,11 +83,11 @@ export async function searchGraphNodes(query: string, type?: string): Promise<{ 
 }
 
 
-export async function renamePendingGraphNode(id: number, newLabel: string): Promise<void> {
+export async function renamePendingGraphNode(id: number, newLabel: string, scope: 'pending' | 'live' = 'pending'): Promise<void> {
   const res = await fetch(`/api/graph-node/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label: newLabel }),
+    body: JSON.stringify({ label: newLabel, scope }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Failed to rename graph node' }));
@@ -95,8 +95,9 @@ export async function renamePendingGraphNode(id: number, newLabel: string): Prom
   }
 }
 
-export async function deletePendingGraphNode(id: number): Promise<{ message: string }> {
-  const res = await fetch(`/api/graph-node/${id}`, {
+export async function deletePendingGraphNode(id: number, scope: 'pending' | 'live' = 'pending'): Promise<{ message: string }> {
+  const params = new URLSearchParams({ scope });
+  const res = await fetch(`/api/graph-node/${id}?${params.toString()}`, {
     method: 'DELETE',
   });
   if (!res.ok) {
@@ -118,4 +119,10 @@ export async function checkSimilarGraphEdges(source: string, target: string, rel
   const res = await fetch(`/api/graph-edges/similar?${params.toString()}`);
   if (!res.ok) return [];
   return res.json();
+}
+export async function fetchLiveGraphNodes(): Promise<any[]> {
+  const res = await fetch('/api/graph-nodes/live');
+  if (!res.ok) return [];
+  const json = await res.json();
+  return json.data || [];
 }
