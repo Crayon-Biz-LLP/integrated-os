@@ -220,7 +220,11 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                     </div>
                   <p className="text-xs text-muted-foreground mt-1">Source: {item.source_text}</p>
                   
-                  {item.eval_context && (
+                  {item.eval_context?.linked_entity && (
+                    <p className="text-sm mt-2"><span className="font-semibold text-zinc-400">Linked:</span> {item.eval_context.linked_entity} <span className="text-zinc-500">—{item.eval_context.relationship || 'EVOKES'}→</span> concept</p>
+                  )}
+                  
+                  {item.eval_context && (item.eval_context.justification || item.eval_context.frequency) && (
                     <div className="mt-2 text-sm border-l-2 border-zinc-700 pl-3">
                       <button 
                         onClick={() => setDetailsExpanded(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
@@ -233,9 +237,6 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                         <div className="space-y-2 mt-2 bg-zinc-900/30 p-2 rounded-md">
                           {item.eval_context.justification && (
                             <p><span className="font-semibold text-zinc-400">Why:</span> {item.eval_context.justification}</p>
-                          )}
-                          {item.eval_context.linked_entity && (
-                            <p><span className="font-semibold text-zinc-400">Linked:</span> {item.eval_context.linked_entity} <span className="text-zinc-500">—{item.eval_context.relationship}→</span> concept</p>
                           )}
                           {item.type === 'practice' && item.eval_context.frequency && (
                             <p><span className="font-semibold text-zinc-400">Frequency:</span> {item.eval_context.frequency}</p>

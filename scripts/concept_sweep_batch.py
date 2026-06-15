@@ -110,28 +110,15 @@ def run_batch_sweep():
             
             print(f"  Memory {mem_id}: Found {len(nodes)} concepts, {len(edges)} edges")
             
-            # Map concept label to its linked entity from edges
-            concept_links = {}
-            for edge in edges:
-                target = edge.get("target")
-                source = edge.get("source")
-                rel = edge.get("relationship", "EVOKES")
-                if target and source:
-                    concept_links[target] = {"entity": source, "rel": rel}
-            
             # Insert concept nodes
             for node in nodes:
                 if node.get("type") != "concept":
                     continue
                 
                 label = node["label"]
-                link_info = concept_links.get(label, {})
                 eval_ctx = {
                     "justification": node.get("justification", ""),
                 }
-                if link_info:
-                    eval_ctx["linked_entity"] = link_info["entity"]
-                    eval_ctx["relationship"] = link_info["rel"]
                 
                 clarification = evaluate_node(node, batch_mode=True)
                 if clarification:
@@ -179,6 +166,34 @@ def run_batch_sweep():
                     }).execute()
                 except Exception:
                     pass
+
+            # Backfill linked_entity for concept nodes by querying the edges just inserted
+            for node in nodes:
+                if node.get("type") != "concept":
+                    continue
+                label = node["label"]
+                try:
+                    edge_res = supabase.table("pending_graph_edges")\
+                        .select("source_label, relationship")\
+                        .ilike("target_label", label)\
+                        .eq("source_text", f"memories:{mem_id}")\
+                        .eq("status", "pending")\
+                        .maybe_single().execute()
+                        
+                    if edge_res and edge_res.data:
+                        eval_ctx = {
+                            "justification": node.get("justification", ""),
+                            "linked_entity": edge_res.data["source_label"],
+                            "relationship": edge_res.data["relationship"]
+                        }
+                        supabase.table("pending_graph_nodes")\
+                            .update({"eval_context": eval_ctx})\
+                            .ilike("label", label)\
+                            .eq("source_text", f"memories:{mem_id}")\
+                            .in_("status", ["pending", "flagged"])\
+                            .execute()
+                except Exception as e:
+                    print(f"    Warning: Failed to backfill linked_entity for {label}: {e}")
             
             # Log as processed
             try:
