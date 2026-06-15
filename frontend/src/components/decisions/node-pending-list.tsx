@@ -117,14 +117,17 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
       payload = { ...payload, label: editedLabels[id] };
     }
 
-    setItems((prev) => prev.filter((i) => i.id !== id));
     try {
-      await decideGraphNode(id, decision, payload);
-      toast.success(decision === 'approve' ? 'Node approved' : 'Node rejected');
+      const result = await decideGraphNode(id, decision, payload);
+      if (result.action === 'merge_proposed') {
+        toast.warning(result.message || 'Similar node exists. Please use Merge action instead.');
+      } else {
+        setItems((prev) => prev.filter((i) => i.id !== id));
+        toast.success(decision === 'approve' ? 'Node approved' : 'Node rejected');
+      }
     } catch (error) {
       console.error('Failed to decide graph node:', error);
-      if (item) setItems((prev) => [...prev, item]);
-      toast.error('Failed to save decision. Item has been restored.');
+      toast.error('Failed to save decision.');
     }
   };
 

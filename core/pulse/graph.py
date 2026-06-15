@@ -39,10 +39,11 @@ async def create_graph_node_with_db_record(
     - Other (org, concept, etc.): graph_nodes only, no DB table
     """
     try:
-        label = label.strip().title()
+        label = label.strip()
         
         # Apply alias resolution (e.g. Yashwant Daniel -> Danny)
         if node_type == 'person':
+            label = label.title()
             label = resolve_alias(label)
 
         similar = find_similar_node(label, node_type)
@@ -369,7 +370,10 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
             )
 
             if result.get('success'):
-                supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
+                if result.get('action') == 'merge_proposed':
+                    supabase.table('pending_graph_nodes').update({'status': 'flagged'}).eq('id', pending_id).execute()
+                else:
+                    supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
 
             return result
 

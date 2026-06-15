@@ -46,7 +46,7 @@ export async function decideMergeProposal(id: number, decision: 'accept' | 'reje
   }
 }
 
-export async function decideGraphNode(id: number, decision: 'approve' | 'reject', updates?: { org_tag?: string; context?: string; label?: string }): Promise<void> {
+export async function decideGraphNode(id: number, decision: 'approve' | 'reject', updates?: { org_tag?: string; context?: string; label?: string }): Promise<any> {
   const res = await fetch('/api/graph-node-action', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -56,9 +56,10 @@ export async function decideGraphNode(id: number, decision: 'approve' | 'reject'
     const err = await res.json().catch(() => ({ detail: 'Failed to decide graph node' }));
     throw new Error(err.detail || 'Failed to decide graph node');
   }
+  return res.json();
 }
 
-export async function mergeGraphNodeIntoExisting(pendingId: number, targetId: string, scope: 'pending' | 'live' = 'pending'): Promise<void> {
+export async function mergeGraphNodeIntoExisting(pendingId: number | string, targetId: string, scope: 'pending' | 'live' = 'pending'): Promise<void> {
   const res = await fetch('/api/graph-node-merge', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -83,7 +84,7 @@ export async function searchGraphNodes(query: string, type?: string, scope?: str
 }
 
 
-export async function renamePendingGraphNode(id: number, newLabel: string, scope: 'pending' | 'live' = 'pending'): Promise<void> {
+export async function renamePendingGraphNode(id: number | string, newLabel: string, scope: 'pending' | 'live' = 'pending'): Promise<void> {
   const res = await fetch(`/api/graph-node/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -95,7 +96,19 @@ export async function renamePendingGraphNode(id: number, newLabel: string, scope
   }
 }
 
-export async function deletePendingGraphNode(id: number, scope: 'pending' | 'live' = 'pending'): Promise<{ message: string }> {
+export async function changePendingGraphNodeType(id: number | string, newType: string, scope: 'pending' | 'live' = 'pending'): Promise<void> {
+  const res = await fetch(`/api/graph-node/${id}/type`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: newType, scope }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to change graph node type' }));
+    throw new Error(err.detail || 'Failed to change graph node type');
+  }
+}
+
+export async function deletePendingGraphNode(id: number | string, scope: 'pending' | 'live' = 'pending'): Promise<{ message: string }> {
   const params = new URLSearchParams({ scope });
   const res = await fetch(`/api/graph-node/${id}?${params.toString()}`, {
     method: 'DELETE',

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { checkSimilarGraphNodes, renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes, decideGraphNode } from '@/lib/decisions/api';
+import { checkSimilarGraphNodes, renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes, decideGraphNode, changePendingGraphNodeType } from '@/lib/decisions/api';
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -87,12 +87,14 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
   const [scope, setScope] = useState<'pending' | 'live'>('pending');
   const [loading, setLoading] = useState(false);
   
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | string | null>(null);
   const [editLabel, setEditLabel] = useState("");
   
-  const [mergingId, setMergingId] = useState<number | null>(null);
+  const [changingTypeId, setChangingTypeId] = useState<number | string | null>(null);
   
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [mergingId, setMergingId] = useState<number | string | null>(null);
+  
+  const [deleteId, setDeleteId] = useState<number | string | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
   useEffect(() => {
@@ -110,17 +112,22 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
     }
   }, [initialItems, scope]);
 
-  const handleDecision = async (id: number, decision: 'approve' | 'reject') => {
+  const handleDecision = async (id: number | string, decision: 'approve' | 'reject') => {
     try {
-      await decideGraphNode(id, decision);
-      setItems(prev => prev.filter(i => i.id !== id));
-      toast.success(decision === 'approve' ? 'Approved successfully' : 'Rejected successfully');
+      const result = await decideGraphNode(id as number, decision);
+      if (result.action === 'merge_proposed') {
+        toast.warning(result.message || 'Similar node exists. Please use Merge action instead.');
+        // Don't remove from list, let them merge it
+      } else {
+        setItems(prev => prev.filter(i => i.id !== id));
+        toast.success(decision === 'approve' ? 'Approved successfully' : 'Rejected successfully');
+      }
     } catch (e: any) {
       toast.error(e.message || `Failed to ${decision}`);
     }
   };
 
-  const handleRename = async (id: number) => {
+  const handleRename = async (id: number | string) => {
     if (!editLabel.trim()) return;
     
     try {
@@ -133,7 +140,18 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
     }
   };
 
-  const handleMerge = async (sourceId: number, targetId: string, targetLabel: string) => {
+  const handleChangeType = async (id: number | string, newType: string) => {
+    try {
+      await changePendingGraphNodeType(id, newType, scope);
+      setItems(prev => prev.map(i => i.id === id ? { ...i, type: newType } : i));
+      setChangingTypeId(null);
+      toast.success("Changed type successfully");
+    } catch (e: any) {
+      toast.error(e.message || "Failed to change type");
+    }
+  };
+
+  const handleMerge = async (sourceId: number | string, targetId: string, targetLabel: string) => {
     try {
       await mergeGraphNodeIntoExisting(sourceId, targetId, scope);
       setItems(prev => prev.filter(i => i.id !== sourceId));
@@ -229,9 +247,28 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
                   )}
                 </TableCell>
                 <TableCell>
-                  <span className="inline-flex items-center rounded-md bg-secondary px-2 py-1 text-xs font-medium ring-1 ring-inset ring-secondary-foreground/10">
-                    {item.type}
-                  </span>
+                  {changingTypeId === item.id ? (
+                    <select
+                      className="h-7 rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm"
+                      defaultValue={item.type}
+                      onChange={(e) => handleChangeType(item.id, e.target.value)}
+                      onBlur={() => setChangingTypeId(null)}
+                      autoFocus
+                    >
+                      <option value="person">person</option>
+                      <option value="project">project</option>
+                      <option value="organization">organization</option>
+                      <option value="concept">concept</option>
+                    </select>
+                  ) : (
+                    <button 
+                      onClick={() => setChangingTypeId(item.id)}
+                      className="inline-flex items-center rounded-md bg-secondary px-2 py-1 text-xs font-medium ring-1 ring-inset ring-secondary-foreground/10 hover:bg-secondary/80 cursor-pointer"
+                      title="Click to change type"
+                    >
+                      {item.type}
+                    </button>
+                  )}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {item.source_text}
