@@ -46,7 +46,7 @@ export async function decideMergeProposal(id: number, decision: 'accept' | 'reje
   }
 }
 
-export async function decideGraphNode(id: number, decision: 'approve' | 'reject', updates?: { org_tag?: string; context?: string }): Promise<void> {
+export async function decideGraphNode(id: number, decision: 'approve' | 'reject', updates?: { org_tag?: string; context?: string; label?: string }): Promise<void> {
   const res = await fetch('/api/graph-node-action', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -58,11 +58,11 @@ export async function decideGraphNode(id: number, decision: 'approve' | 'reject'
   }
 }
 
-export async function mergeGraphNodeIntoExisting(pendingId: number, targetId: string, orgTag?: string): Promise<void> {
+export async function mergeGraphNodeIntoExisting(pendingId: number, targetId: string): Promise<void> {
   const res = await fetch('/api/graph-node-merge', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: pendingId, target_id: targetId, org_tag: orgTag }),
+    body: JSON.stringify({ id: pendingId, target_id: targetId }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Failed to merge graph node' }));

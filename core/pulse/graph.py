@@ -326,7 +326,7 @@ Format:
         return []
 
 
-async def process_graph_pending_decision(pending_id: int, decision: str, org_tag: str = None, context: str = None) -> dict:
+async def process_graph_pending_decision(pending_id: int, decision: str, org_tag: str = None, context: str = None, new_label: str = None) -> dict:
     try:
         pending_res = supabase.table('pending_graph_nodes').select('*').eq('id', pending_id).maybe_single().execute()
         if not pending_res or not pending_res.data:
@@ -344,6 +344,14 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
             label = pending_item['label']
             node_type = pending_item['type']
             source_text = pending_item.get('source_text', '')
+
+            # If label was edited, rewrite pending_graph_edges first
+            if new_label and new_label.strip() and new_label.strip() != label:
+                old_label = label
+                label = new_label.strip()
+                supabase.table('pending_graph_edges').update({'source_label': label}).eq('source_label', old_label).execute()
+                supabase.table('pending_graph_edges').update({'target_label': label}).eq('target_label', old_label).execute()
+                supabase.table('pending_graph_nodes').update({'label': label}).eq('id', pending_id).execute()
 
             result = await create_graph_node_with_db_record(
                 label=label,

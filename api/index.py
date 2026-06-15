@@ -645,12 +645,13 @@ async def graph_node_action_route(request: Request):
         pending_id = body.get('id')
         action = body.get('action')
         org_tag = body.get('org_tag')
+        new_label = body.get('label')
         
         if not pending_id or action not in ('approve', 'reject'):
             raise HTTPException(status_code=400, detail="id and valid action (approve/reject) required")
             
         from core.pulse.graph import process_graph_pending_decision
-        result = await process_graph_pending_decision(int(pending_id), action, org_tag=org_tag)
+        result = await process_graph_pending_decision(int(pending_id), action, org_tag=org_tag, new_label=new_label)
         
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=result.get("message", "Failed to process node decision"))
@@ -707,10 +708,13 @@ async def graph_node_merge_route(request: Request):
         label = pending_res.data['label']
         
         source_res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
+        target_label = target_res.data['label']
+        
         if not source_res or not source_res.data:
-            # The pending node doesn't exist in graph_nodes yet.
-            # Instead of trying to approve it (which might fail via dedup),
-            # just directly update its status and skip graph_node creation entirely.
+            # Rewire pending_graph_edges labels to the target before merging
+            supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', label).execute()
+            supabase.table('pending_graph_edges').update({'target_label': target_label}).eq('target_label', label).execute()
+            
             supabase.table('pending_graph_nodes').update({
                 'status': 'merge_proposed',
                 'merge_candidate_id': target_id,
@@ -733,6 +737,10 @@ async def graph_node_merge_route(request: Request):
                  return {"success": True, "message": "Merge updated."}
             raise HTTPException(status_code=400, detail=merge_res.get("message", "Merge proposal failed"))
             
+        # Rewire pending_graph_edges labels before merge
+        supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', label).execute()
+        supabase.table('pending_graph_edges').update({'target_label': target_label}).eq('target_label', label).execute()
+        
         # Update the original pending node to reflect the merge proposal instead of 'approved' 
         # so it moves to the Merges tab in UI
         supabase.table('pending_graph_nodes').update({

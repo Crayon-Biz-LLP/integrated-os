@@ -8,7 +8,7 @@ import { decideGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes } from '@
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
-import { Check, X, Box, GitMerge, Loader2 } from 'lucide-react';
+import { Check, X, Box, GitMerge, Loader2, Pencil } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const VALID_ORG_TAGS = ['PERSONAL', 'QHORD', 'SOLVSTRAT', 'ASHRAYA', 'CRAYON'];
@@ -79,6 +79,8 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
   const [items, setItems] = useState<GraphPendingNode[]>(initialItems);
   const [projectOrgTags, setProjectOrgTags] = useState<Record<number, string>>({});
   const [mergingId, setMergingId] = useState<number | null>(null);
+  const [editedLabels, setEditedLabels] = useState<Record<number, string>>({});
+  const [editingLabelId, setEditingLabelId] = useState<number | null>(null);
 
   useEffect(() => {
     setItems(initialItems);
@@ -97,6 +99,9 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
       }
       payload = { org_tag: orgTag };
     }
+    if (decision === 'approve' && editedLabels[id]) {
+      payload = { ...payload, label: editedLabels[id] };
+    }
 
     setItems((prev) => prev.filter((i) => i.id !== id));
     try {
@@ -113,25 +118,24 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
     const item = items.find((i) => i.id === id);
     if (!item) return;
 
-    let orgTag: string | undefined = undefined;
-    if (item.type === 'project') {
-      orgTag = projectOrgTags[id];
-      if (!orgTag) {
-        toast.error('Please select an Org Tag before merging a project');
-        return;
-      }
-    }
-
     setItems((prev) => prev.filter((i) => i.id !== id));
     setMergingId(null);
     try {
-      await mergeGraphNodeIntoExisting(id, targetId, orgTag);
+      await mergeGraphNodeIntoExisting(id, targetId);
       toast.success('Merge proposed. Check the Merges tab to finalize.');
     } catch (error) {
       console.error('Failed to merge graph node:', error);
       if (item) setItems((prev) => [...prev, item]);
       toast.error('Failed to merge node. Item has been restored.');
     }
+  };
+
+  const handleLabelEdit = (id: number, newLabel: string) => {
+    setEditedLabels((prev) => ({ ...prev, [id]: newLabel }));
+  };
+
+  const saveLabelEdit = (id: number) => {
+    setEditingLabelId(null);
   };
 
   if (items.length === 0) {
@@ -161,8 +165,34 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
           <CardContent className="p-4">
             <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
               <div className="space-y-3 flex-grow">
-                <div>
-                  <h4 className="font-semibold text-lg">{item.label}</h4>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      {editingLabelId === item.id ? (
+                        <Input
+                          value={editedLabels[item.id] ?? item.label}
+                          onChange={(e) => handleLabelEdit(item.id, e.target.value)}
+                          onBlur={() => saveLabelEdit(item.id)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') saveLabelEdit(item.id); }}
+                          className="h-8 text-lg font-semibold max-w-xs"
+                          autoFocus
+                        />
+                      ) : (
+                        <>
+                          <h4 className="font-semibold text-lg">
+                            {editedLabels[item.id] || item.label}
+                          </h4>
+                          <button
+                            onClick={() => {
+                              setEditedLabels((prev) => ({ ...prev, [item.id]: prev[item.id] || item.label }));
+                              setEditingLabelId(item.id);
+                            }}
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   <p className="text-xs text-muted-foreground mt-1">Source: {item.source_text}</p>
                   {item.status === 'flagged' && (
                     <span className="inline-block mt-2 px-2 py-1 bg-yellow-100 text-yellow-800 text-xs font-medium rounded">
