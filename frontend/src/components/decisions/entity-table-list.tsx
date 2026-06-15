@@ -10,15 +10,13 @@ import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { Loader2, Trash2, Pencil, GitMerge } from 'lucide-react';
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 function MergeSearchInput({ 
   nodeType, 
@@ -238,38 +236,38 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
         </Table>
       </div>
 
-      <AlertDialog open={deleteId !== null} onOpenChange={(o) => !o && setDeleteId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will reject the node <strong>"{items.find(i => i.id === deleteId)?.label}"</strong> 
+      <Dialog open={deleteId !== null} onOpenChange={(o) => !o && setDeleteId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Are you absolutely sure?</DialogTitle>
+            <DialogDescription>
+              This will reject the node <strong>&quot;{items.find(i => i.id === deleteId)?.label}&quot;</strong> 
               AND automatically reject all pending edges referencing it, plus any concept nodes that were orphaned.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
+            </DialogDescription>
+          </DialogHeader>
           <div className="py-4">
-            <p className="text-sm font-medium mb-2">Type "DELETE" to confirm:</p>
+            <p className="text-sm font-medium mb-2">Type &quot;DELETE&quot; to confirm:</p>
             <Input 
               value={deleteConfirmText} 
               onChange={e => setDeleteConfirmText(e.target.value)} 
               placeholder="DELETE"
             />
           </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => { setDeleteId(null); setDeleteConfirmText(""); }}>Cancel</AlertDialogCancel>
-            <AlertDialogAction 
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setDeleteId(null); setDeleteConfirmText(""); }}>Cancel</Button>
+            <Button 
               onClick={(e) => {
                 e.preventDefault();
                 handleDelete();
               }}
               disabled={deleteConfirmText !== 'DELETE'}
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-red-600 hover:bg-red-700 text-white"
             >
               Confirm Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
