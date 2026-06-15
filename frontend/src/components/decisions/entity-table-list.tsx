@@ -4,11 +4,11 @@ import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { checkSimilarGraphNodes, renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes } from '@/lib/decisions/api';
+import { checkSimilarGraphNodes, renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes, decideGraphNode } from '@/lib/decisions/api';
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
-import { Loader2, Trash2, Pencil, GitMerge } from 'lucide-react';
+import { Loader2, Trash2, Pencil, GitMerge, Check, X } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -107,6 +107,16 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
       });
     }
   }, [initialItems, scope]);
+
+  const handleDecision = async (id: number, decision: 'approve' | 'reject') => {
+    try {
+      await decideGraphNode(id, decision);
+      setItems(prev => prev.filter(i => i.id !== id));
+      toast.success(decision === 'approve' ? 'Approved successfully' : 'Rejected successfully');
+    } catch (e: any) {
+      toast.error(e.message || `Failed to ${decision}`);
+    }
+  };
 
   const handleRename = async (id: number) => {
     if (!editLabel.trim()) return;
@@ -228,10 +238,34 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
                 </TableCell>
                 <TableCell className="text-right">
                   {editingId !== item.id && mergingId !== item.id && (
-                    <div className="flex justify-end gap-2">
+                    <div className="flex justify-end gap-1">
+                      {scope === 'pending' && (
+                        <>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="text-green-600 hover:text-green-700 hover:bg-green-50 h-8 w-8"
+                            onClick={() => handleDecision(item.id, 'approve')}
+                            title="Approve"
+                          >
+                            <Check className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="text-amber-600 hover:text-amber-700 hover:bg-amber-50 h-8 w-8"
+                            onClick={() => handleDecision(item.id, 'reject')}
+                            title="Reject"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                          <div className="w-px h-4 bg-border self-center mx-1" />
+                        </>
+                      )}
                       <Button
                         size="icon"
                         variant="ghost"
+                        className="h-8 w-8"
                         onClick={() => {
                           setEditLabel(item.label);
                           setEditingId(item.id);
@@ -243,6 +277,7 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
                       <Button
                         size="icon"
                         variant="ghost"
+                        className="h-8 w-8"
                         onClick={() => setMergingId(item.id)}
                         title="Merge into existing"
                       >
@@ -251,7 +286,7 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="text-red-500 hover:text-red-600 hover:bg-red-50"
+                        className="text-red-500 hover:text-red-600 hover:bg-red-50 h-8 w-8"
                         onClick={() => setDeleteId(item.id)}
                         title="Delete with cascade"
                       >
