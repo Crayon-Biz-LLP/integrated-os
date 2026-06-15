@@ -29,7 +29,8 @@ async def create_graph_node_with_db_record(
     source_text: str = "",
     org_tag: str = None,
     context: str = None,
-    source_tag: str = "pending_approval"
+    source_tag: str = "pending_approval",
+    force: bool = False
 ) -> dict:
     """Create a people/projects table row + graph_nodes entry + Danny edge.
     
@@ -46,13 +47,14 @@ async def create_graph_node_with_db_record(
             label = label.title()
             label = resolve_alias(label)
 
-        similar = find_similar_node(label, node_type)
-        if similar:
-            top = similar[0]
-            return {"success": True, "action": "merge_proposed",
-                    "message": f"Found similar {node_type} '{top['label']}' (score={top['score']}). "
-                               f"Merge proposed — review in Decisions UI.",
-                    "merge_candidate_id": top["id"]}
+        if not force:
+            similar = find_similar_node(label, node_type)
+            if similar:
+                top = similar[0]
+                return {"success": True, "action": "merge_proposed",
+                        "message": f"Found similar {node_type} '{top['label']}' (score={top['score']}). "
+                                   f"Merge proposed — review in Decisions UI.",
+                        "merge_candidate_id": top["id"]}
 
         if node_type == 'project':
             if not org_tag:
