@@ -5,12 +5,16 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const q = searchParams.get("q");
   const type = searchParams.get("type");
+  const scope = searchParams.get("scope");
 
   const apiKey = process.env.API_SECRET_KEY || "";
   
   let url = `${backendUrl}/api/graph-nodes/search?q=${encodeURIComponent(q || '')}`;
   if (type) {
     url += `&type=${encodeURIComponent(type)}`;
+  }
+  if (scope) {
+    url += `&scope=${encodeURIComponent(scope)}`;
   }
 
   const res = await fetch(url, {

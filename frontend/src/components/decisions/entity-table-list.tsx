@@ -20,9 +20,11 @@ import {
 
 function MergeSearchInput({ 
   nodeType, 
+  scope,
   onSelect 
 }: { 
   nodeType: string; 
+  scope: string;
   onSelect: (targetId: string, targetLabel: string) => void 
 }) {
   const [query, setQuery] = useState('');
@@ -40,8 +42,8 @@ function MergeSearchInput({
     debounceRef.current = setTimeout(async () => {
       setLoading(true);
       try {
-        const data = await searchGraphNodes(query, nodeType);
-        setResults(data);
+        const data = await searchGraphNodes(query, nodeType, scope);
+        setResults(Array.isArray(data) ? data : (data as any).data || []);
       } catch (e) {
         console.error(e);
       } finally {
@@ -52,7 +54,7 @@ function MergeSearchInput({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, nodeType]);
+  }, [query, nodeType, scope]);
 
   return (
     <div className="relative w-full max-w-sm">
@@ -217,6 +219,7 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
                       <span className="text-muted-foreground text-xs">Merge &apos;{item.label}&apos; into:</span>
                       <MergeSearchInput
                         nodeType={item.type}
+                        scope={scope}
                         onSelect={(targetId, targetLabel) => handleMerge(item.id, targetId, targetLabel)}
                       />
                       <Button size="sm" variant="ghost" className="w-fit h-7 text-xs" onClick={() => setMergingId(null)}>Cancel</Button>

@@ -70,16 +70,16 @@ export async function mergeGraphNodeIntoExisting(pendingId: number, targetId: st
   }
 }
 
-export async function searchGraphNodes(query: string, type?: string): Promise<{ id: string; label: string; type: string }[]> {
+export async function searchGraphNodes(query: string, type?: string, scope?: string): Promise<{ id: string; label: string; type: string }[]> {
   const params = new URLSearchParams({ q: query });
   if (type) params.append('type', type);
+  if (scope) params.append('scope', scope);
   
   const res = await fetch(`/api/graph-nodes/search?${params.toString()}`);
   if (!res.ok) {
     return [];
   }
-  const json = await res.json();
-  return json.data || [];
+  return await res.json();
 }
 
 

@@ -907,11 +907,14 @@ async def graph_nodes_search_route(request: Request):
     require_api_auth(request)
     q = request.query_params.get('q', '').strip()
     node_type = request.query_params.get('type')
+    scope = request.query_params.get('scope', 'live')
+    
     if not q or len(q) < 2:
         return []
     try:
         supabase = get_supabase()
-        query = supabase.table('graph_nodes').select('id, label, type').ilike('label', f'%{q}%')
+        table_name = 'pending_graph_nodes' if scope == 'pending' else 'graph_nodes'
+        query = supabase.table(table_name).select('id, label, type').ilike('label', f'%{q}%')
         if node_type:
             query = query.eq('type', node_type)
         res = query.limit(10).execute()
