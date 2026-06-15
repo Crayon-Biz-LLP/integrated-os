@@ -37,6 +37,11 @@ export interface GraphPendingEdge {
   confidence: number;
   status: 'pending' | 'approved' | 'rejected';
   created_at: string;
+  eval_context?: {
+    justification?: string;
+    [key: string]: any;
+  };
+  epistemic_status?: string;
 }
 
 export interface GraphMergeProposal {
@@ -56,6 +61,17 @@ export interface GraphPendingNode {
   source_text: string;
   status: 'pending' | 'flagged' | 'approved' | 'rejected';
   created_at: string;
+  eval_context?: {
+    justification?: string;
+    linked_entity?: string;
+    relationship?: string;
+    frequency?: string;
+    confidence?: number;
+    health_score?: number;
+    typical_time?: string;
+    [key: string]: any;
+  };
+  epistemic_status?: string;
 }
 
 

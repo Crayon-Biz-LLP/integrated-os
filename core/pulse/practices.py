@@ -308,7 +308,7 @@ Rules:
 - If is_same_activity is true, also determine if entries represent a PERSONAL HABIT or just work/project tasks. A personal habit is a recurring behavioral practice (e.g., "Morning Run", "Bible Reading", "Daily Journal"). Work/project entries describe coding, development, design, project management, client work, or any activity tied to a business deliverable (e.g., "built frontend", "fixed bug Y", "deployed feature", "designed UI", "code review", "sprint planning"). These must be REJECTED. If you set is_personal_habit: false, include a brief reject_reason explaining why.
 
 Return ONLY valid JSON:
-{{"is_same_activity": true, "is_personal_habit": true, "canonical_name": "Morning Run", "reject_reason": ""}}"""
+{{"is_same_activity": true, "is_personal_habit": true, "canonical_name": "Morning Run", "confidence": 0.9, "reject_reason": ""}}"""
 
             try:
                 response = await generate_content_with_fallback(
@@ -326,6 +326,11 @@ Return ONLY valid JSON:
                     continue
 
                 canonical_name = result['canonical_name'].strip()
+                confidence = float(result.get('confidence', 0.85))
+                
+                if confidence < 0.7:
+                    audit_log_sync("pulse", "WARNING", f"Discarded practice '{canonical_name}' due to low confidence: {confidence}")
+                    continue
 
                 # ── Step 8: Create practice node ──
                 # Double-check: embedding overlap with existing nodes at tighter threshold
@@ -360,7 +365,7 @@ Return ONLY valid JSON:
                     "baseline_weeks_of_data": 2,
                     "typical_time": None,
                     "typical_days": [],
-                    "confidence": 0.85,
+                    "confidence": confidence,
                     "last_occurrence": str(last_occurrence)[:10],
                     "first_detected": str(first_detected)[:10],
                     "occurrence_count": len(cluster_indices),
@@ -404,42 +409,31 @@ Return ONLY valid JSON:
                         pass
                 metadata['typical_days'] = sorted(day_set)
 
-                # Insert node
-                node_res = supabase.table('graph_nodes').insert({
+                # Route to pending
+                node_res = supabase.table('pending_graph_nodes').insert({
                     "label": canonical_name,
                     "type": "practice",
-                    "metadata": metadata
+                    "source_text": "practice_detection",
+                    "status": "pending",
+                    "eval_context": metadata
                 }).execute()
 
                 if node_res.data:
-                    node_id = node_res.data[0]['id']
                     new_practice_nodes[canonical_name] = new_shortcode
-                    print(f"📍 detect_practices: Created practice node '{canonical_name}' (shortcode: {new_shortcode}, id: {node_id})")
+                    print(f"📍 detect_practices: Queued practice '{canonical_name}' for approval")
 
-                    # Create ASSOCIATED_WITH edges for distinct entities
+                    # We skip edge creation since the node is pending.
+                    # In a real impl, we might want to also queue the edges to pending_graph_edges.
                     for entity_text in distinct_entities:
                         if not entity_text:
                             continue
-                        entity_node = supabase.table('graph_nodes') \
-                            .select('id') \
-                            .ilike('label', f'%{entity_text}%') \
-                            .limit(1) \
-                            .execute()
-                        if entity_node.data:
-                            supabase.table('graph_edges').insert({
-                                "source_node_id": node_id,
-                                "target_node_id": entity_node.data[0]['id'],
-                                "relationship": "ASSOCIATED_WITH",
-                                "weight": 1.0,
-                                "metadata": {"source": "practice_detection"}
-                            }).execute()
-
-                    # Track this node for lifecycle processing
-                    existing_practice_nodes.append({
-                        'id': node_id,
-                        'label': canonical_name,
-                        'metadata': metadata
-                    })
+                        supabase.table('pending_graph_edges').insert({
+                            "source_label": canonical_name,
+                            "target_label": entity_text,
+                            "relationship": "ASSOCIATED_WITH",
+                            "source_text": "practice_detection",
+                            "status": "pending"
+                        }).execute()
 
             except Exception as e:
                 audit_log_sync("pulse", "WARNING", f"Practice verification error: {e}")

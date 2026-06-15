@@ -86,6 +86,8 @@ async def create_graph_node_with_db_record(
                 {
                     "label": label,
                     "type": "project",
+                    "epistemic_status": "asserted",
+                    "db_record_id": str(project_id),
                     "metadata": {
                         "source": source_tag,
                         "project_id": str(project_id),
@@ -134,6 +136,8 @@ async def create_graph_node_with_db_record(
                 {
                     "label": label,
                     "type": "person",
+                    "epistemic_status": "asserted",
+                    "db_record_id": str(people_id),
                     "metadata": {
                         "source": source_tag,
                         "people_id": str(people_id),
@@ -159,6 +163,7 @@ async def create_graph_node_with_db_record(
                 {
                     "label": label,
                     "type": node_type,
+                    "epistemic_status": "asserted",
                     "metadata": {
                         "source": source_tag,
                         "memory_id": source_text,
@@ -206,6 +211,7 @@ async def _ensure_danny_edge(label: str, node_type: str):
                 "target_node_id": target_id,
                 "relationship": rel,
                 "weight": 1.0,
+                "epistemic_status": "asserted",
                 "metadata": {"source": "graph_approval"}
             }).execute()
     except Exception as e:
@@ -283,7 +289,7 @@ Format:
                 
             # PHASE 2 HOOK
             from core.clarifier import evaluate_edge
-            evaluate_edge(e)
+            evaluate_edge(e, batch_mode=True)
                 
             if s_label == t_label:
                 continue

@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from core.lib.rate_limiter import flash_lite_limiter
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
-from core.lib.graph_rules import validate_edge, resolve_alias
+from core.lib.graph_rules import validate_edge, resolve_alias, has_structural_anchor
 from core.services.db import get_supabase
 from core.services.pipeline_service import add_to_failed_queue
 from core.services.llm import get_gemini_client
@@ -485,19 +485,36 @@ def extract_graph_elements(text: str, memory_id: str, known_entities: set = None
     prompt = f"""Extract knowledge graph elements from this text.
     
 Return a JSON object with:
-- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"place"|"animal"}}
-- "edges": array of objects with {{"source": string, "target": string, "relationship": string}}
+- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"place"|"animal"|"concept"|"event"|"emotional_state"|"task", "epistemic": "asserted"|"inferred"|"hypothetical", "justification": string}}
+- "edges": array of objects with {{"source": string, "target": string, "relationship": string, "epistemic": "asserted"|"inferred"|"hypothetical", "justification": string}}
     
 Text: {cleaned_text}
     
 Rules:
 - Extract People (names), Organizations, Projects, Places, and Animals as nodes
 - Create edges for relationships between nodes
-- Use UPPERCASE relationship types: "DISCUSSED_WITH", "WORKS_AT", "WORKS_ON", "CLIENT_OF", "VENDOR_TO", "MEMBER_OF", "PARENT_OF", "SPOUSE_OF", "SIBLING_OF", "FAMILY_OF", "PET_OF", "FRIEND_OF", "MET_WITH", "INTRODUCED", "MENTORS", "SERVES_AT"
+- Use UPPERCASE relationship types: "DISCUSSED_WITH", "WORKS_AT", "WORKS_ON", "CLIENT_OF", "VENDOR_TO", "MEMBER_OF", "PARENT_OF", "SPOUSE_OF", "SIBLING_OF", "FAMILY_OF", "PET_OF", "FRIEND_OF", "MET_WITH", "INTRODUCED", "MENTORS", "SERVES_AT", "EVOKES", "RELATES_TO", "ASSOCIATED_WITH"
+- For every extracted node and edge, include:
+  "epistemic": "asserted" | "inferred" | "hypothetical"
+  "justification": one sentence explaining why this was extracted
+- asserted: Danny explicitly stated this fact
+- inferred: logically implied but not directly stated
+- hypothetical: speculative, uncertain, or future-conditional
+- Negatives precede positives in all examples.
 - PROJECT DEFINITION: A named initiative with a defined goal and stakeholders.
   ✓ QHORD, Ashraya, Solvstrat, Rhodey OS
   ✗ "Church cash rotation incident" (event), "New Habit" (intention), "Journaling tool" (concept), "Call Marcus" (task)
   If it doesn't have a formal name someone would use to refer to an ongoing initiative — skip it.
+- CONCEPTUAL ASSOCIATIONS (extract sparingly — at most 2 per memory):
+  Extract abstract concepts this memory evokes. Concepts are intangible themes,
+  not people, places, or projects.
+  Good: "cash flow urgency", "execution risk", "trust repair", "delivery pressure"
+  Bad:  "meeting", "project update" (too generic), "Qhord" (that's a project node)
+  For each concept:
+  - Node: {{"label": "<concept>", "type": "concept", "epistemic": "inferred"}}
+  - Edge from relevant project/person/event to concept:
+    {{"source": "<entity>", "target": "<concept>", "relationship": "EVOKES"|"ASSOCIATED_WITH"|"RELATES_TO", "epistemic": "inferred"}}
+  If nothing strong surfaces, extract zero concepts. Silence is correct.
 - CRITICAL RULE: EVERY node you extract MUST have at least one connecting edge. Do not output isolated nodes.
 - CRITICAL RULE: Only extract entities that are explicitly, verbatim stated in the text. Do NOT infer, guess, or add external knowledge.
 - Standardize labels to Title Case.
@@ -555,22 +572,6 @@ def is_real_project(label: str) -> bool:
         return len(result.data) > 0
     except Exception:
         return False
-
-GROUNDED_TYPES = {
-    'project': ('projects', 'name'),
-    'person': ('people', 'name'),
-    'organization': ('organizations', 'name'),
-}
-
-def has_structural_anchor(label: str, node_type: str) -> bool:
-    if node_type not in GROUNDED_TYPES or GROUNDED_TYPES[node_type] is None:
-        return True  # no check available — allow through
-    table, column = GROUNDED_TYPES[node_type]
-    try:
-        result = supabase.table(table).select('id').ilike(column, label.strip()).execute()
-        return len(result.data) > 0
-    except Exception:
-        return True
 
 def get_or_create_node(label: str, node_type: str, graph_entities: dict, created_nodes: dict, memory_id: str = None) -> str:
     """

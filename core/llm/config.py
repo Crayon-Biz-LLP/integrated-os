@@ -12,3 +12,10 @@ class WorkloadProfile:
     SYNTHESIS = LLMConfig(timeout_s=300.0, max_retries=4, limiter_mode="wait")
     BATCH = LLMConfig(timeout_s=300.0, max_retries=5, limiter_mode="wait")
     EMBEDDING = LLMConfig(timeout_s=120.0, max_retries=3, limiter_mode="consume_deadline")
+
+# Reduced 15% from nominal to account for prompt boilerplate
+CONTEXT_TOKEN_BUDGETS = {
+    'morning_pulse':    1700,
+    'email_triage':      340,
+    'capture_grounding': 680,
+}

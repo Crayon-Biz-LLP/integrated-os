@@ -1,27 +1,43 @@
 import difflib
 import os
+from dotenv import load_dotenv
 from supabase import create_client, Client
+
+load_dotenv()
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 )
 
-BANNED_RELATIONSHIPS = {
-    'RELATES_TO', 'BELONGS_TO', 'AUTHORED',
-    'FEELS', 'INVOLVES', 'WORKS_WITH', 'KNOWS'
+GROUNDED_TYPES = {
+    'person':       ('people',        'name'),
+    'project':      ('projects',      'name'),
+    'organization': ('organizations', 'name'),
 }
 
-INVALID_COMBOS = {
-    ("person", "KNOWS", "emotional_state"): ("auto_reject", "emotions on memory metadata"),
-    ("person", "BELONGS_TO", "project"): ("auto_correct", "WORKS_AT"),
-    ("project", "KNOWS", "person"): ("auto_reject", "projects don't know people"),
-    ("task", "BELONGS_TO", "project"): ("auto_correct", "WORKS_ON"),
-    ("task", "INVOLVES", "person"): ("auto_correct", "DISCUSSED_WITH"),
-    ("organization", "KNOWS", "person"): ("auto_reject", "organizations don't know people"),
-    ("person", "OWNS", "person"): ("auto_reject", "OWNS is programmatic-only"),
-    ("person", "OWNS", "organization"): ("auto_reject", "OWNS is programmatic-only"),
-    ("project", "OWNS", "person"): ("auto_reject", "OWNS is programmatic-only"),
+VALID_EDGE_MATRIX = {
+    ('person',       'organization'): ['WORKS_AT', 'CLIENT_OF', 'VENDOR_TO'],
+    ('person',       'project'):      ['WORKS_ON', 'LEADS'],
+    ('person',       'person'):       ['MET_WITH', 'SPOUSE_OF', 'FAMILY_OF', 'FRIEND_OF'],
+    ('person',       'event'):        ['ATTENDED', 'INVOLVES'],
+    ('task',         'project'):      ['BELONGS_TO'],
+    ('task',         'task'):         ['BLOCKS', 'DEPENDS_ON'],
+    ('event',        'project'):      ['PART_OF'],
+    ('event',        'person'):       ['INVOLVES'],
+    ('project',      'project'):      ['DEPENDS_ON'],
+    ('memory',       'person'):       ['MENTIONS'],
+    ('memory',       'project'):      ['MENTIONS'],
+    ('memory',       'organization'): ['MENTIONS'],
+    ('memory',       'event'):        ['MENTIONS'],
+    
+    # Conceptual fluidity
+    ('project',      'concept'):      ['EVOKES', 'RELATES_TO'],
+    ('memory',       'concept'):      ['EVOKES'],
+    ('event',        'concept'):      ['EVOKES'],
+    ('person',       'concept'):      ['ASSOCIATED_WITH'],
+    ('task',         'concept'):      ['RELATES_TO'],
+    ('organization', 'concept'):      ['ASSOCIATED_WITH'],
 }
 
 _alias_cache = None
@@ -114,10 +130,17 @@ def propose_merge(source_node_id: str, target_node_id: str) -> dict:
 
 def validate_edge(source_type: str, relationship: str, target_type: str) -> dict:
     rel_upper = relationship.upper()
-    if rel_upper in BANNED_RELATIONSHIPS:
-        return {"action": "auto_reject", "reason": f"Banned relationship type: {rel_upper}"}
-    key = (source_type, rel_upper, target_type)
-    if key in INVALID_COMBOS:
-        action, reason = INVALID_COMBOS[key]
-        return {"action": action, "reason": reason}
-    return {"action": "pass"}
+    allowed = VALID_EDGE_MATRIX.get((source_type, target_type), [])
+    if rel_upper in allowed:
+        return {"action": "pass"}
+    return {"action": "auto_reject", "reason": f"Invalid relationship {rel_upper} for {source_type} -> {target_type}"}
+
+def has_structural_anchor(label: str, node_type: str) -> bool:
+    if node_type not in GROUNDED_TYPES or GROUNDED_TYPES[node_type] is None:
+        return True  # no check available — allow through
+    table, column = GROUNDED_TYPES[node_type]
+    try:
+        result = supabase.table(table).select('id').ilike(column, label.strip()).execute()
+        return len(result.data) > 0
+    except Exception:
+        return True

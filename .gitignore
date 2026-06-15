@@ -21,4 +21,4 @@ data/
 **/.vscode/
 **/node_modules/
 **/venv/
-product-summary/
+product-summary/*.log

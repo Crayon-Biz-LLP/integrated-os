@@ -145,7 +145,7 @@ Text: "{text}"
             
             # PHASE 2 HOOK: Evaluate edge
             from core.clarifier import evaluate_edge
-            eval_res = evaluate_edge(edge)
+            eval_res = evaluate_edge(edge, batch_mode=True)
             if eval_res:
                 pass
                 

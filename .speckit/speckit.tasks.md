@@ -248,7 +248,18 @@ T-003 (DLQ table) — parallel to T-002, required by T-006
 ```
 
 
-## Today's Changes (June 12, 2026)
+## Today's Changes (June 15, 2026)
+
+### T-401: Knowledge Graph Hardening (Layers 1-4) + Concept Fluidity
+**Status**: Completed
+**Details**: Executed a massive 4-session upgrade to the graph architecture:
+- **Layer 1-2 (Schema + Guardrails)**: Purged legacy nodes. Added temporal (`valid_from`, `valid_until`) and epistemic (`epistemic_status`) tracking. Replaced BANNED_RELATIONSHIPS with `VALID_EDGE_MATRIX` positive allowlist. Built zombie triggers for task/project completion to auto-close graph edges.
+- **Layer 3 (Context Salience Engine)**: Deployed `get_context_for()` bidirectional recursive CTE in Postgres. Built Python token-budgeted `assemble_context()` packer and `compute_css()` math model ($ln(1+count) \times e^{-\lambda t} \times W_{dist} \times W_{epi}$).
+- **Layer 4 (Active Reasoning)**: Wired email triage and Morning Pulse to use `assemble_context()` instead of flat task dumps. Activated Clarifier Phase 2 with similarity dedup checks.
+- **Concept Fluidity (Synaptic Plasticity)**: Upgraded ontology to support `concept` nodes. Added `EVOKES`, `RELATES_TO`, `ASSOCIATED_WITH` relationships to `VALID_EDGE_MATRIX`. Built and ran `concept_sweep_batch.py` to extract abstract concepts from all 416 historical memories.
+- **Frontend Upgrades**: Updated Next.js `node-pending-list` and `graph-pending-list` to surface `eval_context` (justification, linked entities, memory source) and `epistemic_status` in a collapsible UI. Built proactive `find_similar_node` detection that flags 85%+ label matches and offers a 1-click `[Merge into this]` button before approval. Added `processing_log` table for idempotency tracking.
+
+## Completed Features (Recent)
 
 ### T-021: Voice Memo → Note Pipeline
 **File**: `core/webhook/multimodal.py`

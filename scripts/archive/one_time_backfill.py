@@ -68,7 +68,7 @@ def run_one_time_backfill():
         
     fetch_pending_entities()
     
-    print("Starting batched parallel processing (8 workers). Rate limiter will manage RPM.")
+    print("Starting batched parallel processing (3 workers). Rate limiter will manage RPM.")
     processed_count = 0
     failed_count = 0
     BATCH_SIZE = 25
@@ -76,10 +76,10 @@ def run_one_time_backfill():
     for i in range(0, len(unprocessed), BATCH_SIZE):
         batch = unprocessed[i:i + BATCH_SIZE]
         batch_num = i // BATCH_SIZE + 1
-        print(f"\nProcessing batch {batch_num} ({len(batch)} memories)...")
+        print(f"\nProcessing batch {batch_num} ({len(batch)} memories)...", flush=True)
         
         extracted_data = []
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             future_to_mem = {
                 executor.submit(
                     extract_graph_elements, synthesize_content(m), m["id"], known_entities

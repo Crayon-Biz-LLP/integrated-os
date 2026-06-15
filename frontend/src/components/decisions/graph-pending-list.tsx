@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { decideGraphEdge } from '@/lib/decisions/api';
+import { checkSimilarGraphEdges, decideGraphEdge } from '@/lib/decisions/api';
 import type { GraphPendingEdge } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -38,9 +38,24 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
   const [editForm, setEditForm] = useState({ source: '', target: '', rel: '' });
   const [contextOpen, setContextOpen] = useState<number | null>(null);
   const [contextText, setContextText] = useState('');
+  const [similarEdges, setSimilarEdges] = useState<Record<number, any[]>>({});
+  const [detailsExpanded, setDetailsExpanded] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
     setItems(initialItems);
+    
+    Promise.all(initialItems.map(async (item) => {
+      try {
+        const matches = await checkSimilarGraphEdges(item.source_label, item.target_label, item.relationship);
+        if (matches && matches.length > 0) {
+          // exclude self
+          const realMatches = matches.filter((m: any) => !(m.is_pending && m.id === item.id));
+          if (realMatches.length > 0) {
+            setSimilarEdges(prev => ({ ...prev, [item.id]: realMatches }));
+          }
+        }
+      } catch (e) {}
+    }));
   }, [initialItems]);
 
   const handleDecision = async (id: number, decision: 'approve' | 'reject') => {
@@ -105,8 +120,17 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
         <Card key={item.id}>
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-base font-semibold">
+              <CardTitle className="text-base font-semibold flex items-center gap-2">
                 Pending Edge Validation
+                {item.epistemic_status && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-sm font-semibold uppercase tracking-wider ${
+                    item.epistemic_status === 'asserted' ? 'bg-emerald-500/20 text-emerald-400' :
+                    item.epistemic_status === 'hypothetical' ? 'bg-purple-500/20 text-purple-400' :
+                    'bg-zinc-700 text-zinc-300'
+                  }`}>
+                    {item.epistemic_status}
+                  </span>
+                )}
               </CardTitle>
             </div>
           </CardHeader>
@@ -169,11 +193,54 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
                   <span className="text-zinc-500">→</span>
                   <span className="text-cyan-400 font-semibold">{item.target_label}</span>
                 </div>
-                {item.source_text && (
-                  <p className="text-sm text-muted-foreground mb-3 italic border-l-2 border-zinc-700 pl-2">
-                    Source text: "{item.source_text.length > 200 ? item.source_text.slice(0, 200) + '…' : item.source_text}"
+                
+                {item.eval_context && item.eval_context.justification && (
+                  <p className="text-sm text-zinc-300 mb-3 bg-zinc-900/30 p-2 rounded border-l-2 border-amber-500/50">
+                    <span className="font-semibold text-zinc-500 mr-1">Why:</span>
+                    {item.eval_context.justification}
                   </p>
                 )}
+                
+                {item.source_text && (
+                  <div className="mb-3">
+                    {detailsExpanded[item.id] ? (
+                      <div className="relative">
+                        <p className="text-sm text-muted-foreground italic border-l-2 border-zinc-700 pl-2 whitespace-pre-wrap">
+                          {item.source_text}
+                        </p>
+                        <button 
+                          onClick={() => setDetailsExpanded(prev => ({ ...prev, [item.id]: false }))}
+                          className="text-xs text-zinc-500 hover:text-zinc-300 mt-1"
+                        >
+                          Show less
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground italic border-l-2 border-zinc-700 pl-2">
+                        {item.source_text.length > 200 ? (
+                          <>
+                            {item.source_text.slice(0, 200)}...
+                            <button 
+                              onClick={() => setDetailsExpanded(prev => ({ ...prev, [item.id]: true }))}
+                              className="text-xs text-blue-400 hover:underline ml-1"
+                            >
+                              Show more
+                            </button>
+                          </>
+                        ) : item.source_text}
+                      </p>
+                    )}
+                  </div>
+                )}
+                
+                {similarEdges[item.id] && similarEdges[item.id].length > 0 && (
+                  <div className="mb-3 bg-red-900/20 border border-red-700/50 p-2 rounded-md">
+                    <p className="text-xs font-medium text-red-400">
+                      ⚠️ Duplicate edge detected (already exists in {similarEdges[item.id][0].is_pending ? 'pending' : 'graph_edges'}).
+                    </p>
+                  </div>
+                )}
+                
                 {contextOpen === item.id ? (
                   <div className="mb-3">
                     <textarea

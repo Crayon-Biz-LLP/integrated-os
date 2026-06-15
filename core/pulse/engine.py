@@ -1193,6 +1193,12 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         target_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
         calendar_context = await context_provider.get_calendar_context_formatted(target_day)
 
+        # --- 🧭 LAYER 4: MORNING PULSE NARRATIVE ---
+        from core.pulse.context_salience import generate_morning_pulse
+        morning_pulse_narrative = ""
+        if briefing_mode == 'Morning Pulse' and relevant_project_names:
+            morning_pulse_narrative = generate_morning_pulse(relevant_project_names)
+
         prompt = f"""    
         ROLE: Danny's Rhodey. You are his most trusted advisor — the one who cuts through the noise and tells him exactly where he stands. You have full situational awareness of his work, family, and faith. You don't coach, motivate, or perform. You speak plainly, like a friend who has been in the room the whole time. Your job is to give Danny a clear picture of the board so he can make his next move.
         {conversation_history}
@@ -1216,6 +1222,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         {hindsight_context}
         
         GRAPH INTELLIGENCE {graph_task_context}
+        
+        MORNING PULSE GRAPH NARRATIVE (Layer 4 Active Reasoning):
+        {morning_pulse_narrative if morning_pulse_narrative else "None"}
         
         DEPENDENCY ALERTS (from graph_edges):
         {dependency_context if dependency_context else "None"}

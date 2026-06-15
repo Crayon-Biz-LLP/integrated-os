@@ -670,87 +670,86 @@ async def graph_nodes_search_route(request: Request):
     q = request.query_params.get('q', '').strip()
     node_type = request.query_params.get('type')
     if not q or len(q) < 2:
-        return {"data": []}
-    
-    from core.services.db import get_supabase
-    supabase = get_supabase()
-    query = supabase.table('graph_nodes').select('id, label, type').ilike('label', f"%{q}%")
-    if node_type:
-        query = query.eq('type', node_type)
-    
-    res = query.order('label').limit(10).execute()
-    return {"data": res.data or []}
-
-@app.post("/api/graph-node-merge")
-async def graph_node_merge_route(request: Request):
-    require_api_auth(request)
+        return []
     try:
-        body = await request.json()
-        pending_id = body.get('id')
-        target_id = body.get('target_id')
-        
-        if not pending_id or not target_id:
-            raise HTTPException(status_code=400, detail="id and target_id required")
-            
-        from core.lib.graph_rules import propose_merge
-        from core.services.db import get_supabase
         supabase = get_supabase()
+        query = supabase.table('graph_nodes').select('id, label, type').ilike('label', f'%{q}%')
+        if node_type:
+            query = query.eq('type', node_type)
+        res = query.limit(10).execute()
+        return res.data or []
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/graph-nodes/similar")
+async def graph_nodes_similar_route(request: Request):
+    require_api_auth(request)
+    label = request.query_params.get('label', '').strip()
+    node_type = request.query_params.get('type', '').strip()
+    threshold = float(request.query_params.get('threshold', 0.80))
+    if not label or not node_type:
+        return []
+    try:
+        from core.lib.graph_rules import find_similar_node
+        # find_similar_node returns [{'id': '...', 'label': '...', 'type': '...', 'score': 0.95}, ...]
+        matches = find_similar_node(label, node_type, threshold)
         
-        target_res = supabase.table('graph_nodes').select('id, label').eq('id', target_id).maybe_single().execute()
-        if not target_res or not target_res.data:
-            raise HTTPException(status_code=400, detail="Target node not found")
+        # Also check pending_graph_nodes for exact/high matches
+        supabase = get_supabase()
+        pending_res = supabase.table('pending_graph_nodes').select('id, label, type').eq('type', node_type).execute()
+        pending_nodes = pending_res.data or []
+        import difflib
+        target_lower = label.lower()
+        for p in pending_nodes:
+            if p.get('label', '').lower() == target_lower:
+                continue # ignore exact self if it happens
+            ratio = difflib.SequenceMatcher(None, target_lower, p.get('label', '').lower()).ratio()
+            if ratio >= threshold:
+                # Add a marker so the frontend knows it's pending
+                matches.append({
+                    'id': p['id'], 
+                    'label': p['label'], 
+                    'type': p['type'], 
+                    'score': round(ratio, 3),
+                    'is_pending': True
+                })
+                
+        return sorted(matches, key=lambda x: x['score'], reverse=True)[:5]
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/graph-edges/similar")
+async def graph_edges_similar_route(request: Request):
+    require_api_auth(request)
+    source = request.query_params.get('source', '').strip()
+    target = request.query_params.get('target', '').strip()
+    rel = request.query_params.get('rel', '').strip()
+    if not source or not target or not rel:
+        return []
+    try:
+        supabase = get_supabase()
+        # Find node IDs for the labels to check live graph_edges
+        src_res = supabase.table('graph_nodes').select('id').ilike('label', source).execute()
+        tgt_res = supabase.table('graph_nodes').select('id').ilike('label', target).execute()
         
-        # Check if already approved/created somehow
-        pending_res = supabase.table('pending_graph_nodes').select('label, type').eq('id', int(pending_id)).maybe_single().execute()
-        if not pending_res or not pending_res.data:
-            raise HTTPException(status_code=404, detail="Pending node not found")
-            
-        label = pending_res.data['label']
+        matches = []
+        if src_res.data and tgt_res.data:
+            for src_node in src_res.data:
+                for tgt_node in tgt_res.data:
+                    edge_res = supabase.table('graph_edges').select('id').eq('source_node_id', src_node['id']).eq('target_node_id', tgt_node['id']).eq('relationship', rel).execute()
+                    if edge_res.data:
+                        matches.append({'id': edge_res.data[0]['id'], 'is_pending': False})
         
-        source_res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
-        target_label = target_res.data['label']
-        
-        if not source_res or not source_res.data:
-            # Rewire pending_graph_edges labels to the target before merging
-            supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', label).execute()
-            supabase.table('pending_graph_edges').update({'target_label': target_label}).eq('target_label', label).execute()
+        # Check pending edges too
+        pend_res = supabase.table('pending_graph_edges').select('id').ilike('source_label', source).ilike('target_label', target).eq('relationship', rel).execute()
+        for p in (pend_res.data or []):
+            matches.append({'id': p['id'], 'is_pending': True})
             
-            supabase.table('pending_graph_nodes').update({
-                'status': 'merge_proposed',
-                'merge_candidate_id': target_id,
-                'source_text': 'manual_merge_override'
-            }).eq('id', int(pending_id)).execute()
-            return {"success": True, "message": "Merge proposed successfully (alias created)."}
-            
-        # If it DOES exist in graph_nodes already, propose the merge normally
-            
-        source_id = source_res.data['id']
-        
-        merge_res = propose_merge(source_id, target_id)
-        if not merge_res.get("success"):
-            # If propose_merge says "Already proposed", just update pending_graph_nodes to point to our target
-            if merge_res.get("message") == "Already proposed":
-                 supabase.table('pending_graph_nodes').update({
-                    'status': 'merge_proposed',
-                    'merge_candidate_id': target_id
-                }).eq('id', int(pending_id)).execute()
-                 return {"success": True, "message": "Merge updated."}
-            raise HTTPException(status_code=400, detail=merge_res.get("message", "Merge proposal failed"))
-            
-        # Rewire pending_graph_edges labels before merge
-        supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', label).execute()
-        supabase.table('pending_graph_edges').update({'target_label': target_label}).eq('target_label', label).execute()
-        
-        # Update the original pending node to reflect the merge proposal instead of 'approved' 
-        # so it moves to the Merges tab in UI
-        supabase.table('pending_graph_nodes').update({
-            'status': 'merge_proposed',
-            'merge_candidate_id': target_id
-        }).eq('id', int(pending_id)).execute()
-            
-        return merge_res
-    except HTTPException:
-        raise
+        return matches
     except Exception as e:
         import traceback
         traceback.print_exc()

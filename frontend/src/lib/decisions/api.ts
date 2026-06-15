@@ -81,3 +81,17 @@ export async function searchGraphNodes(query: string, type?: string): Promise<{ 
   const json = await res.json();
   return json.data || [];
 }
+
+export async function checkSimilarGraphNodes(label: string, type: string) {
+  const params = new URLSearchParams({ label, type, threshold: '0.85' });
+  const res = await fetch(`/api/graph-nodes/similar?${params.toString()}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function checkSimilarGraphEdges(source: string, target: string, rel: string) {
+  const params = new URLSearchParams({ source, target, rel });
+  const res = await fetch(`/api/graph-edges/similar?${params.toString()}`);
+  if (!res.ok) return [];
+  return res.json();
+}

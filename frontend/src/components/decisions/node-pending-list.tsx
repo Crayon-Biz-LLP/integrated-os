@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { decideGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes } from '@/lib/decisions/api';
+import { checkSimilarGraphNodes, decideGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes } from '@/lib/decisions/api';
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -81,9 +81,23 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
   const [mergingId, setMergingId] = useState<number | null>(null);
   const [editedLabels, setEditedLabels] = useState<Record<number, string>>({});
   const [editingLabelId, setEditingLabelId] = useState<number | null>(null);
+  const [similarNodes, setSimilarNodes] = useState<Record<number, any[]>>({});
+  const [ignoredSimilar, setIgnoredSimilar] = useState<Record<number, boolean>>({});
+  const [detailsExpanded, setDetailsExpanded] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
     setItems(initialItems);
+    
+    // Proactive merge check for non-project nodes
+    const toCheck = initialItems.filter(i => i.type !== 'project');
+    Promise.all(toCheck.map(async (item) => {
+      try {
+        const matches = await checkSimilarGraphNodes(item.label, item.type);
+        if (matches && matches.length > 0) {
+          setSimilarNodes(prev => ({ ...prev, [item.id]: matches }));
+        }
+      } catch (e) {}
+    }));
   }, [initialItems]);
 
   const handleDecision = async (id: number, decision: 'approve' | 'reject') => {
@@ -153,9 +167,20 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
         <Card key={item.id} className="overflow-hidden">
           <CardHeader className="bg-muted/30 py-3 px-4 border-b">
             <CardTitle className="text-sm font-medium flex justify-between items-center text-muted-foreground">
-              <span className="flex items-center">
-                <Box className="mr-2 h-4 w-4" />
-                {item.type.toUpperCase()} NODE
+              <span className="flex items-center gap-2">
+                <span className="flex items-center">
+                  <Box className="mr-2 h-4 w-4" />
+                  {item.type.toUpperCase()} NODE
+                </span>
+                {item.epistemic_status && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-sm font-semibold uppercase tracking-wider ${
+                    item.epistemic_status === 'asserted' ? 'bg-emerald-500/20 text-emerald-400' :
+                    item.epistemic_status === 'hypothetical' ? 'bg-purple-500/20 text-purple-400' :
+                    'bg-zinc-700 text-zinc-300'
+                  }`}>
+                    {item.epistemic_status}
+                  </span>
+                )}
               </span>
               <span className="text-xs font-normal">
                 {formatDistanceToNow(parseISO(item.created_at), { addSuffix: true })}
@@ -194,6 +219,32 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                       )}
                     </div>
                   <p className="text-xs text-muted-foreground mt-1">Source: {item.source_text}</p>
+                  
+                  {item.eval_context && (
+                    <div className="mt-2 text-sm border-l-2 border-zinc-700 pl-3">
+                      <button 
+                        onClick={() => setDetailsExpanded(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                        className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center mb-1"
+                      >
+                        {detailsExpanded[item.id] ? '▼ Hide details' : '► Show details'}
+                      </button>
+                      
+                      {detailsExpanded[item.id] && (
+                        <div className="space-y-2 mt-2 bg-zinc-900/30 p-2 rounded-md">
+                          {item.eval_context.justification && (
+                            <p><span className="font-semibold text-zinc-400">Why:</span> {item.eval_context.justification}</p>
+                          )}
+                          {item.eval_context.linked_entity && (
+                            <p><span className="font-semibold text-zinc-400">Linked:</span> {item.eval_context.linked_entity} <span className="text-zinc-500">—{item.eval_context.relationship}→</span> concept</p>
+                          )}
+                          {item.type === 'practice' && item.eval_context.frequency && (
+                            <p><span className="font-semibold text-zinc-400">Frequency:</span> {item.eval_context.frequency}</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {item.status === 'flagged' && (
                     <span className="inline-block mt-2 px-2 py-1 bg-yellow-100 text-yellow-800 text-xs font-medium rounded">
                       Flagged: Requires structural anchor
@@ -232,6 +283,35 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                       >
                         Cancel Merge
                       </Button>
+                    </div>
+                  )}
+
+                  {!ignoredSimilar[item.id] && similarNodes[item.id] && similarNodes[item.id].length > 0 && (
+                    <div className="mt-3 bg-yellow-900/20 border border-yellow-700/50 p-3 rounded-md">
+                      <p className="text-xs font-medium text-yellow-500 mb-2">⚠️ Similar existing nodes found:</p>
+                      <div className="space-y-2">
+                        {similarNodes[item.id].map((sim: any) => (
+                          <div key={sim.id} className="flex items-center justify-between text-sm">
+                            <span className="text-zinc-300">
+                              "{sim.label}" <span className="text-xs text-zinc-500">({Math.round(sim.score * 100)}%) {sim.is_pending ? '(pending)' : ''}</span>
+                            </span>
+                            <Button 
+                              size="sm" 
+                              variant="outline" 
+                              className="h-7 text-xs border-yellow-700/50 hover:bg-yellow-900/40"
+                              onClick={() => handleMerge(item.id, sim.id)}
+                            >
+                              Merge into this
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                      <button 
+                        className="text-xs text-zinc-500 hover:text-zinc-300 mt-3 underline decoration-zinc-700 underline-offset-2"
+                        onClick={() => setIgnoredSimilar(prev => ({ ...prev, [item.id]: true }))}
+                      >
+                        Ignore suggestions
+                      </button>
                     </div>
                   )}
                 </div>
