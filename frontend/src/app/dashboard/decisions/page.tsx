@@ -28,13 +28,13 @@ export default async function DecisionsPage() {
       .select("*")
       .eq("status", "pending")
       .order("created_at", { ascending: false })
-      .limit(100),
+      .limit(2000),
     supabase
       .from("pending_graph_nodes")
       .select("*")
       .in("status", ["pending", "flagged"])
       .order("created_at", { ascending: false })
-      .limit(100),
+      .limit(1000),
     supabase
       .from("pending_graph_nodes")
       .select("*")
