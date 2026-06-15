@@ -23,6 +23,9 @@ export function DecisionsShell({
   initialGraphNodes: GraphPendingNode[];
   initialMergeProposals: GraphMergeProposal[];
 }) {
+  const entityNodes = initialGraphNodes.filter(n => ["person", "project", "organization"].includes(n.type));
+  const otherNodes = initialGraphNodes.filter(n => !["person", "project", "organization"].includes(n.type));
+
   return (
     <div className="p-4 md:p-6">
       <h1 className="text-2xl font-bold tracking-tight">Decisions</h1>
