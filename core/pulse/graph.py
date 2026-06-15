@@ -346,8 +346,12 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
             return {"success": False, "action": "already_processed", "message": "Already processed."}
 
         if decision == 'reject':
+            label = pending_item['label']
             supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', pending_id).execute()
-            return {"success": True, "action": "rejected", "message": f"Rejected node {pending_item['label']}"}
+            # Cascade reject edges
+            supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('source_label', label).execute()
+            supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('target_label', label).execute()
+            return {"success": True, "action": "rejected", "message": f"Rejected node and related edges for {label}"}
 
         if decision == 'approve':
             label = pending_item['label']
@@ -376,6 +380,10 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
                     supabase.table('pending_graph_nodes').update({'status': 'flagged'}).eq('id', pending_id).execute()
                 else:
                     supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
+                    # Cascade auto-approve related concepts and EVOKES edges
+                    from core.pulse.auto_approve import auto_approve_concepts_and_evokes
+                    import asyncio
+                    asyncio.create_task(auto_approve_concepts_and_evokes(label))
 
             return result
 
