@@ -6,7 +6,8 @@ import { WhatsAppPendingList } from '@/components/decisions/whatsapp-pending-lis
 import { GraphPendingList } from '@/components/decisions/graph-pending-list';
 import { NodePendingList } from '@/components/decisions/node-pending-list';
 import { MergePendingList } from '@/components/decisions/merge-pending-list';
-import { Phone, MessageSquare, Network, Box, GitMerge } from 'lucide-react';
+import { EntityTableList } from '@/components/decisions/entity-table-list';
+import { Phone, MessageSquare, Network, Box, GitMerge, Users } from 'lucide-react';
 import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphPendingNode, GraphMergeProposal } from '@/lib/decisions/types';
 
 export function DecisionsShell({
@@ -57,12 +58,22 @@ export function DecisionsShell({
               </span>
             )}
           </TabsTrigger>
+          
+          <TabsTrigger value="entities">
+            <Users className="h-4 w-4 mr-2" />
+            Entities
+            {entityNodes.length > 0 && (
+              <span className="ml-1.5 text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full tabular-nums">
+                {entityNodes.length}
+              </span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="nodes">
             <Box className="h-4 w-4 mr-2" />
             Graph Nodes
-            {initialGraphNodes.length > 0 && (
+            {otherNodes.length > 0 && (
               <span className="ml-1.5 text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full tabular-nums">
-                {initialGraphNodes.length}
+                {otherNodes.length}
               </span>
             )}
           </TabsTrigger>
@@ -85,8 +96,12 @@ export function DecisionsShell({
         <TabsContent value="graph" className="mt-4">
           <GraphPendingList items={initialGraphItems} />
         </TabsContent>
+        
+        <TabsContent value="entities" className="mt-4">
+          <EntityTableList items={entityNodes} />
+        </TabsContent>
         <TabsContent value="nodes" className="mt-4">
-          <NodePendingList items={initialGraphNodes} />
+          <NodePendingList items={otherNodes} />
         </TabsContent>
         <TabsContent value="merge" className="mt-4">
           <MergePendingList items={initialMergeProposals} />

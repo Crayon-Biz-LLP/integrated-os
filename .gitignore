@@ -22,3 +22,4 @@ data/
 **/node_modules/
 **/venv/
 product-summary/*.log
+*.log

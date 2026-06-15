@@ -82,6 +82,30 @@ export async function searchGraphNodes(query: string, type?: string): Promise<{ 
   return json.data || [];
 }
 
+
+export async function renamePendingGraphNode(id: number, newLabel: string): Promise<void> {
+  const res = await fetch(`/api/graph-node/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label: newLabel }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to rename graph node' }));
+    throw new Error(err.detail || 'Failed to rename graph node');
+  }
+}
+
+export async function deletePendingGraphNode(id: number): Promise<{ message: string }> {
+  const res = await fetch(`/api/graph-node/${id}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to delete graph node' }));
+    throw new Error(err.detail || 'Failed to delete graph node');
+  }
+  return res.json();
+}
+
 export async function checkSimilarGraphNodes(label: string, type: string) {
   const params = new URLSearchParams({ label, type, threshold: '0.85' });
   const res = await fetch(`/api/graph-nodes/similar?${params.toString()}`);

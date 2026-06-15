@@ -664,6 +664,153 @@ async def graph_node_action_route(request: Request):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.put("/api/graph-node/{pending_id}")
+async def graph_node_rename_route(pending_id: int, request: Request):
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        new_label = body.get('label')
+        if not new_label or not new_label.strip():
+            raise HTTPException(status_code=400, detail="label required")
+        
+        new_label = new_label.strip()
+        from core.services.db import get_supabase
+        supabase = get_supabase()
+        
+        pending_res = supabase.table('pending_graph_nodes').select('label, type').eq('id', pending_id).maybe_single().execute()
+        if not pending_res or not pending_res.data:
+            return {"success": False, "message": "Pending node not found"}
+            
+        old_label = pending_res.data['label']
+        if old_label == new_label:
+            return {"success": True, "message": "Label unchanged"}
+
+        supabase.table('pending_graph_nodes').update({'label': new_label}).eq('id', pending_id).execute()
+        
+        supabase.table('pending_graph_edges').update({'source_label': new_label}).eq('source_label', old_label).execute()
+        supabase.table('pending_graph_edges').update({'target_label': new_label}).eq('target_label', old_label).execute()
+        
+        # Update concept nodes linked_entity
+        concepts_res = supabase.table('pending_graph_nodes').select('id, eval_context').eq('type', 'concept').execute()
+        if concepts_res and concepts_res.data:
+            for c in concepts_res.data:
+                ctx = c.get('eval_context') or {}
+                if ctx.get('linked_entity') == old_label:
+                    ctx['linked_entity'] = new_label
+                    supabase.table('pending_graph_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
+                    
+        return {"success": True, "message": "Renamed node and updated references"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/graph-node/{pending_id}")
+async def graph_node_delete_route(pending_id: int, request: Request):
+    require_api_auth(request)
+    try:
+        from core.services.db import get_supabase
+        supabase = get_supabase()
+        
+        pending_res = supabase.table('pending_graph_nodes').select('label, type').eq('id', pending_id).maybe_single().execute()
+        if not pending_res or not pending_res.data:
+            return {"success": False, "message": "Pending node not found"}
+            
+        label = pending_res.data['label']
+        
+        # Reject the node
+        supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', pending_id).execute()
+        
+        # Reject related edges
+        supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('source_label', label).execute()
+        supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('target_label', label).execute()
+        
+        # Reject orphaned concept nodes
+        orphaned = 0
+        concepts_res = supabase.table('pending_graph_nodes').select('id, eval_context').eq('type', 'concept').in_('status', ['pending', 'flagged']).execute()
+        if concepts_res and concepts_res.data:
+            for c in concepts_res.data:
+                ctx = c.get('eval_context') or {}
+                if ctx.get('linked_entity') == label:
+                    supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', c['id']).execute()
+                    orphaned += 1
+                    
+        return {"success": True, "message": f"Deleted node '{label}', rejected edges and {orphaned} orphaned concepts"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/graph-node-merge")
+async def graph_node_manual_merge_route(request: Request):
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        pending_id = body.get('id')
+        target_id = body.get('target_id')
+        
+        if not pending_id or not target_id:
+            raise HTTPException(status_code=400, detail="id and target_id required")
+            
+        from core.services.db import get_supabase
+        supabase = get_supabase()
+        
+        # Source node
+        source_res = supabase.table('pending_graph_nodes').select('label, type').eq('id', pending_id).maybe_single().execute()
+        if not source_res or not source_res.data:
+            return {"success": False, "message": "Source pending node not found"}
+        source_label = source_res.data['label']
+        
+        # Target node - check if it's live graph_nodes or pending_graph_nodes
+        target_label = None
+        
+        # Usually frontend search returns string IDs for live nodes, int for pending. Or we just search both.
+        # But wait, searchGraphNodes returns IDs from `graph_nodes`. Let's check search API.
+        target_res = supabase.table('graph_nodes').select('label').eq('id', target_id).maybe_single().execute()
+        if target_res and target_res.data:
+            target_label = target_res.data['label']
+        else:
+            # Maybe it's a pending node ID?
+            try:
+                t_id = int(target_id)
+                ptarget_res = supabase.table('pending_graph_nodes').select('label').eq('id', t_id).maybe_single().execute()
+                if ptarget_res and ptarget_res.data:
+                    target_label = ptarget_res.data['label']
+            except ValueError:
+                pass
+                
+        if not target_label:
+            return {"success": False, "message": "Target node not found"}
+            
+        if source_label == target_label:
+            # Delete source since it's already the same name
+            supabase.table('pending_graph_nodes').delete().eq('id', pending_id).execute()
+            return {"success": True, "message": "Nodes had same label. Source deleted."}
+
+        # Repoint pending edges
+        supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', source_label).execute()
+        supabase.table('pending_graph_edges').update({'target_label': target_label}).eq('target_label', source_label).execute()
+        
+        # Update concept nodes
+        concepts_res = supabase.table('pending_graph_nodes').select('id, eval_context').eq('type', 'concept').execute()
+        if concepts_res and concepts_res.data:
+            for c in concepts_res.data:
+                ctx = c.get('eval_context') or {}
+                if ctx.get('linked_entity') == source_label:
+                    ctx['linked_entity'] = target_label
+                    supabase.table('pending_graph_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
+                    
+        # Delete source pending node entirely
+        supabase.table('pending_graph_nodes').delete().eq('id', pending_id).execute()
+        
+        return {"success": True, "message": f"Merged '{source_label}' into '{target_label}'"}
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/graph-nodes/search")
 async def graph_nodes_search_route(request: Request):
     require_api_auth(request)
