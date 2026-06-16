@@ -374,7 +374,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
 
             if result.get('success'):
                 if result.get('action') == 'merge_proposed':
-                    supabase.table('pending_graph_nodes').update({'status': 'flagged'}).eq('id', pending_id).execute()
+                    supabase.table('pending_graph_nodes').update({'status': 'merge_proposed'}).eq('id', pending_id).execute()
                 else:
                     supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
                     # Cascade auto-approve related concepts and EVOKES edges
@@ -971,8 +971,10 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
     for e in edges:
         s_lbl = e.get("source", "")
         t_lbl = e.get("target", "")
-        if isinstance(s_lbl, str) and s_lbl.strip(): all_labels.add(s_lbl.strip())
-        if isinstance(t_lbl, str) and t_lbl.strip(): all_labels.add(t_lbl.strip())
+        if isinstance(s_lbl, str) and s_lbl.strip():
+            all_labels.add(s_lbl.strip())
+        if isinstance(t_lbl, str) and t_lbl.strip():
+            all_labels.add(t_lbl.strip())
 
     # 3. Resolve all labels
     resolved_labels = {}
