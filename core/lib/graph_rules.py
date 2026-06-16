@@ -13,9 +13,9 @@ GROUNDED_TYPES = {
 }
 
 VALID_EDGE_MATRIX = {
-    ('person',       'organization'): ['WORKS_AT', 'CLIENT_OF', 'VENDOR_TO'],
+    ('person',       'organization'): ['WORKS_AT', 'CLIENT_OF', 'VENDOR_TO', 'MEMBER_OF', 'SERVES_AT'],
     ('person',       'project'):      ['WORKS_ON', 'LEADS'],
-    ('person',       'person'):       ['MET_WITH', 'SPOUSE_OF', 'FAMILY_OF', 'FRIEND_OF'],
+    ('person',       'person'):       ['MET_WITH', 'SPOUSE_OF', 'FAMILY_OF', 'FRIEND_OF', 'KNOWS', 'DISCUSSED_WITH', 'MENTORS'],
     ('person',       'event'):        ['ATTENDED', 'INVOLVES'],
     ('task',         'project'):      ['BELONGS_TO'],
     ('task',         'task'):         ['BLOCKS', 'DEPENDS_ON'],
