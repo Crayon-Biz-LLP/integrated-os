@@ -770,7 +770,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         new_type = body.get('type')
         scope = body.get('scope', 'pending')
         
-        if not new_type or new_type not in ['person', 'project', 'organization', 'concept']:
+        if not new_type or new_type not in ['person', 'project', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']:
             raise HTTPException(status_code=400, detail="valid type required")
             
         from core.services.db import get_supabase

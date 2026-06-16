@@ -282,6 +282,10 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
                       <option value="project">project</option>
                       <option value="organization">organization</option>
                       <option value="concept">concept</option>
+                      <option value="place">place</option>
+                      <option value="event">event</option>
+                      <option value="animal">animal</option>
+                      <option value="emotional_state">emotional_state</option>
                     </select>
                   ) : (
                     <button 

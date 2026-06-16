@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { checkSimilarGraphNodes, decideGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes } from '@/lib/decisions/api';
+import { checkSimilarGraphNodes, decideGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, changePendingGraphNodeType } from '@/lib/decisions/api';
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -78,6 +78,7 @@ function MergeDropdown({
 export function NodePendingList({ items: initialItems }: { items: GraphPendingNode[] }) {
   const [items, setItems] = useState<GraphPendingNode[]>(initialItems);
   const [projectOrgTags, setProjectOrgTags] = useState<Record<number, string>>({});
+  const [changingTypeId, setChangingTypeId] = useState<number | null>(null);
   const [mergingId, setMergingId] = useState<number | null>(null);
   const [editedLabels, setEditedLabels] = useState<Record<number, string>>({});
   const [editingLabelId, setEditingLabelId] = useState<number | null>(null);
@@ -147,6 +148,17 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
     }
   };
 
+  const handleChangeType = async (id: number, newType: string) => {
+    try {
+      await changePendingGraphNodeType(id, newType, 'pending');
+      setItems(prev => prev.map(i => i.id === id ? { ...i, type: newType } : i));
+      setChangingTypeId(null);
+      toast.success(`Changed type to ${newType}`);
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to change type');
+    }
+  };
+
   const handleLabelEdit = (id: number, newLabel: string) => {
     setEditedLabels((prev) => ({ ...prev, [id]: newLabel }));
   };
@@ -171,9 +183,35 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
           <CardHeader className="bg-muted/30 py-3 px-4 border-b">
             <CardTitle className="text-sm font-medium flex justify-between items-center text-muted-foreground">
               <span className="flex items-center gap-2">
-                <span className="flex items-center">
-                  <Box className="mr-2 h-4 w-4" />
-                  {item.type.toUpperCase()} NODE
+                <span className="flex items-center gap-1">
+                  <Box className="h-4 w-4" />
+                  {changingTypeId === item.id ? (
+                    <select
+                      className="h-6 rounded-md border border-input bg-background px-1.5 py-0 text-xs shadow-sm font-semibold"
+                      defaultValue={item.type}
+                      onChange={(e) => handleChangeType(item.id, e.target.value)}
+                      onBlur={() => setChangingTypeId(null)}
+                      autoFocus
+                    >
+                      <option value="person">person</option>
+                      <option value="project">project</option>
+                      <option value="organization">organization</option>
+                      <option value="concept">concept</option>
+                      <option value="place">place</option>
+                      <option value="event">event</option>
+                      <option value="animal">animal</option>
+                      <option value="emotional_state">emotional_state</option>
+                    </select>
+                  ) : (
+                    <button
+                      onClick={() => setChangingTypeId(item.id)}
+                      className="inline-flex items-center rounded-md bg-secondary px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ring-1 ring-inset ring-secondary-foreground/10 hover:bg-secondary/80 cursor-pointer"
+                      title="Click to change type"
+                    >
+                      {item.type}
+                    </button>
+                  )}
+                  <span className="text-muted-foreground text-xs font-normal">NODE</span>
                 </span>
                 {item.epistemic_status && (
                   <span className={`text-[10px] px-1.5 py-0.5 rounded-sm font-semibold uppercase tracking-wider ${
