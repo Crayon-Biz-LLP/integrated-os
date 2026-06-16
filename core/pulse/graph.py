@@ -374,7 +374,10 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
 
             if result.get('success'):
                 if result.get('action') == 'merge_proposed':
-                    supabase.table('pending_graph_nodes').update({'status': 'merge_proposed'}).eq('id', pending_id).execute()
+                    supabase.table('pending_graph_nodes').update({
+                        'status': 'merge_proposed',
+                        'merge_candidate_id': result.get('merge_candidate_id')
+                    }).eq('id', pending_id).execute()
                 else:
                     supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
                     # Cascade auto-approve related concepts and EVOKES edges
