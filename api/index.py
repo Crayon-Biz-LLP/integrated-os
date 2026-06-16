@@ -687,6 +687,10 @@ async def graph_node_rename_route(pending_id: str, request: Request):
                 
             supabase.table('graph_nodes').update({'label': new_label}).eq('id', pending_id).execute()
             
+            # Update pending edges referencing this live node
+            supabase.table('pending_graph_edges').update({'source_label': new_label}).eq('source_label', old_label).execute()
+            supabase.table('pending_graph_edges').update({'target_label': new_label}).eq('target_label', old_label).execute()
+            
             # Update concept nodes linked_entity (if they linked by label)
             concepts_res = supabase.table('pending_graph_nodes').select('id, eval_context').eq('type', 'concept').execute()
             if concepts_res and concepts_res.data:
@@ -707,7 +711,6 @@ async def graph_node_rename_route(pending_id: str, request: Request):
                     'created_at': override_data['created_at']
                 }).execute()
             
-            # Note: graph_edges use IDs, so no need to cascade rename on edges
             return {"success": True, "message": "Renamed live node"}
 
         if not new_label or not new_label.strip():
@@ -814,9 +817,13 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                 return {"success": False, "message": "Live node not found"}
             label = live_res.data['label']
             
-            # Cascade delete edges
+            # Cascade delete live edges
             supabase.table('graph_edges').delete().eq('source_node_id', pending_id).execute()
             supabase.table('graph_edges').delete().eq('target_node_id', pending_id).execute()
+            
+            # Reject pending edges referencing this deleted node label
+            supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('source_label', label).execute()
+            supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('target_label', label).execute()
             
             # Reject orphaned concept nodes
             orphaned = 0
@@ -829,7 +836,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                         orphaned += 1
                         
             supabase.table('graph_nodes').delete().eq('id', pending_id).execute()
-            return {"success": True, "message": f"Deleted live node '{label}' and {orphaned} orphaned concepts"}
+            return {"success": True, "message": f"Deleted live node '{label}', {orphaned} orphaned concepts, and rejected matching pending edges"}
         
         try:
             pending_id_int = int(pending_id)
@@ -898,10 +905,14 @@ async def graph_node_manual_merge_route(request: Request):
             loser_id = pending_id
             winner_id = target_id
             
-            # Canonicalise and rewire edges
+            # Canonicalise and rewire live edges
             supabase.table('graph_nodes').update({'canonical_id': winner_id}).eq('id', loser_id).execute()
             supabase.table('graph_edges').update({'source_node_id': winner_id}).eq('source_node_id', loser_id).execute()
             supabase.table('graph_edges').update({'target_node_id': winner_id}).eq('target_node_id', loser_id).execute()
+            
+            # Repoint pending edges referencing the merged source label
+            supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', source_label).execute()
+            supabase.table('pending_graph_edges').update({'target_label': target_label}).eq('target_label', source_label).execute()
             
             # Update concept nodes linked_entity
             concepts_res = supabase.table('pending_graph_nodes').select('id, eval_context').eq('type', 'concept').execute()
@@ -912,10 +923,7 @@ async def graph_node_manual_merge_route(request: Request):
                         ctx['linked_entity'] = target_label
                         supabase.table('pending_graph_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
             
-            # Note: We keep the source node in graph_nodes but with a canonical_id, or we could delete it. 
-            # The original merge action just updates canonical_id, but here we can just delete it as user requested strong merge.
-            # But the existing system uses canonical_id. Let's stick with the existing graph merge logic which doesn't delete, 
-            # but wait, the user requested "the source should be removed". Let's delete it.
+            # Delete source live node
             supabase.table('graph_nodes').delete().eq('id', loser_id).execute()
             return {"success": True, "message": f"Merged live '{source_label}' into '{target_label}'"}
             
@@ -1160,8 +1168,14 @@ async def graph_nodes_live_route(request: Request):
         from core.services.db import get_supabase
         supabase = get_supabase()
         
-        # Only bringing the key nodes: person, project, organization
-        res = supabase.table('graph_nodes').select('id, label, type, created_at').in_('type', ['person', 'project', 'organization']).order('created_at', desc=True).limit(1000).execute()
+        # Bring key nodes and conceptual/structural entities (exclude system tasks/memories)
+        entity_types = ['person', 'project', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']
+        res = supabase.table('graph_nodes') \
+            .select('id, label, type, created_at') \
+            .in_('type', entity_types) \
+            .order('created_at', desc=True) \
+            .limit(1000) \
+            .execute()
         return {"data": res.data or []}
     except Exception as e:
         import traceback

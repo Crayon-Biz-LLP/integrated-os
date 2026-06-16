@@ -148,14 +148,10 @@ Some workflows use an **external cron service** because GitHub Actions free plan
 - `.specify/`: Update templates or workflows if the core development loop has changed.
 - *Violation example:* The completion handler was once committed without any `product-summary/` update. This is now explicitly forbidden by `.speckit/speckit.constitution.md`. Documentation is part of "Done".
 
-### CodeGraph Pre-Flight (Non-Negotiable)
-Before implementing any bug fix, behavior change, or new feature, the agent MUST run these three queries in order:
-
-1. **`codegraph_context("<problem description>")`** — maps all relevant files, symbols, and entry points in one view, preventing single-file tunnel vision
-2. **`codegraph_trace("<entry point>", "<target data/table>")`** — traces the full data flow from ingestion to storage, surfacing ALL paths (not just the symptomatic one)
-3. **`codegraph_impact("<symbol to change>")`** — reveals what other code depends on the symbol being modified
-
-Violation example: Yesterday's URL→TASK fix touched only `engine.py` because the symptom appeared there. `codegraph_trace("webhook_route", "raw_dumps")` would have revealed `dispatch.py:handle_confident_note` as the primary ingestion path, preventing the oversight.
+### Token Awareness
+- **Warn before heavy operations.** Before reading 5+ files at once, running extensive multi-file search operations, or any action expected to consume significant context, flag it to the user: "This will read N files / search across N paths — may be token-heavy."
+- **Prefer targeted reads over bulk.** Use `grep` + `read` with specific line ranges instead of reading entire large files blindly.
+- **Session length check.** If a session exceeds ~20 tool calls or is trending toward high context, proactively suggest the user start a fresh session for cleaner context.
 
 ### Canonical Import Paths (DRY — Non-Negotiable)
 
@@ -205,18 +201,9 @@ WHATSAPP_INGEST_SECRET  # Shared secret for WhatsApp ingest (X-Ingest-Secret hea
 
 ## Integrated AI Tooling
 
-This project is augmented with two local, persistent AI tools that opencode (and its sub-agents) should actively use:
+This project is augmented with one local, persistent AI tool that opencode (and its sub-agents) should actively use:
 
-### 1. CodeGraph (Semantic Code Search)
-* **Purpose:** Provides instantaneous, AST-aware knowledge graph querying of the codebase.
-* **Usage:** Prefer `codegraph_*` MCP tools over raw `grep` or `read` when exploring the codebase.
-* **Key Tools:** 
-  * `codegraph_context`: Use first to map a task or feature.
-  * `codegraph_trace`: Use to understand how a request flows from point A to point B.
-  * `codegraph_explore`: Use to view the source code of multiple related symbols in one call.
-* **Status:** Initialized locally in the `.codegraph/` directory.
-
-### 2. AgentMemory (Persistent Session Memory)
+### AgentMemory (Persistent Session Memory)
 * **Purpose:** Retains context, user preferences, past debugging steps, and architectural decisions across different terminal sessions.
 * **Usage:** Automatically captures tool usage and outputs. The agent should proactively use `memory_smart_search` to recall past context instead of asking the user to re-explain the stack.
 * **Status:** Runs persistently as a local PM2 background process (`agentmemory-server`) on `http://localhost:3111`. (Real-time viewer available at `http://localhost:3113`).
@@ -290,7 +277,7 @@ When making infrastructure changes:
 
 2. **Debugging Process (/diagnose):**
    - When the user pastes an error log (e.g., from `audit_logs` in Supabase), immediately jump to the "Hypothesize" and "Verify" steps.
-   - You MUST use the `CodeGraph` tool (`codegraph_trace`, `codegraph_context`) to verify your hypothesis before proposing a fix.
+   - Use the explore subagent or grep to trace the data flow and verify your hypothesis before proposing a fix.
 
 3. **Domain Documentation & ADRs:**
    - The "Shared Domain Language" and high-level "Architectural Decisions" are stored in the `product-summary/` folder.

@@ -590,9 +590,43 @@ def insert_pending_edges_batch(edges: list):
     except Exception as e:
         audit_log_sync("backfill_graph", "ERROR", f"Pending edge insert failed: {e}")
 
+def _ensure_edge_label_has_node(lbl: str, memory_id: str, source_table: str, seen: set):
+    """Create a pending node for an edge-only label that doesn't exist yet."""
+    if lbl in seen:
+        return
+    seen.add(lbl)
+
+    # Check existing nodes
+    existing = supabase.table("graph_nodes").select("id").eq("label", lbl).maybe_single().execute()
+    if existing and existing.data:
+        return
+    existing_p = supabase.table("pending_graph_nodes").select("id").eq("label", lbl).maybe_single().execute()
+    if existing_p and existing_p.data:
+        return
+
+    # Check people/projects tables for type hints
+    typ = "concept"
+    people_res = supabase.table("people").select("id").ilike("name", lbl).maybe_single().execute()
+    if people_res and people_res.data:
+        typ = "person"
+    else:
+        proj_res = supabase.table("projects").select("id").ilike("name", lbl.strip()).maybe_single().execute()
+        if proj_res and proj_res.data:
+            typ = "project"
+
+    supabase.table("pending_graph_nodes").insert({
+        "label": lbl,
+        "type": typ,
+        "source_text": f"{source_table}:{memory_id}",
+        "status": "pending"
+    }).execute()
+
+
 def insert_edges(edges: list, node_label_to_id: dict, memory_id: str, source_table: str = "memories"):
-    """Queue extracted edges for human approval in pending_graph_edges."""
+    """Queue extracted edges for human approval in pending_graph_edges.
+    Auto-creates pending nodes for edge-only labels not yet in the graph."""
     pending_batch = []
+    node_guard = set()
     for edge in edges:
         source_label = edge.get("source", "")
         target_label = edge.get("target", "")
@@ -600,6 +634,9 @@ def insert_edges(edges: list, node_label_to_id: dict, memory_id: str, source_tab
         
         if not source_label or not target_label:
             continue
+
+        _ensure_edge_label_has_node(source_label, memory_id, source_table, node_guard)
+        _ensure_edge_label_has_node(target_label, memory_id, source_table, node_guard)
             
         pending_batch.append({
             "source_label": source_label,

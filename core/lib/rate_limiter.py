@@ -61,4 +61,4 @@ class SlidingWindowLimiter:
 
 # Global shared limiter for gemini-3.1-flash-lite (free tier: 15 RPM)
 # Using 14 RPM as ceiling to safely maximize throughput
-flash_lite_limiter = SlidingWindowLimiter(max_calls=14, per_seconds=60, redis_key="rhodey:rate_limit:flash_lite")
+flash_lite_limiter = SlidingWindowLimiter(max_calls=13, per_seconds=60, redis_key="rhodey:rate_limit:flash_lite")
