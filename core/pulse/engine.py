@@ -1,4 +1,4 @@
-from core.llm.constants import CLASSIFICATION_MODEL
+from core.llm.constants import CLASSIFICATION_MODEL, SYNTHESIS_MODEL
 from core.llm import get_embedding
 import os
 import json
@@ -18,7 +18,7 @@ from core.services.db import versioned_update
 from core.services.google_service import get_tasks_service
 
 from core.pulse.llm import (
-    supabase, BRIEFING_MODEL,
+    supabase,
 )
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
@@ -1469,7 +1469,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             
             briefing_text = await run_agent_loop(
                 prompt=prompt,
-                model=BRIEFING_MODEL,
+                model=SYNTHESIS_MODEL,
                 config=config,
                 max_steps=10
             )
