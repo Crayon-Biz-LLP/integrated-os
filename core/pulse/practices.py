@@ -1,17 +1,14 @@
+from core.llm.constants import SYNTHESIS_MODEL
+from core.services.db import get_supabase
 from core.llm import get_embedding
-import os
 import json
 from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
 from core.pulse.llm import  cosine_similarity
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+supabase = get_supabase()
 
 
 async def detect_practices():
@@ -314,7 +311,7 @@ Return ONLY valid JSON:
                 response = await generate_content_with_fallback(
                     prompt=verify_prompt,
                     workload=WorkloadProfile.SYNTHESIS,
-                    primary_model="gemini-3.5-flash",
+                    primary_model=SYNTHESIS_MODEL,
                     config={'response_mime_type': 'application/json'},
                     require_json=True
                 )

@@ -1,3 +1,4 @@
+from core.llm.constants import CLASSIFICATION_MODEL
 """
 completion_handler.py
 Owns the full lifecycle of COMPLETION dumps.
@@ -114,7 +115,7 @@ Response: {{"matched_task_ids": [...]}}"""
             match_res = await generate_content_with_fallback(
                 prompt=match_prompt,
                 workload=WorkloadProfile.INTERACTIVE,
-                primary_model="gemini-3.1-flash-lite",
+                primary_model=CLASSIFICATION_MODEL,
                 config={"response_mime_type": "application/json"},
             )
             parsed = match_res.parse_json()

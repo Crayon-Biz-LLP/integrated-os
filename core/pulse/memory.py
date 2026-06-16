@@ -1,16 +1,12 @@
+from core.services.db import get_supabase
 from core.llm import get_embedding
-import os
 import asyncio
 from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+supabase = get_supabase()
 
 
 async def write_outcome_memory(task_title: str, project_name: str = None):

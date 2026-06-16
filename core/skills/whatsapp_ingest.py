@@ -1,3 +1,4 @@
+from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm import get_embedding
 import json
 import asyncio
@@ -68,7 +69,7 @@ Return ONLY valid JSON, NO markdown, NO explanation:
 
     response = await call_gemini_classify(
         prompt,
-        model="gemini-3.1-flash-lite",
+        model=CLASSIFICATION_MODEL,
         config={"response_mime_type": "application/json"}
     )
     return json.loads(response.text)

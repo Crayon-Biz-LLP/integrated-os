@@ -22,6 +22,7 @@
 - `JOURNALSYNC` signal handler — triggers GitHub Actions from Google Sheets
 - Personal capture pipeline — natural speech NOTE routing, `/note` command with entity extraction, `/api/roundup` evening check-in, voice memo→note pipeline
 - RLS on sensitive tables (pending_graph_edges, pending_graph_nodes, messages, system_audit_logs, dead_letter_queue)
+- **LLM Layer fully consolidated**: All API clients (Supabase, Gemini, Google) created once from canonical modules. Multi-key Gemini failover (3 keys). Unified fallback chain. Single rate limiter. Shared pending decision handler for call/whatsapp/teams channels.
 
 ### What is broken or incomplete
 - **PARTIAL**: Graph backfill running — ~77 clean pending edges currently; prior 699 junk nodes (concept, emotional_state, resource) deleted

@@ -8,9 +8,10 @@ from core.webhook.telegram import send_telegram, download_telegram_file, answer_
 from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
 from core.webhook.email import process_email_pending_decision, handle_ed_command
-from core.webhook.call import process_call_pending_decision
-from core.webhook.whatsapp import process_whatsapp_pending_decision
-from core.webhook.teams import process_teams_pending_decision
+from core.webhook.utils import process_channel_pending_decision
+
+
+
 from core.pulse.graph import process_graph_pending_decision, VALID_ORG_TAGS
 from core.webhook.graph import interpret_graph_corrections, apply_graph_actions, active_sessions, get_active_session, clear_session
 from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, ask_task_or_note_confirmation, resolve_task_note_confirmation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
@@ -150,9 +151,9 @@ async def process_callback_query(callback_query: dict):
             if prefix == 'e':
                 result = await process_email_pending_decision(sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'c':
-                result = await process_call_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+                result = await process_channel_pending_decision('call', sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'w':
-                result = await process_whatsapp_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+                result = await process_channel_pending_decision('whatsapp', sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'pe':
                 if action == 'edit':
                     pe_res = supabase.table('pending_graph_edges').select('source_label, relationship, target_label').eq('id', sc_int).maybe_single().execute()
@@ -215,9 +216,9 @@ async def process_callback_query(callback_query: dict):
                 # Unprefixed, try email then call then whatsapp
                 result = await process_email_pending_decision(sc_int, 'approve' if is_approve else 'reject')
                 if result.get('action') == 'not_found':
-                    result = await process_call_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+                    result = await process_channel_pending_decision('call', sc_int, 'approve' if is_approve else 'reject')
                     if result.get('action') == 'not_found':
-                        result = await process_whatsapp_pending_decision(sc_int, 'approve' if is_approve else 'reject')
+                        result = await process_channel_pending_decision('whatsapp', sc_int, 'approve' if is_approve else 'reject')
             
             if result and result.get('success'):
                 await send_telegram(chat_id, f"✅ {result.get('message', 'Done')}")
@@ -711,7 +712,7 @@ async def process_webhook(update: dict):
             try:
                 _sc = (_call_approve_match or _call_reject_match).group(1)
                 _is_approve = bool(_call_approve_match)
-                result = await process_call_pending_decision(
+                result = await process_channel_pending_decision('call', 
                     pending_id=int(_sc),
                     decision='approve' if _is_approve else 'reject'
                 )
@@ -732,7 +733,7 @@ async def process_webhook(update: dict):
             try:
                 _sc = (_whatsapp_approve_match or _whatsapp_reject_match).group(1)
                 _is_approve = bool(_whatsapp_approve_match)
-                result = await process_whatsapp_pending_decision(
+                result = await process_channel_pending_decision('whatsapp', 
                     pending_id=int(_sc),
                     decision='approve' if _is_approve else 'reject'
                 )
@@ -753,7 +754,7 @@ async def process_webhook(update: dict):
             try:
                 _sc = (_teams_approve_match or _teams_reject_match).group(1)
                 _is_approve = bool(_teams_approve_match)
-                result = await process_teams_pending_decision(
+                result = await process_channel_pending_decision('teams', 
                     pending_id=int(_sc),
                     decision='approve' if _is_approve else 'reject'
                 )
@@ -850,7 +851,7 @@ async def process_webhook(update: dict):
                     return {"success": True}
 
                 if result['action'] == 'not_found':
-                    call_result = await process_call_pending_decision(
+                    call_result = await process_channel_pending_decision('call', 
                         pending_id=int(_shortcode),
                         decision='approve' if _is_approve else 'reject'
                     )
@@ -863,7 +864,7 @@ async def process_webhook(update: dict):
                             raise Exception(call_result['message'])
                         return {"success": True}
 
-                    whatsapp_result = await process_whatsapp_pending_decision(
+                    whatsapp_result = await process_channel_pending_decision('whatsapp', 
                         pending_id=int(_shortcode),
                         decision='approve' if _is_approve else 'reject'
                     )

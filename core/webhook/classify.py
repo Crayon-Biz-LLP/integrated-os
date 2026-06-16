@@ -1,28 +1,13 @@
-import os
+from core.services.db import get_supabase
 import re
 from datetime import datetime, timezone, timedelta
 
-from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
-
-
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.llm.constants import SAFE_HOLD_CLASSIFICATION
+from core.llm.constants import SAFE_HOLD_CLASSIFICATION, CLASSIFICATION_MODEL
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
-
-
-
-
-EMBEDDING_MODEL = "gemini-embedding-2-preview"
-
-CLASSIFICATION_MODEL = "gemini-3.1-flash-lite"
-
-EMBEDDING_DIMENSION = 768
+supabase = get_supabase()
 
 
 async def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]", conversation_history: str = "") -> dict:

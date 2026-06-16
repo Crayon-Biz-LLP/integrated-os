@@ -137,7 +137,7 @@ async def _execute_retry(item: dict) -> bool:
             return False # Original dump gone, can't retry
             
         text = dump.data.get("content", "")
-        from core.llm.compat import get_embedding
+        from core.llm import get_embedding
         emb_res = await get_embedding(text)
         embedding = emb_res.vector if emb_res else None
         
@@ -182,7 +182,7 @@ async def _execute_retry(item: dict) -> bool:
         if not mem.data:
             return False
             
-        from core.llm.compat import get_embedding
+        from core.llm import get_embedding
         emb_res = await get_embedding(mem.data["content"])
         embedding = emb_res.vector if emb_res else None
         

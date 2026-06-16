@@ -1,17 +1,14 @@
+from core.llm.constants import SYNTHESIS_MODEL
+from core.services.db import get_supabase
 from core.llm import get_embedding
 from core.llm.fallback import generate_content_with_fallback
-import os
 import json
 import asyncio
-from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.people_utils import normalize_person_name
-from core.lib.graph_rules import find_similar_node, validate_edge, resolve_alias
+from core.lib.graph_rules import find_similar_node, validate_edge, resolve_alias, resolve_canonical_label
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+supabase = get_supabase()
 
 VALID_ORG_TAGS = {'SOLVSTRAT', 'QHORD', 'PERSONAL', 'CRAYON', 'ASHRAYA'}
 TYPE_TO_DANNY_EDGE = {
@@ -265,7 +262,7 @@ Format:
         response = await generate_content_with_fallback(
             prompt=prompt,
             system_instruction="You are a graph extraction engine. Output raw JSON array only. No markdown formatting. No explanation.",
-            model="gemini-3.5-flash",
+            model=SYNTHESIS_MODEL,
             temperature=0.0
         )
         
@@ -918,3 +915,197 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"⚠️ Graph task context fetch failed (non-critical): {e}")
         return ""
+
+BYPASS_APPROVAL_TYPES = {'concept'}
+
+def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_type: str):
+    """
+    Unified extraction insertion pipeline.
+    source_type: 'task', 'memory', 'raw_dump'
+    """
+    # 1. Resolve source node (the memory/task itself)
+    source_label = f"{source_type.capitalize()}_{source_id}"
+    try:
+        source_node_res = supabase.table('graph_nodes') \
+            .select('id') \
+            .eq('type', source_type) \
+            .filter(f'metadata->>{source_type}_id', 'eq', str(source_id)) \
+            .maybe_single() \
+            .execute()
+            
+        if source_node_res and source_node_res.data:
+            root_node_id = source_node_res.data['id']
+        else:
+            new_node = supabase.table('graph_nodes').insert({
+                "label": source_label,
+                "type": source_type,
+                "metadata": {f"{source_type}_id": source_id, "source": "insert_extracted_entities"}
+            }).execute()
+            root_node_id = new_node.data[0]['id']
+    except Exception:
+        # If we can't create/find root node, we can still process edges
+        root_node_id = None
+
+    # Build unique nodes map from extracted nodes
+    extracted_nodes = {}
+    
+    # Fetch type overrides
+    overrides_res = supabase.table('graph_type_overrides').select('*').execute()
+    overrides_map = {r['label'].lower(): r['node_type'] for r in overrides_res.data} if overrides_res.data else {}
+
+    for n in nodes:
+        lbl = n.get("label", "")
+        if isinstance(lbl, str):
+            lbl = lbl.strip()
+            typ = n.get("type", "concept")
+            if lbl:
+                # Apply type override if exists
+                if lbl.lower() in overrides_map:
+                    typ = overrides_map[lbl.lower()]
+                extracted_nodes[lbl] = typ
+
+    # 2. Process all edges to find edge-only entities
+    pending_edges_batch = []
+    
+    all_labels = set(extracted_nodes.keys())
+    for e in edges:
+        s_lbl = e.get("source", "")
+        t_lbl = e.get("target", "")
+        if isinstance(s_lbl, str) and s_lbl.strip(): all_labels.add(s_lbl.strip())
+        if isinstance(t_lbl, str) and t_lbl.strip(): all_labels.add(t_lbl.strip())
+
+    # 3. Resolve all labels
+    resolved_labels = {}
+    for lbl in all_labels:
+        resolved = resolve_canonical_label(lbl)
+        if resolved["confidence"] == 0.0 and len(resolved["label"]) >= 3:
+            # Looks real but has no match anywhere. Determine type.
+            typ = extracted_nodes.get(lbl, "concept")
+            resolved["node_type"] = typ
+            resolved["needs_creation"] = True
+        else:
+            resolved["needs_creation"] = False
+        resolved_labels[lbl] = resolved
+
+    # 4. Create missing nodes
+    node_id_map = {}
+    for raw_lbl, r in resolved_labels.items():
+        c_lbl = r["label"]
+        if r["confidence"] == 0.0 and r.get("needs_creation"):
+            typ = r["node_type"]
+            if typ in BYPASS_APPROVAL_TYPES:
+                # Direct to graph_nodes
+                try:
+                    ins_res = supabase.table("graph_nodes").insert({
+                        "label": c_lbl,
+                        "type": typ,
+                        "metadata": {"source": "insert_extracted_entities"}
+                    }).execute()
+                    if ins_res.data:
+                        node_id_map[c_lbl] = ins_res.data[0]["id"]
+                except Exception:
+                    pass
+            else:
+                # To pending
+                status = "pending" if typ in ['person', 'project', 'organization'] else "flagged"
+                try:
+                    pend_check = supabase.table('pending_graph_nodes').select('id').eq('label', c_lbl).maybe_single().execute()
+                    if not pend_check.data:
+                        supabase.table('pending_graph_nodes').insert({
+                            "label": c_lbl,
+                            "type": typ,
+                            "source_text": f"{source_type}:{source_id}",
+                            "status": status
+                        }).execute()
+                except Exception:
+                    pass
+        elif r["node_id"]:
+            # Known node, store ID for MENTIONS link
+            # Only if it's a UUID (live graph node)
+            try:
+                import uuid
+                uuid.UUID(str(r["node_id"]))
+                node_id_map[c_lbl] = r["node_id"]
+            except ValueError:
+                pass
+
+    # 5. Link extracted nodes to root_node (MENTIONS edges)
+    mentions_to_insert = []
+    if root_node_id:
+        for raw_lbl in extracted_nodes.keys():
+            r = resolved_labels[raw_lbl]
+            c_lbl = r["label"]
+            if r["confidence"] > 0 and c_lbl in node_id_map:
+                mentions_to_insert.append({
+                    "source_node_id": root_node_id,
+                    "target_node_id": node_id_map[c_lbl],
+                    "relationship": "MENTIONS",
+                    "weight": 1.0,
+                    "metadata": {"source": "insert_extracted_entities"}
+                })
+        if mentions_to_insert:
+            try:
+                for i in range(0, len(mentions_to_insert), 50):
+                    supabase.table('graph_edges').insert(mentions_to_insert[i:i+50]).execute()
+            except Exception:
+                pass
+
+    # 6. Create pending edges
+    for e in edges:
+        s_raw = e.get("source", "")
+        t_raw = e.get("target", "")
+        if not isinstance(s_raw, str) or not isinstance(t_raw, str):
+            continue
+            
+        s_raw = s_raw.strip()
+        t_raw = t_raw.strip()
+        rel = e.get("relationship", "RELATES_TO")
+        if not isinstance(rel, str):
+            rel = "RELATES_TO"
+        rel = rel.upper()
+
+        if not s_raw or not t_raw:
+            continue
+
+        s_res = resolved_labels.get(s_raw)
+        t_res = resolved_labels.get(t_raw)
+
+        if not s_res or not t_res:
+            continue
+
+        # Skip noise
+        if s_res["confidence"] == 0.0 and not s_res.get("needs_creation"):
+            continue
+        if t_res["confidence"] == 0.0 and not t_res.get("needs_creation"):
+            continue
+
+        s_c = s_res["label"]
+        t_c = t_res["label"]
+
+        pending_edges_batch.append({
+            "source_label": s_c,
+            "target_label": t_c,
+            "relationship": rel,
+            "source_text": f"{source_type}:{source_id}",
+            "source_table": source_type,
+            "status": "pending"
+        })
+
+    if pending_edges_batch:
+        try:
+            existing_res = supabase.table("pending_graph_edges").select("source_label,target_label,relationship").eq("status", "pending").execute()
+            existing_set = {f"{r['source_label']}|{r['target_label']}|{r['relationship']}" for r in (existing_res.data or [])}
+            
+            to_insert = []
+            for edge in pending_edges_batch:
+                key = f"{edge['source_label']}|{edge['target_label']}|{edge['relationship']}"
+                if key not in existing_set:
+                    to_insert.append(edge)
+                    existing_set.add(key)
+                    
+            if to_insert:
+                for i in range(0, len(to_insert), 100):
+                    supabase.table("pending_graph_edges").insert(to_insert[i:i+100]).execute()
+        except Exception as e:
+            audit_log_sync("pulse", "ERROR", f"Pending edge insert failed: {e}")
+

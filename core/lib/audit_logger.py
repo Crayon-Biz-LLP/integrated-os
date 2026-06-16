@@ -2,23 +2,18 @@
 Audit Logger - Replaces print() with permanent audit trail.
 Writes to Supabase audit_logs table for observability.
 """
-import os
 import json
 import contextvars
 import traceback
-from supabase import create_client, Client
+from core.services.db import get_supabase
 
 # Optional context variable for request correlation
 trace_id_var = contextvars.ContextVar('trace_id', default=None)
 
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
-if not supabase_url or not supabase_key:
-    # Just mock it so tests and imports don't crash. Real writes will fail if it actually runs.
+try:
+    supabase = get_supabase()
+except Exception:
     supabase = None
-else:
-    supabase: Client = create_client(supabase_url, supabase_key)
 
 async def audit_log(service: str, level: str, message: str, metadata: dict = None):
     """

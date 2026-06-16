@@ -1,6 +1,5 @@
-import os
+from core.services.db import get_supabase
 from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
 from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
 from core.lib.audit_logger import audit_log_sync
@@ -9,10 +8,7 @@ from core.lib.temporal_lineage import create_versioned_task
 from core.services.db import versioned_update
 from core.services.outlook_service import get_outlook_calendar_events
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+supabase = get_supabase()
 
 
 class MemoryCache(base.Cache):

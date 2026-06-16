@@ -140,6 +140,20 @@ The system must NOT:
 
 ---
 
+### P11 — No Duplicated Infrastructure
+
+Every new file MUST import shared services from their canonical locations. Never create a second Supabase client, Gemini client, Google credential factory, or fallback chain.
+
+Violation examples:
+- ❌ `from supabase import create_client; supabase = create_client(...)` in app code
+- ❌ `genai.Client(api_key=...)` outside `core/llm/client.py`
+- ❌ `Credentials(refresh_token=..., client_id=..., ...)` outside `core/services/google_service.py`
+- ❌ Custom retry/fallback loop when `call_llm_with_fallback_sync()` exists
+
+See the "Canonical Import Paths" table in `AGENTS.md` for the complete list.
+
+---
+
 ## 7. What "Done" Means
 
 A feature is DONE when:

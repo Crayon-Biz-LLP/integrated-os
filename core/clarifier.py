@@ -1,15 +1,7 @@
-import os
+from core.services.db import get_supabase
 import uuid
 from typing import Optional
-from supabase import create_client, Client
 from core.lib.graph_rules import find_similar_node, has_structural_anchor
-
-# Lazy client initialization
-def get_supabase() -> Client:
-    return create_client(
-        os.getenv("SUPABASE_URL"),
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    )
 
 def _invoke_llm_evaluation(prompt: str, schema: dict) -> dict:
     """Helper to call LLM for evaluation."""

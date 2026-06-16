@@ -1,3 +1,4 @@
+from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm import get_embedding
 import json
 import asyncio
@@ -15,7 +16,6 @@ from core.services.llm import call_gemini_classify
 
 supabase = get_supabase()
 
-RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
 NOREPLY_PATTERNS = [
     'noreply', 'no-reply', 'donotreply', 'mailer-daemon',
     'bounce', 'notifications@', 'automated@',
@@ -61,7 +61,7 @@ Body:
 {body[:1000]}"""
 
     try:
-        response = await call_gemini_classify(prompt, model="gemini-3.1-flash-lite")
+        response = await call_gemini_classify(prompt, model=CLASSIFICATION_MODEL)
         text = response.text.strip()
         if text and '"reasoning": "safe_hold"' in text:
             print(f"Draft generation returned safe_hold fallback for [{subject}]")
@@ -121,7 +121,7 @@ Summary: {summary}
 Output ONLY a concise 1-2 sentence note about the relationship context."""
 
     try:
-        response = await call_gemini_classify(prompt, model="gemini-3.1-flash-lite")
+        response = await call_gemini_classify(prompt, model=CLASSIFICATION_MODEL)
         note_content = response.text.strip()
         embedding = (await get_embedding(note_content)).vector
 
@@ -312,7 +312,7 @@ Return ONLY valid JSON, NO markdown, NO explanation:
 
     response = await call_gemini_classify(
         prompt,
-        model="gemini-3.1-flash-lite",
+        model=CLASSIFICATION_MODEL,
         config={"response_mime_type": "application/json"}
     )
     return json.loads(response.text)

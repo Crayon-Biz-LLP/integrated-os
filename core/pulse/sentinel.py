@@ -1,7 +1,8 @@
+from core.llm.constants import SYNTHESIS_MODEL
+from core.services.db import get_supabase
 import os
 from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
-from supabase import create_client
 
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import get_google_creds
@@ -77,7 +78,7 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
         print("Sentinel missing env vars.")
         return {"error": "Missing env vars", "status": 500}
 
-    supabase = create_client(supabase_url, supabase_key)
+    supabase = get_supabase()
     run_id = await create_pulse_run(supabase, "sentinel", trigger)
 
     try:
@@ -128,7 +129,7 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
                         ai_briefing = await generate_content_with_fallback(
                             prompt=prompt,
                             workload=WorkloadProfile.SYNTHESIS,
-                            primary_model=os.getenv("GEMINI_FLASH_MODEL", "gemini-3.5-flash"),
+                            primary_model=os.getenv("GEMINI_FLASH_MODEL", SYNTHESIS_MODEL),
                             config={"temperature": 0.2}
                         )
                         msg += f"\n\n🧠 **Pre-Flight Context:**\n{ai_briefing.text.strip()}"

@@ -1,186 +1,25 @@
+from core.llm.retry import get_jittered_backoff
+from core.llm.constants import CLASSIFICATION_MODEL
+from core.llm.compat import call_llm_with_fallback_sync, get_embedding_sync
 import os
 import sys
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import uuid
-import httpx
-from dotenv import load_dotenv
 
-from core.lib.rate_limiter import flash_lite_limiter
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
 from core.lib.graph_rules import validate_edge, resolve_alias, has_structural_anchor
 from core.services.db import get_supabase
 from core.services.pipeline_service import add_to_failed_queue
-from core.services.llm import get_gemini_client
 
-load_dotenv()
+
 
 supabase = get_supabase()
-gemini_client = get_gemini_client()
-
-# OpenRouter config
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
-PULSE_HTTP_REFERER = os.getenv("PULSE_HTTP_REFERER", "http://localhost:8000")
-PULSE_APP_NAME = os.getenv("PULSE_APP_NAME", "Pulse")
-GEMMA_FALLBACK_MODEL = "gemma-4-31b-it"
-OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-
-RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit', '429']
-NON_RETRYABLE_ERRORS = ['401', '403', '400', 'invalid']
 
 
-def call_llm_with_fallback_sync(
-    prompt: str,
-    model: str = None,
-    config: dict = None,
-    is_critical: bool = True,
-    require_json: bool = False
-):
-    """
-    Synchronous multi-provider LLM call with fallback chain.
-    Provider chain:
-    1. Primary: Gemini (gemini-3.1-flash-lite)
-    2. Fallback: Gemma (gemma-4-31b-it)
-    3. Fallback: OpenRouter (nvidia/nemotron-3-super-120b-a12b:free)
-    """
-    if model is None:
-        model = "gemini-3.1-flash-lite"
-    
-    max_retries_per_provider = 2 if is_critical else 1
-    base_delay = 8 if is_critical else 4
-    
-    def _call_gemini(p, cfg):
-        pool = ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(
-            gemini_client.models.generate_content,
-            model=model,
-            contents=p,
-            config=cfg or {}
-        )
-        try:
-            return future.result(timeout=90.0)
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
-    
-    def _call_gemma(p, cfg):
-        pool = ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(
-            gemini_client.models.generate_content,
-            model=GEMMA_FALLBACK_MODEL,
-            contents=p,
-            config=cfg or {}
-        )
-        try:
-            return future.result(timeout=90.0)
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
-    
-    def _call_openrouter(p, cfg):
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": PULSE_HTTP_REFERER,
-            "X-Title": PULSE_APP_NAME
-        }
-        system_instruction = cfg.get('system_instruction') if cfg else None
-        temperature = cfg.get('temperature', 0.7) if cfg else 0.7
-        
-        messages = []
-        if system_instruction:
-            messages.append({"role": "system", "content": system_instruction})
-        messages.append({"role": "user", "content": prompt})
-        
-        body = {
-            "model": OPENROUTER_MODEL,
-            "messages": messages,
-            "temperature": temperature
-        }
-        
-        if cfg and cfg.get('response_mime_type') == "application/json":
-            body["response_format"] = {"type": "json_object"}
-        
-        resp = httpx.post(OPENROUTER_BASE_URL, json=body, headers=headers, timeout=60.0)
-        resp.raise_for_status()
-        data = resp.json()
-        
-        class SimpleResponse:
-            def __init__(self, text):
-                self.text = text
-        
-        if 'choices' in data and len(data['choices']) > 0:
-            return SimpleResponse(data['choices'][0]['message']['content'])
-        return SimpleResponse(data.get('content', '') or json.dumps(data))
-    
-    providers = [
-        {"provider": "gemini", "model": model, "fn": _call_gemini},
-        {"provider": "gemma", "model": GEMMA_FALLBACK_MODEL, "fn": _call_gemma},
-    ]
-    
-    if OPENROUTER_API_KEY:
-        providers.append({
-            "provider": "openrouter",
-            "model": OPENROUTER_MODEL,
-            "fn": _call_openrouter
-        })
-    
-    last_error = None
-    
-    for provider_idx, prov in enumerate(providers):
-        provider_name = prov["provider"]
-        model_name = prov["model"]
-        
-        for attempt in range(max_retries_per_provider):
-            try:
-                # Rate limit: only for Gemini flash-lite model
-                if provider_name in ["gemini", "gemma"]:
-                    flash_lite_limiter.acquire()
-                response = prov["fn"](prompt, config)
-                
-                if hasattr(response, 'text'):
-                    response_text = response.text
-                else:
-                    response_text = str(response)
-                
-                if require_json:
-                    try:
-                        if response_text.strip().startswith('{') or response_text.strip().startswith('['):
-                            json.loads(response_text)
-                    except ValueError as pe:
-                        audit_log_sync("backfill_graph", "WARNING", f"⚠️ LLM JSON parse failed provider={provider_name}: {pe}")
-                        if provider_idx == len(providers) - 1:
-                            raise
-                        continue
-                
-                print(f"✓ LLM success provider={provider_name} model={model_name}")
-                return response
-                
-            except Exception as e:
-                error_str = str(e).lower()
-                
-                is_retryable = any(err in error_str for err in RETRYABLE_ERRORS)
-                is_non_retryable = any(err in error_str for err in NON_RETRYABLE_ERRORS)
-                
-                if is_non_retryable:
-                    audit_log_sync("backfill_graph", "ERROR", f"✗ LLM non-retryable error provider={provider_name}: {e}")
-                    raise
-                
-                if is_retryable and attempt < max_retries_per_provider - 1:
-                    delay = base_delay * (2 ** attempt)
-                    audit_log_sync("backfill_graph", "WARNING", f"⚠️ LLM retry provider={provider_name} attempt={attempt+1} delay={delay:.0f}s error={error_str[:50]}")
-                    time.sleep(delay)
-                    continue
-                
-                audit_log_sync("backfill_graph", "WARNING", f"⚠️ LLM provider failed provider={provider_name} model={model_name}: {error_str[:80]}")
-                last_error = e
-                break
-        
-        if provider_idx < len(providers) - 1:
-            print(f"🔄 LLM fallback -> {providers[provider_idx + 1]['provider']}")
-    
-    raise last_error or Exception("All LLM providers failed")
+
 
 BATCH_SIZE = 50  # Process more memories per batch
 MEMORY_TYPES = [
@@ -194,13 +33,12 @@ def with_retry(fn, retries=3, base_delay=1, label="operation"):
             return fn()
         except Exception as e:
             if attempt < retries - 1:
-                wait = base_delay * (2 ** attempt)
-                audit_log_sync("backfill_graph", "ERROR", f"{label} failed (attempt {attempt+1}/3), retrying in {wait}s... Error: {e}")
+                wait = get_jittered_backoff(attempt, base_delay)
+                audit_log_sync("backfill_graph", "ERROR", f"{label} failed (attempt {attempt+1}/{retries}), retrying in {wait:.1f}s... Error: {e}")
                 time.sleep(wait)
             else:
-                print(f"{label} failed after 3 attempts: {e}")
+                audit_log_sync("backfill_graph", "CRITICAL", f"{label} failed after {retries} attempts.")
                 raise e
-
 
 def fetch_all_paginated(table_name: str, select_str: str = "*", in_filter_col=None, in_filter_val=None):
     all_rows = []
@@ -348,29 +186,6 @@ def synthesize_content(memory: dict) -> str:
 
 # ── EMBEDDING BACKFILL ──────────────────────────────────────────────────────
 
-def get_embedding(text: str) -> list | None:
-    """Generate a 768-dim embedding via Gemini for a given text string."""
-    if not text or not text.strip():
-        return None
-    try:
-        result = with_retry(
-            lambda: gemini_client.models.embed_content(
-                model="gemini-embedding-2-preview",
-                contents=text,
-                config={"task_type": "RETRIEVAL_DOCUMENT", "output_dimensionality": 768}
-            ),
-            retries=3,
-            base_delay=2,
-            label="Gemini embedding"
-        )
-        if result and result.embeddings:
-            return result.embeddings[0].values
-        return None
-    except Exception as e:
-        print(f"Embedding failed: {e}")
-        return None
-
-
 def backfill_embeddings():
     """
     Finds all rows in `memories` where embedding IS NULL,
@@ -422,7 +237,7 @@ def backfill_embeddings():
             failed += 1
             continue
 
-        embedding = get_embedding(content)
+        embedding = get_embedding_sync(content)
 
         if not embedding:
             audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ Embedding failed for {memory_id}")
@@ -526,7 +341,7 @@ Rules:
     try:
         response = call_llm_with_fallback_sync(
             prompt=prompt,
-            model="gemini-3.1-flash-lite",
+            model=CLASSIFICATION_MODEL,
             config={"response_mime_type": "application/json"},
             is_critical=False,
             require_json=True

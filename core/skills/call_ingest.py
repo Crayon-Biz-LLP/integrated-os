@@ -4,7 +4,6 @@ import io
 import tempfile
 import asyncio
 from datetime import datetime, timezone
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from faster_whisper import WhisperModel
@@ -18,16 +17,7 @@ WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
 supabase = get_supabase()
 
 
-def get_google_creds():
-    return Credentials(
-        None,
-        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
-        client_id=os.getenv("GOOGLE_CLIENT_ID"),
-        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-        token_uri="https://oauth2.googleapis.com/token",
-        scopes=["https://www.googleapis.com/auth/drive.readonly"]
-    )
-
+from core.services.google_service import get_google_creds
 
 def get_drive_service():
     return build("drive", "v3", credentials=get_google_creds())

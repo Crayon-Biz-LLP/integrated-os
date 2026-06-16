@@ -1,6 +1,5 @@
 import os
 import uuid
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 GOOGLE_DRIVE_CALLS_FOLDER_ID = os.getenv("GOOGLE_DRIVE_CALLS_FOLDER_ID")
@@ -9,16 +8,7 @@ WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "")
 CHANNEL_ID = os.getenv("DRIVE_WATCH_CHANNEL_ID", "integrated-os-call-ingest")
 
 
-def get_google_creds():
-    return Credentials(
-        None,
-        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
-        client_id=os.getenv("GOOGLE_CLIENT_ID"),
-        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-        token_uri="https://oauth2.googleapis.com/token",
-        scopes=["https://www.googleapis.com/auth/drive.readonly"]
-    )
-
+from core.services.google_service import get_google_creds
 
 def renew_channel():
     folder_id = GOOGLE_DRIVE_CALLS_FOLDER_ID

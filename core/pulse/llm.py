@@ -1,8 +1,7 @@
-from core.llm.compat import get_embedding
-import os
+from core.services.db import get_supabase
+from core.llm import get_embedding
 import asyncio
 from typing import Callable, Dict, Any, List
-from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync
 
 class ToolRegistry:
@@ -37,10 +36,7 @@ class ToolRegistry:
 # Global tool registry
 
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+supabase = get_supabase()
 
 
 async def is_already_in_email_queue(title: str) -> bool:
@@ -98,29 +94,3 @@ def cosine_similarity(a: list, b: list) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
-
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
-
-PULSE_ENABLE_OPENROUTER_FALLBACK = os.getenv("PULSE_ENABLE_OPENROUTER_FALLBACK", "true").lower() == "true"
-
-PULSE_HTTP_REFERER = os.getenv("PULSE_HTTP_REFERER", "http://localhost:8000")
-
-PULSE_APP_NAME = os.getenv("PULSE_APP_NAME", "Pulse")
-
-GEMMA_FALLBACK_MODEL = "gemma-4-31b-it"
-
-GEMMA_SPEED_MODEL = "gemma-4-26b-a4b-it"
-
-OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-
-RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
-
-NON_RETRYABLE_ERRORS = ['401', '403', '400', 'invalid']
-
-EMBEDDING_MODEL = "gemini-embedding-2-preview"
-
-EMBEDDING_DIMENSION = 768
-
-BRIEFING_MODEL = "gemini-3.5-flash"

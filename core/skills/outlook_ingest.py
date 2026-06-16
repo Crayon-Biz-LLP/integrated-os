@@ -1,4 +1,5 @@
-from core.llm.compat import get_embedding
+from core.llm.constants import CLASSIFICATION_MODEL
+from core.llm import get_embedding
 import os
 import json
 import asyncio
@@ -40,7 +41,6 @@ def fetch_rejected_email_tasks() -> list:
         print(f"Failed to build rejected task list: {e}")
         return []
 
-RETRYABLE_ERRORS = ['503', '504', '500', 'disconnected', 'timeout', 'deadline exceeded', 'unavailable', 'overloaded', 'rate limit']
 NOREPLY_PATTERNS = [
     'noreply', 'no-reply', 'donotreply', 'mailer-daemon',
     'bounce', 'notifications@', 'automated@',
@@ -97,7 +97,7 @@ Body:
 {body[:1000]}"""
 
     try:
-        response = await call_gemini_with_retry(prompt, model="gemini-3.1-flash-lite")
+        response = await call_gemini_with_retry(prompt, model=CLASSIFICATION_MODEL)
         text = response.text.strip()
         if text and '"reasoning": "safe_hold"' in text:
             print(f"Draft generation returned safe_hold fallback for [{subject}]")
@@ -186,7 +186,7 @@ Return ONLY valid JSON, NO markdown, NO explanation:
 
     response = await call_gemini_with_retry(
         prompt,
-        model="gemini-3.1-flash-lite",
+        model=CLASSIFICATION_MODEL,
         config={"response_mime_type": "application/json"}
     )
     return json.loads(response.text)

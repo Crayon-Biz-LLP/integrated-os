@@ -1,14 +1,73 @@
+from core.services.db import get_supabase
 import os
 import httpx
 from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.audit_logger import audit_log_sync
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+supabase = get_supabase()
+
+
+async def process_channel_pending_decision(channel: str, pending_id: int, decision: str) -> dict:
+    """Shared handler for processing approve/reject for channel-specific pending messages (teams, whatsapp, call)."""
+    row_res = supabase.table('messages')\
+        .select('*')\
+        .eq('id', pending_id)\
+        .eq('channel', channel)\
+        .is_('danny_decision', 'null')\
+        .limit(1)\
+        .maybe_single()\
+        .execute()
+
+    if not row_res.data:
+        decided = supabase.table('messages')\
+            .select('id, danny_decision')\
+            .eq('id', pending_id)\
+            .maybe_single()\
+            .execute()
+        if decided.data and decided.data.get('danny_decision'):
+            return {"success": False, "message": f"This {channel} item was already {decided.data['danny_decision']}.", "action": None}
+        return {"success": False, "message": f"Pending {channel} item {pending_id} not found.", "action": None}
+
+    msg = row_res.data
+    is_approved = decision.lower() in ["y", "yes", "approve", "approved"]
+
+    title = msg.get('suggested_title') or msg.get('body', '')[:60]
+    sender_name = msg.get('sender_name', '')
+    sender_id = msg.get('sender_id', '')
+    summary = msg.get('summary', '') or msg.get('metadata', {}).get('summary', '')
+
+    if is_approved:
+        # Route to raw_dumps for extraction
+        supabase.table('raw_dumps').insert({
+            "content": title,
+            "source": channel,
+            "status": "pending",
+            "direction": "incoming",
+            "sender": "user",
+            "message_type": "task",
+            "metadata": {
+                "sender_name": sender_name,
+                "sender_id": sender_id,
+                f"{channel}_summary": summary,
+                "source": f"{channel}_approval",
+                "original_msg_id": msg['id']
+            }
+        }).execute()
+        
+        action_msg = "approved and queued for extraction"
+        decision_val = "approved"
+    else:
+        action_msg = "rejected and discarded"
+        decision_val = "rejected"
+
+    # Mark as decided
+    supabase.table('messages').update({
+        'danny_decision': decision_val,
+        'decided_at': datetime.now(timezone.utc).isoformat()
+    }).eq('id', pending_id).execute()
+
+    return {"success": True, "message": f"Task from {channel} {action_msg}.", "action": decision_val}
 
 
 def is_already_in_tasks_table(title: str) -> dict:

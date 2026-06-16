@@ -1,18 +1,7 @@
-import os
-from supabase import create_client, Client
+from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 from .constants import Outcome
 from .response import LLMResponse, EmbeddingResult
-
-_supabase = None
-def get_supabase() -> Client:
-    global _supabase
-    if _supabase is None:
-        _supabase = create_client(
-            os.getenv("SUPABASE_URL", "http://localhost"),
-            os.getenv("SUPABASE_SERVICE_ROLE_KEY", "dummy")
-        )
-    return _supabase
 
 def log_llm_outcome(response: LLMResponse, outcome: Outcome, prompt: str = ""):
     status = "WARNING" if response.degraded else "INFO"

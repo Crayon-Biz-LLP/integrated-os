@@ -5,7 +5,7 @@ from typing import Any
 
 from .config import WorkloadProfile, LLMConfig
 from .response import LLMResponse
-from .constants import Outcome, SAFE_HOLD_CLASSIFICATION
+from .constants import Outcome, SAFE_HOLD_CLASSIFICATION, SYNTHESIS_MODEL, OPENROUTER_MODEL, GEMMA_FALLBACK_MODEL
 from .errors import DeadlineExceeded, NonRetryableError, BreakerOpenError, ParseError
 from .breaker import CircuitBreaker
 from .retry import DeadlineBudget, get_jittered_backoff
@@ -18,8 +18,8 @@ gemini_breaker = CircuitBreaker("gemini", threshold=4, window_s=60)
 async def generate_content_with_fallback(
     prompt: str,
     workload: LLMConfig = WorkloadProfile.INTERACTIVE,
-    primary_model: str = "gemini-3.5-flash",
-    fallback_model: str = "nvidia/nemotron-3-super-120b-a12b:free",
+    primary_model: str = SYNTHESIS_MODEL,
+    fallback_model: str = OPENROUTER_MODEL,
     contents: Any = None,
     is_classification: bool = False,
     require_json: bool = False,
@@ -75,13 +75,7 @@ async def generate_content_with_fallback(
                     elif isinstance(current_contents, str):
                         current_contents += hint_text
                         
-                # Apply rate limiter for flash-lite
-                if model_name == "gemini-3.1-flash-lite":
-                    from core.lib.rate_limiter import flash_lite_limiter
-                    await flash_lite_limiter.acquire_async()
-                    # Re-check deadline after potentially waiting for rate limit
-                    budget.check_deadline()
-                    timeout_s = budget.time_remaining()
+                # Rate limiter is handled inside the provider function (call_gemini)
                 
                 text, function_calls, raw_response = await provider_fn(
                     model=model_name,
@@ -172,7 +166,7 @@ async def generate_content_with_fallback(
     # Fallback path 1 (Gemma via Gemini SDK)
     if budget.has_budget_for_hop(1.0):
         try:
-            resp = await _try_provider("gemini_gemma", call_gemini, "gemma-4-31b-it", 1)
+            resp = await _try_provider("gemini_gemma", call_gemini, GEMMA_FALLBACK_MODEL, 1)
             log_llm_outcome(resp, Outcome.FALLBACK_SUCCESS, prompt=prompt)
             return resp
         except Exception as e:

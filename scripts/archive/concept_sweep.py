@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.services.db import get_supabase  # noqa: E402
-from core.skills.backfill_graph import call_llm_with_fallback_sync, synthesize_content  # noqa: E402
+from core.llm.constants import CLASSIFICATION_MODEL
+from core.llm.compat import call_llm_with_fallback_sync
+from core.skills.backfill_graph import synthesize_content
 from core.clarifier import evaluate_node  # noqa: E402
 
 supabase = get_supabase()
@@ -49,7 +51,7 @@ Rules:
     try:
         response = call_llm_with_fallback_sync(
             prompt=prompt,
-            model="gemini-3.1-flash-lite",
+            model=CLASSIFICATION_MODEL,
             config={"response_mime_type": "application/json"},
             is_critical=False,
             require_json=True

@@ -1,3 +1,4 @@
+from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm import get_embedding
 import os
 import json
@@ -471,7 +472,7 @@ Resources:
         response = await generate_content_with_fallback(
             prompt=prompt,
             workload=WorkloadProfile.SYNTHESIS,
-            primary_model="gemini-3.1-flash-lite",
+            primary_model=CLASSIFICATION_MODEL,
             config={'response_mime_type': 'application/json'},
             require_json=True
         )
@@ -688,7 +689,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 sort_response = await generate_content_with_fallback(
                     prompt=sort_prompt,
                     workload=WorkloadProfile.SYNTHESIS,
-                    primary_model="gemini-3.1-flash-lite",
+                    primary_model=CLASSIFICATION_MODEL,
                     config={'response_mime_type': 'application/json'},
                     require_json=True
                 )

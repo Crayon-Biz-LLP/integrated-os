@@ -248,6 +248,21 @@ T-003 (DLQ table) — parallel to T-002, required by T-006
 ```
 
 
+## Today's Changes (June 16, 2026)
+
+### T-402: LLM Layer Consolidation — Eliminate All Duplicated Code
+**Status**: Completed
+**Details**: Eliminated 11 patterns of code duplication across 45+ files:
+- **Supabase clients**: Removed 17 redundant `create_client()` calls across app code. All now use `from core.services.db import get_supabase`.
+- **Gemini clients**: Single source in `core/llm/client.py`. Added `get_gemini_clients()` supporting up to 3 API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`) with transparent failover on `429`/`RESOURCE_EXHAUSTED`.
+- **Google credentials**: Unified under `core/services/google_service.py::get_google_creds()`. Removed inline OAuth re-creation in `email.py`, `call_ingest.py`, `renew_drive_channel.py`.
+- **Fallback chain**: `backfill_graph.py` no longer maintains its own LLM fallback chain. Deleted ~200 lines of duplicated retry/embedding/fallback code. Now delegates to `core/llm/compat.py`.
+- **Double rate limiter**: Removed redundant `flash_lite_limiter.acquire_async()` in `fallback.py` — the single call in `providers.py` is sufficient. Effective throughput doubled.
+- **Model constants**: `CLASSIFICATION_MODEL`, `EMBEDDING_DIMENSION`, `GEMMA_FALLBACK_MODEL`, `OPENROUTER_MODEL`, `RETRYABLE_ERRORS`, `NON_RETRYABLE_ERRORS` all centralized in `core/llm/constants.py`.
+- **Pending decision handlers**: Deleted 3 redundant files (`call.py`, `whatsapp.py`, `teams.py` — ~300 lines total). All channels now route through `core/webhook/utils.py::process_channel_pending_decision()`.
+- **Hardcoded model strings**: Replaced `"gemini-3.5-flash"` and `"gemini-3.1-flash-lite"` with `SYNTHESIS_MODEL` and `CLASSIFICATION_MODEL` imports in `compat.py`, `backfill_graph.py`, and concept sweep scripts.
+- **Dead code**: Removed unused `supabase_url`/`supabase_key` vars in `temporal_lineage.py`. Removed all duplicate constants from `core/pulse/llm.py`.
+
 ## Today's Changes (June 15, 2026)
 
 ### T-401: Knowledge Graph Hardening (Layers 1-4) + Concept Fluidity

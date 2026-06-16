@@ -12,11 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.lib.audit_logger import trace_id_var
 
 from core.webhook import (
+    process_channel_pending_decision,
     process_webhook,
     send_draft_reply,
     process_email_pending_decision,
-    process_call_pending_decision,
-    process_whatsapp_pending_decision,
+    
+    
 )
 from core.pulse.graph import process_pending_edge_decision
 from core.skills.whatsapp_ingest import process_whatsapp_message
@@ -463,7 +464,7 @@ async def call_action_route(request: Request):
         elif action == 'no':
             action = 'reject'
 
-        result = await process_call_pending_decision(int(pending_id), action)
+        result = await process_channel_pending_decision('call', int(pending_id), action)
 
         if result['success']:
             return {"success": True, "message": result['message'], "action": result['action']}
@@ -493,7 +494,7 @@ async def whatsapp_action_route(request: Request):
         elif action == 'no':
             action = 'reject'
 
-        result = await process_whatsapp_pending_decision(int(pending_id), action)
+        result = await process_channel_pending_decision('whatsapp', int(pending_id), action)
 
         if result['success']:
             return {"success": True, "message": result['message'], "action": result['action']}

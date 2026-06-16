@@ -3,7 +3,7 @@ import base64
 import httpx
 from email.mime.text import MIMEText
 from email.utils import getaddresses
-from google.oauth2.credentials import Credentials
+from core.services.google_service import get_google_creds
 from googleapiclient.discovery import build
 from core.lib.audit_logger import audit_log_sync
 from core.webhook.telegram import send_telegram
@@ -141,13 +141,7 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
         }
 
 def get_gmail_service():
-    creds = Credentials(
-        None,
-        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
-        client_id=os.getenv("GOOGLE_CLIENT_ID"),
-        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-        token_uri="https://oauth2.googleapis.com/token"
-    )
+    creds = get_google_creds()
     return build('gmail', 'v1', credentials=creds, cache=None)
 
 async def send_draft_reply(draft_id: int) -> tuple:

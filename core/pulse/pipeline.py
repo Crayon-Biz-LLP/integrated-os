@@ -1,15 +1,12 @@
+from core.services.db import get_supabase
 from core.llm import get_embedding
 import os
 from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
 from core.lib.audit_logger import audit_log_sync, error
 from core.pulse.utils import format_error
 from core.services.db import versioned_update
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+supabase = get_supabase()
 
 
 async def update_heartbeat():

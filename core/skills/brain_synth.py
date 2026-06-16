@@ -1,4 +1,5 @@
-from core.llm.compat import get_embedding
+from core.llm.constants import CLASSIFICATION_MODEL
+from core.llm import get_embedding
 import asyncio
 import json
 import os
@@ -234,7 +235,7 @@ NEW FRAGMENTS:
                 response = await generate_content_with_fallback(
                     prompt=per_prompt,
                     workload=WorkloadProfile.SYNTHESIS,
-                    primary_model="gemini-3.1-flash-lite",
+                    primary_model=CLASSIFICATION_MODEL,
                     config={'response_mime_type': 'text/plain'}
                 )
                 if response and response.text:

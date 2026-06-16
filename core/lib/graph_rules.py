@@ -1,14 +1,10 @@
+from core.services.db import get_supabase
 import difflib
-import os
 from dotenv import load_dotenv
-from supabase import create_client, Client
 
 load_dotenv()
 
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
+supabase = get_supabase()
 
 GROUNDED_TYPES = {
     'person':       ('people',        'name'),
@@ -54,7 +50,107 @@ def resolve_alias(label: str) -> str:
             _alias_cache = {}
             
     lookup = label.lower().strip()
-    return _alias_cache.get(lookup, label)
+    if lookup in _alias_cache:
+        canonical = _alias_cache[lookup]
+        # Write-back async or fire-and-forget
+        try:
+            # We can't do async easily here, so just sync execute
+            res = supabase.table("person_aliases").select("resolution_count").eq("alias", lookup).maybe_single().execute()
+            count = res.data.get("resolution_count", 0) if res and res.data else 0
+            supabase.table("person_aliases").update({
+                "resolution_count": count + 1,
+                "last_resolved_at": "now()"
+            }).eq("alias", lookup).execute()
+        except Exception:
+            pass
+        return canonical
+    return label
+
+NOISE_LABELS = {
+    # Pronouns
+    'i', 'he', 'she', 'his', 'her', 'they', 'we', 'user', 'the user', 'me', 'my', 'mine',
+    # Generic structural terms
+    'loops', 'the backlog', 'the author', 'the system', 'the team', 'the person', 'the narrator',
+    'nine active projects', 'the board', 'the client', 'the mission', 'the project', 'test', 'docket', 'tasks',
+    # Single noise words
+    'god', 'app', 'book', 'system', 'project', 'mission', 'church', 'family', 'wife', 'father', 'mother', 'brother', 'sister', 'son', 'daughter', 'husband', 'operations', 'revenue', 'identity', 'prayer', 'revenue'
+}
+
+def resolve_canonical_label(raw_label: str) -> dict:
+    """Returns the closest canonical match for a raw label.
+    
+    Resolution chain:
+    1. person_aliases table (Amma -> Mother, user -> Danny)
+    2. Length check (< 3 chars -> noise)
+    3. graph_nodes ILIKE match
+    4. pending_graph_nodes ILIKE match
+    5. people/projects/organizations ILIKE match
+    6. NOISE_LABELS check
+    
+    Returns: {"label": canonical_label, "node_id": id_or_none, "node_type": type, "exists_in_pending": bool, "confidence": float}
+    """
+    label = raw_label.strip()
+    
+    # 1. Alias check
+    label = resolve_alias(label)
+    
+    result = {
+        "label": label,
+        "node_id": None,
+        "node_type": None,
+        "exists_in_pending": False,
+        "confidence": 0.0
+    }
+    
+    # 2. Length check
+    if len(label) < 3:
+        return result
+        
+    # 3. ILIKE match against graph_nodes
+    if len(label) >= 4:
+        try:
+            gn_res = supabase.table("graph_nodes").select("id, label, type").ilike("label", label).maybe_single().execute()
+            if gn_res and gn_res.data:
+                result["label"] = gn_res.data["label"]
+                result["node_id"] = gn_res.data["id"]
+                result["node_type"] = gn_res.data["type"]
+                result["confidence"] = 1.0
+                return result
+        except Exception:
+            pass
+            
+        # 4. ILIKE match against pending_graph_nodes
+        try:
+            pgn_res = supabase.table("pending_graph_nodes").select("id, label, type").ilike("label", label).in_("status", ["pending", "approved", "merge_proposed", "flagged"]).maybe_single().execute()
+            if pgn_res and pgn_res.data:
+                result["label"] = pgn_res.data["label"]
+                result["node_id"] = str(pgn_res.data["id"])
+                result["node_type"] = pgn_res.data["type"]
+                result["exists_in_pending"] = True
+                result["confidence"] = 0.95
+                return result
+        except Exception:
+            pass
+            
+        # 5. DB lookup for grounded types
+        for tbl, typ in [('projects', 'project'), ('people', 'person'), ('organizations', 'organization')]:
+            try:
+                db_res = supabase.table(tbl).select('id, name').ilike('name', label).maybe_single().execute()
+                if db_res and db_res.data:
+                    result["label"] = db_res.data["name"]
+                    result["node_type"] = typ
+                    result["confidence"] = 0.9
+                    return result
+            except Exception:
+                pass
+            
+    # 6. NOISE_LABELS check
+    if label.lower() in NOISE_LABELS:
+        result["confidence"] = 0.0
+        return result
+        
+    # Unmatched but passes filters
+    return result
 
 
 def find_similar_node(label: str, node_type: str, threshold: float = 0.55) -> list[dict]:

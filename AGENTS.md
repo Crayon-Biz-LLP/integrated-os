@@ -157,11 +157,37 @@ Before implementing any bug fix, behavior change, or new feature, the agent MUST
 
 Violation example: Yesterday's URL→TASK fix touched only `engine.py` because the symptom appeared there. `codegraph_trace("webhook_route", "raw_dumps")` would have revealed `dispatch.py:handle_confident_note` as the primary ingestion path, preventing the oversight.
 
-## Required Environment Variables
+### Canonical Import Paths (DRY — Non-Negotiable)
+
+**Every new file MUST use these imports. NEVER duplicate the underlying logic.**
+
+| Need | Canonical Import |
+|------|-----------------|
+| Supabase client | `from core.services.db import get_supabase` |
+| Gemini client | `from core.llm.client import get_gemini_client` |
+| Google credentials | `from core.services.google_service import get_google_creds` |
+| LLM call with fallback (async) | `from core.llm.fallback import generate_content_with_fallback` |
+| LLM call with fallback (sync) | `from core.llm.compat import call_llm_with_fallback_sync` |
+| LLM call with retry (async, compat) | `from core.llm.compat import call_gemini_with_retry` |
+| Embedding (async) | `from core.llm import get_embedding` |
+| Embedding (sync) | `from core.llm.compat import get_embedding_sync` |
+| Model constants | `from core.llm.constants import CLASSIFICATION_MODEL, SYNTHESIS_MODEL, EMBEDDING_MODEL, GEMMA_FALLBACK_MODEL, OPENROUTER_MODEL, EMBEDDING_DIMENSION` |
+| Retry error lists | `from core.llm.constants import RETRYABLE_ERRORS, NON_RETRYABLE_ERRORS` |
+| Retry backoff | `from core.llm.retry import get_jittered_backoff` |
+| Pending decision handler | `from core.webhook.utils import process_channel_pending_decision` |
+| Audit logging | `from core.lib.audit_logger import log_audit, audit_log_sync, info, error` |
+| Google service builder | `from core.services.google_service import get_service` |
+| Time formatting | `from core.services.google_service import format_rfc3339` |
+| Task/calendar sync | `from core.services.google_service import sync_to_google, sync_to_calendar, get_tasks_service, delete_calendar_event` |
+| Multi-key Gemini clients | `from core.llm.client import get_gemini_clients` (returns list of clients from all configured keys) |
+
+### Required Environment Variables
 ```
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 GEMINI_API_KEY
+GEMINI_API_KEY_2  # Optional: secondary key for multi-key failover (2x quota)
+GEMINI_API_KEY_3  # Optional: tertiary key for multi-key failover (3x quota)
 TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID
 PULSE_SECRET

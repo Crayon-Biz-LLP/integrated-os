@@ -2,53 +2,67 @@ import os
 import asyncio
 from typing import Any, Tuple, List, Optional
 from httpx import AsyncClient
-from .client import get_gemini_client
+from .client import get_gemini_clients
 from .errors import ProviderTimeout, NonRetryableError
 from core.lib.rate_limiter import flash_lite_limiter
 
 async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: float = 120.0, **kwargs) -> Tuple[str, Optional[List[Any]], Any]:
-    """Make a call to Gemini, enforcing the timeout via asyncio.wait_for"""
+    """Make a call to Gemini, enforcing the timeout via asyncio.wait_for. Supports multi-key failover."""
     if "flash-lite" in model:
         await flash_lite_limiter.acquire_async()
         
-    try:
-        def _call():
-            if contents is not None:
-                return get_gemini_client().models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config=kwargs.get('config')
-                )
-            else:
-                return get_gemini_client().models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=kwargs.get('config')
-                )
-        
-        timeout_s = min(timeout_s, 180.0)
-        response = await asyncio.wait_for(
-            asyncio.to_thread(_call),
-            timeout=timeout_s
-        )
-        
-        response_text = ""
+    clients = get_gemini_clients()
+    last_error = None
+    
+    for client in clients:
         try:
-            if hasattr(response, 'text') and response.text:
-                response_text = response.text
-        except ValueError:
-            pass
+            def _call():
+                if contents is not None:
+                    return client.models.generate_content(
+                        model=model,
+                        contents=contents,
+                        config=kwargs.get('config')
+                    )
+                else:
+                    return client.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=kwargs.get('config')
+                    )
             
-        function_calls = getattr(response, 'function_calls', None)
-        return response_text, function_calls, response
-    except asyncio.TimeoutError:
-        raise ProviderTimeout(f"Gemini call timed out after {timeout_s}s")
-    except Exception as e:
-        error_str = str(e).lower()
-        if any(err in error_str for err in ['503', '504', '500', 'timeout', 'timed out', 'deadline exceeded', '429']):
-            raise  # Retryable
-        else:
-            raise NonRetryableError(f"Gemini non-retryable error: {e}") from e
+            timeout_val = min(timeout_s, 180.0)
+            response = await asyncio.wait_for(
+                asyncio.to_thread(_call),
+                timeout=timeout_val
+            )
+            
+            response_text = ""
+            try:
+                if hasattr(response, 'text') and response.text:
+                    response_text = response.text
+            except ValueError:
+                pass
+                
+            function_calls = getattr(response, 'function_calls', None)
+            return response_text, function_calls, response
+            
+        except asyncio.TimeoutError as e:
+            # Timeout applies to the whole function, not per-client, but if it times out, 
+            # we should raise it rather than trying another client
+            raise ProviderTimeout(f"Gemini call timed out after {timeout_val}s") from e
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(err in error_str for err in ['429', 'resource_exhausted', 'quota']):
+                last_error = e
+                continue # Try next client
+            
+            if any(err in error_str for err in ['503', '504', '500', 'timeout', 'timed out', 'deadline exceeded']):
+                raise  # Retryable (fallback chain will handle it)
+            else:
+                raise NonRetryableError(f"Gemini non-retryable error: {e}") from e
+
+    # If we get here, all clients hit a quota error
+    raise last_error
 
 async def call_openrouter(model: str, prompt: str, timeout_s: float = 120.0, **kwargs) -> Tuple[str, Optional[List[Any]], Any]:
     """Fallback OpenRouter call"""

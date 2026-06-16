@@ -1,4 +1,4 @@
-from core.llm.compat import get_embedding
+from core.llm import get_embedding
 import os
 import json
 import asyncio

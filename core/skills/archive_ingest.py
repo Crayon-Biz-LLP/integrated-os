@@ -45,6 +45,7 @@ MEMORY_TYPE_MAPPING = {
     "Sermon / Teaching": "Sermon",
 }
 
+from core.llm.retry import get_jittered_backoff
 
 def with_retry(fn, retries=3, base_delay=1, label="operation"):
     for attempt in range(retries):
@@ -52,11 +53,11 @@ def with_retry(fn, retries=3, base_delay=1, label="operation"):
             return fn()
         except Exception as e:
             if attempt < retries - 1:
-                wait = base_delay * (2 ** attempt)
-                print(f"{label} failed (attempt {attempt+1}/3), retrying in {wait}s... Error: {e}")
+                wait = get_jittered_backoff(attempt, base_delay)
+                print(f"{label} failed (attempt {attempt+1}/{retries}), retrying in {wait:.1f}s... Error: {e}")
                 time.sleep(wait)
             else:
-                print(f"{label} failed after 3 attempts: {e}")
+                print(f"{label} failed after {retries} attempts: {e}")
                 raise e
 
 
@@ -89,8 +90,8 @@ def fetch_sheet_data():
             
         except HttpError as e:
             if e.resp.status in [500, 503, 504] and attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                print(f"⚠️ Google service busy (503). Retrying in {wait_time}s...")
+                wait_time = get_jittered_backoff(attempt)
+                print(f"⚠️ Google service busy (503). Retrying in {wait_time:.1f}s...")
                 time.sleep(wait_time)
                 continue
             else:

@@ -1,13 +1,10 @@
+from core.services.db import get_supabase
 """
 Temporal Lineage - Version history for memories, tasks, projects.
 Enables tracking how thoughts/decisions evolve over time.
 """
-import os
-from supabase import create_client, Client
 
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-supabase: Client = create_client(supabase_url, supabase_key)
+supabase = get_supabase()
 
 
 

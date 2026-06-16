@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from core.services.db import get_supabase
 """
 Pulse CLI - Command-line interface for the pulse engine.
 
@@ -28,7 +29,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.pulse import process_pulse, process_decision_pulse
 from core.pulse.sentinel import process_sentinel
-from supabase import create_client
 from core.lib.audit_logger import info, error
 
 
@@ -36,14 +36,7 @@ def cleanup_raw_dumps():
     """Remove raw_dumps older than 90 days (aligned with memories pruning window)"""
     info("pulse_cli", "Starting raw_dumps cleanup (90+ days)")
     
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    
-    if not supabase_url or not supabase_key:
-        error("pulse_cli", "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
-        return
-    
-    supabase = create_client(supabase_url, supabase_key)
+    supabase = get_supabase()
     
     # Calculate cutoff date (90 days ago)
     cutoff = (datetime.now() - timedelta(days=90)).isoformat()

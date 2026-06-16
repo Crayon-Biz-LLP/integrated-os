@@ -1,7 +1,5 @@
 import os
-from core.llm.compat import get_embedding_sync
 from supabase import create_client, Client
-from core.lib.audit_logger import audit_log_sync
 
 _supabase: Client = None
 
@@ -17,16 +15,13 @@ def get_supabase() -> Client:
 
 
 
-def get_embedding(text: str, model: str = "gemini-embedding-2-preview", dimension: int = 768) -> list:
-    return get_embedding_sync(text)
-
-
 def fetch_active_projects() -> list:
     supabase = get_supabase()
     try:
         res = supabase.table('projects').select('id, name, org_tag').eq('status', 'active').execute()
         return res.data or []
     except Exception as e:
+        from core.lib.audit_logger import audit_log_sync
         audit_log_sync("db", "WARNING", f"Failed to fetch projects: {e}")
         return []
 
@@ -42,11 +37,13 @@ def zombie_recovery():
             .lt('created_at', ten_mins_ago) \
             .execute()
     except Exception as e:
+        from core.lib.audit_logger import audit_log_sync
         audit_log_sync("db", "WARNING", f"Zombie recovery failed: {e}")
 
 
 def versioned_update(table_name: str, record_id: int, update_data: dict, user_id=None, change_source=None, change_reason=None):
     supabase = get_supabase()
+    from core.lib.audit_logger import audit_log_sync
     try:
         current = supabase.table(table_name).select('*').eq('id', record_id).execute()
         if not current.data:
