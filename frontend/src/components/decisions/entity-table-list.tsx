@@ -86,6 +86,7 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
   const [items, setItems] = useState<GraphPendingNode[]>(initialItems);
   const [scope, setScope] = useState<'pending' | 'live'>('pending');
   const [loading, setLoading] = useState(false);
+  const [filterType, setFilterType] = useState<string>('all');
   
   const [editingId, setEditingId] = useState<number | string | null>(null);
   const [editLabel, setEditLabel] = useState("");
@@ -175,9 +176,31 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
     }
   };
 
+  const filteredItems = items.filter(item => {
+    if (filterType === 'all') return true;
+    if (filterType === 'other') {
+      return !['person', 'project', 'organization', 'concept'].includes(item.type);
+    }
+    return item.type === filterType;
+  });
+
   return (
     <div className="space-y-4">
-      <div className="flex justify-end border-b pb-4 mb-4">
+      <div className="flex justify-between items-center border-b pb-4 mb-4">
+        <div>
+          <select
+            value={filterType}
+            onChange={(e) => setFilterType(e.target.value)}
+            className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="all">All Types</option>
+            <option value="person">People</option>
+            <option value="project">Projects</option>
+            <option value="organization">Organizations</option>
+            <option value="concept">Concepts</option>
+            <option value="other">Others (Places, Events, etc.)</option>
+          </select>
+        </div>
         <div className="inline-flex items-center rounded-md bg-muted p-1 text-muted-foreground">
           <button
             onClick={() => setScope('pending')}
@@ -196,9 +219,9 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
       
       {loading ? (
         <div className="p-8 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" /></div>
-      ) : items.length === 0 ? (
+      ) : filteredItems.length === 0 ? (
         <div className="rounded-md border p-8 text-center text-muted-foreground">
-          No entities found in {scope} view.
+          No entities found {filterType !== 'all' ? `matching "${filterType}"` : `in ${scope} view`}.
         </div>
       ) : (
         <>
@@ -214,7 +237,7 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
             </TableRow>
           </TableHeader>
           <TableBody>
-            {items.map((item) => (
+            {filteredItems.map((item) => (
               <TableRow key={item.id}>
                 <TableCell className="font-medium">
                   {editingId === item.id ? (
