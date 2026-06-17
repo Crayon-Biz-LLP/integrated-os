@@ -570,7 +570,7 @@ async def build_practice_edges():
                 if co_count < 3:
                     continue
 
-                # Check existing edge
+                # Check existing edge (graph_edges + pending_graph_edges)
                 existing = supabase.table('graph_edges') \
                     .select('id') \
                     .eq('source_node_id', a['id']) \
@@ -579,6 +579,16 @@ async def build_practice_edges():
                     .limit(1) \
                     .execute()
                 if existing.data:
+                    continue
+                existing_pending = supabase.table('pending_graph_edges') \
+                    .select('id') \
+                    .eq('source_label', a['label']) \
+                    .eq('target_label', b['label']) \
+                    .eq('relationship', 'PRECEDES') \
+                    .in_('status', ['pending', 'approved']) \
+                    .limit(1) \
+                    .execute()
+                if existing_pending.data:
                     continue
 
                 # Confidence: co-occurrence count, gap tightness, day overlap
@@ -594,19 +604,21 @@ async def build_practice_edges():
                     "shared_days": sorted(shared)
                 })
 
-                supabase.table('graph_edges').insert({
-                    "source_node_id": a['id'],
-                    "target_node_id": b['id'],
+                supabase.table('pending_graph_edges').insert({
+                    "source_label": a['label'],
+                    "target_label": b['label'],
                     "relationship": "PRECEDES",
-                    "weight": confidence,
+                    "status": "pending",
+                    "source_text": "practice_detection",
                     "metadata": meta_json
                 }).execute()
 
-                supabase.table('graph_edges').insert({
-                    "source_node_id": b['id'],
-                    "target_node_id": a['id'],
+                supabase.table('pending_graph_edges').insert({
+                    "source_label": b['label'],
+                    "target_label": a['label'],
                     "relationship": "FOLLOWED_BY",
-                    "weight": confidence,
+                    "status": "pending",
+                    "source_text": "practice_detection",
                     "metadata": meta_json
                 }).execute()
 

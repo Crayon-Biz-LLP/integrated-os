@@ -1096,7 +1096,24 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
         if mentions_to_insert:
             try:
                 for i in range(0, len(mentions_to_insert), 50):
-                    supabase.table('graph_edges').insert(mentions_to_insert[i:i+50]).execute()
+                    batch = mentions_to_insert[i:i+50]
+                    supabase.table('graph_edges').insert(batch).execute()
+                    # Also log in pending_graph_edges for audit trail
+                    # MENTIONS are structural meta-edges (provenance), exempt from HITL
+                    s_ids = list(set(m["source_node_id"] for m in batch))
+                    t_ids = list(set(m["target_node_id"] for m in batch))
+                    s_res = supabase.table('graph_nodes').select('id, label').in_('id', s_ids).execute()
+                    t_res = supabase.table('graph_nodes').select('id, label').in_('id', t_ids).execute()
+                    s_labels = {n['id']: n['label'] for n in (s_res.data or [])}
+                    t_labels = {n['id']: n['label'] for n in (t_res.data or [])}
+                    for m in batch:
+                        supabase.table('pending_graph_edges').upsert({
+                            "source_label": s_labels.get(m["source_node_id"], ""),
+                            "target_label": t_labels.get(m["target_node_id"], ""),
+                            "relationship": "MENTIONS",
+                            "status": "approved",
+                            "source_text": "insert_extracted_entities"
+                        }, on_conflict="source_label,relationship,target_label", ignore_duplicates=True).execute()
             except Exception:
                 pass
 

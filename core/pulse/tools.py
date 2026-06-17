@@ -214,13 +214,23 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
 def create_person(name: str, context: str):
     """Records a new person in the Knowledge Graph."""
     try:
-        res = supabase.table('people').insert({"name": name, "context": context, "status": "active"}).execute()
+        res = supabase.table('pending_graph_nodes').insert({
+            "label": name,
+            "type": "person",
+            "status": "pending",
+            "source_text": f"pulse_tools: {context[:100]}",
+            "metadata": {"source": "pulse_tools", "context": context}
+        }).execute()
         if res.data:
-            supabase.table('graph_nodes').insert({
-                "label": name, "type": "person",
-                "metadata": {"source": "pulse_tools", "person_id": str(res.data[0]['id'])}
+            pending_id = res.data[0]['id']
+            supabase.table('pending_graph_edges').insert({
+                "source_label": "Danny",
+                "target_label": name,
+                "relationship": "KNOWS",
+                "status": "pending",
+                "source_text": "pulse_tools_create_person"
             }).execute()
-            return f"Person created with ID {res.data[0]['id']}"
+            return f"Person '{name}' queued for approval (pending ID: {pending_id})."
     except Exception as e:
         return f"Error: {e}"
     return "Failed to create person."
