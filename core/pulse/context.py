@@ -7,6 +7,7 @@ from core.services.db import get_supabase
 from core.services.google_service import get_google_calendar_events
 from core.services.outlook_service import get_outlook_calendar_events
 from core.lib.redis_cache import cache_get, cache_set, cache_delete
+from core.lib.time_utils import age_tag
 
 supabase = get_supabase()
 
@@ -362,7 +363,7 @@ class ContextProvider:
                 
             lines = []
             for m in memories:
-                lines.append(f"[{m.get('memory_type', 'note').upper()}] {m.get('content')}")
+                lines.append(f"{age_tag(m.get('created_at'))} [{m.get('memory_type', 'note').upper()}] {m.get('content')}")
             return "\n".join(lines)
             
         except Exception as e:
@@ -487,7 +488,7 @@ class ContextProvider:
                 # Highlight the entities it connects to
                 prefix += f" (Links to: {', '.join(found_entities).title()})"
                 
-            lines.append(f"{prefix} {content}")
+            lines.append(f"{age_tag(m.get('created_at'))} {prefix} {content}")
             
         # 4. Merge results
         result_blocks = []

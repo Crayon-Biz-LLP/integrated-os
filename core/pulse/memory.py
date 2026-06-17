@@ -3,6 +3,7 @@ from core.llm import get_embedding
 import asyncio
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
+from core.lib.time_utils import age_tag
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 
@@ -88,7 +89,7 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
         for m in memories_res.data:
             memory_type = m.get('memory_type', 'note')
             content = m.get('content', '')[:200]  # Truncate to 200 chars
-            memory_entries.append(f"[{memory_type.upper()}] {content}")
+            memory_entries.append(f"{age_tag(m.get('created_at'))} [{memory_type.upper()}] {content}")
 
         result = "\n".join(memory_entries)
         print(f"🧠 Retrieved {len(memories_res.data)} relevant memories for briefing")
@@ -161,7 +162,7 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
         if top_memories:
             latest_timestamp = top_memories[0].get('created_at')
             formatted = [
-                f"[MEMORY CONTEXT ONLY — DO NOT LIST IN BRIEFING] {m.get('memory_type', '').upper()}: {m.get('content', '')}"
+                f"{age_tag(m.get('created_at'))} [MEMORY CONTEXT ONLY — DO NOT LIST IN BRIEFING] {m.get('memory_type', '').upper()}: {m.get('content', '')}"
                 for m in top_memories
             ]
             return (formatted, latest_timestamp)

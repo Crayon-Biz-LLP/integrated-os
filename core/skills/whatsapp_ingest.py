@@ -5,6 +5,7 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from core.services.db import get_supabase
 from core.services.llm import call_gemini_classify
+from core.lib.time_utils import resolve_expiry
 
 supabase = get_supabase()
 
@@ -91,6 +92,11 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
         return {"status": "duplicate", "message": "Already processed"}
 
     now_iso = received_at or datetime.now(timezone.utc).isoformat()
+    created_at_dt = datetime.fromisoformat(now_iso)
+    if created_at_dt.tzinfo is None:
+        created_at_dt = created_at_dt.replace(tzinfo=timezone.utc)
+    expires_at = resolve_expiry(message_text, created_at_dt)
+    expires_iso = expires_at.isoformat() if expires_at else None
 
     if any(p in (sender_name or sender_phone).lower() for p in NOREPLY_PATTERNS):
         classification_data = {
@@ -132,11 +138,13 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
 
     if classification == 'ignored':
         row['danny_decision'] = 'skipped'
+        row['expires_at'] = expires_iso
         supabase.table('messages').insert(row).execute()
         print(f"[ignored] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "ignored", "classification": classification}
 
     if classification == 'fyi':
+        row['expires_at'] = expires_iso
         supabase.table('messages').insert(row).execute()
         if classification_data.get('has_memory_value'):
             mem_content = f"{sender_name or sender_phone}: {classification_data.get('summary', message_text[:200])}"
@@ -146,12 +154,14 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
                 "memory_type": "relationship_note",
                 "embedding": embedding,
                 "embedding_status": 'success' if embedding and any(embedding) else 'failed',
-                "source": "whatsapp"
+                "source": "whatsapp",
+                "expires_at": expires_iso
             }).execute()
         print(f"[fyi] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "fyi", "classification": classification}
 
     if classification == 'actionable':
+        row['expires_at'] = expires_iso
         supabase.table('messages').insert(row).execute()
         print(f"[actionable] {sender_name or sender_phone}: {classification_data.get('suggested_title', message_text[:60])}")
         return {

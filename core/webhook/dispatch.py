@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
+from core.lib.time_utils import age_tag, resolve_expiry
 from core.pulse.context import context_provider
 from core.lib.conversation import get_history, log_exchange, format_history_for_prompt
 from core.webhook.telegram import send_telegram
@@ -349,13 +350,16 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
 
     # ── Step 3: Save to memories (success path) ──
     try:
+        expires_at = resolve_expiry(text, datetime.now(timezone.utc))
+        expires_iso = expires_at.isoformat() if expires_at else None
         supabase.table('memories').insert({
             "content": text,
             "memory_type": "note",
             "embedding": embedding,
             "embedding_status": embed_status,
             "source": "webhook",
-            "metadata": {"entity": entity}
+            "metadata": {"entity": entity},
+            "expires_at": expires_iso
         }).execute()
         
         # Mark dump as processed
@@ -762,11 +766,13 @@ Query: {query}"""
                 
             lines = []
             try:
+                now_iso = datetime.now(timezone.utc).isoformat()
                 # Get both incoming and outgoing emails, searching subject, body, and sender_id
                 e_res = supabase.table('messages').select('id, subject, sender_name, sender_id, body, received_at, processing_status, direction, metadata') \
                     .eq('channel', 'email') \
                     .or_(f"subject.ilike.%{search_val}%,body.ilike.%{search_val}%,sender_id.ilike.%{search_val}%") \
                     .in_('processing_status', ['pending', 'completed']) \
+                    .or_(f"expires_at.is.null,expires_at.gte.{now_iso}") \
                     .order('received_at', desc=True).limit(8).execute()
                 
                 found_sent = False
@@ -776,9 +782,9 @@ Query: {query}"""
                         if direction == 'outgoing':
                             found_sent = True
                             preview = (e.get('body') or '').replace('\n', ' ')[:150]
-                            lines.append(f"- [YOUR REPLY] Re: {e.get('subject', '')}: \"{preview}\"... (to {e.get('sender_id', '')})")
+                            lines.append(f"{age_tag(e.get('received_at'))} - [YOUR REPLY] Re: {e.get('subject', '')}: \"{preview}\"... (to {e.get('sender_id', '')})")
                         else:
-                            lines.append(f"- [EMAIL] {e.get('subject', '')} (from {e.get('sender_name') or e.get('sender_id', '')}, status: {e.get('processing_status', '')})")
+                            lines.append(f"{age_tag(e.get('received_at'))} - [EMAIL] {e.get('subject', '')} (from {e.get('sender_name') or e.get('sender_id', '')}, status: {e.get('processing_status', '')})")
                             
                 # Fallback to API if we didn't find any sent replies
                 if not found_sent:
@@ -797,11 +803,12 @@ Query: {query}"""
                 pass
                 
             try:
-                w_res = supabase.table('messages').select('id, sender_name, body, received_at').eq('channel', 'whatsapp').ilike('body', f"%{search_val}%").order('received_at', desc=True).limit(3).execute()
+                now_iso = datetime.now(timezone.utc).isoformat()
+                w_res = supabase.table('messages').select('id, sender_name, body, received_at').eq('channel', 'whatsapp').ilike('body', f"%{search_val}%").or_(f"expires_at.is.null,expires_at.gte.{now_iso}").order('received_at', desc=True).limit(3).execute()
                 if w_res.data:
                     for w in w_res.data:
                         text = w.get('body', '').replace('\n', ' ')[:100]
-                        lines.append(f"- [WHATSAPP] {text}... (from {w.get('sender_name', '')})")
+                        lines.append(f"{age_tag(w.get('received_at'))} - [WHATSAPP] {text}... (from {w.get('sender_name', '')})")
             except Exception:
                 pass
                 
@@ -810,7 +817,7 @@ Query: {query}"""
                 if c_res.data:
                     for c in c_res.data:
                         text = c.get('transcript', '').replace('\n', ' ')[:150]
-                        lines.append(f"- [CALL RECORDING] {c.get('drive_file_name', '')}: {text}...")
+                        lines.append(f"{age_tag(c.get('created_at'))} - [CALL RECORDING] {c.get('drive_file_name', '')}: {text}...")
             except Exception:
                 pass
                 

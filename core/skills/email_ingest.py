@@ -12,6 +12,7 @@ from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.duplicate_guard import check_duplicate
 from core.services.db import get_supabase
 from core.services.google_service import get_google_creds, _MemoryCache
+from core.lib.time_utils import compute_expires_at
 from core.services.llm import call_gemini_classify
 
 supabase = get_supabase()
@@ -135,6 +136,7 @@ Output ONLY a concise 1-2 sentence note about the relationship context."""
             "embedding": embedding,
             "embedding_status": 'success' if embedding and any(embedding) else 'failed',
             "source": "email_ingest",
+            "expires_at": compute_expires_at(note_content, datetime.now(timezone.utc).isoformat()),
             "metadata": metadata if metadata else None
         }).execute()
         print(f"Relationship note written for {sender_name}")
@@ -362,6 +364,7 @@ def process_sent_email(msg_data: dict, gmail_service) -> tuple:
             "received_at": received_at,
             "classification": "fyi",
             "processing_status": "completed",
+            "expires_at": compute_expires_at(f"{subject} {raw_plain[:20000]}", received_at),
             "metadata": {
                 "body_summary": body[:2000]
             }
@@ -437,6 +440,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
                 "received_at": received_at,
                 "classification": "ignored",
                 "processing_status": "completed",
+                "expires_at": compute_expires_at(subject or "", received_at),
                 "danny_decision": "skipped"
             }).execute()
             print(f"[ignored] {subject} | From: {sender_email}")
@@ -454,6 +458,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
             "received_at": received_at,
             "classification": classification,
             "processing_status": "completed" if classification != "error" else "failed",
+            "expires_at": compute_expires_at(f"{subject} {raw_plain[:20000]}", received_at),
             "linked_person_id": None,
             "linked_project_id": None,
             "metadata": {
@@ -585,6 +590,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
     except Exception as e:
         print(f"Error processing email {msg_id}: {e}")
         try:
+            now_iso = datetime.now(timezone.utc).isoformat()
             supabase.table('messages').insert({
                 "channel": "email",
                 "message_id": msg_id,
@@ -594,7 +600,8 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
                 "classification": "error",
                 "processing_status": "failed",
                 "subject": subject or "processing_error",
-                "received_at": datetime.now(timezone.utc).isoformat()
+                "received_at": now_iso,
+                "expires_at": compute_expires_at(subject or "processing_error", now_iso)
             }).execute()
         except Exception as insert_err:
             print(f"Failed to insert error record: {insert_err}")
