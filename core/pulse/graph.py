@@ -343,7 +343,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
             return {"success": False, "action": "not_found", "message": "Graph item not found."}
 
         pending_item = pending_res.data
-        if pending_item.get('status') not in ('pending', 'awaiting_details'):
+        if pending_item.get('status') not in ('pending', 'awaiting_details', 'flagged'):
             return {"success": False, "action": "already_processed", "message": "Already processed."}
 
         if decision == 'reject':
