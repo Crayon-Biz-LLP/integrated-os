@@ -6,9 +6,11 @@ import asyncio
 from datetime import datetime, timezone
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel # type: ignore
 from core.services.db import get_supabase
 from core.services.llm import call_gemini_classify, CLASSIFICATION_MODEL
+from core.services.google_service import get_google_creds
+
 
 GOOGLE_DRIVE_CALLS_FOLDER_ID = os.getenv("GOOGLE_DRIVE_CALLS_FOLDER_ID")
 
@@ -16,8 +18,6 @@ WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
 
 supabase = get_supabase()
 
-
-from core.services.google_service import get_google_creds
 
 def get_drive_service():
     return build("drive", "v3", credentials=get_google_creds())

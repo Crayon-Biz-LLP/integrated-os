@@ -58,7 +58,7 @@ def get_embedding_sync(text: str) -> list:
 
     if loop.is_running():
         # Fallback for sync calls inside async context
-        import nest_asyncio
+        import nest_asyncio # type: ignore
         nest_asyncio.apply()
         return asyncio.run(_get_embedding_async(text)).vector
     else:
@@ -87,7 +87,7 @@ def call_llm_with_fallback_sync(prompt: str, **kwargs) -> Any:
         return LegacyResponse(resp.text)
 
     if loop.is_running():
-        import nest_asyncio
+        import nest_asyncio # type: ignore
         nest_asyncio.apply()
         resp = asyncio.run(_run())
     else:

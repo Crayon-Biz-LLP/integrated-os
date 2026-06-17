@@ -10,7 +10,7 @@ from core.skills.outlook_token_helper import refresh_outlook_token
 
 try:
     from pypdf import PdfReader
-    import docx
+    import docx # type: ignore
     import openpyxl
 except ImportError:
     print("Warning: Missing document extraction libraries (pypdf, python-docx, openpyxl)")
@@ -162,7 +162,7 @@ async def ingest_teams_messages(limit_chats=5, limit_messages=10):
                 skipped_duplicate += 1
                 continue
                 
-            from_user = msg.get("from", {}).get("user", {})
+            from_user = (msg.get("from") or {}).get("user", {})
             if not from_user:
                 # Might be a system message or deleted user
                 ignored += 1
