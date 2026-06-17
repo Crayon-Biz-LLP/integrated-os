@@ -358,3 +358,25 @@ END;
 $function$
 
 
+-- match_graph_nodes
+CREATE OR REPLACE FUNCTION public.match_graph_nodes(query_embedding vector, match_threshold double precision, match_count integer)
+ RETURNS TABLE(id uuid, label text, type text, metadata jsonb, similarity double precision)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+  RETURN QUERY
+  SELECT
+    n.id,
+    n.label,
+    n.type,
+    n.metadata,
+    1 - (n.embedding <=> query_embedding) AS similarity
+  FROM graph_nodes n
+  WHERE n.embedding IS NOT NULL
+    AND 1 - (n.embedding <=> query_embedding) > match_threshold
+  ORDER BY similarity DESC
+  LIMIT match_count;
+END;
+$function$
+
+

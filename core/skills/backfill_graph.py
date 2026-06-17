@@ -1256,7 +1256,7 @@ def backfill_orphaned_node_edges():
     edges_to_delete = []
 
     for node in (all_nodes or []):
-        if node["id"] == danny_id or node["type"] == "task":
+        if node["id"] == danny_id or node["type"] in ("task", "memory"):
             continue
             
         edges = node_edges.get(node["id"], [])
