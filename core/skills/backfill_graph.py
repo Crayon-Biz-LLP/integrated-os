@@ -1002,7 +1002,7 @@ def backfill_orphaned_tasks():
         return
     
     all_people = fetch_all_paginated("people", "id, name")
-    all_projects = fetch_all_paginated("projects", "id, name")
+    all_projects = fetch_all_paginated("projects", "id, name, status")
     
     project_id_to_name = {p["id"]: p["name"] for p in all_projects}
     person_id_to_name = {p["id"]: p["name"] for p in all_people}
@@ -1317,7 +1317,7 @@ def sync_project_nodes_to_projects_table():
         print("No project nodes found.")
         return
 
-    all_projects = fetch_all_paginated("projects", "id, name")
+    all_projects = fetch_all_paginated("projects", "id, name, status")
     name_to_id = {p["name"].strip().lower(): p["id"] for p in all_projects}
 
     synced = 0
