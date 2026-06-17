@@ -11,6 +11,7 @@ from core.services.google_service import format_rfc3339, sync_to_calendar, sync_
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
+from core.lib.time_utils import compute_expires_at
 from core.lib.duplicate_guard import check_duplicate
 from core.pulse.calendar import check_conflict
 from core.pulse.memory import write_outcome_memory
@@ -157,7 +158,8 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
                 "source": "quick_process",
                 "sentiment_score": result.get("sentiment_score"),
                 "sentiment": result.get("sentiment"),
-                "entities_mentioned": result.get("entities_mentioned") or []
+                "entities_mentioned": result.get("entities_mentioned") or [],
+                "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat())
             }).execute()
             memory_id = ins_res.data[0]['id']
         except Exception as e:

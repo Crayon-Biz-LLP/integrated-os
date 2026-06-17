@@ -127,11 +127,25 @@ async def run_batch_sweep():
                         for d in filter_fragments_by_project(dumps.data, entity_name):
                             add_fragment("DUMP", d['content'])
 
-                people = supabase.table('people').select('name, role, strategic_weight') \
-                    .ilike('name', f'%{entity_name}%').execute()
-                if people.data:
-                    for p in people.data:
-                        add_fragment("PERSON", f"{p.get('name', 'Unknown')} — {p.get('role', 'Unknown role')}")
+                person_nodes = supabase.table('graph_nodes').select('id, label, db_record_id, metadata') \
+                    .eq('type', 'person').ilike('label', f'%{entity_name}%').execute()
+                if person_nodes.data:
+                    for n in person_nodes.data:
+                        pid = n.get('db_record_id') or (n.get('metadata') or {}).get('people_id')
+                        if pid:
+                            p_res = supabase.table('people').select('name, role, strategic_weight') \
+                                .eq('id', pid).maybe_single().execute()
+                            if p_res.data:
+                                p = p_res.data
+                                add_fragment("PERSON", f"{p.get('name', 'Unknown')} — {p.get('role', 'Unknown role')}")
+                        else:
+                            add_fragment("PERSON", f"{n['label']} — (no role)")
+                else:
+                    people = supabase.table('people').select('name, role, strategic_weight') \
+                        .ilike('name', f'%{entity_name}%').execute()
+                    if people.data:
+                        for p in people.data:
+                            add_fragment("PERSON", f"{p.get('name', 'Unknown')} — {p.get('role', 'Unknown role')}")
 
                 if org_tag in PARENT_ORG_TAGS:
                     child_res = supabase.table('projects') \

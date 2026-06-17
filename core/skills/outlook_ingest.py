@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from core.lib.constants import EmailStatus
 from core.lib.duplicate_guard import check_duplicate
+from core.lib.time_utils import compute_expires_at
 from core.services.db import get_supabase
 from core.services.llm import call_gemini_classify
 import requests
@@ -360,7 +361,8 @@ async def ingest_outlook_messages(limit=25):
                     "received_at": normalized["received_at"],
                     "classification": "ignored",
                     "processing_status": "completed",
-                    "danny_decision": "skipped"
+                    "danny_decision": "skipped",
+                    "expires_at": compute_expires_at(f"{subject} {body}", normalized["received_at"])
                 }).execute()
                 print(f"⏭️ [ignored] {subject} | From: {sender_email}")
                 ignored += 1
@@ -382,7 +384,8 @@ async def ingest_outlook_messages(limit=25):
                 "linked_project_id": None,
                 "metadata": {
                     "body_summary": body[:2000]
-                }
+                },
+                "expires_at": compute_expires_at(f"{subject} {body}", normalized["received_at"])
             }
 
             if classification == "fyi":
@@ -402,7 +405,8 @@ async def ingest_outlook_messages(limit=25):
                     supabase.table('memories').insert({
                         "content": _mem_content,
                         "memory_type": "relationship_note",
-                        "embedding": _emb
+                        "embedding": _emb,
+                        "expires_at": compute_expires_at(_mem_content, datetime.now(timezone.utc).isoformat())
                     }).execute()
                     print(f"🧠 [relationship_note] FYI memory saved for {sender_email}")
                 
@@ -490,7 +494,8 @@ async def ingest_outlook_messages(limit=25):
                     "classification": EmailStatus.ERROR,
                     "processing_status": "failed",
                     "subject": subject or "processing_error",
-                    "received_at": datetime.now(timezone.utc).isoformat()
+                    "received_at": datetime.now(timezone.utc).isoformat(),
+                    "expires_at": compute_expires_at(subject or "processing_error", datetime.now(timezone.utc).isoformat())
                 }).execute()
             except Exception as insert_err:
                 print(f"⚠️ Failed to insert error record for {msg_id}: {insert_err}")
@@ -551,7 +556,8 @@ async def ingest_outlook_messages(limit=25):
                     "processing_status": "completed",
                     "metadata": {
                         "body_summary": body_preview[:2000]
-                    }
+                    },
+                    "expires_at": compute_expires_at(f"{subject} {body_content}", msg.get("sentDateTime") or datetime.now(timezone.utc).isoformat())
                 }
                 
                 insert_res = supabase.table('messages').insert(email_row).execute()

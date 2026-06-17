@@ -120,7 +120,7 @@ $function$
 
 -- match_memories
 CREATE OR REPLACE FUNCTION public.match_memories(query_embedding jsonb, match_threshold double precision, match_count integer)
- RETURNS TABLE(id bigint, content text, metadata jsonb, similarity double precision, created_at timestamp with time zone)
+ RETURNS TABLE(id bigint, content text, memory_type text, metadata jsonb, similarity double precision, created_at timestamp with time zone)
  LANGUAGE plpgsql
 AS $function$
 DECLARE
@@ -131,6 +131,7 @@ BEGIN
     SELECT
         m.id,
         m.content,
+        m.memory_type,
         m.metadata,
         1 - (m.embedding <=> q_vec) AS similarity,
         m.created_at
@@ -139,6 +140,7 @@ BEGIN
         AND (m.embedding <=> q_vec) IS NOT NULL
         AND (m.embedding <=> q_vec) < 2
         AND (1 - (m.embedding <=> q_vec)) > match_threshold
+        AND (m.expires_at IS NULL OR m.expires_at > now())
     ORDER BY similarity DESC
     LIMIT match_count;
 END;
@@ -262,6 +264,7 @@ BEGIN
             AND m.is_archived = false
             AND m.is_current = true
             AND m.pruned = false
+            AND (m.expires_at IS NULL OR m.expires_at > now_utc)
     )
     SELECT
         b.id,

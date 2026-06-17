@@ -1427,6 +1427,59 @@ def sync_person_nodes_to_people_table():
     print(f"Synced {synced} person nodes ({added} new people, {skipped} blocklisted).")
 
 
+def sync_people_to_graph_nodes():
+    """Reverse sync: ensure every people table row has a graph_nodes entry.
+    Creates graph_nodes for orphan people records (e.g. legacy imports, direct inserts)."""
+    print("\n👤 Reverse sync: people table → graph_nodes...")
+    all_people = fetch_all_paginated("people", "id, name")
+    if not all_people:
+        print("No people found.")
+        return
+
+    person_nodes = fetch_all_paginated("graph_nodes", "id, label, db_record_id", in_filter_col="type", in_filter_val=["person"])
+    existing_labels = set()
+    existing_db_ids = set()
+    for n in (person_nodes or []):
+        existing_labels.add(n["label"].strip().lower())
+        if n.get("db_record_id"):
+            existing_db_ids.add(str(n["db_record_id"]))
+
+    created = 0
+    skipped = 0
+    for p in all_people:
+        pid = str(p["id"])
+        name = p["name"].strip()
+        if not name or len(name) < 2:
+            skipped += 1
+            continue
+        if is_blocklisted_person(name):
+            skipped += 1
+            continue
+        if pid in existing_db_ids or name.lower() in existing_labels:
+            continue
+        norm = normalize_person_name(name)
+        if norm and norm in existing_labels:
+            continue
+        try:
+            supabase.table("graph_nodes").upsert({
+                "label": name,
+                "type": "person",
+                "epistemic_status": "inferred",
+                "db_record_id": pid,
+                "metadata": {
+                    "source": "people_reverse_sync",
+                    "people_id": pid
+                }
+            }, on_conflict="label").execute()
+            existing_labels.add(name.lower())
+            existing_db_ids.add(pid)
+            created += 1
+        except Exception as e:
+            audit_log_sync("backfill_graph", "WARNING", f"Failed to create graph node for person '{name}': {e}")
+
+    print(f"Reverse sync complete: {created} graph nodes created, {skipped} skipped.")
+
+
 
 def dedup_graph_nodes(dry_run: bool = True):
     """
@@ -1535,5 +1588,6 @@ if __name__ == "__main__":
     # Run graph→table sync
     sync_project_nodes_to_projects_table()
     sync_person_nodes_to_people_table()
+    sync_people_to_graph_nodes()
     
     print("✅ All Phase-2 operations complete")

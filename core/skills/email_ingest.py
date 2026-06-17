@@ -509,7 +509,18 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
                         }).execute()
                         if new_person.data:
                             linked_person_id = new_person.data[0]['id']
+                            supabase.table('graph_nodes').upsert({
+                                "label": linked_person_name,
+                                "type": "person",
+                                "epistemic_status": "inferred",
+                                "db_record_id": str(linked_person_id),
+                                "metadata": {
+                                    "source": "email_ingest",
+                                    "people_id": str(linked_person_id)
+                                }
+                            }, on_conflict="label").execute()
                             print(f"Added linked person from email: {linked_person_name}")
+                            print(f"  → graph_nodes entry created for {linked_person_name}")
 
             is_human = classification_data.get('is_human_sender', False)
             if is_human:

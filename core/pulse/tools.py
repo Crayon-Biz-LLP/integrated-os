@@ -214,6 +214,14 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
 def create_person(name: str, context: str):
     """Records a new person in the Knowledge Graph."""
     try:
+        existing_node = supabase.table('pending_graph_nodes').select('id').eq('label', name).eq('type', 'person').in_('status', ['pending', 'flagged']).maybe_single().execute()
+        if existing_node and existing_node.data:
+            return f"Person '{name}' already pending approval (ID: {existing_node.data['id']})."
+
+        existing_live = supabase.table('graph_nodes').select('id').eq('label', name).eq('type', 'person').maybe_single().execute()
+        if existing_live and existing_live.data:
+            return f"Person '{name}' already exists in graph."
+
         res = supabase.table('pending_graph_nodes').insert({
             "label": name,
             "type": "person",
@@ -223,13 +231,15 @@ def create_person(name: str, context: str):
         }).execute()
         if res.data:
             pending_id = res.data[0]['id']
-            supabase.table('pending_graph_edges').insert({
-                "source_label": "Danny",
-                "target_label": name,
-                "relationship": "KNOWS",
-                "status": "pending",
-                "source_text": "pulse_tools_create_person"
-            }).execute()
+            existing_knows = supabase.table('pending_graph_edges').select('id').eq('source_label', 'Danny').eq('target_label', name).eq('relationship', 'KNOWS').in_('status', ['pending', 'approved']).maybe_single().execute()
+            if not (existing_knows and existing_knows.data):
+                supabase.table('pending_graph_edges').insert({
+                    "source_label": "Danny",
+                    "target_label": name,
+                    "relationship": "KNOWS",
+                    "status": "pending",
+                    "source_text": "pulse_tools_create_person"
+                }).execute()
             return f"Person '{name}' queued for approval (pending ID: {pending_id})."
     except Exception as e:
         return f"Error: {e}"

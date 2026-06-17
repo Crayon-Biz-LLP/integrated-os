@@ -1,16 +1,17 @@
-from core.llm.constants import CLASSIFICATION_MODEL
 """
 completion_handler.py
 Owns the full lifecycle of COMPLETION dumps.
 State machine: processing_completion -> awaiting_completion_match | completed | partially_synced
 """
+from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm import get_embedding
-
 import json
 import asyncio
 
 from core.lib.audit_logger import audit_log_sync
+from core.lib.time_utils import compute_expires_at
 from core.webhook.utils import supabase
+from datetime import datetime, timezone
 
     # ── Constants ─────────────────────────────────────────────────────────────────
 COMPLETION_MESSAGE_TYPE = "completion"
@@ -63,7 +64,8 @@ async def handle_confident_completion(
                 "metadata": {
                     "intent": "COMPLETION",
                     "entity": entity,
-                }
+                },
+                "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat())
             }).execute()
         except Exception as mem_err:
             audit_log_sync("completion", "WARNING", f"Memory write failed for dump {dump_id}: {mem_err}")

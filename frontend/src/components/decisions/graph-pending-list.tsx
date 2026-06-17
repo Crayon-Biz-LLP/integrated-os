@@ -45,6 +45,10 @@ const RELATIONSHIP_OPTIONS = [
   { value: 'MENTIONS', group: 'Memory → Organization', desc: 'Memory mentions an organization' },
   { value: 'MENTIONS', group: 'Memory → Event', desc: 'Memory mentions an event' },
   { value: 'EVOKES', group: 'Memory → Concept', desc: 'Memory evokes a concept' },
+  { value: 'RELATES_TO', group: 'Place → Person', desc: 'Place relates to a person' },
+  { value: 'RELATES_TO', group: 'Animal → Person', desc: 'Animal relates to a person' },
+  { value: 'RELATES_TO', group: 'Emotional State → Person', desc: 'Emotional state relates to a person' },
+  { value: 'ASSOCIATED_WITH', group: 'Practice → Practice', desc: 'Practice associated with another' },
 ];
 
 const REL_GROUPS = [...new Set(RELATIONSHIP_OPTIONS.map(o => o.group))];

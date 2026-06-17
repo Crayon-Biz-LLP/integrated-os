@@ -5,6 +5,7 @@ import httpx
 import re as _re
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
+from core.lib.time_utils import compute_expires_at
 from core.webhook.telegram import send_telegram
 from core.webhook.utils import supabase, trigger_github_pulse
 from core.webhook.email import handle_ed_command
@@ -297,7 +298,8 @@ async def handle_undo_command(text: str, chat_id: int):
                         "memory_type": "note",
                         "embedding": embedding,
                         "embedding_status": "success",
-                        "source": "webhook_undo"
+                        "source": "webhook_undo",
+                        "expires_at": compute_expires_at(content, datetime.now(timezone.utc).isoformat())
                     }).execute()
                     supabase.table('raw_dumps').update({
                         "status": "processed",

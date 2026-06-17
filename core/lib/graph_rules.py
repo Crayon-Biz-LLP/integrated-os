@@ -34,6 +34,12 @@ VALID_EDGE_MATRIX = {
     ('person',       'concept'):      ['ASSOCIATED_WITH'],
     ('task',         'concept'):      ['RELATES_TO'],
     ('organization', 'concept'):      ['ASSOCIATED_WITH'],
+    
+    # New types — place, animal, emotional_state, practice
+    ('place',          'person'):      ['RELATES_TO'],
+    ('animal',         'person'):      ['RELATES_TO'],
+    ('emotional_state','person'):      ['RELATES_TO'],
+    ('practice',       'practice'):    ['ASSOCIATED_WITH'],
 }
 
 _alias_cache = None

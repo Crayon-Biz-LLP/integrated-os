@@ -13,6 +13,7 @@ from typing import List, Optional
 from core.lib.audit_logger import info, warning, error, audit_log_sync
 from core.lib.temporal_lineage import detect_drift
 from core.lib.conversation import get_or_create_session, format_history_for_prompt
+from core.lib.time_utils import compute_expires_at
 
 from core.services.db import versioned_update
 from core.services.google_service import get_tasks_service
@@ -742,7 +743,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                                     "memory_type": "note",
                                     "embedding": embedding,
                                     "embedding_status": status,
-                                    "source": "pulse_note"
+                                    "source": "pulse_note",
+                                    "expires_at": compute_expires_at(dump_content, datetime.now(timezone.utc).isoformat())
                                 }).execute()
                                 if result.data:
                                     note_dump_ids.append(dump_id)

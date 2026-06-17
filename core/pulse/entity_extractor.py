@@ -21,7 +21,7 @@ async def extract_and_link_entities(text: str, source_id: str, source_type: str 
 
     # Fetch known entities for prompt injection
     try:
-        kn_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'organization', 'project']).execute()
+        kn_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'organization', 'project', 'place', 'event', 'animal', 'emotional_state', 'concept']).neq('epistemic_status', 'hypothetical').execute()
         known_labels = [r['label'] for r in kn_res.data] if kn_res and kn_res.data else []
         known_str = ", ".join(known_labels[:50]) # limit to avoid huge prompts
     except Exception:
@@ -30,7 +30,7 @@ async def extract_and_link_entities(text: str, source_id: str, source_type: str 
     prompt = f"""Extract knowledge graph elements from this text.
     
 Return a JSON object with:
-- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"emotional_state"|"concept"}}
+- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"place"|"event"|"animal"|"emotional_state"|"concept"}}
 - "edges": array of objects with {{"source": string, "target": string, "relationship": string}}
     
 RULES:
@@ -40,10 +40,15 @@ RULES:
   - Use canonical names for known entities: "Danny" (not "I", "me", "user"), "Mother" (not "Amma", "amma").
   - Do not extract pronouns or generic terms ("he", "the project", "loops") as nodes.
 - KNOWN ENTITIES (use exact spelling if referring to these): {known_str}
-- PROJECT DEFINITION: A named initiative with a defined goal and stakeholders.
-  ✓ QHORD, Ashraya, Solvstrat, Rhodey OS
-  ✗ "Church cash rotation incident" (event), "New Habit" (intention), "Journaling tool" (concept), "Call Marcus" (task)
-  If it doesn't have a formal name someone would use to refer to an ongoing initiative — skip it.
+- TYPE GUIDANCE:
+  - "place": A physical location, venue, or geographic area (e.g. "St. Mary's Church", "Kakkanad office").
+  - "event": A scheduled or past occurrence with a time/date (e.g. "Sunday service", "team standup").
+  - "animal": Named or referenced pets, animals (e.g. "Max", "the stray cat").
+  - "emotional_state": A feeling, mood, or emotional condition (e.g. "stressed", "excited", "overwhelmed").
+  - "project": A named initiative with a defined goal and stakeholders.
+    ✓ QHORD, Ashraya, Solvstrat, Rhodey OS
+    ✗ "Church cash rotation incident" (event), "New Habit" (intention), "Journaling tool" (concept), "Call Marcus" (task)
+    If it doesn't have a formal name someone would use to refer to an ongoing initiative — skip it.
 - If no clear entities/relationships, return empty arrays.
 - Normalize person names to First Last if obvious.
     
