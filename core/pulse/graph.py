@@ -14,9 +14,11 @@ VALID_ORG_TAGS = {'SOLVSTRAT', 'QHORD', 'PERSONAL', 'CRAYON', 'ASHRAYA'}
 TYPE_TO_DANNY_EDGE = {
     'project': 'OWNS',
     'person': 'KNOWS',
-    # Organizations and other types are linked through other relationships
-    # (e.g. WORKS_AT, BELONGS_TO). An OWNS/KNOWS edge is not semantically
-    # correct without explicit confirmation.
+    'organization': 'MEMBER_OF',
+    'concept': 'EVOKES',
+    'place': 'RELATES_TO',
+    'event': 'ATTENDED',
+    'emotional_state': 'RELATES_TO',
 }
 
 
@@ -171,6 +173,8 @@ async def create_graph_node_with_db_record(
                 },
                 on_conflict="label"
             ).execute()
+
+            await _ensure_danny_edge(label, node_type)
 
             inferred = []
             if source_text and source_text.strip() not in ("", "batch"):
@@ -362,6 +366,29 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
                 supabase.table('pending_graph_edges').update({'source_label': label}).eq('source_label', old_label).execute()
                 supabase.table('pending_graph_edges').update({'target_label': label}).eq('target_label', old_label).execute()
                 supabase.table('pending_graph_nodes').update({'label': label}).eq('id', pending_id).execute()
+
+            # Auto-approve any pending Danny→KNOWS edge for this label before creating node
+            # (so _ensure_danny_edge sees the edge already exists and skips)
+            danny_edge_res = supabase.table("pending_graph_edges")\
+                .select("id, source_label, target_label, source_text")\
+                .eq("source_label", "Danny")\
+                .eq("target_label", label)\
+                .eq("relationship", "KNOWS")\
+                .eq("status", "pending")\
+                .maybe_single().execute()
+            if danny_edge_res and danny_edge_res.data:
+                pe = danny_edge_res.data
+                s_node = supabase.table("graph_nodes").select("id").eq("label", pe["source_label"]).maybe_single().execute()
+                t_node = supabase.table("graph_nodes").select("id").eq("label", pe["target_label"]).maybe_single().execute()
+                if s_node and s_node.data and t_node and t_node.data:
+                    supabase.table("graph_edges").upsert({
+                        "source_node_id": s_node.data["id"],
+                        "target_node_id": t_node.data["id"],
+                        "relationship": "KNOWS",
+                        "weight": 1.0,
+                        "metadata": {"source": "pending_edge_approval", "pending_id": pe["id"]}
+                    }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
+                supabase.table("pending_graph_edges").update({"status": "approved"}).eq("id", pe["id"]).execute()
 
             result = await create_graph_node_with_db_record(
                 label=label,
@@ -1022,6 +1049,24 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                             "source_text": f"{source_type}:{source_id}",
                             "status": status
                         }).execute()
+                        # If person, also add a pending KNOWS edge from Danny
+                        if typ == 'person':
+                            danny_edge_exists = supabase.table("pending_graph_edges")\
+                                .select("id")\
+                                .eq("source_label", "Danny")\
+                                .eq("target_label", c_lbl)\
+                                .eq("relationship", "KNOWS")\
+                                .eq("status", "pending")\
+                                .maybe_single().execute()
+                            if not danny_edge_exists or not danny_edge_exists.data:
+                                supabase.table("pending_graph_edges").insert({
+                                    "source_label": "Danny",
+                                    "target_label": c_lbl,
+                                    "relationship": "KNOWS",
+                                    "source_text": f"{source_type}:{source_id}",
+                                    "source_table": source_type,
+                                    "status": "pending"
+                                }).execute()
                 except Exception:
                     pass
         elif r["node_id"]:

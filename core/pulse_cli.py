@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
+import os
+import sys
+import asyncio
+from datetime import datetime, timedelta
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core.services.db import get_supabase
+from core.pulse import process_pulse, process_decision_pulse
+from core.pulse.sentinel import process_sentinel
+from core.lib.audit_logger import info, error
+
 """
 Pulse CLI - Command-line interface for the pulse engine.
 
@@ -19,17 +31,6 @@ Required env vars:
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
 """
-import os
-import sys
-import asyncio
-from datetime import datetime, timedelta
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from core.pulse import process_pulse, process_decision_pulse
-from core.pulse.sentinel import process_sentinel
-from core.lib.audit_logger import info, error
 
 
 def cleanup_raw_dumps():

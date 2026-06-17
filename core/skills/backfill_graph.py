@@ -764,11 +764,24 @@ def run_backfill():
                     edges = graph_data.get("edges", [])
                     if nodes or edges:
                         extracted_data.append({"memory_id": mem["id"], "source_table": mem.get("_source_table", "memories"), "nodes": nodes, "edges": edges})
-                        processed += 1
-                    else:
-                        failed += 1
                 except Exception as e:
-                    audit_log_sync("backfill_graph", "ERROR", f"Error processing memory {mem['id']}: {e}")
+                    audit_log_sync("backfill_graph", "WARNING", f"Failed to process future for {mem['id']}: {e}")
+                    continue
+
+                # Create memory node
+                memory_label = f"Memory_{mem['id']}"
+                try:
+                    supabase.table('graph_nodes').upsert({
+                        "label": memory_label,
+                        "type": "memory",
+                        "metadata": {
+                            "source": "backfill_graph",
+                            "memory_id": str(mem['id'])
+                        }
+                    }, on_conflict="label").execute()
+                    processed += 1
+                except Exception as e:
+                    audit_log_sync("backfill_graph", "WARNING", f"Failed to create memory node for {mem['id']}: {e}")
                     failed += 1
         
         if not extracted_data:
@@ -1054,6 +1067,47 @@ def backfill_orphaned_tasks():
                         .execute()
                 except Exception:
                     proj_node = None
+
+            try:
+                if proj_node is not None and proj_node.data is not None:
+                    proj_node_id = proj_node.data["id"]
+
+                    # Create BELONGS_TO edge for task -> project
+                    try:
+                        supabase.table("graph_edges").insert({
+                            "source_node_id": task_node_id,
+                            "target_node_id": proj_node_id,
+                            "relationship": "BELONGS_TO",
+                            "weight": 1.0,
+                            "metadata": {"source": "task_project_backfill"}
+                        }).execute()
+                    except Exception as e:
+                        audit_log_sync("backfill_graph", "WARNING", f"Failed to create BELONGS_TO edge for task {task_id}: {e}")
+            except Exception:
+                pass
+            # Try metadata->>project_id (old style)
+            if proj_node is None or proj_node.data is None:
+                try:
+                    proj_node = supabase.table("graph_nodes") \
+                        .select("id") \
+                        .in_("type", ["project", "cluster", "organization"]) \
+                        .filter("metadata->>project_id", "eq", str(project_id)) \
+                        .limit(1).maybe_single() \
+                        .execute()
+                except Exception:
+                    proj_node = None
+            # Fallback: label-based match using project name
+            if (proj_node is None or proj_node.data is None) and project_id in project_id_to_name:
+                proj_name = project_id_to_name[project_id]
+                try:
+                    proj_node = supabase.table("graph_nodes") \
+                        .select("id") \
+                        .in_("type", ["project", "cluster", "organization"]) \
+                        .ilike("label", proj_name) \
+                        .limit(1).maybe_single() \
+                        .execute()
+                except Exception:
+                    proj_node = None
             
             if proj_node is not None and proj_node.data is not None:
                 proj_node_id = proj_node.data["id"]
@@ -1282,6 +1336,30 @@ def sync_project_nodes_to_projects_table():
                 audit_log_sync("backfill_graph", "WARNING", f"Failed to sync project node {n['id']}: {e}")
 
     print(f"Synced {synced} project nodes to projects table.")
+
+    # Add project rename/delete handling
+    for p in all_projects:
+        # Check for renamed projects
+        if p['name'] != p.get('original_name', p['name']):
+            try:
+                supabase.table('graph_nodes').update({
+                    "label": p['name']
+                }).eq('type', 'project').filter('metadata->>legacy_id', 'eq', str(p['id'])).execute()
+            except Exception as e:
+                audit_log_sync("backfill_graph", "WARNING", f"Failed to rename project node {p['id']}: {e}")
+        
+        # Check for deleted projects
+        if p['status'] in ['archived', 'cancelled']:
+            try:
+                supabase.table('graph_nodes').update({
+                    "archived": True,
+                    "metadata": {
+                        "archived_reason": "project_deleted",
+                        "archived_at": "now()"
+                    }
+                }).eq('type', 'project').filter('metadata->>legacy_id', 'eq', str(p['id'])).execute()
+            except Exception as e:
+                audit_log_sync("backfill_graph", "WARNING", f"Failed to archive deleted project node {p['id']}: {e}")
 
 
 def sync_person_nodes_to_people_table():

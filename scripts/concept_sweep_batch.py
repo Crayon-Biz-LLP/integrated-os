@@ -5,9 +5,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.services.db import get_supabase  # noqa: E402
-from core.llm.constants import CLASSIFICATION_MODEL
-from core.llm.compat import call_llm_with_fallback_sync
-from core.skills.backfill_graph import synthesize_content
+from core.llm.constants import CLASSIFICATION_MODEL  # noqa: E402
+from core.llm.compat import call_llm_with_fallback_sync  # noqa: E402
+from core.skills.backfill_graph import synthesize_content  # noqa: E402
 from core.clarifier import evaluate_node  # noqa: E402
 
 supabase = get_supabase()
@@ -82,6 +82,31 @@ Rules:
     except Exception as e:
         print(f"Error extracting batch: {e}")
     return []
+
+def ensure_memory_node_exists(memory_id: str, content: str) -> str:
+    """Ensure a memory graph node exists, creating one on-the-fly if not. Returns the node label."""
+    memory_label = f"Memory {memory_id}"
+    try:
+        existing = supabase.table("graph_nodes")\
+            .select("id")\
+            .eq("type", "memory")\
+            .eq("db_record_id", str(memory_id))\
+            .maybe_single()\
+            .execute()
+        if existing and existing.data:
+            return memory_label
+        supabase.table("graph_nodes").insert({
+            "label": memory_label,
+            "type": "memory",
+            "db_record_id": str(memory_id),
+            "epistemic_status": "asserted",
+            "metadata": {"source": "concept-sweep-fallback", "preview": content[:100]}
+        }).execute()
+        print(f"    Created fallback memory node for {memory_id}")
+    except Exception as e:
+        print(f"    Warning: Failed to ensure memory node for {memory_id}: {e}")
+    return memory_label
+
 
 def run_batch_sweep():
     memories = fetch_unprocessed_memories()
@@ -183,10 +208,26 @@ def run_batch_sweep():
                         .maybe_single().execute()
                         
                     if edge_res and edge_res.data:
+                        linked_entity = edge_res.data["source_label"]
+                        relationship = edge_res.data["relationship"]
+
+                        # Verify the linked_entity exists as a graph node
+                        entity_exists = supabase.table("graph_nodes").select("id")\
+                            .ilike("label", linked_entity)\
+                            .maybe_single().execute()
+
+                        if not entity_exists or not entity_exists.data:
+                            # Fallback: ensure memory node exists and use it as anchor
+                            ensure_memory_node_exists(mem_id, mem.get("content", ""))
+                            memory_label = f"Memory {mem_id}"
+                            linked_entity = memory_label
+                            relationship = "EVOKES"
+                            print(f"    Fallback: linking concept '{label}' to memory node '{memory_label}'")
+
                         eval_ctx = {
                             "justification": node.get("justification", ""),
-                            "linked_entity": edge_res.data["source_label"],
-                            "relationship": edge_res.data["relationship"]
+                            "linked_entity": linked_entity,
+                            "relationship": relationship
                         }
                         supabase.table("pending_graph_nodes")\
                             .update({"eval_context": eval_ctx})\
