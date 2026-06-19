@@ -1057,10 +1057,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             audit_log_sync("pulse", "INFO", f"🧠 Hindsight found {len(hindsight_memories)} relevant memories")
 
         is_hindsight_stale = False
+        hindsight_empty = False
         if hindsight_timestamp:
             last_seen = datetime.fromisoformat(hindsight_timestamp.replace('Z', '+00:00'))
-            if (now - last_seen).total_seconds() > (36 * 3600):
+            if (now - last_seen).total_seconds() > (72 * 3600):
                 is_hindsight_stale = True
+        else:
+            hindsight_empty = True
 
         recent_lib = supabase.table('resources')\
             .select('url, category, title, summary, strategic_note, created_at')\
@@ -1218,6 +1221,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         STALE_TASKS: {stale_context}
         SYSTEM STATUS: {system_context}
         HINDSIGHT_STALE: {is_hindsight_stale}
+        HINDSIGHT_EMPTY: {hindsight_empty}
         
         CALENDAR EVENTS TODAY:
         {calendar_context}
@@ -1283,8 +1287,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             - EMPTY SECTION SUPPRESSION: If a section (Work, Home, Church, Done, Ideas) has absolutely zero items to list, you MUST completely omit that section header from the briefing. Never output 'None today' or 'Empty'. Silence is preferred.
             - HEADLINE RULE: Use exactly "{briefing_mode}".
             - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
-            - COMPASS TONE: If HINDSIGHT_STALE is FALSE, weave the latest hindsight insights into a sharp, forward-leaning opening.
-              IF HINDSIGHT_STALE is TRUE: Do NOT repeat old insights. Instead, acknowledge the silence with a dry, one-sentence observation (e.g., 'The signal is quiet on the reflection front, Danny. Let's look at the board.') and move immediately to the tactical list.
+            - COMPASS TONE:
+              IF HINDSIGHT_EMPTY is TRUE: Skip the hindsight section entirely. Do not generate filler or acknowledge silence. Just start with the tactical board directly.
+              IF HINDSIGHT_STALE is TRUE AND HINDSIGHT_EMPTY is FALSE: Do NOT repeat old insights. Instead, acknowledge the silence with a dry, one-sentence observation (e.g., 'The signal is quiet on the reflection front, Danny. Let's look at the board.') and move immediately to the tactical list.
+              IF BOTH HINDSIGHT_STALE and HINDSIGHT_EMPTY are FALSE: Weave the latest hindsight insights into a sharp, forward-leaning opening.
             - COMPASS LENS (Temporal Variety):
                 - MORNING: Focus on the 'Delta'. What happened overnight? What is the single most important pivot for TODAY?
                 - AFTERNOON: Focus on 'Velocity'. Don't repeat the strategy; call out what is actually moving (or stalled) in the last 4 hours.
