@@ -808,6 +808,21 @@ async def graph_node_delete_route(pending_id: str, request: Request):
     require_api_auth(request)
     try:
         scope = request.query_params.get('scope', 'pending')
+        
+        import uuid
+        def _is_uuid(val):
+            try:
+                uuid.UUID(str(val))
+                return True
+            except (ValueError, AttributeError):
+                return False
+
+        # Auto-detect scope to avoid UI mismatch crashes
+        if _is_uuid(pending_id):
+            scope = 'live'
+        else:
+            scope = 'pending'
+
         from core.services.db import get_supabase
         supabase = get_supabase()
         
@@ -866,6 +881,14 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                     supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', c['id']).execute()
                     orphaned += 1
                     
+        # Check if the pending node was already approved and has a live node to clean up
+        live_res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
+        if live_res and live_res.data:
+            l_id = live_res.data['id']
+            supabase.table('graph_edges').delete().eq('source_node_id', l_id).execute()
+            supabase.table('graph_edges').delete().eq('target_node_id', l_id).execute()
+            supabase.table('graph_nodes').delete().eq('id', l_id).execute()
+                    
         return {"success": True, "message": f"Deleted node '{label}', rejected edges and {orphaned} orphaned concepts"}
     except Exception as e:
         import traceback
@@ -904,11 +927,39 @@ async def graph_node_manual_merge_route(request: Request):
                 
             loser_id = pending_id
             winner_id = target_id
+            source_type = source_res.data['type']
+            
+            # --- Handle unique_edge constraint ---
+            # 1. Source_node_id rewiring (loser -> winner)
+            winner_out_res = supabase.table('graph_edges').select('target_node_id, relationship').eq('source_node_id', winner_id).execute()
+            if winner_out_res and winner_out_res.data:
+                for w_edge in winner_out_res.data:
+                    supabase.table('graph_edges').delete().eq('source_node_id', loser_id).eq('target_node_id', w_edge['target_node_id']).eq('relationship', w_edge['relationship']).execute()
+            
+            supabase.table('graph_edges').update({'source_node_id': winner_id}).eq('source_node_id', loser_id).execute()
+            
+            # 2. Target_node_id rewiring (loser -> winner)
+            winner_in_res = supabase.table('graph_edges').select('source_node_id, relationship').eq('target_node_id', winner_id).execute()
+            if winner_in_res and winner_in_res.data:
+                for w_edge in winner_in_res.data:
+                    supabase.table('graph_edges').delete().eq('target_node_id', loser_id).eq('source_node_id', w_edge['source_node_id']).eq('relationship', w_edge['relationship']).execute()
+                    
+            supabase.table('graph_edges').update({'target_node_id': winner_id}).eq('target_node_id', loser_id).execute()
+            
+            # --- Handle people table merge ---
+            if source_type == 'person':
+                s_meta = supabase.table('graph_nodes').select('metadata').eq('id', loser_id).maybe_single().execute()
+                s_people_id = s_meta.data.get('metadata', {}).get('people_id') if s_meta and s_meta.data else None
+                
+                if s_people_id:
+                    p_res = supabase.table('people').select('role').eq('id', s_people_id).maybe_single().execute()
+                    old_role = p_res.data.get('role') if p_res and p_res.data else ""
+                    old_role = old_role or ""
+                    new_role = f"{old_role} [MERGED INTO: {target_label}]".strip()
+                    supabase.table('people').update({'role': new_role, 'strategic_weight': 0}).eq('id', s_people_id).execute()
             
             # Canonicalise and rewire live edges
             supabase.table('graph_nodes').update({'canonical_id': winner_id}).eq('id', loser_id).execute()
-            supabase.table('graph_edges').update({'source_node_id': winner_id}).eq('source_node_id', loser_id).execute()
-            supabase.table('graph_edges').update({'target_node_id': winner_id}).eq('target_node_id', loser_id).execute()
             
             # Repoint pending edges referencing the merged source label
             supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', source_label).execute()
@@ -932,6 +983,7 @@ async def graph_node_manual_merge_route(request: Request):
         if not source_res or not source_res.data:
             return {"success": False, "message": "Source pending node not found"}
         source_label = source_res.data['label']
+        source_type = source_res.data['type']
         
         # Target node - check if it's live graph_nodes or pending_graph_nodes
         target_label = None
@@ -962,10 +1014,42 @@ async def graph_node_manual_merge_route(request: Request):
         if not target_label:
             return {"success": False, "message": "Target node not found"}
             
+        # --- FIX: Check if pending source was already approved (has live graph_nodes entry) ---
+        live_source = supabase.table('graph_nodes').select('id').eq('label', source_label).maybe_single().execute()
+        if live_source and live_source.data:
+            s_live_id = live_source.data['id']
+            if _is_uuid(target_id):
+                # Clean conflicting edges before rewiring
+                winner_out = supabase.table('graph_edges').select('target_node_id, relationship').eq('source_node_id', target_id).execute()
+                for w in (winner_out.data or []):
+                    supabase.table('graph_edges').delete().eq('source_node_id', s_live_id).eq('target_node_id', w['target_node_id']).eq('relationship', w['relationship']).execute()
+                supabase.table('graph_edges').update({'source_node_id': target_id}).eq('source_node_id', s_live_id).execute()
+                
+                winner_in = supabase.table('graph_edges').select('source_node_id, relationship').eq('target_node_id', target_id).execute()
+                for w in (winner_in.data or []):
+                    supabase.table('graph_edges').delete().eq('target_node_id', s_live_id).eq('source_node_id', w['source_node_id']).eq('relationship', w['relationship']).execute()
+                supabase.table('graph_edges').update({'target_node_id': target_id}).eq('target_node_id', s_live_id).execute()
+                
+                # Handle people table merge
+                if source_type == 'person':
+                    s_meta = supabase.table('graph_nodes').select('metadata').eq('id', s_live_id).maybe_single().execute()
+                    s_pid = s_meta.data.get('metadata', {}).get('people_id') if s_meta and s_meta.data else None
+                    if s_pid:
+                        p_res = supabase.table('people').select('role').eq('id', s_pid).maybe_single().execute()
+                        old_role = p_res.data.get('role') or ""
+                        supabase.table('people').update({'role': f"{old_role} [MERGED INTO: {target_label}]".strip(), 'strategic_weight': 0}).eq('id', s_pid).execute()
+                        
+                supabase.table('graph_nodes').delete().eq('id', s_live_id).execute()
+            else:
+                # If target is not a live node, just delete the live source to prevent orphans, 
+                # but ideally we merge it into the new live target later.
+                supabase.table('graph_nodes').delete().eq('id', s_live_id).execute()
+        # --------------------------------------------------------------------------------------
+            
         if source_label == target_label:
-            # Delete source since it's already the same name
-            supabase.table('pending_graph_nodes').delete().eq('id', pending_id).execute()
-            return {"success": True, "message": "Nodes had same label. Source deleted."}
+            # Mark source since it's already the same name
+            supabase.table('pending_graph_nodes').update({'status': 'merged'}).eq('id', pending_id).execute()
+            return {"success": True, "message": "Nodes had same label. Source merged."}
 
         # Repoint pending edges
         supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', source_label).execute()
@@ -980,8 +1064,8 @@ async def graph_node_manual_merge_route(request: Request):
                     ctx['linked_entity'] = target_label
                     supabase.table('pending_graph_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
                     
-        # Delete source pending node entirely
-        supabase.table('pending_graph_nodes').delete().eq('id', pending_id).execute()
+        # Mark source pending node as merged entirely
+        supabase.table('pending_graph_nodes').update({'status': 'merged'}).eq('id', pending_id).execute()
         
         return {"success": True, "message": f"Merged '{source_label}' into '{target_label}'"}
         
