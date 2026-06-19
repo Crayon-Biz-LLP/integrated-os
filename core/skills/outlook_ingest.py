@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
+from core.retrieval.pipeline import schedule_index_memory
 from core.lib.constants import EmailStatus
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.time_utils import compute_expires_at
@@ -402,12 +403,14 @@ async def ingest_outlook_messages(limit=25):
                     _mem_content = f"{sender} ({sender_email}): {_summary}"
                     _emb_res = await get_embedding(_mem_content)
                     _emb = _emb_res.vector if _emb_res else None
-                    supabase.table('memories').insert({
+                    result = supabase.table('memories').insert({
                         "content": _mem_content,
                         "memory_type": "relationship_note",
                         "embedding": _emb,
                         "expires_at": compute_expires_at(_mem_content, datetime.now(timezone.utc).isoformat())
                     }).execute()
+                    memory_id = result.data[0]['id']
+                    schedule_index_memory(memory_id, _mem_content, "relationship_note", "outlook_fyi")
                     print(f"🧠 [relationship_note] FYI memory saved for {sender_email}")
                 
                 print(f"✅ [fyi] {subject} | From: {sender_email}")

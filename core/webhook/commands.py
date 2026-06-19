@@ -6,6 +6,7 @@ import re as _re
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import compute_expires_at
+from core.retrieval.pipeline import schedule_index_memory
 from core.webhook.telegram import send_telegram
 from core.webhook.utils import supabase, trigger_github_pulse
 from core.webhook.email import handle_ed_command
@@ -293,7 +294,7 @@ async def handle_undo_command(text: str, chat_id: int):
             embedding = (await get_embedding(content)).vector
             if embedding and any(embedding):
                 try:
-                    supabase.table('memories').insert({
+                    result = supabase.table('memories').insert({
                         "content": content,
                         "memory_type": "note",
                         "embedding": embedding,
@@ -301,6 +302,8 @@ async def handle_undo_command(text: str, chat_id: int):
                         "source": "webhook_undo",
                         "expires_at": compute_expires_at(content, datetime.now(timezone.utc).isoformat())
                     }).execute()
+                    memory_id = result.data[0]['id']
+                    schedule_index_memory(memory_id, content, "note", "webhook_undo")
                     supabase.table('raw_dumps').update({
                         "status": "processed",
                         "is_processed": True,

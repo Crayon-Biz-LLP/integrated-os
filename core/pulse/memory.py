@@ -6,6 +6,7 @@ from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import age_tag
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
+from core.retrieval.config import config as retrieval_config
 
 supabase = get_supabase()
 
@@ -22,13 +23,16 @@ async def write_outcome_memory(task_title: str, project_name: str = None):
 
         embedding = (await get_embedding(label)).vector
         status = 'success' if embedding and any(embedding) else 'failed'
-        supabase.table('memories').insert({
+        result = supabase.table('memories').insert({
             "content": label,
             "memory_type": "outcome",
             "embedding": embedding,
             "embedding_status": status,
             "source": "pulse_outcome"
         }).execute()
+        memory_id = result.data[0]['id']
+        from core.retrieval.pipeline import schedule_index_memory
+        asyncio.create_task(schedule_index_memory(memory_id, label, "outcome", "pulse_outcome"))
         print(f"🧠 Outcome memory written: {label}")
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"⚠️ Outcome memory write failed (non-critical): {e}")
@@ -60,39 +64,39 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
         return ""
 
     try:
-        # Generate embedding for the query
-        query_embedding = (await get_embedding(query_text)).vector
+        from core.retrieval.search import search_memories_compat
+        memories = await search_memories_compat(
+            query_text=query_text,
+            top_k=max_memories,
+            threshold=0.7,
+            recency_weight=0.4,
+            importance_weight=0.2,
+            use_associative=retrieval_config.associative_enabled_recent_memories,
+        )
 
-        if not query_embedding or all(v == 0 for v in query_embedding):
-            return ""
-
-        # Semantic search for relevant memories (last 30 days)
-
-        memories_res = supabase.rpc('match_memories_hybrid', {
-            'query_embedding': query_embedding,
-            'match_threshold': 0.7,
-            'match_count': max_memories,
-            'recency_weight': 0.4,
-            'importance_weight': 0.2
-        }).execute()
-        if memories_res.data:
+        if memories:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-            memories_res.data = [m for m in memories_res.data
-                                 if m.get('created_at')
-                                 and m['created_at'] >= cutoff]
+            memories = [m for m in memories
+                        if m.get('created_at')
+                        and m['created_at'] >= cutoff]
 
-        if not memories_res.data:
+        if not memories:
             return ""
+
+        # Shadow mode: run associative retrieval alongside for comparison
+        if retrieval_config.shadow_mode and query_text:
+            from core.pulse.context import _shadow_comparison
+            asyncio.create_task(_shadow_comparison(query_text, memories, max_memories))
 
         # Format memories for briefing context
         memory_entries = []
-        for m in memories_res.data:
+        for m in memories:
             memory_type = m.get('memory_type', 'note')
             content = m.get('content', '')[:200]  # Truncate to 200 chars
             memory_entries.append(f"{age_tag(m.get('created_at'))} [{memory_type.upper()}] {content}")
 
         result = "\n".join(memory_entries)
-        print(f"🧠 Retrieved {len(memories_res.data)} relevant memories for briefing")
+        print(f"🧠 Retrieved {len(memories)} relevant memories for briefing")
         return result
 
     except Exception as e:
@@ -127,20 +131,15 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
 
         async def fetch_memories_for_query(query_name: str, query_text: str):
             try:
-                embedding = (await get_embedding(query_text)).vector
-                if not any(embedding):
-                    return []
-                res = supabase.rpc(
-                    'match_memories_hybrid',
-                    {
-                        'query_embedding': embedding,
-                        'match_count': top_k,
-                        'match_threshold': 0.6,
-                        'recency_weight': 0.4,
-                        'importance_weight': 0.2
-                    }
-                ).execute()
-                return res.data if res.data else []
+                from core.retrieval.search import search_memories_compat
+                return await search_memories_compat(
+                    query_text=query_text,
+                    top_k=top_k,
+                    threshold=0.6,
+                    recency_weight=0.4,
+                    importance_weight=0.2,
+                    use_associative=retrieval_config.associative_enabled_hindsight,
+                )
             except Exception as e:
                 audit_log_sync("pulse", "ERROR", f"Hindsight query error ({query_name}): {e}")
                 return []
@@ -198,13 +197,16 @@ async def generate_after_action_report() -> str:
             status = 'success' if embedding and any(embedding) else 'failed'
             if status == 'failed':
                 audit_log_sync("pulse", "WARNING", "Warning: zero-vector embedding for daily reflection — storing with failed status")
-            supabase.table('memories').insert({
+            result = supabase.table('memories').insert({
                 "content": lesson,
                 "memory_type": "reflection",
                 "embedding": embedding,
                 "embedding_status": status,
                 "source": "pulse_reflection"
             }).execute()
+            memory_id = result.data[0]['id']
+            from core.retrieval.pipeline import schedule_index_memory
+            asyncio.create_task(schedule_index_memory(memory_id, lesson, "reflection", "pulse_reflection"))
             print(f"📝 Daily Reflection saved: {lesson[:50]}...")
             return lesson
     except Exception as e:

@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 import json
 from dotenv import load_dotenv
-
-load_dotenv()
-
-from core.services.db import get_supabase  # noqa: E402
+from core.services.db import get_supabase
 from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm.compat import call_llm_with_fallback_sync
 from core.skills.backfill_graph import synthesize_content
-from core.clarifier import evaluate_node  # noqa: E402
+from core.clarifier import evaluate_node
+
+load_dotenv()
 
 supabase = get_supabase()
 

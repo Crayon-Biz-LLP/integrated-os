@@ -44,6 +44,7 @@ from core.pulse.practices import (
     sync_practice_canonical_pages, build_rhythms_section,
 )
 from core.pulse.resources import batch_enrich_resources
+from core.retrieval.pipeline import schedule_index_memory
 
 
 # ──────────────────────────────────────────
@@ -748,6 +749,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                                 }).execute()
                                 if result.data:
                                     note_dump_ids.append(dump_id)
+                                    schedule_index_memory(
+                                        result.data[0]["id"], dump_content,
+                                        "note", "pulse_note")
                                     audit_log_sync("pulse", "INFO", f"📝 Note filed to memory: {dump_content[:50]}...")
                                 else:
                                     raise Exception("Insert returned no data")

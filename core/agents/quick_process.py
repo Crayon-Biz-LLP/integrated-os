@@ -17,6 +17,7 @@ from core.pulse.calendar import check_conflict
 from core.pulse.memory import write_outcome_memory
 from core.pulse.graph import write_graph_edges_for_task
 from core.pulse.entity_extractor import extract_and_link_entities
+from core.retrieval.pipeline import schedule_index_memory
 
 supabase = get_supabase()
 
@@ -165,11 +166,12 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
         except Exception as e:
             audit_log_sync("quick_process", "WARNING", f"Memory insert failed: {e}")
             
-        try:
-            if memory_id:
-                await extract_and_link_entities(text, memory_id, 'memory')
-        except Exception as e:
-            audit_log_sync("quick_process", "WARNING", f"extract_and_link_entities failed: {e}")
+            try:
+                if memory_id:
+                    await extract_and_link_entities(text, memory_id, 'memory')
+                    schedule_index_memory(memory_id, text, 'note', 'quick_process')
+            except Exception as e:
+                audit_log_sync("quick_process", "WARNING", f"extract_and_link_entities failed: {e}")
             
         return {"action": "filed", "type": "note"}
 

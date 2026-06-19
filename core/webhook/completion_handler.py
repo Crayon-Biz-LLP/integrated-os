@@ -11,6 +11,7 @@ import asyncio
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import compute_expires_at
 from core.webhook.utils import supabase
+from core.retrieval.pipeline import schedule_index_memory
 from datetime import datetime, timezone
 
     # ── Constants ─────────────────────────────────────────────────────────────────
@@ -55,7 +56,7 @@ async def handle_confident_completion(
         embedding = (await get_embedding(text)).vector
         embed_valid = bool(embedding and any(embedding))
         try:
-            supabase.table("memories").insert({
+            mem_res = supabase.table("memories").insert({
                 "content":          text,
                 "memory_type":      "note",
                 "embedding":        embedding if embed_valid else None,
@@ -67,6 +68,9 @@ async def handle_confident_completion(
                 },
                 "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat())
             }).execute()
+            if mem_res and mem_res.data:
+                schedule_index_memory(mem_res.data[0]["id"], text,
+                                      "note", "webhook_completion")
         except Exception as mem_err:
             audit_log_sync("completion", "WARNING", f"Memory write failed for dump {dump_id}: {mem_err}")
             from core.services.pipeline_service import add_to_failed_queue

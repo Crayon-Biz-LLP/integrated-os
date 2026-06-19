@@ -8,6 +8,8 @@ from core.services.google_service import get_google_calendar_events
 from core.services.outlook_service import get_outlook_calendar_events
 from core.lib.redis_cache import cache_get, cache_set, cache_delete
 from core.lib.time_utils import age_tag
+from core.lib.audit_logger import audit_log_sync
+from core.retrieval.config import config as retrieval_config
 
 supabase = get_supabase()
 
@@ -342,21 +344,21 @@ class ContextProvider:
             return [] if return_raw else "None"
             
         try:
-            embedding = (await get_embedding(query_text)).vector
-            if not embedding:
-                return [] if return_raw else "None"
-                
-            res = supabase.rpc('match_memories_hybrid', {
-                'query_embedding': embedding,
-                'match_count': match_count,
-                'match_threshold': 0.6,
-                'recency_weight': recency_weight,
-                'importance_weight': 0.2
-            }).execute()
-            
-            memories = res.data or []
+            from core.retrieval.search import search_memories_compat
+            memories = await search_memories_compat(
+                query_text=query_text,
+                top_k=match_count,
+                threshold=0.6,
+                recency_weight=recency_weight,
+                importance_weight=0.2,
+                use_associative=retrieval_config.associative_enabled_hydrate,
+            )
             if return_raw:
                 return memories
+
+            # Shadow mode: run associative retrieval alongside for comparison
+            if retrieval_config.shadow_mode and query_text:
+                asyncio.create_task(_shadow_comparison(query_text, memories, match_count))
 
             if not memories:
                 return "None"
@@ -503,3 +505,24 @@ class ContextProvider:
         
 # Global instance
 context_provider = ContextProvider()
+
+
+async def _shadow_comparison(query: str, current_memories: list, top_k: int):
+    """Fire-and-forget: run associative retrieval alongside current RPC for comparison."""
+    try:
+        from core.retrieval.search import associative_retrieve
+
+        current_ids = set(str(m.get("id", "")) for m in (current_memories or []))
+
+        bundle = await associative_retrieve(query=query, top_k=top_k)
+        new_ids = set(str(item.memory_id) for item in bundle.items)
+
+        overlap = current_ids & new_ids
+        audit_log_sync(
+            "retrieval", "INFO",
+            f"shadow_mode query={query[:40]}... "
+            f"current={len(current_ids)} new={len(new_ids)} "
+            f"overlap={len(overlap)} {bundle.latency_ms}ms"
+        )
+    except Exception:
+        pass  # Shadow mode failures must never affect the production path

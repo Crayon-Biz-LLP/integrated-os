@@ -6,8 +6,10 @@ from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import get_supabase
 from core.services.google_service import get_google_creds
+from core.llm.retry import get_jittered_backoff
 
 supabase = get_supabase()
 
@@ -44,8 +46,6 @@ MEMORY_TYPE_MAPPING = {
     "Prayer / Intercession": "Prayer",
     "Sermon / Teaching": "Sermon",
 }
-
-from core.llm.retry import get_jittered_backoff
 
 def with_retry(fn, retries=3, base_delay=1, label="operation"):
     for attempt in range(retries):
@@ -407,6 +407,7 @@ def run_ingest():
                     print("Skipping graphify for row — embedding failed")
                 else:
                     graphify(parsed["content"], memory_id)
+                schedule_index_memory(memory_id, parsed["content"], "archive", "archive_ingest")
             
             inserted += 1
             if inserted % 10 == 0:

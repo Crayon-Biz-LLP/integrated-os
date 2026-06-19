@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import List
 
+from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import get_supabase, versioned_update
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
@@ -171,11 +172,13 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
                 skip_msg = "No linked calendar event — recorded as completed."
             # Write an outcome memory
             try:
-                supabase.table('memories').insert({
+                result = supabase.table('memories').insert({
                     'content': f"Completed instance of recurring task: {td['title']} (Task {task_id})",
                     'memory_type': 'outcome',
                     'source': 'pulse_tools'
                 }).execute()
+                memory_id = result.data[0]['id']
+                schedule_index_memory(memory_id, f"Completed instance of recurring task: {td['title']} (Task {task_id})", "outcome", "pulse_tools")
             except Exception:
                 pass
             return f"Marked this week's instance done for '{td['title']}'. {skip_msg} The series continues — use 'cancelled' to end it entirely."

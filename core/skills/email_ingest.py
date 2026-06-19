@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from core.lib.constants import EmailStatus
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.duplicate_guard import check_duplicate
+from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import get_supabase
 from core.services.google_service import get_google_creds, _MemoryCache
 from core.lib.time_utils import compute_expires_at
@@ -130,7 +131,7 @@ Output ONLY a concise 1-2 sentence note about the relationship context."""
         if people_id:
             metadata['people_id'] = people_id
 
-        supabase.table('memories').insert({
+        result = supabase.table('memories').insert({
             "content": note_content,
             "memory_type": "relationship_note",
             "embedding": embedding,
@@ -139,6 +140,8 @@ Output ONLY a concise 1-2 sentence note about the relationship context."""
             "expires_at": compute_expires_at(note_content, datetime.now(timezone.utc).isoformat()),
             "metadata": metadata if metadata else None
         }).execute()
+        memory_id = result.data[0]['id']
+        schedule_index_memory(memory_id, note_content, "relationship_note", "email_ingest")
         print(f"Relationship note written for {sender_name}")
     except Exception as e:
         print(f"Relationship note write failed: {e}")

@@ -10,6 +10,8 @@ from core.webhook.telegram import send_telegram
 from core.pulse.calendar import MemoryCache
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
+from core.retrieval.config import config as retrieval_config
+from core.retrieval.pipeline import retry_failed_index_runs
 
 def get_upcoming_events(minutes_ahead=60):
     """Fetch events starting between now and X minutes from now."""
@@ -166,7 +168,20 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
                 pass
         except Exception as e:
             audit_log_sync("sentinel", "ERROR", f"Clarification dispatch error: {e}")
-            
+
+        # --- PIGGYBACK: Retry failed retrieval index runs ---
+        if retrieval_config.indexing_enabled:
+            try:
+                retried = await retry_failed_index_runs(
+                    max_retries=3, batch_size=10, retry_delay_seconds=0
+                )
+                if retried > 0:
+                    audit_log_sync("sentinel", "INFO",
+                                   f"Retry sweeper retried {retried} failed index runs")
+            except Exception as e:
+                audit_log_sync("sentinel", "ERROR",
+                               f"Retry sweeper error: {e}")
+
         await complete_pulse_run(supabase, run_id, status="completed",
             metadata={"alerted": alerted_count})
         return {"success": True, "alerted": alerted_count}

@@ -2,13 +2,12 @@ import os
 import uuid
 from googleapiclient.discovery import build
 
+from core.services.google_service import get_google_creds
+
 GOOGLE_DRIVE_CALLS_FOLDER_ID = os.getenv("GOOGLE_DRIVE_CALLS_FOLDER_ID")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "")
 
 CHANNEL_ID = os.getenv("DRIVE_WATCH_CHANNEL_ID", "integrated-os-call-ingest")
-
-
-from core.services.google_service import get_google_creds
 
 def renew_channel():
     folder_id = GOOGLE_DRIVE_CALLS_FOLDER_ID

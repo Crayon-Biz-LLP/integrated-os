@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from core.services.db import get_supabase
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
+from core.retrieval.config import config as retrieval_config
 
 supabase = get_supabase()
 
@@ -80,15 +81,17 @@ async def run_batch_sweep():
                 entity_embedding = entity_embedding_res.vector if entity_embedding_res else None
 
                 if entity_embedding:
-                    mem = supabase.rpc('match_memories_hybrid', {
-                        'query_embedding': entity_embedding,
-                        'match_threshold': 0.5,
-                        'match_count': 20,
-                        'recency_weight': 0.3,
-                        'importance_weight': 0.2
-                    }).execute()
-                    if mem.data:
-                        for f in filter_fragments_by_project(mem.data, entity_name):
+                    from core.retrieval.search import search_memories_compat
+                    mem = await search_memories_compat(
+                        query_text=entity_name,
+                        top_k=20,
+                        threshold=0.5,
+                        recency_weight=0.3,
+                        importance_weight=0.2,
+                        use_associative=retrieval_config.associative_enabled_entity_summary,
+                    )
+                    if mem:
+                        for f in filter_fragments_by_project(mem, entity_name):
                             add_fragment("MEMORY", f['content'])
 
                 tasks = supabase.table('tasks').select('title, status') \

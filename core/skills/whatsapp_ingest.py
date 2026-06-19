@@ -3,6 +3,7 @@ from core.llm import get_embedding
 import json
 import asyncio
 from datetime import datetime, timezone, timedelta
+from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import get_supabase
 from core.services.llm import call_gemini_classify
 from core.lib.time_utils import resolve_expiry
@@ -149,7 +150,7 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
         if classification_data.get('has_memory_value'):
             mem_content = f"{sender_name or sender_phone}: {classification_data.get('summary', message_text[:200])}"
             embedding = (await get_embedding(mem_content)).vector
-            supabase.table('memories').insert({
+            result = supabase.table('memories').insert({
                 "content": mem_content,
                 "memory_type": "relationship_note",
                 "embedding": embedding,
@@ -157,6 +158,8 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
                 "source": "whatsapp",
                 "expires_at": expires_iso
             }).execute()
+            memory_id = result.data[0]['id']
+            schedule_index_memory(memory_id, mem_content, "relationship_note", "whatsapp")
         print(f"[fyi] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "fyi", "classification": classification}
 

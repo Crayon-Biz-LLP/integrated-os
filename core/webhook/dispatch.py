@@ -14,8 +14,8 @@ from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.webhook.utils import is_recent_raw_dump, supabase
 from core.pulse.graph import hybrid_search_graph
-
 from core.agents.quick_process import process_single_dump, get_tasks_service
+from core.retrieval.pipeline import schedule_index_memory
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "") -> str:
@@ -352,7 +352,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
     try:
         expires_at = resolve_expiry(text, datetime.now(timezone.utc))
         expires_iso = expires_at.isoformat() if expires_at else None
-        supabase.table('memories').insert({
+        result = supabase.table('memories').insert({
             "content": text,
             "memory_type": "note",
             "embedding": embedding,
@@ -361,6 +361,9 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             "metadata": {"entity": entity},
             "expires_at": expires_iso
         }).execute()
+        if result and result.data:
+            schedule_index_memory(result.data[0]["id"], text,
+                                  "note", "webhook")
         
         # Mark dump as processed
         if dump_id:

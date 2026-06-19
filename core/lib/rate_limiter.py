@@ -12,6 +12,7 @@ class SlidingWindowLimiter:
         self.redis_key = redis_key
         self.timestamps = []
         self.lock = Lock()
+        self.async_lock = asyncio.Lock()
 
     def _prune(self, now: float):
         cutoff = now - self.per_seconds
@@ -49,11 +50,11 @@ class SlidingWindowLimiter:
 
     async def acquire_async(self):
         """Asynchronous acquire — awaits until a token is available."""
-        with self.lock:
+        async with self.async_lock:
             wait = self._get_wait_secs()
             if wait > 0:
                 await asyncio.sleep(wait)
-                
+
             now = time.time()
             self._prune(now)
             self.timestamps.append(now)

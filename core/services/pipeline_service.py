@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timezone, timedelta
+from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 
@@ -144,7 +145,7 @@ async def _execute_retry(item: dict) -> bool:
         if not embedding:
             raise Exception("Retry failed: Embedding still returned None")
             
-        supabase.table("memories").insert({
+        result = supabase.table("memories").insert({
             "content": text,
             "memory_type": "note",
             "embedding": embedding,
@@ -152,6 +153,8 @@ async def _execute_retry(item: dict) -> bool:
             "source": "retry_queue",
             "metadata": dump.data.get("metadata", {})
         }).execute()
+        memory_id = result.data[0]["id"]
+        schedule_index_memory(memory_id, text, "note", "retry_queue")
         return True
         
     elif table == "tasks" and op == "google_sync":
