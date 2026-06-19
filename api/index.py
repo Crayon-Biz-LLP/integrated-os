@@ -777,10 +777,21 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         supabase = get_supabase()
         
         if scope == 'live':
-            live_res = supabase.table('graph_nodes').select('id, label').eq('id', pending_id).maybe_single().execute()
+            live_res = supabase.table('graph_nodes').select('id, label, type, db_record_id').eq('id', pending_id).maybe_single().execute()
             if not live_res or not live_res.data:
                 return {"success": False, "message": "Live node not found"}
             label = live_res.data['label']
+            old_type = live_res.data.get('type')
+            
+            # --- Handle people table change type ---
+            if old_type == 'person' and new_type != 'person':
+                p_id = live_res.data.get('db_record_id')
+                if p_id:
+                    p_res = supabase.table('people').select('role').eq('id', p_id).maybe_single().execute()
+                    old_role = p_res.data.get('role') if p_res and p_res.data else ""
+                    old_role = old_role or ""
+                    supabase.table('people').update({'role': f"{old_role} [CHANGED TO {new_type.upper()}]".strip(), 'strategic_weight': 0}).eq('id', p_id).execute()
+            
             supabase.table('graph_nodes').update({'type': new_type}).eq('id', pending_id).execute()
             supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
             return {"success": True, "message": f"Changed type to {new_type}"}
@@ -790,11 +801,24 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         except ValueError:
             return {"success": False, "message": "Invalid pending ID"}
             
-        pending_res = supabase.table('pending_graph_nodes').select('id, label').eq('id', pending_id_int).maybe_single().execute()
+        pending_res = supabase.table('pending_graph_nodes').select('id, label, type').eq('id', pending_id_int).maybe_single().execute()
         if not pending_res or not pending_res.data:
             return {"success": False, "message": "Pending node not found"}
             
         label = pending_res.data['label']
+        old_type = pending_res.data.get('type')
+        
+        # --- Handle people table change type for pending ---
+        if old_type == 'person' and new_type != 'person':
+            live_node = supabase.table('graph_nodes').select('db_record_id').eq('label', label).maybe_single().execute()
+            if live_node and live_node.data:
+                p_id = live_node.data.get('db_record_id')
+                if p_id:
+                    p_res = supabase.table('people').select('role').eq('id', p_id).maybe_single().execute()
+                    old_role = p_res.data.get('role') if p_res and p_res.data else ""
+                    old_role = old_role or ""
+                    supabase.table('people').update({'role': f"{old_role} [CHANGED TO {new_type.upper()}]".strip(), 'strategic_weight': 0}).eq('id', p_id).execute()
+
         supabase.table('pending_graph_nodes').update({'type': new_type}).eq('id', pending_id_int).execute()
         supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
         return {"success": True, "message": f"Changed type to {new_type}"}
@@ -827,10 +851,19 @@ async def graph_node_delete_route(pending_id: str, request: Request):
         supabase = get_supabase()
         
         if scope == 'live':
-            live_res = supabase.table('graph_nodes').select('label, type').eq('id', pending_id).maybe_single().execute()
+            live_res = supabase.table('graph_nodes').select('label, type, db_record_id').eq('id', pending_id).maybe_single().execute()
             if not live_res or not live_res.data:
                 return {"success": False, "message": "Live node not found"}
             label = live_res.data['label']
+            
+            # --- Handle people table delete ---
+            if live_res.data.get('type') == 'person':
+                p_id = live_res.data.get('db_record_id')
+                if p_id:
+                    p_res = supabase.table('people').select('role').eq('id', p_id).maybe_single().execute()
+                    old_role = p_res.data.get('role') if p_res and p_res.data else ""
+                    old_role = old_role or ""
+                    supabase.table('people').update({'role': f"{old_role} [DELETED]".strip(), 'strategic_weight': 0}).eq('id', p_id).execute()
             
             # Cascade delete live edges
             supabase.table('graph_edges').delete().eq('source_node_id', pending_id).execute()
@@ -881,10 +914,18 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                     supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', c['id']).execute()
                     orphaned += 1
                     
-        # Check if the pending node was already approved and has a live node to clean up
-        live_res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
+        # --- Handle people table & live node cleanup ---
+        live_res = supabase.table('graph_nodes').select('id, type, db_record_id').eq('label', label).maybe_single().execute()
         if live_res and live_res.data:
             l_id = live_res.data['id']
+            if live_res.data.get('type') == 'person':
+                p_id = live_res.data.get('db_record_id')
+                if p_id:
+                    p_res = supabase.table('people').select('role').eq('id', p_id).maybe_single().execute()
+                    old_role = p_res.data.get('role') if p_res and p_res.data else ""
+                    old_role = old_role or ""
+                    supabase.table('people').update({'role': f"{old_role} [DELETED]".strip(), 'strategic_weight': 0}).eq('id', p_id).execute()
+                    
             supabase.table('graph_edges').delete().eq('source_node_id', l_id).execute()
             supabase.table('graph_edges').delete().eq('target_node_id', l_id).execute()
             supabase.table('graph_nodes').delete().eq('id', l_id).execute()
@@ -929,22 +970,30 @@ async def graph_node_manual_merge_route(request: Request):
             winner_id = target_id
             source_type = source_res.data['type']
             
-            # --- Handle unique_edge constraint ---
-            # 1. Source_node_id rewiring (loser -> winner)
-            winner_out_res = supabase.table('graph_edges').select('target_node_id, relationship').eq('source_node_id', winner_id).execute()
-            if winner_out_res and winner_out_res.data:
-                for w_edge in winner_out_res.data:
-                    supabase.table('graph_edges').delete().eq('source_node_id', loser_id).eq('target_node_id', w_edge['target_node_id']).eq('relationship', w_edge['relationship']).execute()
+            # --- Handle unique_edge constraint & performance timeout ---
+            # Instead of looping through all of the winner's edges (which could be 800+ and cause a timeout),
+            # we loop through the loser's edges (usually just a few) and safely move them.
             
-            supabase.table('graph_edges').update({'source_node_id': winner_id}).eq('source_node_id', loser_id).execute()
+            # 1. Source_node_id rewiring (loser -> winner)
+            loser_out = supabase.table('graph_edges').select('id, target_node_id, relationship').eq('source_node_id', loser_id).execute()
+            for l_edge in (loser_out.data or []):
+                # Check if winner already has this edge
+                w_edge = supabase.table('graph_edges').select('id').eq('source_node_id', winner_id).eq('target_node_id', l_edge['target_node_id']).eq('relationship', l_edge['relationship']).maybe_single().execute()
+                if w_edge and w_edge.data:
+                    # Duplicate exists! Just delete the loser's edge
+                    supabase.table('graph_edges').delete().eq('id', l_edge['id']).execute()
+                else:
+                    # Safe to repoint
+                    supabase.table('graph_edges').update({'source_node_id': winner_id}).eq('id', l_edge['id']).execute()
             
             # 2. Target_node_id rewiring (loser -> winner)
-            winner_in_res = supabase.table('graph_edges').select('source_node_id, relationship').eq('target_node_id', winner_id).execute()
-            if winner_in_res and winner_in_res.data:
-                for w_edge in winner_in_res.data:
-                    supabase.table('graph_edges').delete().eq('target_node_id', loser_id).eq('source_node_id', w_edge['source_node_id']).eq('relationship', w_edge['relationship']).execute()
-                    
-            supabase.table('graph_edges').update({'target_node_id': winner_id}).eq('target_node_id', loser_id).execute()
+            loser_in = supabase.table('graph_edges').select('id, source_node_id, relationship').eq('target_node_id', loser_id).execute()
+            for l_edge in (loser_in.data or []):
+                w_edge = supabase.table('graph_edges').select('id').eq('target_node_id', winner_id).eq('source_node_id', l_edge['source_node_id']).eq('relationship', l_edge['relationship']).maybe_single().execute()
+                if w_edge and w_edge.data:
+                    supabase.table('graph_edges').delete().eq('id', l_edge['id']).execute()
+                else:
+                    supabase.table('graph_edges').update({'target_node_id': winner_id}).eq('id', l_edge['id']).execute()
             
             # --- Handle people table merge ---
             if source_type == 'person':
@@ -1019,16 +1068,22 @@ async def graph_node_manual_merge_route(request: Request):
         if live_source and live_source.data:
             s_live_id = live_source.data['id']
             if _is_uuid(target_id):
-                # Clean conflicting edges before rewiring
-                winner_out = supabase.table('graph_edges').select('target_node_id, relationship').eq('source_node_id', target_id).execute()
-                for w in (winner_out.data or []):
-                    supabase.table('graph_edges').delete().eq('source_node_id', s_live_id).eq('target_node_id', w['target_node_id']).eq('relationship', w['relationship']).execute()
-                supabase.table('graph_edges').update({'source_node_id': target_id}).eq('source_node_id', s_live_id).execute()
+                # Clean conflicting edges before rewiring using loser-first logic
+                loser_out = supabase.table('graph_edges').select('id, target_node_id, relationship').eq('source_node_id', s_live_id).execute()
+                for l_edge in (loser_out.data or []):
+                    w_edge = supabase.table('graph_edges').select('id').eq('source_node_id', target_id).eq('target_node_id', l_edge['target_node_id']).eq('relationship', l_edge['relationship']).maybe_single().execute()
+                    if w_edge and w_edge.data:
+                        supabase.table('graph_edges').delete().eq('id', l_edge['id']).execute()
+                    else:
+                        supabase.table('graph_edges').update({'source_node_id': target_id}).eq('id', l_edge['id']).execute()
                 
-                winner_in = supabase.table('graph_edges').select('source_node_id, relationship').eq('target_node_id', target_id).execute()
-                for w in (winner_in.data or []):
-                    supabase.table('graph_edges').delete().eq('target_node_id', s_live_id).eq('source_node_id', w['source_node_id']).eq('relationship', w['relationship']).execute()
-                supabase.table('graph_edges').update({'target_node_id': target_id}).eq('target_node_id', s_live_id).execute()
+                loser_in = supabase.table('graph_edges').select('id, source_node_id, relationship').eq('target_node_id', s_live_id).execute()
+                for l_edge in (loser_in.data or []):
+                    w_edge = supabase.table('graph_edges').select('id').eq('target_node_id', target_id).eq('source_node_id', l_edge['source_node_id']).eq('relationship', l_edge['relationship']).maybe_single().execute()
+                    if w_edge and w_edge.data:
+                        supabase.table('graph_edges').delete().eq('id', l_edge['id']).execute()
+                    else:
+                        supabase.table('graph_edges').update({'target_node_id': target_id}).eq('id', l_edge['id']).execute()
                 
                 # Handle people table merge
                 if source_type == 'person':
