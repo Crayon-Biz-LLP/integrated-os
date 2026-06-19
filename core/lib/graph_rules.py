@@ -19,6 +19,7 @@ VALID_EDGE_MATRIX = {
     ('person',       'event'):        ['ATTENDED', 'INVOLVES'],
     ('task',         'project'):      ['BELONGS_TO'],
     ('task',         'task'):         ['BLOCKS', 'DEPENDS_ON'],
+    ('task',         'person'):       ['INVOLVES', 'RELATES_TO', 'ASSIGNED_TO'],
     ('event',        'project'):      ['PART_OF'],
     ('event',        'person'):       ['INVOLVES'],
     ('project',      'project'):      ['DEPENDS_ON'],

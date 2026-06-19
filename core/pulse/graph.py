@@ -554,13 +554,13 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                         supabase.table("pending_graph_edges").insert({
                             "source_label": task_title,
                             "target_label": person['name'],
-                            "relationship": "DISCUSSED_WITH",
+                            "relationship": "INVOLVES",
                             "source_text": f"tasks:{task_id}",
                             "source_table": "task_engine",
                             "status": "pending"
                         }).execute()
                     except Exception as e:
-                        audit_log_sync("pulse", "WARNING", f"Failed to insert DISCUSSED_WITH pending edge: {e}")
+                        audit_log_sync("pulse", "WARNING", f"Failed to insert INVOLVES pending edge: {e}")
 
         print(f"🕸️ Graph edges written for task {task_id}: '{task_title}'")
 
