@@ -59,7 +59,7 @@ export async function decideGraphNode(id: number, decision: 'approve' | 'reject'
   return res.json();
 }
 
-export async function mergeGraphNodeIntoExisting(pendingId: number | string, targetId: string, scope: 'pending' | 'live' = 'pending'): Promise<void> {
+export async function mergeGraphNodeIntoExisting(pendingId: number | string, targetId: string, scope: 'pending' | 'live' | 'rejected' = 'pending'): Promise<void> {
   const res = await fetch('/api/graph-node-merge', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -84,7 +84,7 @@ export async function searchGraphNodes(query: string, type?: string, scope?: str
 }
 
 
-export async function renamePendingGraphNode(id: number | string, newLabel: string, scope: 'pending' | 'live' = 'pending'): Promise<void> {
+export async function renamePendingGraphNode(id: number | string, newLabel: string, scope: 'pending' | 'live' | 'rejected' = 'pending'): Promise<void> {
   const res = await fetch(`/api/graph-node/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -96,7 +96,7 @@ export async function renamePendingGraphNode(id: number | string, newLabel: stri
   }
 }
 
-export async function changePendingGraphNodeType(id: number | string, newType: string, scope: 'pending' | 'live' = 'pending'): Promise<void> {
+export async function changePendingGraphNodeType(id: number | string, newType: string, scope: 'pending' | 'live' | 'rejected' = 'pending'): Promise<void> {
   const res = await fetch(`/api/graph-node/${id}/type`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -108,7 +108,7 @@ export async function changePendingGraphNodeType(id: number | string, newType: s
   }
 }
 
-export async function deletePendingGraphNode(id: number | string, scope: 'pending' | 'live' = 'pending'): Promise<{ message: string }> {
+export async function deletePendingGraphNode(id: number | string, scope: 'pending' | 'live' | 'rejected' = 'pending'): Promise<{ message: string }> {
   const params = new URLSearchParams({ scope });
   const res = await fetch(`/api/graph-node/${id}?${params.toString()}`, {
     method: 'DELETE',
