@@ -135,7 +135,17 @@ export async function checkSimilarGraphEdges(source: string, target: string, rel
 }
 export async function fetchLiveGraphNodes(): Promise<any[]> {
   const res = await fetch('/api/graph-nodes/live');
-  if (!res.ok) return [];
+  if (!res.ok) {
+    const errText = await res.text();
+    let errJson;
+    try {
+      errJson = JSON.parse(errText);
+    } catch {
+      // Ignore
+    }
+    const msg = errJson?.error || errJson?.detail || errText || `Failed with status ${res.status}`;
+    throw new Error(`Failed to fetch live nodes: ${msg}`);
+  }
   const json = await res.json();
   return json.data || [];
 }

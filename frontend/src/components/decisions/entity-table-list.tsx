@@ -108,6 +108,8 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
         setLoading(false);
       }).catch(e => {
         console.error(e);
+        toast.error(e.message || "Failed to load live nodes");
+        setItems([]);
         setLoading(false);
       });
     }
