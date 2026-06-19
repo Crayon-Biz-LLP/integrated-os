@@ -248,6 +248,27 @@ T-003 (DLQ table) — parallel to T-002, required by T-006
 ```
 
 
+## Today's Changes (June 19, 2026)
+
+### T-403: Associative Retrieval Engine — Full Rollout
+**Status**: Completed
+**Details**: Replaced the legacy pgvector-only `match_memories_hybrid` path with a 7-signal associative retrieval pipeline:
+- **7 new retrieval tables**: `retrieval_passages`, `retrieval_phrase_nodes`, `retrieval_node_stats`, `retrieval_passage_phrase_links`, `retrieval_memory_bundle_links`, `retrieval_alias_edges`, `retrieval_index_runs`.
+- **7-signal ranking**: Semantic (embedding cosine), PPR (graph traversal), recency, importance, project boost, specificity (node degree), person_boost — configurable weights in `core/retrieval/ranking.py`.
+- **Parallel query analysis**: LLM entity extraction (Gemini Flash Lite) + lexical word n-grams run concurrently via `asyncio.gather()`.
+- **Redis caching**: SHA-256 keyed cache for LLM extraction (1h TTL) and embeddings (24h TTL) — warm path eliminates ~3.5s of Gemini calls.
+- **GIN trigram index**: `idx_phrase_nodes_text` on `normalized_text` using `gin_trgm_ops` — phrase lookups at ~5ms from ~80ms.
+- **Multi-key failover**: Embedding layer (`core/llm/embedding.py`) iterates `get_gemini_clients()` on 429 errors instead of exponential backoff.
+- **PostgREST nested joins**: Collapsed N+1 queries via `!inner` syntax — 4 DB roundtrips → 1.
+- **asyncio.to_thread()**: All sync DB calls wrapped to avoid blocking event loop.
+- **Alias edge backfill**: 3,760 heuristic edges upserted bridging synonymous labels.
+- **Forward indexing**: `schedule_index_memory()` wired into all 13 memory insertion paths — every new memory auto-indexes.
+- **Production backfill**: 470 memories indexed across all types (note, Journal, outcome, reflection, relationship_note, Prayer, Prophecy, Psalm, archive).
+- **4 per-site feature flags** all ON: `RETRIEVAL_ASSOCIATIVE_ENTITY_SUMMARY`, `RECENT_MEMORIES`, `HINDSIGHT`, `HYDRATE`, plus `RETRIEVAL_INDEXING_ENABLED`.
+- **Performance**: Cold path 3.5–5.0s (was ~23s baseline), warm path 1.8–3.5s (was ~9s pgvector). Eval runs #7–14 validated progressive optimization.
+- **HINDSIGHT_STALE logic**: Three-way COMPASS TONE (HINDSIGHT_STALE / HINDSIGHT_EMPTY / neither).
+- **`get_gemini_client()` singleton removed** — all consumers now use `get_gemini_clients()` for multi-key rotation.
+
 ## Today's Changes (June 16, 2026)
 
 ### T-402: LLM Layer Consolidation — Eliminate All Duplicated Code

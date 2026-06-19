@@ -13,6 +13,10 @@
 | **Classification** | Gemini 1.5 Flash | Cost-efficient for high-frequency classification |
 | **Email** | Gmail API + Microsoft Graph API | Existing. Both OAuth2 token-refresh flows |
 | **Briefing / Brain** | Gemini 1.5 Pro | Reserved for synthesis tasks only |
+| **Retrieval (semantic)** | Gemini `gemini-embedding-2-preview`, 768 dims | Query embedding, passage embedding, phrase node embedding |
+| **Retrieval (lexical)** | GIN trigram indexes + `retrieval_phrase_nodes` | ~5ms phrase lookups via `pg_trgm` |
+| **Retrieval (graph)** | Personalized PageRank on subgraph | ~50ms on bounded subgraph (<2000 nodes) |
+| **Retrieval (cache)** | Upstash Redis (SHA-256 keys) | LLM extraction (1h TTL), embeddings (24h TTL) |
 | **Scheduling** | GitHub Actions (cron) | No separate infra. Acceptable latency for background jobs |
 | **Alerting** | Telegram Bot API | Danny lives in Telegram. Zero latency to operator |
 | **Graph** | Supabase `graph_nodes` + `graph_edges` tables | Lightweight — no external graph DB needed at current scale |
@@ -34,16 +38,42 @@
        ├──► QUERY ────────────► [interrogate_brain()]
        │                               │
        └──► NOISE ───────────► [log to audit, discard]
-                                       │
-                               [Background Processor]
-                                       │
-                            ┌──────────┴──────────┐
-                            ▼                     ▼
-                     [get_embedding()]      [fail → DLQ]
-                            │
-                     [memories insert]
-                            │
-                     [raw_dumps: processed]
+                                        │
+                                [Background Processor]
+                                        │
+                             ┌──────────┴──────────┐
+                             ▼                     ▼
+                      [get_embedding()]      [fail → DLQ]
+                             │
+                      [memories insert]
+                             │
+                      [raw_dumps: processed]
+                             │
+                             ▼
+              ┌──────────────────────────────┐
+              │  Associative Retrieval Index │
+              │  (schedule_index_memory)     │
+              │                              │
+              │  chunk → embed → extract     │
+              │  → upsert phrase nodes       │
+              │  → link passages → bundle    │
+              └──────────┬───────────────────┘
+                         │
+              ┌──────────▼───────────┐
+              │  7 tables: passages  │
+              │  phrase_nodes, stats │
+              │  links, alias_edges  │
+              └──────────────────────┘
+
+              ┌──────────────────────────────┐
+              │  Associative Retrieval Query │
+              │  (associative_retrieve)      │
+              │                              │
+              │  LLM entities + lexical      │
+              │  → PPR graph traversal       │
+              │  → 7-signal ranking          │
+              │  → ExplainableBundle         │
+              └──────────────────────────────┘
 
 
 [GitHub Actions Cron]
@@ -88,6 +118,12 @@
 **Why**: The graph is the backbone of Rhodey's intelligence — wrong nodes infect every query and brief. The "low-risk auto-create" approach created 699 junk nodes (concept, emotional_state, resource). Every edge is now staged in `pending_graph_edges` with inline editing in the Decisions UI before approval. `pending_graph_nodes` and `pending_graph_edges` both have RLS enabled for extra safety.
 **Change from previous**: All 4 removed node types (concept, emotional_state, resource, practice) together formed a junk drawer of 699 hallucinated nodes. The new ontology has 5 precise types. Emotions live on memory metadata instead.
 **Tradeoff**: Latency between extraction and graph availability — but the Decisions UI Graph Edges tab makes batch approval fast.
+
+### Decision 7: Associative Retrieval over pgvector-only
+**Chosen**: 7-signal associative retrieval with dedicated retrieval tables (passages, phrase nodes, alias edges, etc.).
+**Rejected**: Keeping `match_memories_hybrid` as the sole retrieval path.
+**Why**: pgvector-only search misses multi-word phrases, doesn't leverage graph structure, and has no alias/entity bridging. The new system: (1) caches LLM entity extraction and embeddings in Redis (warming ~3.5s → ~10ms), (2) uses GIN trigram indexes for ~5ms lexical phrase matching, (3) runs PPR graph traversal for indirect connections (~50ms), (4) blends 7 ranking signals with configurable weights. Cold path: 3.5–5.0s, warm path: 1.8–3.5s — down from ~9s on legacy pgvector.
+**Tradeoff**: 7 new database tables + 2 Redis caching tiers = operational surface area. But all caching is fail-open, and the legacy path remains as fallback via `RETRIEVAL_SHADOW_MODE=false`.
 
 ---
 

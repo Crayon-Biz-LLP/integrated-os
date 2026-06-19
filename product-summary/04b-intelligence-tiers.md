@@ -88,35 +88,42 @@ Each cache follows a **dual-layer pattern**:
 
 **Purpose:** Retrieve, connect, and surface insights from the system's historical knowledge — memories, relationships, and patterns.
 
-**Core files:** `core/pulse/memory.py`, `core/pulse/graph.py`, `core/skills/backfill_graph.py`
+**Core files:** `core/retrieval/search.py`, `core/retrieval/pipeline.py`, `core/retrieval/ranking.py`, `core/retrieval/ppr.py`, `core/pulse/memory.py`, `core/pulse/graph.py`, `core/skills/backfill_graph.py`
 
 **What it does:**
 
-### 3a. Memory System
+### 3a. Associative Retrieval Engine
 
-The `memories` table stores 5 types: `note`, `outcome`, `archive`, `reflection`, `relationship_note`. Retrieval uses `match_memories_hybrid` — a custom PostgreSQL RPC that scores memories on three axes:
+The primary retrieval path uses `associative_retrieve()` (`core/retrieval/search.py`) — a 7-signal ranking pipeline that replaced the legacy pgvector-only `match_memories_hybrid` RPC:
 
-- **Semantic similarity** — Cosine distance of the 768-dim Gemini embedding vs query vector
-- **Recency decay** — Exponential curve `EXP(-days / 15.0)`, 30-day half-life
-- **Importance score** — 1-10 scale, directly factored into rank
+1. **Query Analysis** — Parallel via `asyncio.gather()`: Gemini Flash Lite entity extraction (Redis-cached 1h), lexical word n-gram splitting (GIN trigram ~5ms), and query embedding (Redis-cached 24h).
+2. **Graph Traversal** — Matched phrase nodes seed `personalized_pagerank()` across the bounded subgraph (~50ms). Alias edges bridge synonymous labels.
+3. **7-Signal Ranking** — Memories ranked by semantic similarity, PPR score, recency, importance, project boost, specificity (node degree), and person_boost. Configurable weights in `core/retrieval/ranking.py`.
+4. **Aggregation** — Passages aggregated to memories via nested PostgREST joins. Results deduplicated and returned as `ExplainableBundle`.
+
+**Performance:** Cold path 3.5–5.0s, warm path 1.8–3.5s (Redis eliminates LLM extraction and embedding on cache hits).
 
 ### 3b. Knowledge Graph Traversal
 
 `hybrid_search_graph()` (`graph.py`) walks the graph edges (`BELONGS_TO`, `MENTIONS`, `RELATED_TO`, `AUTHORED`, `INVOLVES`) to surface connections between tasks, people, projects, and memories. Results feed the tactical map — a structural view of how entities connect.
 
-**Graph integrity safeguards** (added June 2026):
+**Graph integrity safeguards:**
 - **Guard A** — Orphaned `BELONGS_TO` edges cleaned before insert (by `metadata->>task_id`)
 - **Guard B** — Text-anchoring validation drops hallucinated labels not found in source text
 - **HITL** — New person/project/organization nodes gated through `pending_graph_nodes` for Danny's approval via Decision Pulse
 
-### 3c. Hindsight Retrieval
+### 3c. Forward Indexing
 
-`retrieve_hindsight_memories()` (`memory.py:104-170`) runs multi-signal retrieval:
+Every new memory write triggers `schedule_index_memory()` (`core/retrieval/pipeline.py`) — chunks text into passages (512-char sliding windows), extracts entities via Gemini Flash Lite, embeds phrase nodes, and builds link tables. Runs at concurrency 3 (`asyncio.Semaphore(3)`). 470 production memories indexed across all types.
+
+### 3d. Hindsight Retrieval
+
+`retrieve_hindsight_memories()` (`memory.py:104-170`) routes through `search_memories_compat()`, which directs to `associative_retrieve()` when enabled (all flags ON):
 1. For active tasks with `reminder_at` → fetches memories with semantic similarity to the task title
 2. For the current query → fetches matching memories
 3. Results are merged, deduplicated, and trimmed to `top_k`
 
-### 3d. Serendipity Engine
+### 3e. Serendipity Engine
 
 `serendipity_engine()` (`memory.py:271-320`) hunts for non-obvious connections across domains:
 - **Cross-domain keyword bridges** — Words >4 chars appearing in 2+ org tags
@@ -124,11 +131,11 @@ The `memories` table stores 5 types: `note`, `outcome`, `archive`, `reflection`,
 - **Temporal serendipity** — Resources and memories created on the same day
 - Results sampled to max 5 paths to protect token budget
 
-### 3e. Temporal Pattern Detection
+### 3f. Temporal Pattern Detection
 
 `detect_temporal_patterns()` queries memories from the same month/day across all years (Timehop-style). Results deduplicated, capped at 5, injected into briefing context.
 
-### 3f. After-Action Report
+### 3g. After-Action Report
 
 Runs nightly (hour >= 20 IST): queries completed + open tasks, sends summary to Gemini for a 1-2 sentence reflection, saves as `memory_type: 'reflection'`.
 
@@ -205,8 +212,10 @@ Tier 1 (handler.py) ──── Intent classification → QUERY
 Tier 2 (dispatch.py) ──── Parallel context fetch (14 sources in 3 groups)
                             │  └─ TTL caches hit Redis for tasks/people
                             │
-Tier 3 (memory.py) ────── Serendipity, hindsight, temporal patterns
-                            │  └─ Graph traversal for Solvstrat connections
+Tier 3 (retrieval) ─────── Associative retrieval (7-signal ranking)
+                            │  └─ LLM entity extraction + lexical phrase matching
+                            │  └─ PPR graph traversal + alias bridges
+                            │  └─ Serendipity, hindsight, temporal patterns
                             │
 Tier 4 (dispatch.py) ──── Anaphora ("Solvstrat" is the anchor)
                             │  └─ Proactive signal check for Solvstrat drafts

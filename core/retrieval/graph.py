@@ -31,6 +31,12 @@ async def upsert_phrase_node(node: PhraseNode) -> Optional[int]:
                 .execute()
             return node_id
 
+        if not node.embedding:
+            from core.llm import get_embedding
+            emb_res = await get_embedding(node.display_text)
+            if emb_res:
+                node.embedding = emb_res.vector
+
         payload = {
             "normalized_text": node.normalized_text,
             "display_text": node.display_text,

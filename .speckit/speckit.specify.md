@@ -23,9 +23,9 @@
 - Personal capture pipeline — natural speech NOTE routing, `/note` command with entity extraction, `/api/roundup` evening check-in, voice memo→note pipeline
 - RLS on sensitive tables (pending_graph_edges, pending_graph_nodes, messages, system_audit_logs, dead_letter_queue)
 - **LLM Layer fully consolidated**: All API clients (Supabase, Gemini, Google) created once from canonical modules. Multi-key Gemini failover (3 keys). Unified fallback chain. Single rate limiter. Shared pending decision handler for call/whatsapp/teams channels.
+- **Associative retrieval engine fully deployed**: 7-signal ranking (semantic, PPR, recency, importance, project, specificity, person_boost) replaces legacy pgvector-only `match_memories_hybrid`. 7 dedicated retrieval tables (passages, phrase_nodes, node_stats, passage_phrase_links, memory_bundle_links, alias_edges, index_runs). 470 memories indexed, 633 passages, 1305 phrase nodes, 3760 alias edges. Cold path 3.5–5.0s, warm path 1.8–3.5s. 4 per-site feature flags all ON in production. Forward indexing live for all new memories via `schedule_index_memory()`. Redis caching (1h LLM, 24h embeddings) with multi-key failover on 429 errors.
 
 ### What is broken or incomplete
-- **PARTIAL**: Graph backfill running — ~77 clean pending edges currently; prior 699 junk nodes (concept, emotional_state, resource) deleted
 - **MISSING**: No Decisions table (P3) — decisions are implicit in tasks/briefings
 - **MISSING**: No graph edge expiry (P4) — edges older than 6 months may be stale
 - **MISSING**: People table enrichment (P5) — org, last_interaction_date, notes columns not yet populated

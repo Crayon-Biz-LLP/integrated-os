@@ -2,7 +2,6 @@ import time
 import asyncio
 import hashlib
 from collections import OrderedDict
-from .client import get_gemini_client
 from .response import EmbeddingResult
 from .constants import Outcome, EMBEDDING_MODEL
 from .instrument import log_embedding_outcome
@@ -32,13 +31,28 @@ async def get_embedding(text: str) -> EmbeddingResult:
     max_retries = 3
     
     def _call():
-        return get_gemini_client().models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=text,
-            config={
-                'output_dimensionality': EMBEDDING_DIMENSION
-            }
-        )
+        from .client import get_gemini_clients
+        clients = get_gemini_clients()
+        last_error = None
+        for client in clients:
+            try:
+                return client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=text,
+                    config={
+                        'output_dimensionality': EMBEDDING_DIMENSION
+                    }
+                )
+            except Exception as e:
+                error_str = str(e).lower()
+                if '429' in error_str or 'resource_exhausted' in error_str or 'quota' in error_str:
+                    last_error = e
+                    continue
+                raise e
+        
+        if last_error:
+            raise last_error
+        raise RuntimeError("No Gemini clients available")
         
     for attempt in range(max_retries):
         try:

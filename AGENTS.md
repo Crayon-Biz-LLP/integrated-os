@@ -41,6 +41,17 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - `core/clarifier.py` - Clarification loop engine. 6-function interface (`evaluate_node`, `evaluate_edge`, `build_batch`, `handle_response`, `next_shortcode`, `dedupe_batch`). Phase 1 returns `None` for all evaluations. Phase 2 will generate Telegram questions for low-confidence extractions.
 - `core/agents/research_agent.py` - Research and embedding tasks
 - `core/skills/` - Ingest (email, archive), nightly canonical brain synthesis, and graph sync scripts (run via CI)
+- `core/retrieval/search.py` - `associative_retrieve()` — 7-signal ranking pipeline (semantic, PPR, recency, importance, project, specificity, person_boost). Redis-cached LLM extraction + embeddings, parallel DB queries via PostgREST nested joins, `asyncio.to_thread()` for sync ops.
+- `core/retrieval/pipeline.py` - `index_memory()` / `schedule_index_memory()` — forward indexing: chunk → embed → extract → phrase node upsert → link passages → bundle. Module-level `Semaphore(3)` for extraction concurrency.
+- `core/retrieval/graph.py` - Phrase node graph operations: `upsert_phrase_node()` (embeds new nodes at creation), `get_subgraph_edges()`, `update_node_stats()`.
+- `core/retrieval/extractor.py` - `extract_triples()` — LLM entity extraction for phrase nodes from memory text.
+- `core/retrieval/ranking.py` - `rank_memories()` — blends 7 signals with configurable weight constants.
+- `core/retrieval/ppr.py` - `personalized_pagerank()` — 20 iterations, ~50ms on bounded subgraph (<2000 nodes).
+- `core/retrieval/backfill.py` - Historical retrieval index backfill with checkpoint/resume via `retrieval_index_runs`.
+- `core/retrieval/eval.py` - `run_eval()` — side-by-side comparison of legacy pgvector vs associative retrieval.
+- `core/retrieval/config.py` - 4 per-site feature flags (`RETRIEVAL_ASSOCIATIVE_ENTITY_SUMMARY`, `RECENT_MEMORIES`, `HINDSIGHT`, `HYDRATE`) + `RETRIEVAL_INDEXING_ENABLED` + `RETRIEVAL_SHADOW_MODE`. Default: all OFF.
+- `core/llm/embedding.py` - `get_embedding()` — multi-key failover across 3 Gemini API keys (iterates `get_gemini_clients()` on 429).
+- `core/lib/redis_cache.py` - `cache_get()` / `cache_set()` — synchronous Redis helpers wrapped in `asyncio.to_thread()`.
 
 ### Database (Supabase)
 - Uses `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)
@@ -49,6 +60,7 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - **Note**: `pending_graph_nodes` holds new person/project nodes awaiting approval via Decision Pulse (`g{id}` shortcode). Also holds organization nodes and `status='flagged'` for ungrounded people awaiting clarification loop questions (`c{id}` shortcode).
 - **Note**: `pending_graph_edges` holds all extracted edges awaiting approve/edit/reject via Decisions UI or Telegram (`pe{id}` shortcode). Since Step 1.5, entity_extractor.py routes ALL LLM-extracted edges here instead of direct graph_edges inserts.
 - `messages` holds WhatsApp chats, Emails, and Call extracts with classification + approval status
+- **Retrieval tables**: `retrieval_passages`, `retrieval_phrase_nodes` (with GIN trigram index), `retrieval_node_stats`, `retrieval_passage_phrase_links`, `retrieval_memory_bundle_links`, `retrieval_alias_edges` (3760 heuristic synonym bridges), `retrieval_index_runs` (checkpoint/resume).
 - `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter). Excludes `raw_dumps` from extraction. Uses strict 5-node-type / 16-edge-type ontology with entity grounding.
 - **Graph integrity**: Five layers — (1) Guard A deletes stale project edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation (no AUTHORED exception); (3) Guard C (HITL) gates ALL edges through `pending_graph_edges` + high-risk nodes through `pending_graph_nodes`; (4) Guard D dedup prevents label-drift re-insertion; (5) No auto-created concept nodes. **Phase 1 Guards**: Guard 2 (`is_real_project`) hard-rejects ungrounded projects, Guard 3 (`has_structural_anchor`) flags ungrounded people/orgs.
 
@@ -176,6 +188,16 @@ Some workflows use an **external cron service** because GitHub Actions free plan
 | Time formatting | `from core.services.google_service import format_rfc3339` |
 | Task/calendar sync | `from core.services.google_service import sync_to_google, sync_to_calendar, get_tasks_service, delete_calendar_event` |
 | Multi-key Gemini clients | `from core.llm.client import get_gemini_clients` (returns list of clients from all configured keys) |
+| Associative retrieve | `from core.retrieval.search import associative_retrieve` |
+| Associative retrieve (compat) | `from core.retrieval.search import search_memories_compat` |
+| Forward indexing | `from core.retrieval.pipeline import index_memory, schedule_index_memory` |
+| Phrase node graph | `from core.retrieval.graph import upsert_phrase_node, get_subgraph_edges, update_node_stats` |
+| Entity extraction | `from core.retrieval.extractor import extract_triples` |
+| Memory ranking | `from core.retrieval.ranking import rank_memories` |
+| Pagerank | `from core.retrieval.ppr import personalized_pagerank` |
+| Redis cache | `from core.lib.redis_cache import cache_get, cache_set` |
+| Embedding with multi-key failover | `from core.llm.embedding import get_embedding` |
+| Retrieval config | `from core.retrieval import config` |
 
 ### Required Environment Variables
 ```
@@ -197,6 +219,8 @@ PULSE_HTTP_REFERER  # Default: http://localhost:8000
 PULSE_APP_NAME  # Default: Pulse
 API_SECRET_KEY  # Shared secret for frontend API auth (X-API-Key header)
 WHATSAPP_INGEST_SECRET  # Shared secret for WhatsApp ingest (X-Ingest-Secret header)
+UPSTASH_REDIS_REST_URL  # Required for retrieval Redis cache
+UPSTASH_REDIS_REST_TOKEN  # Required for retrieval Redis cache
 ```
 
 ## Integrated AI Tooling

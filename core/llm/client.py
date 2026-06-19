@@ -28,7 +28,3 @@ def get_gemini_clients() -> List[genai.Client]:
         _gemini_clients.append(genai.Client(api_key=api_key_3))
         
     return _gemini_clients
-
-def get_gemini_client() -> genai.Client:
-    """Returns primary client for backward compatibility."""
-    return get_gemini_clients()[0]

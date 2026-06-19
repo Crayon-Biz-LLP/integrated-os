@@ -27,22 +27,39 @@ Each memory now stores emotional context as structured fields to enable temporal
 
 Extracted at ingestion time by Flash Lite during NOTE classification. Enables queries like "how do I feel about Atna?" → aggregate sentiment_score over time → trajectory.
 
-### Memory Decay & Importance Weighting
+### 7-Signal Associative Ranking
 
-To prevent stale memories from crowding out relevant recent decisions, retrieval uses the `match_memories_hybrid` RPC. This function scores memories using:
+The primary retrieval path uses `associative_retrieve()` (`core/retrieval/search.py`) — a 7-signal ranking pipeline that replaced the legacy pgvector-only approach:
 
-1. **Semantic Similarity:** Cosine distance of the query vector vs memory vector.
-2. **Exponential Recency Decay:** Memories age on a 30-day curve `EXP(-days / 15.0)`, giving newer memories a mathematical boost.
-3. **Importance Score:** Incorporates the memory's `importance_score` (1-10 scale) directly into the final rank.
+1. **Semantic Similarity:** Query embedding (768-dim Gemini) is cosine-scored against all matched passages.
+2. **Personalized PageRank (PPR):** Graph traversal from matched phrase nodes surfaces indirect connections (~50ms on bounded subgraph).
+3. **Recency Decay:** Exponential curve `EXP(-days / 15.0)` — 30-day half-life.
+4. **Importance Score:** Memory's `importance_score` (1-10 scale) directly factored into rank.
+5. **Project Boost:** Cross-references memories linked to active projects via graph edges.
+6. **Specificity Boost:** Node degree weighting — more specific entities rank higher.
+7. **Person Boost:** Active person anchor biases results toward memories mentioning that person (+5% rank weight).
 
-### Hybrid Vector+Graph Context (Cross-Referencing)
+All signals are blended with configurable weights in `core/retrieval/ranking.py`. The legacy `match_memories_hybrid` RPC remains as a fallback path.
 
-Rhodey combines multi-signal retrieval through `get_cross_referenced_context()`:
+### Associative Retrieval Pipeline
 
-1. **Vector Search:** Fetches semantically similar memories via the hybrid RPC.
-2. **Graph Traversal:** Executes `fetch_hybrid_graph_context()` to walk the knowledge graph for related edges.
-3. **Cross-Referencing:** The engine automatically scans the vector memory results. If a memory explicitly mentions any entities known to the graph (people, projects), it tags the memory dynamically: `[NOTE] (Links to: Danny, Qhord) ...`.
-4. The LLM receives a single, unified context block where textual memories and graph structural relationships are co-presented.
+Rhodey's associative retrieval runs in three phases:
+
+**Phase 1 — Query Analysis (parallel via `asyncio.gather()`):**
+- **LLM Entity Extraction:** Query sent to Gemini Flash Lite (`CLASSIFICATION_MODEL`) to extract entities, cached for 1h via Redis SHA-256 key.
+- **Lexical Phrase Splitting:** Query split into word n-grams (1-3 words) for trigram matching.
+- **Embedding:** Query embedded via `gemini-embedding-2-preview`, cached for 24h via Redis.
+
+**Phase 2 — Graph Traversal:**
+- Matched phrase nodes drive `personalized_pagerank()` across the bounded subgraph.
+- LLM-only entities trigger a secondary DB fetch for phrase nodes not caught by lexical match.
+- Alias edges (`retrieval_alias_edges`) bridge synonymous labels identified via heuristics.
+
+**Phase 3 — Aggregation & Ranking:**
+- Passages aggregated to memories via nested PostgREST joins (collapsed N+1 queries).
+- 7-signal rank blended → deduplicated → top-k returned as `ExplainableBundle`.
+
+The LLM receives a unified context block where associative signals and graph structure are co-presented.
 
 ### Temporal Pattern Detection
 
@@ -60,7 +77,7 @@ The deep-dive retrieval — runs parallel queries:
 # Query 3: Entity-seeded queries (from graph traversal)
 ```
 
-All queries run concurrently via `asyncio.gather()`. Results are deduplicated by ID, sorted by hybrid score, and the top-k returned.
+All queries run concurrently via `asyncio.gather()`. Each query path calls `search_memories_compat()`, which routes to `associative_retrieve()` when enabled (all feature flags ON as of June 2026). Results are deduplicated by ID, sorted by hybrid score, and the top-k returned.
 
 ## The Knowledge Graph
 
@@ -170,9 +187,84 @@ To maintain context across time without bloated prompt windows, Rhodey implement
 3. At the *start* of the next pulse, this summary is retrieved and injected as `SESSION MEMORY`.
 This gives the agent "cross-pulse continuity," allowing it to refer to what it recommended in the last session.
 
-### Visual Exploration
+## Associative Retrieval Architecture (June 2026)
 
-The frontend renders the knowledge graph as an interactive D3.js force-directed visualization with:
+### Database Tables
+
+The retrieval layer uses 7 dedicated tables, separate from the main `memories` and `graph_*` tables:
+
+| Table | Purpose | Row Count |
+|-------|---------|-----------|
+| `retrieval_passages` | Chunked memory passages (512-char windows) | 633 |
+| `retrieval_phrase_nodes` | Extracted phrase entities with embedding | 1305 |
+| `retrieval_node_stats` | Per-node degree/frequency statistics | 1292 |
+| `retrieval_passage_phrase_links` | Many-to-many: passages ↔ phrase nodes | 1928 |
+| `retrieval_memory_bundle_links` | Many-to-many: retrieval data ↔ memory IDs | 646 |
+| `retrieval_alias_edges` | Heuristic synonymous label bridges | 3760 |
+| `retrieval_index_runs` | Index operation checkpoint tracking | 470 |
+
+### Forward Indexing Pipeline
+
+Every new memory write triggers `schedule_index_memory()` (`core/retrieval/pipeline.py`):
+
+```
+memories.insert
+    → schedule_index_memory(memory_id)
+        → fetch_memory(memory_id)
+        → chunk_into_passages(text)           # 512-char sliding windows
+        → upsert_passages(passages)            # save to retrieval_passages
+        → extract_entities(passages)           # Gemini Flash Lite extraction
+        → upsert_phrase_nodes(entities)        # embed + save to retrieval_phrase_nodes
+        → link_passage_phrases(passages, nodes) # build passage_phrase_links
+        → link_bundle(memory_id, passage_ids)   # build memory_bundle_links
+        → update_node_stats()                   # refresh frequency stats
+        → log_index_run()                       # checkpoint
+```
+
+Indexing runs at concurrency 3 (module-level `asyncio.Semaphore(3)`), with jittered backoff on Gemini 429s via multi-key rotation.
+
+### Performance Characteristics
+
+| Metric | Cold Path | Warm Path |
+|--------|-----------|-----------|
+| **Total latency** | 3.5–5.0s | 1.8–3.5s |
+| LLM entity extraction | ~2.5s | ~10ms (Redis cache) |
+| Embedding fetch | ~1.2s | ~10ms (Redis cache) |
+| Post-Gemini tail | ~900ms | ~900ms |
+| PPR traversal | ~50ms | ~50ms |
+| Lexical phrase search | ~5ms | ~5ms (GIN trigram) |
+
+**Gemini Free Tier limits:** 1000 embed_content requests/day/project/model. Mitigated by 3 API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`) with transparent multi-key failover on 429 errors. Effective daily limit: ~3000 before exponential backoff.
+
+### Redis Caching
+
+Two cache tiers, both in Upstash Redis, fail-open on Redis error:
+
+| Cache | Key | TTL | Hit Effect |
+|-------|-----|-----|------------|
+| LLM entity extraction | `retrieval:entities:{sha256(query)}` | 1h | Skips Gemini Flash Lite call (~2.5s saved) |
+| Query embedding | `retrieval:embedding:{sha256(query)}` | 24h | Skips embed_content call (~1.2s saved) |
+
+### Feature Flags (Env Vars)
+
+Four per-site flags control which read paths use associative retrieval. All are set to `true` in production:
+
+| Flag | Path Activated | Purpose |
+|------|----------------|---------|
+| `RETRIEVAL_ASSOCIATIVE_ENTITY_SUMMARY` | `brain_synth.py` | Entity summaries use associative |
+| `RETRIEVAL_ASSOCIATIVE_RECENT_MEMORIES` | `memory.py` (briefing) | Recent memories use associative |
+| `RETRIEVAL_ASSOCIATIVE_HINDSIGHT` | `memory.py` (hindsight) | Hindsight retrieval uses associative |
+| `RETRIEVAL_ASSOCIATIVE_HYDRATE` | `context.py` | Context hydration uses associative |
+| `RETRIEVAL_INDEXING_ENABLED` | `pipeline.py` | Forward indexing is live |
+
+### Data Integrity
+
+- **Checkpoint/resume:** `retrieval_index_runs` tracks memory runs by `memory_id` + `source_type`. Backfill resumes from last checkpoint.
+- **GIN trigram index:** `idx_phrase_nodes_text` on `normalized_text` using `gin_trgm_ops` — phrase lookups at ~5ms.
+- **Alias edge backfill:** 3760 heuristic edges bridge synonymous labels (e.g., "Paulsons" ↔ "Paulsons Ledgers").
+- **No shadow mode:** Legacy pgvector path (`match_memories_hybrid`) remains as fallback but is no longer the primary.
+
+### Visual Exploration
 - 6 node colors (person, organization, project, place, animal, danny)
 - Zoom (0.2x-4x scale)
 - Drag with force reheat
