@@ -590,8 +590,21 @@ async def graph_merge_action_route(request: Request):
             return {"success": False, "message": "Merge proposal already processed."}
 
         if action == 'reject':
-            supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', int(pending_id)).execute()
-            return {"success": True, "message": f"Merge rejected for '{pr['label']}'."}
+            from core.pulse.graph import create_graph_node_with_db_record
+            result = await create_graph_node_with_db_record(
+                label=pr['label'],
+                node_type=pr['type'],
+                source_text=pr.get('source_text', ''),
+                source_tag='pending_approval',
+                force=True
+            )
+            if result.get('success'):
+                supabase.table('pending_graph_nodes').update({
+                    'status': 'approved',
+                    'merge_candidate_id': None
+                }).eq('id', int(pending_id)).execute()
+                return {"success": True, "message": f"Keep both — approved '{pr['label']}' as separate node."}
+            return {"success": False, "message": result.get('message', 'Failed to approve node')}
 
         target_id = pr.get('merge_candidate_id')
         if not target_id:
