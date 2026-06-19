@@ -178,13 +178,15 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
     }
   };
 
-  const filteredItems = items.filter(item => {
-    if (filterType === 'all') return true;
-    if (filterType === 'other') {
-      return !['person', 'project', 'organization', 'concept'].includes(item.type);
-    }
-    return item.type === filterType;
-  });
+  const filteredItems = items
+    .filter(item => {
+      if (filterType === 'all') return true;
+      if (filterType === 'other') {
+        return !['person', 'project', 'organization', 'concept'].includes(item.type);
+      }
+      return item.type === filterType;
+    })
+    .sort((a, b) => a.label.localeCompare(b.label));
 
   return (
     <div className="space-y-4">
