@@ -1087,8 +1087,8 @@ async def graph_node_manual_merge_route(request: Request):
                 
                 # Handle people table merge
                 if source_type == 'person':
-                    s_meta = supabase.table('graph_nodes').select('metadata').eq('id', s_live_id).maybe_single().execute()
-                    s_pid = s_meta.data.get('metadata', {}).get('people_id') if s_meta and s_meta.data else None
+                    s_node = supabase.table('graph_nodes').select('db_record_id').eq('id', s_live_id).maybe_single().execute()
+                    s_pid = s_node.data.get('db_record_id') if s_node and s_node.data else None
                     if s_pid:
                         p_res = supabase.table('people').select('role').eq('id', s_pid).maybe_single().execute()
                         old_role = p_res.data.get('role') or ""
