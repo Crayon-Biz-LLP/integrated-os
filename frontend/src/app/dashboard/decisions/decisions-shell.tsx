@@ -16,14 +16,17 @@ export function DecisionsShell({
   initialGraphItems,
   initialGraphNodes,
   initialMergeProposals,
+  initialRejectedNodes,
 }: {
   initialCallItems: CallPendingItem[];
   initialWhatsappItems: WhatsAppPendingMessage[];
   initialGraphItems: GraphPendingEdge[];
   initialGraphNodes: GraphPendingNode[];
   initialMergeProposals: GraphMergeProposal[];
+  initialRejectedNodes?: GraphPendingNode[];
 }) {
   const entityNodes = initialGraphNodes.filter(n => ["person", "project", "organization"].includes(n.type));
+  const rejectedEntityNodes = (initialRejectedNodes || []).filter(n => ["person", "project", "organization"].includes(n.type));
   const otherNodes = initialGraphNodes.filter(n => !["person", "project", "organization"].includes(n.type));
 
   return (
@@ -101,7 +104,7 @@ export function DecisionsShell({
         </TabsContent>
         
         <TabsContent value="entities" className="mt-4">
-          <EntityTableList items={entityNodes} />
+          <EntityTableList items={entityNodes} rejectedItems={rejectedEntityNodes} />
         </TabsContent>
         <TabsContent value="nodes" className="mt-4">
           <NodePendingList items={otherNodes} />

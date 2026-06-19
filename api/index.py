@@ -648,8 +648,8 @@ async def graph_node_action_route(request: Request):
         org_tag = body.get('org_tag')
         new_label = body.get('label')
         
-        if not pending_id or action not in ('approve', 'reject'):
-            raise HTTPException(status_code=400, detail="id and valid action (approve/reject) required")
+        if not pending_id or action not in ('approve', 'reject', 'unreject'):
+            raise HTTPException(status_code=400, detail="id and valid action (approve/reject/unreject) required")
             
         from core.pulse.graph import process_graph_pending_decision
         result = await process_graph_pending_decision(int(pending_id), action, org_tag=org_tag, new_label=new_label)

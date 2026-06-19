@@ -343,8 +343,14 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
             return {"success": False, "action": "not_found", "message": "Graph item not found."}
 
         pending_item = pending_res.data
-        if pending_item.get('status') not in ('pending', 'awaiting_details', 'flagged'):
+        if pending_item.get('status') not in ('pending', 'awaiting_details', 'flagged') and decision != 'unreject':
             return {"success": False, "action": "already_processed", "message": "Already processed."}
+
+        if decision == 'unreject':
+            if pending_item.get('status') != 'rejected':
+                return {"success": False, "action": "not_rejected", "message": "Item is not rejected."}
+            supabase.table('pending_graph_nodes').update({'status': 'pending', 'merge_candidate_id': None}).eq('id', pending_id).execute()
+            return {"success": True, "action": "unrejected", "message": f"Un-rejected node {pending_item['label']}"}
 
         if decision == 'reject':
             label = pending_item['label']

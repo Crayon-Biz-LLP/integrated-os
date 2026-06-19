@@ -82,9 +82,9 @@ function MergeSearchInput({
   );
 }
 
-export function EntityTableList({ items: initialItems }: { items: GraphPendingNode[] }) {
+export function EntityTableList({ items: initialItems, rejectedItems = [] }: { items: GraphPendingNode[], rejectedItems?: GraphPendingNode[] }) {
   const [items, setItems] = useState<GraphPendingNode[]>(initialItems);
-  const [scope, setScope] = useState<'pending' | 'live'>('pending');
+  const [scope, setScope] = useState<'pending' | 'live' | 'rejected'>('pending');
   const [loading, setLoading] = useState(false);
   const [filterType, setFilterType] = useState<string>('all');
   
@@ -101,6 +101,8 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
   useEffect(() => {
     if (scope === 'pending') {
       setItems(initialItems);
+    } else if (scope === 'rejected') {
+      setItems(rejectedItems);
     } else {
       setLoading(true);
       fetchLiveGraphNodes().then(data => {
@@ -113,9 +115,9 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
         setLoading(false);
       });
     }
-  }, [initialItems, scope]);
+  }, [initialItems, rejectedItems, scope]);
 
-  const handleDecision = async (id: number | string, decision: 'approve' | 'reject') => {
+  const handleDecision = async (id: number | string, decision: 'approve' | 'reject' | 'unreject') => {
     try {
       const result = await decideGraphNode(id as number, decision);
       if (result.action === 'merge_proposed') {
@@ -123,7 +125,7 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
         // Don't remove from list, let them merge it
       } else {
         setItems(prev => prev.filter(i => i.id !== id));
-        toast.success(decision === 'approve' ? 'Approved successfully' : 'Rejected successfully');
+        toast.success(decision === 'approve' ? 'Approved successfully' : decision === 'unreject' ? 'Un-rejected successfully' : 'Rejected successfully');
       }
     } catch (e: any) {
       toast.error(e.message || `Failed to ${decision}`);
@@ -217,6 +219,12 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
             className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all ${scope === 'live' ? 'bg-background text-foreground shadow-sm' : 'hover:bg-background/50 hover:text-foreground'}`}
           >
             Live
+          </button>
+          <button
+            onClick={() => setScope('rejected')}
+            className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all ${scope === 'rejected' ? 'bg-background text-foreground shadow-sm' : 'hover:bg-background/50 hover:text-foreground'}`}
+          >
+            Rejected
           </button>
         </div>
       </div>
@@ -329,6 +337,20 @@ export function EntityTableList({ items: initialItems }: { items: GraphPendingNo
                             title="Reject"
                           >
                             <X className="h-4 w-4" />
+                          </Button>
+                          <div className="w-px h-4 bg-border self-center mx-1" />
+                        </>
+                      )}
+                      {scope === 'rejected' && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 h-8"
+                            onClick={() => handleDecision(item.id, 'unreject')}
+                            title="Un-reject"
+                          >
+                            Un-reject
                           </Button>
                           <div className="w-px h-4 bg-border self-center mx-1" />
                         </>

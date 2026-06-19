@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export default async function DecisionsPage() {
   const supabase = await createServerSupabaseClient();
 
-  const [callRes, whatsappRes, graphRes, nodeRes, mergeRes] = await Promise.all([
+  const [callRes, whatsappRes, graphRes, nodeRes, mergeRes, rejectedRes] = await Promise.all([
     supabase
       .from("messages")
       .select("*")
@@ -41,6 +41,12 @@ export default async function DecisionsPage() {
       .eq("status", "merge_proposed")
       .order("created_at", { ascending: false })
       .limit(50),
+    supabase
+      .from("pending_graph_nodes")
+      .select("*")
+      .eq("status", "rejected")
+      .order("created_at", { ascending: false })
+      .limit(100),
   ]);
 
   const rawCallItems = callRes.data ?? [];
@@ -60,11 +66,13 @@ export default async function DecisionsPage() {
 
   const graphItems = (graphRes.data ?? []) as GraphPendingEdge[];
   const graphNodes = (nodeRes.data ?? []) as GraphPendingNode[];
+  const rejectedNodes = (rejectedRes.data ?? []) as GraphPendingNode[];
   const mergeProposals = (mergeRes.data ?? []) as GraphMergeProposal[];
 
   const memIds = [...new Set([
     ...graphItems.map(i => i.source_text?.match(/^memories:(\d+)$/)).filter(Boolean).map(m => parseInt(m![1])),
-    ...graphNodes.map(n => n.source_text?.match(/^memories:(\d+)$/)).filter(Boolean).map(m => parseInt(m![1]))
+    ...graphNodes.map(n => n.source_text?.match(/^memories:(\d+)$/)).filter(Boolean).map(m => parseInt(m![1])),
+    ...rejectedNodes.map(n => n.source_text?.match(/^memories:(\d+)$/)).filter(Boolean).map(m => parseInt(m![1]))
   ])];
   if (memIds.length > 0) {
     const memRes = await supabase.from("memories").select("id, content").in("id", memIds);
@@ -78,6 +86,13 @@ export default async function DecisionsPage() {
       }
     }
     for (const node of graphNodes) {
+      const match = node.source_text?.match(/^memories:(\d+)$/);
+      if (match) {
+        const content = memMap.get(parseInt(match[1]));
+        if (content) node.source_text = content;
+      }
+    }
+    for (const node of rejectedNodes) {
       const match = node.source_text?.match(/^memories:(\d+)$/);
       if (match) {
         const content = memMap.get(parseInt(match[1]));
@@ -104,6 +119,7 @@ export default async function DecisionsPage() {
       initialGraphItems={graphItems}
       initialGraphNodes={graphNodes}
       initialMergeProposals={mergeProposals}
+      initialRejectedNodes={rejectedNodes}
     />
   );
 }
