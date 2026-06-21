@@ -20,6 +20,7 @@ export async function GET(req: NextRequest) {
       .select("source_node_id")
       .eq("target_node_id", nodeId)
       .eq("relationship", "MENTIONS")
+      .order("created_at", { ascending: false })
       .limit(50);
       
     if (edges && edges.length > 0) {

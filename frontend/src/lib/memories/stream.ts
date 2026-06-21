@@ -11,13 +11,21 @@ export interface NeighborhoodResponse {
   center: GraphNode;
   nodes: GraphNode[];
   edges: GraphEdge[];
+  danny_id?: string;
 }
 
 export interface StreamResponse {
   items: StreamItem[];
 }
 
-export async function fetchNeighborhood(nodeId: number, signal?: AbortSignal): Promise<NeighborhoodResponse> {
+export interface EgoGraphResponse {
+  center: GraphNode;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  danny_id: string;
+}
+
+export async function fetchNeighborhood(nodeId: string, signal?: AbortSignal): Promise<NeighborhoodResponse> {
   const res = await fetch(`/api/graph/neighborhood?node_id=${nodeId}`, { 
     cache: 'no-store',
     signal 
@@ -26,7 +34,16 @@ export async function fetchNeighborhood(nodeId: number, signal?: AbortSignal): P
   return res.json();
 }
 
-export async function fetchMemoryStream(nodeId?: number, limit = 20, signal?: AbortSignal): Promise<StreamResponse> {
+export async function fetchEgoGraph(depth = 2, cap = 80, signal?: AbortSignal): Promise<EgoGraphResponse> {
+  const res = await fetch(`/api/graph/ego?depth=${depth}&cap=${cap}`, {
+    cache: 'no-store',
+    signal,
+  });
+  if (!res.ok) throw new Error('Failed to fetch ego graph');
+  return res.json();
+}
+
+export async function fetchMemoryStream(nodeId?: string, limit = 20, signal?: AbortSignal): Promise<StreamResponse> {
   const params = new URLSearchParams();
   if (nodeId) params.set('node_id', String(nodeId));
   params.set('limit', String(limit));
@@ -36,4 +53,14 @@ export async function fetchMemoryStream(nodeId?: number, limit = 20, signal?: Ab
   });
   if (!res.ok) throw new Error('Failed to fetch stream');
   return res.json();
+}
+
+export async function resolveMemoryToEntity(memoryId: number, signal?: AbortSignal): Promise<string | null> {
+  const res = await fetch(`/api/graph/resolve-memory?memory_id=${memoryId}`, {
+    cache: 'no-store',
+    signal,
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.entity_node_id || null;
 }

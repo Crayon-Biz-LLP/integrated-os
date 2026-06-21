@@ -22,15 +22,15 @@ export interface CanonicalPageListItem {
 }
 
 export interface GraphNode {
-  id: number;
+  id: string;
   label: string;
   type: string;
   canonical_page_id: number | null;
 }
 
 export interface GraphEdge {
-  id: number;
-  source_node_id: number;
-  target_node_id: number;
+  id: string;
+  source_node_id: string;
+  target_node_id: string;
   relationship: string;
 }

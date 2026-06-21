@@ -21,16 +21,16 @@ const colorMap: Record<string, string> = {
 };
 
 interface SimNode extends d3.SimulationNodeDatum {
-  id: number;
+  id: string;
   label: string;
   type: string;
   canonical_page_id: number | null;
 }
 
 interface SimEdge {
-  id: number;
-  source_node_id: number;
-  target_node_id: number;
+  id: string;
+  source_node_id: string;
+  target_node_id: string;
   relationship: string;
   source: SimNode;
   target: SimNode;

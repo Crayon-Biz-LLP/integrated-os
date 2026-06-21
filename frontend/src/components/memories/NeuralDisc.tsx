@@ -8,7 +8,7 @@ import { GraphNode, GraphEdge } from '@/lib/memories/types';
 interface NeuralDiscProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  centerNodeId: number | null;
+  centerNodeId: string | null;
   onNodeClick: (node: GraphNode) => void;
   onBackgroundClick: () => void;
   onDiagnostics?: (metrics: { layout: number; render: number; hover: number }) => void;
@@ -27,13 +27,13 @@ const colorMap: Record<string, number> = {
 };
 
 interface SimNode extends d3.SimulationNodeDatum {
-  id: number;
+  id: string;
   label: string;
   type: string;
 }
 
 interface LayoutNode {
-  id: number;
+  id: string;
   label: string;
   type: string;
   x: number;
@@ -41,14 +41,14 @@ interface LayoutNode {
 }
 
 interface SimEdge {
-  id: number;
+  id: string;
   relationship: string;
   source: SimNode;
   target: SimNode;
 }
 
 interface LayoutEdge {
-  id: number;
+  id: string;
   relationship: string;
   source: LayoutNode;
   target: LayoutNode;
@@ -57,7 +57,7 @@ interface LayoutEdge {
 function computeLayout(
   nodes: GraphNode[],
   edges: GraphEdge[],
-  centerId: number | null,
+  centerId: string | null,
   width: number,
   height: number,
 ): { layoutNodes: LayoutNode[]; layoutEdges: LayoutEdge[] } {
@@ -113,7 +113,7 @@ function computeLayout(
     y: n.y ?? height / 2,
   }));
 
-  const nodeMap = new Map<number, LayoutNode>(layoutNodes.map((n) => [n.id, n]));
+  const nodeMap = new Map<string, LayoutNode>(layoutNodes.map((n) => [n.id, n]));
   const layoutEdges: LayoutEdge[] = simEdges
     .filter((e) => nodeMap.has(e.source.id) && nodeMap.has(e.target.id))
     .map((e) => ({
@@ -140,7 +140,7 @@ export default function NeuralDisc({
   const appRef = useRef<Application | null>(null);
   const [dimensions, setDimensions] = useState({ width: 600, height: 600 });
   const [contextLost, setContextLost] = useState(false);
-  const [hoveredNodeId, setHoveredNodeId] = useState<number | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   // --- Track Reduced Motion Live ---
@@ -159,7 +159,7 @@ export default function NeuralDisc({
     layoutEdges: [],
   });
   const lastMetrics = useRef({ layout: 0, render: 0, hover: 0 });
-  const prevHoveredNodeId = useRef<number | null>(null);
+  const prevHoveredNodeId = useRef<string | null>(null);
 
   // Expose a method to intentionally crash the context for dev testing
   useEffect(() => {
@@ -302,7 +302,7 @@ export default function NeuralDisc({
 
     // Determine which nodes/edges are active based on hover
     const isHovering = hoveredNodeId !== null;
-    const connectedIds = new Set<number>();
+    const connectedIds = new Set<string>();
     
     if (isHovering) {
       connectedIds.add(hoveredNodeId!);
@@ -523,21 +523,8 @@ export default function NeuralDisc({
         </div>
         <p className="text-sm font-medium text-zinc-300">Graphics Context Lost</p>
         <p className="text-xs text-zinc-500 mt-1 max-w-sm">
-          Your browser has discarded the WebGL context, likely due to high memory pressure or an idle GPU. 
-          Please refresh the page to restore the graph.
+          Your browser has discarded the WebGL context. Please refresh to restore.
         </p>
-      </div>
-    );
-  }
-
-  if (nodes.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-zinc-500 bg-zinc-950">
-        <div className="h-12 w-12 rounded-full border border-zinc-800 flex items-center justify-center mb-3">
-          <div className="h-6 w-6 rounded-full bg-zinc-800" />
-        </div>
-        <p className="text-sm">Select a memory to explore its graph</p>
-        <p className="text-xs text-zinc-600 mt-1">Click any stream item to begin</p>
       </div>
     );
   }
