@@ -16,6 +16,7 @@ from core.webhook.utils import is_recent_raw_dump, supabase
 from core.pulse.graph import hybrid_search_graph
 from core.agents.quick_process import process_single_dump, get_tasks_service
 from core.retrieval.pipeline import schedule_index_memory
+from core.pulse.entity_extractor import extract_and_link_entities
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "") -> str:
@@ -362,8 +363,12 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             "expires_at": expires_iso
         }).execute()
         if result and result.data:
-            schedule_index_memory(result.data[0]["id"], text,
-                                  "note", "webhook")
+            memory_id = result.data[0]["id"]
+            schedule_index_memory(memory_id, text, "note", "webhook")
+            try:
+                await extract_and_link_entities(text, memory_id, 'memory')
+            except Exception as e:
+                audit_log_sync("webhook", "WARNING", f"Entity extraction for note failed: {e}")
         
         # Mark dump as processed
         if dump_id:
