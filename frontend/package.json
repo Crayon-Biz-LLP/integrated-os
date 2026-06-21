@@ -18,9 +18,11 @@
     "clsx": "^2.1.1",
     "d3": "^7.9.0",
     "date-fns": "^4.1.0",
+    "framer-motion": "^12.40.0",
     "lucide-react": "^1.11.0",
     "next": "^16.2.9",
     "next-themes": "^0.4.6",
+    "pixi.js": "^8.19.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-markdown": "^10.1.0",
@@ -38,9 +40,9 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
+    "shadcn": "^4.5.0",
     "tailwindcss": "^4",
-    "typescript": "^5",
-    "shadcn": "^4.5.0"
+    "typescript": "^5"
   },
   "overrides": {
     "postcss": "^8.5.10"
