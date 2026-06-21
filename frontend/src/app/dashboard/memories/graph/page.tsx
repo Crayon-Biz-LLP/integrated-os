@@ -3,24 +3,24 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Loader2, AlertCircle, ArrowLeft, Info, User } from 'lucide-react';
-import { fetchNeighborhood, fetchEgoGraph, fetchMemoryStream, resolveMemoryToEntity } from '@/lib/memories/stream';
-import type { StreamItem, NeighborhoodResponse } from '@/lib/memories/stream';
+import { fetchNeighborhood, fetchEgoGraph, fetchEpisodes, resolveMemoryToEntity } from '@/lib/memories/stream';
+import type { Episode, NeighborhoodResponse } from '@/lib/memories/stream';
 import type { GraphNode, GraphEdge } from '@/lib/memories/types';
 
-const LifeStream = dynamic(() => import('@/components/memories/LifeStream'), { ssr: false });
+const EpisodeStream = dynamic(() => import('@/components/memories/EpisodeStream'), { ssr: false });
 const NeuralDisc = dynamic(() => import('@/components/memories/NeuralDisc'), { ssr: false });
 
 export default function MemoryGraphPage() {
-  const [streamItems, setStreamItems] = useState<StreamItem[]>([]);
-  const [streamLoading, setStreamLoading] = useState(true);
-  const [focusedMemoryId, setFocusedMemoryId] = useState<number | null>(null);
+  const [episodes, setEpisodes] = useState<Episode[]>([]);
+  const [episodesLoading, setEpisodesLoading] = useState(true);
+  const [expandedEpisodeId, setExpandedEpisodeId] = useState<string | null>(null);
+  const [expandedMemoryId, setExpandedMemoryId] = useState<number | null>(null);
 
   const [graphNodes, setGraphNodes] = useState<GraphNode[]>([]);
   const [graphEdges, setGraphEdges] = useState<GraphEdge[]>([]);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [graphLoading, setGraphLoading] = useState(true);
   const [graphError, setGraphError] = useState<string | null>(null);
-  const [graphInfo, setGraphInfo] = useState<string | null>(null);
   const dannyIdRef = useRef<string | null>(null);
 
   // Graphics context recovery
@@ -31,58 +31,64 @@ export default function MemoryGraphPage() {
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [enableEffects, setEnableEffects] = useState(true);
 
-  const streamLimit = 20;
+  const episodeLimitRef = useRef(40);
 
   // Abort controllers for in-flight requests
-  const streamAbortRef = useRef<AbortController | null>(null);
+  const episodeAbortRef = useRef<AbortController | null>(null);
   const graphAbortRef = useRef<AbortController | null>(null);
+
+  // Current filter node ID for episode stream
+  const episodeFilterRef = useRef<string | null>(null);
 
   // Sequence guards against stale responses resolving out of order
   const sequenceRef = useRef(0);
 
-  const loadStream = useCallback(async (nodeId?: string, reqSeq?: number) => {
-    if (streamAbortRef.current) streamAbortRef.current.abort();
+  const loadEpisodes = useCallback(async (nodeId?: string) => {
+    if (episodeAbortRef.current) episodeAbortRef.current.abort();
     const abortController = new AbortController();
-    streamAbortRef.current = abortController;
-    const currentSeq = reqSeq ?? sequenceRef.current;
+    episodeAbortRef.current = abortController;
+    const currentSeq = ++sequenceRef.current;
 
-    setStreamLoading(true);
+    episodeFilterRef.current = nodeId ?? null;
+    setEpisodesLoading(true);
+
     try {
-      const res = await fetchMemoryStream(nodeId, streamLimit, abortController.signal);
+      const res = await fetchEpisodes(nodeId ?? undefined, episodeLimitRef.current, abortController.signal);
       if (currentSeq !== sequenceRef.current) return;
-      setStreamItems(res.items);
+      setEpisodes(res.episodes);
     } catch (e: any) {
       if (e.name === 'AbortError' || currentSeq !== sequenceRef.current) return;
-      setStreamItems([]);
+      setEpisodes([]);
     } finally {
-      if (streamAbortRef.current === abortController) {
-        setStreamLoading(false);
+      if (episodeAbortRef.current === abortController) {
+        setEpisodesLoading(false);
       }
     }
   }, []);
 
-  const loadMoreStream = useCallback(async () => {
-    if (streamAbortRef.current) return;
+  const loadMoreEpisodes = useCallback(async () => {
+    if (episodeAbortRef.current) return;
+    episodeLimitRef.current += 20;
     const abortController = new AbortController();
-    streamAbortRef.current = abortController;
+    episodeAbortRef.current = abortController;
     const currentSeq = sequenceRef.current;
 
-    setStreamLoading(true);
+    setEpisodesLoading(true);
     try {
-      const res = await fetchMemoryStream(undefined, streamLimit + 10, abortController.signal);
+      const res = await fetchEpisodes(episodeFilterRef.current ?? undefined, episodeLimitRef.current, abortController.signal);
       if (currentSeq !== sequenceRef.current) return;
 
-      setStreamItems((prev) => {
-        const existing = new Set(prev.map((i) => i.id));
-        const newItems = res.items.filter((i) => !existing.has(i.id));
-        return [...prev, ...newItems];
+      setEpisodes((prev) => {
+        const existing = new Set(prev.map((e) => e.id));
+        const newEps = res.episodes.filter((e) => !existing.has(e.id));
+        return [...prev, ...newEps];
       });
     } catch (e: any) {
       if (e.name === 'AbortError' || currentSeq !== sequenceRef.current) return;
     } finally {
-      if (streamAbortRef.current === abortController) {
-        streamAbortRef.current = null;
-        setStreamLoading(false);
+      if (episodeAbortRef.current === abortController) {
+        episodeAbortRef.current = null;
+        setEpisodesLoading(false);
       }
     }
   }, []);
@@ -96,7 +102,6 @@ export default function MemoryGraphPage() {
 
     setGraphLoading(true);
     setGraphError(null);
-    setGraphInfo(null);
     const start = performance.now();
 
     try {
@@ -111,9 +116,7 @@ export default function MemoryGraphPage() {
       setDiagnostics(d => ({ ...d, fetch: fetchTime, total: fetchTime + d.layout + d.render }));
     } catch (e: any) {
       if (e.name === 'AbortError' || currentSeq !== sequenceRef.current) return;
-
       setGraphError(e instanceof Error ? e.message : 'Failed to load graph');
-
       const fetchTime = Math.round(performance.now() - start);
       setDiagnostics(d => ({ ...d, fetch: fetchTime, total: fetchTime }));
     } finally {
@@ -132,7 +135,6 @@ export default function MemoryGraphPage() {
 
     setGraphLoading(true);
     setGraphError(null);
-    setGraphInfo(null);
     const start = performance.now();
 
     try {
@@ -152,7 +154,6 @@ export default function MemoryGraphPage() {
       setGraphNodes([]);
       setGraphEdges([]);
       setFocusedNodeId(null);
-
       const fetchTime = Math.round(performance.now() - start);
       setDiagnostics(d => ({ ...d, fetch: fetchTime, total: fetchTime }));
     } finally {
@@ -162,27 +163,46 @@ export default function MemoryGraphPage() {
     }
   }, []);
 
-  const handleSelectStreamItem = useCallback(
-    async (item: StreamItem) => {
-      setFocusedMemoryId(item.id);
+  const handleEpisodeClick = useCallback(
+    async (episode: Episode) => {
+      if (expandedEpisodeId === episode.id) {
+        setExpandedEpisodeId(null);
+        setExpandedMemoryId(null);
+        returnToDanny();
+        return;
+      }
 
-      const entityId = await resolveMemoryToEntity(item.id);
+      setExpandedEpisodeId(episode.id);
+      setExpandedMemoryId(null);
+
+      const entityId = episode.graph_node_ids[0];
       if (entityId) {
         setFocusedNodeId(entityId);
         await loadNeighborhood(entityId);
-        await loadStream(entityId);
       }
     },
-    [loadNeighborhood, loadStream],
+    [expandedEpisodeId, loadNeighborhood],
+  );
+
+  const handleMemoryClick = useCallback(
+    async (memoryId: number) => {
+      setExpandedMemoryId(memoryId);
+      const entityId = await resolveMemoryToEntity(memoryId);
+      if (entityId) {
+        setFocusedNodeId(entityId);
+        await loadNeighborhood(entityId);
+      }
+    },
+    [loadNeighborhood],
   );
 
   const handleGraphNodeClick = useCallback(
     async (node: GraphNode) => {
       setFocusedNodeId(node.id);
       await loadNeighborhood(node.id);
-      await loadStream(node.id);
+      await loadEpisodes(node.id);
     },
-    [loadNeighborhood, loadStream],
+    [loadNeighborhood, loadEpisodes],
   );
 
   const returnToDanny = useCallback(() => {
@@ -191,13 +211,11 @@ export default function MemoryGraphPage() {
       return;
     }
 
-    setFocusedMemoryId(null);
-    // Both manage their own sequence and abort internally:
-    // loadEgoGraph bumps sequenceRef then aborts graphAbortRef
-    // loadStream uses latest sequenceRef then aborts streamAbortRef
+    setExpandedEpisodeId(null);
+    setExpandedMemoryId(null);
     loadEgoGraph();
-    loadStream();
-  }, [loadEgoGraph, loadStream]);
+    loadEpisodes();
+  }, [loadEgoGraph, loadEpisodes]);
 
   const handleGraphBackgroundClick = useCallback(() => {
     if (focusedNodeId === dannyIdRef.current) return;
@@ -208,23 +226,25 @@ export default function MemoryGraphPage() {
 
   useEffect(() => {
     loadEgoGraph();
-    loadStream();
+    loadEpisodes();
     return () => {
       if (graphAbortRef.current) graphAbortRef.current.abort();
-      if (streamAbortRef.current) streamAbortRef.current.abort();
+      if (episodeAbortRef.current) episodeAbortRef.current.abort();
     };
-  }, [loadEgoGraph, loadStream]);
+  }, [loadEgoGraph, loadEpisodes]);
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)] bg-zinc-950">
-      {/* Left: Context Stream */}
+      {/* Left: Context Stream (Episodes) */}
       <div className="w-96 flex-shrink-0 border-r border-zinc-800">
-        <LifeStream
-          items={streamItems}
-          loading={streamLoading}
-          selectedItemId={focusedMemoryId}
-          onSelectItem={handleSelectStreamItem}
-          onLoadMore={loadMoreStream}
+        <EpisodeStream
+          episodes={episodes}
+          loading={episodesLoading}
+          expandedEpisodeId={expandedEpisodeId}
+          expandedMemoryId={expandedMemoryId}
+          onToggleEpisode={handleEpisodeClick}
+          onMemoryClick={handleMemoryClick}
+          onLoadMore={loadMoreEpisodes}
         />
       </div>
 
@@ -252,13 +272,6 @@ export default function MemoryGraphPage() {
             <span className="text-xs text-red-400 flex items-center gap-1">
               <AlertCircle className="h-3 w-3" />
               {graphError}
-            </span>
-          )}
-
-          {graphInfo && (
-            <span className="text-xs text-zinc-400 flex items-center gap-1">
-              <Info className="h-3 w-3" />
-              {graphInfo}
             </span>
           )}
 

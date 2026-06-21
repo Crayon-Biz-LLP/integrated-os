@@ -47,14 +47,11 @@ export async function GET(req: NextRequest) {
 
   const dannyId = dannyNode.id;
 
-  // Fetch 1-hop edges from Danny, deterministically ordered
+  // Fetch ALL 1-hop edges from Danny — no limit, we need the full neighbourhood
   const { data: hop1Edges } = await supabase
     .from("graph_edges")
     .select("id,source_node_id,target_node_id,relationship,weight")
-    .or(`source_node_id.eq.${dannyId},target_node_id.eq.${dannyId}`)
-    .order("weight", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(200);
+    .or(`source_node_id.eq.${dannyId},target_node_id.eq.${dannyId}`);
 
   const neighborIds = new Set<string>();
   (hop1Edges || []).forEach((e) => {
@@ -63,74 +60,93 @@ export async function GET(req: NextRequest) {
   });
 
   let allEdges = [...(hop1Edges || [])];
-  let hop2NeighborIds = new Set<string>();
 
-  // Fetch 2-hop if depth > 1
+  // Build the full node set (1-hop only by default, 2-hop if depth > 1)
+  const allNodeIds = new Set<string>([dannyId]);
+  neighborIds.forEach((id) => allNodeIds.add(id));
+
   if (depth > 1 && neighborIds.size > 0) {
-    const hop1Ids = Array.from(neighborIds);
+    // Fetch neighbor node types to identify entity nodes (non-memory)
+    const { data: neighborNodes } = await supabase
+      .from("graph_nodes")
+      .select("id,type")
+      .in("id", Array.from(neighborIds));
 
-    const { data: hop2Edges } = await supabase
-      .from("graph_edges")
-      .select("id,source_node_id,target_node_id,relationship,weight")
-      .in("source_node_id", hop1Ids)
-      .in("target_node_id", hop1Ids)
-      .order("weight", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(500);
+    const entityNodeIds = (neighborNodes || [])
+      .filter((n: any) => n.type !== "memory")
+      .map((n: any) => n.id);
 
-    (hop2Edges || []).forEach((e) => {
-      allEdges.push(e);
-      if (!neighborIds.has(e.source_node_id) && e.source_node_id !== dannyId) {
-        hop2NeighborIds.add(e.source_node_id);
-      }
-      if (!neighborIds.has(e.target_node_id) && e.target_node_id !== dannyId) {
-        hop2NeighborIds.add(e.target_node_id);
-      }
-    });
+    // 2-hop: query edges for each entity neighbor individually but sequentially bounded
+    let hop2NeighborIds = new Set<string>();
+    let hop2Edges: any[] = [];
 
-    // Bridge edges back to Danny/1-hop
-    if (hop2NeighborIds.size > 0) {
-      const hop2Ids = Array.from(hop2NeighborIds);
-
-      const { data: bridgingEdges } = await supabase
+    for (const entityId of entityNodeIds.slice(0, 30)) {
+      const { data: eEdges } = await supabase
         .from("graph_edges")
         .select("id,source_node_id,target_node_id,relationship,weight")
-        .in("source_node_id", hop2Ids)
-        .in("target_node_id", [dannyId, ...hop1Ids])
-        .order("weight", { ascending: false })
+        .or(`source_node_id.eq.${entityId},target_node_id.eq.${entityId}`)
+        .limit(20);
+
+      if (eEdges) {
+        for (const e of eEdges) {
+          if (allNodeIds.has(e.source_node_id) && allNodeIds.has(e.target_node_id)) continue;
+          if (e.source_node_id !== dannyId && !neighborIds.has(e.source_node_id)) {
+            hop2NeighborIds.add(e.source_node_id);
+          }
+          if (e.target_node_id !== dannyId && !neighborIds.has(e.target_node_id)) {
+            hop2NeighborIds.add(e.target_node_id);
+          }
+          hop2Edges.push(e);
+        }
+      }
+    }
+
+    // Merge 2-hop edges and node IDs
+    hop2NeighborIds.forEach((id) => allNodeIds.add(id));
+    allEdges.push(...hop2Edges);
+  }
+
+  // Fetch nodes — split into parallel batches to avoid URL length limits with 820+ UUIDs
+  const allNodeIdArr = Array.from(allNodeIds);
+  const batches: string[][] = [];
+  for (let i = 0; i < allNodeIdArr.length; i += 200) {
+    batches.push(allNodeIdArr.slice(i, i + 200));
+  }
+
+  const nodeResults = await Promise.all(
+    batches.map((batch) =>
+      supabase
+        .from("graph_nodes")
+        .select("id,label,type,canonical_page_id")
+        .in("id", batch)
+        .order("reference_count", { ascending: false })
         .order("created_at", { ascending: false })
-        .limit(200);
+    )
+  );
 
-      (bridgingEdges || []).forEach((e) => allEdges.push(e));
-
-      const { data: bridgingEdgesReverse } = await supabase
-        .from("graph_edges")
-        .select("id,source_node_id,target_node_id,relationship,weight")
-        .in("source_node_id", [dannyId, ...hop1Ids])
-        .in("target_node_id", hop2Ids)
-        .order("weight", { ascending: false })
-        .order("created_at", { ascending: false })
-        .limit(200);
-
-      (bridgingEdgesReverse || []).forEach((e) => allEdges.push(e));
+  const allNodeMap = new Map<string, any>();
+  for (const result of nodeResults) {
+    for (const node of result.data || []) {
+      if (!allNodeMap.has(node.id)) {
+        allNodeMap.set(node.id, node);
+      }
     }
   }
 
-  // Collect all unique node IDs
-  const allNodeIds = new Set<string>([dannyId]);
-  neighborIds.forEach((id) => allNodeIds.add(id));
-  hop2NeighborIds.forEach((id) => allNodeIds.add(id));
+  // Sort by entity type priority first, then reference_count
+  const typeOrder: Record<string, number> = {
+    person: 1, organization: 2, project: 3, place: 4,
+    cluster: 5, task: 6, emotional_state: 7, concept: 8, memory: 9,
+  };
 
-  // Fetch nodes with deterministic ordering before capping
-  const { data: allNodes } = await supabase
-    .from("graph_nodes")
-    .select("id,label,type,canonical_page_id")
-    .in("id", Array.from(allNodeIds))
-    .order("reference_count", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(cap);
+  const allNodes = Array.from(allNodeMap.values()).sort((a: any, b: any) => {
+    const aPrio = typeOrder[a.type] ?? 99;
+    const bPrio = typeOrder[b.type] ?? 99;
+    if (aPrio !== bPrio) return aPrio - bPrio;
+    return (b.reference_count ?? 0) - (a.reference_count ?? 0);
+  }).slice(0, cap);
 
-  const cappedNodeIds = new Set((allNodes || []).map((n: any) => n.id));
+  const cappedNodeIds = new Set(allNodes.map((n: any) => n.id));
 
   // Filter edges to only include capped nodes
   const filteredEdges = allEdges.filter(

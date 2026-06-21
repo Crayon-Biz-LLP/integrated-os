@@ -55,6 +55,48 @@ export async function fetchMemoryStream(nodeId?: string, limit = 20, signal?: Ab
   return res.json();
 }
 
+export interface EpisodeEntity {
+  id: string;
+  label: string;
+  type: string;
+}
+
+export interface EpisodeRawMemory {
+  id: number;
+  content: string;
+  memory_type: string | null;
+  created_at: string;
+}
+
+export interface Episode {
+  id: string;
+  title: string;
+  summary: string;
+  memory_type: string | null;
+  entities: EpisodeEntity[];
+  timestamp: string;
+  count: number;
+  graph_node_ids: string[];
+  memory_ids: number[];
+  memories: EpisodeRawMemory[];
+}
+
+export interface EpisodesResponse {
+  episodes: Episode[];
+}
+
+export async function fetchEpisodes(nodeId?: string, limit = 40, signal?: AbortSignal): Promise<EpisodesResponse> {
+  const params = new URLSearchParams();
+  if (nodeId) params.set("node_id", String(nodeId));
+  params.set("limit", String(limit));
+  const res = await fetch(`/api/episodes/stream?${params.toString()}`, {
+    cache: 'no-store',
+    signal,
+  });
+  if (!res.ok) throw new Error('Failed to fetch episodes');
+  return res.json();
+}
+
 export async function resolveMemoryToEntity(memoryId: number, signal?: AbortSignal): Promise<string | null> {
   const res = await fetch(`/api/graph/resolve-memory?memory_id=${memoryId}`, {
     cache: 'no-store',
