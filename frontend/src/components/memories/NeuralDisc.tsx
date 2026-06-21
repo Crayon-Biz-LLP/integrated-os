@@ -127,8 +127,8 @@ function computeLayout(
 }
 
 export default function NeuralDisc({
-  nodes,
-  edges,
+  nodes: nodesProp,
+  edges: edgesProp,
   centerNodeId,
   onNodeClick,
   onBackgroundClick,
@@ -142,6 +142,30 @@ export default function NeuralDisc({
   const [contextLost, setContextLost] = useState(false);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+
+  // ---- Stable refs for callbacks (prevent identity changes from triggering scene rebuilds) ----
+  const onNodeClickRef = useRef(onNodeClick);
+  onNodeClickRef.current = onNodeClick;
+  const onBackgroundClickRef = useRef(onBackgroundClick);
+  onBackgroundClickRef.current = onBackgroundClick;
+  const onDiagnosticsRef = useRef(onDiagnostics);
+  onDiagnosticsRef.current = onDiagnostics;
+  const onContextRestoredRef = useRef(onContextRestored);
+  onContextRestoredRef.current = onContextRestored;
+  const nodesRef = useRef(nodesProp);
+  nodesRef.current = nodesProp;
+  const edgesRef = useRef(edgesProp);
+  edgesRef.current = edgesProp;
+  const centerNodeIdRef = useRef(centerNodeId);
+  centerNodeIdRef.current = centerNodeId;
+
+  // ---- Debug counters ----
+  const renderCountRef = useRef(0);
+  renderCountRef.current += 1;
+  const layoutCountRef = useRef(0);
+  const sceneBuildCountRef = useRef(0);
+  const diagCallCountRef = useRef(0);
+  const lastLogRef = useRef(performance.now());
 
   // --- Track Reduced Motion Live ---
   useEffect(() => {
@@ -197,8 +221,8 @@ export default function NeuralDisc({
 
     const handleContextRestored = () => {
       console.log("WebGL context restored");
-      if (onContextRestored) {
-        onContextRestored();
+      if (onContextRestoredRef.current) {
+        onContextRestoredRef.current();
       }
     };
 
@@ -234,12 +258,10 @@ export default function NeuralDisc({
         appRef.current.canvas.removeEventListener('webglcontextlost', handleContextLost);
         appRef.current.canvas.removeEventListener('webglcontextrestored', handleContextRestored);
         
-        // Explicitly sever DOM linkage to prevent detached canvas leaks across remounts
         if (appRef.current.canvas.parentNode) {
           appRef.current.canvas.parentNode.removeChild(appRef.current.canvas);
         }
         
-        // Aggressive deep-clean destruction
         appRef.current.destroy(true, { children: true, texture: true, textureSource: true });
         appRef.current = null;
       }
@@ -267,14 +289,19 @@ export default function NeuralDisc({
     return () => observer.disconnect();
   }, []);
 
-  // --- Compute Layout (Heavy) ---
+  // --- Compute Layout (Heavy) — only data changes trigger this ---
   useEffect(() => {
-    if (nodes.length === 0 || dimensions.width === 0) return;
+    if (nodesProp.length === 0 || dimensions.width === 0) return;
+
+    layoutCountRef.current += 1;
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[NeuralDisc] layout #${layoutCountRef.current} — ${nodesProp.length} nodes, ${edgesProp.length} edges`);
+    }
 
     const startLayout = performance.now();
     const result = computeLayout(
-      nodes,
-      edges,
+      nodesProp,
+      edgesProp,
       centerNodeId,
       dimensions.width,
       dimensions.height,
@@ -283,86 +310,92 @@ export default function NeuralDisc({
     lastMetrics.current.layout = Math.round(endLayout - startLayout);
 
     setLayoutData(result);
-  }, [nodes, edges, centerNodeId, dimensions.width, dimensions.height]);
+    // Deps: only data that actually changes node positions
+  }, [nodesProp, edgesProp, centerNodeId, dimensions.width, dimensions.height]);
 
-  // --- render graph (Light) ---
+  // --- Render graph scene — uses refs for callbacks to avoid rebuilds on prop identity changes ---
   useEffect(() => {
     const app = appRef.current;
     if (!app || layoutData.layoutNodes.length === 0 || contextLost) return;
 
+    sceneBuildCountRef.current += 1;
+
     const startRender = performance.now();
     const { layoutNodes, layoutEdges } = layoutData;
+    const currentCenterId = centerNodeIdRef.current;
+    const currentHoverId = hoveredNodeId;
+    const isHoverPass = prevHoveredNodeId.current !== currentHoverId;
+    prevHoveredNodeId.current = currentHoverId;
 
-    // Determine if this render pass was triggered purely by a hover state change
-    const isHoverPass = prevHoveredNodeId.current !== hoveredNodeId;
-    prevHoveredNodeId.current = hoveredNodeId;
-
-    // Determine if we should render heavy visual effects
     const shouldRenderEffects = enableEffects && !prefersReducedMotion;
-
-    // Determine which nodes/edges are active based on hover
-    const isHovering = hoveredNodeId !== null;
+    const isHovering = currentHoverId !== null;
     const connectedIds = new Set<string>();
     
     if (isHovering) {
-      connectedIds.add(hoveredNodeId!);
+      connectedIds.add(currentHoverId);
       layoutEdges.forEach(e => {
-        if (e.source.id === hoveredNodeId) connectedIds.add(e.target.id);
-        if (e.target.id === hoveredNodeId) connectedIds.add(e.source.id);
+        if (e.source.id === currentHoverId) connectedIds.add(e.target.id);
+        if (e.target.id === currentHoverId) connectedIds.add(e.source.id);
       });
     }
 
-    // Determine if we should render heavy visual effects
+    // ---- Scene rebuild starts here ----
+    if (process.env.NODE_ENV === 'development') {
+      const now = performance.now();
+      if (now - lastLogRef.current > 5000) {
+        console.log(
+          `[NeuralDisc] scene #${sceneBuildCountRef.current}, ` +
+          `renders=${renderCountRef.current}, ` +
+          `layouts=${layoutCountRef.current}, ` +
+          `diagCalls=${diagCallCountRef.current}, ` +
+          `hover=${isHoverPass}, ` +
+          `nodes=${layoutNodes.length}, ` +
+          `edges=${layoutEdges.length}`
+        );
+        lastLogRef.current = now;
+      }
+    }
 
     app.stage.removeChildren();
 
     const edgesContainer = new Container();
-    edgesContainer.eventMode = 'none'; // Skip interaction crawling for edge layers
+    edgesContainer.eventMode = 'none';
     app.stage.addChild(edgesContainer);
 
     const edgeGraphics = new Graphics();
     edgesContainer.addChild(edgeGraphics);
 
-    // Draw non-hovered edges first (dimmed)
     layoutEdges.forEach((e) => {
-      const isEdgeHovered = !isHovering || (e.source.id === hoveredNodeId || e.target.id === hoveredNodeId);
+      const isEdgeHovered = !isHovering || (e.source.id === currentHoverId || e.target.id === currentHoverId);
       if (isEdgeHovered) return;
-      
       edgeGraphics.moveTo(e.source.x, e.source.y);
       edgeGraphics.lineTo(e.target.x, e.target.y);
     });
     edgeGraphics.stroke({ width: 1.2, color: 0x3f3f46, alpha: 0.2 });
 
     const activeEdgeGraphics = new Graphics();
-    activeEdgeGraphics.eventMode = 'none'; // Skip interaction crawling
+    activeEdgeGraphics.eventMode = 'none';
     edgesContainer.addChild(activeEdgeGraphics);
 
-    // Draw hovered edges
     layoutEdges.forEach((e) => {
-      const isEdgeHovered = !isHovering || (e.source.id === hoveredNodeId || e.target.id === hoveredNodeId);
+      const isEdgeHovered = !isHovering || (e.source.id === currentHoverId || e.target.id === currentHoverId);
       if (!isEdgeHovered) return;
-      
       activeEdgeGraphics.moveTo(e.source.x, e.source.y);
       activeEdgeGraphics.lineTo(e.target.x, e.target.y);
     });
     activeEdgeGraphics.stroke({ width: isHovering ? 2.0 : 1.2, color: isHovering ? 0x71717a : 0x3f3f46, alpha: isHovering ? 0.9 : 0.6 });
 
     const nodesContainer = new Container();
-    // Container itself is passive, children are static targets
     
-    // --- GLOW LAYER ---
     const glowContainer = new Container();
     if (shouldRenderEffects) {
-      // Quality 2 reduces passes dramatically compared to Quality 4, easing GPU load
       const blurFilter = new BlurFilter({ strength: 8, quality: 2 });
       glowContainer.filters = [blurFilter];
     }
     glowContainer.eventMode = 'none';
     app.stage.addChild(glowContainer);
-    
     app.stage.addChild(nodesContainer);
 
-    // --- EDGE PARTICLES LAYER ---
     const particlesContainer = new Container();
     particlesContainer.eventMode = 'none';
     if (shouldRenderEffects) {
@@ -370,30 +403,26 @@ export default function NeuralDisc({
     }
 
     let tickerCb: ((time: any) => void) | null = null;
-    let centerCircleRef: Graphics | null = null;
-    let centerGlowRef: Graphics | null = null;
-    let edgeParticles: { sprite: Graphics, sx: number, sy: number, ex: number, ey: number, speed: number, offset: number }[] = [];
+    let centerCircleGraphics: Graphics | null = null;
+    let centerGlowGraphics: Graphics | null = null;
+    let edgeParticles: { sprite: Graphics; sx: number; sy: number; ex: number; ey: number; speed: number; offset: number }[] = [];
 
-    // Pre-calculate active edges for particles
     if (shouldRenderEffects) {
       layoutEdges.forEach((e) => {
-        // Only spawn particles on edges directly connected to the active center/hover node
-        const isEdgeActive = isHovering 
-          ? (e.source.id === hoveredNodeId || e.target.id === hoveredNodeId)
-          : (e.source.id === centerNodeId || e.target.id === centerNodeId);
-          
+        const isEdgeActive = isHovering
+          ? (e.source.id === currentHoverId || e.target.id === currentHoverId)
+          : (e.source.id === currentCenterId || e.target.id === currentCenterId);
         if (isEdgeActive) {
           const p = new Graphics();
           p.circle(0, 0, 1.5);
           p.fill({ color: 0xd4d4d8, alpha: 0.9 });
           particlesContainer.addChild(p);
-          
           edgeParticles.push({
             sprite: p,
             sx: e.source.x, sy: e.source.y,
             ex: e.target.x, ey: e.target.y,
-            speed: 0.3 + Math.random() * 0.4, // Traversals per second
-            offset: Math.random() // Start position phase offset
+            speed: 0.3 + Math.random() * 0.4,
+            offset: Math.random(),
           });
         }
       });
@@ -401,11 +430,10 @@ export default function NeuralDisc({
 
     layoutNodes.forEach((n) => {
       const color = colorMap[n.type] ?? 0x52525b;
-      const isCenter = n.id === centerNodeId;
+      const isCenter = n.id === currentCenterId;
       const isNodeActive = !isHovering || connectedIds.has(n.id);
-      const isDirectHover = n.id === hoveredNodeId;
+      const isDirectHover = n.id === currentHoverId;
 
-      // Glow sprite
       if (isNodeActive && shouldRenderEffects) {
         const glow = new Graphics();
         glow.circle(0, 0, isCenter ? 20 : (isDirectHover ? 18 : 14));
@@ -413,7 +441,7 @@ export default function NeuralDisc({
         glow.x = n.x;
         glow.y = n.y;
         glowContainer.addChild(glow);
-        if (isCenter) centerGlowRef = glow;
+        if (isCenter) centerGlowGraphics = glow;
       }
 
       const circle = new Graphics();
@@ -423,24 +451,19 @@ export default function NeuralDisc({
       circle.x = n.x;
       circle.y = n.y;
       circle.alpha = isNodeActive ? 1.0 : 0.2;
-      
-      if (isCenter) {
-        centerCircleRef = circle;
-      }
-      
+      if (isCenter) centerCircleGraphics = circle;
       circle.eventMode = 'static';
       circle.cursor = 'pointer';
-      
+
       const nodeId = n.id;
       circle.on('pointerenter', () => setHoveredNodeId(nodeId));
       circle.on('pointerleave', () => setHoveredNodeId(null));
       circle.on('pointerdown', () => {
-        const clicked = nodes.find((nd) => nd.id === nodeId);
-        if (clicked) onNodeClick(clicked);
+        const clicked = nodesRef.current.find((nd) => nd.id === nodeId);
+        if (clicked) onNodeClickRef.current(clicked);
       });
       nodesContainer.addChild(circle);
 
-      // Show labels for center node or if hovering over this specific node/cluster
       if (isCenter || isDirectHover || (isHovering && isNodeActive)) {
         const label = n.label.length > 16 && !isDirectHover ? n.label.slice(0, 16) + '...' : n.label;
         const text = new Text({
@@ -451,27 +474,22 @@ export default function NeuralDisc({
         text.x = n.x;
         text.y = n.y + (isCenter ? 22 : (isDirectHover ? 20 : 18));
         text.alpha = isNodeActive ? 1.0 : 0.2;
-        text.eventMode = 'none'; // Exclude label text from hit testing
+        text.eventMode = 'none';
         nodesContainer.addChild(text);
       }
     });
 
-    // Only run ticker loop for breathing animation and particles if effects are enabled and motion isn't reduced
-    if (shouldRenderEffects && (centerCircleRef || edgeParticles.length > 0)) {
+    if (shouldRenderEffects && (centerCircleGraphics || edgeParticles.length > 0)) {
       tickerCb = () => {
         const time = performance.now() / 1000;
-        
-        // Breathing
-        if (centerCircleRef && !centerCircleRef.destroyed) {
-          const breathe = 1 + Math.sin(time * 3) * 0.06; // ~6% gentle breathing scale
-          centerCircleRef.scale.set(breathe);
-          if (centerGlowRef && !centerGlowRef.destroyed) {
-            centerGlowRef.scale.set(breathe);
-            centerGlowRef.alpha = 0.4 + Math.sin(time * 3) * 0.1;
+        if (centerCircleGraphics && !centerCircleGraphics.destroyed) {
+          const breathe = 1 + Math.sin(time * 3) * 0.06;
+          centerCircleGraphics.scale.set(breathe);
+          if (centerGlowGraphics && !centerGlowGraphics.destroyed) {
+            centerGlowGraphics.scale.set(breathe);
+            centerGlowGraphics.alpha = 0.4 + Math.sin(time * 3) * 0.1;
           }
         }
-
-        // Particle traversal
         edgeParticles.forEach(p => {
           if (!p.sprite.destroyed) {
             const progress = ((time * p.speed) + p.offset) % 1.0;
@@ -487,44 +505,43 @@ export default function NeuralDisc({
     app.stage.cursor = 'default';
     app.stage.on('pointerdown', (e) => {
       if (e.target === app.stage) {
-        onBackgroundClick();
+        onBackgroundClickRef.current();
       }
     });
 
     const endRender = performance.now();
     const renderTime = Math.round(endRender - startRender);
-    
     if (isHoverPass) {
       lastMetrics.current.hover = renderTime;
     } else {
       lastMetrics.current.render = renderTime;
     }
-    
-    if (onDiagnostics) {
-      onDiagnostics({ ...lastMetrics.current });
+
+    // --- Diagnostics reported via ref — does NOT trigger scene rebuilds ---
+    diagCallCountRef.current += 1;
+    if (onDiagnosticsRef.current) {
+      onDiagnosticsRef.current({ ...lastMetrics.current });
     }
 
     return () => {
       if (tickerCb && app && app.ticker) {
         try {
           app.ticker.remove(tickerCb);
-        } catch (e) {
-          // Ignore if already destroyed
-        }
+        } catch (e) {}
       }
     };
-  }, [layoutData, hoveredNodeId, centerNodeId, onNodeClick, onBackgroundClick, contextLost, nodes, onDiagnostics, enableEffects, prefersReducedMotion]);
+    // Deps: only scene-triggering state, NOT callback props.
+    // Callbacks are accessed through stable refs.
+    // nodesProp/edgesProp NOT needed: layoutData captures positions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutData, hoveredNodeId, contextLost, enableEffects, prefersReducedMotion]);
 
   if (contextLost) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-zinc-500 bg-zinc-950 p-6 text-center">
-        <div className="h-12 w-12 rounded-full border border-red-500/30 flex items-center justify-center mb-3 text-red-400 bg-red-500/10">
-          !
-        </div>
+        <div className="h-12 w-12 rounded-full border border-red-500/30 flex items-center justify-center mb-3 text-red-400 bg-red-500/10">!</div>
         <p className="text-sm font-medium text-zinc-300">Graphics Context Lost</p>
-        <p className="text-xs text-zinc-500 mt-1 max-w-sm">
-          Your browser has discarded the WebGL context. Please refresh to restore.
-        </p>
+        <p className="text-xs text-zinc-500 mt-1 max-w-sm">Please refresh to restore.</p>
       </div>
     );
   }

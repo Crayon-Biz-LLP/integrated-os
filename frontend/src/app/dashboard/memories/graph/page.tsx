@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Loader2, AlertCircle, ArrowLeft, Info, User } from 'lucide-react';
+import { Loader2, AlertCircle, ArrowLeft, User } from 'lucide-react';
 import { fetchNeighborhood, fetchEgoGraph, fetchEpisodes, resolveMemoryToEntity } from '@/lib/memories/stream';
 import type { Episode, NeighborhoodResponse } from '@/lib/memories/stream';
 import type { GraphNode, GraphEdge } from '@/lib/memories/types';
@@ -224,6 +224,27 @@ export default function MemoryGraphPage() {
 
   const isDannyCentered = focusedNodeId === dannyIdRef.current;
 
+  // ---- Stable callback refs for NeuralDisc to prevent infinite rebuild loops ----
+  const handleDiagnostics = useCallback(
+    (metrics: { layout: number; render: number; hover: number }) => {
+      setDiagnostics(d => ({ ...d, ...metrics, total: d.fetch + metrics.layout + metrics.render }));
+    },
+    [],
+  );
+
+  const handleContextRestored = useCallback(() => {
+    setDiscKey(k => k + 1);
+  }, []);
+
+  // ---- Debug render counter ----
+  const renderCountRef = useRef(0);
+  renderCountRef.current += 1;
+  if (process.env.NODE_ENV === 'development' && typeof window !== 'undefined') {
+    if (renderCountRef.current <= 5 || renderCountRef.current % 10 === 0) {
+      console.log(`[page] render #${renderCountRef.current} — nodes=${graphNodes.length} edges=${graphEdges.length} episodes=${episodes.length}`);
+    }
+  }
+
   useEffect(() => {
     loadEgoGraph();
     loadEpisodes();
@@ -347,8 +368,8 @@ export default function MemoryGraphPage() {
             centerNodeId={focusedNodeId}
             onNodeClick={handleGraphNodeClick}
             onBackgroundClick={handleGraphBackgroundClick}
-            onContextRestored={() => setDiscKey(k => k + 1)}
-            onDiagnostics={(metrics) => setDiagnostics(d => ({ ...d, ...metrics, total: d.fetch + metrics.layout + metrics.render }))}
+            onContextRestored={handleContextRestored}
+            onDiagnostics={handleDiagnostics}
             enableEffects={enableEffects}
           />
         </div>

@@ -25,13 +25,12 @@ function minutesDiff(a: string, b: string): number {
 }
 
 function makeTitle(memories: any[], entities: any[]): string {
-  // If a single entity appears in >50% of memories, title by entity
   if (entities.length === 1) {
     return `About ${entities[0].label}`;
   }
   const entityCounts = new Map<string, number>();
   for (const m of memories) {
-    for (const eid of (m.entity_ids || [])) {
+    for (const eid of (m.non_root_entity_ids || [])) {
       entityCounts.set(eid, (entityCounts.get(eid) || 0) + 1);
     }
   }
@@ -71,11 +70,29 @@ export async function GET(req: NextRequest) {
 
   const supabase = await createServerSupabaseClient();
 
+  // Step 0: Resolve root (Danny) entity ID to exclude from clustering overlap
+  let rootEntityId: string | null = null;
+  const { data: config } = await supabase
+    .from("core_config")
+    .select("content")
+    .eq("key", "root_entity_id")
+    .maybeSingle();
+  if (config?.content) {
+    rootEntityId = config.content.trim();
+  } else {
+    const { data: dannyNode } = await supabase
+      .from("graph_nodes")
+      .select("id")
+      .ilike("label", "Danny")
+      .eq("type", "person")
+      .maybeSingle();
+    if (dannyNode) rootEntityId = dannyNode.id;
+  }
+
   // Step 1: Fetch recent graph-linked memories
   let memoryIds: number[] = [];
 
   if (nodeId) {
-    // Filtered by entity node: find memories that MENTIONS this node
     const { data: edges } = await supabase
       .from("graph_edges")
       .select("source_node_id")
@@ -99,7 +116,6 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // If no node filter or no results, get recent graph-linked memories
   if (memoryIds.length === 0 && !nodeId) {
     const { data: recentMemories } = await supabase
       .from("memories")
@@ -158,10 +174,8 @@ export async function GET(req: NextRequest) {
     .in("source_node_id", memoryNodeIds)
     .eq("relationship", "MENTIONS");
 
-  // Build memory → entity IDs map
   const memToEntities = new Map<number, string[]>();
   for (const edge of mentionsEdges || []) {
-    // Find which memory node this edge came from
     for (const [memId, nodeId] of memNodeMap) {
       if (nodeId === edge.source_node_id) {
         const existing = memToEntities.get(Number(memId)) || [];
@@ -194,11 +208,11 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Step 5: Cluster memories
-  type MemoWithEntities = any;
-  const enriched: MemoWithEntities[] = memories.map((m: any) => ({
+  // Step 5: Cluster memories — exclude root entity from overlap
+  const enriched: any[] = memories.map((m: any) => ({
     ...m,
     entity_ids: memToEntities.get(m.id) || [],
+    non_root_entity_ids: (memToEntities.get(m.id) || []).filter((eid) => eid !== rootEntityId),
     source: m.metadata?.source || null,
   }));
 
@@ -210,19 +224,20 @@ export async function GET(req: NextRequest) {
   for (let i = 0; i < enriched.length; i++) {
     for (let j = i + 1; j < enriched.length; j++) {
       const a = enriched[i], b = enriched[j];
-      const sharedEntity = a.entity_ids.some((eid: string) => b.entity_ids.includes(eid));
+      // Only cluster on non-root entity overlap — never merge solely because both mention Danny
+      const sharedNonRootEntity = a.non_root_entity_ids.some((eid: string) => b.non_root_entity_ids.includes(eid));
       const sameSource = a.source && b.source && a.source === b.source;
       const timeDiff = minutesDiff(a.created_at, b.created_at);
       const sameType = a.memory_type && b.memory_type && a.memory_type === b.memory_type;
 
-      if (sharedEntity && timeDiff < 120) { uf.union(i, j); }
+      if (sharedNonRootEntity && timeDiff < 120) { uf.union(i, j); }
       else if (sameSource && timeDiff < 60) { uf.union(i, j); }
       else if (sameType && timeDiff < 30) { uf.union(i, j); }
     }
   }
 
   // Build clusters from union-find
-  const clusters = new Map<number, MemoWithEntities[]>();
+  const clusters = new Map<number, any[]>();
   for (let i = 0; i < enriched.length; i++) {
     const root = uf.find(i);
     if (!clusters.has(root)) clusters.set(root, []);
@@ -259,7 +274,6 @@ export async function GET(req: NextRequest) {
     };
   });
 
-  // Sort episodes by newest first
   episodes.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
   return NextResponse.json({ episodes });
