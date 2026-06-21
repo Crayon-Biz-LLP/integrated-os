@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { Application, Graphics, Text, TextStyle, Container, BlurFilter } from 'pixi.js';
 import { GraphNode, GraphEdge } from '@/lib/memories/types';
@@ -138,12 +138,14 @@ export default function NeuralDisc({
 }: NeuralDiscProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
+  const mainContainerRef = useRef<Container | null>(null);
   const [dimensions, setDimensions] = useState({ width: 600, height: 600 });
   const [contextLost, setContextLost] = useState(false);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [zoomVersion, setZoomVersion] = useState(0);
 
-  // ---- Stable refs for callbacks (prevent identity changes from triggering scene rebuilds) ----
+  // ---- Stable refs for callbacks ----
   const onNodeClickRef = useRef(onNodeClick);
   onNodeClickRef.current = onNodeClick;
   const onBackgroundClickRef = useRef(onBackgroundClick);
@@ -159,6 +161,9 @@ export default function NeuralDisc({
   const centerNodeIdRef = useRef(centerNodeId);
   centerNodeIdRef.current = centerNodeId;
 
+  // ---- Zoom / Pan transform (persisted across scene rebuilds, reset on new layout) ----
+  const viewTransformRef = useRef({ x: 0, y: 0, scale: 1 });
+
   // ---- Debug counters ----
   const renderCountRef = useRef(0);
   renderCountRef.current += 1;
@@ -172,7 +177,6 @@ export default function NeuralDisc({
     if (typeof window === 'undefined') return;
     const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
     setPrefersReducedMotion(mediaQuery.matches);
-    
     const handler = (e: MediaQueryListEvent) => setPrefersReducedMotion(e.matches);
     mediaQuery.addEventListener('change', handler);
     return () => mediaQuery.removeEventListener('change', handler);
@@ -185,24 +189,17 @@ export default function NeuralDisc({
   const lastMetrics = useRef({ layout: 0, render: 0, hover: 0 });
   const prevHoveredNodeId = useRef<string | null>(null);
 
-  // Expose a method to intentionally crash the context for dev testing
+  // Expose GPU crash for dev testing
   useEffect(() => {
     if (process.env.NODE_ENV !== 'development') return;
-
     (window as any).__crashPixi = () => {
       if (appRef.current) {
         const renderer: any = appRef.current.renderer;
         const gl = renderer.gl || renderer.context?.gl;
-        if (gl) {
-          gl.getExtension('WEBGL_lose_context')?.loseContext();
-        }
+        if (gl) gl.getExtension('WEBGL_lose_context')?.loseContext();
       }
     };
-    return () => {
-      if (process.env.NODE_ENV === 'development') {
-        delete (window as any).__crashPixi;
-      }
-    };
+    return () => { if (process.env.NODE_ENV === 'development') delete (window as any).__crashPixi; };
   }, []);
 
   // --- init PixiJS once ---
@@ -218,12 +215,9 @@ export default function NeuralDisc({
       setContextLost(true);
       console.warn("WebGL context lost");
     };
-
     const handleContextRestored = () => {
       console.log("WebGL context restored");
-      if (onContextRestoredRef.current) {
-        onContextRestoredRef.current();
-      }
+      onContextRestoredRef.current?.();
     };
 
     (async () => {
@@ -236,11 +230,7 @@ export default function NeuralDisc({
           resolution: Math.min(window.devicePixelRatio || 1, 2),
           autoDensity: true,
         });
-
-        if (destroyed) {
-          app.destroy(true, { children: true, texture: true, textureSource: true });
-          return;
-        }
+        if (destroyed) { app.destroy(true, { children: true, texture: true, textureSource: true }); return; }
         app.canvas.style.display = 'block';
         app.canvas.addEventListener('webglcontextlost', handleContextLost);
         app.canvas.addEventListener('webglcontextrestored', handleContextRestored);
@@ -257,11 +247,7 @@ export default function NeuralDisc({
       if (appRef.current) {
         appRef.current.canvas.removeEventListener('webglcontextlost', handleContextLost);
         appRef.current.canvas.removeEventListener('webglcontextrestored', handleContextRestored);
-        
-        if (appRef.current.canvas.parentNode) {
-          appRef.current.canvas.parentNode.removeChild(appRef.current.canvas);
-        }
-        
+        if (appRef.current.canvas.parentNode) appRef.current.canvas.parentNode.removeChild(appRef.current.canvas);
         appRef.current.destroy(true, { children: true, texture: true, textureSource: true });
         appRef.current = null;
       }
@@ -273,23 +259,20 @@ export default function NeuralDisc({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
         const w = Math.floor(width);
         const h = Math.floor(height);
         setDimensions({ width: w, height: h });
-        if (appRef.current) {
-          appRef.current.renderer.resize(w, h);
-        }
+        appRef.current?.renderer.resize(w, h);
       }
     });
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
 
-  // --- Compute Layout (Heavy) — only data changes trigger this ---
+  // --- Compute Layout (Heavy) — resets zoom/pan on new data ---
   useEffect(() => {
     if (nodesProp.length === 0 || dimensions.width === 0) return;
 
@@ -299,21 +282,45 @@ export default function NeuralDisc({
     }
 
     const startLayout = performance.now();
-    const result = computeLayout(
-      nodesProp,
-      edgesProp,
-      centerNodeId,
-      dimensions.width,
-      dimensions.height,
-    );
-    const endLayout = performance.now();
-    lastMetrics.current.layout = Math.round(endLayout - startLayout);
+    const result = computeLayout(nodesProp, edgesProp, centerNodeId, dimensions.width, dimensions.height);
+    lastMetrics.current.layout = Math.round(performance.now() - startLayout);
+
+    // Reset zoom/pan on new graph data so the full graph is visible
+    viewTransformRef.current = { x: 0, y: 0, scale: 1 };
+    mainContainerRef.current?.scale.set(1);
+    mainContainerRef.current?.position.set(0, 0);
+    setZoomVersion(v => v + 1);
 
     setLayoutData(result);
-    // Deps: only data that actually changes node positions
   }, [nodesProp, edgesProp, centerNodeId, dimensions.width, dimensions.height]);
 
-  // --- Render graph scene — uses refs for callbacks to avoid rebuilds on prop identity changes ---
+  // --- Zoom helpers (called from UI buttons) ---
+  const zoomTo = useCallback((factor: number) => {
+    const mc = mainContainerRef.current;
+    if (!mc) return;
+    const newScale = Math.max(0.1, Math.min(5, viewTransformRef.current.scale * factor));
+    const cx = dimensions.width / 2;
+    const cy = dimensions.height / 2;
+    const worldX = (cx - viewTransformRef.current.x) / viewTransformRef.current.scale;
+    const worldY = (cy - viewTransformRef.current.y) / viewTransformRef.current.scale;
+    viewTransformRef.current.scale = newScale;
+    viewTransformRef.current.x = cx - worldX * newScale;
+    viewTransformRef.current.y = cy - worldY * newScale;
+    mc.scale.set(newScale);
+    mc.position.set(viewTransformRef.current.x, viewTransformRef.current.y);
+    setZoomVersion(v => v + 1);
+  }, [dimensions.width, dimensions.height]);
+
+  const resetView = useCallback(() => {
+    const mc = mainContainerRef.current;
+    if (!mc) return;
+    viewTransformRef.current = { x: 0, y: 0, scale: 1 };
+    mc.scale.set(1);
+    mc.position.set(0, 0);
+    setZoomVersion(v => v + 1);
+  }, []);
+
+  // --- Render graph scene — uses refs for callbacks, mainContainer for zoom/pan ---
   useEffect(() => {
     const app = appRef.current;
     if (!app || layoutData.layoutNodes.length === 0 || contextLost) return;
@@ -330,7 +337,6 @@ export default function NeuralDisc({
     const shouldRenderEffects = enableEffects && !prefersReducedMotion;
     const isHovering = currentHoverId !== null;
     const connectedIds = new Set<string>();
-    
     if (isHovering) {
       connectedIds.add(currentHoverId);
       layoutEdges.forEach(e => {
@@ -339,92 +345,80 @@ export default function NeuralDisc({
       });
     }
 
-    // ---- Scene rebuild starts here ----
     if (process.env.NODE_ENV === 'development') {
       const now = performance.now();
       if (now - lastLogRef.current > 5000) {
-        console.log(
-          `[NeuralDisc] scene #${sceneBuildCountRef.current}, ` +
-          `renders=${renderCountRef.current}, ` +
-          `layouts=${layoutCountRef.current}, ` +
-          `diagCalls=${diagCallCountRef.current}, ` +
-          `hover=${isHoverPass}, ` +
-          `nodes=${layoutNodes.length}, ` +
-          `edges=${layoutEdges.length}`
-        );
+        console.log(`[NeuralDisc] scene #${sceneBuildCountRef.current}, renders=${renderCountRef.current}, layouts=${layoutCountRef.current}, diagCalls=${diagCallCountRef.current}, hover=${isHoverPass}, nodes=${layoutNodes.length}, edges=${layoutEdges.length}`);
         lastLogRef.current = now;
       }
     }
 
+    // ---- Main container: single child of stage, holds all visual layers, supports zoom/pan ----
     app.stage.removeChildren();
 
+    const mainContainer = new Container();
+    mainContainer.eventMode = 'static';
+    mainContainer.cursor = 'grab';
+    const tx = viewTransformRef.current;
+    mainContainer.scale.set(tx.scale);
+    mainContainer.position.set(tx.x, tx.y);
+    app.stage.addChild(mainContainer);
+    mainContainerRef.current = mainContainer;
+
+    // ---- Edge layers ----
     const edgesContainer = new Container();
     edgesContainer.eventMode = 'none';
-    app.stage.addChild(edgesContainer);
+    mainContainer.addChild(edgesContainer);
 
     const edgeGraphics = new Graphics();
     edgesContainer.addChild(edgeGraphics);
-
     layoutEdges.forEach((e) => {
-      const isEdgeHovered = !isHovering || (e.source.id === currentHoverId || e.target.id === currentHoverId);
-      if (isEdgeHovered) return;
+      if (!isHovering || e.source.id === currentHoverId || e.target.id === currentHoverId) return;
       edgeGraphics.moveTo(e.source.x, e.source.y);
       edgeGraphics.lineTo(e.target.x, e.target.y);
     });
     edgeGraphics.stroke({ width: 1.2, color: 0x3f3f46, alpha: 0.2 });
 
     const activeEdgeGraphics = new Graphics();
-    activeEdgeGraphics.eventMode = 'none';
     edgesContainer.addChild(activeEdgeGraphics);
-
     layoutEdges.forEach((e) => {
-      const isEdgeHovered = !isHovering || (e.source.id === currentHoverId || e.target.id === currentHoverId);
-      if (!isEdgeHovered) return;
+      if (isHovering && e.source.id !== currentHoverId && e.target.id !== currentHoverId) return;
       activeEdgeGraphics.moveTo(e.source.x, e.source.y);
       activeEdgeGraphics.lineTo(e.target.x, e.target.y);
     });
     activeEdgeGraphics.stroke({ width: isHovering ? 2.0 : 1.2, color: isHovering ? 0x71717a : 0x3f3f46, alpha: isHovering ? 0.9 : 0.6 });
 
-    const nodesContainer = new Container();
-    
+    // ---- Glow layer ----
     const glowContainer = new Container();
-    if (shouldRenderEffects) {
-      const blurFilter = new BlurFilter({ strength: 8, quality: 2 });
-      glowContainer.filters = [blurFilter];
-    }
+    if (shouldRenderEffects) glowContainer.filters = [new BlurFilter({ strength: 8, quality: 2 })];
     glowContainer.eventMode = 'none';
-    app.stage.addChild(glowContainer);
-    app.stage.addChild(nodesContainer);
+    mainContainer.addChild(glowContainer);
 
+    // ---- Nodes layer ----
+    const nodesContainer = new Container();
+    mainContainer.addChild(nodesContainer);
+
+    // ---- Particle layer ----
     const particlesContainer = new Container();
     particlesContainer.eventMode = 'none';
-    if (shouldRenderEffects) {
-      app.stage.addChild(particlesContainer);
-    }
+    if (shouldRenderEffects) mainContainer.addChild(particlesContainer);
 
     let tickerCb: ((time: any) => void) | null = null;
     let centerCircleGraphics: Graphics | null = null;
     let centerGlowGraphics: Graphics | null = null;
-    let edgeParticles: { sprite: Graphics; sx: number; sy: number; ex: number; ey: number; speed: number; offset: number }[] = [];
+    const edgeParticles: { sprite: Graphics; sx: number; sy: number; ex: number; ey: number; speed: number; offset: number }[] = [];
 
     if (shouldRenderEffects) {
       layoutEdges.forEach((e) => {
         const isEdgeActive = isHovering
           ? (e.source.id === currentHoverId || e.target.id === currentHoverId)
           : (e.source.id === currentCenterId || e.target.id === currentCenterId);
-        if (isEdgeActive) {
-          const p = new Graphics();
-          p.circle(0, 0, 1.5);
-          p.fill({ color: 0xd4d4d8, alpha: 0.9 });
-          particlesContainer.addChild(p);
-          edgeParticles.push({
-            sprite: p,
-            sx: e.source.x, sy: e.source.y,
-            ex: e.target.x, ey: e.target.y,
-            speed: 0.3 + Math.random() * 0.4,
-            offset: Math.random(),
-          });
-        }
+        if (!isEdgeActive) return;
+        const p = new Graphics();
+        p.circle(0, 0, 1.5);
+        p.fill({ color: 0xd4d4d8, alpha: 0.9 });
+        particlesContainer.addChild(p);
+        edgeParticles.push({ sprite: p, sx: e.source.x, sy: e.source.y, ex: e.target.x, ey: e.target.y, speed: 0.3 + Math.random() * 0.4, offset: Math.random() });
       });
     }
 
@@ -456,12 +450,13 @@ export default function NeuralDisc({
       circle.cursor = 'pointer';
 
       const nodeId = n.id;
-      circle.on('pointerenter', () => setHoveredNodeId(nodeId));
-      circle.on('pointerleave', () => setHoveredNodeId(null));
-      circle.on('pointerdown', () => {
+      circle.on('pointerdown', (e) => {
+        e.stopPropagation();
         const clicked = nodesRef.current.find((nd) => nd.id === nodeId);
         if (clicked) onNodeClickRef.current(clicked);
       });
+      circle.on('pointerenter', () => setHoveredNodeId(nodeId));
+      circle.on('pointerleave', () => setHoveredNodeId(null));
       nodesContainer.addChild(circle);
 
       if (isCenter || isDirectHover || (isHovering && isNodeActive)) {
@@ -501,40 +496,81 @@ export default function NeuralDisc({
       app.ticker.add(tickerCb);
     }
 
-    app.stage.eventMode = 'static';
-    app.stage.cursor = 'default';
-    app.stage.on('pointerdown', (e) => {
-      if (e.target === app.stage) {
+    // ---- Wheel zoom (zoom toward mouse cursor) ----
+    mainContainer.on('wheel', (e) => {
+      e.preventDefault();
+      const oldScale = viewTransformRef.current.scale;
+      const newScale = Math.max(0.1, Math.min(5, oldScale * (e.deltaY > 0 ? 0.9 : 1.1)));
+      const worldX = (e.global.x - viewTransformRef.current.x) / oldScale;
+      const worldY = (e.global.y - viewTransformRef.current.y) / oldScale;
+      viewTransformRef.current.scale = newScale;
+      viewTransformRef.current.x = e.global.x - worldX * newScale;
+      viewTransformRef.current.y = e.global.y - worldY * newScale;
+      mainContainer.scale.set(newScale);
+      mainContainer.position.set(viewTransformRef.current.x, viewTransformRef.current.y);
+      setZoomVersion(v => v + 1);
+    });
+
+    // ---- Drag-to-pan with click/drag detection ----
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let dragStartTx = { x: 0, y: 0 };
+
+    mainContainer.on('pointerdown', (e) => {
+      if (e.target !== mainContainer) return;
+      isDragging = true;
+      mainContainer.cursor = 'grabbing';
+      dragStart = { x: e.global.x, y: e.global.y };
+      dragStartTx = { ...viewTransformRef.current };
+      e.stopPropagation();
+    });
+
+    const onPointerMove = (e: any) => {
+      if (!isDragging) return;
+      const dx = e.global.x - dragStart.x;
+      const dy = e.global.y - dragStart.y;
+      if (Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+      viewTransformRef.current.x = dragStartTx.x + dx;
+      viewTransformRef.current.y = dragStartTx.y + dy;
+      mainContainer.position.set(viewTransformRef.current.x, viewTransformRef.current.y);
+    };
+
+    const onPointerUp = (e: any) => {
+      if (!isDragging) return;
+      isDragging = false;
+      mainContainer.cursor = 'grab';
+      const dx = e.global.x - dragStart.x;
+      const dy = e.global.y - dragStart.y;
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) {
         onBackgroundClickRef.current();
       }
+    };
+
+    mainContainer.on('pointermove', onPointerMove);
+    mainContainer.on('pointerup', onPointerUp);
+    mainContainer.on('pointerupoutside', () => {
+      isDragging = false;
+      mainContainer.cursor = 'grab';
     });
 
     const endRender = performance.now();
     const renderTime = Math.round(endRender - startRender);
-    if (isHoverPass) {
-      lastMetrics.current.hover = renderTime;
-    } else {
-      lastMetrics.current.render = renderTime;
-    }
+    if (isHoverPass) { lastMetrics.current.hover = renderTime; }
+    else { lastMetrics.current.render = renderTime; }
 
-    // --- Diagnostics reported via ref — does NOT trigger scene rebuilds ---
     diagCallCountRef.current += 1;
-    if (onDiagnosticsRef.current) {
-      onDiagnosticsRef.current({ ...lastMetrics.current });
-    }
+    onDiagnosticsRef.current?.({ ...lastMetrics.current });
 
     return () => {
       if (tickerCb && app && app.ticker) {
-        try {
-          app.ticker.remove(tickerCb);
-        } catch (e) {}
+        try { app.ticker.remove(tickerCb); } catch (e) {}
       }
     };
-    // Deps: only scene-triggering state, NOT callback props.
-    // Callbacks are accessed through stable refs.
-    // nodesProp/edgesProp NOT needed: layoutData captures positions.
+    // Deps: only scene-triggering state. Callbacks accessed through stable refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutData, hoveredNodeId, contextLost, enableEffects, prefersReducedMotion]);
+
+  const zoomPercent = Math.round(viewTransformRef.current.scale * 100);
 
   if (contextLost) {
     return (
@@ -547,6 +583,28 @@ export default function NeuralDisc({
   }
 
   return (
-    <div ref={containerRef} className="w-full h-full relative bg-zinc-950 overflow-hidden" />
+    <div ref={containerRef} className="w-full h-full relative bg-zinc-950 overflow-hidden">
+      {/* Zoom controls */}
+      <div className="absolute bottom-4 right-4 flex flex-col items-center gap-0.5 z-20 select-none">
+        <button
+          onClick={() => zoomTo(1.3)}
+          className="w-7 h-7 flex items-center justify-center text-xs text-zinc-400 bg-zinc-900/80 border border-zinc-700/50 rounded-t hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+          title="Zoom in"
+        >+</button>
+        <div className="w-7 py-0.5 text-[10px] text-center text-zinc-500 bg-zinc-900/80 border-x border-zinc-700/50 font-mono">
+          {zoomPercent}%
+        </div>
+        <button
+          onClick={() => zoomTo(1 / 1.3)}
+          className="w-7 h-7 flex items-center justify-center text-xs text-zinc-400 bg-zinc-900/80 border border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+          title="Zoom out"
+        >−</button>
+        <button
+          onClick={resetView}
+          className="w-7 h-7 flex items-center justify-center text-[10px] text-zinc-500 bg-zinc-900/80 border border-zinc-700/50 border-t-0 rounded-b hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+          title="Reset view"
+        >Fit</button>
+      </div>
+    </div>
   );
 }

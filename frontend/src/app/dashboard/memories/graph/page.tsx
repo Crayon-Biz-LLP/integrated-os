@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Loader2, AlertCircle, ArrowLeft, User } from 'lucide-react';
+import { Loader2, AlertCircle, ArrowLeft, User, PanelLeftClose, PanelLeft } from 'lucide-react';
 import { fetchNeighborhood, fetchEgoGraph, fetchEpisodes, resolveMemoryToEntity } from '@/lib/memories/stream';
 import type { Episode, NeighborhoodResponse } from '@/lib/memories/stream';
 import type { GraphNode, GraphEdge } from '@/lib/memories/types';
@@ -30,6 +30,7 @@ export default function MemoryGraphPage() {
   const [diagnostics, setDiagnostics] = useState({ fetch: 0, layout: 0, render: 0, hover: 0, total: 0 });
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [enableEffects, setEnableEffects] = useState(true);
+  const [streamCollapsed, setStreamCollapsed] = useState(false);
 
   const episodeLimitRef = useRef(40);
 
@@ -256,18 +257,20 @@ export default function MemoryGraphPage() {
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)] bg-zinc-950">
-      {/* Left: Context Stream (Episodes) */}
-      <div className="w-96 flex-shrink-0 border-r border-zinc-800">
-        <EpisodeStream
-          episodes={episodes}
-          loading={episodesLoading}
-          expandedEpisodeId={expandedEpisodeId}
-          expandedMemoryId={expandedMemoryId}
-          onToggleEpisode={handleEpisodeClick}
-          onMemoryClick={handleMemoryClick}
-          onLoadMore={loadMoreEpisodes}
-        />
-      </div>
+      {/* Left: Context Stream (Episodes) — collapsible */}
+      {!streamCollapsed && (
+        <div className="w-80 flex-shrink-0 border-r border-zinc-800 transition-all duration-200">
+          <EpisodeStream
+            episodes={episodes}
+            loading={episodesLoading}
+            expandedEpisodeId={expandedEpisodeId}
+            expandedMemoryId={expandedMemoryId}
+            onToggleEpisode={handleEpisodeClick}
+            onMemoryClick={handleMemoryClick}
+            onLoadMore={loadMoreEpisodes}
+          />
+        </div>
+      )}
 
       {/* Right: Neural Knowledge Disc */}
       <div className="flex-1 flex flex-col relative">
@@ -297,6 +300,15 @@ export default function MemoryGraphPage() {
           )}
 
           <div className="flex-1" />
+
+          {/* Sidebar toggle */}
+          <button
+            onClick={() => setStreamCollapsed(c => !c)}
+            className="text-xs flex items-center gap-1 text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-1 rounded"
+            title={streamCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+          >
+            {streamCollapsed ? <PanelLeft className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
+          </button>
 
           {/* Diagnostics Panel Toggle */}
           <button
