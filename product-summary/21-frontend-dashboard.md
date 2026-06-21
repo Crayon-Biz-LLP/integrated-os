@@ -46,22 +46,71 @@ Library grid with title, URL, category, cluster assignment. Cluster group view. 
 
 ### Memories Module — Knowledge Graph Visualization
 
-The standout feature. Three components:
+Two pages serve memory exploration:
 
-**EgoGraph** (`EgoGraph.tsx`): D3.js force-directed graph for a single page's ego network. 7 node types with distinct colors. Labels on edges showing relationship type. 300 simulation ticks.
+**Memories List** (`/dashboard/memories`): Standard table/listing of all memories with search/filter.
 
-**FullGraph** (`FullGraph.tsx`): Full interactive D3.js force-directed graph with:
-- Zoom (0.2x-4x scale)
-- Drag nodes with force reheat
-- Hover effects (node enlargement, edge highlight)
-- Click to open NodeFlyout detail panel
-- Dark background (#09090b)
-- 250-tick simulation with auto-stop
+**Brain Graph** (`/dashboard/memories/graph`): Split-pane, Danny-centered interactive brain view.
 
-**NodeFlyout** (`NodeFlyout.tsx`): Slide-in panel showing node details with:
-- Color-coded type indicator
-- Linked canonical pages
-- All connections listed with relationship type and direction arrows
+#### Split-Pane Architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│  Toolbar: Danny button | node/edge count | Dev   │
+│  zoom controls | sidebar toggle | Memories link  │
+├────────────────┬─────────────────────────────────┤
+│                │                                 │
+│  Episode       │  NeuralDisc (PixiJS v8 WebGL)   │
+│  Stream        │                                 │
+│                │  - Danny-centered ego graph     │
+│  (collapsible) │  - 2-hop neighborhood           │
+│                │  - Hover highlights connections  │
+│  w-80 (320px)  │  - Zoom: mouse wheel → cursor   │
+│  or hidden     │  - Pan: background drag          │
+│                │  - Click node → load neighbor     │
+│                │  - Click bg → return to Danny     │
+│                │  - Zoom controls (+/-/Fit)        │
+│                │  - Breathing glow + edge particles│
+│                │  - Reduced motion support         │
+└────────────────┴─────────────────────────────────┘
+```
+
+**Left Pane — Episode Stream** (`EpisodeStream.tsx`):
+Groups graph-linked memories into episodes rather than displaying raw chronological fragments. Clustering uses 3 signals:
+1. **Shared non-root entity** (memories about the same person/project, not Danny himself)
+2. **Same source/thread** (same metadata source within 1h)
+3. **Same memory_type** (within 30min)
+
+Each episode card shows: title, human-readable summary, entity badges (color-coded by type), memory count, relative timestamp. Click to expand reveals raw memories beneath. Collapsible via toolbar button.
+
+**Right Pane — NeuralDisc** (`NeuralDisc.tsx`):
+PixiJS v8 interactive force-directed graph rendered via WebGL:
+- Danny is the permanent root anchor — graph loads centered on him on page boot
+- Nodes colored by type: person (blue), organization (teal), project (purple), cluster (pink), task (amber), concept (grey), emotional_state (red)
+- D3.js `forceSimulation` runs 300 ticks to compute layout, positions rendered as PixiJS Graphics circles
+- Hover: highlights connected nodes/edges, dims non-connected, shows labels
+- Labels shown for center, directly hovered, and active-connected nodes
+- Breathing glow animation on center node, particle traversal on connected edges
+- Background click returns to Danny-centered view
+- Node click loads 1-hop neighborhood and filters episode stream
+- Zoom/pan: mouse wheel zoom toward cursor, background drag to pan, +/-/Fit buttons
+- WebGL context loss detection and recovery via component key remount
+- GPU crash button in dev mode for testing context loss
+
+**Performance & Stability**:
+- All callback props (onNodeClick, onBackgroundClick, onDiagnostics, onContextRestored) stored in refs to prevent identity changes from triggering PIXI scene rebuilds
+- Render effect dependency array: `[layoutData, hoveredNodeId, contextLost, enableEffects, prefersReducedMotion]` — removed `onNodeClick`, `onBackgroundClick`, `onDiagnostics`, `nodes`, `centerNodeId` from deps
+- Layout computed once per data change (D3.js tick), then positions reused across hover passes
+- Debug counters: render count, scene build count, layout count, diagnostics call count — logged every 5s in dev
+- AbortController + sequence guard pattern for all fetch operations to prevent stale responses
+
+**Backend API**:
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/graph/ego?depth=2&cap=80` | Danny-centered ego graph (resolve root via core_config, parallel batched node queries) |
+| `GET /api/graph/neighborhood?node_id=X` | 1-hop ego network from any node |
+| `GET /api/graph/resolve-memory?memory_id=X` | Resolve memory → primary entity via highest-weight MENTIONS edge |
+| `GET /api/episodes/stream?node_id=X&limit=40` | Clustered memory episodes, optionally filtered by entity |
 
 ### Health Module
 Pipeline health status, failed queue items with retry counts, memory embedding stats, error logs from audit_logs.

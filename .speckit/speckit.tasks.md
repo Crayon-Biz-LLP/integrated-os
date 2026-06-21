@@ -229,6 +229,35 @@ Tables to surface:
 **Why**: The people table currently has sparse fields beyond name and strategic weight. Enrichment would enable richer person profiles in the UI and pulse context.
 **Depends on**: Graph edge quality confirmed (happens naturally as part of P3 timeline)
 
+## Today's Changes (June 21, 2026)
+
+### T-404: Brain Graph — Danny-Centered Ego Graph with Episode Stream
+**Status**: Completed
+**Details**: Replaced the legacy D3.js FullGraph with a split-pane Danny-centered brain view:
+- **New `/api/graph/ego`**: Returns Danny-centered 2-hop ego graph with configurable depth/cap. Uses parallel batched Supabase queries (200 UUIDs per batch) to avoid PostgREST URL length limits. Unbounded 1-hop edge fetch (849 edges), type-priority client-side node sorting.
+- **New `/api/graph/neighborhood`**: UUID-safe 1-hop graph from any node. Resolves memory_id through MENTIONS to entity node before fetching.
+- **New `/api/graph/resolve-memory`**: Maps memory_id → primary entity via highest-weight MENTIONS edge.
+- **NeuralDisc (PixiJS v8)**: Split-pane layout — left: LifeStream → right: interactive WebGL force-directed graph. Danny boots as permanent center. Node click loads neighborhood, background click returns to Danny. Fixed UUID type rot (GraphNode.id is string, not number). AbortController + sequence guard for stale-response defense. Fix: `order by weight desc` was filtering out Danny's real edges — removed LIMIT on 1-hop query. Fix: `.in()` URL length issue — parallel batched queries. Fix: `returnToDanny` race condition. Removed empty-state instructional block.
+- **Ego Graph fixed**: Dedup edges by sorted UUID pair + relationship to handle A→B/B→A duplicates. Stable root lookup via `core_config root_entity_id` with ILIKE fallback. All capped queries use ORDER BY for determinism.
+- **Infinite loop fix**: `onDiagnostics` callback was inline, causing NeuralDisc's render effect to rebuild the PIXI scene on every React render (60+ FPS → GPU/CPU flood → tab crash). Fixed by wrapping in `useCallback` + reading all callback props through stable refs (onNodeClickRef, onBackgroundClickRef, onDiagnosticsRef). Render effect dep array reduced from 10 to 5, removing callback props and `nodes` (position data flows through layoutData).
+- **Episode stream**: New `/api/episodes/stream` endpoint clusters graph-linked memories into episodes using 3 signals: shared non-root entity overlap (within 2h), same source metadata (within 1h), same memory_type (within 30min). Union-find transitive closure for overlapping clusters. **Critical fix**: Original clustering used all entity IDs including Danny (root), which caused every memory to merge into one "About Danny" episode — most memories share Danny. Now fetches root_entity_id from core_config and excludes it from the overlap check. EpisodeStream component replaces raw LifeStream in graph page.
+- **Zoom/Pan**: NeuralDisc now uses a mainContainer wrapper for all scene objects. Mouse wheel zooms toward cursor. Background drag pans the graph. Click/drag detection: <5px drag → background click (return to Danny), ≥5px → pan. Zoom controls overlay (+/-/Fit buttons).
+- **Collapsible sidebar**: Left pane toggles between 320px and 0 via `PanelLeftClose`/`PanelLeft` button in toolbar, giving the graph full viewport width when hidden.
+
+### T-405: Future Graph / Stream Improvements (Backlog)
+**Status**: Deferred
+**Details**: Four enhancements identified post-launch for the brain graph page:
+
+1. **PIXI Object Pooling**: Currently every scene rebuild destroys and recreates all PIXI Graphics objects. Implement object pooling (reuse existing Graphics instances, update positions/scales in place) to make hover-only passes and zoom/pan nearly instant (~0ms allocation). Critical for smooth interaction with 100+ node graphs.
+
+2. **Smooth Zoom/Pan Animations**: Currently zoom-to-fit and +/- buttons snap instantly. Add spring-physics tweening via PIXI ticker or a lightweight easing function so that "Fit" and zoom level changes glide smoothly to the target transform.
+
+3. **Multi-Select + Expand-in-Place Nodes**: Currently clicking a node replaces the entire graph with that node's neighborhood. Add Shift-click multi-select to highlight multiple nodes simultaneously. Add expand/collapse toggle on individual nodes to load 2-hop neighbors without leaving the current graph view.
+
+4. **Episode Stream Infinite Scroll + Date Range**: Currently the episode stream loads a fixed batch (up to 80 memories grouped). Add true infinite scroll pagination (offset/cursor-based) and date-range filtering so users can browse weeks/months of clustered history without overwhelming the initial load.
+
+---
+
 ## Dependency Map
 
 ```

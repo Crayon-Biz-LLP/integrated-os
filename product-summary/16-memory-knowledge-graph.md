@@ -265,9 +265,8 @@ Four per-site flags control which read paths use associative retrieval. All are 
 - **No shadow mode:** Legacy pgvector path (`match_memories_hybrid`) remains as fallback but is no longer the primary.
 
 ### Visual Exploration
-- 6 node colors (person, organization, project, place, animal, danny)
-- Zoom (0.2x-4x scale)
-- Drag with force reheat
-- Hover effects (node enlargement, edge highlighting)
-- Click to open NodeFlyout detail panel
-- 250-tick simulation with auto-stop
+The brain graph page (`/dashboard/memories/graph`) renders the graph as a split-pane interactive view:
+- **Left pane**: Episode Stream — clustered memories grouped by shared entity, source thread, or time window. Cards show title, summary, entity badges (color-coded), and memory count. Click to expand raw memories beneath. Collapsible via toolbar toggle.
+- **Right pane**: NeuralDisc — PixiJS v8 WebGL force-directed graph. Danny-centered 2-hop ego graph. Hover highlights connections, click node loads neighborhood, background click returns to Danny. Zoom via mouse wheel (toward cursor), pan via background drag. Zoom controls overlay (+/-/Fit). 7 node colors by type. Breathing glow on center node.
+- **Backend**: 4 API endpoints power the view: ego graph, neighborhood, resolve-memory, and episode stream.
+- **Performance**: All callback props stored in refs to prevent infinite scene rebuild loops. Dep array reduced from 10 to 5 deps. D3.js layout computed once per data change, PIXI scene rebuilds only on layout/hover changes.

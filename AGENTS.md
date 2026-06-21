@@ -3,6 +3,30 @@
 ## Project Overview
 FastAPI-based executive command system deployed as Vercel serverless functions (Python 3.11, matches CI). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 
+## Session Anchored Summary (Jun 21, 2026)
+
+### Progress Done This Session
+- **Created `/api/episodes/stream`**: New API endpoint that clusters graph-linked memories into episodic groups. Algorithm: union-find transitive closure on overlap graph using 3 signals — shared non-root entity (within 2h), same source metadata (within 1h), same memory_type (within 30min).
+- **Fixed cluster quality bug**: Excludes root entity (Danny) from entity overlap check to prevent every memory from merging into a single "About Danny" mega-cluster. Fetches `root_entity_id` from `core_config` table.
+- **EpisodeStream component**: New left-pane component replacing raw LifeStream. Episode cards with: title, human-readable summary, entity badges (color-coded by type), memory count, relative timestamp. Click to expand reveals raw memories beneath. Filters to specific entity when graph node is clicked.
+- **Types/API client**: Added `Episode` type + `fetchEpisodes()` function to `frontend/lib/stream.ts`.
+- **NeuralDisc zoom/pan**: Wheel zoom toward cursor, background drag to pan (5px dead zone for click/drag detection). `viewTransformRef` persists across hover-only scene rebuilds. Zoom controls overlay (+/-/Fit buttons). Main transform applied via `mainContainer` wrapper.
+- **Collapsible sidebar**: Left pane toggles between 320px and 0 via `PanelLeftClose`/`PanelLeft` button, giving graph full viewport when hidden.
+- **Infinite render loop fixed**: NeuralDisc now stores all callback props in refs that update without triggering React re-renders. Render effect dep array reduced from 10 to 5: `[layoutData, hoveredNodeId, contextLost, enableEffects, prefersReducedMotion]`.
+- **Clean TypeScript build**: All checks pass. Ruff clean on Python side.
+
+### Key Decisions This Session
+- **Exclude root entity from clustering overlap**: Prevents the "About Danny" mega-cluster problem. The root entity is fetched from `core_config` table.
+- **Ref-based callbacks for PIXI scene**: Prevents infinite scene rebuilds on prop identity changes. Each callback prop has a corresponding ref (`onNodeClickRef`, etc.) that is kept in sync via `useEffect`. Render effect only reads from refs.
+- **`mainContainer` for transforms**: All visual layers are children of a single PIXI `Container`, enabling unified zoom/pan.
+- **5px dead zone for click-vs-drag**: Prevents background-click "return to Danny" from firing during pan operations.
+
+### Pending / Next Steps
+- **Missing page routes**: `CalendarEvents`, `Messages`, `Graph` pages show placeholder "Work in progress" content
+- **WhatsApp notification ingestion**: Schema change for `whatsapp_messages` table may need a migration
+- **Collaborator view**: Would require RLS policies and user-permission scoping (out of scope for current MVP)
+- **Future graph improvements**: PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range
+
 ## Key Commands
 
 ### Local Development
