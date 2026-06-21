@@ -13,7 +13,7 @@ const NeuralDisc = dynamic(() => import('@/components/memories/NeuralDisc'), { s
 export default function MemoryGraphPage() {
   const [streamItems, setStreamItems] = useState<StreamItem[]>([]);
   const [streamLoading, setStreamLoading] = useState(true);
-  const [focusedPageId, setFocusedPageId] = useState<number | null>(null);
+  const [focusedMemoryId, setFocusedMemoryId] = useState<number | null>(null);
 
   const [graphNodes, setGraphNodes] = useState<GraphNode[]>([]);
   const [graphEdges, setGraphEdges] = useState<GraphEdge[]>([]);
@@ -86,7 +86,7 @@ export default function MemoryGraphPage() {
     }
   }, []);
 
-  const loadNeighborhood = useCallback(async (nodeId: number | null, pageId: number | null) => {
+  const loadNeighborhood = useCallback(async (nodeId: number | null, memoryId: number | null) => {
     const currentSeq = ++sequenceRef.current;
     
     if (graphAbortRef.current) graphAbortRef.current.abort();
@@ -102,15 +102,15 @@ export default function MemoryGraphPage() {
       let res;
       if (nodeId !== null) {
         res = await fetchNeighborhood(nodeId, abortController.signal);
-      } else if (pageId !== null) {
-        const fetchRes = await fetch(`/api/graph/neighborhood?page_id=${pageId}`, { signal: abortController.signal });
+      } else if (memoryId !== null) {
+        const fetchRes = await fetch(`/api/graph/neighborhood?memory_id=${memoryId}`, { signal: abortController.signal });
         if (fetchRes.status === 404) {
-          throw new Error('ORPHAN_PAGE');
+          throw new Error('ORPHAN_MEMORY');
         }
         if (!fetchRes.ok) throw new Error('Failed to fetch neighborhood');
         res = await fetchRes.json();
       } else {
-        throw new Error('Must provide nodeId or pageId');
+        throw new Error('Must provide nodeId or memoryId');
       }
 
       if (currentSeq !== sequenceRef.current) return;
@@ -124,7 +124,7 @@ export default function MemoryGraphPage() {
     } catch (e: any) {
       if (e.name === 'AbortError' || currentSeq !== sequenceRef.current) return;
       
-      if (e.message === 'ORPHAN_PAGE') {
+      if (e.message === 'ORPHAN_MEMORY') {
         setGraphInfo('This memory has no linked entities yet.');
       } else {
         setGraphError(e instanceof Error ? e.message : 'Failed to load graph');
@@ -145,8 +145,8 @@ export default function MemoryGraphPage() {
 
   const handleSelectStreamItem = useCallback(
     async (item: StreamItem) => {
-      setFocusedPageId(item.id);
-      setFocusedNodeId(null); // Clear explicit node focus when focusing on a page
+      setFocusedMemoryId(item.id);
+      setFocusedNodeId(null); // Clear explicit node focus when focusing on a memory
       await loadNeighborhood(null, item.id);
     },
     [loadNeighborhood],
@@ -162,14 +162,14 @@ export default function MemoryGraphPage() {
 
   const handleReset = useCallback(() => {
     // Only reset if we actually have something to reset
-    if (focusedPageId === null && focusedNodeId === null) return;
+    if (focusedMemoryId === null && focusedNodeId === null) return;
 
     const currentSeq = ++sequenceRef.current;
     
     if (graphAbortRef.current) graphAbortRef.current.abort();
     if (streamAbortRef.current) streamAbortRef.current.abort();
     
-    setFocusedPageId(null);
+    setFocusedMemoryId(null);
     setFocusedNodeId(null);
     setGraphNodes([]);
     setGraphEdges([]);
@@ -177,7 +177,7 @@ export default function MemoryGraphPage() {
     setGraphInfo(null);
     
     loadStream(undefined, currentSeq);
-  }, [focusedPageId, focusedNodeId, loadStream]);
+  }, [focusedMemoryId, focusedNodeId, loadStream]);
 
   useEffect(() => {
     loadStream();
@@ -194,7 +194,7 @@ export default function MemoryGraphPage() {
         <LifeStream
           items={streamItems}
           loading={streamLoading}
-          selectedItemId={focusedPageId}
+          selectedItemId={focusedMemoryId}
           onSelectItem={handleSelectStreamItem}
           onLoadMore={loadMoreStream}
         />

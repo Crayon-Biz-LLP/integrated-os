@@ -110,17 +110,17 @@ export default function LifeStream({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <h3 className="text-sm font-medium text-zinc-200 line-clamp-1">
-                      {item.title}
+                      {cleanContent.split(' ').slice(0, 6).join(' ') || 'Memory'}...
                     </h3>
                     <span className="text-[10px] text-zinc-500 whitespace-nowrap mt-0.5 flex items-center gap-1">
                       <Clock className="h-3 w-3" />
-                      {relativeTime(item.updated_at)}
+                      {relativeTime(item.created_at)}
                     </span>
                   </div>
 
-                  {item.category && (
-                    <span className="inline-block text-[10px] text-zinc-500 bg-zinc-800/60 rounded px-1.5 py-0.5 mt-1">
-                      {item.category}
+                  {item.memory_type && (
+                    <span className="inline-block text-[10px] text-zinc-500 bg-zinc-800/60 rounded px-1.5 py-0.5 mt-1 capitalize">
+                      {item.memory_type.replace('_', ' ')}
                     </span>
                   )}
 

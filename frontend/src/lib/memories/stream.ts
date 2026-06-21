@@ -2,10 +2,9 @@ import type { GraphNode, GraphEdge } from './types';
 
 export interface StreamItem {
   id: number;
-  title: string;
-  content: string | null;
-  updated_at: string | null;
-  category: string | null;
+  content: string;
+  memory_type: string | null;
+  created_at: string;
 }
 
 export interface NeighborhoodResponse {

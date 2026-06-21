@@ -7,19 +7,33 @@ export const revalidate = 0;
 async function resolveNodeId(
   supabase: any,
   nodeId: string | null,
-  pageId: string | null,
+  memoryId: string | null,
 ): Promise<string | null> {
   if (nodeId) return nodeId;
-  if (!pageId) return null;
+  if (!memoryId) return null;
 
-  const { data: pageNodes } = await supabase
+  // Find the memory node corresponding to this memory_id
+  const { data: memNodes } = await supabase
     .from("graph_nodes")
     .select("id")
-    .eq("canonical_page_id", Number(pageId))
+    .eq("type", "memory")
+    .eq("label", `Memory_${memoryId}`)
     .limit(1);
 
-  if (pageNodes && pageNodes.length > 0) {
-    return String(pageNodes[0].id);
+  if (memNodes && memNodes.length > 0) {
+    return String(memNodes[0].id);
+  }
+  
+  // Fallback: check metadata if label convention changes
+  const { data: metaNodes } = await supabase
+    .from("graph_nodes")
+    .select("id, metadata")
+    .eq("type", "memory")
+    .limit(100); // we can't easily query jsonb in this generic client without specific syntax
+    
+  const found = metaNodes?.find((n: any) => n.metadata?.memory_id == memoryId);
+  if (found) {
+    return String(found.id);
   }
 
   return null;
@@ -32,14 +46,14 @@ export async function GET(req: NextRequest) {
   const nodeId = await resolveNodeId(
     supabase,
     searchParams.get("node_id"),
-    searchParams.get("page_id"),
+    searchParams.get("memory_id"),
   );
 
   if (!nodeId) {
-    if (searchParams.get("page_id")) {
-      return NextResponse.json({ error: "No nodes linked to this page" }, { status: 404 });
+    if (searchParams.get("memory_id")) {
+      return NextResponse.json({ error: "No nodes linked to this memory" }, { status: 404 });
     }
-    return NextResponse.json({ error: "node_id or page_id required" }, { status: 400 });
+    return NextResponse.json({ error: "node_id or memory_id required" }, { status: 400 });
   }
 
   const { data: centerNode } = await supabase
