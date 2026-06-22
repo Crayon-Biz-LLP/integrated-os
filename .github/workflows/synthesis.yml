@@ -52,7 +52,7 @@ jobs:
           GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m core.skills.brain_synth
+        run: python -m core.skills.brain_synth_v2
 
   notify_failure:
     runs-on: ubuntu-latest
