@@ -87,6 +87,11 @@ async def generate_content_with_fallback(
                 
                 parsed_schema = None
                 if not function_calls and (require_json or schema):
+                    if not text.strip():
+                        # Fast-fail for safety filters to avoid exponential backoff
+                        resp = LLMResponse(text="", provider=provider_name, model=model_name, workload="classification" if is_classification else "general", success=True, degraded=False, degraded_reason=None, attempts=attempt+1, latency_ms=int((time.time() - start_time) * 1000), final_exception=None)
+                        return resp
+                        
                     try:
                         dummy_resp = LLMResponse(text=text, provider="", model="", workload="", success=True, degraded=False, degraded_reason=None, attempts=0, latency_ms=0, final_exception=None)
                         parsed = dummy_resp.parse_json()

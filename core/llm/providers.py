@@ -4,14 +4,19 @@ from typing import Any, Tuple, List, Optional
 from httpx import AsyncClient
 from .client import get_gemini_clients
 from .errors import ProviderTimeout, NonRetryableError
-from core.lib.rate_limiter import flash_lite_limiter
+from core.lib.rate_limiter import flash_lite_limiter, flash_3_5_limiter
 
 async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: float = 120.0, **kwargs) -> Tuple[str, Optional[List[Any]], Any]:
     """Make a call to Gemini, enforcing the timeout via asyncio.wait_for. Supports multi-key failover."""
-    if "flash-lite" in model:
-        await flash_lite_limiter.acquire_async()
-        
     clients = get_gemini_clients()
+    
+    if "flash-lite" in model:
+        client_idx = await flash_lite_limiter.acquire_async()
+        clients = clients[client_idx:] + clients[:client_idx]
+    elif "flash" in model:
+        client_idx = await flash_3_5_limiter.acquire_async()
+        clients = clients[client_idx:] + clients[:client_idx]
+        
     last_error = None
     
     for client in clients:

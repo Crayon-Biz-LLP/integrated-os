@@ -555,8 +555,15 @@ def insert_pending_edges_batch(edges: list):
         return
     try:
         label_type_cache = _build_label_type_cache()
-        existing_res = supabase.table("pending_graph_edges").select("source_label,target_label,relationship").eq("status", "pending").execute()
-        existing_set = {f"{r['source_label']}|{r['target_label']}|{r['relationship']}" for r in (existing_res.data or [])}
+        
+        source_labels = list(set([e.get('source_label', '') for e in edges if e.get('source_label')]))
+        existing_map = {}
+        for i in range(0, len(source_labels), 20):
+            batch_labels = source_labels[i:i+20]
+            res = supabase.table("pending_graph_edges").select("id, source_label, target_label, relationship, source_text").in_("source_label", batch_labels).execute()
+            for r in (res.data or []):
+                key = f"{r['source_label']}|{r['target_label']}|{r['relationship']}"
+                existing_map[key] = r
 
         to_insert = []
         for edge in edges:
@@ -575,9 +582,19 @@ def insert_pending_edges_batch(edges: list):
                     rel = vr["reason"]
                     audit_log_sync("backfill_graph", "INFO", f"Auto-corrected {s_label} --[{rel}]--> {t_label}")
             key = f"{s_label}|{t_label}|{rel}"
-            if key not in existing_set:
+            if key in existing_map:
+                existing = existing_map[key]
+                if 'id' in existing:
+                    current_sources = [s.strip() for s in (existing.get('source_text') or '').split(',') if s.strip()]
+                    new_source = edge.get('source_text', '')
+                    if new_source and new_source not in current_sources:
+                        current_sources.append(new_source)
+                        updated_source_text = ", ".join(current_sources)
+                        supabase.table("pending_graph_edges").update({"source_text": updated_source_text}).eq("id", existing['id']).execute()
+                        existing['source_text'] = updated_source_text
+            else:
                 to_insert.append(edge)
-                existing_set.add(key)
+                existing_map[key] = edge
 
         if not to_insert:
             if edges:
@@ -762,8 +779,7 @@ def run_backfill():
                     graph_data = future.result()
                     nodes = graph_data.get("nodes", [])
                     edges = graph_data.get("edges", [])
-                    if nodes or edges:
-                        extracted_data.append({"memory_id": mem["id"], "source_table": mem.get("_source_table", "memories"), "nodes": nodes, "edges": edges})
+                    extracted_data.append({"memory_id": mem["id"], "source_table": mem.get("_source_table", "memories"), "nodes": nodes, "edges": edges})
                 except Exception as e:
                     audit_log_sync("backfill_graph", "WARNING", f"Failed to process future for {mem['id']}: {e}")
                     continue

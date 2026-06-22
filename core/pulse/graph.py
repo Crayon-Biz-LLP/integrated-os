@@ -471,6 +471,12 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             meta = {"source": "pending_edge_approval", "pending_id": pending_id}
             if context:
                 meta["context"] = context
+                
+            # Preserve the origin memory/task references into the permanent graph metadata
+            if pe.get('source_text'):
+                memories = [m.strip() for m in pe['source_text'].split(',') if m.strip()]
+                if memories:
+                    meta["contributing_memories"] = memories
 
             supabase.table('graph_edges').upsert({
                 'source_node_id': s_id,
@@ -1058,11 +1064,10 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                         # If person, also add a pending KNOWS edge from Danny
                         if typ == 'person':
                             danny_edge_exists = supabase.table("pending_graph_edges")\
-                                .select("id")\
+                                .select("id, source_text")\
                                 .eq("source_label", "Danny")\
                                 .eq("target_label", c_lbl)\
                                 .eq("relationship", "KNOWS")\
-                                .eq("status", "pending")\
                                 .maybe_single().execute()
                             if not danny_edge_exists or not danny_edge_exists.data:
                                 supabase.table("pending_graph_edges").insert({
@@ -1073,6 +1078,14 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                                     "source_table": source_type,
                                     "status": "pending"
                                 }).execute()
+                            else:
+                                # Merge provenance
+                                existing = danny_edge_exists.data
+                                current_sources = [s.strip() for s in (existing.get('source_text') or '').split(',') if s.strip()]
+                                new_source = f"{source_type}:{source_id}"
+                                if new_source not in current_sources:
+                                    current_sources.append(new_source)
+                                    supabase.table("pending_graph_edges").update({"source_text": ", ".join(current_sources)}).eq("id", existing['id']).execute()
                 except Exception:
                     pass
         elif r["node_id"]:
@@ -1166,15 +1179,34 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
 
     if pending_edges_batch:
         try:
-            existing_res = supabase.table("pending_graph_edges").select("source_label,target_label,relationship").eq("status", "pending").execute()
-            existing_set = {f"{r['source_label']}|{r['target_label']}|{r['relationship']}" for r in (existing_res.data or [])}
+            source_labels = list(set([e['source_label'] for e in pending_edges_batch]))
+            
+            existing_map = {}
+            for i in range(0, len(source_labels), 20):
+                batch_labels = source_labels[i:i+20]
+                res = supabase.table("pending_graph_edges").select("id, source_label, target_label, relationship, source_text").in_("source_label", batch_labels).execute()
+                for r in (res.data or []):
+                    key = f"{r['source_label']}|{r['target_label']}|{r['relationship']}"
+                    existing_map[key] = r
             
             to_insert = []
             for edge in pending_edges_batch:
                 key = f"{edge['source_label']}|{edge['target_label']}|{edge['relationship']}"
-                if key not in existing_set:
+                if key in existing_map:
+                    # Append source_text to preserve provenance across duplicate extractions
+                    existing = existing_map[key]
+                    # if existing is just from the batch itself (not from db yet), it won't have an 'id'
+                    if 'id' in existing:
+                        current_sources = [s.strip() for s in (existing.get('source_text') or '').split(',') if s.strip()]
+                        new_source = edge['source_text']
+                        if new_source not in current_sources:
+                            current_sources.append(new_source)
+                            updated_source_text = ", ".join(current_sources)
+                            supabase.table("pending_graph_edges").update({"source_text": updated_source_text}).eq("id", existing['id']).execute()
+                            existing['source_text'] = updated_source_text
+                else:
                     to_insert.append(edge)
-                    existing_set.add(key)
+                    existing_map[key] = edge # Treat it as existing for the rest of the batch
                     
             if to_insert:
                 for i in range(0, len(to_insert), 100):
