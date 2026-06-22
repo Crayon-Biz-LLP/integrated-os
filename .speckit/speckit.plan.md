@@ -87,6 +87,12 @@
 
 ## Key Design Decisions
 
+### Decision 0: Temporal Lineage via PostgreSQL triggers (not application-level)
+**Chosen**: BEFORE UPDATE triggers on `tasks` and `canonical_pages` tables automatically archive old state and increment versions. `pg_trigger_depth() = 0` guard prevents cascading trigger re-entry.
+**Rejected**: Application-level versioning in Python via `create_versioned_task()`.
+**Why**: Application-level versioning requires every code path (Python webhook, Next.js API routes, direct SQL) to remember to call the versioning function. A database trigger catches ALL update paths transparently without changing existing `supabase.table('tasks').update()` calls. The trigger preserves the primary key (only inserts a new historical row, doesn't change the active row's ID), preventing Google Calendar sync mappings from breaking.
+**Tradeoff**: Slightly more complex DB migration. But triggers are well-understood PostgreSQL patterns with zero application overhead.
+
 ### Decision 1: No real-time embedding in the webhook response path
 **Chosen**: Stage the record immediately, embed asynchronously.
 **Rejected**: Embedding inline during webhook response.
@@ -112,11 +118,11 @@
 **Rejected**: Inline LLM extraction during webhook response.
 **Why**: The webhook must respond to Telegram within a few seconds. Background processing handles LLM latency gracefully.
 
-### Decision 6: Human-in-the-loop for ALL graph entities AND edges
-**Chosen**: Every new node (person, organization, project, place, animal) requires HITL approval — `concept`, `emotional_state`, `resource`, `practice` node types were removed entirely. All extracted edges (16 types) flow through `pending_graph_edges` for approval.
+### Decision 6: Human-in-the-loop for ALL graph entities AND edges + Concept Fluidity
+**Chosen**: Every new entity requires HITL approval — 5 core types (person, organization, project, place, animal) plus `concept` nodes guarded by 85%+ similarity dedup. All extracted edges (16 types plus 3 concept-specific: EVOKES, RELATES_TO, ASSOCIATED_WITH) flow through `pending_graph_edges` for approval.
 **Rejected**: Auto-create all extracted entities; auto-create low-risk entity types.
 **Why**: The graph is the backbone of Rhodey's intelligence — wrong nodes infect every query and brief. The "low-risk auto-create" approach created 699 junk nodes (concept, emotional_state, resource). Every edge is now staged in `pending_graph_edges` with inline editing in the Decisions UI before approval. `pending_graph_nodes` and `pending_graph_edges` both have RLS enabled for extra safety.
-**Change from previous**: All 4 removed node types (concept, emotional_state, resource, practice) together formed a junk drawer of 699 hallucinated nodes. The new ontology has 5 precise types. Emotions live on memory metadata instead.
+**Concept Fluidity**: After initially purging concepts during the ontology overhaul (T-301), abstract `concept` nodes were re-introduced under strict HITL control via the Synaptic Plasticity upgrade (T-401). They are not auto-created — they flow through pending approval with proactive 85%+ similarity merge detection.
 **Tradeoff**: Latency between extraction and graph availability — but the Decisions UI Graph Edges tab makes batch approval fast.
 
 ### Decision 7: Associative Retrieval over pgvector-only

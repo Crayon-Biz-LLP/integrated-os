@@ -3,29 +3,23 @@
 ## Project Overview
 FastAPI-based executive command system deployed as Vercel serverless functions (Python 3.11, matches CI). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 
-## Session Anchored Summary (Jun 21, 2026)
+## Session Anchored Summary (Jun 22, 2026)
 
 ### Progress Done This Session
-- **Created `/api/episodes/stream`**: New API endpoint that clusters graph-linked memories into episodic groups. Algorithm: union-find transitive closure on overlap graph using 3 signals — shared non-root entity (within 2h), same source metadata (within 1h), same memory_type (within 30min).
-- **Fixed cluster quality bug**: Excludes root entity (Danny) from entity overlap check to prevent every memory from merging into a single "About Danny" mega-cluster. Fetches `root_entity_id` from `core_config` table.
-- **EpisodeStream component**: New left-pane component replacing raw LifeStream. Episode cards with: title, human-readable summary, entity badges (color-coded by type), memory count, relative timestamp. Click to expand reveals raw memories beneath. Filters to specific entity when graph node is clicked.
-- **Types/API client**: Added `Episode` type + `fetchEpisodes()` function to `frontend/lib/stream.ts`.
-- **NeuralDisc zoom/pan**: Wheel zoom toward cursor, background drag to pan (5px dead zone for click/drag detection). `viewTransformRef` persists across hover-only scene rebuilds. Zoom controls overlay (+/-/Fit buttons). Main transform applied via `mainContainer` wrapper.
-- **Collapsible sidebar**: Left pane toggles between 320px and 0 via `PanelLeftClose`/`PanelLeft` button, giving graph full viewport when hidden.
-- **Infinite render loop fixed**: NeuralDisc now stores all callback props in refs that update without triggering React re-renders. Render effect dep array reduced from 10 to 5: `[layoutData, hoveredNodeId, contextLost, enableEffects, prefersReducedMotion]`.
-- **Clean TypeScript build**: All checks pass. Ruff clean on Python side.
+- **Pipeline Integrity Hardening**: Applied raw_dumps status CHECK constraint, created PostgreSQL BEFORE UPDATE triggers for Temporal Lineage on tasks and canonical_pages tables (preserves primary keys, no Google Calendar sync breakage). All Tier 0/1 tasks ([COMPLETED]).
+- **Documentation Audit & Sync**: Synchronized all documentation (AGENTS.md, speckit.*, product-summary/) to reflect current codebase reality — many features (Calendar/Messages/Graph pages, Clarifier Phase 2, DLQ, audit logs) were already built and deployed but undocumented.
+- **Memories table schema fix**: Changed `supersedes_id` and `superseded_by` columns from `uuid` to `int8` (0 rows affected) to match the table's primary key type, unblocking Temporal Lineage on memories.
 
 ### Key Decisions This Session
-- **Exclude root entity from clustering overlap**: Prevents the "About Danny" mega-cluster problem. The root entity is fetched from `core_config` table.
-- **Ref-based callbacks for PIXI scene**: Prevents infinite scene rebuilds on prop identity changes. Each callback prop has a corresponding ref (`onNodeClickRef`, etc.) that is kept in sync via `useEffect`. Render effect only reads from refs.
-- **`mainContainer` for transforms**: All visual layers are children of a single PIXI `Container`, enabling unified zoom/pan.
-- **5px dead zone for click-vs-drag**: Prevents background-click "return to Danny" from firing during pan operations.
+- **Database-level temporal triggers over application-level**: Using BEFORE UPDATE triggers (with `pg_trigger_depth() = 0` guard) ensures ALL task/canonical_page updates — whether from Python, Next.js API routes, or direct SQL — automatically preserve history without risking broken foreign keys or primary key churn.
+- **Vercel 60s timeout mitigated via GitHub Actions offload**: Heavy synthesis tasks (300s LLM profiles) are triggered from Vercel webhooks but executed as GitHub Actions jobs. Vercel only handles the lightweight trigger; the timeout mismatch is a non-issue.
 
 ### Pending / Next Steps
-- **Missing page routes**: `CalendarEvents`, `Messages`, `Graph` pages show placeholder "Work in progress" content
-- **WhatsApp notification ingestion**: Schema change for `whatsapp_messages` table may need a migration
-- **Collaborator view**: Would require RLS policies and user-permission scoping (out of scope for current MVP)
 - **Future graph improvements**: PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range
+- **Decisions Table (TF-001)**: Structured `decisions` table to track explicit choices with lifecycle (active/superseded/reversed). Currently decisions are implicit in tasks/briefings.
+- **Graph Edge Expiry (TF-002)**: `last_confirmed_at`/`valid_until` columns on `graph_edges` to prevent stale relationship poisoning.
+- **People Table Enrichment (TF-003)**: Populate `org`, `last_interaction_date`, `notes` columns from graph edges.
+- **Collaborator view**: Would require RLS policies and user-permission scoping (out of scope for current MVP)
 
 ## Key Commands
 
@@ -60,9 +54,9 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - `core/webhook/classify.py` - LLM-based intent classifier. Schedule questions with date ranges ("meetings this week?") route to QUERY, not DAILY_BRIEF. DAILY_BRIEF reserved for explicit daily overview requests ("good morning", "what's my day look like?").
 - `core/pulse/engine.py` - AI briefing generation via `run_agent_loop` ToolRegistry, task management, calendar sync, and **Decision Pulse** (no AI, inline keyboard approvals).
 - `core/pulse/context.py` - **Phase 2 Context Hydration Engine**. Uses TTL caches (`SimpleCache`) and hybrid vector+graph cross-referencing.
-- `core/pulse/memory.py` - **Phase 3 Memory Engine**. Handles semantic retrieval with temporal decay and importance weighting (`match_memories_hybrid`).
+- `core/pulse/memory.py` - **Phase 3 Memory Engine**. Handles semantic retrieval with temporal decay and importance weighting (`match_memories_hybrid` — legacy, replaced by associative_retrieve).
 - `core/pulse/entity_extractor.py` - Real-time Flash Lite entity extraction during webhook ingestion. Routes organizations and all LLM-extracted edges to pending tables (Step 1.5).
-- `core/clarifier.py` - Clarification loop engine. 6-function interface (`evaluate_node`, `evaluate_edge`, `build_batch`, `handle_response`, `next_shortcode`, `dedupe_batch`). Phase 1 returns `None` for all evaluations. Phase 2 will generate Telegram questions for low-confidence extractions.
+- `core/clarifier.py` - **Clarifier Phase 2 (LIVE)**. 6-function interface (`evaluate_node`, `evaluate_edge`, `build_batch`, `handle_response`, `next_shortcode`, `dedupe_batch`). Generates Telegram disambiguation questions for 85%+ similarity matches, auto-merge confirmations at 95%+, edge contradiction detection, low-confidence (<0.7) edge verification, and concept alias dedup.
 - `core/agents/research_agent.py` - Research and embedding tasks
 - `core/skills/` - Ingest (email, archive), nightly canonical brain synthesis, and graph sync scripts (run via CI)
 - `core/retrieval/search.py` - `associative_retrieve()` — 7-signal ranking pipeline (semantic, PPR, recency, importance, project, specificity, person_boost). Redis-cached LLM extraction + embeddings, parallel DB queries via PostgREST nested joins, `asyncio.to_thread()` for sync ops.
@@ -86,12 +80,12 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - `messages` holds WhatsApp chats, Emails, and Call extracts with classification + approval status
 - **Retrieval tables**: `retrieval_passages`, `retrieval_phrase_nodes` (with GIN trigram index), `retrieval_node_stats`, `retrieval_passage_phrase_links`, `retrieval_memory_bundle_links`, `retrieval_alias_edges` (3760 heuristic synonym bridges), `retrieval_index_runs` (checkpoint/resume).
 - `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter). Excludes `raw_dumps` from extraction. Uses strict 5-node-type / 16-edge-type ontology with entity grounding.
-- **Graph integrity**: Five layers — (1) Guard A deletes stale project edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation (no AUTHORED exception); (3) Guard C (HITL) gates ALL edges through `pending_graph_edges` + high-risk nodes through `pending_graph_nodes`; (4) Guard D dedup prevents label-drift re-insertion; (5) No auto-created concept nodes. **Phase 1 Guards**: Guard 2 (`is_real_project`) hard-rejects ungrounded projects, Guard 3 (`has_structural_anchor`) flags ungrounded people/orgs.
+- **Graph integrity**: Five layers — (1) Guard A deletes stale project edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation (no AUTHORED exception); (3) Guard C (HITL) gates ALL edges through `pending_graph_edges` + high-risk nodes through `pending_graph_nodes`; (4) Guard D dedup prevents label-drift re-insertion; (5) `concept` nodes supported via **Concept Fluidity (Synaptic Plasticity)** upgrade — extracted via `concept_sweep_batch.py`, deduped via 85%+ similarity check with 1-click merge, protected by HITL approval. No concept auto-creation. **Phase 1 Guards**: Guard 2 (`is_real_project`) hard-rejects ungrounded projects, Guard 3 (`has_structural_anchor`) flags ungrounded people/orgs.
 
 ### External Integrations
 - **Gemini AI**: Briefing (`gemini-3.5-flash`), Classification (`gemini-3.1-flash-lite`), Embeddings (`gemini-embedding-2-preview`)
 - **Native Control Layer**: Built-in to `core/pulse/llm.py` to enforce Pydantic JSON validation, targeted prompt mutations, and jittered exponential backoffs.
-- **LLM Timeout Config**: `core/llm/config.py` defines `WorkloadProfile` profiles: INTERACTIVE (55s), SYNTHESIS (300s), BATCH (300s), EMBEDDING (120s). Synced with Vercel's 60s serverless limit.
+- **LLM Timeout Config**: `core/llm/config.py` defines `WorkloadProfile` profiles: INTERACTIVE (55s), SYNTHESIS (300s), BATCH (300s), EMBEDDING (120s). Heavy SYNTHESIS workloads (300s) are offloaded from Vercel to GitHub Actions jobs — Vercel only handles lightweight trigger webhooks, so the 60s serverless limit is not a constraint.
 - Google Calendar API (event blocks), Google Tasks API (checklist)
 - Telegram Bot API
 - WhatsApp via MacroDroid (Android notification → webhook to `/api/whatsapp-ingest`)

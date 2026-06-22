@@ -41,7 +41,7 @@ All four tiers are always active. A single `interrogate_brain()` call touches ev
 **Key behaviors:**
 - Dedup via `processed_updates` table with UNIQUE constraint
 - Authorization check against `TELEGRAM_CHAT_ID`
-- 60-second Vercel serverless timeout matches `LLM_TIMEOUT` settings
+- Heavy LLM synthesis (SYNTHESIS profile, 300s timeout) offloaded to GitHub Actions — Vercel only handles trigger webhooks
 - All Tier 1 operations gracefully degrade on failure
 
 ---
@@ -105,12 +105,13 @@ The primary retrieval path uses `associative_retrieve()` (`core/retrieval/search
 
 ### 3b. Knowledge Graph Traversal
 
-`hybrid_search_graph()` (`graph.py`) walks the graph edges (`BELONGS_TO`, `MENTIONS`, `RELATED_TO`, `AUTHORED`, `INVOLVES`) to surface connections between tasks, people, projects, and memories. Results feed the tactical map — a structural view of how entities connect.
+`hybrid_search_graph()` (`graph.py`) walks the graph edges (`DISCUSSED_WITH`, `WORKS_AT`, `CLIENT_OF`, etc.) to surface connections between tasks, people, projects, and memories. Results feed the tactical map — a structural view of how entities connect.
 
 **Graph integrity safeguards:**
 - **Guard A** — Orphaned `BELONGS_TO` edges cleaned before insert (by `metadata->>task_id`)
 - **Guard B** — Text-anchoring validation drops hallucinated labels not found in source text
-- **HITL** — New person/project/organization nodes gated through `pending_graph_nodes` for Danny's approval via Decision Pulse
+- **HITL** — New person/project/organization/concept nodes gated through `pending_graph_nodes` for Danny's approval via Decision Pulse
+- **Concept Fluidity** — Abstract concept nodes supported with 85%+ similarity dedup and 1-click merge
 
 ### 3c. Forward Indexing
 

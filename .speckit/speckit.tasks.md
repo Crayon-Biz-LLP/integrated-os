@@ -5,7 +5,7 @@
 
 ## Tier 0 — STOP THE BLEEDING (Do This Week)
 
-### T-001: Add try/except to handle_confident_note()
+### [COMPLETED] T-001: Add try/except to handle_confident_note()
 **File**: `core/webhook/handler.py`
 **Depends on**: Nothing
 **Risk**: Low — additive change
@@ -21,7 +21,7 @@ IF get_embedding() throws:
 
 ---
 
-### T-002: Create system_audit_logs table
+### [COMPLETED] T-002: Create system_audit_logs table
 **File**: New Supabase migration
 **Depends on**: Nothing
 **Risk**: Zero — additive
@@ -40,7 +40,7 @@ CREATE TABLE system_audit_logs (
 
 ---
 
-### T-003: Create dead_letter_queue table
+### [COMPLETED] T-003: Create dead_letter_queue table
 **File**: New Supabase migration
 **Depends on**: T-002
 **Risk**: Zero — additive
@@ -61,7 +61,7 @@ CREATE TABLE dead_letter_queue (
 
 ---
 
-### T-004: Add log_audit() utility function
+### [COMPLETED] T-004: Add log_audit() utility function
 **File**: `core/webhook/handler.py` (shared utils)
 **Depends on**: T-002
 **Risk**: Low — additive
@@ -82,7 +82,7 @@ def log_audit(function_name, event_type, message, raw_input=None):
 
 ---
 
-### T-005: Replace print() errors with log_audit() calls
+### [COMPLETED] T-005: Replace print() errors with log_audit() calls
 **File**: `core/webhook/handler.py`, `core/pulse/engine.py`
 **Depends on**: T-004
 **Risk**: Low
@@ -94,7 +94,7 @@ Scan for every `except` block and add `log_audit()` call before existing handlin
 
 ## Tier 1 — PIPELINE INTEGRITY (Week 2)
 
-### T-006: Introduce 'staged' → 'processed' state machine in raw_dumps
+### [COMPLETED] T-006: Introduce 'staged' → 'processed' state machine in raw_dumps
 **File**: `core/webhook/handler.py`, Supabase migration
 **Depends on**: T-001, T-004
 **Risk**: Medium — changes status values used in queries
@@ -131,7 +131,7 @@ Modify `handle_confident_note()`:
 
 ---
 
-### T-008: Janitor heartbeat GitHub Action
+### [COMPLETED] T-008: Janitor heartbeat GitHub Action
 **File**: `.github/workflows/janitor.yml`
 **Depends on**: T-006
 **Risk**: Low — read-only queries + Telegram alert
@@ -144,7 +144,7 @@ Alert format: `⚠️ Rhodey Janitor: {n} records stalled in pipeline. Check raw
 
 ## Tier 2 — MEMORY HARDENING (Month 1)
 
-### T-009: Temporal Lineage on tasks table
+### [COMPLETED] T-009: Temporal Lineage on tasks table
 **File**: New Supabase migration
 **Depends on**: T-006 stable for 2 weeks
 **Risk**: High — schema change to live table
@@ -163,7 +163,7 @@ Modify task update logic:
 
 ---
 
-### T-010: Temporal Lineage on canonical_pages
+### [COMPLETED] T-010: Temporal Lineage on canonical_pages
 **File**: Supabase migration
 **Depends on**: T-009 stable
 **Risk**: Medium — additive
@@ -173,7 +173,7 @@ Same `is_current` + `version` pattern. `brain_synth.py` writes a new page versio
 
 ---
 
-### T-011: Idempotency guard on raw_dumps insert
+### [COMPLETED] T-011: Idempotency guard on raw_dumps insert
 **File**: `core/webhook/handler.py`
 **Depends on**: T-006
 **Risk**: Low
@@ -458,3 +458,14 @@ This enables natural-language note capture without special syntax.
 **File**: `core/webhook/dispatch.py`, `core/webhook/classify.py`
 **Status**: Completed
 **Details**: Fixed `classify.py` so schedule questions with time ranges (e.g. "meetings this week?") route to `QUERY` instead of `DAILY_BRIEF`, enabling proper date range resolution. Added current-time injection and `[PAST]` tagging for calendar events in both `interrogate_brain()` and `handle_daily_brief()`. Applied strict output formatting (no invented headings, max 600 tokens, mandatory stop sequence) to both code paths.
+
+## Today's Changes (June 22, 2026)
+
+### T-500: Pipeline Integrity — Tier 0/1/2 Hardening
+**Status**: Completed
+**Details**: Finalized the last remaining Tier 0–2 backlog items that were already built in code but undocumented:
+- **raw_dumps status CHECK constraint applied**: Added SQL-level CHECK to enforce valid states (`pending`, `staged`, `processed`, `embedding_failed`, `noise`, `completed`).
+- **Temporal Lineage on tasks**: Created `trg_temporal_task_update` PostgreSQL trigger. BEFORE UPDATE inserts the old row as a historical record and increments version, preserving the primary key (no Google Calendar sync breakage).
+- **Temporal Lineage on canonical_pages**: Created `trg_temporal_canonical_pages_update` PostgreSQL trigger with same pattern. Brain synth now writes page versions instead of overwriting.
+- **memories table schema fix**: `supersedes_id`/`superseded_by` changed from `uuid` to `int8` to match the table's primary key type.
+- **Documentation synchronized**: All backlog items marked completed. AGENTS.md, speckit.*, and product-summary/ brought in sync with codebase reality.

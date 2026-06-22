@@ -583,8 +583,6 @@ async def hybrid_search_graph(query: str, node_id: str = None) -> str:
         if not nodes_res or not nodes_res.data:
             nodes_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{query}%').limit(1).execute()
 
-        # TODO: If match_graph_nodes RPC does not exist yet in Supabase,
-        # create it mirroring the match_memories pattern for graph_nodes table.
         if not nodes_res.data:
             try:
                 query_embedding = (await get_embedding(query)).vector

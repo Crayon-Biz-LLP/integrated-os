@@ -149,8 +149,8 @@ def _check_pending_label_exists(label: str) -> bool:
     return False
 
 def fetch_graph_entities():
-    nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata")
-    return {row["label"]: {"id": row["id"], "type": row["type"]} for row in (nodes or [])}
+    nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata, canonical_id")
+    return {row["label"]: {"id": row.get("canonical_id") or row["id"], "type": row["type"]} for row in (nodes or [])}
 
 def fetch_known_entities() -> set:
     nodes = fetch_all_paginated("graph_nodes", "label, type")

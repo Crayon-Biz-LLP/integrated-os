@@ -98,7 +98,14 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
     matched = existing_names.get(name_norm) if name_norm else None
     if matched is None:
         matched = existing_names.get(name_lower)
+        
     if matched is not None:
+        # Resolve canonical if it exists in graph
+        g_res = supabase.table("graph_nodes").select("canonical_id, db_record_id").eq("db_record_id", str(matched)).maybe_single().execute()
+        if g_res and g_res.data and g_res.data.get("canonical_id"):
+            c_res = supabase.table("graph_nodes").select("db_record_id").eq("id", g_res.data["canonical_id"]).maybe_single().execute()
+            if c_res and c_res.data and c_res.data.get("db_record_id"):
+                return int(c_res.data["db_record_id"])
         return matched
 
     from core.pulse.tools import create_person
@@ -501,29 +508,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
                 if is_blocklisted_person(linked_person_name):
                     print(f"Skipping blocklisted linked person: {linked_person_name}")
                 else:
-                    person_res = supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').maybe_single().execute()
-                    if getattr(person_res, 'data', None):
-                        linked_person_id = person_res.data['id']
-                    else:
-                        new_person = supabase.table('people').insert({
-                            "name": linked_person_name,
-                            "source": "email_ingest",
-                            "strategic_weight": 5
-                        }).execute()
-                        if new_person.data:
-                            linked_person_id = new_person.data[0]['id']
-                            supabase.table('graph_nodes').upsert({
-                                "label": linked_person_name,
-                                "type": "person",
-                                "epistemic_status": "inferred",
-                                "db_record_id": str(linked_person_id),
-                                "metadata": {
-                                    "source": "email_ingest",
-                                    "people_id": str(linked_person_id)
-                                }
-                            }, on_conflict="label").execute()
-                            print(f"Added linked person from email: {linked_person_name}")
-                            print(f"  → graph_nodes entry created for {linked_person_name}")
+                    linked_person_id = await add_person_from_email(linked_person_name, None, source="email_ingest_linked")
 
             is_human = classification_data.get('is_human_sender', False)
             if is_human:

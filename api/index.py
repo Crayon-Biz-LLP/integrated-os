@@ -1021,7 +1021,7 @@ async def graph_node_manual_merge_route(request: Request):
                     supabase.table('people').update({'role': new_role, 'strategic_weight': 0}).eq('id', s_people_id).execute()
             
             # Canonicalise and rewire live edges
-            supabase.table('graph_nodes').update({'canonical_id': winner_id}).eq('id', loser_id).execute()
+            supabase.table('graph_nodes').update({'canonical_id': winner_id, 'epistemic_status': 'merged'}).eq('id', loser_id).execute()
             
             # Repoint pending edges referencing the merged source label
             supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', source_label).execute()
@@ -1036,8 +1036,7 @@ async def graph_node_manual_merge_route(request: Request):
                         ctx['linked_entity'] = target_label
                         supabase.table('pending_graph_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
             
-            # Delete source live node
-            supabase.table('graph_nodes').delete().eq('id', loser_id).execute()
+            # Do NOT delete source live node, keep it as a canonical alias pointer
             return {"success": True, "message": f"Merged live '{source_label}' into '{target_label}'"}
             
         # Source node (pending)
@@ -1107,9 +1106,10 @@ async def graph_node_manual_merge_route(request: Request):
                         old_role = p_res.data.get('role') or ""
                         supabase.table('people').update({'role': f"{old_role} [MERGED INTO: {target_label}]".strip(), 'strategic_weight': 0}).eq('id', s_pid).execute()
                         
-                supabase.table('graph_nodes').delete().eq('id', s_live_id).execute()
+                # Update as merged alias instead of deleting
+                supabase.table('graph_nodes').update({'canonical_id': target_id, 'epistemic_status': 'merged'}).eq('id', s_live_id).execute()
             else:
-                # If target is not a live node, just delete the live source to prevent orphans, 
+                # If target is not a live node, we can't set canonical_id yet. We just delete the live source to prevent orphans, 
                 # but ideally we merge it into the new live target later.
                 supabase.table('graph_nodes').delete().eq('id', s_live_id).execute()
         # --------------------------------------------------------------------------------------
@@ -1325,8 +1325,9 @@ async def graph_nodes_live_route(request: Request):
         res = supabase.table('graph_nodes') \
             .select('id, label, type, created_at') \
             .in_('type', entity_types) \
+            .is_('canonical_id', 'null') \
             .order('created_at', desc=True) \
-            .limit(1000) \
+            .limit(5000) \
             .execute()
         return {"data": res.data or []}
     except Exception as e:

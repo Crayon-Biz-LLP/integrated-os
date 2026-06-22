@@ -221,9 +221,16 @@ def create_person(name: str, context: str):
         if existing_node and existing_node.data:
             return f"Person '{name}' already pending approval (ID: {existing_node.data['id']})."
 
-        existing_live = supabase.table('graph_nodes').select('id').eq('label', name).eq('type', 'person').maybe_single().execute()
+        existing_live = supabase.table('graph_nodes').select('id, db_record_id, canonical_id').eq('label', name).eq('type', 'person').maybe_single().execute()
         if existing_live and existing_live.data:
-            return f"Person '{name}' already exists in graph."
+            if existing_live.data.get('canonical_id'):
+                from core.lib.graph_rules import get_canonical_id
+                c_id = get_canonical_id(existing_live.data['id'])
+                c_node = supabase.table('graph_nodes').select('db_record_id').eq('id', c_id).maybe_single().execute()
+                if c_node and c_node.data and c_node.data.get('db_record_id'):
+                    return f"Person '{name}' was merged. ID {c_node.data['db_record_id']}"
+            db_id = existing_live.data.get('db_record_id')
+            return f"Person '{name}' already exists in graph.{' ID ' + str(db_id) if db_id else ''}"
 
         res = supabase.table('pending_graph_nodes').insert({
             "label": name,

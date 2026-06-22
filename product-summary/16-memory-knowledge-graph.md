@@ -87,7 +87,7 @@ The graph is stored in two tables:
 - `graph_nodes` — vertices with type and label
 - `graph_edges` — directed edges with relationship type and weight
 
-### Node Types (5 types only)
+### Node Types (5 core + concept)
 
 | Type | Created By | Metadata |
 |------|-----------|----------|
@@ -96,10 +96,13 @@ The graph is stored in two tables:
 | `project` | Graph approval flow | project_id, org_tag |
 | `place` | Backfill extraction | source |
 | `animal` | Backfill extraction | source |
+| `concept` | Concept sweep batch + HITL approval | Deduped via 85%+ similarity check |
 
-**Removed types:** `concept`, `emotional_state`, `resource`, `task`, `practice`, `cluster` — these were either junk drawers (concept, emotional_state) or have dedicated tables (resource, task).
+**Concept Fluidity (Synaptic Plasticity):** Abstract `concept` nodes were re-introduced after the June ontology overhaul. They are extracted via `concept_sweep_batch.py` from historical memories and flow through the same HITL pipeline as person/org/project nodes. A proactive `find_similar_node()` check at 85%+ similarity offers a 1-click `[Merge into this]` button, preventing label drift.
 
-### Edge Types (16 types only)
+**Removed types that stay removed:** `emotional_state`, `resource`, `task`, `practice`, `cluster` — these were either junk drawers or have dedicated tables.
+
+### Edge Types (16 core + 3 concept)
 
 | Relationship | Source → Target | Valid For |
 |-------------|----------------|-----------|
@@ -121,6 +124,16 @@ The graph is stored in two tables:
 | `SERVES_AT` | Person → Organization | Ministry / volunteer role |
 
 **Banned types (removed):** `RELATES_TO`, `BELONGS_TO`, `AUTHORED`, `FEELS`, `INVOLVES`, `OWNS` — these were catch-all junk drawers. `OWNS` is still used programmatically by the node approval flow (Danny → OWNS → Project), but is excluded from the extraction prompt.
+
+### Concept Edge Types (3 types)
+
+In addition to the 16 core types, `concept` nodes have their own relationship vocabulary:
+
+| Relationship | Source → Target | Purpose |
+|-------------|----------------|---------|
+| `EVOKES` | Concept → Concept | One concept reminds the system of another |
+| `RELATES_TO` | Concept → Concept | General thematic connection |
+| `ASSOCIATED_WITH` | Concept → Entity | Abstract concept linked to a concrete entity |
 
 ### Human-in-the-Loop Approval Pipeline
 
@@ -175,9 +188,9 @@ The `people` table now has a `graph_node_id` FK → `graph_nodes.id` for person-
 
 1. **Guard A: Orphaned BELONGS_TO edge cleanup** — When a task's project_id changes, stale edges are deleted before new ones are inserted.
 2. **Guard B: Text-anchoring validation** — Node labels must appear verbatim in source text.
-3. **HITL: Pending approval** — All edges and high-risk nodes (person, organization, project) require manual approval before reaching the live graph.
+3. **HITL: Pending approval** — All edges and high-risk nodes (person, organization, project, concept) require manual approval before reaching the live graph.
 4. **Guard D: Dedup** — Unique index on `lower(trim(label))` prevents label-drift re-insertion in `pending_graph_nodes`.
-5. **No auto-created concept nodes:** Edge approval no longer creates `concept` nodes for missing labels — missing labels generate a rejection with guidance to create the node first.
+5. **Concept Fluidity:** Abstract `concept` nodes are supported but never auto-created. They flow through `pending_graph_nodes` with 85%+ similarity dedup detection and 1-click merge confirmation. Concept edge types (`EVOKES`, `RELATES_TO`, `ASSOCIATED_WITH`) are part of the `VALID_EDGE_MATRIX`.
 
 ### Session Memory (Cross-Pulse Continuity)
 

@@ -25,11 +25,17 @@
 - **LLM Layer fully consolidated**: All API clients (Supabase, Gemini, Google) created once from canonical modules. Multi-key Gemini failover (3 keys). Unified fallback chain. Single rate limiter. Shared pending decision handler for call/whatsapp/teams channels.
 - **Associative retrieval engine fully deployed**: 7-signal ranking (semantic, PPR, recency, importance, project, specificity, person_boost) replaces legacy pgvector-only `match_memories_hybrid`. 7 dedicated retrieval tables (passages, phrase_nodes, node_stats, passage_phrase_links, memory_bundle_links, alias_edges, index_runs). 470 memories indexed, 633 passages, 1305 phrase nodes, 3760 alias edges. Cold path 3.5–5.0s, warm path 1.8–3.5s. 4 per-site feature flags all ON in production. Forward indexing live for all new memories via `schedule_index_memory()`. Redis caching (1h LLM, 24h embeddings) with multi-key failover on 429 errors.
 - **Brain Graph (Danny-centered)**: Split-pane graph page replaces legacy FullGraph. Left: Episode Stream (clustered memories grouped by entity/source/time, not raw fragments). Right: NeuralDisc (PixiJS v8 WebGL force-directed graph). Danny loads as permanent root. Node/background click, zoom/pan, collapsible sidebar. Backend: `/api/graph/ego`, `/api/graph/neighborhood`, `/api/graph/resolve-memory`, `/api/episodes/stream`. Infinite loop in PIXI scene rebuild fixed via ref-based callbacks and reduced dep array.
+- **Concept Fluidity (Synaptic Plasticity)**: Ontology supports `concept` nodes with `EVOKES`, `RELATES_TO`, `ASSOCIATED_WITH` edge types. Abstract concepts extracted from 416 historical memories via `concept_sweep_batch.py`. All concept nodes guarded by HITL approval with 85%+ similarity dedup and 1-click merge.
+- **Clarifier Phase 2 (Live)**: Full disambiguation engine for graph nodes — 85%+ similarity triggers Telegram questions, 95%+ triggers auto-merge confirmation, edge contradiction detection, low-confidence (<0.7) edge verification, concept alias dedup.
+- **Pipeline Integrity**: Raw dumps state machine (`staged` → `processed`/`embedding_failed`), `system_audit_logs` table, `dead_letter_queue` table, `log_audit()`/`write_dlq()` utilities, idempotency guard on raw_dumps insert, `is_recent_raw_dump()` check.
+- **Temporal Lineage**: PostgreSQL BEFORE UPDATE triggers on `tasks` and `canonical_pages` tables preserve history without breaking primary keys. Old rows archived as `is_current=false` with incremented version. Memories table also has `is_current`/`version`/`supersedes_id` columns (now correctly typed `int8`).
+- **Frontend Pages**: Fully built Calendar (Day/Week/Month/Agenda views with Google+Outlook sources), Messages (Telegram-style chat interface with auto-scroll, metadata parsing), and Graph (split-pane NeuralDisc + Episode Stream).
 
 ### What is broken or incomplete
 - **MISSING**: No Decisions table (P3) — decisions are implicit in tasks/briefings
-- **MISSING**: No graph edge expiry (P4) — edges older than 6 months may be stale
+- **MISSING**: No graph edge expiry (P4) — edges older than 6 months may be stale  
 - **MISSING**: People table enrichment (P5) — org, last_interaction_date, notes columns not yet populated
+- **DEFERRED**: Graph UI polish — PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range
 
 ---
 
@@ -37,7 +43,7 @@
 
 ---
 
-### SPEC-001: Atomic raw_dumps Pipeline
+### SPEC-001: Atomic raw_dumps Pipeline [COMPLETED]
 
 **What**: Separate the capture step from the embedding/memory step. Capture must always succeed. Embedding may fail gracefully.
 
@@ -55,7 +61,7 @@
 
 ---
 
-### SPEC-002: system_audit_logs
+### SPEC-002: system_audit_logs [COMPLETED]
 
 **What**: Replace all `print(f"...")` error logging with structured writes to a Supabase table.
 
@@ -72,7 +78,7 @@
 
 ---
 
-### SPEC-003: dead_letter_queue
+### SPEC-003: dead_letter_queue [COMPLETED]
 
 **What**: A dedicated table for records that have failed processing after the maximum retry count.
 
@@ -89,7 +95,7 @@
 
 ---
 
-### SPEC-004: Janitor Heartbeat
+### SPEC-004: Janitor Heartbeat [COMPLETED]
 
 **What**: A scheduled cron job that monitors pipeline health and alerts Danny via Telegram if records are stalling.
 
@@ -107,7 +113,7 @@
 
 ---
 
-### SPEC-005: Backfill — Recover 41 Orphaned Notes
+### SPEC-005: Backfill — Recover 41 Orphaned Notes [COMPLETED]
 
 **What**: A one-time migration script to recover the 41 `raw_dumps` records that are marked `completed` but have no corresponding `memories` entry.
 
@@ -125,14 +131,15 @@
 
 ---
 
-### SPEC-006: Graph Integrity — Guards + Human-in-the-Loop (OVERHAULED June 12)
+### SPEC-006: Graph Integrity — Guards + Human-in-the-Loop + Concept Fluidity [COMPLETED]
 
-**What**: Four-layer defence against bad graph data, plus HITL for ALL pending edges and high-risk nodes.
+**What**: Four-layer defence against bad graph data, plus HITL for ALL pending edges and high-risk nodes. Concept nodes re-introduced via Synaptic Plasticity upgrade.
 
 **Why**: The original spec (Guard A/B/HITL) was insufficient — 699 junk nodes (concept, emotional_state, resource) accumulated via auto-create. The ontology has been rebuilt from scratch. Key problems fixed:
 - `raw_dumps` excluded from graph extraction (100% hallucinated edges)
 - Catch-all relationship types removed (RELATES_TO, BELONGS_TO, AUTHORED, FEELS, INVOLVES)
-- No more concept/emotional_state auto-creation during edge approval
+- Concept nodes re-introduced under strict HITL control via Concept Fluidity upgrade (T-401)
+- No concept auto-creation during edge approval — all go through pending tables with 85%+ dedup
 - Emotions moved to memory metadata (sentiment fields), not graph
 - Edge approval flow also added: all edges go through `pending_graph_edges` table with inline editing UI
 
@@ -155,6 +162,13 @@
 - Decisions UI (`/dashboard/decisions`) shows Graph Edges tab with Approve/Edit/Reject
 - `_resolve_node()` in `graph.py` returns None instead of auto-creating `concept` nodes for missing labels
 - Both tables have RLS enabled
+
+**Concept Fluidity (Synaptic Plasticity) [ADDED]:**
+- Ontology supports `concept` nodes with `EVOKES`, `RELATES_TO`, `ASSOCIATED_WITH` edge types
+- `concept_sweep_batch.py` extracts abstract concepts from historical memories
+- All concept nodes pass through the same HITL flow: pending table → approval via `g{id}` shortcode
+- Deduped via 85%+ similarity detection with 1-click merge confirmation
+- No concept auto-creation: all go through `pending_graph_nodes` with explicit approval
 
 **Guard D — Label-Drift Dedup (unchanged, extended to edges):**
 - `fetch_pending_entities()` loads labels across ALL statuses

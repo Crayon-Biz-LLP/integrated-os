@@ -4,83 +4,52 @@ Integrated-OS is built with the expectation that everything will fail eventually
 
 ## Temporal Lineage & Versioning
 
-The most fundamental resilience pattern. Instead of updating records in-place, the system creates new versions and marks old ones as `is_current=False`.
+The most fundamental resilience pattern. Instead of updating records in-place, the system creates new versions and marks old ones as `is_current=False`. This is enforced at the **database level** via PostgreSQL `BEFORE UPDATE` triggers, not in application code.
 
 ### How It Works
 
-For tasks, memories, projects, and canonical_pages:
+Active tables: `tasks` and `canonical_pages` have database triggers (`trg_temporal_task_update`, `trg_temporal_canonical_pages_update`). When any code path (Python webhook, Next.js API, direct SQL) runs an `UPDATE`:
 
-```python
-# 1. Fetch current record
-current = supabase.table(table_name).select('*').eq('id', record_id).execute()
+1. The `BEFORE UPDATE` trigger fires on the old row.
+2. It inserts the old state as a new row with `is_current = false` and the same version number.
+3. The actual `UPDATE` on the active row increments `version` by 1 and sets `supersedes_id` to the ID of the archived row.
 
-# 2. Build new record with incremented version
-new_record = {**old_record_fields, **update_data, 
-              'version': old_version + 1,
-              'is_current': True,
-              'supersedes_id': record_id}
+The active row's **primary key never changes** — ensuring Google Calendar sync mappings, React keys in the frontend, and graph edge references remain intact.
 
-# 3. Insert new, mark old as superseded
-supabase.table(table_name).insert(new_record).execute()
-supabase.table(table_name).update({"is_current": False}).eq('id', record_id).execute()
-```
+The `memories` table has the same columns (`is_current`, `version`, `supersedes_id`, `superseded_by`) correctly typed as `int8`, ready for trigger deployment.
 
-### Time-Travel Queries
+### Key Implementation Detail
 
-The `get_memory_at_time()` RPC walks the `supersedes_id` chain to reconstruct what a record looked like at any point in the past:
-
-```sql
--- Walk the supersedes chain to find the version active at query_time
-WITH RECURSIVE version_chain AS (
-    SELECT * FROM memories WHERE id = memory_id
-    UNION ALL
-    SELECT m.* FROM memories m
-    JOIN version_chain vc ON m.id = vc.supersedes_id
-    WHERE m.created_at <= query_time
-)
-SELECT * FROM version_chain ORDER BY created_at DESC LIMIT 1;
-```
+The trigger uses `pg_trigger_depth() = 0` to prevent cascading re-entry — if the trigger's INSERT of the historical record fires any other triggers, they are ignored.
 
 ### Drift Detection
 
 The `detect_drift()` RPC counts how many times a project has been updated in the last N hours — if it's 3+ times in 48 hours, it flags as a potential bottleneck.
 
-### Fallback to Direct Update
-
-If versioned_update fails (e.g., the `supersedes_id` column doesn't exist), the system gracefully falls back to a direct in-place update:
-
-```python
-except Exception as e:
-    audit_log_sync("db", "WARNING", f"Versioned update failed, falling back: {e}")
-    supabase.table(table_name).update(fallback_data).eq('id', record_id).execute()
-```
-
 ## Dead Letter Queue
 
-Failed operations don't crash the system — they go to the `failed_queue` table with automatic retry.
+Failed operations don't crash the system — they go to the `dead_letter_queue` table with retry tracking via `write_dlq()` in `core/lib/audit_logger.py`.
 
 ### Schema
 
 | Column | Purpose |
 |--------|---------|
-| `source_table` | Which table had the error (memories, raw_dumps, graph_edges) |
-| `source_id` | The record's ID |
-| `operation` | What failed (embedding, graph_extract, memory_insert) |
-| `error_message` | The error description (truncated to 500 chars) |
+| `source_table` | Which table had the error (raw_dumps) |
+| `source_id` | The record's ID (UUID) |
+| `content` | The raw content that failed (truncated to 2000 chars) |
+| `failure_reason` | The error description (truncated to 1000 chars) |
 | `retry_count` | Incremented on each retry attempt |
-| `last_retry_at` | When it was last retried |
+| `resolved` | Boolean, set to TRUE when Danny resolves via `/dlq resolve <id>` |
 
-### Retry with Exponential Backoff
+### Usage
 
-Retries happen in two places:
+Writes to the DLQ happen in `handle_confident_note()` when embedding fails:
+```python
+from core.lib.audit_logger import write_dlq
+write_dlq('raw_dumps', str(dump_id), text, 'Embedding failed or returned null vector')
+```
 
-1. **Pipeline service retry** (`pipeline_service.py:91-113`): Increments `retry_count`, updates `last_retry_at`, attempts re-processing
-2. **Pipeline health retry** (`pipeline.py:106-189`): Handles `embedding` and `memory_insert` operations with exponential backoff
-
-### Operations That Use the DLQ
-
-- Failed embedding generation → queued as `operation='embedding'`
-- Failed memory insert → queued as `operation='memory_insert'`
+Each DLQ write also logs to `system_audit_logs` via `log_audit()` for full traceability.
 
 ## Zombie Recovery
 
