@@ -117,16 +117,13 @@ async def synth_entity(project_id, entity_name, org_tag):
         try:
             from core.retrieval.search import search_memories_compat
             # Use associative=True to get 7-signal ranking including project boost
-            mem = await asyncio.to_thread(
-                asyncio.run,
-                search_memories_compat(
-                    query_text=entity_name,
-                    top_k=30,
-                    threshold=0.5,
-                    recency_weight=0.3,
-                    importance_weight=0.2,
-                    use_associative=True
-                )
+            mem = await search_memories_compat(
+                query_text=entity_name,
+                top_k=30,
+                threshold=0.5,
+                recency_weight=0.3,
+                importance_weight=0.2,
+                use_associative=True
             )
             if mem:
                 # Still apply strict word filter as a safety net
@@ -316,12 +313,15 @@ async def run_batch_sweep_v2():
         for payload in gathered_payloads:
             if payload:
                 if payload.get("archive"):
-                    # Archive pages that fell below threshold
-                    supabase.table('canonical_pages') \
-                        .update({"is_current": False}) \
-                        .eq('id', payload['existing_id']) \
-                        .execute()
-                    print(f"Master Page Archived: {payload['entity']} — below threshold.")
+                    if payload.get("existing_id"):
+                        # Archive pages that fell below threshold
+                        supabase.table('canonical_pages') \
+                            .update({"is_current": False}) \
+                            .eq('id', payload['existing_id']) \
+                            .execute()
+                        print(f"Master Page Archived: {payload['entity']} — below threshold.")
+                    else:
+                        print(f"Skipping {payload['entity']} — below threshold, no existing page to archive.")
                 else:
                     batch_payload.append(payload)
 
