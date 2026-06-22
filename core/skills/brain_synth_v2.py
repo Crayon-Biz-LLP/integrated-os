@@ -87,7 +87,33 @@ async def fetch_entity_graph_edges(entity_name: str, max_edges=20):
             .limit(max_edges) \
             .execute()
             
-        return edges.data or []
+        if not edges.data:
+            return []
+            
+        node_ids = set()
+        for e in edges.data:
+            node_ids.add(e['source_node_id'])
+            node_ids.add(e['target_node_id'])
+            
+        nodes_res = supabase.table('graph_nodes') \
+            .select('id, label') \
+            .in_('id', list(node_ids)) \
+            .execute()
+            
+        id_to_label = {n['id']: n.get('label', 'Unknown') for n in (nodes_res.data or [])}
+        
+        resolved_edges = []
+        for e in edges.data:
+            src_label = id_to_label.get(e['source_node_id'], 'Unknown')
+            tgt_label = id_to_label.get(e['target_node_id'], 'Unknown')
+            predicate = (e.get('metadata') or {}).get('predicate_text', '')
+            rel = predicate if predicate else e.get('relationship_type', '')
+            resolved_edges.append({
+                "description": f"{src_label} → {rel} → {tgt_label}",
+                "created_at": e.get('created_at')
+            })
+            
+        return resolved_edges
     except Exception as e:
         print(f"Graph context error for {entity_name}: {e}")
         return []
@@ -95,12 +121,28 @@ async def fetch_entity_graph_edges(entity_name: str, max_edges=20):
 async def synth_entity(project_id, entity_name, org_tag):
     async with entity_sem:
         print(f"  Gathering fragments for {entity_name}...")
+        
+        # Fetch existing page first to get last_synth_at
+        try:
+            existing = supabase.table('canonical_pages') \
+                .select('id, content, last_synth_at') \
+                .eq('title', entity_name) \
+                .eq('is_current', True) \
+                .limit(1).execute()
+            existing_content = existing.data[0]["content"] if existing.data else None
+            existing_id = existing.data[0]["id"] if existing.data else None
+            last_synth_at = parse_iso(existing.data[0]["last_synth_at"]) if existing.data and existing.data[0].get("last_synth_at") else datetime.min.replace(tzinfo=timezone.utc)
+        except Exception as e:
+            print(f"  [Error] Failed to fetch canonical page for {entity_name}: {e}")
+            existing_content, existing_id, last_synth_at = None, None, datetime.min.replace(tzinfo=timezone.utc)
+
         all_fragments = []
         seen_hashes = set()
         newest_timestamp = datetime.min.replace(tzinfo=timezone.utc)
+        new_fragment_count = 0
 
         def add_fragment(prefix: str, text: str, ts: datetime):
-            nonlocal newest_timestamp
+            nonlocal newest_timestamp, new_fragment_count
             if ts and ts > newest_timestamp:
                 newest_timestamp = ts
                 
@@ -109,6 +151,8 @@ async def synth_entity(project_id, entity_name, org_tag):
             if h not in seen_hashes and normalized and not normalized.startswith("http"):
                 seen_hashes.add(h)
                 all_fragments.append(f"[{prefix}] {text}")
+                if ts and ts > last_synth_at:
+                    new_fragment_count += 1
 
         entity_embedding_res = await get_embedding(entity_name)
         entity_embedding = entity_embedding_res.vector if entity_embedding_res else None
@@ -130,7 +174,7 @@ async def synth_entity(project_id, entity_name, org_tag):
                 filtered_mem = filter_fragments_by_project_strict(mem, entity_name)
                 for f in filtered_mem:
                     ts = parse_iso(f.get('created_at'))
-                    add_fragment("MEMORY", f.get('content', ''), ts)
+                    add_fragment("memory", f.get('content', ''), ts)
         except Exception as e:
             print(f"  [Error] Memories failed for {entity_name}: {e}")
 
@@ -141,7 +185,7 @@ async def synth_entity(project_id, entity_name, org_tag):
             if tasks_res.data:
                 for t in tasks_res.data:
                     ts = parse_iso(t.get('updated_at') or t.get('created_at'))
-                    add_fragment(f"TASK/{t['status'].upper()}", t['title'], ts)
+                    add_fragment("task", f"({t['status'].upper()}) {t['title']}", ts)
         except Exception as e:
             print(f"  [Error] Tasks failed for {entity_name}: {e}")
 
@@ -154,14 +198,11 @@ async def synth_entity(project_id, entity_name, org_tag):
                     'match_count': 20
                 }).execute()
                 if resources_res.data:
-                    # Filter by project_id if present, else fallback to strict word filter
                     for r in resources_res.data:
-                        # Assuming the RPC doesn't return project_id, we just use strict word filter
-                        # If we wanted to check project_id, we'd need another query or an updated RPC
                         filtered = filter_fragments_by_project_strict([r], entity_name)
                         if filtered:
                             ts = parse_iso(r.get('enriched_at') or r.get('created_at'))
-                            add_fragment("RESOURCE", f"{r['title']} — {r.get('summary', '')}", ts)
+                            add_fragment("resource", f"{r['title']} — {r.get('summary', '')}", ts)
             except Exception as e:
                 print(f"  [Error] Resources failed for {entity_name}: {e}")
 
@@ -177,7 +218,7 @@ async def synth_entity(project_id, entity_name, org_tag):
                     filtered_dumps = filter_fragments_by_project_strict(dumps_res.data, entity_name)
                     for d in filtered_dumps:
                         ts = parse_iso(d.get('created_at'))
-                        add_fragment("DUMP", d.get('content', ''), ts)
+                        add_fragment("dump", d.get('content', ''), ts)
             except Exception as e:
                 print(f"  [Error] Raw Dumps failed for {entity_name}: {e}")
 
@@ -193,7 +234,7 @@ async def synth_entity(project_id, entity_name, org_tag):
                     filtered_emails = filter_fragments_by_project_strict(emails_res.data, entity_name)
                     for m in filtered_emails:
                         ts = parse_iso(m.get('received_at'))
-                        add_fragment("EMAIL", f"{m.get('subject', '')} — {m.get('body_summary', '')}", ts)
+                        add_fragment("email", f"{m.get('subject', '')} — {m.get('body_summary', '')}", ts)
             except Exception as e:
                 print(f"  [Error] Emails failed for {entity_name}: {e}")
 
@@ -209,7 +250,7 @@ async def synth_entity(project_id, entity_name, org_tag):
                     filtered_wa = filter_fragments_by_project_strict(wa_res.data, entity_name)
                     for m in filtered_wa:
                         ts = parse_iso(m.get('received_at'))
-                        add_fragment("WHATSAPP", m.get('message_text', ''), ts)
+                        add_fragment("whatsapp", m.get('message_text', ''), ts)
             except Exception as e:
                 print(f"  [Error] WhatsApp failed for {entity_name}: {e}")
 
@@ -221,14 +262,7 @@ async def synth_entity(project_id, entity_name, org_tag):
                 ts = parse_iso(e.get('created_at'))
                 if ts > newest_timestamp:
                     newest_timestamp = ts
-                
-                meta = e.get('metadata') or {}
-                predicate = meta.get('predicate_text', '')
-                if predicate:
-                    rel_desc = f"{e.get('relationship_type')} ({predicate})"
-                else:
-                    rel_desc = e.get('relationship_type')
-                graph_context.append(f"Edge: {rel_desc}")
+                graph_context.append(f"- {e['description']} [graph]")
         except Exception as e:
             print(f"  [Error] Graph edges failed for {entity_name}: {e}")
 
@@ -245,25 +279,11 @@ async def synth_entity(project_id, entity_name, org_tag):
                         .eq('project_id', child['id']).execute()
                     for t in child_tasks.data or []:
                         ts = parse_iso(t.get('updated_at') or t.get('created_at'))
-                        add_fragment(f"CHILD_TASK/{t['status'].upper()}", f"[{child['name']}] {t['title']}", ts)
+                        add_fragment("task", f"[{child['name']}] ({t['status'].upper()}) {t['title']}", ts)
             except Exception as e:
                 print(f"  [Error] Child tasks failed for {entity_name}: {e}")
 
         is_parent = org_tag in PARENT_ORG_TAGS and entity_name.lower() == org_tag.lower()
-
-        # Existing page
-        try:
-            existing = supabase.table('canonical_pages') \
-                .select('id, content, last_synth_at') \
-                .eq('project_id', project_id) \
-                .eq('is_current', True) \
-                .limit(1).execute()
-            existing_content = existing.data[0]["content"] if existing.data else None
-            existing_id = existing.data[0]["id"] if existing.data else None
-            last_synth_at = parse_iso(existing.data[0]["last_synth_at"]) if existing.data and existing.data[0].get("last_synth_at") else datetime.min.replace(tzinfo=timezone.utc)
-        except Exception as e:
-            print(f"  [Error] Failed to fetch canonical page for {entity_name}: {e}")
-            existing_content, existing_id, last_synth_at = None, None, datetime.min.replace(tzinfo=timezone.utc)
 
         # Incremental skip logic
         if existing_id and newest_timestamp <= last_synth_at and not is_parent:
@@ -284,6 +304,7 @@ async def synth_entity(project_id, entity_name, org_tag):
             "existing_page": existing_content or "No existing page — create from scratch.",
             "new_fragments": all_fragments,
             "fragment_count": len(all_fragments),
+            "new_fragment_count": new_fragment_count,
             "existing_id": existing_id,
             "graph_context": graph_context
         }
@@ -367,9 +388,26 @@ OBJECTIVE: {prompt_objective}
 
 RULES:
 - {scope_rules}
-- CORRECT: If new fragments contradict the existing page, update with newer information.
+- IMPORTANT: Preserve existing section content unless a new fragment directly contradicts or updates it. Add to sections, don't replace them.
 - SPARSE GUARD: Output MUST be at least 300 characters. If fragments are thin, preserve the existing page as-is.
-- FORMAT: Clean Markdown with headers and bullets.
+- FORMAT: You MUST follow this exact Markdown structure:
+  _Synthesized {datetime.now(timezone.utc).strftime("%b %d, %Y")} · {entry['fragment_count']} sources · {entry['new_fragment_count']} new since last run_
+  
+  ## Status
+  (Active / Winding down / On hold — one sentence summary)
+  
+  ## Recent Activity
+  (New developments since last synthesis)
+  
+  ## Key People
+  (People connected via graph edges, with roles)
+  
+  ## Active Tasks
+  (Open tasks with status)
+  
+  ## Decisions & Notes
+  (Key decisions, context, blockers)
+- CITATIONS: Tag claims with their fragment source type at the end of the bullet point, like: [memory], [email], [whatsapp], [task], [resource], [graph].
 - OUTPUT: Return ONLY the raw Markdown string. No JSON wrapper.
 
 EXISTING PAGE:

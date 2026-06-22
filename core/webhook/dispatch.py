@@ -844,7 +844,7 @@ Query: {query}"""
             try:
                 res = supabase.table('canonical_pages').select('title, content').ilike('title', f"%{search_val}%").limit(1).execute()
                 if res.data:
-                    c = res.data[0].get('content', '')[:500]
+                    c = res.data[0].get('content', '')[:2000]
                     return f"{res.data[0].get('title')}:\n{c}..."
             except Exception:
                 pass
