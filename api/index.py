@@ -162,7 +162,7 @@ async def roundup_route(request: Request):
         
         notes_res = supabase.table('memories') \
             .select('id') \
-            .in_('memory_type', ['note', 'Journal', 'relationship_note']) \
+            .in_('memory_type', ['note', 'Journal']) \
             .gte('created_at', start_of_day.isoformat()) \
             .execute()
             
