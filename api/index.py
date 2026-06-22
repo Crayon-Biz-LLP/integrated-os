@@ -161,13 +161,15 @@ async def roundup_route(request: Request):
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
         
         notes_res = supabase.table('memories') \
-            .select('id') \
+            .select('id, content') \
             .in_('memory_type', ['note', 'Journal']) \
             .gte('created_at', start_of_day.isoformat()) \
             .execute()
             
-        if notes_res.data and len(notes_res.data) >= 3:
-            return {"success": True, "message": "Already captured enough notes today. Skipping prompt."}
+        if notes_res.data:
+            text_notes = [n for n in notes_res.data if not n.get('content', '').strip().startswith('http')]
+            if len(text_notes) >= 3:
+                return {"success": True, "message": "Already captured enough notes today. Skipping prompt."}
             
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         if not chat_id:
