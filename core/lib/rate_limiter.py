@@ -113,3 +113,6 @@ flash_lite_limiter = MultiKeyLimiter(prefix="flash_lite", max_rpm_per_key=13)
 
 # Gemini 3.5 Flash (Free tier: 5 RPM). We use 4 for safety.
 flash_3_5_limiter = MultiKeyLimiter(prefix="flash_3_5", max_rpm_per_key=4)
+
+# Gemini Embedding (Free tier: 1500 RPM). We use 1400 for safety.
+embedding_limiter = MultiKeyLimiter(prefix="embedding", max_rpm_per_key=1400)

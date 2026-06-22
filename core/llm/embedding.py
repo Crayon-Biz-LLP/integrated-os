@@ -30,9 +30,14 @@ async def get_embedding(text: str) -> EmbeddingResult:
     workload = WorkloadProfile.EMBEDDING
     max_retries = 3
     
-    def _call():
+    from core.lib.rate_limiter import embedding_limiter
+    
+    def _call(c_idx: int):
         from .client import get_gemini_clients
         clients = get_gemini_clients()
+        if clients:
+            clients = clients[c_idx:] + clients[:c_idx]
+            
         last_error = None
         for client in clients:
             try:
@@ -56,8 +61,9 @@ async def get_embedding(text: str) -> EmbeddingResult:
         
     for attempt in range(max_retries):
         try:
+            client_idx = await embedding_limiter.acquire_async()
             result = await asyncio.wait_for(
-                asyncio.to_thread(_call),
+                asyncio.to_thread(_call, client_idx),
                 timeout=workload.timeout_s
             )
             

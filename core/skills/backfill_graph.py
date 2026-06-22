@@ -226,22 +226,23 @@ def backfill_embeddings():
 
     success = 0
     failed = 0
-
-    for i, row in enumerate(all_rows):
+    
+    def process_mem_embed(i, row):
+        nonlocal success, failed
         memory_id = row["id"]
         content = synthesize_content(row)
 
         if not content.strip():
             print(f"  [{i+1}/{total}] Skipping {memory_id} — empty content.")
             failed += 1
-            continue
+            return
 
         embedding = get_embedding_sync(content)
 
         if not embedding:
             audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ Embedding failed for {memory_id}")
             failed += 1
-            continue
+            return
 
         try:
             with_retry(
@@ -254,18 +255,20 @@ def backfill_embeddings():
             print(f"  [{i+1}/{total}] ✅ Patched embedding for {memory_id} ({row['memory_type']})")
             success += 1
         except Exception as e:
-            # Mark as failed
             try:
                 supabase.table("memories").update({"embedding_status": "failed"}).eq("id", memory_id).execute()
             except Exception:
                 pass
             
-            
             audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ DB update failed for {memory_id}: {e}")
             failed += 1
 
-        # Small delay to stay within Gemini rate limits
-        time.sleep(0.3)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = []
+        for i, row in enumerate(all_rows):
+            futures.append(executor.submit(process_mem_embed, i, row))
+        for future in as_completed(futures):
+            future.result()
 
     audit_log_sync("backfill_graph", "ERROR", f"\n🏁 Embedding backfill complete! ✅ Success: {success}  ❌ Failed: {failed}")
 
