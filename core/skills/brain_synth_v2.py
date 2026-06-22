@@ -69,23 +69,27 @@ async def fetch_entity_graph_edges(entity_name: str, max_edges=20):
         if not entity_embedding_res or not entity_embedding_res.vector:
             return []
             
-        nodes = supabase.rpc('match_graph_nodes', {
-            'query_embedding': entity_embedding_res.vector,
-            'match_threshold': 0.7,
-            'match_count': 1
-        }).execute()
+        nodes = await asyncio.to_thread(
+            lambda: supabase.rpc('match_graph_nodes', {
+                'query_embedding': entity_embedding_res.vector,
+                'match_threshold': 0.7,
+                'match_count': 1
+            }).execute()
+        )
         
         if not nodes.data:
             return []
             
         node_id = nodes.data[0]['id']
         
-        edges = supabase.table('graph_edges') \
+        edges = await asyncio.to_thread(
+            lambda: supabase.table('graph_edges') \
             .select('source_node_id, target_node_id, relationship_type, metadata, created_at') \
             .or_(f"source_node_id.eq.{node_id},target_node_id.eq.{node_id}") \
             .order('created_at', desc=True) \
             .limit(max_edges) \
             .execute()
+        )
             
         if not edges.data:
             return []
@@ -95,10 +99,12 @@ async def fetch_entity_graph_edges(entity_name: str, max_edges=20):
             node_ids.add(e['source_node_id'])
             node_ids.add(e['target_node_id'])
             
-        nodes_res = supabase.table('graph_nodes') \
+        nodes_res = await asyncio.to_thread(
+            lambda: supabase.table('graph_nodes') \
             .select('id, label') \
             .in_('id', list(node_ids)) \
             .execute()
+        )
             
         id_to_label = {n['id']: n.get('label', 'Unknown') for n in (nodes_res.data or [])}
         
@@ -124,11 +130,13 @@ async def synth_entity(project_id, entity_name, org_tag):
         
         # Fetch existing page first to get last_synth_at
         try:
-            existing = supabase.table('canonical_pages') \
+            existing = await asyncio.to_thread(
+                lambda: supabase.table('canonical_pages') \
                 .select('id, content, last_synth_at') \
                 .eq('title', entity_name) \
                 .eq('is_current', True) \
                 .limit(1).execute()
+            )
             existing_content = existing.data[0]["content"] if existing.data else None
             existing_id = existing.data[0]["id"] if existing.data else None
             last_synth_at = parse_iso(existing.data[0]["last_synth_at"]) if existing.data and existing.data[0].get("last_synth_at") else datetime.min.replace(tzinfo=timezone.utc)
@@ -180,8 +188,10 @@ async def synth_entity(project_id, entity_name, org_tag):
 
         # 2. Tasks
         try:
-            tasks_res = supabase.table('tasks').select('title, status, created_at, updated_at') \
+            tasks_res = await asyncio.to_thread(
+                lambda: supabase.table('tasks').select('title, status, created_at, updated_at') \
                 .eq('project_id', project_id).execute()
+            )
             if tasks_res.data:
                 for t in tasks_res.data:
                     ts = parse_iso(t.get('updated_at') or t.get('created_at'))
@@ -192,11 +202,13 @@ async def synth_entity(project_id, entity_name, org_tag):
         # 3. Resources (with project_id filter fallback)
         if entity_embedding:
             try:
-                resources_res = supabase.rpc('match_resources', {
-                    'query_embedding': entity_embedding,
-                    'match_threshold': 0.5,
-                    'match_count': 20
-                }).execute()
+                resources_res = await asyncio.to_thread(
+                    lambda: supabase.rpc('match_resources', {
+                        'query_embedding': entity_embedding,
+                        'match_threshold': 0.5,
+                        'match_count': 20
+                    }).execute()
+                )
                 if resources_res.data:
                     for r in resources_res.data:
                         filtered = filter_fragments_by_project_strict([r], entity_name)
@@ -209,11 +221,13 @@ async def synth_entity(project_id, entity_name, org_tag):
         # 4. Raw Dumps
         if entity_embedding:
             try:
-                dumps_res = supabase.rpc('match_raw_dumps', {
-                    'query_embedding': entity_embedding,
-                    'match_threshold': 0.5,
-                    'match_count': 30
-                }).execute()
+                dumps_res = await asyncio.to_thread(
+                    lambda: supabase.rpc('match_raw_dumps', {
+                        'query_embedding': entity_embedding,
+                        'match_threshold': 0.5,
+                        'match_count': 30
+                    }).execute()
+                )
                 if dumps_res.data:
                     filtered_dumps = filter_fragments_by_project_strict(dumps_res.data, entity_name)
                     for d in filtered_dumps:
@@ -225,11 +239,13 @@ async def synth_entity(project_id, entity_name, org_tag):
         # 5. Emails
         if entity_embedding:
             try:
-                emails_res = supabase.rpc('match_emails_hybrid', {
-                    'query_embedding': entity_embedding,
-                    'match_threshold': 0.5,
-                    'match_count': 10
-                }).execute()
+                emails_res = await asyncio.to_thread(
+                    lambda: supabase.rpc('match_emails_hybrid', {
+                        'query_embedding': entity_embedding,
+                        'match_threshold': 0.5,
+                        'match_count': 10
+                    }).execute()
+                )
                 if emails_res.data:
                     filtered_emails = filter_fragments_by_project_strict(emails_res.data, entity_name)
                     for m in filtered_emails:
@@ -241,11 +257,13 @@ async def synth_entity(project_id, entity_name, org_tag):
         # 6. WhatsApp
         if entity_embedding:
             try:
-                wa_res = supabase.rpc('match_whatsapp_hybrid', {
-                    'query_embedding': entity_embedding,
-                    'match_threshold': 0.5,
-                    'match_count': 10
-                }).execute()
+                wa_res = await asyncio.to_thread(
+                    lambda: supabase.rpc('match_whatsapp_hybrid', {
+                        'query_embedding': entity_embedding,
+                        'match_threshold': 0.5,
+                        'match_count': 10
+                    }).execute()
+                )
                 if wa_res.data:
                     filtered_wa = filter_fragments_by_project_strict(wa_res.data, entity_name)
                     for m in filtered_wa:
@@ -269,14 +287,18 @@ async def synth_entity(project_id, entity_name, org_tag):
         # Parent/Child Tasks
         if org_tag in PARENT_ORG_TAGS:
             try:
-                child_res = supabase.table('projects') \
+                child_res = await asyncio.to_thread(
+                    lambda: supabase.table('projects') \
                     .select('id, name') \
                     .eq('parent_project_id', project_id) \
                     .eq('status', 'active') \
                     .execute()
+                )
                 for child in child_res.data or []:
-                    child_tasks = supabase.table('tasks').select('title, status, created_at, updated_at') \
-                        .eq('project_id', child['id']).execute()
+                    child_tasks = await asyncio.to_thread(
+                        lambda c_id=child['id']: supabase.table('tasks').select('title, status, created_at, updated_at') \
+                        .eq('project_id', c_id).execute()
+                    )
                     for t in child_tasks.data or []:
                         ts = parse_iso(t.get('updated_at') or t.get('created_at'))
                         add_fragment("task", f"[{child['name']}] ({t['status'].upper()}) {t['title']}", ts)
@@ -336,10 +358,12 @@ async def run_batch_sweep_v2():
                 if payload.get("archive"):
                     if payload.get("existing_id"):
                         # Archive pages that fell below threshold
-                        supabase.table('canonical_pages') \
-                            .update({"is_current": False}) \
-                            .eq('id', payload['existing_id']) \
-                            .execute()
+                        await asyncio.to_thread(
+                            lambda e_id=payload['existing_id']: supabase.table('canonical_pages') \
+                                .update({"is_current": False}) \
+                                .eq('id', e_id) \
+                                .execute()
+                        )
                         print(f"Master Page Archived: {payload['entity']} — below threshold.")
                     else:
                         print(f"Skipping {payload['entity']} — below threshold, no existing page to archive.")
@@ -462,40 +486,46 @@ FRAGMENTS (Old & New):
 
             try:
                 if existing_id:
-                    version_res = supabase.table('canonical_pages') \
+                    version_res = await asyncio.to_thread(
+                        lambda e_id=existing_id: supabase.table('canonical_pages') \
                         .select('version') \
-                        .eq('id', existing_id) \
+                        .eq('id', e_id) \
                         .single() \
                         .execute()
+                    )
                     old_version = (version_res.data.get('version') or 0) if version_res.data else 0
 
-                    supabase.table('canonical_pages') \
+                    await asyncio.to_thread(
+                        lambda e_id=existing_id, ov=old_version, m=markdown, e=embedding, ts=now_iso, sc=payload_entry['fragment_count']: supabase.table('canonical_pages') \
                         .update({
-                            "content": markdown,
-                            "embedding": embedding,
-                            "version": old_version + 1,
-                            "updated_at": now_iso,
-                            "source_count": payload_entry['fragment_count'],
-                            "last_synth_at": now_iso,
-                            "is_sparse": len(markdown) < 500
+                            "content": m,
+                            "embedding": e,
+                            "version": ov + 1,
+                            "updated_at": ts,
+                            "source_count": sc,
+                            "last_synth_at": ts,
+                            "is_sparse": len(m) < 500
                         }) \
-                        .eq('id', existing_id) \
+                        .eq('id', e_id) \
                         .execute()
+                    )
 
                     print(f"Master Page Updated: {entity_name} (v{old_version + 1}, {payload_entry['fragment_count']} fragments)")
                 else:
-                    supabase.table('canonical_pages').insert({
-                        "title": entity_name,
-                        "project_id": project_id,
-                        "content": markdown,
-                        "embedding": embedding,
-                        "version": 1,
-                        "is_current": True,
-                        "updated_at": now_iso,
-                        "source_count": payload_entry['fragment_count'],
-                        "last_synth_at": now_iso,
-                        "is_sparse": len(markdown) < 500
-                    }).execute()
+                    await asyncio.to_thread(
+                        lambda en=entity_name, pid=project_id, m=markdown, e=embedding, ts=now_iso, sc=payload_entry['fragment_count']: supabase.table('canonical_pages').insert({
+                            "title": en,
+                            "project_id": pid,
+                            "content": m,
+                            "embedding": e,
+                            "version": 1,
+                            "is_current": True,
+                            "updated_at": ts,
+                            "source_count": sc,
+                            "last_synth_at": ts,
+                            "is_sparse": len(m) < 500
+                        }).execute()
+                    )
                     print(f"Master Page Created: {entity_name} ({payload_entry['fragment_count']} fragments)")
             except Exception as e:
                 print(f"DB commit failed for {entity_name}: {e}")
