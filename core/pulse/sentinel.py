@@ -156,16 +156,22 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
             clarifications_res = supabase.table('clarification_feedback') \
                 .select('*') \
                 .is_('resolved_at', 'null') \
+                .is_('sent_at', 'null') \
                 .gt('expires_at', datetime.now(timezone.utc).isoformat()) \
                 .limit(5) \
                 .execute()
                 
             if clarifications_res.data:
-                # To prevent spamming the same ones every 5 mins, we should track if sent.
-                # Actually, the spec says "Batching: piggyback on Sentinel". It implies we build_batch
-                # and send. Since we don't have a sent flag, maybe we add one or just rely on a separate pending state?
-                # For Phase 1, we just do a stub or skip sending since Phase 1 doesn't generate them anyway (evaluate returns None).
-                pass
+                from core.clarifier import build_batch
+                batch_msg = build_batch(clarifications_res.data, max_items=5)
+                if batch_msg:
+                    success = await send_telegram(int(telegram_chat_id), batch_msg)
+                    if success:
+                        c_ids = [c['id'] for c in clarifications_res.data]
+                        supabase.table('clarification_feedback').update({
+                            "sent_at": datetime.now(timezone.utc).isoformat()
+                        }).in_('id', c_ids).execute()
+                        audit_log_sync("sentinel", "INFO", f"Dispatched {len(c_ids)} clarifications")
         except Exception as e:
             audit_log_sync("sentinel", "ERROR", f"Clarification dispatch error: {e}")
 

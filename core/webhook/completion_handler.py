@@ -73,8 +73,7 @@ async def handle_confident_completion(
                                       "note", "webhook_completion")
         except Exception as mem_err:
             audit_log_sync("completion", "WARNING", f"Memory write failed for dump {dump_id}: {mem_err}")
-            from core.services.pipeline_service import add_to_failed_queue
-            await add_to_failed_queue('memories', str(dump_id), 'memory_insert', str(mem_err))
+            pass
 
         # ── Stage 3: Deterministic narrowing — fetch live active tasks ────────
         tasks_res = supabase.table("tasks") \
@@ -216,9 +215,6 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
         return
 
     if sync_failed:
-        from core.services.pipeline_service import add_to_failed_queue
-        for task_id in closed_ids:
-            await add_to_failed_queue("tasks", str(task_id), "google_sync", "Sync failed post-completion via tool")
         _park(dump_id, STATUS_PARTIAL, "sync_failed")
     else:
         # ── Only seal to completed if we can prove DB mutations occurred ──

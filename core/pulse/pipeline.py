@@ -1,10 +1,8 @@
 from core.services.db import get_supabase
-from core.llm import get_embedding
 import os
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync, error
 from core.pulse.utils import format_error
-from core.services.db import versioned_update
 
 supabase = get_supabase()
 
@@ -98,88 +96,3 @@ async def check_pipeline_health() -> str:
         return "PIPELINE HEALTH REPORT:\n" + "\n".join(lines)
     except Exception as e:
         return f"⚠️ Health check failed: {e}"
-
-async def retry_failed_operations(max_retries: int = 5):
-    """Retry operations in the failed_queue with exponential backoff."""
-    try:
-        # Fetch items that haven't exceeded max retries
-        failed_items = supabase.table('failed_queue') \
-            .select('*') \
-            .lt('retry_count', max_retries) \
-            .order('created_at', desc=False) \
-            .limit(20) \
-            .execute()
-
-        if not failed_items.data:
-            return "✅ No failed items to retry."
-
-        print(f"🔄 Retrying {len(failed_items.data)} failed operations...")
-        retried = 0
-        failed_again = 0
-
-        for item in failed_items.data:
-            queue_id = item['id']
-            source_table = item['source_table']
-            source_id = item['source_id']
-            operation = item['operation']
-
-            try:
-                if operation == 'embedding' and source_table == 'memories':
-                    # Retry embedding generation
-                    mem_res = supabase.table('memories') \
-                        .select('id, content') \
-                        .eq('id', int(source_id)) \
-                        .maybe_single() \
-                        .execute()
-
-                    if mem_res and mem_res.data:
-                        embedding = (await get_embedding(mem_res.data['content'])).vector
-                        if embedding and any(embedding):
-                            # Versioned update for memories
-                            versioned_update('memories', int(source_id), {
-                                "embedding": embedding,
-                                "embedding_status": "success"
-                            })
-
-                            # Remove from failed queue on success
-                            supabase.table('failed_queue') \
-                                .delete() \
-                                .eq('id', queue_id) \
-                                .execute()
-                            retried += 1
-                        else:
-                            raise Exception("Embedding generation returned zero vector")
-
-                elif operation == 'memory_insert':
-                    # Would need the original content - skip for now
-                    audit_log_sync("pulse", "WARNING", f"   ⚠️ Cannot retry memory_insert without original content: {queue_id}")
-                    continue
-
-                # Update retry count (metadata update, no versioning needed)
-                supabase.table('failed_queue') \
-                    .update({
-                        "retry_count": item['retry_count'] + 1,
-                        "last_retry_at": datetime.now(timezone.utc).isoformat()
-                    }) \
-                    .eq('id', queue_id) \
-                    .execute()
-
-            except Exception as e:
-                # Update retry count and last_retry_at
-                try:
-                    supabase.table('failed_queue') \
-                        .update({
-                            "retry_count": item['retry_count'] + 1,
-                            "last_retry_at": datetime.now(timezone.utc).isoformat(),
-                            "error_message": str(e)[:500]
-                        }) \
-                        .eq('id', queue_id) \
-                        .execute()
-                except Exception:
-                    pass
-                failed_again += 1
-
-        return f"🔄 Retry complete: ✅ {retried} succeeded, ❌ {failed_again} still failing"
-
-    except Exception as e:
-        return f"⚠️ Retry process failed: {e}"

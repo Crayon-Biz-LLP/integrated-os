@@ -1055,12 +1055,24 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                 try:
                     pend_check = supabase.table('pending_graph_nodes').select('id').eq('label', c_lbl).maybe_single().execute()
                     if not pend_check.data:
-                        supabase.table('pending_graph_nodes').insert({
+                        ins_res = supabase.table('pending_graph_nodes').insert({
                             "label": c_lbl,
                             "type": typ,
                             "source_text": f"{source_type}:{source_id}",
                             "status": status
                         }).execute()
+                        
+                        if ins_res and ins_res.data:
+                            new_node_id = ins_res.data[0]['id']
+                            from core.clarifier import evaluate_node, store_and_send_clarification
+                            clar = evaluate_node({"label": c_lbl, "type": typ}, batch_mode=True)
+                            if clar:
+                                import asyncio
+                                loop = asyncio.get_event_loop()
+                                if loop.is_running():
+                                    loop.create_task(store_and_send_clarification(clar, "pending_graph_nodes", new_node_id))
+                                else:
+                                    asyncio.run(store_and_send_clarification(clar, "pending_graph_nodes", new_node_id))
                         # If person, also add a pending KNOWS edge from Danny
                         if typ == 'person':
                             danny_edge_exists = supabase.table("pending_graph_edges")\
@@ -1210,7 +1222,19 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                     
             if to_insert:
                 for i in range(0, len(to_insert), 100):
-                    supabase.table("pending_graph_edges").insert(to_insert[i:i+100]).execute()
+                    batch = to_insert[i:i+100]
+                    ins_res = supabase.table("pending_graph_edges").insert(batch).execute()
+                    if ins_res and ins_res.data:
+                        from core.clarifier import evaluate_edge, store_and_send_clarification
+                        for new_edge in ins_res.data:
+                            clar = evaluate_edge(new_edge, batch_mode=True)
+                            if clar:
+                                import asyncio
+                                loop = asyncio.get_event_loop()
+                                if loop.is_running():
+                                    loop.create_task(store_and_send_clarification(clar, "pending_graph_edges", new_edge['id']))
+                                else:
+                                    asyncio.run(store_and_send_clarification(clar, "pending_graph_edges", new_edge['id']))
         except Exception as e:
             audit_log_sync("pulse", "ERROR", f"Pending edge insert failed: {e}")
 

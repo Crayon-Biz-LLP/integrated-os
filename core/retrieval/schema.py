@@ -48,8 +48,8 @@ class RetrievalEdge(BaseModel):
     from_node_id: int
     to_node_id: int
     edge_type: str = "related"
+    predicate_text: Optional[str] = None
     weight: float = 1.0
-    source_triple_id: Optional[int] = None
     source_passage_id: Optional[int] = None
     index_version: int = 1
 

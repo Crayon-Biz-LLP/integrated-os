@@ -12,7 +12,6 @@ from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
 from core.lib.graph_rules import validate_edge, resolve_alias, has_structural_anchor
 from core.services.db import get_supabase
-from core.services.pipeline_service import add_to_failed_queue
 
 
 
@@ -261,21 +260,6 @@ def backfill_embeddings():
             except Exception:
                 pass
             
-            # Add to failed queue for retry (use sync version)
-            try:
-                # Since backfill_graph.py is sync, we need to handle the async function
-                import asyncio
-                if asyncio.get_event_loop().is_running():
-                    asyncio.create_task(
-                        add_to_failed_queue("memories", str(memory_id), "embedding_backfill", str(e))
-                    )
-                else:
-                    # Run in new event loop
-                    asyncio.run(
-                        add_to_failed_queue("memories", str(memory_id), "embedding_backfill", str(e))
-                    )
-            except Exception as qe:
-                audit_log_sync("backfill_graph", "WARNING", f"Failed to add to queue: {qe}")
             
             audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ DB update failed for {memory_id}: {e}")
             failed += 1

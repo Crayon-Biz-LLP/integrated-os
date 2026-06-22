@@ -83,8 +83,8 @@ async def upsert_retrieval_edge(edge: RetrievalEdge) -> bool:
                 "from_node_id": edge.from_node_id,
                 "to_node_id": edge.to_node_id,
                 "edge_type": edge.edge_type,
+                "predicate_text": edge.predicate_text,
                 "weight": edge.weight,
-                "source_triple_id": edge.source_triple_id,
                 "source_passage_id": edge.source_passage_id,
                 "index_version": edge.index_version,
             }, on_conflict="from_node_id,to_node_id,edge_type,index_version") \
@@ -146,22 +146,6 @@ async def upsert_memory_bundle_link(memory_id: int, passage_id: int) -> bool:
     except Exception as e:
         audit_log_sync("retrieval", "WARNING",
                        f"upsert_memory_bundle_link(memory_id={memory_id}, passage_id={passage_id}) failed: {e}")
-        return False
-
-
-async def upsert_passage_triple_link(passage_id: int, triple_id: int) -> bool:
-    """UPSERT a passage-triple link. Idempotent."""
-    try:
-        supabase.table("retrieval_passage_triple_links") \
-            .upsert({
-                "passage_id": passage_id,
-                "triple_id": triple_id,
-            }, on_conflict="passage_id,triple_id") \
-            .execute()
-        return True
-    except Exception as e:
-        audit_log_sync("retrieval", "WARNING",
-                       f"upsert_passage_triple_link(passage_id={passage_id}, triple_id={triple_id}) failed: {e}")
         return False
 
 
@@ -236,8 +220,8 @@ async def build_triple_graph(triples: list, passage_id: int,
                 from_node_id=sub_id,
                 to_node_id=obj_id,
                 edge_type="related",
+                predicate_text=triple.predicate_text,
                 weight=triple.confidence,
-                source_triple_id=None,
                 source_passage_id=passage_id,
                 index_version=INDEX_VERSION,
             ))

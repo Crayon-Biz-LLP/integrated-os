@@ -187,19 +187,7 @@ class PulseOutput(BaseModel):
 
 
 
-# --- 🗃️ FAILED QUEUE MANAGEMENT ---
-async def add_to_failed_queue(source_table: str, source_id: str, operation: str, error_message: str):
-    """Add a failed operation to the retry queue."""
-    try:
-        supabase.table('failed_queue').insert({
-            "source_table": source_table,
-            "source_id": str(source_id),
-            "operation": operation,
-            "error_message": error_message[:500] if error_message else None,
-        }).execute()
-        audit_log_sync("pulse", "INFO", f"🗃️ Added to failed_queue: {source_table}:{source_id} ({operation})")
-    except Exception as e:
-        audit_log_sync("pulse", "WARNING", f"⚠️ Failed to add to failed_queue: {e}")
+
 
 
 
@@ -756,7 +744,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                                 else:
                                     raise Exception("Insert returned no data")
                             except Exception as e:
-                                await add_to_failed_queue('memories', str(dump_id), 'memory_insert', str(e))
                                 audit_log_sync("pulse", "WARNING", f"⚠️ Note insert failed: {e}")
                             url_match = re.search(r'https?://\S+', dump_content)
                             if url_match:

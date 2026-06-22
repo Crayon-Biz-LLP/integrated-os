@@ -8,7 +8,7 @@ from core.retrieval.config import config, INDEX_VERSION, BACKFILL_MAX_CONCURRENC
 from core.retrieval.chunker import chunk_text, compute_fingerprint
 from core.retrieval.extractor import extract_triples
 from core.retrieval.graph import (
-    build_triple_graph, upsert_memory_bundle_link, upsert_passage_triple_link,
+    build_triple_graph, upsert_memory_bundle_link,
     update_node_stats,
 )
 from core.retrieval.schema import Passage
@@ -111,10 +111,6 @@ async def index_memory(memory_id: int, content: str, memory_type: str,
                 if not llm_ok or not triples:
                     return bool(triples), llm_ok
                 await build_triple_graph(triples, p_id, source_type, source_id)
-                for triple in triples:
-                    t_id = await _insert_triple(triple)
-                    if t_id:
-                        await upsert_passage_triple_link(p_id, t_id)
                 return True, True
 
         tasks = [process_passage(p_id, p) for p_id, p in inserted_passages]
@@ -190,49 +186,6 @@ async def _upsert_passage(passage: Passage) -> Optional[int]:
         audit_log_sync("retrieval", "ERROR",
                        f"upsert_passage failed for {passage.source_type}/{passage.source_id} "
                        f"passage {passage.passage_index}: {e}")
-        return None
-
-
-async def _insert_triple(triple) -> Optional[int]:
-    """Insert a triple, skip if duplicate. Return ID."""
-    try:
-        existing = supabase.table("retrieval_triples") \
-            .select("id") \
-            .eq("passage_id", triple.passage_id) \
-            .eq("normalized_subject", triple.normalized_subject) \
-            .eq("normalized_predicate", triple.normalized_predicate) \
-            .eq("normalized_object", triple.normalized_object) \
-            .eq("index_version", triple.index_version) \
-            .maybe_single() \
-            .execute()
-
-        if existing and existing.data:
-            return existing.data["id"]
-
-        result = supabase.table("retrieval_triples") \
-            .insert({
-                "source_type": triple.source_type,
-                "source_id": triple.source_id,
-                "passage_id": triple.passage_id,
-                "subject_text": triple.subject_text,
-                "predicate_text": triple.predicate_text,
-                "object_text": triple.object_text,
-                "normalized_subject": triple.normalized_subject,
-                "normalized_predicate": triple.normalized_predicate,
-                "normalized_object": triple.normalized_object,
-                "confidence": triple.confidence,
-                "extraction_model": triple.extraction_model,
-                "index_version": triple.index_version,
-            }) \
-            .execute()
-
-        if result and result.data:
-            return result.data[0]["id"]
-        return None
-
-    except Exception as e:
-        audit_log_sync("retrieval", "ERROR",
-                       f"insert_triple failed for passage {triple.passage_id}: {e}")
         return None
 
 
