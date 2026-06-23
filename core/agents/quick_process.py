@@ -413,8 +413,9 @@ async def process_pending_dumps():
     zombie_recovery()
 
     dumps_res = supabase.table('raw_dumps') \
-        .select('id, content, metadata, message_type') \
-        .eq('status', 'pending') \
+        .select('id, content, metadata, source') \
+        .in_('status', ['pending', 'staged']) \
+        .limit(20) \
         .execute()
     dumps = dumps_res.data or []
     if not dumps:
@@ -435,7 +436,7 @@ async def process_pending_dumps():
         lock_res = supabase.table('raw_dumps') \
             .update({"status": "processing"}) \
             .eq('id', d['id']) \
-            .eq('status', 'pending') \
+            .in_('status', ['pending', 'staged']) \
             .execute()
         if not lock_res.data:
             continue
@@ -450,7 +451,7 @@ async def process_pending_dumps():
             audit_log_sync("quick_process", "INFO", f"Processed dump {d['id']}: {result['action']}")
         elif result.get('action') == 'error':
             supabase.table('raw_dumps').update({
-                "status": "pending",
+                "status": "staged",
                 "metadata": {**meta, "quick_process_error": result.get('reason')}
             }).eq('id', d['id']).execute()
         else:

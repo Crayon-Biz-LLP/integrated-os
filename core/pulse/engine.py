@@ -549,7 +549,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         try:
             ten_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
             supabase.table('raw_dumps') \
-                .update({"status": "pending"}) \
+                .update({"status": "staged"}) \
                 .eq('status', 'processing') \
                 .lt('created_at', ten_mins_ago) \
                 .execute()
