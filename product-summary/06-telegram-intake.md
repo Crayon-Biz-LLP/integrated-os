@@ -117,11 +117,17 @@ Sends the completion text + candidate tasks to Gemini with a strict JSON matcher
 
 **Validation**: Returned IDs are cross-checked against the live active task set. Invalid IDs are discarded — no guessing allowed.
 
+**Fallback chain** (June 2026): The matcher first tries `CLASSIFICATION_MODEL` (Gemini Flash Lite). If that returns no match, it retries once with `SYNTHESIS_MODEL` (Gemini 3.5 Flash) before falling through to user disambiguation. This avoids unnecessary parking on ambiguous phrasing that a more capable model resolves correctly.
+
 #### Stage 4: Disambiguation (Ambiguous Completions)
 
-If no valid task ID is matched, the handler checks the candidate count:
+If no valid task ID is matched after both LLM attempts, the handler checks the candidate count:
 
-- **≤ 5 candidates**: Posts an interactive Telegram message asking the user to pick: `"🧐 Which task did you complete?"` with numbered options + "n" for none. Saves clarification state to conversation history. When the user replies with a digit or "n", `resolve_completion_disambiguation()` (`completion_handler.py:235`) routes the choice to `execute_completion_closure()` or parks it.
+- **≤ 5 candidates**: Posts an interactive Telegram message asking the user to pick: `"🧐 Which task did you complete?"` with numbered options + "n" for none. Saves clarification state to conversation history. When the user replies, `resolve_completion_disambiguation()` (`completion_handler.py:235`) accepts:
+  - **Digit** (`1`, `2`, …) → picks that numbered candidate
+  - **Ordinal word** (`first`, `second`, `third`, …) → mapped to digit
+  - **`n` / `none`** → parks as `awaiting_completion_match`
+  Routes the choice to `execute_completion_closure()` or parks it.
 - **> 5 candidates**: Parks as `awaiting_completion_match` with reason `no_match` — content already vaulted, no further action.
 
 #### Stage 5: Idempotent Closure
@@ -133,9 +139,20 @@ If no valid task ID is matched, the handler checks the candidate count:
 3. Writes outcome memory via `write_outcome_memory()` (async, fire-and-forget)
 4. Deletes Google Calendar event if present
 5. Syncs completion to Google Tasks
-6. If sync fails, parks dump as `partially_synced` and queues for retry
+6. **Partial failure handling** (June 2026): If any Google sync steps fail, the failed task IDs are collected and surfaced to Telegram with task-level detail (e.g. `"⚠️ Synced 2/3 tasks. Failed: Buy groceries (id=42)"`). The dump status is set to `partially_synced`. Previously, sync failures were swallowed silently.
 
 If all closed IDs were already terminal, parks as `awaiting_completion_match` with reason `already_closed`.
+
+#### Google Calendar 404 Auto-Heal
+
+When `sync_to_calendar` is called for a task whose `google_event_id` references an event that was externally deleted from Google Calendar, the API returns a 404. The handler:
+
+1. Nulls `google_event_id` in the DB *before* re-provisioning (so if re-provision fails, the DB is clean rather than pointing to a ghost).
+2. Creates a fresh Google Calendar event and saves the new ID.
+
+Non-404 errors (429, 403, 500) are re-raised — they do **not** null the stored event ID, preventing valid IDs from being cleared on transient failures.
+
+**File**: `core/services/google_service.py` — `sync_to_calendar()`
 
 #### Ownership Boundary
 

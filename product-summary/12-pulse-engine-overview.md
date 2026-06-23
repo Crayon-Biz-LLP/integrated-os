@@ -58,7 +58,7 @@ The heartbeat moment. The engine runs a multi-turn agent loop (`run_agent_loop` 
 Before the AI loop, the **Adaptive Briefing Learner** (`memory.py`) refines prompt patterns by analyzing past briefing outcomes — but only on Sundays (`now.weekday() == 6`) to avoid unnecessary latency on weekdays. Instead of returning a monolithic JSON blob, the model issues tool calls to modify state sequentially.
 
 Available Tools:
-- `update_task_status` — **on recurring tasks, `done` skips the next instance** (write outcome memory, series continues); only `cancelled` ends the entire series
+- `update_task_status` — **on recurring tasks, `done` skips the next instance** (write outcome memory, series continues); only `cancelled` ends the entire series. **UNTIL boundary exception** (June 2026): if the RRULE `UNTIL` date is past and `skip_recurring_instance` returns `"No upcoming instances found"`, `update_task_status` treats this as a permanent close and marks the master task `done` (series exhausted). Non-recurring tasks with `recurrence="none"` are guarded explicitly (`not in ['none', '']`) to prevent them from entering the recurring skip path.
 - `create_project`
 - `create_person`
 - `create_task` — accepts optional `recurrence` parameter (iCalendar RRULE string)
@@ -66,7 +66,7 @@ Available Tools:
 - `create_resource`
 - `create_cluster`
 - `write_memory`
-- `skip_recurring_instance` — deletes the next individual Google Calendar instance for a recurring task without affecting the series
+- `skip_recurring_instance` — deletes the next individual Google Calendar instance for a recurring task without affecting the series. Returns `"No upcoming instances found"` when the RRULE `UNTIL` date is past — this is the signal `update_task_status` uses to trigger the UNTIL boundary exhaustion close path.
 
 The agent executes tools in a `while True` loop until it completes its logic and returns a final Markdown briefing payload (and optionally hits a `HitlInterrupt` if it requires user confirmation).
 

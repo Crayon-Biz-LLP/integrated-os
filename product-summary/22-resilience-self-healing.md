@@ -61,12 +61,12 @@ The zombie recovery function (`db.py:43-54`) runs at the start of every Pulse an
 ten_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
 supabase.table('raw_dumps') \
     .update({"status": "pending"}) \
-    .eq('status', 'processing') \
+    .in_('status', ['processing', 'processing_completion']) \
     .lt('created_at', ten_mins_ago) \
     .execute()
 ```
 
-Any dump stuck in 'processing' for more than 10 minutes is automatically reset to 'pending' and re-processed.
+Any dump stuck in `processing` **or** `processing_completion` for more than 10 minutes is automatically reset to `pending` and re-processed. The `processing_completion` status is set by the completion handler when a completion is in-flight — extending zombie recovery to cover it prevents orphaned completions from blocking the queue indefinitely.
 
 ## Pipeline Heartbeat & Health Checks
 
@@ -199,6 +199,29 @@ Set to 12 RPM (leaving 3 RPM headroom from the 15 RPM free tier limit). Supports
 | Task completion | Status already done/cancelled check prevents duplicates |
 | Graph edges | `upsert` with `on_conflict="label"` for task nodes |
 | Google sync | Google event ID stored in DB, used for patch (not re-create) |
+
+## Google Calendar Ghost-Event Auto-Heal
+
+When `sync_to_calendar` attempts to patch a Google Calendar event whose `google_event_id` references an event that was externally deleted, the Google API returns a 404. The handler (June 2026):
+
+1. Nulls `google_event_id` in the DB *before* re-provisioning — so if re-provision fails, the DB is clean rather than pointing to a ghost event.
+2. Creates a fresh Google Calendar event and persists the new ID.
+
+**Error discrimination is strict**: only 404 triggers the heal path. `429`, `403`, and `500` errors are re-raised immediately — they never null a valid stored ID on transient failures.
+
+**File**: `core/services/google_service.py` — `sync_to_calendar()`
+
+## Partial Batch Sync Visibility
+
+When the completion handler closes multiple tasks in a single `execute_completion_closure` call and some Google sync steps fail, failures are **collected and surfaced to Telegram** rather than swallowed silently (June 2026):
+
+- Failed task IDs and titles are accumulated during the batch.
+- If any fail, the dump status is set to `partially_synced` and a Telegram message is sent listing the failed tasks (e.g. `"⚠️ Synced 2/3 tasks. Failed: Buy groceries (id=42)"`).
+- `partially_synced` dumps are included in the Pulse's claim scope, allowing the pulse to retry the Google sync on the next scheduled run.
+
+This is Option B (collect + notify) rather than transaction rollback — chosen because the Supabase Python client has limited transaction support and visibility beats atomicity for this use case.
+
+**File**: `core/webhook/completion_handler.py` — `execute_completion_closure()`
 
 ## Distributed Trace IDs
 

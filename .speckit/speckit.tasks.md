@@ -481,3 +481,18 @@ This enables natural-language note capture without special syntax.
 - **Tier 3 (Tests & Deployment)**: Fixed crashing `test_retrieval.py` patches. Deleted stale RPCs from `rpcs.sql`. Created `02_temporal_lineage_triggers.sql` migration. Fixed `package.json` lint script. Pinned `requirements.txt`. Purged orphan `__pycache__` dirs.
 - **Tier 4 (Security)**: Plugged exception leaks (`detail=str(e)`) across 12 endpoints. Hardened weak `.endswith()` cron auth. Added Google Drive webhook auth (`X-Goog-Channel-Token` check). Added Next.js dashboard auth guard.
 - **Tier 5 (Frontend)**: Fixed NeuralDisc zoom state coupling. Fixed `null as any` onNodeClick types. Fixed D3 teardown loop on dependency change. Fixed duplicate Radix UI SelectItem values in graph-pending.
+
+### T-601: Task Lifecycle Hardening
+**Status**: Completed
+**Details**: Second hardening pass targeting silent bugs in the completion flow, recurrence logic, Google Calendar sync, and partial batch failures:
+- **`recurrence="none"` truthy bug fixed** (`core/pulse/tools.py`): String `"none"` is truthy in Python — non-recurring tasks were entering the recurring skip path. Guard changed to `td.get('recurrence') not in ['none', '']`.
+- **UNTIL boundary exhaustion fixed** (`core/pulse/tools.py`): When a recurring series' RRULE UNTIL date is past and no future instances remain (`skip_recurring_instance` returns `"No upcoming instances found"`), the master task is now permanently closed as `done` instead of looping as `todo` forever.
+- **404 auto-heal in `sync_to_calendar`** (`core/services/google_service.py`): Externally deleted Google Calendar events trigger DB null + fresh re-provision. Non-404 errors re-raise to prevent clearing valid IDs on transient failures. DB nulled *before* re-provisioning.
+- **Partial batch sync visibility** (`core/webhook/completion_handler.py`): `execute_completion_closure` collects failed task IDs and surfaces them to Telegram. Status: `partially_synced`.
+- **LLM matcher fallback chain**: Flash Lite → Gemini 3.5 Flash before parking as `awaiting_completion_match`.
+- **Ordinal/keyword disambiguation** (`resolve_completion_disambiguation`): Accepts digits, ordinal words ("first", "second"), "n"/"none".
+- **Zombie recovery extended** (`core/services/db.py`): `zombie_recovery()` now also resets `processing_completion` orphans stuck > 10 min.
+- **Pulse `completed_task_ids` fixed** (`core/pulse/engine.py`): Was dead code — now actually calls `update_task_status()`.
+- **11-test integration suite built** (`tests/clusters/`): 7 cluster files covering merge/dedup, deletion/cancellation (2a/2b/2c), lineage integrity, metadata persistence, recurrence boundary, timezone documentation, cross-system partial sync. DB confirmed clean post-suite.
+- **Task 247 manually closed**: `recurrence="none"` fix allowed it to complete correctly. Now `done, is_current=true, version=2, supersedes_id=385`.
+- **Committed and pushed** to `main` (`06d9c84`).

@@ -7,16 +7,51 @@ FastAPI-based executive command system deployed as Vercel serverless functions (
 
 ### Progress Done This Session
 - **Comprehensive 38-Point Hardening (Tiers 0-5)**: Executed a massive codebase hardening pass to address 6 tiers of vulnerabilities.
-- **Active Crashes & Secrets (Tier 0)**: Rotated and redacted hardcoded `config.json` and `frontend/.env.local` keys. Added `processing_completion` statuses to `raw_dumps_status_check`. Fixed context polarity (`.eq('is_current', True)`) and salience bugs.
-- **Data Corruption (Tier 1)**: Restored entity extraction loop in `quick_process.py`. Fixed string formatting crashes in retrieval. Fixed `auto_approve` metadata overwrites. Stripped all app-level temporal versioning from `calendar.py` and Python codebase to enforce pure DB-trigger lineage.
-- **Ghost Record Isolation (Tier 2)**: Added strict `.eq('is_current', True)` to 10 queries across Python and Next.js layers to prevent duplicate blocking and context pollution from archived rows.
-- **Tests & Deploy (Tier 3)**: Pinned `requirements.txt`. Purged orphan `__pycache__` folders. Dropped stale RPCs. Created SQL migration for DB triggers. Fixed `test_retrieval.py` patches.
-- **Security (Tier 4)**: Plugged 12 endpoint exception leaks. Hardened cron endpoint auth. Added `X-Goog-Channel-Token` validation to Google Drive webhook. Added frontend Dashboard auth guards.
-- **Frontend (Tier 5)**: Fixed React 19 NeuralDisc refs read during render. Fixed Radix UI duplicate key selections. Fixed FullGraph simulation teardown issues.
+  - **Active Crashes & Secrets (Tier 0)**: Rotated and redacted hardcoded `config.json` and `frontend/.env.local` keys. Added `processing_completion` statuses to `raw_dumps_status_check`. Fixed context polarity (`.eq('is_current', True)`) and salience bugs.
+  - **Data Corruption (Tier 1)**: Restored entity extraction loop in `quick_process.py`. Fixed string formatting crashes in retrieval. Fixed `auto_approve` metadata overwrites. Stripped all app-level temporal versioning from `calendar.py` and Python codebase to enforce pure DB-trigger lineage.
+  - **Ghost Record Isolation (Tier 2)**: Added strict `.eq('is_current', True)` to 10 queries across Python and Next.js layers to prevent duplicate blocking and context pollution from archived rows.
+  - **Tests & Deploy (Tier 3)**: Pinned `requirements.txt`. Purged orphan `__pycache__` folders. Dropped stale RPCs. Created SQL migration for DB triggers. Fixed `test_retrieval.py` patches.
+  - **Security (Tier 4)**: Plugged 12 endpoint exception leaks. Hardened cron endpoint auth. Added `X-Goog-Channel-Token` validation to Google Drive webhook. Added frontend Dashboard auth guards.
+  - **Frontend (Tier 5)**: Fixed React 19 NeuralDisc refs read during render. Fixed Radix UI duplicate key selections. Fixed FullGraph simulation teardown issues.
+- **Task Lifecycle Hardening (T-601)**: Second hardening pass targeting silent bugs in the completion flow, recurrence logic, Google Calendar sync, and partial batch failures.
+  - **Fixed `recurrence="none"` truthy bug** (`core/pulse/tools.py`): The string `"none"` is truthy in Python — non-recurring tasks were entering the recurring skip path. Guard changed to `td.get('recurrence') not in ['none', '']`.
+  - **Fixed UNTIL boundary exhaustion** (`core/pulse/tools.py`): When a recurring series' RRULE UNTIL date is past and no future instances remain, the master task is now permanently closed as `done` instead of looping as `todo` forever.
+  - **Fixed 404 auto-heal in `sync_to_calendar`** (`core/services/google_service.py`): If a Google Calendar event is externally deleted, the DB `google_event_id` is nulled and a fresh event is re-provisioned. Non-404 errors (429, 403, 500) re-raise to prevent incorrectly nulling valid IDs. DB is nulled *before* re-provisioning — if re-provision fails, DB is clean.
+  - **Fixed partial batch sync visibility** (`core/webhook/completion_handler.py`): `execute_completion_closure` now collects failed task IDs and surfaces them to Telegram with task-level detail instead of swallowing silently. Status: `partially_synced`.
+  - **Fixed LLM matcher fallback** (`core/webhook/completion_handler.py`): Classification Flash Lite → Gemini 3.5 Flash fallback before parking as `awaiting_completion_match`.
+  - **Added ordinal/keyword disambiguation** (`core/webhook/completion_handler.py`): `resolve_completion_disambiguation()` handles digit replies, "none"/"n", and ordinal words ("first", "second").
+  - **Extended zombie recovery** (`core/services/db.py`): `zombie_recovery()` now resets `processing_completion` orphans (stuck > 10 min) back to `pending`, not just `processing`.
+  - **Fixed pulse completed_task_ids** (`core/pulse/engine.py`): `completed_task_ids` now actually calls `update_task_status()` — it was dead code before.
+  - **Built 11-test integration suite** (`tests/clusters/`): 7 cluster files covering merge/dedup, deletion/cancellation (2a/2b/2c), lineage integrity under concurrency, metadata persistence, recurrence boundary, timezone documentation, and cross-system partial sync. Confirmed DB clean post-suite.
+  - **Timezone handling documented** (`tests/clusters/06_timezone_handling.py`): `format_rfc3339` only appends `+05:30` to naive strings; Z-strings pass through. Documented as a test rather than changed — AI is the sole time source and is prompted to output IST.
+  - **Task 247 manually closed**: `recurrence="none"` fix allowed it to complete correctly. Now `done, is_current=true, version=2, supersedes_id=385`.
+  - **Committed and pushed** to `main` (`06d9c84`).
 
 ### Key Decisions This Session
 - **Strict Configuration Segregation**: The local AI (`opencode.json`) tokens for Vercel/Supabase are entirely separated from the deployed backend environment variables (`SUPABASE_SERVICE_ROLE_KEY`).
 - **Complete reliance on PostgreSQL Triggers**: The Python layer no longer touches `is_current` or `supersedes_id` during updates — all temporal versioning is managed strictly by `BEFORE UPDATE` database triggers.
+- **`recurrence="none"` fix**: Guard changed to `td.get('recurrence') not in ['none', '']` — string `"none"` is truthy in Python.
+- **UNTIL boundary**: `"No upcoming instances found"` string from `skip_recurring_instance` is the signal to fall through to permanent `done` close.
+- **404 heal order**: DB nulled *before* re-provisioning — if re-provision fails, DB is clean rather than pointing to dead event.
+- **Partial batch failure**: Option B chosen (collect + notify) over Option A (transaction rollback) — Supabase Python client has limited transaction support; visibility beats atomicity for this use case.
+- **Timezone fix reverted**: `format_rfc3339` only appends `+05:30` to naive strings; Z-strings pass through. Safe because AI is the sole time source and is prompted to output IST. Documented in `test_timezone_handling_documents_current_behaviour`.
+- **Temporal trigger design**: Every `UPDATE` on `tasks` inserts the OLD state as a **new row** (new ID, `is_current=false`) and updates the original row in place (bumps `version`, sets `supersedes_id`). The new ID is the archive; the original ID is always the live row. ID sequence gaps (e.g. 258→385) are expected — test inserts + trigger archive rows consume IDs; sequence never resets on delete.
+
+### Key Files (Task Lifecycle Hardening)
+- `core/webhook/completion_handler.py` — completion lifecycle; `execute_completion_closure` collects failures and notifies Telegram
+- `core/pulse/tools.py` — `update_task_status`: `recurrence="none"` fix, UNTIL boundary fix, Calendar/Google Tasks sync
+- `core/services/google_service.py` — `sync_to_calendar`: 404 auto-heal; `format_rfc3339`: IST enforcement for naive strings
+- `core/services/db.py` — `zombie_recovery()`: resets stuck `processing_completion` dumps
+- `tests/clusters/` — 7 cluster files, 11 integration tests
+- `tests/conftest.py` — `LIVE_DB=true` env bootstrap; `mock_google_apis` fixture export
+- `tests/fixtures/task_factory.py` — `TaskFactory` with `cleanup_by_title_prefix("[TEST]")`
+- `tests/fixtures/google_api_mocks.py` — `mock_google_apis` pytest fixture
+
+### Integration Test Notes
+- **Run**: `LIVE_DB=true PYTHONPATH=. pytest tests/clusters/` (requires real Supabase env vars)
+- **Local isolation**: `pytest.ini` forces `SUPABASE_URL=http://localhost:8000` — `LIVE_DB=true` overrides it
+- **`mock_google_apis` fixture**: Registered in `tests/conftest.py` — cluster files must NOT import it directly (causes ruff F811)
+- **Trigger archive rows**: Each `UPDATE` that fires the temporal trigger creates a new archived row with a new ID. Sequence gaps are expected and normal.
 
 ### Pending / Next Steps
 - **Future graph improvements**: PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range
