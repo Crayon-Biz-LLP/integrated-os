@@ -134,18 +134,16 @@ Response: {{"matched_task_ids": [...]}}"""
         validated_ids   = [i for i in raw_ids if i in active_id_set]
 
         if not validated_ids:
-            # Clarification Fallback (The Ambiguity Check)
-            if candidates and len(candidates) <= 5:
-                # Ask user to pick which task they meant
-                reply = "🧐 *Which task did you complete?*"
-                keyboard = []
-                for i, c in enumerate(candidates):
-                    # Button text max 64 chars. Callback data is just the digit string (e.g. "1")
-                    title_short = c['title'][:50] + ("..." if len(c['title']) > 50 else "")
-                    keyboard.append([{"text": f"{i+1}️⃣ {title_short}", "callback_data": str(i+1)}])
-                keyboard.append([{"text": "None of these (Leave open)", "callback_data": "n"}])
-                
-                # Save clarification state to conversations
+            if candidates:
+                # Ask user to pick via text reply
+                MAX_SHOWN = 10
+                lines = [f"{i+1}. {c['title'][:80]}" for i, c in enumerate(candidates[:MAX_SHOWN])]
+                if len(candidates) > MAX_SHOWN:
+                    lines.append(f"...and {len(candidates) - MAX_SHOWN} more")
+                reply = "Which task did you complete? Reply with the number, or 'n' if none of these.\n\n"
+                reply += "\n".join(lines)
+                reply += "\n\nReply 'n' to leave it open."
+
                 from core.lib.conversation import get_or_create_session, log_exchange
                 session_id, _, _ = get_or_create_session(chat_id)
                 log_exchange(
@@ -153,20 +151,19 @@ Response: {{"matched_task_ids": [...]}}"""
                     json.dumps({
                         "confirmation": "completion_disambiguation",
                         "dump_id": dump_id,
-                        "candidate_tasks": candidates,
+                        "candidate_tasks": candidates[:MAX_SHOWN],
                         "original": text
                     }),
                     chat_id
                 )
-                
+
                 _park(dump_id, STATUS_AWAITING, "awaiting_clarification")
-                from core.webhook.telegram import send_telegram
-                await send_telegram(chat_id, reply, show_keyboard=False, inline_keyboard=keyboard)
+                await _send(chat_id, reply)
                 return
-            else:
-                _park(dump_id, STATUS_AWAITING, "no_match")
-                await _send(chat_id, receipt or "Completion logged. Couldn't match a specific task — parked for review.")
-                return
+
+            _park(dump_id, STATUS_AWAITING, "no_match")
+            await _send(chat_id, receipt or "Completion logged. Couldn't match a specific task — parked for review.")
+            return
 
         await execute_completion_closure(dump_id, validated_ids, chat_id, receipt, entity, active_tasks)
 
