@@ -186,6 +186,7 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
 
     from core.pulse.tools import update_task_status
     sync_failed = False
+    failed_tasks = []
 
     for task_id in validated_ids:
         row_res = supabase.table("tasks").select("id, title, status, google_task_id, google_event_id").eq("id", task_id).maybe_single().execute()
@@ -203,14 +204,16 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
             if "Error" in result_msg:
                 audit_log_sync("completion", "ERROR", f"Tool failed for task {task_id}: {result_msg}")
                 sync_failed = True
+                failed_tasks.append(f"Task {task_id} ({row['title']}): {result_msg}")
             else:
                 closed_ids.append(task_id)
                 asyncio.create_task(write_outcome_memory(row["title"], entity))
         except Exception as close_err:
             audit_log_sync("completion", "ERROR", f"update_task_status tool failed for task {task_id}: {close_err}")
             sync_failed = True
+            failed_tasks.append(f"Task {task_id} ({row['title']}): {close_err}")
 
-    if not closed_ids:
+    if not closed_ids and not sync_failed:
         _park(dump_id, STATUS_AWAITING, "already_closed")
         await _send(chat_id, "Completion noted — those tasks were already closed.")
         audit_log_sync("completion", "INFO", f"execute_completion_closure: no tasks closed. validated_ids={validated_ids}")
@@ -219,14 +222,17 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
     if sync_failed:
         _park(dump_id, STATUS_PARTIAL, "sync_failed")
         audit_log_sync("completion", "WARNING", f"execute_completion_closure: partial sync failure. closed_ids={closed_ids}")
+        error_details = "\\n".join(failed_tasks)
+        await _send(chat_id, f"⚠️ **Partial Sync Failure**\\nSome tasks couldn't be closed due to an external error. Please check manually:\\n\\n{error_details}")
     else:
         _park(dump_id, STATUS_COMPLETED, None, is_processed=True)
         audit_log_sync("completion", "INFO", f"execute_completion_closure: success. closed_ids={closed_ids}")
 
-    closed_titles = ", ".join(
-        t["title"] for t in active_tasks if t["id"] in closed_ids
-    )
-    await _send(chat_id, f"✅ Closed: {closed_titles}")
+    if closed_ids:
+        closed_titles = ", ".join(
+            t["title"] for t in active_tasks if t["id"] in closed_ids
+        )
+        await _send(chat_id, f"✅ Closed: {closed_titles}")
 
 ORDINALS = {
     'first': 0, '1st': 0, 'second': 1, '2nd': 1, 'third': 2, '3rd': 2,

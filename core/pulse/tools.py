@@ -163,25 +163,28 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
             return f"Task {task_id} already {td.get('status')}."
 
         # --- RECURRING TASK: done = skip instance, cancelled = end series ---
-        if td.get('recurrence') and status == 'done':
+        if td.get('recurrence') and td.get('recurrence') not in ['none', ''] and status == 'done':
             # Skip the next instance and record an outcome, but keep the series alive
             skip_msg = ""
             if td.get('google_event_id'):
                 skip_msg = skip_recurring_instance(task_id)
             else:
                 skip_msg = "No linked calendar event — recorded as completed."
-            # Write an outcome memory
-            try:
-                result = supabase.table('memories').insert({
-                    'content': f"Completed instance of recurring task: {td['title']} (Task {task_id})",
-                    'memory_type': 'outcome',
-                    'source': 'pulse_tools'
-                }).execute()
-                memory_id = result.data[0]['id']
-                schedule_index_memory(memory_id, f"Completed instance of recurring task: {td['title']} (Task {task_id})", "outcome", "pulse_tools")
-            except Exception:
-                pass
-            return f"Marked this week's instance done for '{td['title']}'. {skip_msg} The series continues — use 'cancelled' to end it entirely."
+            
+            # If the series is exhausted (UNTIL date passed), we fall through to complete the master task.
+            if "No upcoming instances found" not in skip_msg:
+                # Write an outcome memory
+                try:
+                    result = supabase.table('memories').insert({
+                        'content': f"Completed instance of recurring task: {td['title']} (Task {task_id})",
+                        'memory_type': 'outcome',
+                        'source': 'pulse_tools'
+                    }).execute()
+                    memory_id = result.data[0]['id']
+                    schedule_index_memory(memory_id, f"Completed instance of recurring task: {td['title']} (Task {task_id})", "outcome", "pulse_tools")
+                except Exception:
+                    pass
+                return f"Marked this week's instance done for '{td['title']}'. {skip_msg} The series continues — use 'cancelled' to end it entirely."
             
         new_reminder = format_rfc3339(reminder_at) if reminder_at else None
         g_id = td.get('google_task_id')

@@ -87,19 +87,40 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority
             event_body['recurrence'] = [recurrence]
 
         if event_id:
-            res = service.events().patch(calendarId='primary', eventId=event_id, body=event_body).execute()
-            print(f"Calendar block edited: {formatted_title}")
+            try:
+                res = service.events().patch(calendarId='primary', eventId=event_id, body=event_body).execute()
+                print(f"Calendar block edited: {formatted_title}")
+            except Exception as e:
+                # Only fallback to creation if it's a 404 (event deleted externally)
+                is_404 = False
+                if hasattr(e, 'resp') and getattr(e.resp, 'status', None) == 404:
+                    is_404 = True
+                elif "404" in str(e):
+                    is_404 = True
+                    
+                if is_404:
+                    audit_log_sync("google_service", "WARNING", f"Event ID {event_id} deleted (404), healing DB and provisioning new event...")
+                    from core.services.db import get_supabase
+                    try:
+                        # Pre-emptively heal the DB before provisioning. We only do this if it's truly a 404.
+                        # This avoids the ID being stuck if the following insert fails for another reason.
+                        supabase = get_supabase()
+                        supabase.table('tasks').update({'google_event_id': None}).eq('google_event_id', event_id).eq('is_current', True).execute()
+                    except Exception:
+                        pass
+                    return sync_to_calendar(title, start_iso, duration_mins, event_id=None, priority=priority, recurrence=recurrence)
+                else:
+                    # Temporary errors (500, 429) or permissions (403) must raise to prevent the DB from incorrectly nulling the event ID.
+                    raise e
         else:
             res = service.events().insert(calendarId='primary', body=event_body).execute()
             print(f"Calendar block secured: {formatted_title}")
 
         return res.get('id')
     except Exception as e:
-        if event_id:
-            audit_log_sync("google_service", "WARNING", f"Event ID {event_id} invalid, attempting creation...")
-            return sync_to_calendar(title, start_iso, duration_mins, event_id=None, priority=priority, recurrence=recurrence)
         audit_log_sync("google_service", "ERROR", f"Calendar sync failed: {e}")
-        return None
+        # Raising the error to bubble up to update_task_status so it doesn't return None and null out the DB
+        raise e
 
 
 def delete_calendar_event(event_id):
