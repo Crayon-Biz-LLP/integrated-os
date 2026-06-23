@@ -609,10 +609,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 error("pulse", f"Cluster discovery failed, continuing pulse: {e}", format_error(e))
         
         # --- 1. READ: Fetch and Lock ---
-        # 1.1 Fetch pending, staged, and synced items
+        # 1.1 Fetch pending, staged, synced, partially_synced, and awaiting_completion_match items
         dumps_res = supabase.table('raw_dumps') \
             .select('id, content, metadata, status, message_type') \
-            .in_('status', ['pending', 'staged', 'synced', 'partially_synced']) \
+            .in_('status', ['pending', 'staged', 'synced', 'partially_synced', 'awaiting_completion_match']) \
             .execute()
 
         all_dumps = dumps_res.data or []
@@ -1324,7 +1324,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 - STALE TASKS: If STALE_TASKS has items, include a short ⏳ Stale Loops section listing them with day count. Max 5. Cap with '...and X more stalled' if over 5.
              
          SYSTEM MUTATION TOOLS:
-        You have been provided with function tools (create_task, update_task_status, complete_tasks, create_project, etc).
+        You have been provided with function tools (create_task, update_task_status, create_project, etc).
         If the NEW INPUTS explicitly command you to create tasks, complete tasks, or update tasks, you MUST call the appropriate function tools to execute those changes in the database.
         NEVER populate tools unless explicitly commanded in NEW INPUTS.
         After calling the necessary tools, your FINAL TEXT RESPONSE must be ONLY the formatted text string for the Telegram briefing.
@@ -1552,8 +1552,16 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             await generate_after_action_report()
 
         # ✅ COMPLETION DUMP CLOSER — seal the raw dumps that were completion signals
+        # Also ensure matching tasks are actually marked done in the DB
         if completion_dump_ids:
-            if ai_data.get('completed_task_ids'): # At least one task was closed
+            if ai_data.get('completed_task_ids'):
+                from core.pulse.tools import update_task_status
+                for ct in ai_data['completed_task_ids']:
+                    try:
+                        result = update_task_status(task_id=ct.id, status=ct.status)
+                        audit_log_sync("pulse", "INFO", f"Completion closer: update_task_status({ct.id}, {ct.status}) → {result[:100]}")
+                    except Exception as close_err:
+                        audit_log_sync("pulse", "ERROR", f"Completion closer failed for task {ct.id}: {close_err}")
                 supabase.table('raw_dumps').update({"status": "completed", "is_processed": True}).in_('id', completion_dump_ids).execute()
                 audit_log_sync("pulse", "INFO", f"✅ Sealed {len(completion_dump_ids)} completion dumps.")
             else:

@@ -36,6 +36,12 @@ def zombie_recovery():
             .eq('status', 'processing') \
             .lt('created_at', ten_mins_ago) \
             .execute()
+        # Also recover orphaned completion dumps stuck in processing_completion
+        supabase.table('raw_dumps') \
+            .update({"status": "awaiting_completion_match"}) \
+            .eq('status', 'processing_completion') \
+            .lt('created_at', ten_mins_ago) \
+            .execute()
     except Exception as e:
         from core.lib.audit_logger import audit_log_sync
         audit_log_sync("db", "WARNING", f"Zombie recovery failed: {e}")

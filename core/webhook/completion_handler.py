@@ -85,7 +85,7 @@ async def handle_confident_completion(
 
         if not active_tasks:
             _park(dump_id, STATUS_AWAITING, "no_active_tasks")
-            await _send(chat_id, receipt or "Completion logged. No open tasks to match right now.")
+            await _send(chat_id, "Completion logged. No open tasks to match right now.")
             return
 
         # Lexical prefilter — reduce LLM context to plausible candidates
@@ -98,6 +98,7 @@ async def handle_confident_completion(
         # ── Stage 4: Strict LLM matcher ───────────────────────────────────────
         from core.llm.fallback import generate_content_with_fallback
         from core.llm.config import WorkloadProfile
+        from core.llm.constants import SYNTHESIS_MODEL
         candidate_lines = "\n".join(f"ID {t['id']}: {t['title']}" for t in candidates)
         match_prompt = f"""You are a task-matching engine. Given the completion message and a list of open tasks,
 return ONLY a JSON object with one key: matched_task_ids (array of integers).
@@ -116,18 +117,21 @@ Rules:
 
 Response: {{"matched_task_ids": [...]}}"""
 
-        try:
-            match_res = await generate_content_with_fallback(
-                prompt=match_prompt,
-                workload=WorkloadProfile.INTERACTIVE,
-                primary_model=CLASSIFICATION_MODEL,
-                config={"response_mime_type": "application/json"},
-            )
-            parsed = match_res.parse_json()
-            raw_ids = parsed.get("matched_task_ids", [])
-        except Exception as match_err:
-            audit_log_sync("completion", "WARNING", f"LLM matcher failed for dump {dump_id}: {match_err}")
-            raw_ids = []
+        raw_ids = []
+        for attempt_model in (CLASSIFICATION_MODEL, SYNTHESIS_MODEL):
+            try:
+                match_res = await generate_content_with_fallback(
+                    prompt=match_prompt,
+                    workload=WorkloadProfile.INTERACTIVE,
+                    primary_model=attempt_model,
+                    config={"response_mime_type": "application/json"},
+                )
+                parsed = match_res.parse_json()
+                raw_ids = parsed.get("matched_task_ids", [])
+                if raw_ids:
+                    break
+            except Exception as match_err:
+                audit_log_sync("completion", "WARNING", f"LLM matcher failed (model={attempt_model}) for dump {dump_id}: {match_err}")
 
         # Strict validation — only IDs present in the active set are allowed
         active_id_set   = {t["id"] for t in active_tasks}
@@ -178,49 +182,51 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
     from core.pulse.memory import write_outcome_memory
     closed_ids      = []
 
+    audit_log_sync("completion", "INFO", f"execute_completion_closure start: validated_ids={validated_ids}, dump_id={dump_id}")
+
     from core.pulse.tools import update_task_status
     sync_failed = False
 
     for task_id in validated_ids:
-        # Read current row — skip if already terminal
         row_res = supabase.table("tasks").select("id, title, status, google_task_id, google_event_id").eq("id", task_id).maybe_single().execute()
         row = row_res.data
         if not row:
+            audit_log_sync("completion", "WARNING", f"Task {task_id} not found in DB — skipping.")
             continue
         if row["status"] in ("done", "cancelled"):
             audit_log_sync("completion", "INFO", f"Task {task_id} already terminal — skipping.")
             continue
 
         try:
-            # Use the canonical tool to do the DB update, Calendar delete, and Google Tasks sync
             result_msg = update_task_status(task_id=task_id, status="done")
+            audit_log_sync("completion", "INFO", f"update_task_status({task_id}) returned: {result_msg[:200]}")
             if "Error" in result_msg:
                 audit_log_sync("completion", "ERROR", f"Tool failed for task {task_id}: {result_msg}")
                 sync_failed = True
             else:
                 closed_ids.append(task_id)
-                # Write outcome memory per closed task
                 asyncio.create_task(write_outcome_memory(row["title"], entity))
         except Exception as close_err:
             audit_log_sync("completion", "ERROR", f"update_task_status tool failed for task {task_id}: {close_err}")
             sync_failed = True
 
     if not closed_ids:
-        # Matched but all were already terminal
         _park(dump_id, STATUS_AWAITING, "already_closed")
-        await _send(chat_id, receipt or "Completion noted — those tasks were already closed.")
+        await _send(chat_id, "Completion noted — those tasks were already closed.")
+        audit_log_sync("completion", "INFO", f"execute_completion_closure: no tasks closed. validated_ids={validated_ids}")
         return
 
     if sync_failed:
         _park(dump_id, STATUS_PARTIAL, "sync_failed")
+        audit_log_sync("completion", "WARNING", f"execute_completion_closure: partial sync failure. closed_ids={closed_ids}")
     else:
-        # ── Only seal to completed if we can prove DB mutations occurred ──
         _park(dump_id, STATUS_COMPLETED, None, is_processed=True)
+        audit_log_sync("completion", "INFO", f"execute_completion_closure: success. closed_ids={closed_ids}")
 
     closed_titles = ", ".join(
         t["title"] for t in active_tasks if t["id"] in closed_ids
     )
-    await _send(chat_id, receipt or f"✅ Closed: {closed_titles}")
+    await _send(chat_id, f"✅ Closed: {closed_titles}")
 
 ORDINALS = {
     'first': 0, '1st': 0, 'second': 1, '2nd': 1, 'third': 2, '3rd': 2,
