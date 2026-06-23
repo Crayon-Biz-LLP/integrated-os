@@ -3,16 +3,20 @@
 ## Project Overview
 FastAPI-based executive command system deployed as Vercel serverless functions (Python 3.11, matches CI). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 
-## Session Anchored Summary (Jun 22, 2026)
+## Session Anchored Summary (Jun 23, 2026)
 
 ### Progress Done This Session
-- **Pipeline Integrity Hardening**: Applied raw_dumps status CHECK constraint, created PostgreSQL BEFORE UPDATE triggers for Temporal Lineage on tasks and canonical_pages tables (preserves primary keys, no Google Calendar sync breakage). All Tier 0/1 tasks ([COMPLETED]).
-- **Documentation Audit & Sync**: Synchronized all documentation (AGENTS.md, speckit.*, product-summary/) to reflect current codebase reality — many features (Calendar/Messages/Graph pages, Clarifier Phase 2, DLQ, audit logs) were already built and deployed but undocumented.
-- **Memories table schema fix**: Changed `supersedes_id` and `superseded_by` columns from `uuid` to `int8` (0 rows affected) to match the table's primary key type, unblocking Temporal Lineage on memories.
+- **Comprehensive 38-Point Hardening (Tiers 0-5)**: Executed a massive codebase hardening pass to address 6 tiers of vulnerabilities.
+- **Active Crashes & Secrets (Tier 0)**: Rotated and redacted hardcoded `config.json` and `frontend/.env.local` keys. Added `processing_completion` statuses to `raw_dumps_status_check`. Fixed context polarity (`.eq('is_current', True)`) and salience bugs.
+- **Data Corruption (Tier 1)**: Restored entity extraction loop in `quick_process.py`. Fixed string formatting crashes in retrieval. Fixed `auto_approve` metadata overwrites. Stripped all app-level temporal versioning from `calendar.py` and Python codebase to enforce pure DB-trigger lineage.
+- **Ghost Record Isolation (Tier 2)**: Added strict `.eq('is_current', True)` to 10 queries across Python and Next.js layers to prevent duplicate blocking and context pollution from archived rows.
+- **Tests & Deploy (Tier 3)**: Pinned `requirements.txt`. Purged orphan `__pycache__` folders. Dropped stale RPCs. Created SQL migration for DB triggers. Fixed `test_retrieval.py` patches.
+- **Security (Tier 4)**: Plugged 12 endpoint exception leaks. Hardened cron endpoint auth. Added `X-Goog-Channel-Token` validation to Google Drive webhook. Added frontend Dashboard auth guards.
+- **Frontend (Tier 5)**: Fixed React 19 NeuralDisc refs read during render. Fixed Radix UI duplicate key selections. Fixed FullGraph simulation teardown issues.
 
 ### Key Decisions This Session
-- **Database-level temporal triggers over application-level**: Using BEFORE UPDATE triggers (with `pg_trigger_depth() = 0` guard) ensures ALL task/canonical_page updates — whether from Python, Next.js API routes, or direct SQL — automatically preserve history without risking broken foreign keys or primary key churn.
-- **Vercel 60s timeout mitigated via GitHub Actions offload**: Heavy synthesis tasks (300s LLM profiles) are triggered from Vercel webhooks but executed as GitHub Actions jobs. Vercel only handles the lightweight trigger; the timeout mismatch is a non-issue.
+- **Strict Configuration Segregation**: The local AI (`opencode.json`) tokens for Vercel/Supabase are entirely separated from the deployed backend environment variables (`SUPABASE_SERVICE_ROLE_KEY`).
+- **Complete reliance on PostgreSQL Triggers**: The Python layer no longer touches `is_current` or `supersedes_id` during updates — all temporal versioning is managed strictly by `BEFORE UPDATE` database triggers.
 
 ### Pending / Next Steps
 - **Future graph improvements**: PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range

@@ -127,6 +127,7 @@ async def handle_status_command(chat_id: int):
         # Urgent tasks
         urgent_res = supabase.table('tasks')\
             .select('id', count='exact')\
+            .eq('is_current', True)\
             .eq('priority', 'urgent')\
             .in_('status', ['todo', 'in_progress'])\
             .execute()
@@ -135,6 +136,7 @@ async def handle_status_command(chat_id: int):
         # Important tasks
         important_res = supabase.table('tasks')\
             .select('id', count='exact')\
+            .eq('is_current', True)\
             .eq('priority', 'important')\
             .in_('status', ['todo', 'in_progress'])\
             .execute()
@@ -143,6 +145,7 @@ async def handle_status_command(chat_id: int):
         # Stale tasks (no update in 7+ days, still open)
         stale_res = supabase.table('tasks')\
             .select('id', count='exact')\
+            .eq('is_current', True)\
             .in_('status', ['todo', 'in_progress'])\
             .lt('updated_at', stale_cutoff)\
             .execute()
@@ -277,6 +280,7 @@ async def handle_undo_command(text: str, chat_id: int):
             # Best-effort cancel any task Pulse may have created
             try:
                 supabase.table('tasks').update({"status": "cancelled"}) \
+                    .eq('is_current', True) \
                     .ilike('title', content[:100]) \
                     .in_('status', ['todo', 'in_progress']) \
                     .execute()
@@ -313,6 +317,7 @@ async def handle_undo_command(text: str, chat_id: int):
             # Best-effort cancel any task Pulse may have created
             try:
                 supabase.table('tasks').update({"status": "cancelled"}) \
+                    .eq('is_current', True) \
                     .ilike('title', content[:100]) \
                     .in_('status', ['todo', 'in_progress']) \
                     .execute()

@@ -249,12 +249,9 @@ class TestPipelineStatusTransitions:
     @patch("core.retrieval.pipeline.upsert_memory_bundle_link", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline.extract_triples", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline.build_triple_graph", new_callable=AsyncMock)
-    @patch("core.retrieval.pipeline._insert_triple", new_callable=AsyncMock)
-    @patch("core.retrieval.pipeline.upsert_passage_triple_link", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline._set_run_status")
     async def test_all_extractions_fail(
-        self, mock_set_status, mock_triple_link, mock_insert_triple,
-        mock_build_graph, mock_extract, mock_bundle_link,
+        self, mock_set_status,         mock_build_graph, mock_extract, mock_bundle_link,
         mock_upsert_passage, mock_supabase,
     ):
         mock_upsert_passage.side_effect = [100, 200]
@@ -280,12 +277,9 @@ class TestPipelineStatusTransitions:
     @patch("core.retrieval.pipeline.upsert_memory_bundle_link", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline.extract_triples", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline.build_triple_graph", new_callable=AsyncMock)
-    @patch("core.retrieval.pipeline._insert_triple", new_callable=AsyncMock)
-    @patch("core.retrieval.pipeline.upsert_passage_triple_link", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline._set_run_status")
     async def test_partial_extractions_fail(
-        self, mock_set_status, mock_triple_link, mock_insert_triple,
-        mock_build_graph, mock_extract, mock_bundle_link,
+        self, mock_set_status,         mock_build_graph, mock_extract, mock_bundle_link,
         mock_upsert_passage, mock_supabase,
     ):
         mock_upsert_passage.side_effect = [100, 200]
@@ -293,7 +287,7 @@ class TestPipelineStatusTransitions:
             ([MagicMock()], True),
             ([], False),
         ]
-        mock_insert_triple.return_value = 1
+        
 
         result = await index_memory(
             memory_id=42, content=self.CONTENT,
@@ -313,12 +307,9 @@ class TestPipelineStatusTransitions:
     @patch("core.retrieval.pipeline.upsert_memory_bundle_link", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline.extract_triples", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline.build_triple_graph", new_callable=AsyncMock)
-    @patch("core.retrieval.pipeline._insert_triple", new_callable=AsyncMock)
-    @patch("core.retrieval.pipeline.upsert_passage_triple_link", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline._set_run_status")
     async def test_all_extractions_succeed(
-        self, mock_set_status, mock_triple_link, mock_insert_triple,
-        mock_build_graph, mock_extract, mock_bundle_link,
+        self, mock_set_status,         mock_build_graph, mock_extract, mock_bundle_link,
         mock_upsert_passage, mock_supabase,
     ):
         mock_upsert_passage.side_effect = [100, 200]
@@ -326,7 +317,7 @@ class TestPipelineStatusTransitions:
             ([MagicMock()], True),
             ([MagicMock()], True),
         ]
-        mock_insert_triple.return_value = 1
+        
 
         result = await index_memory(
             memory_id=42, content=self.CONTENT,
@@ -363,13 +354,10 @@ class TestConcurrentBackfill:
     @patch("core.retrieval.pipeline.upsert_memory_bundle_link", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline.extract_triples", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline.build_triple_graph", new_callable=AsyncMock)
-    @patch("core.retrieval.pipeline._insert_triple", new_callable=AsyncMock)
-    @patch("core.retrieval.pipeline.upsert_passage_triple_link", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline._set_run_status")
     @patch("core.retrieval.pipeline.index_semaphore", wraps=asyncio.Semaphore(3))
     async def test_semaphore_limits_concurrent_calls(
-        self, mock_sem, mock_set_status, mock_triple_link, mock_insert_triple,
-        mock_build_graph, mock_extract, mock_bundle_link,
+        self, mock_sem, mock_set_status,         mock_build_graph, mock_extract, mock_bundle_link,
         mock_upsert_passage, mock_supabase,
     ):
         max_concurrent = 0
@@ -385,7 +373,7 @@ class TestConcurrentBackfill:
 
         mock_upsert_passage.side_effect = [100, 200]
         mock_extract.side_effect = controlled_extract
-        mock_insert_triple.return_value = 1
+        
 
         tasks = [
             index_memory(memory_id=i, content=self.CONTENT,
@@ -426,19 +414,16 @@ class TestRetryReplay:
     @patch("core.retrieval.pipeline.upsert_memory_bundle_link", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline.extract_triples", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline.build_triple_graph", new_callable=AsyncMock)
-    @patch("core.retrieval.pipeline._insert_triple", new_callable=AsyncMock)
-    @patch("core.retrieval.pipeline.upsert_passage_triple_link", new_callable=AsyncMock)
     @patch("core.retrieval.pipeline._set_run_status")
     async def test_retry_replay_no_duplicates(
-        self, mock_set_status, mock_triple_link, mock_insert_triple,
-        mock_build_graph, mock_extract, mock_bundle_link,
+        self, mock_set_status,         mock_build_graph, mock_extract, mock_bundle_link,
         mock_upsert_passage, mock_supabase,
     ):
         mock_upsert_passage.return_value = 100
         mock_extract.side_effect = [
             ([MagicMock()], True),
         ]
-        mock_insert_triple.return_value = 1
+        
 
         # Short single-paragraph content → 1 passage
         result1 = await index_memory(
@@ -449,9 +434,6 @@ class TestRetryReplay:
 
         assert mock_build_graph.call_count == 1, (
             f"Expected 1 build_triple_graph call, got {mock_build_graph.call_count}"
-        )
-        assert mock_insert_triple.call_count == 1, (
-            f"Expected 1 _insert_triple call, got {mock_insert_triple.call_count}"
         )
         mock_set_status.assert_called_once()
         assert mock_set_status.call_args[0][1] == "completed"

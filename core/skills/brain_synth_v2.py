@@ -190,7 +190,7 @@ async def synth_entity(project_id, entity_name, org_tag):
         try:
             tasks_res = await asyncio.to_thread(
                 lambda: supabase.table('tasks').select('title, status, created_at, updated_at') \
-                .eq('project_id', project_id).execute()
+                .eq('is_current', True).eq('project_id', project_id).execute()
             )
             if tasks_res.data:
                 for t in tasks_res.data:
@@ -297,7 +297,7 @@ async def synth_entity(project_id, entity_name, org_tag):
                 for child in child_res.data or []:
                     child_tasks = await asyncio.to_thread(
                         lambda c_id=child['id']: supabase.table('tasks').select('title, status, created_at, updated_at') \
-                        .eq('project_id', c_id).execute()
+                        .eq('is_current', True).eq('project_id', c_id).execute()
                     )
                     for t in child_tasks.data or []:
                         ts = parse_iso(t.get('updated_at') or t.get('created_at'))

@@ -1148,7 +1148,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
 
         if relevant_project_names:
             or_string = ",".join([f"title.ilike.%{name}%" for name in relevant_project_names])
-            pages_res = supabase.table('canonical_pages').select('title, content').or_(or_string).execute()
+            pages_res = supabase.table('canonical_pages').select('title, content').eq('is_current', True).or_(or_string).execute()
             if pages_res.data:
                 page_entries = [f"[CANONICAL CONTEXT ONLY — DO NOT LIST IN BRIEFING]\n### MASTER PAGE: {p['title']}\n{p['content']}" for p in pages_res.data]
                 master_page_context = "\n\n".join(page_entries)

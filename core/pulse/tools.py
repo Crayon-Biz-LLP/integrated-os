@@ -99,7 +99,7 @@ def create_task(title: str, project_id: int = None, priority: str = "important",
     import hashlib
     dedup_key = hashlib.md5(f"{title.lower().strip()}:{project_id or 0}".encode()).hexdigest()[:16]
     
-    exist = supabase.table('tasks').select('id').eq('dedup_key', dedup_key).not_.in_('status', ['done', 'cancelled']).execute()
+    exist = supabase.table('tasks').select('id').eq('is_current', True).eq('dedup_key', dedup_key).not_.in_('status', ['done', 'cancelled']).execute()
     if exist.data:
         return f"Task '{title}' already exists."
         

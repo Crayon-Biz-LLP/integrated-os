@@ -42,7 +42,7 @@ async def extract_triples(text: str, source_type: str, source_id: str,
 
     Returns (triples, llm_ok) where llm_ok is False if the LLM call itself failed.
     """
-    prompt = EXTRACTION_PROMPT.format(text=text[:2000])
+    prompt = EXTRACTION_PROMPT.replace("{text}", text[:2000])
 
     try:
         response = await generate_content_with_fallback(

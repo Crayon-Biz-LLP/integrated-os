@@ -78,7 +78,11 @@ export default function DashboardLayout({
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      setUserEmail(data.user?.email || null);
+      if (!data.user) {
+        window.location.href = '/login';
+      } else {
+        setUserEmail(data.user.email || null);
+      }
     });
   }, [supabase]);
 

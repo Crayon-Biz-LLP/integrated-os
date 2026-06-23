@@ -115,7 +115,7 @@ CREATE TABLE public.resources (
     embedding vector,
     is_current bool DEFAULT true,
     version int4 DEFAULT 1,
-    supersedes_id int4
+    supersedes_id int8
 );
 
 ALTER TABLE public.resources ADD PRIMARY KEY (id);
@@ -151,11 +151,11 @@ CREATE TABLE public.memories (
     archive_reason text,
     importance_score int4 DEFAULT 5 CHECK (importance_score >= 1 AND importance_score <= 10),
     last_accessed_at timestamptz DEFAULT now(),
-    supersedes_id uuid,
+    supersedes_id int8,
     pruned bool DEFAULT false,
     pruned_at timestamptz,
     pruned_reason text,
-    superseded_by uuid,
+    superseded_by int8,
     is_current bool DEFAULT true,
     version int4 DEFAULT 1,
     project_id int8
@@ -187,7 +187,7 @@ CREATE TABLE public.graph_nodes (
     type text,
     metadata jsonb,
     embedding vector,
-    canonical_page_id int4
+    canonical_page_id int8
 );
 
 ALTER TABLE public.graph_nodes ADD PRIMARY KEY (id);

@@ -469,3 +469,15 @@ This enables natural-language note capture without special syntax.
 - **Temporal Lineage on canonical_pages**: Created `trg_temporal_canonical_pages_update` PostgreSQL trigger with same pattern. Brain synth now writes page versions instead of overwriting.
 - **memories table schema fix**: `supersedes_id`/`superseded_by` changed from `uuid` to `int8` to match the table's primary key type.
 - **Documentation synchronized**: All backlog items marked completed. AGENTS.md, speckit.*, and product-summary/ brought in sync with codebase reality.
+
+## Today's Changes (June 23, 2026)
+
+### T-600: Comprehensive System Audit & Hardening (Tiers 0-5)
+**Status**: Completed
+**Details**: Executed a 38-point massive system hardening based on the 6-tier classification pass:
+- **Tier 0 (Active Crashes)**: `completion_handler` status values added to `raw_dumps_status_check`. Rotated and redacted plaintext secrets from `config.json` and `frontend/.env.local`. Fixed `.eq('is_current', False)` polarity bug in `context.py` and missing return in `context_salience.py`.
+- **Tier 1 (Data Corruption)**: Restored entity extraction in `quick_process.py` (indentation fix). Replaced crash-prone `.format()` with `.replace()` in `extractor.py`/`search.py`. Fixed `auto_approve.py` JSONB metadata overwrite. Removed double-versioning `create_versioned_task` from `calendar.py` and `temporal_lineage.py`. Fixed schema type mismatches (`uuid` to `int8`).
+- **Tier 2 (Ghost Record Isolation)**: Added `.eq('is_current', True)` to 10 queries across `utils.py`, `commands.py`, `engine.py`, `memory.py`, `practices.py`, `tools.py`, `email_ingest.py`, `outlook_ingest.py`, `dispatch.py`, and Next.js `route.ts`.
+- **Tier 3 (Tests & Deployment)**: Fixed crashing `test_retrieval.py` patches. Deleted stale RPCs from `rpcs.sql`. Created `02_temporal_lineage_triggers.sql` migration. Fixed `package.json` lint script. Pinned `requirements.txt`. Purged orphan `__pycache__` dirs.
+- **Tier 4 (Security)**: Plugged exception leaks (`detail=str(e)`) across 12 endpoints. Hardened weak `.endswith()` cron auth. Added Google Drive webhook auth (`X-Goog-Channel-Token` check). Added Next.js dashboard auth guard.
+- **Tier 5 (Frontend)**: Fixed NeuralDisc zoom state coupling. Fixed `null as any` onNodeClick types. Fixed D3 teardown loop on dependency change. Fixed duplicate Radix UI SelectItem values in graph-pending.

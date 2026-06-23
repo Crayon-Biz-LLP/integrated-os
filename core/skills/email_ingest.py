@@ -31,6 +31,7 @@ def build_active_task_list() -> list:
     try:
         result = supabase.table('tasks')\
             .select('id, title')\
+            .eq('is_current', True)\
             .not_.in_('status', ['done', 'cancelled'])\
             .execute()
         return result.data or []

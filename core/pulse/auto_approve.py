@@ -85,8 +85,12 @@ async def auto_approve_concepts_and_evokes(label: str):
         # Store raw linked_entity as fallback metadata when resolution fails
         if linked_entity and not resolved_label and concept_uuid:
             try:
+                node_res = supabase.table('graph_nodes').select('metadata').eq('id', concept_uuid).maybe_single().execute()
+                existing_meta = (node_res.data.get('metadata') if node_res and node_res.data else {}) or {}
+                
                 supabase.table('graph_nodes').update({
                     "metadata": {
+                        **existing_meta,
                         "raw_linked_entity": linked_entity,
                         "resolution_failed": True
                     }

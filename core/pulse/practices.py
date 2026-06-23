@@ -648,6 +648,7 @@ async def build_practice_correlations() -> list:
     try:
         completed_res = supabase.table('tasks') \
             .select('id', count='exact') \
+            .eq('is_current', True) \
             .in_('status', ['done', 'cancelled']) \
             .execute()
         total_completed = completed_res.count or 0
@@ -663,6 +664,7 @@ async def build_practice_correlations() -> list:
         thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         tasks_res = supabase.table('tasks') \
             .select('completed_at') \
+            .eq('is_current', True) \
             .in_('status', ['done', 'cancelled']) \
             .gte('completed_at', thirty_days_ago) \
             .execute()

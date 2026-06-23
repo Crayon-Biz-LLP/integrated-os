@@ -137,7 +137,7 @@ class ContextProvider:
         since_utc = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         res = supabase.table('tasks') \
             .select('title, project_id, updated_at') \
-            .eq('is_current', False) \
+            .eq('is_current', True) \
             .eq('status', 'done') \
             .gte('updated_at', since_utc) \
             .order('updated_at', desc=True) \

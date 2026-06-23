@@ -169,7 +169,7 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">Relationship</label>
-                    <Select value={editForm.rel} onValueChange={(v) => setEditForm(prev => ({ ...prev, rel: v ?? '' }))}>
+                    <Select value={`${RELATIONSHIP_OPTIONS.find(o => o.value === editForm.rel)?.group || ''}::${editForm.rel}`} onValueChange={(v) => setEditForm(prev => ({ ...prev, rel: v ? v.split('::')[1] : '' }))}>
                       <SelectTrigger className="w-full h-8 text-sm">
                         <SelectValue />
                       </SelectTrigger>
@@ -177,8 +177,8 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
                         {REL_GROUPS.map(group => (
                           <SelectGroup key={group}>
                             <SelectLabel>{group}</SelectLabel>
-                            {RELATIONSHIP_OPTIONS.filter(o => o.group === group).map(opt => (
-                              <SelectItem key={opt.value} value={opt.value}>
+                            {RELATIONSHIP_OPTIONS.filter(o => o.group === group).map((opt, i) => (
+                              <SelectItem key={`${opt.group}-${opt.value}-${i}`} value={`${opt.group}::${opt.value}`}>
                                 {opt.value}
                               </SelectItem>
                             ))}

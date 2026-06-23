@@ -1,4 +1,4 @@
-from core.webhook.utils import supabase
+from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 
 async def check_proactive_signals(entity_name: str) -> str:
@@ -7,6 +7,7 @@ async def check_proactive_signals(entity_name: str) -> str:
         return ""
         
     signals = []
+    supabase = get_supabase()
     try:
         # Check email drafts
         drafts_res = supabase.table('email_drafts').select('id').eq('status', 'pending').ilike('draft_body', f'%{entity_name}%').execute()

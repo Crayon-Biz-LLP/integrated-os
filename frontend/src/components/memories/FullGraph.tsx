@@ -7,7 +7,7 @@ import { GraphNode, GraphEdge } from '@/lib/memories/types';
 interface FullGraphProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  onNodeClick: (node: GraphNode) => void;
+  onNodeClick: (node: GraphNode | null) => void;
 }
 
 const colorMap: Record<string, string> = {
@@ -164,13 +164,15 @@ export default function FullGraph({ nodes, edges, onNodeClick }: FullGraphProps)
       .text((d) => d.label.length > 16 ? d.label.slice(0, 16) + '...' : d.label);
 
     svg.on('click', () => {
-      onNodeClick(null as any);
+      onNodeClick(null);
     });
 
     return () => {
+      svg.on('click', null);
       simulation.stop();
     };
-  }, [nodes, edges, onNodeClick, ticked]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, edges, ticked]);
 
   return (
     <div ref={containerRef} className="w-full h-full" />

@@ -5,7 +5,6 @@ from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import get_google_creds, format_rfc3339
-from core.lib.temporal_lineage import create_versioned_task
 
 from core.services.outlook_service import get_outlook_calendar_events
 
@@ -150,28 +149,14 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                 ).execute()
 
                 if google_task.get('status') == 'completed':
-                    # Versioned insert for task completion
                     try:
-                        current = supabase_client.table('tasks').select('*').eq('id', task_id).execute()
-                        if current.data:
-                            old_task = current.data[0]
-                            new_payload = {
-                                **{k: v for k, v in old_task.items() if k not in ['id', 'created_at', 'version', 'is_current', 'supersedes_id', 'google_task_id']},
-                                'status': 'done',
-                                'completed_at': datetime.now(timezone.utc).isoformat()
-                            }
-                            create_versioned_task(
-                                title=new_payload.get('title'),
-                                project_id=new_payload.get('project_id'),
-                                old_task_id=task_id,
-                                **new_payload
-                            )
-                    except Exception:
-                        # Fallback to standard update
+                        # Standard update relies on temporal lineage BEFORE UPDATE trigger
                         supabase_client.table('tasks').update({
                             'status': 'done',
                             'completed_at': datetime.now(timezone.utc).isoformat()
                         }).eq('id', task_id).execute()
+                    except Exception as e:
+                        audit_log_sync("pulse", "ERROR", f"Failed to mark task {task_id} as done: {e}")
 
                     # 🧠 Collect for outcome memory — caller will fire as background tasks
                     proj_name = None

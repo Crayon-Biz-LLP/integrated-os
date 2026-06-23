@@ -842,7 +842,7 @@ Query: {query}"""
             if not search_val or search_val == "None":
                 return "None"
             try:
-                res = supabase.table('canonical_pages').select('title, content').ilike('title', f"%{search_val}%").limit(1).execute()
+                res = supabase.table('canonical_pages').select('title, content').eq('is_current', True).ilike('title', f"%{search_val}%").limit(1).execute()
                 if res.data:
                     c = res.data[0].get('content', '')[:2000]
                     return f"{res.data[0].get('title')}:\n{c}..."

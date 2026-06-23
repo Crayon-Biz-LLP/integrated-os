@@ -1,3 +1,6 @@
+import hashlib
+from core.lib.redis_cache import cache_get, cache_set
+
 import asyncio
 from typing import List, Optional, Dict
 import time
@@ -37,8 +40,6 @@ async def associative_retrieve(
     debug = {}
 
     # 1. Parse query, fetch embedding, and search lexical phrases concurrently
-    import hashlib
-    from core.lib.redis_cache import cache_get, cache_set
     
     query_norm = query.lower().strip()
     query_hash = hashlib.sha256(query_norm.encode()).hexdigest()
@@ -98,9 +99,9 @@ async def associative_retrieve(
     phrase_nodes = phrase_nodes[:DEFAULT_TOP_K_PHRASES]
 
     query_phrases = list(set(llm_phrases + lex_phrases))
-    debug["query_phrases"] = query_phrases
-    debug["llm_phrases"] = llm_phrases
-    debug["lex_phrases"] = lex_phrases
+    debug["query_phrases"] = "[REDACTED]"
+    debug["llm_phrases"] = "[REDACTED]"
+    debug["lex_phrases"] = "[REDACTED]"
 
     if not phrase_nodes:
         return ExplainableBundle(query=query, items=[], latency_ms=int((time.time() - start) * 1000))
@@ -220,7 +221,7 @@ async def _extract_query_entities(query: str) -> List[str]:
     from core.llm.constants import CLASSIFICATION_MODEL
     import json
     try:
-        prompt = QUERY_ENTITY_PROMPT.format(query=query)
+        prompt = QUERY_ENTITY_PROMPT.replace("{query}", query)
         response = await generate_content_with_fallback(
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,

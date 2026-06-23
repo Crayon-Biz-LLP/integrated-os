@@ -95,27 +95,6 @@ AS $function$
 $function$
 
 
--- match_emails_hybrid
-CREATE OR REPLACE FUNCTION public.match_emails_hybrid(query_embedding vector, match_count integer DEFAULT 5, match_threshold double precision DEFAULT 0.5)
- RETURNS TABLE(id integer, subject text, sender text, body_summary text, classification text, received_at timestamp with time zone, similarity double precision)
- LANGUAGE plpgsql
-AS $function$
-BEGIN
-  RETURN QUERY
-  SELECT
-    e.id,
-    e.subject,
-    e.sender,
-    e.body_summary,
-    e.classification,
-    e.received_at,
-    1 - (e.embedding <=> query_embedding) AS similarity
-  FROM emails e
-  WHERE 1 - (e.embedding <=> query_embedding) > match_threshold
-  ORDER BY similarity DESC
-  LIMIT match_count;
-END;
-$function$
 
 
 -- match_memories
@@ -174,28 +153,6 @@ END;
 $function$
 
 
--- match_whatsapp_hybrid
-CREATE OR REPLACE FUNCTION public.match_whatsapp_hybrid(query_embedding vector, match_count integer DEFAULT 5, match_threshold double precision DEFAULT 0.5)
- RETURNS TABLE(id bigint, sender_name text, sender_phone text, message_text text, summary text, classification text, received_at timestamp with time zone, similarity double precision)
- LANGUAGE plpgsql
-AS $function$
-BEGIN
-  RETURN QUERY
-  SELECT
-    w.id,
-    w.sender_name,
-    w.sender_phone,
-    w.message_text,
-    w.summary,
-    w.classification,
-    w.received_at,
-    1 - (w.embedding <=> query_embedding) AS similarity
-  FROM whatsapp_messages w
-  WHERE 1 - (w.embedding <=> query_embedding) > match_threshold
-  ORDER BY similarity DESC
-  LIMIT match_count;
-END;
-$function$
 
 
 -- get_memory_at_time

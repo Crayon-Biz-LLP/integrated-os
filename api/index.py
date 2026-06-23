@@ -113,7 +113,7 @@ async def sentinel_route(request: Request):
     if not cron_secret:
         raise HTTPException(status_code=500, detail="CRON_SECRET missing")
         
-    if not auth_header.endswith(cron_secret) and request.headers.get("x-pulse-secret") != cron_secret:
+    if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
         
     result = await process_sentinel(auth_secret=cron_secret, trigger="cron")
@@ -129,7 +129,7 @@ async def decision_pulse_route(request: Request):
     if not cron_secret:
         raise HTTPException(status_code=500, detail="CRON_SECRET missing")
 
-    if not auth_header.endswith(cron_secret) and request.headers.get("x-pulse-secret") != cron_secret:
+    if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     result = await process_decision_pulse(auth_secret=cron_secret, trigger="cron")
@@ -145,7 +145,7 @@ async def roundup_route(request: Request):
     if not cron_secret:
         raise HTTPException(status_code=500, detail="CRON_SECRET missing")
 
-    if not auth_header.endswith(cron_secret) and request.headers.get("x-pulse-secret") != cron_secret:
+    if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     try:
@@ -535,10 +535,10 @@ async def graph_edge_action_route(request: Request):
         else:
             return {"success": False, "message": result['message'], "action": action}
 
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/clarification")
 async def clarification_action_route(request: Request):
@@ -560,7 +560,7 @@ async def clarification_action_route(request: Request):
     except Exception as e:
         import logging
         logging.error(f"Clarification API error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/graph-merge-action")
 async def graph_merge_action_route(request: Request):
@@ -640,10 +640,10 @@ async def graph_merge_action_route(request: Request):
 
         return {"success": True, "message": f"Merged '{pr['label']}' into canonical node."}
 
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/graph-node-action")
@@ -669,10 +669,10 @@ async def graph_node_action_route(request: Request):
         return result
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.put("/api/graph-node/{pending_id}")
@@ -766,10 +766,10 @@ async def graph_node_rename_route(pending_id: str, request: Request):
             }).execute()
 
         return {"success": True, "message": f"Renamed to '{new_label}'"}
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.patch("/api/graph-node/{pending_id}/type")
 async def graph_node_change_type_route(pending_id: str, request: Request):
@@ -831,10 +831,10 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         supabase.table('pending_graph_nodes').update({'type': new_type}).eq('id', pending_id_int).execute()
         supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
         return {"success": True, "message": f"Changed type to {new_type}"}
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.delete("/api/graph-node/{pending_id}")
 async def graph_node_delete_route(pending_id: str, request: Request):
@@ -940,10 +940,10 @@ async def graph_node_delete_route(pending_id: str, request: Request):
             supabase.table('graph_nodes').delete().eq('id', l_id).execute()
                     
         return {"success": True, "message": f"Deleted node '{label}', rejected edges and {orphaned} orphaned concepts"}
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/graph-node-merge")
 async def graph_node_manual_merge_route(request: Request):
@@ -1133,10 +1133,10 @@ async def graph_node_manual_merge_route(request: Request):
         
         return {"success": True, "message": f"Merged '{source_label}' into '{target_label}'"}
         
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/api/graph-nodes/search")
 async def graph_nodes_search_route(request: Request):
@@ -1155,10 +1155,10 @@ async def graph_nodes_search_route(request: Request):
             query = query.eq('type', node_type)
         res = query.limit(10).execute()
         return res.data or []
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/api/graph-nodes/similar")
 async def graph_nodes_similar_route(request: Request):
@@ -1194,10 +1194,10 @@ async def graph_nodes_similar_route(request: Request):
                 })
                 
         return sorted(matches, key=lambda x: x['score'], reverse=True)[:5]
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/api/graph-edges/similar")
 async def graph_edges_similar_route(request: Request):
@@ -1227,10 +1227,10 @@ async def graph_edges_similar_route(request: Request):
             matches.append({'id': p['id'], 'is_pending': True})
             
         return matches
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/whatsapp-ingest")
 async def whatsapp_ingest_route(request: Request):
@@ -1279,6 +1279,11 @@ async def drive_webhook(request: Request):
     channel_id = request.headers.get("X-Goog-Channel-ID", "")
     resource_state = request.headers.get("X-Goog-Resource-State", "")
     resource_id = request.headers.get("X-Goog-Resource-ID", "")
+    channel_token = request.headers.get("X-Goog-Channel-Token", "")
+
+    expected_token = os.getenv("PULSE_SECRET")
+    if expected_token and channel_token != expected_token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     print(f"Drive webhook: channel={channel_id} state={resource_state} resource={resource_id}")
 
@@ -1326,7 +1331,7 @@ async def graph_nodes_live_route(request: Request):
             .limit(5000) \
             .execute()
         return {"data": res.data or []}
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")

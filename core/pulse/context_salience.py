@@ -66,6 +66,8 @@ def assemble_context(
             break
         packed.append(node_data)
         node_ids.append(node_data['node_id'])
+        
+    return packed
 def _resolve_sender_to_person(sender_email: str) -> dict | None:
     supabase = get_supabase()
     # Assuming people table has email or we match by something. 

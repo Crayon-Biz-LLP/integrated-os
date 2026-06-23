@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
         supabase,
         "canonical_pages",
         "id,title,project_id,source_count,last_synth_at,updated_at,is_sparse,category",
-        (q) => q.order("updated_at", { ascending: false }),
+        (q) => q.eq("is_current", true).order("updated_at", { ascending: false }),
       );
 
       return NextResponse.json(data || [], {

@@ -166,12 +166,12 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
         except Exception as e:
             audit_log_sync("quick_process", "WARNING", f"Memory insert failed: {e}")
             
-            try:
-                if memory_id:
-                    await extract_and_link_entities(text, memory_id, 'memory')
-                    schedule_index_memory(memory_id, text, 'note', 'quick_process')
-            except Exception as e:
-                audit_log_sync("quick_process", "WARNING", f"extract_and_link_entities failed: {e}")
+        try:
+            if memory_id:
+                await extract_and_link_entities(text, memory_id, 'memory')
+                schedule_index_memory(memory_id, text, 'note', 'quick_process')
+        except Exception as e:
+            audit_log_sync("quick_process", "WARNING", f"extract_and_link_entities failed: {e}")
             
         return {"action": "filed", "type": "note"}
 
@@ -334,6 +334,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
             
     # Fallback strict idempotency guard
     existing = supabase.table('tasks').select('id') \
+        .eq('is_current', True) \
         .eq('dedup_key', dedup_key) \
         .not_.in_('status', ['done', 'cancelled']) \
         .limit(1).execute()

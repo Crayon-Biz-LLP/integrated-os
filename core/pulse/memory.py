@@ -174,7 +174,7 @@ async def generate_after_action_report() -> str:
     try:
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
-        completed_tasks_res = supabase.table('tasks').select('title').eq('status', 'done').gte('completed_at', today_start).execute()
+        completed_tasks_res = supabase.table('tasks').select('title').eq('is_current', True).eq('status', 'done').gte('completed_at', today_start).execute()
         completed_count = len(completed_tasks_res.data) if completed_tasks_res.data else 0
 
         open_tasks_res = supabase.table('tasks').select('id').eq('status', 'todo').eq('is_current', True).execute()

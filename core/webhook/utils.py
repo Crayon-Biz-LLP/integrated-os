@@ -80,6 +80,7 @@ def is_already_in_tasks_table(title: str) -> dict:
     try:
         result = supabase.table('tasks')\
             .select('id, title')\
+            .eq('is_current', True)\
             .not_.in_('status', ['done', 'cancelled'])\
             .execute()
         tasks = result.data or []

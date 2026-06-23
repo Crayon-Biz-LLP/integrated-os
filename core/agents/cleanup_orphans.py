@@ -37,7 +37,7 @@ def cleanup_orphan_graph_edges(dry_run: bool = False):
 
 def cleanup_orphan_tasks(dry_run: bool = False):
     audit_log_sync("cleanup_orphans", "INFO", "Starting orphan task cleanup...")
-    all_tasks = supabase.table("tasks").select("id, project_id, title").execute()
+    all_tasks = supabase.table("tasks").select("id, project_id, title").eq('is_current', True).execute()
     orphans = 0
     for task in all_tasks.data or []:
         pid = task.get("project_id")

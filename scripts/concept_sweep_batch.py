@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 from dotenv import load_dotenv
+from datetime import datetime, timezone
 
 load_dotenv()
 
@@ -245,7 +246,7 @@ def run_batch_sweep():
                     "source_id": mem_id,
                     "process_type": "concept_sweep",
                     "status": "completed",
-                    "completed_at": "now()",
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
                     "concepts_extracted": len(nodes)
                 }, on_conflict="source_table,source_id,process_type").execute()
             except Exception as e:

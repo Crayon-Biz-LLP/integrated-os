@@ -30,6 +30,7 @@ def renew_channel():
         "id": channel_id,
         "type": "web_hook",
         "address": address,
+        "token": os.getenv("PULSE_SECRET", ""),
         "payload": True
     }
 
