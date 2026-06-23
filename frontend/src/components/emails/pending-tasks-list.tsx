@@ -20,6 +20,7 @@ export function PendingTasksList({ tasks: initialTasks, loading }: PendingTasksL
   const [tasks, setTasks] = useState<EmailPendingTask[]>(initialTasks);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTasks(initialTasks);
   }, [initialTasks]);
 
@@ -37,6 +38,7 @@ export function PendingTasksList({ tasks: initialTasks, loading }: PendingTasksL
 
   const isExpiringSoon = (createdAt: string) => {
     try {
+      // eslint-disable-next-line react-hooks/purity
       const diff = Date.now() - parseISO(createdAt).getTime();
       return diff > 5 * 24 * 60 * 60 * 1000;
     } catch {

@@ -833,24 +833,16 @@ async def sync_practice_canonical_pages():
             existing = existing_res.data[0] if existing_res.data else None
 
             if existing:
-                old_ver = existing.get('version', 0) or 0
-                supabase.table('canonical_pages').insert({
-                    "title": canonical_title,
-                    "project_id": None,
+                old_ver = existing.get('version') or 0
+                supabase.table('canonical_pages').update({
                     "content": content,
                     "embedding": embedding,
                     "version": old_ver + 1,
-                    "is_current": True,
-                    "supersedes_id": existing['id'],
                     "updated_at": now_iso,
                     "source_count": len(variants) + len(ro),
                     "last_synth_at": now_iso,
                     "is_sparse": len(content) < 500
-                }).execute()
-                supabase.table('canonical_pages') \
-                    .update({"is_current": False}) \
-                    .eq('id', existing['id']) \
-                    .execute()
+                }).eq('id', existing['id']).execute()
             else:
                 supabase.table('canonical_pages').insert({
                     "title": canonical_title,

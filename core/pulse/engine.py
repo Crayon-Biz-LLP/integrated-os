@@ -15,7 +15,6 @@ from core.lib.temporal_lineage import detect_drift
 from core.lib.conversation import get_or_create_session, format_history_for_prompt
 from core.lib.time_utils import compute_expires_at
 
-from core.services.db import versioned_update
 from core.services.google_service import get_tasks_service
 
 from core.pulse.llm import (
@@ -123,10 +122,10 @@ def _auto_expire_recurring_tasks():
 
         if expired:
             for tid in expired:
-                versioned_update('tasks', tid, {
+                supabase.table('tasks').update({
                     'status': 'cancelled',
                     'completed_at': now.isoformat()
-                }, change_source='pulse_auto_expiry')
+                }).eq('id', tid).execute()
             audit_log_sync("pulse", "INFO", f"⏰ Auto-expired {len(expired)} recurring tasks (recurrence ended).")
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Auto-expiry check failed: {e}")

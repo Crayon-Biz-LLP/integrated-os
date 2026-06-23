@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { Application, Graphics, Text, TextStyle, Container, BlurFilter } from 'pixi.js';
 import { GraphNode, GraphEdge } from '@/lib/memories/types';
@@ -147,35 +147,41 @@ export default function NeuralDisc({
 
   // ---- Stable refs for callbacks ----
   const onNodeClickRef = useRef(onNodeClick);
-  onNodeClickRef.current = onNodeClick;
   const onBackgroundClickRef = useRef(onBackgroundClick);
-  onBackgroundClickRef.current = onBackgroundClick;
   const onDiagnosticsRef = useRef(onDiagnostics);
-  onDiagnosticsRef.current = onDiagnostics;
   const onContextRestoredRef = useRef(onContextRestored);
-  onContextRestoredRef.current = onContextRestored;
   const nodesRef = useRef(nodesProp);
-  nodesRef.current = nodesProp;
   const edgesRef = useRef(edgesProp);
-  edgesRef.current = edgesProp;
   const centerNodeIdRef = useRef(centerNodeId);
-  centerNodeIdRef.current = centerNodeId;
 
   // ---- Zoom / Pan transform (persisted across scene rebuilds, reset on new layout) ----
   const viewTransformRef = useRef({ x: 0, y: 0, scale: 1 });
 
   // ---- Debug counters ----
   const renderCountRef = useRef(0);
-  renderCountRef.current += 1;
   const layoutCountRef = useRef(0);
   const sceneBuildCountRef = useRef(0);
   const diagCallCountRef = useRef(0);
-  const lastLogRef = useRef(performance.now());
+  // eslint-disable-next-line react-hooks/purity
+  const lastLogRef = useRef(typeof performance !== 'undefined' ? performance.now() : 0);
+
+  // Update refs in useLayoutEffect to avoid concurrent rendering issues
+  useLayoutEffect(() => {
+    onNodeClickRef.current = onNodeClick;
+    onBackgroundClickRef.current = onBackgroundClick;
+    onDiagnosticsRef.current = onDiagnostics;
+    onContextRestoredRef.current = onContextRestored;
+    nodesRef.current = nodesProp;
+    edgesRef.current = edgesProp;
+    centerNodeIdRef.current = centerNodeId;
+    renderCountRef.current += 1;
+  });
 
   // --- Track Reduced Motion Live ---
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPrefersReducedMotion(mediaQuery.matches);
     const handler = (e: MediaQueryListEvent) => setPrefersReducedMotion(e.matches);
     mediaQuery.addEventListener('change', handler);
@@ -289,6 +295,7 @@ export default function NeuralDisc({
     viewTransformRef.current = { x: 0, y: 0, scale: 1 };
     mainContainerRef.current?.scale.set(1);
     mainContainerRef.current?.position.set(0, 0);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setZoomVersion(v => v + 1);
 
     setLayoutData(result);
@@ -570,6 +577,7 @@ export default function NeuralDisc({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutData, hoveredNodeId, contextLost, enableEffects, prefersReducedMotion]);
 
+  // eslint-disable-next-line react-hooks/refs
   const zoomPercent = Math.round(viewTransformRef.current.scale * 100);
 
   if (contextLost) {

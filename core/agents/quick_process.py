@@ -6,7 +6,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 from core.lib.audit_logger import info, audit_log_sync
-from core.services.db import get_supabase,  fetch_active_projects, zombie_recovery, versioned_update
+from core.services.db import get_supabase,  fetch_active_projects, zombie_recovery
 from core.services.google_service import format_rfc3339, sync_to_calendar, sync_to_google, delete_calendar_event, get_tasks_service
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.llm.fallback import generate_content_with_fallback
@@ -227,7 +227,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
                         audit_log_sync("quick_process", "ERROR", f"Google Tasks sync failed on update: {e}")
 
             if update_payload:
-                versioned_update('tasks', task_update_id, update_payload, change_source='quick_process', change_reason="Updated via quick_process inline")
+                supabase.table('tasks').update(update_payload).eq('id', task_update_id).execute()
                 
             return {"action": "updated", "task_id": task_update_id}
 
@@ -265,8 +265,10 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
                     delete_calendar_event(td['google_event_id'])
                 if td.get('google_task_id') and tasks_service:
                     sync_to_google(tasks_service, title=td['title'], task_id=td['google_task_id'], status='done')
-                versioned_update('tasks', td['id'], {"status": "done", "completed_at": datetime.now(timezone.utc).isoformat()},
-                                 change_source='quick_process', change_reason="Completed via quick_process")
+                supabase.table('tasks').update({
+                    "status": "done",
+                    "completed_at": datetime.now(timezone.utc).isoformat()
+                }).eq('id', td['id']).execute()
                 
                 # 🧠 Write outcome memory
                 try:
@@ -323,7 +325,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
                         audit_log_sync("quick_process", "ERROR", f"Google Tasks sync failed on update: {e}")
 
             if update_payload:
-                versioned_update('tasks', matched_id, update_payload, change_source='quick_process', change_reason="Updated via quick_process semantic match")
+                supabase.table('tasks').update(update_payload).eq('id', matched_id).execute()
                 
             ret = {"action": "updated", "task_id": matched_id}
             if conflict_warning:

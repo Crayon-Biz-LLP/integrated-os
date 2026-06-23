@@ -1,11 +1,12 @@
 from core.services.db import get_supabase
+
 from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import get_google_creds, format_rfc3339
 from core.lib.temporal_lineage import create_versioned_task
-from core.services.db import versioned_update
+
 from core.services.outlook_service import get_outlook_calendar_events
 
 supabase = get_supabase()
@@ -151,7 +152,7 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                 if google_task.get('status') == 'completed':
                     # Versioned insert for task completion
                     try:
-                        current = supabase.table('tasks').select('*').eq('id', task_id).execute()
+                        current = supabase_client.table('tasks').select('*').eq('id', task_id).execute()
                         if current.data:
                             old_task = current.data[0]
                             new_payload = {
@@ -166,11 +167,11 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                                 **new_payload
                             )
                     except Exception:
-                        # Fallback to versioned update
-                        versioned_update('tasks', task_id, {
+                        # Fallback to standard update
+                        supabase_client.table('tasks').update({
                             'status': 'done',
                             'completed_at': datetime.now(timezone.utc).isoformat()
-                        })
+                        }).eq('id', task_id).execute()
 
                     # 🧠 Collect for outcome memory — caller will fire as background tasks
                     proj_name = None

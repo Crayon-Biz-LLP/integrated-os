@@ -57,7 +57,7 @@ core/
 │   ├── outlook_ingest.py         — Outlook inbox processing
 │   └── outlook_token_helper.py   — Outlook OAuth token management
 ├── services/                     — Shared services
-│   ├── db.py                     — Supabase client, versioned_update, embeddings
+│   ├── db.py                     — Supabase client, embeddings
 │   ├── google_service.py         — Google Calendar + Tasks API (build() LRU-cached)
 │   ├── llm.py                    — Shared LLM calls
 │   ├── outlook_service.py        — Outlook Calendar API

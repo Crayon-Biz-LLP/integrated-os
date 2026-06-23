@@ -157,9 +157,9 @@ ALTER TABLE tasks ADD COLUMN superseded_by UUID REFERENCES tasks(id);
 ```
 
 Modify task update logic:
-1. When a task's content/status changes materially → INSERT new row with `is_current = TRUE`, `version = old_version + 1`
-2. Set old row: `is_current = FALSE`, `superseded_by = new_row_id`
-3. Never DELETE task rows
+1. Relies ENTIRELY on Supabase `BEFORE UPDATE` triggers (`trg_temporal_task_update`).
+2. Python application-level versioning (`versioned_update`) was stripped out to prevent primary key churn.
+3. Standard `.update()` calls on the tasks table will automatically preserve history into archived rows while keeping the `id` perfectly stable.
 
 ---
 
@@ -169,7 +169,7 @@ Modify task update logic:
 **Risk**: Medium — additive
 **Deploy safe**: YES
 
-Same `is_current` + `version` pattern. `brain_synth.py` writes a new page version instead of overwriting.
+Same `is_current` + `version` pattern, completely managed via `BEFORE UPDATE` database trigger. `brain_synth.py` runs standard `.update()` instead of manually overwriting.
 
 ---
 

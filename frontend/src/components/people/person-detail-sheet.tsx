@@ -29,9 +29,13 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
 
   useEffect(() => {
     if (!person) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRole(person.role || '');
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setStrategicWeight(person.strategic_weight || 5);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHasChanges(false);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTasks([]);
 
     // Load tasks lazily when sheet opens

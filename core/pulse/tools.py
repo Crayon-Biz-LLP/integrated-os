@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import List
 
 from core.retrieval.pipeline import schedule_index_memory
-from core.services.db import get_supabase, versioned_update
+from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
 
@@ -208,7 +208,7 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
         if new_reminder:
             update_payload["reminder_at"] = new_reminder
 
-        versioned_update('tasks', task_id, update_payload, change_source='pulse_tools')
+        supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
         return f"Task {task_id} updated successfully."
     except Exception as e:
         return f"Error updating task {task_id}: {e}"

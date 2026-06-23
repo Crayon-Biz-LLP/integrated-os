@@ -28,7 +28,7 @@ from core.pulse import (
     get_tasks_service,
     sync_to_google,
     delete_calendar_event,
-    versioned_update,
+
     write_outcome_memory,
     get_outlook_calendar_events,
     get_outlook_calendar_events_range,
@@ -390,13 +390,7 @@ async def update_task_status(request: Request, task_id: int):
         if new_status == 'done':
             update_data['completed_at'] = datetime.now().isoformat()
 
-        versioned_update(
-            table_name='tasks',
-            record_id=task_id,
-            update_data=update_data,
-            change_source='web_done',
-            change_reason=f"Status: {new_status}"
-        )
+        supabase.table('tasks').update(update_data).eq('id', task_id).execute()
 
         if new_status == 'done':
             proj_name = None

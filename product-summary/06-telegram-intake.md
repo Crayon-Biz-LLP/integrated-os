@@ -129,7 +129,7 @@ If no valid task ID is matched, the handler checks the candidate count:
 `execute_completion_closure()` (`completion_handler.py:167`) runs for every matched task:
 
 1. Reads current task row — skips if already terminal (`done`/`cancelled`)
-2. Uses `versioned_update()` for safe concurrent writes
+2. Uses standard `.update()` on the task (Database `BEFORE UPDATE` temporal triggers handle history preservation safely)
 3. Writes outcome memory via `write_outcome_memory()` (async, fire-and-forget)
 4. Deletes Google Calendar event if present
 5. Syncs completion to Google Tasks

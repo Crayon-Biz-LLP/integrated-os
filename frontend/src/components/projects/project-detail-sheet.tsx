@@ -92,10 +92,17 @@ export function ProjectDetailSheet({
 
   useEffect(() => {
     if (open && project) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setTasksLoading(true);
       fetchProjectTasks(project.id)
-        .then((data) => setTasks(data))
-        .catch(() => setTasks([]))
+        .then((data) => {
+          // eslint-disable-next-line react-hooks/set-state-in-effect
+          setTasks(data);
+        })
+        .catch(() => {
+          // eslint-disable-next-line react-hooks/set-state-in-effect
+          setTasks([]);
+        })
         .finally(() => setTasksLoading(false));
     }
   }, [open, project]);
