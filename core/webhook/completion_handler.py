@@ -222,37 +222,68 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
     )
     await _send(chat_id, receipt or f"✅ Closed: {closed_titles}")
 
+ORDINALS = {
+    'first': 0, '1st': 0, 'second': 1, '2nd': 1, 'third': 2, '3rd': 2,
+    'fourth': 3, '4th': 3, 'fifth': 4, '5th': 4,
+}
+NULL_WORDS = {'n', 'none', 'skip', 'cancel', 'leave', 'neither', 'nothing', 'no',
+              'leave it', 'none of these', 'none of them', 'dismiss'}
+FILLER = {'the', 'a', 'an', 'it', 'is', 'was', 'this', 'that', 'one', 'to', 'for',
+          'of', 'in', 'on', 'at', 'by', 'with', 'or', 'and', 'but', 'not', 'its',
+          'about', 'just', 'do', 'done', 'task', 'please', 'thanks', 'my', 'me'}
+
+
+async def _complete_candidate(candidate: dict, chat_id: int, last_clarification: dict) -> bool:
+    """Select a candidate task and execute completion closure."""
+    dump_id = last_clarification.get('dump_id')
+    active_tasks = [{"id": candidate["id"], "title": candidate["title"]}]
+    await execute_completion_closure(
+        dump_id=dump_id,
+        validated_ids=[candidate["id"]],
+        chat_id=chat_id,
+        receipt=None,
+        entity=None,
+        active_tasks=active_tasks
+    )
+    return True
+
+
 async def resolve_completion_disambiguation(text: str, chat_id: int, session_id: str, last_clarification: dict) -> bool:
-    """Handles the user's digit reply for an ambiguous completion."""
+    """Handles the user's digit or natural reply for an ambiguous completion."""
     cleaned = text.strip().lower()
+    candidates = last_clarification.get('candidate_tasks', [])
     
-    if cleaned in ('n', 'none'):
+    if cleaned in NULL_WORDS:
         dump_id = last_clarification.get('dump_id')
         _park(dump_id, STATUS_AWAITING, "user_selected_none")
         await _send(chat_id, "Understood. Left on the board. Note vaulted.")
         return True
-        
+    
     if cleaned.isdigit():
         idx = int(cleaned) - 1
-        candidates = last_clarification.get('candidate_tasks', [])
-        
         if 0 <= idx < len(candidates):
-            selected_task = candidates[idx]
-            dump_id = last_clarification.get('dump_id')
-            
-            # Retrieve active tasks context (just for title mapping)
-            active_tasks = [{"id": selected_task["id"], "title": selected_task["title"]}]
-            
-            await execute_completion_closure(
-                dump_id=dump_id,
-                validated_ids=[selected_task["id"]],
-                chat_id=chat_id,
-                receipt=None,
-                entity=None,
-                active_tasks=active_tasks
-            )
-            return True
-            
+            return await _complete_candidate(candidates[idx], chat_id, last_clarification)
+    
+    words = cleaned.split()
+    for w in words:
+        if w in ORDINALS:
+            idx = ORDINALS[w]
+            if 0 <= idx < len(candidates):
+                return await _complete_candidate(candidates[idx], chat_id, last_clarification)
+    
+    query_words = [w for w in words if len(w) > 2 and w not in FILLER]
+    if query_words:
+        best_score = 0
+        best_candidate = None
+        for c in candidates:
+            title_lower = c['title'].lower()
+            score = sum(1 for qw in query_words if qw in title_lower)
+            if score > best_score:
+                best_score = score
+                best_candidate = c
+        if best_score >= 1 and best_candidate:
+            return await _complete_candidate(best_candidate, chat_id, last_clarification)
+    
     return False
 
 def _park(dump_id, status, reason=None, is_processed=False):

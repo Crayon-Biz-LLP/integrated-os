@@ -443,6 +443,11 @@ async def ask_intent_disambiguation(text: str, possible_intents: list, chat_id: 
     log_exchange(session_id, 'bot', 'CLARIFICATION', json.dumps({"possible_intents": possible_intents, "original": text}), chat_id)
     await send_telegram(chat_id, reply, show_keyboard=False, inline_keyboard=keyboard)
 
+FILLER_WORDS = {'the', 'a', 'an', 'it', 'is', 'was', 'this', 'that', 'to', 'for',
+                 'of', 'in', 'on', 'at', 'by', 'with', 'or', 'and', 'but', 'not',
+                 'its', 'about', 'just', 'please', 'thanks', 'make', 'do', 'my', 'me'}
+
+
 async def resolve_disambiguation(text: str, chat_id: int, session_id: str, last_clarification: dict) -> bool:
     cleaned = text.strip().lower()
     if cleaned in INTENT_BY_KEYWORD:
@@ -450,7 +455,15 @@ async def resolve_disambiguation(text: str, chat_id: int, session_id: str, last_
     elif cleaned in [v[0].lower() for v in INTENT_OPTIONS.values() if v[0].lower() != cleaned]:
         intent = next(v[0] for v in INTENT_OPTIONS.values() if v[0].lower() == cleaned)
     else:
-        return False
+        words = [w for w in cleaned.split() if len(w) > 2 and w not in FILLER_WORDS]
+        intent_names = {v[0].lower(): v[0] for v in INTENT_OPTIONS.values()}
+        intent = None
+        for w in words:
+            if w in intent_names:
+                intent = intent_names[w]
+                break
+        if not intent:
+            return False
     original = last_clarification.get("original", text)
     log_exchange(session_id, 'user', intent, text, chat_id)
     classification = {"title": original, "intent": intent}
@@ -479,6 +492,10 @@ async def resolve_task_note_confirmation(text: str, chat_id: int, session_id: st
     if cleaned in ('t', 'task'):
         intent = 'TASK'
     elif cleaned in ('n', 'note'):
+        intent = 'NOTE'
+    elif 'task' in cleaned:
+        intent = 'TASK'
+    elif 'note' in cleaned:
         intent = 'NOTE'
     else:
         return False
@@ -1070,16 +1087,26 @@ async def resolve_task_update_confirmation(text: str, chat_id: int, session_id: 
     classification = last_clarification.get("classification", {"title": original})
     classification["intent"] = "TASK"
 
-    if cleaned in ('u', 'update'):
+    is_update = cleaned in ('u', 'update') or 'update' in cleaned
+    is_new = cleaned in ('n', 'new', 'create') or 'new' in cleaned or 'create' in cleaned
+
+    if is_update and not is_new:
         target = matched_tasks[0]
         classification["task_update_id"] = target['id']
         log_exchange(session_id, 'user', 'TASK', text, chat_id)
         await route_by_intent("TASK", original, chat_id, session_id,
                               classification=classification, task_update_id=target['id'])
         return True
-    elif cleaned in ('n', 'new', 'create'):
+    elif is_new:
         log_exchange(session_id, 'user', 'TASK', text, chat_id)
         await route_by_intent("TASK", original, chat_id, session_id, classification=classification)
+        return True
+    elif is_update:
+        target = matched_tasks[0]
+        classification["task_update_id"] = target['id']
+        log_exchange(session_id, 'user', 'TASK', text, chat_id)
+        await route_by_intent("TASK", original, chat_id, session_id,
+                              classification=classification, task_update_id=target['id'])
         return True
     return False
 

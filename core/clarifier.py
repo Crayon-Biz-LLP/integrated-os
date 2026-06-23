@@ -164,10 +164,13 @@ def build_batch(items: list, max_items: int = 5) -> str:
     return msg.strip()
 
 def handle_response(shortcode: str, answer: str) -> dict:
-    """Phase 1 stub."""
+    """Process user reply to a clarification question (c{shortcode}).
+    
+    Handles free-form answers — grounding questions accept any context,
+    other question types use expanded positive/negative word sets.
+    """
     supabase = get_supabase()
     
-    # 1. Look up the clarification question
     res = supabase.table("clarification_feedback").select("*").eq("shortcode", shortcode).maybe_single().execute()
     if not res.data:
         return {"status": "error", "message": "Shortcode not found"}
@@ -175,26 +178,48 @@ def handle_response(shortcode: str, answer: str) -> dict:
     feedback = res.data
     source_table = feedback["source_table"]
     source_id = feedback["source_id"]
+    question_type = feedback.get("question_type", "")
     
-    # 2. Hybrid parser: regex for standard responses, LLM for free-form
-    response_type = "approved" if answer.lower() in ["y", "yes", "approve"] else "rejected"
-    if answer.lower() in ["n", "no", "reject"]:
+    POSITIVE = {'y', 'yes', 'yeah', 'yep', 'approve', 'correct', 'right', 'true',
+                'sure', 'ok', 'okay', 'do it', 'add it', "that's right", 'thats right',
+                'looks good', 'confirm', 'agreed', 'go ahead'}
+    NEGATIVE = {'n', 'no', 'nope', 'nah', 'reject', 'wrong', 'incorrect', 'false',
+                'skip', 'dismiss', 'drop', 'cancel', 'none', 'leave it', 'neither', 'nope'}
+    
+    cleaned = answer.strip().lower()
+    context = None
+    
+    if cleaned in POSITIVE:
+        response_type = "approved"
+    elif cleaned in NEGATIVE:
         response_type = "rejected"
-        
-    # Update feedback table
-    supabase.table("clarification_feedback").update({
+    else:
+        if question_type == "grounding":
+            response_type = "approved"
+            context = answer
+        else:
+            response_type = "rejected"
+    
+    update = {
         "answer": answer,
         "response_type": response_type,
         "resolved_at": "now()"
-    }).eq("shortcode", shortcode).execute()
+    }
+    if context:
+        update["context"] = context
     
-    # Update source table
-    supabase.table(source_table).update({
+    supabase.table("clarification_feedback").update(update).eq("shortcode", shortcode).execute()
+    
+    source_update = {
         "clarification_status": "resolved",
         "status": "approved" if response_type == "approved" else "rejected"
-    }).eq("id", source_id).execute()
+    }
+    if context:
+        source_update["clarification_answer"] = context
     
-    return {"status": "ok", "action": response_type}
+    supabase.table(source_table).update(source_update).eq("id", source_id).execute()
+    
+    return {"status": "ok", "action": response_type, "context": context}
 
 def next_shortcode() -> str:
     """Phase 1 stub."""
