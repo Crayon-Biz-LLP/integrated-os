@@ -82,12 +82,33 @@ def create_project(name: str, description: str = "", keywords: List[str] = None,
         if is_org_routing_enabled() and (organization_name or client_organization_name):
             orgs_res = supabase.table('organizations').select('id, name').execute()
             orgs_dict = {o['name'].lower(): o['id'] for o in (orgs_res.data or [])}
-            
-            if organization_name and organization_name.lower() in orgs_dict:
-                org_id = orgs_dict[organization_name.lower()]
-                data['organization_id'] = org_id
-            if client_organization_name and client_organization_name.lower() in orgs_dict:
-                client_org_id = orgs_dict[client_organization_name.lower()]
+
+            if organization_name:
+                if organization_name.lower() in orgs_dict:
+                    org_id = orgs_dict[organization_name.lower()]
+                    data['organization_id'] = org_id
+                else:
+                    # Unknown org — write signal so Pulse can surface it, then reject
+                    try:
+                        supabase.table('project_creation_signals').insert({
+                            "project_name": f"{name} [unknown_org={organization_name}]",
+                            "source": "create_project_tool",
+                        }).execute()
+                    except Exception as sig_e:
+                        audit_log_sync("tools", "WARNING", f"Failed to write project_creation_signal: {sig_e}")
+                    return (
+                        f"Error creating project: organization '{organization_name}' not found. "
+                        "Ask the user to approve this org via Decisions first, or use an existing org name."
+                    )
+
+            if client_organization_name:
+                if client_organization_name.lower() in orgs_dict:
+                    client_org_id = orgs_dict[client_organization_name.lower()]
+                else:
+                    return (
+                        f"Error creating project: client organization '{client_organization_name}' not found. "
+                        "Ask the user to approve this org via Decisions first, or use an existing org name."
+                    )
 
         res = supabase.table('projects').insert(data).execute()
         
@@ -134,10 +155,13 @@ def create_task(title: str, project_id: int = None, organization_name: str = Non
         new_reminder = format_rfc3339(reminder_at) if reminder_at else None
         
         org_id = None
+        org_unresolved = False
         if is_org_routing_enabled() and organization_name:
             orgs_res = supabase.table('organizations').select('id').ilike('name', organization_name).limit(1).execute()
             if orgs_res.data:
                 org_id = orgs_res.data[0]['id']
+            else:
+                org_unresolved = True
 
         data = {
             "title": title, "project_id": project_id, "priority": priority.lower(),
@@ -181,7 +205,10 @@ def create_task(title: str, project_id: int = None, organization_name: str = Non
                 update['google_task_id'] = g_id
             supabase.table('tasks').update(update).eq('id', task_id).execute()
             
-        return f"Task created with ID {task_id}"
+        return f"Task created with ID {task_id}" + (
+            f" (WARNING: organization '{organization_name}' not found — task has no org routing. "
+            "Approve this org via Decisions first.)" if org_unresolved else ""
+        )
     except Exception as e:
         return f"Error creating task: {str(e)}"
 

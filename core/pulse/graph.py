@@ -145,18 +145,45 @@ async def create_graph_node_with_db_record(
             return {"success": True, "action": "approved", "message": msg, "inferred_edges": inferred}
 
         else:
-            supabase.table("graph_nodes").upsert(
+            # For organizations: create/upsert an organizations table row first,
+            # then link graph_node_id back to it.
+            org_db_id = None
+            if node_type == 'organization':
+                existing_org = supabase.table('organizations').select('id').ilike('name', label).maybe_single().execute()
+                if existing_org and existing_org.data:
+                    org_db_id = existing_org.data['id']
+                    audit_log_sync("pulse", "INFO", f"Reusing existing organization '{label}' (ID {org_db_id})")
+                else:
+                    org_insert = supabase.table('organizations').insert({
+                        "name": label,
+                        "is_active": True,
+                    }).execute()
+                    if not org_insert or not org_insert.data:
+                        raise Exception("Supabase insert returned no data for organizations")
+                    org_db_id = org_insert.data[0]['id']
+
+            node_meta = {
+                "source": source_tag,
+                "memory_id": source_text,
+            }
+            if org_db_id:
+                node_meta["organization_id"] = str(org_db_id)
+
+            upsert_res = supabase.table("graph_nodes").upsert(
                 {
                     "label": label,
                     "type": node_type,
                     "epistemic_status": "asserted",
-                    "metadata": {
-                        "source": source_tag,
-                        "memory_id": source_text,
-                    }
+                    "metadata": node_meta,
                 },
                 on_conflict="label"
             ).execute()
+
+            # Back-link: store graph_node_id on the organizations row
+            if org_db_id and upsert_res and upsert_res.data:
+                graph_node_id = upsert_res.data[0].get('id')
+                if graph_node_id:
+                    supabase.table('organizations').update({'graph_node_id': graph_node_id}).eq('id', org_db_id).execute()
 
             await _ensure_danny_edge(label, node_type)
 
@@ -164,7 +191,10 @@ async def create_graph_node_with_db_record(
             if source_text and source_text.strip() not in ("", "batch"):
                 inferred = await _infer_additional_edges(label, node_type, source_text)
 
-            return {"success": True, "action": "approved", "message": f"Approved node '{label}' ({node_type})", "inferred_edges": inferred}
+            msg = f"Approved node '{label}' ({node_type})"
+            if node_type == 'organization' and org_db_id:
+                msg = f"Approved organization '{label}' — organizations row created/linked (ID {org_db_id})"
+            return {"success": True, "action": "approved", "message": msg, "inferred_edges": inferred}
 
     except Exception as e:
         audit_log_sync("pulse", "ERROR", f"Error creating graph node with DB record: {e}")

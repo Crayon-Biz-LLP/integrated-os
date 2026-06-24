@@ -1338,6 +1338,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         If the NEW INPUTS explicitly command you to create tasks, complete tasks, or update tasks, you MUST call the appropriate function tools to execute those changes in the database.
         NEVER populate tools unless explicitly commanded in NEW INPUTS.
         After calling the necessary tools, your FINAL TEXT RESPONSE must be ONLY the formatted text string for the Telegram briefing.
+        TOOL WARNINGS: If a tool returns a result containing 'WARNING', you MUST include the full warning text verbatim in your response to the user. Do not paraphrase or omit.
         """
 
         orgs_list = await context_provider.get_organizations()

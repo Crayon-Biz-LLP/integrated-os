@@ -3,7 +3,38 @@
 ## Project Overview
 FastAPI-based executive command system deployed as Vercel serverless functions (Python 3.11, matches CI). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 
-## Session Anchored Summary (Jun 24, 2026)
+## Session Anchored Summary (Jun 24, 2026 — Part 2)
+
+### Progress Done This Session
+- **13-Scenario Org-Routing Edge Case Simulation**: Identified, fixed, and verified all critical org-routing edge cases. 43/43 assertions passed, all test artifacts cleaned up.
+  - **S1 Fixed (`create_project()` unknown org)**: Returns a clear error string and writes a `project_creation_signals` row. No orphan project row created. Signal `project_name` format: `"<name> [unknown_org=<org>]"`.
+  - **S2 Fixed (`create_task()` unknown org)**: Task is still created (not blocked), but result string includes `WARNING: organization '<name>' not found`. `organization_id = NULL` on the task row. **R1 fix**: Engine prompt now instructs AI to surface tool WARNINGs verbatim. **R2 fix**: Signal insert writes `audit_log_sync` on failure instead of silent `except: pass`.
+  - **S7 Fixed (`create_graph_node_with_db_record()` org approval)**: Approving a pending org node via Decisions UI now creates a real `organizations` table row and back-links `graph_node_id`. Previously it only created a `graph_nodes` entry — the `organizations` row was never written, making the org invisible to `create_project`/`create_task` org lookup.
+  - **S3**: Duplicate project name under same org → correctly blocked by `projects_name_org_unique` constraint (DB-enforced, no orphan).
+  - **S4**: Duplicate role in `project_organizations` → correctly blocked by UNIQUE constraint `(project_id, organization_id, role)`.
+  - **S5**: Cross-org client/performer → both `performer` and `client` roles created. Same org for both → only 1 role row (guard `client_org_id != org_id` works).
+  - **S6**: No-org internal project → `organization_id = NULL`, no `project_organizations` row (intentional, by design).
+  - **S8**: Rejecting a pending org node → no phantom `organizations`, `projects`, or `graph_nodes` rows created.
+  - **S9**: Idempotency → same task blocked via `dedup_key`; same project blocked via org-scoped unique constraint.
+  - **S10**: Anon insert to `project_organizations` → `42501 permission denied` (RLS enforced).
+  - **S11**: Signal queue is write-only by design — signals sit staged; no consumer exists yet (future Pulse feature).
+  - **S12**: Frontend org name fallback is null-safe for all empty/partial-data paths (`orgNames[undefined]` → `undefined`, not crash).
+  - **S13**: All stale fields (`org_tag`, `is_org_proxy`, `migrated_to_organization_id`) confirmed absent from all `.py/.ts/.tsx/.json` files.
+
+### Key Decisions This Session
+- **`create_project()` unknown org = hard reject**: Error is returned before any DB write. Signal is written. This prevents orphan projects that would be invisible to org routing.
+- **`create_task()` unknown org = soft warn**: Task is created (unblocked) with `organization_id = NULL` and a WARNING in the return string. This prevents stalling task creation when org isn't approved yet, but makes the gap visible to the AI and user.
+- **Org approval creates `organizations` row**: `create_graph_node_with_db_record()` now handles `node_type == 'organization'` with a dedicated branch: upsert `organizations` row, then back-link `graph_node_id`. Previously this path was a no-op at the DB table level.
+- **`project_creation_signals.metadata` column does not exist**: The table only has `id, project_name, source, raw_dump_id, task_id, status, created_at, resolved_at`. The unknown org name is encoded into `project_name` as suffix `[unknown_org=<name>]`.
+- **`except: pass` hardened**: Signal insert failure now logs via `audit_log_sync` instead of swallowing silently (`tools.py`).
+- **Tool WARNING visibility**: Engine prompt (`engine.py:1340`) now includes `TOOL WARNINGS:` instruction — AI must surface WARNING text verbatim in user responses.
+
+### Key Files (13-Scenario Hardening)
+- `core/pulse/tools.py` — `create_project()`: unknown org → signal + hard reject; `create_task()`: unknown org → warning suffix
+- `core/pulse/graph.py` — `create_graph_node_with_db_record()`: `organization` type now creates `organizations` table row + back-links `graph_node_id`
+- `scripts/simulate_13_scenarios.py` — 13-scenario simulation script; 43 assertions; self-cleaning
+
+## Session Anchored Summary (Jun 24, 2026 — Part 1)
 
 ### Progress Done This Session
 - **Phase 5 Organizations Expansion Completed**: Eradicated legacy `org_tag`, `is_org_proxy`, and `migrated_to_organization_id` columns.
@@ -12,8 +43,6 @@ FastAPI-based executive command system deployed as Vercel serverless functions (
   - Removed `is_org_proxy` filters completely across the Next.js `frontend/` and Python backend.
   - Fixed database RLS and permissions on the new `project_organizations` and `project_creation_signals` tables via formal `db/07_project_organizations_grants.sql` migration, strictly confining access to `service_role`.
   - Confirmed via python simulation script that API invariants (`no org_tag`, `organization_name present`, proper task grouping) are correctly maintained at the database level.
-
-## Session Anchored Summary (Jun 23, 2026)
 
 ### Progress Done This Session
 - **Comprehensive 38-Point Hardening (Tiers 0-5)**: Executed a massive codebase hardening pass to address 6 tiers of vulnerabilities.
