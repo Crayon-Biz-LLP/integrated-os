@@ -6,38 +6,17 @@ import { DashboardShell } from "./dashboard-shell";
 
 export const dynamic = 'force-dynamic';
 
-function mapOpenTask(t: any): Task {
-  const proj = Array.isArray(t.projects) ? t.projects[0] : t.projects;
-  return {
-    id: t.id,
-    title: t.title,
-    status: t.status ?? "todo",
-    priority: t.priority ?? "medium",
-    project_id: t.project_id,
-    project_name: proj?.name ?? "Inbox",
-    project_org_tag: proj?.org_tag ?? null,
-    estimated_minutes: t.estimated_minutes,
-    is_revenue_critical: t.is_revenue_critical ?? false,
-    deadline: t.deadline,
-    created_at: t.created_at,
-    completed_at: t.completed_at,
-    reminder_at: t.reminder_at,
-    duration_mins: t.duration_mins,
-    recurrence: t.recurrence ?? null,
-  };
-}
-
 export default async function DashboardPage() {
   const supabase = await createServerSupabaseClient();
 
-  const [tasksRes, taskStatsRes, pendingEmailsRes, emailClassRes, pendingDraftsCountRes] = await Promise.all([
+  const [tasksRes, taskStatsRes, pendingEmailsRes, emailClassRes, pendingDraftsCountRes, orgsRes] = await Promise.all([
     supabase
       .from("tasks")
       .select(`
         id, title, status, priority, project_id, estimated_minutes,
         is_revenue_critical, deadline, created_at, completed_at,
-        reminder_at, duration_mins, recurrence,
-        projects ( id, name, org_tag )
+        reminder_at, duration_mins, recurrence, organization_id,
+        projects ( id, name, organization_id )
       `)
       .eq("is_current", true)
       .filter("status", "not.in", "(done,cancelled)")
@@ -68,7 +47,40 @@ export default async function DashboardPage() {
       .from("email_drafts")
       .select("id", { count: "exact", head: true })
       .eq("status", "pending"),
+    supabase
+      .from("organizations")
+      .select("id, name")
   ]);
+
+  const orgNames: Record<string, string> = {};
+  if (orgsRes.data) {
+    orgsRes.data.forEach((o: any) => {
+      orgNames[o.id] = o.name;
+    });
+  }
+
+  function mapOpenTask(t: any): Task {
+    const proj = Array.isArray(t.projects) ? t.projects[0] : t.projects;
+    const org_id = t.organization_id || proj?.organization_id;
+    return {
+      id: t.id,
+      title: t.title,
+      status: t.status ?? "todo",
+      priority: t.priority ?? "medium",
+      project_id: t.project_id,
+      project_name: proj?.name ?? "General",
+      organization_id: org_id ?? null,
+      organization_name: org_id ? orgNames[org_id] : null,
+      estimated_minutes: t.estimated_minutes,
+      is_revenue_critical: t.is_revenue_critical ?? false,
+      deadline: t.deadline,
+      created_at: t.created_at,
+      completed_at: t.completed_at,
+      reminder_at: t.reminder_at,
+      duration_mins: t.duration_mins,
+      recurrence: t.recurrence ?? null,
+    };
+  }
 
   const openTasks: Task[] = (tasksRes.data ?? []).map(mapOpenTask);
   const taskStats: TaskStats = computeTaskStats(taskStatsRes.data ?? []);

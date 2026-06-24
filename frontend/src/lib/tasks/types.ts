@@ -5,7 +5,8 @@ export interface Task {
   priority: string;
   project_id: number | null;
   project_name: string;
-  project_org_tag: string | null;
+  organization_id?: string | null;
+  organization_name?: string | null;
   estimated_minutes: number | null;
   is_revenue_critical: boolean;
   deadline: string | null;
@@ -19,7 +20,7 @@ export interface Task {
 export interface Project {
   id: number;
   name: string;
-  org_tag: string | null;
+  organization_id?: string | null;
   is_active: boolean;
   status: string;
 }

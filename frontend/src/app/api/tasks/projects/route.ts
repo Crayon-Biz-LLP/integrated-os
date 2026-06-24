@@ -6,8 +6,9 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("projects")
-    .select("id, name, org_tag, is_active, status")
+    .select("id, name, organization_id, is_active, status")
     .eq("is_active", true)
+    .eq("is_org_proxy", false)
     .order("name", { ascending: true })
     .limit(100);
 

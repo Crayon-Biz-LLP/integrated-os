@@ -8,7 +8,6 @@ interface ProjectRow {
   context: string;
   description: string | null;
   created_at: string | null;
-  org_tag: string | null;
   is_active: boolean;
   parent_project_id: number | null;
   keywords: string[] | null;
@@ -23,7 +22,6 @@ interface EnrichedProject {
   context: string;
   description: string | null;
   created_at: string | null;
-  org_tag: string | null;
   is_active: boolean;
   parent_project_id: number | null;
   parent_project_name: string | null;
@@ -37,10 +35,9 @@ interface EnrichedProject {
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const supabase = await createServerSupabaseClient();
-  const isOrgRoutingEnabled = process.env.ORG_ROUTING_ENABLED === "1" || process.env.ORG_ROUTING_ENABLED === "true";
+  const isOrgRoutingEnabled = true;
 
   const search = searchParams.get("search");
-  const orgTag = searchParams.get("orgTag");
   const context = searchParams.get("context");
   const status = searchParams.get("status");
 
@@ -50,7 +47,6 @@ export async function GET(req: NextRequest) {
   }
 
   const { data: projectsData, error: projectsError } = await query
-    .order("org_tag", { ascending: true })
     .order("name", { ascending: true })
     .limit(100);
 
@@ -119,9 +115,6 @@ export async function GET(req: NextRequest) {
       projects = projects.filter((p) =>
         p.name.toLowerCase().includes(search.toLowerCase())
       );
-    }
-    if (orgTag && orgTag !== "all") {
-      projects = projects.filter((p) => p.org_tag === orgTag);
     }
     if (context && context !== "all") {
       projects = projects.filter((p) => p.context === context);

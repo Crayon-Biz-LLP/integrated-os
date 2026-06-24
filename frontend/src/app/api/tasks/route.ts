@@ -19,6 +19,7 @@ export async function GET(req: NextRequest) {
       status,
       priority,
       project_id,
+      organization_id,
       estimated_minutes,
       is_revenue_critical,
       deadline,
@@ -30,7 +31,7 @@ export async function GET(req: NextRequest) {
       projects (
         id,
         name,
-        org_tag
+        organization_id
       )
     `)
     .eq("is_current", true)
@@ -56,8 +57,8 @@ export async function GET(req: NextRequest) {
     status: t.status ?? "todo",
     priority: t.priority ?? "medium",
     project_id: t.project_id,
-    project_name: t.projects?.name ?? "Inbox",
-    project_org_tag: t.projects?.org_tag ?? null,
+    project_name: t.projects?.name ?? "General",
+    organization_id: t.organization_id ?? t.projects?.organization_id ?? null,
     estimated_minutes: t.estimated_minutes,
     is_revenue_critical: t.is_revenue_critical ?? false,
     deadline: t.deadline,

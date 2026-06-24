@@ -11,10 +11,11 @@ interface ProjectRow {
   context: string;
   description: string | null;
   created_at: string | null;
-  org_tag: string | null;
   is_active: boolean;
   parent_project_id: number | null;
   keywords: string[] | null;
+  organization_id?: string | null;
+  is_org_proxy?: boolean;
 }
 
 interface TaskCountRow {
@@ -56,11 +57,11 @@ function computeProjectStats(projects: ProjectRow[], tasks: TaskCountRow[]): Pro
 export default async function Page() {
   const supabase = await createServerSupabaseClient();
 
-  const [projectsRes, taskCountsRes] = await Promise.all([
+  const [projectsRes, taskCountsRes, orgsRes] = await Promise.all([
     supabase
       .from("projects")
       .select("*")
-      .order("org_tag", { ascending: true })
+      .eq("is_org_proxy", false)
       .order("name", { ascending: true })
       .limit(100),
     supabase
@@ -69,10 +70,19 @@ export default async function Page() {
       .eq("is_current", true)
       .in("status", ["todo", "in_progress", "blocked"])
       .limit(500),
+    supabase
+      .from("organizations")
+      .select("id, name")
   ]);
 
   const projectsData = (projectsRes.data ?? []) as ProjectRow[];
   const taskCountsData = (taskCountsRes.data ?? []) as TaskCountRow[];
+  const orgNames: Record<string, string> = {};
+  if (orgsRes.data) {
+    orgsRes.data.forEach((o: any) => {
+      orgNames[o.id] = o.name;
+    });
+  }
 
   const parentIds = new Set<number>();
   projectsData.forEach((p) => {
@@ -108,12 +118,13 @@ export default async function Page() {
     context: p.context,
     description: p.description,
     created_at: p.created_at,
-    org_tag: p.org_tag,
     is_active: p.is_active,
     parent_project_id: p.parent_project_id,
     parent_project_name: p.parent_project_id ? parentNames[p.parent_project_id] ?? null : null,
     keywords: p.keywords ?? [],
     open_task_count: taskCountMap[p.id] || 0,
+    organization_id: p.organization_id,
+    organization_name: p.organization_id ? orgNames[p.organization_id] : null,
   }));
 
   const stats = computeProjectStats(projectsData, taskCountsData);

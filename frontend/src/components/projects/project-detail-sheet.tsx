@@ -110,7 +110,6 @@ export function ProjectDetailSheet({
   if (!project) return null;
 
   const isArchived = project.status === 'archived';
-  const orgTagBadge = project.org_tag ? orgTagColors[project.org_tag] : '';
 
   const handleToggleStatus = async () => {
     setUpdating(true);
@@ -159,10 +158,10 @@ export function ProjectDetailSheet({
             </div>
 
             <div>
-              <p className="section-label mb-1">Area</p>
-              {project.org_tag ? (
+              <p className="section-label mb-1">Org</p>
+              {project.organization_name ? (
                 <span className="text-xs bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded font-semibold tracking-wide uppercase">
-                  {project.org_tag}
+                  {project.organization_name}
                 </span>
               ) : (
                 <span className="text-sm text-foreground">-</span>
