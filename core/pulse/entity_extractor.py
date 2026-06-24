@@ -17,7 +17,7 @@ async def extract_and_link_entities(text: str, source_id: str, source_type: str 
     import re
     if re.search(r'https?://', text, re.IGNORECASE):
         audit_log_sync("pulse", "INFO", "Skipped entity extraction: text contains URL")
-        return
+        return [], []
 
     # Fetch known entities for prompt injection
     try:
@@ -62,16 +62,47 @@ Text: "{text}"
             config={'response_mime_type': 'application/json'}
         )
         if not response or not response.text:
-            return
+            return [], []
 
         data = response.parse_json()
         nodes = data.get("nodes", [])
         edges = data.get("edges", [])
         
         if not nodes and not edges:
-            return
+            return [], []
             
         insert_extracted_entities(nodes=nodes, edges=edges, source_id=str(source_id), source_type=source_type)
         print(f"🕸️ Real-time entities extracted for {source_type} {source_id}: {len(nodes)} nodes, {len(edges)} edges routed to pending")
+        
+        # Look up canonical orgs and projects from extracted nodes for enrichment
+        org_candidates = []
+        proj_candidates = []
+        for n in nodes:
+            label = n.get("label", "").strip()
+            ntype = n.get("type", "")
+            if not label:
+                continue
+            
+            if ntype == "organization":
+                try:
+                    res = supabase.table('organizations').select('id').ilike('name', label).maybe_single().execute()
+                    if res and res.data:
+                        org_candidates.append(res.data['id'])
+                except Exception:
+                    pass
+            elif ntype == "project":
+                try:
+                    res = supabase.table('projects').select('id, organization_id').ilike('name', label).maybe_single().execute()
+                    if res and res.data:
+                        proj_candidates.append({
+                            'id': res.data['id'],
+                            'org_id': res.data.get('organization_id')
+                        })
+                except Exception:
+                    pass
+        
+        return org_candidates, proj_candidates
+
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"⚠️ Entity extraction failed for {source_id}: {e}")
+        return [], []

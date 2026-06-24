@@ -391,9 +391,42 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             memory_id = result.data[0]["id"]
             schedule_index_memory(memory_id, text, "note", "webhook")
             try:
-                await extract_and_link_entities(text, memory_id, 'memory')
+                extracted = await extract_and_link_entities(text, memory_id, 'memory')
+                org_candidates, proj_candidates = extracted if extracted else ([], [])
+                
+                chosen_org_id = None
+                chosen_proj_id = None
+                reason = "no_match"
+                
+                if len(proj_candidates) == 1:
+                    chosen_proj_id = proj_candidates[0]['id']
+                    if proj_candidates[0].get('org_id'):
+                        chosen_org_id = proj_candidates[0]['org_id']
+                        reason = "project_implied_org"
+                    elif len(org_candidates) == 1:
+                        chosen_org_id = org_candidates[0]
+                        reason = "single_match_both"
+                    else:
+                        reason = "single_match_project"
+                elif len(proj_candidates) > 1:
+                    reason = "ambiguous_project"
+                elif len(org_candidates) == 1:
+                    chosen_org_id = org_candidates[0]
+                    reason = "single_match_org"
+                elif len(org_candidates) > 1:
+                    reason = "ambiguous_org"
+                
+                if chosen_org_id or chosen_proj_id:
+                    update_data = {}
+                    if chosen_org_id:
+                        update_data['organization_id'] = chosen_org_id
+                    if chosen_proj_id:
+                        update_data['project_id'] = chosen_proj_id
+                    supabase.table('memories').update(update_data).eq('id', memory_id).execute()
+                
+                audit_log_sync("webhook", "INFO", f"Memory enrichment {memory_id} | reason={reason} | orgs={len(org_candidates)} projs={len(proj_candidates)} | chosen_org={chosen_org_id} chosen_proj={chosen_proj_id}")
             except Exception as e:
-                audit_log_sync("webhook", "WARNING", f"Entity extraction for note failed: {e}")
+                audit_log_sync("webhook", "WARNING", f"Entity extraction or enrichment for note failed: {e}")
         
         # Mark dump as processed
         if dump_id:

@@ -3,6 +3,15 @@
 ## Project Overview
 FastAPI-based executive command system deployed as Vercel serverless functions (Python 3.11, matches CI). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 
+## Session Anchored Summary (Jun 24, 2026 — Part 3)
+
+### Progress Done This Session
+- **Meeting Minutes & Document Intake Hardened**: Added explicit classifier rules so long-form structured documents (MoMs, PDFs) containing action items are correctly identified as `NOTE` intent, preventing the completion matcher from intercepting them as task completions.
+- **Native Graph-to-Memory Enrichment**: Upgraded the `extract_and_link_entities` real-time entity extraction pipeline to actively return the canonical `organization_id` and `project_id` generated during its database resolution phase.
+- **Strict Memory Attribute Linking**: Modified `dispatch.py` to gracefully capture these natively resolved entity IDs and update the original memory row. Implemented strict precedence rules: project-implied organizations win over secondary extracted organizations to prevent entity drift, backed by robust `audit_log_sync` tracking.
+- **Canonical Pages Migrated to Org-Level Models**: Altered the brain synthesis schema and execution (`brain_synth_v2.py`) to construct holistic domain-level Master Pages aggregating all underlying projects for an organization.
+- **Database Backfill and Cleanup**: Executed a production backfill fixing the intent and entity associations of prior Equisoft MoMs. Successfully generated new org-level canonical pages for all 10 active organizations and systematically archived stale project-level pages (e.g., *IAM Recertification Platform*, *AI Gateway*) to protect retrieval salience.
+
 ## Session Anchored Summary (Jun 24, 2026 — Part 2)
 
 ### Progress Done This Session
