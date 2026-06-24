@@ -52,11 +52,15 @@ export function ProjectCard({ project, onClick }: ProjectCardProps) {
             <h3 className="font-semibold text-base tracking-tight group-hover:text-primary transition-colors duration-150 truncate">
               {project.name}
             </h3>
-            {project.parent_project_name && (
+            {project.organization_name ? (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                🏢 Org: {project.organization_name}
+              </p>
+            ) : project.parent_project_name ? (
               <p className="text-xs text-muted-foreground mt-0.5">
                 ↳ Parent: {project.parent_project_name}
               </p>
-            )}
+            ) : null}
           </div>
         {isArchived && (
           <span className="text-xs bg-muted text-muted-foreground border border-border px-2 py-0.5 rounded-full font-medium">

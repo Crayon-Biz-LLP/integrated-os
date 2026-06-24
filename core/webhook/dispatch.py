@@ -19,14 +19,21 @@ from core.retrieval.pipeline import schedule_index_memory
 from core.pulse.entity_extractor import extract_and_link_entities
 
 
-def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "") -> str:
+def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:
     """Format a task line with consistent [Project] bracket.
     Strips the project name from the end of the title if already embedded
     to avoid duplication like 'Qhord [Qhord]'."""
     title = title.rstrip()
     if project_name and title.lower().endswith(project_name.lower()):
         title = title[:-len(project_name)].rstrip()
-    line = f"{title} [{project_name}]"
+        
+    from core.features import is_org_routing_enabled
+    if is_org_routing_enabled() and organization_name:
+        loc = f"{organization_name} · {project_name}" if project_name and project_name != "INBOX" else organization_name
+        line = f"{title} [{loc}]"
+    else:
+        line = f"{title} [{project_name}]"
+        
     if priority:
         line += f" ({priority})"
     if suffix:
@@ -83,18 +90,27 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
         try:
             now_iso = now.isoformat()
             overdue_res = supabase.table('tasks') \
-                .select('title, project_id, priority') \
+                .select('title, project_id, organization_id, priority') \
                 .eq('is_current', True) \
                 .not_.in_('status', ['done', 'cancelled']) \
                 .not_.is_('reminder_at', None) \
                 .lt('reminder_at', now_iso) \
                 .execute()
             if overdue_res.data:
+                from core.features import is_org_routing_enabled
                 projects = await context_provider.get_projects()
                 proj_map = {p['id']: p['name'] for p in projects}
+                
+                org_map = {}
+                if is_org_routing_enabled():
+                    orgs = await context_provider.get_organizations()
+                    org_map = {o['id']: o['name'] for o in orgs}
+
                 for t in overdue_res.data:
                     pn = proj_map.get(t.get('project_id'), 'INBOX')
-                    overdue_tasks.append(_format_task_line(t.get('title', ''), pn, t.get('priority')))
+                    org_id = t.get('organization_id')
+                    o_name = org_map.get(org_id) if org_id else None
+                    overdue_tasks.append(_format_task_line(t.get('title', ''), pn, t.get('priority'), organization_name=o_name))
         except Exception as err:
             audit_log_sync("webhook", "WARNING", f"Brief overdue query failed: {err}")
 
@@ -102,11 +118,20 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
         try:
             completed_raw = await context_provider.get_recently_completed_tasks()
             if completed_raw:
+                from core.features import is_org_routing_enabled
                 projects = await context_provider.get_projects()
                 proj_map = {p['id']: p['name'] for p in projects}
+                
+                org_map = {}
+                if is_org_routing_enabled():
+                    orgs = await context_provider.get_organizations()
+                    org_map = {o['id']: o['name'] for o in orgs}
+                
                 for t in completed_raw:
                     pn = proj_map.get(t.get('project_id'), 'INBOX')
-                    recently_completed.append(_format_task_line(t.get('title', ''), pn))
+                    org_id = t.get('organization_id')
+                    o_name = org_map.get(org_id) if org_id else None
+                    recently_completed.append(_format_task_line(t.get('title', ''), pn, organization_name=o_name))
         except Exception as err:
             audit_log_sync("webhook", "WARNING", f"Brief recent completions failed: {err}")
 

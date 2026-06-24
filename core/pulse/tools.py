@@ -62,15 +62,16 @@ def save_briefing(text: str):
     return "Briefing saved successfully."
 
 @rhodey_tools.register
-def create_project(name: str, org_tag: str, description: str = "", keywords: List[str] = None):
-    """Creates a new project. Valid org_tags: SOLVSTRAT, QHORD, PERSONAL, CRAYON, ASHRAYA."""
+def create_project(name: str, org_tag: str = "SOLVSTRAT", description: str = "", keywords: List[str] = None, organization_name: str = None, client_organization_name: str = None):
+    """Creates a new project. Optionally provide organization_name and client_organization_name for proper org routing."""
+    from core.features import is_org_routing_enabled
     valid_tags = ['SOLVSTRAT', 'QHORD', 'PERSONAL', 'CRAYON', 'ASHRAYA']
     CONTEXT_MAP = {'ASHRAYA': 'personal', 'PERSONAL': 'personal', 'SOLVSTRAT': 'work', 'QHORD': 'work', 'CRAYON': 'work'}
     
-    org_tag = org_tag.upper() if org_tag.upper() in valid_tags else 'SOLVSTRAT'
+    org_tag = org_tag.upper() if org_tag and org_tag.upper() in valid_tags else 'SOLVSTRAT'
     
     try:
-        res = supabase.table('projects').insert({
+        data = {
             "name": name,
             "org_tag": org_tag,
             "description": description,
@@ -78,10 +79,40 @@ def create_project(name: str, org_tag: str, description: str = "", keywords: Lis
             "status": "active",
             "is_active": True,
             "keywords": keywords or []
-        }).execute()
+        }
+        
+        org_id = None
+        client_org_id = None
+        
+        if is_org_routing_enabled() and (organization_name or client_organization_name):
+            orgs_res = supabase.table('organizations').select('id, name').execute()
+            orgs_dict = {o['name'].lower(): o['id'] for o in (orgs_res.data or [])}
+            
+            if organization_name and organization_name.lower() in orgs_dict:
+                org_id = orgs_dict[organization_name.lower()]
+                data['organization_id'] = org_id
+            if client_organization_name and client_organization_name.lower() in orgs_dict:
+                client_org_id = orgs_dict[client_organization_name.lower()]
+
+        res = supabase.table('projects').insert(data).execute()
         
         if res.data:
             proj_id = res.data[0]['id']
+            
+            if is_org_routing_enabled():
+                if org_id:
+                    supabase.table('project_organizations').insert({
+                        "project_id": proj_id,
+                        "organization_id": org_id,
+                        "role": "performer"
+                    }).execute()
+                if client_org_id and client_org_id != org_id:
+                    supabase.table('project_organizations').insert({
+                        "project_id": proj_id,
+                        "organization_id": client_org_id,
+                        "role": "client"
+                    }).execute()
+            
             # Create graph node
             supabase.table('graph_nodes').insert({
                 "label": name,
@@ -94,8 +125,9 @@ def create_project(name: str, org_tag: str, description: str = "", keywords: Lis
     return "Failed to create project."
 
 @rhodey_tools.register
-def create_task(title: str, project_id: int = None, priority: str = "important", duration_mins: int = 15, reminder_at: str = None, recurrence: str = None):
+def create_task(title: str, project_id: int = None, organization_name: str = None, priority: str = "important", duration_mins: int = 15, reminder_at: str = None, recurrence: str = None):
     """Creates a new task and optionally schedules it on the calendar."""
+    from core.features import is_org_routing_enabled
     import hashlib
     dedup_key = hashlib.md5(f"{title.lower().strip()}:{project_id or 0}".encode()).hexdigest()[:16]
     
@@ -105,11 +137,19 @@ def create_task(title: str, project_id: int = None, priority: str = "important",
         
     try:
         new_reminder = format_rfc3339(reminder_at) if reminder_at else None
+        
+        org_id = None
+        if is_org_routing_enabled() and organization_name:
+            orgs_res = supabase.table('organizations').select('id').ilike('name', organization_name).limit(1).execute()
+            if orgs_res.data:
+                org_id = orgs_res.data[0]['id']
+
         data = {
             "title": title, "project_id": project_id, "priority": priority.lower(),
             "status": "todo", "estimated_minutes": duration_mins, "duration_mins": duration_mins,
             "reminder_at": new_reminder, "dedup_key": dedup_key,
-            "recurrence": recurrence
+            "recurrence": recurrence,
+            "organization_id": org_id
         }
         res = supabase.table('tasks').insert(data).execute()
         if not res.data:

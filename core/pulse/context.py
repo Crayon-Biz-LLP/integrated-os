@@ -60,7 +60,8 @@ class ContextProvider:
             'projects': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:projects"),
             'people': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:people"),
             'calendar': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:calendar"),
-            'recent_tasks': SimpleCache(ttl_seconds=60, redis_key="rhodey:cache:recent_tasks")
+            'recent_tasks': SimpleCache(ttl_seconds=60, redis_key="rhodey:cache:recent_tasks"),
+            'organizations': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:organizations")
         }
         
     def cosine_similarity(self, vec_a, vec_b):
@@ -74,14 +75,31 @@ class ContextProvider:
         return dot / (norm_a * norm_b)
 
     async def get_projects(self):
+        from core.features import is_org_routing_enabled
         cached = self.caches['projects'].get()
         if cached is not None:
+            # Optionally we could filter the cache, but usually we just rebuild it if the flag changes.
+            if is_org_routing_enabled():
+                return [p for p in cached if not p.get('is_org_proxy')]
             return cached
             
         res = supabase.table('projects').select('*').eq('status', 'active').execute()
         projects = res.data or []
         self.caches['projects'].set(projects)
+        
+        if is_org_routing_enabled():
+            return [p for p in projects if not p.get('is_org_proxy')]
         return projects
+
+    async def get_organizations(self):
+        cached = self.caches['organizations'].get()
+        if cached is not None:
+            return cached
+            
+        res = supabase.table('organizations').select('*').eq('is_active', True).execute()
+        orgs = res.data or []
+        self.caches['organizations'].set(orgs)
+        return orgs
 
     async def get_active_tasks(self):
         cached = self.caches['tasks'].get()
@@ -89,7 +107,7 @@ class ContextProvider:
             return cached
             
         res = supabase.table('tasks')\
-            .select('id, title, project_id, priority, created_at, reminder_at, status')\
+            .select('id, title, project_id, organization_id, priority, created_at, reminder_at, status, direction, committed_to')\
             .eq('is_current', True)\
             .not_.in_('status', ['done', 'cancelled'])\
             .execute()
@@ -136,7 +154,7 @@ class ContextProvider:
             
         since_utc = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         res = supabase.table('tasks') \
-            .select('title, project_id, updated_at') \
+            .select('title, project_id, organization_id, updated_at') \
             .eq('is_current', True) \
             .eq('status', 'done') \
             .gte('updated_at', since_utc) \
@@ -262,9 +280,16 @@ class ContextProvider:
         1. Always-include: urgent, overdue, due today.
         2. Semantic Tail: remaining tasks ranked by similarity to query_text.
         """
+        from core.features import is_org_routing_enabled
         tasks = await self.get_active_tasks()
         projects = await self.get_projects()
         proj_map = {p['id']: p for p in projects}
+        
+        orgs = []
+        org_map = {}
+        if is_org_routing_enabled():
+            orgs = await self.get_organizations()
+            org_map = {o['id']: o['name'] for o in orgs}
         
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
@@ -289,7 +314,16 @@ class ContextProvider:
             p_name = p_data['name'] if p_data else "General"
             org_tag = p_data.get('org_tag', 'INBOX') if p_data else "INBOX"
             
-            formatted = f"[{org_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
+            if is_org_routing_enabled():
+                o_id = t.get('organization_id') or (p_data.get('organization_id') if p_data else None)
+                o_name = org_map.get(o_id, 'INBOX')
+                if p_name != "General":
+                    loc = f"{o_name} · {p_name}"
+                else:
+                    loc = o_name
+                formatted = f"[{loc}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
+            else:
+                formatted = f"[{org_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
             
             if is_urgent or is_due_soon:
                 always_include.append(formatted)

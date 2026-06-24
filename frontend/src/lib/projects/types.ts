@@ -11,6 +11,9 @@ export interface Project {
   parent_project_name?: string | null;
   keywords: string[];
   open_task_count: number;
+  organization_id?: string | null;
+  organization_name?: string | null;
+  is_org_proxy?: boolean;
 }
 
 export interface ProjectTask {

@@ -13,11 +13,65 @@ def get_project_name(project: dict) -> str:
         return ""
     return (project.get("name") or project.get("label") or "").strip()
 
-def build_routing_context(legacy_projects: list) -> str:
+def build_routing_context(legacy_projects: list, organizations: list = None) -> str:
     """
     Dynamically builds project routing instructions from the DB.
-    No hardcoded client names — new projects auto-register on next Pulse run.
     """
+    from core.features import is_org_routing_enabled
+    if is_org_routing_enabled() and organizations is not None:
+        lines = []
+        org_id_to_name = {o['id']: o['name'] for o in organizations}
+        org_id_to_parent = {o['id']: o.get('parent_organization_id') for o in organizations}
+        
+        # Build org hierarchy strings
+        def get_org_path(oid):
+            path = []
+            curr = oid
+            while curr:
+                name = org_id_to_name.get(curr)
+                if name:
+                    path.insert(0, name)
+                curr = org_id_to_parent.get(curr)
+                if len(path) > 5:
+                    break # guard against cycles
+            return " -> ".join(path)
+            
+        # Group projects by org
+        org_projects = {}
+        for p in legacy_projects:
+            if p.get('status') != 'active':
+                continue
+            oid = p.get('organization_id')
+            if oid not in org_projects:
+                org_projects[oid] = []
+            org_projects[oid].append(p)
+            
+        for org in organizations:
+            if not org.get('is_active'):
+                continue
+            org_name = org.get('name', '').strip()
+            if not org_name:
+                continue
+            
+            path = get_org_path(org['id'])
+            lines.append(f"ORGANIZATION: {path} (Type: {org.get('org_type', 'unknown')})")
+            
+            projs = org_projects.get(org['id'], [])
+            if not projs:
+                lines.append(f"  - No specific projects. Use organization_name '{org_name}' directly for general tasks.")
+            else:
+                for p in sorted(projs, key=lambda x: x.get('name', '')):
+                    pname = p.get('name', '').strip()
+                    desc = (p.get('description') or '').strip()
+                    detail = f"  - PROJECT: {pname} | {desc}"
+                    kws = p.get('keywords') or []
+                    if kws:
+                        detail += f" | Keywords: {', '.join(kws)}"
+                    lines.append(detail)
+            lines.append("")
+        return '\n'.join(lines).strip()
+        
+    # Legacy flat routing
     lines = []
 
     id_to_name = {p['id']: p['name'] for p in legacy_projects}

@@ -12,6 +12,8 @@ interface ProjectRow {
   is_active: boolean;
   parent_project_id: number | null;
   keywords: string[] | null;
+  organization_id?: string | null;
+  is_org_proxy?: boolean;
 }
 
 interface EnrichedProject {
@@ -27,26 +29,44 @@ interface EnrichedProject {
   parent_project_name: string | null;
   keywords: string[];
   open_task_count: number;
+  organization_id?: string | null;
+  organization_name?: string | null;
+  is_org_proxy?: boolean;
 }
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const supabase = await createServerSupabaseClient();
+  const isOrgRoutingEnabled = process.env.ORG_ROUTING_ENABLED === "1" || process.env.ORG_ROUTING_ENABLED === "true";
 
   const search = searchParams.get("search");
   const orgTag = searchParams.get("orgTag");
   const context = searchParams.get("context");
   const status = searchParams.get("status");
 
-  const { data: projectsData, error: projectsError } = await supabase
-    .from("projects")
-    .select("*")
+  let query = supabase.from("projects").select("*");
+  if (isOrgRoutingEnabled) {
+    query = query.eq("is_org_proxy", false);
+  }
+
+  const { data: projectsData, error: projectsError } = await query
     .order("org_tag", { ascending: true })
     .order("name", { ascending: true })
     .limit(100);
 
   if (projectsError) {
     return NextResponse.json({ error: projectsError.message }, { status: 500 });
+  }
+
+  // Fetch organizations if enabled
+  let orgNames: Record<string, string> = {};
+  if (isOrgRoutingEnabled) {
+    const { data: orgsData } = await supabase.from("organizations").select("id, name");
+    if (orgsData) {
+      orgsData.forEach((o) => {
+        orgNames[o.id] = o.name;
+      });
+    }
   }
 
   const { data: taskCounts } = await supabase
@@ -92,6 +112,7 @@ export async function GET(req: NextRequest) {
       parent_project_name: p.parent_project_id ? parentNames[p.parent_project_id] ?? null : null,
       open_task_count: taskCountMap[p.id] || 0,
       keywords: p.keywords ?? [],
+      organization_name: p.organization_id && orgNames[p.organization_id] ? orgNames[p.organization_id] : null,
     }));
 
     if (search) {

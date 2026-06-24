@@ -920,17 +920,30 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # B. BUILD COMPRESSED LIST (For the Briefing Context)
         # 🛡️ FIX: Defining 'compressed_tasks' so the prompt builder doesn't crash!
         compressed_tasks_list = []
+        from core.features import is_org_routing_enabled
+        if is_org_routing_enabled():
+            orgs_list = await context_provider.get_organizations()
+            org_map = {o['id']: o['name'] for o in orgs_list}
+            
         for t in filtered_tasks:
             project = next((p for p in legacy_projects if p.get('id') == t.get('project_id')), None)
             p_name = project.get('name') if project else "General"
-            o_tag = project.get('org_tag') if project else "INBOX"
+            
+            if is_org_routing_enabled():
+                o_id = t.get('organization_id') or (project.get('organization_id') if project else None)
+                o_name = org_map.get(o_id, 'INBOX')
+                loc = f"{o_name} · {p_name}" if p_name != "General" else o_name
+            else:
+                o_tag = project.get('org_tag') if project else "INBOX"
+                loc = f"{o_tag} >> {p_name}"
+                
             dir_str = ""
             if t.get('direction') == 'waiting_on':
                 dir_str = f" [WAITING ON: {t.get('committed_to', 'someone')}]"
             elif t.get('direction') == 'outbound':
                 dir_str = f" [OWED TO: {t.get('committed_to', 'someone')}]"
             
-            compressed_tasks_list.append(f"[{o_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}){dir_str} [ID:{t.get('id')}]")
+            compressed_tasks_list.append(f"[{loc}] {t.get('title')} ({t.get('priority')}){dir_str} [ID:{t.get('id')}]")
 
         # --- 1.5 SEASON EXPIRY LOGIC ---
         season_row = next((c for c in core if c.get('key') == 'current_season'), None)
@@ -1330,18 +1343,33 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         After calling the necessary tools, your FINAL TEXT RESPONSE must be ONLY the formatted text string for the Telegram briefing.
         """
 
-        # --- BUILD SYSTEM INSTRUCTION ---
-        system_instruction_text = f"""{system_persona}
+        from core.features import is_org_routing_enabled
+        if is_org_routing_enabled():
+            orgs_list = await context_provider.get_organizations()
+            project_routing_logic = f"""
+            PROJECT AND ORGANIZATION ROUTING LOGIC:
+            Match each task to the MOST SPECIFIC active project using the hierarchy below.
+            If a task belongs to an organization but has no specific project, use the organization name instead.
+            Never default client or business work to Inbox.
 
-            MANDATE — SILENCE PROTOCOL & HALLUCINATION GUARD:
-            - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
-            - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
-            - NEVER proactively invent tasks or ideas. ONLY track what is manually entered or already exists.
-            - If NEW INPUTS is "None" or empty, you MUST return completely empty arrays for `completed_task_ids`, `new_tasks`, `new_projects`, and `resources` [].
-            - NEVER "make up", guess, or generate example tasks.
-            - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
-            - ONLY track what is manually entered in NEW INPUTS.
+            Active Organization Hierarchy and Projects:
+            {build_routing_context(legacy_projects, orgs_list)}
 
+            Routing rules:
+            1. Use project name or organization name EXACTLY as shown above.
+            2. If a task mentions a keyword, person, or topic from a project's description/keywords, use that project.
+            3. For client work, assign to the client organization. For internal work, assign to the organization doing the work.
+            
+            NEW PROJECT CREATION CRITERIA:
+            - Create new projects ONLY when there is a clear commanding instruction to start a new project or engagement.
+            - Provide "organization_name" (the primary owning or client organization).
+            - Provide "client_organization_name" if different from the primary organization.
+            - Provide "description" (one-sentence summary).
+            - Provide "keywords" (array of relevant names/topics).
+            - Do not invent domains.
+            """
+        else:
+            project_routing_logic = f"""
             PROJECT ROUTING LOGIC:
             Match each task to the MOST SPECIFIC active project using the list below.
             Sub-projects always win over parent projects when there is any match.
@@ -1358,7 +1386,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             4. For new projects you don't recognise from the list:
                - If it's client/tech work → use "Solvstrat" as the project_name.
                - If it's Qhord-related → use "Qhord".
-                - If it's Ashraya church admin/operations → use "Ashraya".
+               - If it's Ashraya church admin/operations → use "Ashraya".
                - If it's family/home → use "Family & Home".
                - NEVER use "Inbox" for business tasks.
 
@@ -1390,6 +1418,21 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
               5. Does the input mention family, home, kids, health, spiritual, learning, or personal admin? → PERSONAL
               6. Default for anything business/work that doesn't fit 1-3: → SOLVSTRAT
               7. NEVER default to INBOX for business or client work.
+            """
+
+        # --- BUILD SYSTEM INSTRUCTION ---
+        system_instruction_text = f"""{system_persona}
+
+            MANDATE — SILENCE PROTOCOL & HALLUCINATION GUARD:
+            - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
+            - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
+            - NEVER proactively invent tasks or ideas. ONLY track what is manually entered or already exists.
+            - If NEW INPUTS is "None" or empty, you MUST return completely empty arrays for `completed_task_ids`, `new_tasks`, `new_projects`, and `resources` [].
+            - NEVER "make up", guess, or generate example tasks.
+            - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
+            - ONLY track what is manually entered in NEW INPUTS.
+
+            {project_routing_logic}
             
             DRIFT DETECTION (Temporal Lineage):
             - Check if active projects have been updated 3+ times in 48 hours.

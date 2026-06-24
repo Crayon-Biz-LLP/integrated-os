@@ -178,11 +178,29 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
     title = result.get('title', text[:80])
     project_name = result.get('project_name', '')
     project_id = None
+    org_id = None
+    
     if project_name:
         for p in projects:
             if p['name'].lower() == project_name.lower():
                 project_id = p['id']
                 break
+                
+        from core.features import is_org_routing_enabled
+        if not project_id and is_org_routing_enabled():
+            # Try to match org
+            try:
+                org_res = supabase.table('organizations').select('id').ilike('name', project_name).limit(1).execute()
+                if org_res.data:
+                    org_id = org_res.data[0]['id']
+                else:
+                    # Log signal for Pulse
+                    supabase.table('project_creation_signals').insert({
+                        "project_name": project_name,
+                        "source": "quick_process"
+                    }).execute()
+            except Exception as e:
+                audit_log_sync("quick_process", "WARNING", f"Org match failed: {e}")
 
     sanitized_time = format_rfc3339(result.get('reminder_at'))
     explicit_time = bool(result.get('reminder_at') and 'T' in str(result.get('reminder_at')))
@@ -344,6 +362,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
     task_insert = {
         "title": title,
         "project_id": project_id,
+        "organization_id": org_id,
         "priority": (result.get('priority') or 'important').lower(),
         "status": "todo",
         "estimated_minutes": result.get('duration_mins', 15),
