@@ -39,7 +39,7 @@ def build_combined_prompt(text: str, projects: list, history_text: str = "") -> 
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
     date_context = now_ist.strftime("%A, %B %d, %Y at %I:%M %p IST")
     project_lines = "\n".join([
-        f"  - {p['name']} (tag: {p.get('org_tag', 'INBOX')})"
+        f"  - {p['name']} (org: {p.get('organization_name', 'INBOX')})"
         for p in projects
     ]) if projects else "  - General (tag: INBOX)"
 

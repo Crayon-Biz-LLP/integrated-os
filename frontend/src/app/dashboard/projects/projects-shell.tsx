@@ -10,7 +10,6 @@ import { ProjectDetailSheet } from '@/components/projects/project-detail-sheet';
 
 const defaultFilters: ProjectFiltersType = {
   search: '',
-  orgTag: 'all',
   context: 'all',
   status: 'active',
 };
@@ -18,7 +17,6 @@ const defaultFilters: ProjectFiltersType = {
 function filterProjects(projects: Project[], filters: ProjectFiltersType): Project[] {
   return projects.filter((p) => {
     if (filters.search && !p.name.toLowerCase().includes(filters.search.toLowerCase())) return false;
-    if (filters.orgTag && filters.orgTag !== 'all' && p.org_tag !== filters.orgTag) return false;
     if (filters.context && filters.context !== 'all' && p.context !== filters.context) return false;
     if (filters.status && filters.status !== 'all' && p.status !== filters.status) return false;
     return true;

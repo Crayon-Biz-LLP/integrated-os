@@ -3,6 +3,16 @@
 ## Project Overview
 FastAPI-based executive command system deployed as Vercel serverless functions (Python 3.11, matches CI). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 
+## Session Anchored Summary (Jun 24, 2026)
+
+### Progress Done This Session
+- **Phase 5 Organizations Expansion Completed**: Eradicated legacy `org_tag`, `is_org_proxy`, and `migrated_to_organization_id` columns.
+  - Successfully dropped legacy columns from `projects` and `tasks`.
+  - Refactored `core/pulse/context.py`, `engine.py`, `tools.py`, and `webhook/handler.py` to natively route by `organization_id` and `organization_name`.
+  - Removed `is_org_proxy` filters completely across the Next.js `frontend/` and Python backend.
+  - Fixed database RLS and permissions on the new `project_organizations` and `project_creation_signals` tables via formal `db/07_project_organizations_grants.sql` migration, strictly confining access to `service_role`.
+  - Confirmed via python simulation script that API invariants (`no org_tag`, `organization_name present`, proper task grouping) are correctly maintained at the database level.
+
 ## Session Anchored Summary (Jun 23, 2026)
 
 ### Progress Done This Session

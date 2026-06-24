@@ -654,14 +654,13 @@ async def graph_node_action_route(request: Request):
         body = await request.json()
         pending_id = body.get('id')
         action = body.get('action')
-        org_tag = body.get('org_tag')
         new_label = body.get('label')
         
         if not pending_id or action not in ('approve', 'reject', 'unreject'):
             raise HTTPException(status_code=400, detail="id and valid action (approve/reject/unreject) required")
             
         from core.pulse.graph import process_graph_pending_decision
-        result = await process_graph_pending_decision(int(pending_id), action, org_tag=org_tag, new_label=new_label)
+        result = await process_graph_pending_decision(int(pending_id), action, new_label=new_label)
         
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=result.get("message", "Failed to process node decision"))

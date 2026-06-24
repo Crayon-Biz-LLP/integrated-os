@@ -54,7 +54,7 @@ export function ChangeProjectDialog({ task, open, onOpenChange, onSuccess }: Cha
         ...task,
         project_id: selectedId,
         project_name: updatedProject?.name ?? 'Inbox',
-        project_org_tag: updatedProject?.org_tag ?? null,
+        organization_id: updatedProject?.organization_id ?? null,
       });
     } catch (error) {
       console.error('Failed to update task project:', error);

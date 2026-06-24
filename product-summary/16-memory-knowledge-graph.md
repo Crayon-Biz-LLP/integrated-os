@@ -93,7 +93,7 @@ The graph is stored in two tables:
 |------|-----------|----------|
 | `person` | Graph approval flow (pending → approved) | people_id, source |
 | `organization` | Graph approval flow | source |
-| `project` | Graph approval flow | project_id, org_tag |
+| `project` | Graph approval flow | project_id, organization_name |
 | `place` | Backfill extraction | source |
 | `animal` | Backfill extraction | source |
 | `concept` | Concept sweep batch + HITL approval | Deduped via 85%+ similarity check |

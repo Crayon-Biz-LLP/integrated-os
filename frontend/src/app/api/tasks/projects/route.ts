@@ -8,7 +8,6 @@ export async function GET() {
     .from("projects")
     .select("id, name, organization_id, is_active, status")
     .eq("is_active", true)
-    .eq("is_org_proxy", false)
     .order("name", { ascending: true })
     .limit(100);
 

@@ -12,7 +12,6 @@ class CompletedTask(BaseModel):
 class NewProject(BaseModel):
     name: str
     importance: Optional[int] = 5
-    org_tag: Optional[str] = "SOLVSTRAT"
     context: Optional[str] = "work"
     description: Optional[str] = None
     keywords: Optional[List[str]] = Field(default_factory=list)

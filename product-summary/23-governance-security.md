@@ -63,7 +63,7 @@ CRAYON for corporate governance/tax/legal.
 
 **Stealth enforcement**: The entity tag is in the JSON data, NEVER in the Telegram receipt.
 
-**Briefing filtering**: Tasks are grouped by org_tag in briefings:
+**Briefing filtering**: Tasks are grouped by organization_name in briefings:
 - `SOLVSTRAT`, `QHORD`, `CRAYON` → **🚀 Work** section
 - `PERSONAL` → **🏠 Home** section (family, personal)
 - `ASHRAYA` → **⛪ Church** section (dedicated section for Ashraya tasks)

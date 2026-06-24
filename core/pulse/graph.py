@@ -10,7 +10,6 @@ from core.lib.graph_rules import find_similar_node, validate_edge, resolve_alias
 
 supabase = get_supabase()
 
-VALID_ORG_TAGS = {'SOLVSTRAT', 'QHORD', 'PERSONAL', 'CRAYON', 'ASHRAYA'}
 TYPE_TO_DANNY_EDGE = {
     'project': 'OWNS',
     'person': 'KNOWS',
@@ -26,7 +25,6 @@ async def create_graph_node_with_db_record(
     label: str,
     node_type: str,
     source_text: str = "",
-    org_tag: str = None,
     context: str = None,
     source_tag: str = "pending_approval",
     force: bool = False
@@ -35,7 +33,7 @@ async def create_graph_node_with_db_record(
     
     Three modes:
     - Person: creates people row → graph_nodes with people_id → Danny KNOWS edge
-    - Project: creates projects row (requires org_tag) → graph_nodes with project_id → Danny OWNS edge
+    - Project: creates projects row → graph_nodes with project_id → Danny OWNS edge
     - Other (org, concept, etc.): graph_nodes only, no DB table
     """
     try:
@@ -56,18 +54,6 @@ async def create_graph_node_with_db_record(
                         "merge_candidate_id": top["id"]}
 
         if node_type == 'project':
-            if not org_tag:
-                return {
-                    "success": False, "action": "needs_org_tag",
-                    "message": f"Project '{label}' needs an org tag ({', '.join(sorted(VALID_ORG_TAGS))})"
-                }
-            org_tag_upper = org_tag.upper().strip()
-            if org_tag_upper not in VALID_ORG_TAGS:
-                return {
-                    "success": False, "action": "invalid_org_tag",
-                    "message": f"Invalid org tag '{org_tag}'. Must be one of: {', '.join(sorted(VALID_ORG_TAGS))}"
-                }
-
             existing = supabase.table('projects').select('id, name').ilike('name', label).maybe_single().execute()
             if existing and existing.data:
                 project_id = existing.data['id']
@@ -75,7 +61,6 @@ async def create_graph_node_with_db_record(
             else:
                 result = supabase.table('projects').insert({
                     "name": label,
-                    "org_tag": org_tag_upper,
                     "status": "active",
                     "context": context or "from graph_approval",
                     "is_active": True,
@@ -93,7 +78,6 @@ async def create_graph_node_with_db_record(
                     "metadata": {
                         "source": source_tag,
                         "project_id": str(project_id),
-                        "org_tag": org_tag_upper,
                         "memory_id": source_text,
                     }
                 },
@@ -108,7 +92,7 @@ async def create_graph_node_with_db_record(
 
             return {
                 "success": True, "action": "approved",
-                "message": f"Approved project '{label}' ({org_tag_upper})",
+                "message": f"Approved project '{label}'",
                 "inferred_edges": inferred
             }
 
@@ -336,7 +320,7 @@ Format:
         return []
 
 
-async def process_graph_pending_decision(pending_id: int, decision: str, org_tag: str = None, context: str = None, new_label: str = None) -> dict:
+async def process_graph_pending_decision(pending_id: int, decision: str, context: str = None, new_label: str = None) -> dict:
     try:
         pending_res = supabase.table('pending_graph_nodes').select('*').eq('id', pending_id).maybe_single().execute()
         if not pending_res or not pending_res.data:
@@ -400,7 +384,6 @@ async def process_graph_pending_decision(pending_id: int, decision: str, org_tag
                 label=label,
                 node_type=node_type,
                 source_text=source_text,
-                org_tag=org_tag,
                 context=context,
                 source_tag="pending_approval"
             )

@@ -11,8 +11,6 @@ import { formatDistanceToNow, parseISO } from 'date-fns';
 import { Check, X, Box, GitMerge, Loader2, Pencil } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-const VALID_ORG_TAGS = ['PERSONAL', 'QHORD', 'SOLVSTRAT', 'ASHRAYA', 'CRAYON'];
-
 function MergeDropdown({ 
   nodeType, 
   onSelect 
@@ -77,7 +75,6 @@ function MergeDropdown({
 
 export function NodePendingList({ items: initialItems }: { items: GraphPendingNode[] }) {
   const [items, setItems] = useState<GraphPendingNode[]>(initialItems);
-  const [projectOrgTags, setProjectOrgTags] = useState<Record<number, string>>({});
   const [changingTypeId, setChangingTypeId] = useState<number | null>(null);
   const [mergingId, setMergingId] = useState<number | null>(null);
   const [editedLabels, setEditedLabels] = useState<Record<number, string>>({});
@@ -106,16 +103,8 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
     if (!item) return;
 
     let payload: any = undefined;
-    if (decision === 'approve' && item.type === 'project') {
-      const orgTag = projectOrgTags[id];
-      if (!orgTag) {
-        toast.error('Please select an Org Tag for the project');
-        return;
-      }
-      payload = { org_tag: orgTag };
-    }
     if (decision === 'approve' && editedLabels[id]) {
-      payload = { ...payload, label: editedLabels[id] };
+      payload = { label: editedLabels[id] };
     }
 
     try {
@@ -291,24 +280,6 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                     <span className="inline-block mt-2 px-2 py-1 bg-yellow-100 text-yellow-800 text-xs font-medium rounded">
                       Flagged: Requires structural anchor
                     </span>
-                  )}
-                  {item.type === 'project' && (
-                    <div className="mt-4 flex items-center gap-3">
-                      <span className="text-sm text-muted-foreground whitespace-nowrap">Org Tag:</span>
-                      <Select
-                        value={projectOrgTags[item.id] || ''}
-                        onValueChange={(val) => setProjectOrgTags((prev) => ({ ...prev, [item.id]: val || '' }))}
-                      >
-                        <SelectTrigger className="w-[180px] h-8 text-sm">
-                          <SelectValue placeholder="Select Org Tag" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {VALID_ORG_TAGS.map((tag) => (
-                            <SelectItem key={tag} value={tag} className="text-sm">{tag}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
                   )}
                   {mergingId === item.id && (
                     <div className="mt-3 bg-muted/50 p-3 rounded-md border">

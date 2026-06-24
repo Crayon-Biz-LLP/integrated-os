@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 export default async function Page() {
   const supabase = await createServerSupabaseClient();
 
-  const [tasksRes, statsRes, projectsRes] = await Promise.all([
+  const [tasksRes, statsRes, projectsRes, orgsRes] = await Promise.all([
     supabase
       .from("tasks")
       .select(`
@@ -29,7 +29,6 @@ export default async function Page() {
       .from("projects")
       .select("id, name, organization_id, is_active, status")
       .eq("is_active", true)
-      .eq("is_org_proxy", false)
       .order("name", { ascending: true })
       .limit(100),
     supabase

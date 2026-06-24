@@ -401,14 +401,14 @@ async def adaptive_briefing_learner(briefing_history: list = None) -> str:
         # Track if certain sections are consistently empty and suggest hiding them
         try:
             recent_tasks = supabase.table('tasks') \
-                .select('org_tag, priority, status') \
+                .select('organization_id, priority, status') \
                 .eq('status', 'active') \
                 .execute()
 
             if recent_tasks.data:
                 tag_counts = {}
                 for t in recent_tasks.data:
-                    tag = t.get('org_tag', 'INBOX')
+                    tag = str(t.get('organization_id', 'INBOX'))
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
                 # Suggest hiding sections with < 2 tasks

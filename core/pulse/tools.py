@@ -62,20 +62,15 @@ def save_briefing(text: str):
     return "Briefing saved successfully."
 
 @rhodey_tools.register
-def create_project(name: str, org_tag: str = "SOLVSTRAT", description: str = "", keywords: List[str] = None, organization_name: str = None, client_organization_name: str = None):
+def create_project(name: str, description: str = "", keywords: List[str] = None, organization_name: str = None, client_organization_name: str = None):
     """Creates a new project. Optionally provide organization_name and client_organization_name for proper org routing."""
     from core.features import is_org_routing_enabled
-    valid_tags = ['SOLVSTRAT', 'QHORD', 'PERSONAL', 'CRAYON', 'ASHRAYA']
-    CONTEXT_MAP = {'ASHRAYA': 'personal', 'PERSONAL': 'personal', 'SOLVSTRAT': 'work', 'QHORD': 'work', 'CRAYON': 'work'}
-    
-    org_tag = org_tag.upper() if org_tag and org_tag.upper() in valid_tags else 'SOLVSTRAT'
     
     try:
         data = {
             "name": name,
-            "org_tag": org_tag,
             "description": description,
-            "context": CONTEXT_MAP.get(org_tag, 'work'),
+            "context": "work",
             "status": "active",
             "is_active": True,
             "keywords": keywords or []
@@ -117,7 +112,7 @@ def create_project(name: str, org_tag: str = "SOLVSTRAT", description: str = "",
             supabase.table('graph_nodes').insert({
                 "label": name,
                 "type": "project",
-                "metadata": {"source": "pulse_tools", "project_id": str(proj_id), "org_tag": org_tag}
+                "metadata": {"source": "pulse_tools", "project_id": str(proj_id)}
             }).execute()
             return f"Project created with ID {proj_id}"
     except Exception as e:

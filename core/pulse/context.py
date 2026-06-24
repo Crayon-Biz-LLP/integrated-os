@@ -75,20 +75,14 @@ class ContextProvider:
         return dot / (norm_a * norm_b)
 
     async def get_projects(self):
-        from core.features import is_org_routing_enabled
         cached = self.caches['projects'].get()
         if cached is not None:
-            # Optionally we could filter the cache, but usually we just rebuild it if the flag changes.
-            if is_org_routing_enabled():
-                return [p for p in cached if not p.get('is_org_proxy')]
             return cached
             
         res = supabase.table('projects').select('*').eq('status', 'active').execute()
         projects = res.data or []
         self.caches['projects'].set(projects)
         
-        if is_org_routing_enabled():
-            return [p for p in projects if not p.get('is_org_proxy')]
         return projects
 
     async def get_organizations(self):
@@ -312,7 +306,6 @@ class ContextProvider:
             
             p_data = proj_map.get(t.get('project_id'))
             p_name = p_data['name'] if p_data else "General"
-            org_tag = p_data.get('org_tag', 'INBOX') if p_data else "INBOX"
             
             if is_org_routing_enabled():
                 o_id = t.get('organization_id') or (p_data.get('organization_id') if p_data else None)
@@ -323,7 +316,7 @@ class ContextProvider:
                     loc = o_name
                 formatted = f"[{loc}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
             else:
-                formatted = f"[{org_tag} >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
+                formatted = f"[INBOX >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
             
             if is_urgent or is_due_soon:
                 always_include.append(formatted)

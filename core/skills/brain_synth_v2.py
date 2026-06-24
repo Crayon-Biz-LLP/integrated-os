@@ -12,17 +12,7 @@ from core.llm.embedding import get_embedding
 
 supabase = get_supabase()
 
-PARENT_ORG_TAGS = {'SOLVSTRAT', 'QHORD', 'ASHRAYA', 'PERSONAL', 'CRAYON'}
-SKIP_ORG_TAGS = {None, 'INBOX'}
 MIN_FRAGMENT_THRESHOLD = 5
-
-ORG_TAG_CONTEXT = {
-    'SOLVSTRAT': 'Client services and delivery. Software development, consulting, client projects.',
-    'QHORD': "Product GTM and launch. Qhord is Danny's standalone product launching June 2026.",
-    'ASHRAYA': 'Ashraya church administration, operations, finances, events.',
-    'PERSONAL': 'Family, home, health, personal admin, spiritual practices.',
-    'CRAYON': 'Company governance, legal, tax, compliance, admin structure.',
-}
 
 entity_sem = asyncio.Semaphore(6)
 gemini_sem = asyncio.Semaphore(4)
@@ -124,7 +114,7 @@ async def fetch_entity_graph_edges(entity_name: str, max_edges=20):
         print(f"Graph context error for {entity_name}: {e}")
         return []
 
-async def synth_entity(project_id, entity_name, org_tag):
+async def synth_entity(project_id, entity_name, org_name, org_context):
     async with entity_sem:
         print(f"  Gathering fragments for {entity_name}...")
         
@@ -284,28 +274,8 @@ async def synth_entity(project_id, entity_name, org_tag):
         except Exception as e:
             print(f"  [Error] Graph edges failed for {entity_name}: {e}")
 
-        # Parent/Child Tasks
-        if org_tag in PARENT_ORG_TAGS:
-            try:
-                child_res = await asyncio.to_thread(
-                    lambda: supabase.table('projects') \
-                    .select('id, name') \
-                    .eq('parent_project_id', project_id) \
-                    .eq('status', 'active') \
-                    .execute()
-                )
-                for child in child_res.data or []:
-                    child_tasks = await asyncio.to_thread(
-                        lambda c_id=child['id']: supabase.table('tasks').select('title, status, created_at, updated_at') \
-                        .eq('is_current', True).eq('project_id', c_id).execute()
-                    )
-                    for t in child_tasks.data or []:
-                        ts = parse_iso(t.get('updated_at') or t.get('created_at'))
-                        add_fragment("task", f"[{child['name']}] ({t['status'].upper()}) {t['title']}", ts)
-            except Exception as e:
-                print(f"  [Error] Child tasks failed for {entity_name}: {e}")
-
-        is_parent = org_tag in PARENT_ORG_TAGS and entity_name.lower() == org_tag.lower()
+        # Parent/Child Tasks (Removed legacy logic)
+        is_parent = False
 
         # Incremental skip logic
         if existing_id and newest_timestamp <= last_synth_at and not is_parent:
@@ -321,7 +291,8 @@ async def synth_entity(project_id, entity_name, org_tag):
         return {
             "entity": entity_name,
             "project_id": project_id,
-            "org_tag": org_tag,
+            "org_name": org_name,
+            "org_context": org_context,
             "is_parent": is_parent,
             "existing_page": existing_content or "No existing page — create from scratch.",
             "new_fragments": all_fragments,
@@ -334,21 +305,24 @@ async def synth_entity(project_id, entity_name, org_tag):
 async def run_batch_sweep_v2():
     try:
         active_res = supabase.table('projects') \
-            .select('id, name, org_tag') \
+            .select('id, name, organization_id') \
             .eq('is_active', True) \
             .eq('status', 'active') \
             .execute()
             
+        orgs_res = supabase.table('organizations').select('id, name, description').eq('is_active', True).execute()
+        org_map = {str(o['id']): o for o in orgs_res.data} if orgs_res.data else {}
+            
         entities = []
         for p in active_res.data:
-            org_tag = p.get('org_tag')
-            if org_tag not in SKIP_ORG_TAGS:
-                entities.append((p['id'], p.get('name') or p.get('title', ''), org_tag))
+            org_id = str(p.get('organization_id'))
+            if org_id in org_map:
+                entities.append((p['id'], p.get('name') or p.get('title', ''), org_map[org_id]['name'], org_map[org_id].get('description', '')))
 
         print(f"Gathering fragments for {len(entities)} entities (Phase 2 Parallel)...")
         
         # Stage 1-3: Gather, filter, incremental check (Parallel)
-        tasks = [synth_entity(pid, name, org) for pid, name, org in entities]
+        tasks = [synth_entity(pid, name, org_n, org_c) for pid, name, org_n, org_c in entities]
         gathered_payloads = await asyncio.gather(*tasks)
         
         # Filter out skips
@@ -391,18 +365,18 @@ async def run_batch_sweep_v2():
         async def call_gemini_for_entity(entry):
             async with gemini_sem:
                 entity_name = entry['entity']
-                org_tag = entry.get('org_tag', '')
+                org_name = entry.get('org_name', '')
+                org_context = entry.get('org_context', '')
                 is_parent = entry.get('is_parent', False)
-                org_context = ORG_TAG_CONTEXT.get(org_tag, org_tag)
                 
                 if is_parent:
                     prompt_role = "Executive Summary Writer for Danny's OS"
-                    prompt_objective = f"Write a high-level overview of the {org_tag} domain ({entity_name}). Synthesize all sub-projects and activity under this domain."
-                    scope_rules = f"DOMAIN SCOPE: This page covers the {org_tag} domain and its sub-projects only.\nEXCLUDE: Any content related to other domains.\nDOMAIN DESCRIPTION: {org_context}"
+                    prompt_objective = f"Write a high-level overview of the {org_name} domain ({entity_name}). Synthesize all sub-projects and activity under this domain."
+                    scope_rules = f"DOMAIN SCOPE: This page covers the {org_name} domain and its sub-projects only.\nEXCLUDE: Any content related to other domains.\nDOMAIN DESCRIPTION: {org_context}"
                 else:
                     prompt_role = "Knowledge Curator for Danny's OS"
-                    prompt_objective = f"Update the Master Page for {entity_name} (under {org_tag})."
-                    scope_rules = f"PROJECT SCOPE: This page is ONLY for {entity_name} under {org_tag}.\nEXCLUDE: Any content about other projects.\nDOMAIN CONTEXT: {entity_name} belongs to {org_tag} ({org_context})."
+                    prompt_objective = f"Update the Master Page for {entity_name} (under {org_name})."
+                    scope_rules = f"PROJECT SCOPE: This page is ONLY for {entity_name} under {org_name}.\nEXCLUDE: Any content about other projects.\nDOMAIN CONTEXT: {entity_name} belongs to {org_name} ({org_context})."
                 
                 graph_ctx_str = "\n".join(entry['graph_context']) if entry['graph_context'] else "No known relationships."
                 

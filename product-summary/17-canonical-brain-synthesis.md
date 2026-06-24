@@ -49,7 +49,7 @@ Every project must meet a minimum fragment threshold of 5 to qualify for a canon
 
 If an existing page exists for a project that no longer meets the threshold, it is **automatically archived** (`is_current = False`). This keeps the table clean — old, stale pages don't accumulate.
 
-Projects with `org_tag = INBOX` or `NULL` are completely skipped — they never get pages.
+Projects with `organization_name = INBOX` or `NULL` are completely skipped — they never get pages.
 
 ### Safety Guards
 
@@ -84,8 +84,8 @@ This avoids unique constraint conflicts on the `title` column.
 ### What It Does
 
 `core/skills/brain_synth.py` is a nightly knowledge consolidation job that:
-1. Queries all active projects with a recognized `org_tag` (skips INBOX)
-2. For each project, gathers fragments from 6 sources with org_tag-scoped filtering
+1. Queries all active projects with a recognized `organization_name` (skips INBOX)
+2. For each project, gathers fragments from 6 sources with organization_name-scoped filtering
 3. For parent pages, also gathers child project tasks
 4. Sends fragments + existing page to Gemini for domain-aware synthesis
 5. Updates the page in-place (or creates if new)
@@ -104,16 +104,16 @@ The Gemini prompt differs based on page type:
 **Parent pages** get an Executive Summary prompt:
 ```
 ROLE: Executive Summary Writer for Danny's OS.
-OBJECTIVE: Write a high-level overview of the {org_tag} domain.
-DOMAIN SCOPE: This page covers the {org_tag} domain and its sub-projects only.
+OBJECTIVE: Write a high-level overview of the {organization_name} domain.
+DOMAIN SCOPE: This page covers the {organization_name} domain and its sub-projects only.
 EXCLUDE: Any content related to other domains.
 ```
 
 **Sub-pages** get a focused prompt:
 ```
 ROLE: Knowledge Curator for Danny's OS.
-OBJECTIVE: Update the Master Page for {entity_name} (under {org_tag}).
-PROJECT SCOPE: This page is ONLY for {entity_name} under {org_tag}.
+OBJECTIVE: Update the Master Page for {entity_name} (under {organization_name}).
+PROJECT SCOPE: This page is ONLY for {entity_name} under {organization_name}.
 EXCLUDE: Any content about other projects, clients, or domains.
 ```
 

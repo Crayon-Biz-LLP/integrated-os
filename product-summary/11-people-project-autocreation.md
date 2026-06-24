@@ -8,7 +8,7 @@ Projects are NOT auto-created when a task references a non-existent project. The
 
 The Pulse prompt strictly constrains project creation by domain:
 
-> **SOLVSTRAT**: Auto-create new projects for completely unknown client names mentioned (e.g., a company hiring Solvstrat for tech work). Set `org_tag: "SOLVSTRAT"`, `parent_project_name: "Solvstrat"`.
+> **SOLVSTRAT**: Auto-create new projects for completely unknown client names mentioned (e.g., a company hiring Solvstrat for tech work). Set `organization_name: "SOLVSTRAT"`, `parent_project_name: "Solvstrat"`.
 
 > **OTHER DOMAINS** (QHORD, ASHRAYA, PERSONAL, CRAYON): ONLY create a new project if Danny explicitly says "create a project", "start a new project", or gives a clear commanding instruction. Otherwise, route the work as a task under the existing parent project. Do NOT auto-create projects for one-off tasks or casual mentions.
 
@@ -23,7 +23,7 @@ for p in ai_data['new_projects']:
     name = p.get('name', '').strip()
     
     # 1. VALIDATE ORG TAG
-    tag = p.get('org_tag', 'SOLVSTRAT')
+    tag = p.get('organization_name', 'SOLVSTRAT')
     if tag not in ['SOLVSTRAT', 'QHORD', 'PERSONAL', 'CRAYON', 'ASHRAYA']:
         continue
     
@@ -50,7 +50,7 @@ for p in ai_data['new_projects']:
     checks if matching graph node exists:
         - If exists AND not type 'project': upgrade to 'project'
         - If exists AND is 'project': update metadata
-        - If none: create new graph_node (type='project', metadata with project_id, org_tag)
+        - If none: create new graph_node (type='project', metadata with project_id, organization_name)
 ```
 
 ### Deduplication Strategy

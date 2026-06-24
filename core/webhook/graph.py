@@ -51,8 +51,7 @@ Rules:
 4. If the user corrects the type (e.g. person, project, organization, team), include "corrected_type".
 5. If the user indicates the node is a duplicate, alias, or should be merged, map that to action="reject" and include a "reason" explaining why.
 6. Allowed actions: "approve", "reject", "skip".
-7. If approving a "project" type, check if the user specified an org tag (e.g. SOLVSTRAT, QHORD, PERSONAL, CRAYON, ASHRAYA) and include it as "org_tag".
-8. If approving a "person" type, check if the user provided context (e.g. role, relationship, organization) and include it as "context".
+7. If approving a "person" type, check if the user provided context (e.g. role, relationship, organization) and include it as "context".
 
 Return format MUST be a valid JSON array:
 [
@@ -73,8 +72,7 @@ Return format MUST be a valid JSON array:
     "id": 3,
     "action": "approve",
     "corrected_label": "Qhord Cloud Console",
-    "corrected_type": "project",
-    "org_tag": "QHORD"
+    "corrected_type": "project"
   }
 ]
 """
@@ -157,7 +155,6 @@ async def apply_graph_actions(actions: list, original_items_map: dict) -> dict:
                     label=final_label,
                     node_type=final_type,
                     source_text=source_text,
-                    org_tag=action.get('org_tag'),
                     context=action.get('context'),
                     source_tag="pending_approval_nlp"
                 )

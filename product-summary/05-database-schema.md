@@ -25,7 +25,7 @@
 | updated_at | TIMESTAMPTZ | |
 | raw_dump_id | BIGINT | FK → `raw_dumps.id` |
 | raw_dump_source | TEXT | |
-| org_tag | TEXT | `SOLVSTRAT`, `QHORD`, `ASHRAYA`, `PERSONAL`, `CRAYON` |
+| organization_name | TEXT | `SOLVSTRAT`, `QHORD`, `ASHRAYA`, `PERSONAL`, `CRAYON` |
 | goal_id | UUID | FK → `goals.id` |
 | is_bad | BOOLEAN | Noise flag |
 | direction | TEXT | `inbound`, `outbound`, `waiting_on` — who owns the action |
@@ -58,7 +58,7 @@ Added: `direction` (inbound/outbound/waiting_on), `committed_to` (person name), 
 | raw_dump_id | BIGINT | FK → `raw_dumps.id` (nullable) |
 | created_at | TIMESTAMPTZ | |
 | project_id | TEXT | FK → `projects.id` |
-| org_tag | TEXT | |
+| organization_name | TEXT | |
 | source_table | TEXT | `memories` or `raw_dumps` (marks origin) |
 | sentiment_score | REAL | -1.0 to +1.0 |
 | sentiment | TEXT | Single-word label (e.g., "frustrated") |
@@ -110,7 +110,7 @@ Added: `status`, `pending_id`, `source_label`, `target_label`, `source_text`, `s
 | name | TEXT |
 | description | TEXT |
 | status | TEXT |
-| org_tag | TEXT |
+| organization_name | TEXT |
 | start_date | TIMESTAMPTZ |
 | end_date | TIMESTAMPTZ |
 

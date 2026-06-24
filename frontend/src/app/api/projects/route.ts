@@ -12,7 +12,6 @@ interface ProjectRow {
   parent_project_id: number | null;
   keywords: string[] | null;
   organization_id?: string | null;
-  is_org_proxy?: boolean;
 }
 
 interface EnrichedProject {
@@ -29,7 +28,6 @@ interface EnrichedProject {
   open_task_count: number;
   organization_id?: string | null;
   organization_name?: string | null;
-  is_org_proxy?: boolean;
 }
 
 export async function GET(req: NextRequest) {
@@ -42,9 +40,6 @@ export async function GET(req: NextRequest) {
   const status = searchParams.get("status");
 
   let query = supabase.from("projects").select("*");
-  if (isOrgRoutingEnabled) {
-    query = query.eq("is_org_proxy", false);
-  }
 
   const { data: projectsData, error: projectsError } = await query
     .order("name", { ascending: true })

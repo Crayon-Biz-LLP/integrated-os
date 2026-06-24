@@ -36,7 +36,7 @@ Injected into the prompt alongside the 5 agents:
 **Source**: `core/pulse/memory.py` — `adaptive_briefing_learner()`
 Three meta-learning mechanisms:
 1. **Time-of-day effectiveness**: Compares morning vs. evening memory creation rates to suggest adjusting briefing depth
-2. **Section density learning**: Detects sparse org_tag sections (<2 tasks) and suggests condensing
+2. **Section density learning**: Detects sparse organization_name sections (<2 tasks) and suggests condensing
 3. **Token optimization**: Recommends keeping briefings under 3 bullets per section
 
 ## The Research Worker Agent (Background Scheduled)

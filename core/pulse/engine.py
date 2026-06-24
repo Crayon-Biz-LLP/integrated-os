@@ -141,7 +141,6 @@ class CompletedTask(BaseModel):
 class NewProject(BaseModel):
     name: str
     importance: Optional[int] = 5
-    org_tag: Optional[str] = "SOLVSTRAT"
     context: Optional[str] = "work"
     description: Optional[str] = None
     keywords: Optional[List[str]] = Field(default_factory=list)
@@ -334,7 +333,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             awaiting_res = supabase.table('pending_graph_nodes').select('id', count='exact').eq('status', 'awaiting_details').execute()
             awaiting_count = awaiting_res.count if hasattr(awaiting_res, 'count') else len(awaiting_res.data or [])
             if awaiting_count:
-                lines.append(f"⏳ {awaiting_count} node(s) waiting for details (tap ✅ to provide org_tag/context)")
+                lines.append(f"⏳ {awaiting_count} node(s) waiting for details (tap ✅ to provide context)")
                 lines.append("")
         except Exception:
             pass
@@ -652,7 +651,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             
             audit_log_sync("pulse", "INFO", f"🔒 Locked {len(dump_ids)} dumps for processing.")
 
-        active_tasks_res = supabase.table('tasks').select('id, title, project_id, priority, created_at, reminder_at, google_event_id, direction, committed_to').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
+        active_tasks_res = supabase.table('tasks').select('id, title, project_id, organization_id, priority, created_at, reminder_at, google_event_id, direction, committed_to').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
         active_tasks = active_tasks_res.data or []
 
         # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
@@ -804,7 +803,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             projects.append({
                 'id': gp['id'],
                 'name': gp['label'],
-                'org_tag': metadata.get('org_tag', 'INBOX'),
+                'organization_name': metadata.get('organization_name', 'INBOX'),
                 'description': metadata.get('description', ''),
                 'legacy_id': metadata.get('legacy_id')
             })
@@ -814,6 +813,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
 
         audit_log_sync("pulse", "INFO", "📦 Step 3: Fetching people...")
         people = await context_provider.get_people()
+        
+        orgs_list = await context_provider.get_organizations()
+        org_map = {o['id']: o['name'] for o in orgs_list}
 
         audit_log_sync("pulse", "INFO", "📦 Step 4: Fetching clusters (skipped, unused)...")
         # --- 🕒 1.2 UNIFIED TIME & DAY INTELLIGENCE (IST) ---
@@ -879,16 +881,19 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 continue
 
             project = next((p for p in legacy_projects if p.get('id') == t.get('project_id')), None)
-            o_tag = project.get('org_tag') if project else "INBOX"
+            o_id = t.get('organization_id') or (project.get('organization_id') if project else None)
+            o_name = org_map.get(o_id, 'INBOX')
+
+            personal_orgs = ['Personal', 'Ashraya', 'Ashraya Chennai', 'Chennai North', 'Chennai Central', 'Chennai India']
 
             if is_weekend:
-                if o_tag in ['PERSONAL', 'ASHRAYA']:
+                if any(po in o_name for po in personal_orgs):
                     filtered_tasks.append(t)
             elif hour < 19:
-                if o_tag in ['SOLVSTRAT', 'CRAYON', 'INBOX']:
+                if not any(po in o_name for po in personal_orgs) or o_name == 'INBOX':
                     filtered_tasks.append(t)
             else:
-                if o_tag in ['PERSONAL', 'ASHRAYA']:
+                if any(po in o_name for po in personal_orgs):
                     filtered_tasks.append(t)
 
         # --- 1.4 CONTEXT COMPRESSION & PRUNING ---
@@ -920,22 +925,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # B. BUILD COMPRESSED LIST (For the Briefing Context)
         # 🛡️ FIX: Defining 'compressed_tasks' so the prompt builder doesn't crash!
         compressed_tasks_list = []
-        from core.features import is_org_routing_enabled
-        if is_org_routing_enabled():
-            orgs_list = await context_provider.get_organizations()
-            org_map = {o['id']: o['name'] for o in orgs_list}
             
         for t in filtered_tasks:
             project = next((p for p in legacy_projects if p.get('id') == t.get('project_id')), None)
             p_name = project.get('name') if project else "General"
             
-            if is_org_routing_enabled():
-                o_id = t.get('organization_id') or (project.get('organization_id') if project else None)
-                o_name = org_map.get(o_id, 'INBOX')
-                loc = f"{o_name} · {p_name}" if p_name != "General" else o_name
-            else:
-                o_tag = project.get('org_tag') if project else "INBOX"
-                loc = f"{o_tag} >> {p_name}"
+            o_id = t.get('organization_id') or (project.get('organization_id') if project else None)
+            o_name = org_map.get(o_id, 'INBOX')
+            loc = f"{o_name} · {p_name}" if p_name != "General" else o_name
                 
             dir_str = ""
             if t.get('direction') == 'waiting_on':
@@ -1343,82 +1340,29 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         After calling the necessary tools, your FINAL TEXT RESPONSE must be ONLY the formatted text string for the Telegram briefing.
         """
 
-        from core.features import is_org_routing_enabled
-        if is_org_routing_enabled():
-            orgs_list = await context_provider.get_organizations()
-            project_routing_logic = f"""
-            PROJECT AND ORGANIZATION ROUTING LOGIC:
-            Match each task to the MOST SPECIFIC active project using the hierarchy below.
-            If a task belongs to an organization but has no specific project, use the organization name instead.
-            Never default client or business work to Inbox.
+        orgs_list = await context_provider.get_organizations()
+        project_routing_logic = f"""
+        PROJECT AND ORGANIZATION ROUTING LOGIC:
+        Match each task to the MOST SPECIFIC active project using the hierarchy below.
+        If a task belongs to an organization but has no specific project, use the organization name instead.
+        Never default client or business work to Inbox.
 
-            Active Organization Hierarchy and Projects:
-            {build_routing_context(legacy_projects, orgs_list)}
+        Active Organization Hierarchy and Projects:
+        {build_routing_context(legacy_projects, orgs_list)}
 
-            Routing rules:
-            1. Use project name or organization name EXACTLY as shown above.
-            2. If a task mentions a keyword, person, or topic from a project's description/keywords, use that project.
-            3. For client work, assign to the client organization. For internal work, assign to the organization doing the work.
-            
-            NEW PROJECT CREATION CRITERIA:
-            - Create new projects ONLY when there is a clear commanding instruction to start a new project or engagement.
-            - Provide "organization_name" (the primary owning or client organization).
-            - Provide "client_organization_name" if different from the primary organization.
-            - Provide "description" (one-sentence summary).
-            - Provide "keywords" (array of relevant names/topics).
-            - Do not invent domains.
-            """
-        else:
-            project_routing_logic = f"""
-            PROJECT ROUTING LOGIC:
-            Match each task to the MOST SPECIFIC active project using the list below.
-            Sub-projects always win over parent projects when there is any match.
-            Only use "Inbox" if the task is truly personal admin with no project match.
-            Never default client or business work to Inbox.
-
-            Active projects (sub-projects listed first):
-            {build_routing_context(legacy_projects)}
-
-            Routing rules:
-            1. Use project name EXACTLY as shown in quotes above.
-            2. If a task mentions a keyword, person, or topic from a project's description/keywords, use that project.
-            3. Sub-projects (those marked "sub-project of X") are always more specific — prefer them.
-            4. For new projects you don't recognise from the list:
-               - If it's client/tech work → use "Solvstrat" as the project_name.
-               - If it's Qhord-related → use "Qhord".
-               - If it's Ashraya church admin/operations → use "Ashraya".
-               - If it's family/home → use "Family & Home".
-               - NEVER use "Inbox" for business tasks.
-
-            NEW PROJECT CREATION CRITERIA:
-            - SOLVSTRAT: Auto-create new projects for completely unknown client names mentioned (e.g., a company hiring Solvstrat for tech work). Set org_tag: "SOLVSTRAT", parent_project_name: "Solvstrat".
-            - OTHER DOMAINS (QHORD, ASHRAYA, PERSONAL, CRAYON): ONLY create a new project if Danny explicitly says "create a project", "start a new project", or gives a clear commanding instruction. Otherwise, route the work as a task under the existing parent project. Do NOT auto-create projects for one-off tasks or casual mentions.
-            - Always populate "description" with a one-sentence summary of the project's purpose.
-            - Always populate "keywords" with an array of relevant names, abbreviations, companies, and topics.
-            - Always populate "context" using the rules below.
-
-            ORG_TAG & CONTEXT ROUTING (MANDATORY — never leave as INBOX):
-            Danny's world has 5 domains. Route every new project into exactly one:
-
-              CRAYON     | context: work     | Company umbrella. Governance, legal, tax, compliance, admin structure, company-level config, board matters. → Set org_tag: "CRAYON", parent_project_name: "Crayon"
-
-              SOLVSTRAT  | context: work     | Client services and delivery. Software development, consulting, client projects, tech services. Clients include: Shield Identity, GRB, Equisoft, Armour Cyber, Johan. → Set org_tag: "SOLVSTRAT", parent_project_name: "Solvstrat"
-
-              QHORD      | context: work     | Danny's own product company (launching June 2026). Product development, GTM, marketing, beta, sales, everything Qhord. → Set org_tag: "QHORD", parent_project_name: "Qhord"
-
-              ASHRAYA    | context: personal | Ashraya church administration, operations, accounts, facility management, event coordination, organizational work. → Set org_tag: "ASHRAYA", parent_project_name: "Ashraya"
-
-              PERSONAL   | context: personal | Everything personal — family, home, kids, health, personal admin, hobbies, investments, learning, spiritual practices, journaling. Under "Family & Home" parent. → Set org_tag: "PERSONAL", parent_project_name: "Family & Home"
-
-              ROUTING RULES (apply in order):
-              1. Does the input mention Crayon governance, legal, tax, company structure? → CRAYON
-              2. Does the input mention Qhord product development, GTM, or launch? → QHORD
-              3. Does the input mention a client paying Solvstrat for tech/product work? → SOLVSTRAT
-              4. Does the input mention Ashraya church admin, operations, accounts? → ASHRAYA
-              5. Does the input mention family, home, kids, health, spiritual, learning, or personal admin? → PERSONAL
-              6. Default for anything business/work that doesn't fit 1-3: → SOLVSTRAT
-              7. NEVER default to INBOX for business or client work.
-            """
+        Routing rules:
+        1. Use project name or organization name EXACTLY as shown above.
+        2. If a task mentions a keyword, person, or topic from a project's description/keywords, use that project.
+        3. For client work, assign to the client organization. For internal work, assign to the organization doing the work.
+        
+        NEW PROJECT CREATION CRITERIA:
+        - Create new projects ONLY when there is a clear commanding instruction to start a new project or engagement.
+        - Provide "organization_name" (the primary owning or client organization).
+        - Provide "client_organization_name" if different from the primary organization.
+        - Provide "description" (one-sentence summary).
+        - Provide "keywords" (array of relevant names/topics).
+        - Do not invent domains.
+        """
 
         # --- BUILD SYSTEM INSTRUCTION ---
         system_instruction_text = f"""{system_persona}
@@ -1485,7 +1429,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             6a. UPDATE DETECTION: If a user says "Update [title]" or "Reschedule [title]" or "Change [title] to [new time]", IMMEDIATELY search ALL SYSTEM TASKS for the matching task. Return it in completed_task_ids with the updated reminder_at and/or duration_mins — NOT in new_tasks.
             7. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When Danny mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
             7a. RECURRENCE RULES: If Danny says "every Monday", "weekly", "daily", output an iCalendar RRULE string in "recurrence" (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO"). If he specifies an end date like "until December", append the UNTIL clause in UTC format (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261231T000000Z"). Otherwise leave it null.
-            8. AUTO-ONBOARDING: If a new Solvstrat client is mentioned, add to "new_projects" (org_tag: SOLVSTRAT). For other domains, only create a project if Danny explicitly commands it. If a new Person is mentioned, add to "new_people".
+            8. AUTO-ONBOARDING: If a new client is mentioned, add to "new_projects" (organization_name: Solvstrat). For other domains, only create a project if Danny explicitly commands it. If a new Person is mentioned, add to "new_people".
             9. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
             10. WEEKEND FILTER: If isWeekend is true, do NOT suggest or list Work tasks in the briefing.
             """

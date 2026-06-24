@@ -12,33 +12,14 @@ from core.webhook.utils import process_channel_pending_decision
 
 
 
-from core.pulse.graph import process_graph_pending_decision, VALID_ORG_TAGS
+from core.pulse.graph import process_graph_pending_decision
 from core.webhook.graph import interpret_graph_corrections, apply_graph_actions, active_sessions, get_active_session, clear_session
 from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, ask_task_or_note_confirmation, resolve_task_note_confirmation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
 from core.webhook.commands import handle_command, handle_undo_command
 from core.webhook.multimodal import process_multimodal_content
 
-# Pending graph clarification state for org_tag/context collection
+# Pending graph clarification state for context collection
 pending_graph_clarifications = {}
-
-async def resolve_graph_org_tag(chat_id: int, org_tag: str, pending_id: int, label: str):
-    org_tag_upper = org_tag.upper().strip()
-    if org_tag_upper not in VALID_ORG_TAGS:
-        await send_telegram(chat_id, f"Invalid org tag. Use one of: {', '.join(sorted(VALID_ORG_TAGS))}")
-        return
-    result = await process_graph_pending_decision(
-        pending_id=pending_id, decision='approve', org_tag=org_tag_upper
-    )
-    if result.get('success'):
-        msg = f"✅ {result.get('message', 'Done')}"
-        inferred = result.get('inferred_edges', [])
-        if inferred:
-            msg += "\n🔗 " + "\n🔗 ".join(inferred)
-        await send_telegram(chat_id, msg)
-    else:
-        await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
-    if chat_id in pending_graph_clarifications:
-        del pending_graph_clarifications[chat_id]
 
 async def resolve_graph_person_context(chat_id: int, context_text: str, pending_id: int, label: str):
     ctx = context_text.strip() if context_text and context_text.strip() else None
@@ -77,16 +58,6 @@ async def process_callback_query(callback_query: dict):
         
     try:
         import re
-
-        # Check for org tag selection callback
-        orgtag_match = re.match(r'^orgtag_(\w+)_g(\d+)$', data)
-        if orgtag_match:
-            org_tag = orgtag_match.group(1)
-            pending_id = int(orgtag_match.group(2))
-            pending_item = supabase.table('pending_graph_nodes').select('label').eq('id', pending_id).maybe_single().execute()
-            label = pending_item.data.get('label', 'Unknown') if pending_item and pending_item.data else 'Unknown'
-            await resolve_graph_org_tag(chat_id, org_tag, pending_id, label)
-            return {"success": True}
 
         # Check for person context skip callback
         persontag_match = re.match(r'^persontag_skip_g(\d+)$', data)
@@ -184,18 +155,7 @@ async def process_callback_query(callback_query: dict):
                         ptype = pending_item.data.get('type')
                         label = pending_item.data.get('label')
                         if ptype == 'project':
-                            supabase.table('pending_graph_nodes').update({'status': 'awaiting_details'}).eq('id', sc_int).execute()
-                            keyboard = [
-                                [{"text": tag, "callback_data": f"orgtag_{tag}_g{sc_int}"}]
-                                for tag in sorted(VALID_ORG_TAGS)
-                            ]
-                            keyboard.append([{"text": "❌ Cancel", "callback_data": f"cancel_clarification_g{sc_int}"}])
-                            await send_telegram(
-                                chat_id,
-                                f"Pick an org tag for project '{label}':",
-                                inline_keyboard=keyboard
-                            )
-                            return {"success": True}
+                            result = await process_graph_pending_decision(sc_int, 'approve')
                         elif ptype == 'person':
                             supabase.table('pending_graph_nodes').update({'status': 'awaiting_details'}).eq('id', sc_int).execute()
                             keyboard = [
@@ -395,7 +355,7 @@ async def process_webhook(update: dict):
             # It will fall through to the NLP check below.
 
         # ---------------------------------------------------------
-        # PENDING GRAPH CLARIFICATION CHECK (org_tag/context text replies)
+        # PENDING GRAPH CLARIFICATION CHECK (context text replies)
         # ---------------------------------------------------------
         if chat_id in pending_graph_clarifications:
             clar = pending_graph_clarifications[chat_id]
@@ -413,9 +373,6 @@ async def process_webhook(update: dict):
                         await resolve_graph_person_context(chat_id, None, clar['pending_id'], clar['label'])
                     else:
                         await resolve_graph_person_context(chat_id, text, clar['pending_id'], clar['label'])
-                    return {"success": True}
-                elif step == 'awaiting_org_tag':
-                    await resolve_graph_org_tag(chat_id, text, clar['pending_id'], clar['label'])
                     return {"success": True}
                 elif step == 'awaiting_edge_edit':
                     _sc = clar['pending_id']
@@ -455,32 +412,19 @@ async def process_webhook(update: dict):
 
         # DB recovery: if in-memory state was lost (restart/cold start), check awaiting_details items directly
         text_clean = text.strip().lower()
-        org_tag_upper = text_clean.upper().strip()
-        if org_tag_upper in VALID_ORG_TAGS:
-            awaiting_projects = supabase.table('pending_graph_nodes').select('id, label').eq('status', 'awaiting_details').eq('type', 'project').limit(2).execute().data or []
-            if len(awaiting_projects) == 1:
-                item = awaiting_projects[0]
-                pending_graph_clarifications[chat_id] = {
-                    "pending_id": item['id'], "step": "awaiting_org_tag",
-                    "type": "project", "label": item['label'],
-                    "expires_at": datetime.now() + timedelta(minutes=5)
-                }
-                await resolve_graph_org_tag(chat_id, org_tag_upper, item['id'], item['label'])
-                return {"success": True}
-        else:
-            awaiting_people = supabase.table('pending_graph_nodes').select('id, label').eq('status', 'awaiting_details').eq('type', 'person').limit(2).execute().data or []
-            if len(awaiting_people) == 1 and text_clean not in ('yes', 'no', 'approve', 'reject', 'drop', 'skip'):
-                item = awaiting_people[0]
-                pending_graph_clarifications[chat_id] = {
-                    "pending_id": item['id'], "step": "awaiting_person_context",
-                    "type": "person", "label": item['label'],
-                    "expires_at": datetime.now() + timedelta(minutes=5)
-                }
-                if text_clean in ('skip', 'no', 'none', 'n/a'):
-                    await resolve_graph_person_context(chat_id, None, item['id'], item['label'])
-                else:
-                    await resolve_graph_person_context(chat_id, text_clean, item['id'], item['label'])
-                return {"success": True}
+        awaiting_people = supabase.table('pending_graph_nodes').select('id, label').eq('status', 'awaiting_details').eq('type', 'person').limit(2).execute().data or []
+        if len(awaiting_people) == 1 and text_clean not in ('yes', 'no', 'approve', 'reject', 'drop', 'skip'):
+            item = awaiting_people[0]
+            pending_graph_clarifications[chat_id] = {
+                "pending_id": item['id'], "step": "awaiting_person_context",
+                "type": "person", "label": item['label'],
+                "expires_at": datetime.now() + timedelta(minutes=5)
+            }
+            if text_clean in ('skip', 'no', 'none', 'n/a'):
+                await resolve_graph_person_context(chat_id, None, item['id'], item['label'])
+            else:
+                await resolve_graph_person_context(chat_id, text_clean, item['id'], item['label'])
+            return {"success": True}
 
         # ---------------------------------------------------------
         # QUICK DECISION ROUTES (Binary Approve/Reject)
@@ -512,17 +456,7 @@ async def process_webhook(update: dict):
                     ptype = pending_item.data.get('type')
                     label = pending_item.data.get('label')
                     if ptype == 'project':
-                        supabase.table('pending_graph_nodes').update({'status': 'awaiting_details'}).eq('id', int(_sc)).execute()
-                        pending_graph_clarifications[chat_id] = {
-                            "pending_id": int(_sc),
-                            "step": "awaiting_org_tag",
-                            "type": "project",
-                            "label": label,
-                            "expires_at": datetime.now() + timedelta(minutes=5)
-                        }
-                        await send_telegram(chat_id, f"Project '{label}' needs an org tag. Reply with one: {', '.join(sorted(VALID_ORG_TAGS))} (or 'cancel' to abort)")
-                        clear_session(chat_id)
-                        return {"success": True}
+                        result = await process_graph_pending_decision(pending_id=int(_sc), decision='approve')
                     elif ptype == 'person':
                         supabase.table('pending_graph_nodes').update({'status': 'awaiting_details'}).eq('id', int(_sc)).execute()
                         pending_graph_clarifications[chat_id] = {
@@ -583,21 +517,9 @@ async def process_webhook(update: dict):
                 ptype = pending_item.data.get('type')
                 label = pending_item.data.get('label')
                 if ptype == 'project':
-                    parts = _value.strip().split(None, 1)
-                    first_word = parts[0].upper()
-                    rest = parts[1].strip() if len(parts) > 1 else None
-                    if first_word in VALID_ORG_TAGS:
-                        result = await process_graph_pending_decision(
-                            pending_id=_sc, decision='approve', org_tag=first_word, context=rest
-                        )
-                    else:
-                        await send_telegram(chat_id,
-                            f"⚠️ Couldn't parse an org tag from '{first_word}'.\n"
-                            f"Valid tags: {', '.join(sorted(VALID_ORG_TAGS))}\n"
-                            f"Reply 'g{_sc} yes' for the keyboard, or retry: g{_sc} QHORD <note>"
-                        )
-                        clear_session(chat_id)
-                        return {"success": True}
+                    result = await process_graph_pending_decision(
+                        pending_id=_sc, decision='approve', context=_value.strip()
+                    )
                 elif ptype == 'person':
                     result = await process_graph_pending_decision(
                         pending_id=_sc, decision='approve', context=_value.strip()

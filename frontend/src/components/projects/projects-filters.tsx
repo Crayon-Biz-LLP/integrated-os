@@ -10,16 +10,6 @@ interface ProjectsFiltersProps {
   onFiltersChange: (filters: ProjectFiltersType) => void;
 }
 
-const orgTags = [
-  { value: 'all', label: 'All' },
-  { value: 'SOLVSTRAT', label: 'SOLVSTRAT' },
-  { value: 'ASHRAYA', label: 'ASHRAYA' },
-  { value: 'PERSONAL', label: 'PERSONAL' },
-  { value: 'PRODUCT_LABS', label: 'PRODUCT_LABS' },
-  { value: 'INBOX', label: 'INBOX' },
-  { value: 'ADMIN', label: 'ADMIN' },
-];
-
 const contexts = [
   { value: 'all', label: 'All' },
   { value: 'work', label: 'Work' },
@@ -43,14 +33,12 @@ export function ProjectsFilters({ filters, onFiltersChange }: ProjectsFiltersPro
 
   const hasActiveFilters =
     filters.search ||
-    filters.orgTag !== 'all' ||
     filters.context !== 'all' ||
     filters.status !== 'all';
 
   const clearFilters = () => {
     onFiltersChange({
       search: '',
-      orgTag: 'all',
       context: 'all',
       status: 'all',
     });
@@ -68,18 +56,6 @@ export function ProjectsFilters({ filters, onFiltersChange }: ProjectsFiltersPro
           className="w-full rounded-lg border border-border bg-background px-4 py-2 text-sm placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-all duration-150"
         />
         </div>
-
-        <select
-          value={filters.orgTag || 'all'}
-          onChange={(e) => handleFilterChange('orgTag', e.target.value)}
-          className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
-        >
-          {orgTags.map((tag) => (
-            <option key={tag.value} value={tag.value}>
-              {tag.label}
-            </option>
-          ))}
-        </select>
 
         <select
           value={filters.context || 'all'}

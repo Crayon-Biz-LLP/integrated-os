@@ -46,7 +46,7 @@ export async function decideMergeProposal(id: number, decision: 'accept' | 'reje
   }
 }
 
-export async function decideGraphNode(id: number, decision: 'approve' | 'reject' | 'unreject', updates?: { org_tag?: string; context?: string; label?: string }): Promise<any> {
+export async function decideGraphNode(id: number, decision: 'approve' | 'reject' | 'unreject', updates?: { context?: string; label?: string }): Promise<any> {
   const res = await fetch('/api/graph-node-action', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -30,7 +30,7 @@ The main landing page shows:
 Filterable table with priority badges, project context, estimated minutes. Detail sheet with project change dialog. One-click status toggle. Project change dropdown.
 
 ### Projects Module
-Grid cards with org_tag badges, status, keyword context. Detail sheet with full project info. Stats: active project count, org_tag distribution.
+Grid cards with organization_name badges, status, keyword context. Detail sheet with full project info. Stats: active project count, organization_name distribution.
 
 ### Emails Module
 Inbox table with sender, subject, classification badges (actionable/FYI/ignored). Draft list with status tracking. Pending tasks with approve/reject buttons. Email detail sheet. Comprehensive filters.
@@ -153,7 +153,7 @@ A 607-line design specification governs all UI decisions:
 | Emails | Volume by classification, pending tasks, pending drafts |
 | Health | Pipeline health, failed queue count, memory stats |
 | People | Total count, strategic weight distribution |
-| Projects | Active count, org_tag distribution |
+| Projects | Active count, organization_name distribution |
 | Resources | Count by category, cluster-linked vs. unlinked |
 | Calendar | Event counts, upcoming blocks |
 | Dashboard | Aggregate snapshot across all domains |

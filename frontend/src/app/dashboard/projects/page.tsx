@@ -15,7 +15,6 @@ interface ProjectRow {
   parent_project_id: number | null;
   keywords: string[] | null;
   organization_id?: string | null;
-  is_org_proxy?: boolean;
 }
 
 interface TaskCountRow {
@@ -61,7 +60,6 @@ export default async function Page() {
     supabase
       .from("projects")
       .select("*")
-      .eq("is_org_proxy", false)
       .order("name", { ascending: true })
       .limit(100),
     supabase

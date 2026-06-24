@@ -8,7 +8,7 @@ The serendipity engine (`memory.py:259-320`) actively hunts for non-obvious conn
 
 ### Layer 1: Cross-Domain Keyword Bridges
 
-Finds words >4 characters that appear in 2+ task titles from different org_tags.
+Finds words >4 characters that appear in 2+ task titles from different organization_names.
 
 Example:
 - SOLVSTRAT task: "Prepare Qhord pricing review"

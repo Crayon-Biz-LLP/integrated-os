@@ -895,9 +895,12 @@ Query: {query}"""
 
         async def fetch_projects():
             try:
-                res = supabase.table('projects').select('name, status, org_tag').eq('is_current', True).neq('status', 'archived').order('name').execute()
+                res = supabase.table('projects').select('name, status, organization_id, organizations(name)').eq('is_current', True).neq('status', 'archived').order('name').execute()
                 if res.data:
-                    lines = [f"- [{p.get('org_tag', 'INBOX')}] {p.get('name')} ({p.get('status')})" for p in res.data]
+                    lines = []
+                    for p in res.data:
+                        org_name = p.get('organizations', {}).get('name', 'INBOX') if p.get('organizations') else 'INBOX'
+                        lines.append(f"- [{org_name}] {p.get('name')} ({p.get('status')})")
                     return "\n".join(lines)
             except Exception:
                 pass

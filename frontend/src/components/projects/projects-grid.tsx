@@ -26,7 +26,7 @@ export function ProjectsGrid({ projects, onProjectClick }: ProjectsGridProps) {
   const ungrouped: Project[] = [];
 
   projects.forEach((project) => {
-    const key = project.org_tag ?? 'null';
+    const key = project.organization_name ?? 'null';
     if (key === 'null') {
       ungrouped.push(project);
     } else {

@@ -5,7 +5,6 @@ export interface Project {
   context: string;
   description: string | null;
   created_at: string | null;
-  org_tag: string | null;
   is_active: boolean;
   parent_project_id: number | null;
   parent_project_name?: string | null;
@@ -13,7 +12,6 @@ export interface Project {
   open_task_count: number;
   organization_id?: string | null;
   organization_name?: string | null;
-  is_org_proxy?: boolean;
 }
 
 export interface ProjectTask {
@@ -36,7 +34,6 @@ export interface ProjectStats {
 
 export interface ProjectFilters {
   search?: string;
-  orgTag?: string;
   context?: string;
   status?: string;
 }

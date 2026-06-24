@@ -18,7 +18,7 @@ def get_supabase() -> Client:
 def fetch_active_projects() -> list:
     supabase = get_supabase()
     try:
-        res = supabase.table('projects').select('id, name, org_tag').eq('status', 'active').execute()
+        res = supabase.table('projects').select('id, name, organization_id').eq('status', 'active').execute()
         return res.data or []
     except Exception as e:
         from core.lib.audit_logger import audit_log_sync

@@ -85,7 +85,7 @@ The briefing AI has a 2-day task horizon and a 14-day creation window:
 
 - Tasks with reminder dates >48 hours away are hidden from the AI (prevents noise)
 - Tasks created more than 14 days ago are excluded (prevents stale backlog from polluting)
-- Weekend vs. weekday smart filtering based on org_tag:
+- Weekend vs. weekday smart filtering based on organization_name:
   - Personal/Ashraya tasks are visible on weekends
   - Work tasks (SOLVSTRAT, CRAYON, QHORD) are de-emphasized on weekends
 
