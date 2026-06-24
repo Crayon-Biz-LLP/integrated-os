@@ -11,6 +11,13 @@ export async function GET(req: NextRequest) {
   const projectId = searchParams.get("projectId");
   const dueWindow = searchParams.get("dueWindow");
 
+  // Fetch org name lookup so tasks with org but no project show org name instead of "General"
+  const { data: orgsData } = await supabase.from("organizations").select("id, name");
+  const orgMap: Record<string, string> = {};
+  if (orgsData) {
+    orgsData.forEach((o: any) => { orgMap[o.id] = o.name; });
+  }
+
   let query = supabase
     .from("tasks")
     .select(`
@@ -51,23 +58,27 @@ export async function GET(req: NextRequest) {
 
   const now = new Date();
 
-  let tasks = (data ?? []).map((t: any) => ({
-    id: t.id,
-    title: t.title,
-    status: t.status ?? "todo",
-    priority: t.priority ?? "medium",
-    project_id: t.project_id,
-    project_name: t.projects?.name ?? "General",
-    organization_id: t.organization_id ?? t.projects?.organization_id ?? null,
-    estimated_minutes: t.estimated_minutes,
-    is_revenue_critical: t.is_revenue_critical ?? false,
-    deadline: t.deadline,
-    created_at: t.created_at,
-    completed_at: t.completed_at,
-    reminder_at: t.reminder_at,
-    duration_mins: t.duration_mins,
-    recurrence: t.recurrence ?? null,
-  }));
+  let tasks = (data ?? []).map((t: any) => {
+    const resolvedOrgId = t.organization_id ?? t.projects?.organization_id ?? null;
+    return {
+      id: t.id,
+      title: t.title,
+      status: t.status ?? "todo",
+      priority: t.priority ?? "medium",
+      project_id: t.project_id,
+      project_name: t.projects?.name ?? (resolvedOrgId ? orgMap[resolvedOrgId] : null) ?? "General",
+      organization_id: resolvedOrgId,
+      organization_name: resolvedOrgId ? orgMap[resolvedOrgId] : null,
+      estimated_minutes: t.estimated_minutes,
+      is_revenue_critical: t.is_revenue_critical ?? false,
+      deadline: t.deadline,
+      created_at: t.created_at,
+      completed_at: t.completed_at,
+      reminder_at: t.reminder_at,
+      duration_mins: t.duration_mins,
+      recurrence: t.recurrence ?? null,
+    };
+  });
 
   if (dueWindow && dueWindow !== "all") {
     const today = new Date();
