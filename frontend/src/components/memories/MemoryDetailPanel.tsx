@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { X, Brain, ChevronDown, ChevronRight, Clock, Layers, ExternalLink, AlertCircle } from 'lucide-react';
-import type { GraphNode } from '@/lib/memories/types';
+import type { GraphNode, GraphEdge } from '@/lib/memories/types';
 import type { StreamItem } from '@/lib/memories/stream';
 
 // ── colour map (mirrors NeuralDisc and NodeFlyout) ──────────────────────────
@@ -79,7 +79,10 @@ function MemoryCard({ item }: { item: StreamItem }) {
               {item.memory_type.replace(/_/g, ' ')}
             </span>
           )}
-          <span className="text-[10px] text-zinc-600 flex items-center gap-1 flex-shrink-0">
+          <span className="text-[9px] text-zinc-500 border border-zinc-700/50 bg-zinc-800/30 px-1.5 py-0.5 rounded flex-shrink-0">
+            Direct mention
+          </span>
+          <span className="text-[10px] text-zinc-600 flex items-center gap-1 flex-shrink-0 ml-1">
             <Clock className="h-2.5 w-2.5" />
             {relativeTime(item.created_at)}
           </span>
@@ -123,14 +126,16 @@ function SkeletonCard() {
 export interface MemoryDetailPanelProps {
   /** Selected graph node. Panel hidden when null. */
   node: GraphNode | null;
+  /** All nodes in current neighborhood */
+  allNodes: GraphNode[];
+  /** All edges in current neighborhood */
+  allEdges: GraphEdge[];
   /** Memory stream items for this node */
   items: StreamItem[];
   /** Whether memory data is loading */
   loading: boolean;
   /** Error message if fetch failed */
   error: string | null;
-  /** Total edge count for this node (passed from graph) */
-  connectionCount?: number;
   /** Close / dismiss the panel */
   onClose: () => void;
   /** Promote to ego-focus (explicit deep focus) */
@@ -139,10 +144,11 @@ export interface MemoryDetailPanelProps {
 
 export default function MemoryDetailPanel({
   node,
+  allNodes,
+  allEdges,
   items,
   loading,
   error,
-  connectionCount,
   onClose,
   onFocusNode,
 }: MemoryDetailPanelProps) {
@@ -150,6 +156,45 @@ export default function MemoryDetailPanel({
 
   const colour = TYPE_COLOUR[node.type] || '#52525b';
   const typeLabel = TYPE_LABEL[node.type] || node.type;
+
+  // ── Graph Context Computation ──────────────────────────────────────────────
+  const nodeEdges = allEdges.filter(e => e.source_node_id === node.id || e.target_node_id === node.id);
+  const connectionCount = nodeEdges.length;
+
+  // Count relations
+  const relationCounts = new Map<string, number>();
+  nodeEdges.forEach(e => {
+    relationCounts.set(e.relationship, (relationCounts.get(e.relationship) || 0) + 1);
+  });
+  const topRelations = Array.from(relationCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(entry => entry[0]);
+
+  // Identify connected nodes
+  const connectedNodeIds = new Set<string>();
+  nodeEdges.forEach(e => {
+    if (e.source_node_id !== node.id) connectedNodeIds.add(e.source_node_id);
+    if (e.target_node_id !== node.id) connectedNodeIds.add(e.target_node_id);
+  });
+  
+  const connectedNodes = Array.from(connectedNodeIds)
+    .map(id => allNodes.find(n => n.id === id))
+    .filter((n): n is GraphNode => n !== undefined);
+
+  // Separate concepts vs others
+  const connectedConcepts = connectedNodes.filter(n => n.type === 'concept' || n.type === 'emotional_state');
+  const connectedEntities = connectedNodes.filter(n => n.type !== 'concept' && n.type !== 'emotional_state');
+
+  // Narrative summary
+  let whyItMatters = "";
+  if (connectionCount > 10) whyItMatters = `A major ${typeLabel.toLowerCase()} anchor in the graph.`;
+  else if (connectionCount > 3) whyItMatters = `A connected ${typeLabel.toLowerCase()}.`;
+  else whyItMatters = `An isolated ${typeLabel.toLowerCase()}.`;
+
+  if (topRelations.length > 0) {
+    whyItMatters += ` Primarily associated through ${topRelations[0].toLowerCase().replace(/_/g, ' ')}.`;
+  }
 
   return (
     <div
@@ -210,13 +255,83 @@ export default function MemoryDetailPanel({
         </button>
       </div>
 
-      {/* ── memory stream ──────────────────────────────────────────────────── */}
+      {/* ── scrollable body ────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto overscroll-contain">
+        
+        {/* ── graph context summary ──────────────────────────────────────────── */}
+        <div className="px-4 py-4 border-b border-zinc-800/40">
+          <p className="text-sm text-zinc-300 leading-relaxed mb-4">
+            {whyItMatters}
+          </p>
+
+          <div className="space-y-4">
+            {/* Top Relations */}
+            {topRelations.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-2">
+                  Dominant Relations
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {topRelations.map(rel => (
+                    <span key={rel} className="px-2 py-0.5 rounded text-[10px] bg-zinc-900 border border-zinc-800 text-zinc-400 uppercase tracking-wide">
+                      {rel.replace(/_/g, ' ')}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Connected Concepts */}
+            {connectedConcepts.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-2">
+                  Associated Concepts
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {connectedConcepts.slice(0, 5).map(c => (
+                    <span key={c.id} className="px-2 py-0.5 rounded text-[10px] bg-zinc-800/50 text-zinc-300 border border-zinc-700/50">
+                      {c.label}
+                    </span>
+                  ))}
+                  {connectedConcepts.length > 5 && (
+                    <span className="px-2 py-0.5 rounded text-[10px] text-zinc-500">
+                      +{connectedConcepts.length - 5}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Connected Entities */}
+            {connectedEntities.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-2">
+                  Top Connections
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {connectedEntities.slice(0, 6).map(e => (
+                    <span key={e.id} className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] bg-zinc-900 border border-zinc-800 text-zinc-300">
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: TYPE_COLOUR[e.type] || '#52525b' }} />
+                      {e.label}
+                    </span>
+                  ))}
+                  {connectedEntities.length > 6 && (
+                    <span className="px-2 py-0.5 rounded text-[10px] text-zinc-500">
+                      +{connectedEntities.length - 6}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── memory stream ──────────────────────────────────────────────────── */}
         {/* section heading */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800/40 sticky top-0 bg-zinc-950/90 backdrop-blur-sm z-10">
           <Brain className="h-3.5 w-3.5 text-zinc-500" />
           <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
-            Linked Memories
+            Supporting Evidence
           </span>
           {!loading && items.length > 0 && (
             <span className="ml-auto text-[10px] text-zinc-600 tabular-nums">

@@ -644,20 +644,33 @@ export default function NeuralDisc({
     edgesContainer.eventMode = 'none';
     mainContainer.addChild(edgesContainer);
 
-    const dimEdgeGraphics    = new Graphics();
-    const activeEdgeGraphics = new Graphics();
-    edgesContainer.addChild(dimEdgeGraphics);
-    edgesContainer.addChild(activeEdgeGraphics);
+    const ambientEdgeGraphics = new Graphics();
+    const relatedEdgeGraphics = new Graphics();
+    const heroEdgeGraphics    = new Graphics();
+    edgesContainer.addChild(ambientEdgeGraphics);
+    edgesContainer.addChild(relatedEdgeGraphics);
+    edgesContainer.addChild(heroEdgeGraphics);
 
     const useCurves = useCurvedEdges && currentViewMode !== 'overview';
+    const isEgoFocus = currentViewMode === 'ego-focus';
 
     layoutEdges.forEach(e => {
-      const isActive =
-        !isFocused ||
-        e.source.id === effectiveFocusId ||
-        e.target.id === effectiveFocusId;
+      let edgeClass: 'ambient' | 'related' | 'hero' = 'ambient';
 
-      const g = isActive ? activeEdgeGraphics : dimEdgeGraphics;
+      if (isFocused) {
+        if (e.source.id === effectiveFocusId || e.target.id === effectiveFocusId) {
+          edgeClass = 'hero';
+        } else if (connectedIds.has(e.source.id) && connectedIds.has(e.target.id)) {
+          edgeClass = 'related';
+        }
+      } else {
+        // Overview mode: all edges are ambient
+        edgeClass = 'ambient';
+      }
+
+      const g = edgeClass === 'hero' ? heroEdgeGraphics 
+              : edgeClass === 'related' ? relatedEdgeGraphics 
+              : ambientEdgeGraphics;
 
       if (useCurves) {
         drawCurvedEdge(g, e.source.x, e.source.y, e.target.x, e.target.y, 14);
@@ -665,16 +678,52 @@ export default function NeuralDisc({
         g.moveTo(e.source.x, e.source.y);
         g.lineTo(e.target.x, e.target.y);
       }
+
+      // Add relationship labels on hero edges in ego-focus mode
+      if (isEgoFocus && edgeClass === 'hero') {
+        const mx = (e.source.x + e.target.x) / 2;
+        const my = (e.source.y + e.target.y) / 2;
+        // Subtle relation label
+        const relText = new Text({
+          text: e.relationship.replace(/_/g, ' '),
+          style: new TextStyle({
+            fill: 0x71717a,
+            fontSize: 7,
+            fontFamily: 'system-ui, sans-serif',
+            letterSpacing: 0.5,
+          }),
+        });
+        relText.anchor.set(0.5);
+        
+        if (useCurves) {
+          const dx = e.target.x - e.source.x;
+          const dy = e.target.y - e.source.y;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
+          const px = -dy / len;
+          const py = dx / len;
+          relText.x = mx + px * 14;
+          relText.y = my + py * 14;
+        } else {
+          relText.x = mx;
+          relText.y = my;
+        }
+
+        // Only add text if it's not too cluttered (e.g. limit by zoom or just let them overlap)
+        if (scale > 0.8) {
+          edgesContainer.addChild(relText);
+        }
+      }
     });
 
-    // Active edge style
-    const activeWidth = isFocused ? 1.8 : 1.0;
-    const activeAlpha = isFocused ? 0.65 : 0.55;
-    activeEdgeGraphics.stroke({ width: activeWidth, color: 0x52525b, alpha: activeAlpha });
+    // Ambient edge style
+    const resolvedDimEdgeAlpha = isFocused ? dimEdgeAlpha : 0.08;
+    ambientEdgeGraphics.stroke({ width: 0.8, color: 0x3f3f46, alpha: resolvedDimEdgeAlpha });
 
-    // Dim edge style — controlled by parent's dimEdgeAlpha
-    const resolvedDimEdgeAlpha = isFocused ? dimEdgeAlpha : 0.45;
-    dimEdgeGraphics.stroke({ width: 0.8, color: 0x3f3f46, alpha: resolvedDimEdgeAlpha });
+    // Related edge style
+    relatedEdgeGraphics.stroke({ width: 1.2, color: 0x52525b, alpha: 0.3 });
+
+    // Hero edge style
+    heroEdgeGraphics.stroke({ width: 1.8, color: 0x71717a, alpha: 0.65 });
 
     // ── glow layer ────────────────────────────────────────────────────────
     const glowContainer = new Container();
@@ -757,13 +806,28 @@ export default function NeuralDisc({
 
       // ── circle ───────────────────────────────────────────────────────
       const circle = new Graphics();
+      const isConcept = n.type === 'concept' || n.type === 'emotional_state';
+
       circle.circle(0, 0, radius);
-      circle.fill({ color: colour });
-      circle.stroke({
-        width: isCentre ? 2.5 : 1.5,
-        color: isKbFocused ? 0xffffff : 0x18181b,
-        alpha: isKbFocused ? 0.9 : 1.0,
-      });
+      
+      if (isConcept) {
+        // Concept nodes are hollow with a colored stroke
+        circle.fill({ color: colour, alpha: 0.15 });
+        circle.stroke({
+          width: isCentre ? 2.5 : 1.5,
+          color: colour,
+          alpha: isNodeActive ? (isKbFocused ? 1.0 : 0.9) : dimAlpha,
+        });
+      } else {
+        // Standard entity nodes are solid
+        circle.fill({ color: colour });
+        circle.stroke({
+          width: isCentre ? 2.5 : 1.5,
+          color: isKbFocused ? 0xffffff : 0x18181b,
+          alpha: isKbFocused ? 0.9 : 1.0,
+        });
+      }
+
       circle.x      = n.x;
       circle.y      = n.y;
       circle.alpha  = isNodeActive ? 1.0 : dimAlpha;

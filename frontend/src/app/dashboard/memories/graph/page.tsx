@@ -299,9 +299,6 @@ export default function MemoryGraphPage() {
   // Panel should show when there is a focused node and panel is open
   const showPanel = focusState.isPanelOpen && focusState.focusedNodeId !== null;
   const focusedNode = graphNodes.find(n => n.id === focusState.focusedNodeId) ?? null;
-  const connectionCount = focusedNode
-    ? graphEdges.filter(e => e.source_node_id === focusedNode.id || e.target_node_id === focusedNode.id).length
-    : undefined;
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)] bg-zinc-950">
@@ -469,10 +466,11 @@ export default function MemoryGraphPage() {
         <div className="w-80 flex-shrink-0 border-l border-zinc-800 flex flex-col">
           <MemoryDetailPanel
             node={focusedNode}
+            allNodes={graphNodes}
+            allEdges={graphEdges}
             items={memories.state.items}
             loading={memories.state.loading}
             error={memories.state.error}
-            connectionCount={connectionCount}
             onClose={handlePanelClose}
             onFocusNode={handleEgoFocus}
           />
