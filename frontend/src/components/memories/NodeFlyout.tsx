@@ -1,5 +1,17 @@
 'use client';
 
+/**
+ * @deprecated
+ * NodeFlyout has been replaced by MemoryDetailPanel
+ * (src/components/memories/MemoryDetailPanel.tsx).
+ *
+ * This file is retained only as a temporary compatibility artifact to avoid
+ * breaking any dangling imports. It is safe to delete once you have confirmed
+ * no import of NodeFlyout exists anywhere else in the codebase.
+ *
+ * DO NOT add new features here.
+ */
+
 import { GraphNode, GraphEdge } from '@/lib/memories/types';
 import { X } from 'lucide-react';
 

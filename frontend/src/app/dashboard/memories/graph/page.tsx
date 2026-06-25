@@ -1,48 +1,72 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { Loader2, AlertCircle, ArrowLeft, User, PanelLeftClose, PanelLeft } from 'lucide-react';
+import { useEffect, useCallback, useRef } from 'react';
+import {
+  Loader2, AlertCircle, ArrowLeft, User,
+  PanelLeftClose, PanelLeft, Maximize2,
+} from 'lucide-react';
+import { useState } from 'react';
+
 import { fetchNeighborhood, fetchEgoGraph, fetchEpisodes, resolveMemoryToEntity } from '@/lib/memories/stream';
-import type { Episode, NeighborhoodResponse } from '@/lib/memories/stream';
+import type { Episode } from '@/lib/memories/stream';
 import type { GraphNode, GraphEdge } from '@/lib/memories/types';
 
-const EpisodeStream = dynamic(() => import('@/components/memories/EpisodeStream'), { ssr: false });
-const NeuralDisc = dynamic(() => import('@/components/memories/NeuralDisc'), { ssr: false });
+import { useFocusContext } from '@/lib/memories/useFocusContext';
+import { useNodeMemories } from '@/lib/memories/useNodeMemories';
+
+const EpisodeStream   = dynamic(() => import('@/components/memories/EpisodeStream'),    { ssr: false });
+const NeuralDisc      = dynamic(() => import('@/components/memories/NeuralDisc'),       { ssr: false });
+const MemoryDetailPanel = dynamic(() => import('@/components/memories/MemoryDetailPanel'), { ssr: false });
+
+// ── mode badge labels ─────────────────────────────────────────────────────────
+const MODE_LABELS: Record<string, string> = {
+  overview:    'Overview',
+  'soft-focus': 'Exploring',
+  'ego-focus':  'Deep focus',
+  detail:      'Memory detail',
+};
 
 export default function MemoryGraphPage() {
-  const [episodes, setEpisodes] = useState<Episode[]>([]);
-  const [episodesLoading, setEpisodesLoading] = useState(true);
+  // ── episode / left-stream state ───────────────────────────────────────────
+  const [episodes,         setEpisodes]         = useState<Episode[]>([]);
+  const [episodesLoading,  setEpisodesLoading]  = useState(true);
   const [expandedEpisodeId, setExpandedEpisodeId] = useState<string | null>(null);
-  const [expandedMemoryId, setExpandedMemoryId] = useState<number | null>(null);
+  const [expandedMemoryId,  setExpandedMemoryId]  = useState<number | null>(null);
 
-  const [graphNodes, setGraphNodes] = useState<GraphNode[]>([]);
-  const [graphEdges, setGraphEdges] = useState<GraphEdge[]>([]);
-  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  // ── graph data ────────────────────────────────────────────────────────────
+  const [graphNodes,   setGraphNodes]   = useState<GraphNode[]>([]);
+  const [graphEdges,   setGraphEdges]   = useState<GraphEdge[]>([]);
   const [graphLoading, setGraphLoading] = useState(true);
-  const [graphError, setGraphError] = useState<string | null>(null);
+  const [graphError,   setGraphError]   = useState<string | null>(null);
+  // dannyId needs to drive render (toolbar visibility, isDannyCentered) so it lives in state.
+  // The ref below shadows it for use inside callbacks without re-triggering effects.
+  const [dannyId,    setDannyId]        = useState<string | null>(null);
   const dannyIdRef = useRef<string | null>(null);
 
-  // Graphics context recovery
-  const [discKey, setDiscKey] = useState(0);
+  // ── focus context (state machine) ─────────────────────────────────────────
+  const focus = useFocusContext();
 
-  // Diagnostics
+  // ── memory panel data ─────────────────────────────────────────────────────
+  const memories = useNodeMemories();
+
+  // ── ui toggles ────────────────────────────────────────────────────────────
+  const [streamCollapsed,  setStreamCollapsed]  = useState(false);
+  const [showDiagnostics,  setShowDiagnostics]  = useState(false);
+  const [enableEffects,    setEnableEffects]     = useState(true);
+  const [discKey,          setDiscKey]           = useState(0);
+
+  // ── diagnostics ───────────────────────────────────────────────────────────
   const [diagnostics, setDiagnostics] = useState({ fetch: 0, layout: 0, render: 0, hover: 0, total: 0 });
-  const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [enableEffects, setEnableEffects] = useState(true);
-  const [streamCollapsed, setStreamCollapsed] = useState(false);
 
-  const episodeLimitRef = useRef(40);
-
-  // Abort controllers for in-flight requests
+  // ── abort controllers & sequence guard ───────────────────────────────────
   const episodeAbortRef = useRef<AbortController | null>(null);
-  const graphAbortRef = useRef<AbortController | null>(null);
-
-  // Current filter node ID for episode stream
+  const graphAbortRef   = useRef<AbortController | null>(null);
+  const episodeLimitRef = useRef(40);
   const episodeFilterRef = useRef<string | null>(null);
-
-  // Sequence guards against stale responses resolving out of order
   const sequenceRef = useRef(0);
+
+  // ── data fetchers (unchanged from original page.tsx) ─────────────────────
 
   const loadEpisodes = useCallback(async (nodeId?: string) => {
     if (episodeAbortRef.current) episodeAbortRef.current.abort();
@@ -57,13 +81,11 @@ export default function MemoryGraphPage() {
       const res = await fetchEpisodes(nodeId ?? undefined, episodeLimitRef.current, abortController.signal);
       if (currentSeq !== sequenceRef.current) return;
       setEpisodes(res.episodes);
-    } catch (e: any) {
-      if (e.name === 'AbortError' || currentSeq !== sequenceRef.current) return;
+    } catch (e: unknown) {
+      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== sequenceRef.current)) return;
       setEpisodes([]);
     } finally {
-      if (episodeAbortRef.current === abortController) {
-        setEpisodesLoading(false);
-      }
+      if (episodeAbortRef.current === abortController) setEpisodesLoading(false);
     }
   }, []);
 
@@ -76,16 +98,18 @@ export default function MemoryGraphPage() {
 
     setEpisodesLoading(true);
     try {
-      const res = await fetchEpisodes(episodeFilterRef.current ?? undefined, episodeLimitRef.current, abortController.signal);
+      const res = await fetchEpisodes(
+        episodeFilterRef.current ?? undefined,
+        episodeLimitRef.current,
+        abortController.signal,
+      );
       if (currentSeq !== sequenceRef.current) return;
-
-      setEpisodes((prev) => {
-        const existing = new Set(prev.map((e) => e.id));
-        const newEps = res.episodes.filter((e) => !existing.has(e.id));
-        return [...prev, ...newEps];
+      setEpisodes(prev => {
+        const existing = new Set(prev.map(e => e.id));
+        return [...prev, ...res.episodes.filter(e => !existing.has(e.id))];
       });
-    } catch (e: any) {
-      if (e.name === 'AbortError' || currentSeq !== sequenceRef.current) return;
+    } catch (e: unknown) {
+      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== sequenceRef.current)) return;
     } finally {
       if (episodeAbortRef.current === abortController) {
         episodeAbortRef.current = null;
@@ -96,7 +120,6 @@ export default function MemoryGraphPage() {
 
   const loadNeighborhood = useCallback(async (nodeId: string) => {
     const currentSeq = ++sequenceRef.current;
-
     if (graphAbortRef.current) graphAbortRef.current.abort();
     const abortController = new AbortController();
     graphAbortRef.current = abortController;
@@ -108,28 +131,22 @@ export default function MemoryGraphPage() {
     try {
       const res = await fetchNeighborhood(nodeId, abortController.signal);
       if (currentSeq !== sequenceRef.current) return;
-
       setGraphNodes(res.nodes || []);
       setGraphEdges(res.edges || []);
-      setFocusedNodeId(res.center?.id ?? nodeId);
-
       const fetchTime = Math.round(performance.now() - start);
       setDiagnostics(d => ({ ...d, fetch: fetchTime, total: fetchTime + d.layout + d.render }));
-    } catch (e: any) {
-      if (e.name === 'AbortError' || currentSeq !== sequenceRef.current) return;
+    } catch (e: unknown) {
+      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== sequenceRef.current)) return;
       setGraphError(e instanceof Error ? e.message : 'Failed to load graph');
       const fetchTime = Math.round(performance.now() - start);
       setDiagnostics(d => ({ ...d, fetch: fetchTime, total: fetchTime }));
     } finally {
-      if (graphAbortRef.current === abortController) {
-        setGraphLoading(false);
-      }
+      if (graphAbortRef.current === abortController) setGraphLoading(false);
     }
   }, []);
 
   const loadEgoGraph = useCallback(async () => {
     const currentSeq = ++sequenceRef.current;
-
     if (graphAbortRef.current) graphAbortRef.current.abort();
     const abortController = new AbortController();
     graphAbortRef.current = abortController;
@@ -141,28 +158,79 @@ export default function MemoryGraphPage() {
     try {
       const res = await fetchEgoGraph(2, 80, abortController.signal);
       if (currentSeq !== sequenceRef.current) return;
-
       dannyIdRef.current = res.danny_id;
+      setDannyId(res.danny_id);
       setGraphNodes(res.nodes || []);
       setGraphEdges(res.edges || []);
-      setFocusedNodeId(res.danny_id);
-
       const fetchTime = Math.round(performance.now() - start);
       setDiagnostics(d => ({ ...d, fetch: fetchTime, total: fetchTime + d.layout + d.render }));
-    } catch (e: any) {
-      if (e.name === 'AbortError' || currentSeq !== sequenceRef.current) return;
+    } catch (e: unknown) {
+      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== sequenceRef.current)) return;
       setGraphError(e instanceof Error ? e.message : 'Failed to load graph');
       setGraphNodes([]);
       setGraphEdges([]);
-      setFocusedNodeId(null);
       const fetchTime = Math.round(performance.now() - start);
       setDiagnostics(d => ({ ...d, fetch: fetchTime, total: fetchTime }));
     } finally {
-      if (graphAbortRef.current === abortController) {
-        setGraphLoading(false);
-      }
+      if (graphAbortRef.current === abortController) setGraphLoading(false);
     }
   }, []);
+
+  // ── interaction handlers ──────────────────────────────────────────────────
+
+  const returnToDanny = useCallback(() => {
+    setExpandedEpisodeId(null);
+    setExpandedMemoryId(null);
+    memories.clear();
+    focus.reset();
+    if (dannyIdRef.current) {
+      loadEgoGraph();
+      loadEpisodes();
+    } else {
+      loadEgoGraph();
+    }
+  }, [focus, loadEgoGraph, loadEpisodes, memories]);
+
+  /**
+   * Graph node clicked — enters soft-focus (no recentering).
+   * Also fetches memory stream for the panel.
+   */
+  const handleGraphNodeClick = useCallback(
+    async (node: GraphNode) => {
+      focus.clickNode(node.id);
+      // Soft-focus: load neighbourhood (which may change graph data slightly)
+      // and memory stream in parallel; no centering on this node yet
+      await Promise.all([
+        loadNeighborhood(node.id),
+        loadEpisodes(node.id),
+      ]);
+      memories.load(node.id);
+    },
+    [focus, loadNeighborhood, loadEpisodes, memories],
+  );
+
+  const handleGraphBackgroundClick = useCallback(() => {
+    if (focus.state.focusedNodeId === dannyIdRef.current) return;
+    returnToDanny();
+  }, [focus.state.focusedNodeId, returnToDanny]);
+
+  /**
+   * Panel "Focus graph here" button — promote to ego-focus (recenters).
+   */
+  const handleEgoFocus = useCallback(
+    (nodeId: string) => {
+      focus.triggerEgoFocus(nodeId);
+      // Reload ego-graph centred on this node so layout pins it
+      loadNeighborhood(nodeId);
+    },
+    [focus, loadNeighborhood],
+  );
+
+  const handlePanelClose = useCallback(() => {
+    focus.closeDetail();
+  }, [focus]);
+
+  // ── episode-stream interactions (unchanged) ───────────────────────────────
 
   const handleEpisodeClick = useCallback(
     async (episode: Episode) => {
@@ -172,17 +240,16 @@ export default function MemoryGraphPage() {
         returnToDanny();
         return;
       }
-
       setExpandedEpisodeId(episode.id);
       setExpandedMemoryId(null);
-
       const entityId = episode.graph_node_ids[0];
       if (entityId) {
-        setFocusedNodeId(entityId);
+        focus.clickNode(entityId);
         await loadNeighborhood(entityId);
+        memories.load(entityId);
       }
     },
-    [expandedEpisodeId, loadNeighborhood],
+    [expandedEpisodeId, focus, loadNeighborhood, memories, returnToDanny],
   );
 
   const handleMemoryClick = useCallback(
@@ -190,74 +257,55 @@ export default function MemoryGraphPage() {
       setExpandedMemoryId(memoryId);
       const entityId = await resolveMemoryToEntity(memoryId);
       if (entityId) {
-        setFocusedNodeId(entityId);
+        focus.clickNode(entityId);
         await loadNeighborhood(entityId);
+        memories.load(entityId);
       }
     },
-    [loadNeighborhood],
+    [focus, loadNeighborhood, memories],
   );
 
-  const handleGraphNodeClick = useCallback(
-    async (node: GraphNode) => {
-      setFocusedNodeId(node.id);
-      await loadNeighborhood(node.id);
-      await loadEpisodes(node.id);
-    },
-    [loadNeighborhood, loadEpisodes],
-  );
-
-  const returnToDanny = useCallback(() => {
-    if (!dannyIdRef.current) {
-      loadEgoGraph();
-      return;
-    }
-
-    setExpandedEpisodeId(null);
-    setExpandedMemoryId(null);
-    loadEgoGraph();
-    loadEpisodes();
-  }, [loadEgoGraph, loadEpisodes]);
-
-  const handleGraphBackgroundClick = useCallback(() => {
-    if (focusedNodeId === dannyIdRef.current) return;
-    returnToDanny();
-  }, [focusedNodeId, returnToDanny]);
-
-  const isDannyCentered = focusedNodeId === dannyIdRef.current;
-
-  // ---- Stable callback refs for NeuralDisc to prevent infinite rebuild loops ----
+  // ── stable callbacks for NeuralDisc ──────────────────────────────────────
   const handleDiagnostics = useCallback(
     (metrics: { layout: number; render: number; hover: number }) => {
       setDiagnostics(d => ({ ...d, ...metrics, total: d.fetch + metrics.layout + metrics.render }));
     },
     [],
   );
+  const handleContextRestored = useCallback(() => setDiscKey(k => k + 1), []);
 
-  const handleContextRestored = useCallback(() => {
-    setDiscKey(k => k + 1);
-  }, []);
-
-  // ---- Debug render counter ----
-  const renderCountRef = useRef(0);
-  renderCountRef.current += 1;
-  if (process.env.NODE_ENV === 'development' && typeof window !== 'undefined') {
-    if (renderCountRef.current <= 5 || renderCountRef.current % 10 === 0) {
-      console.log(`[page] render #${renderCountRef.current} — nodes=${graphNodes.length} edges=${graphEdges.length} episodes=${episodes.length}`);
-    }
-  }
-
+  // ── initial load ──────────────────────────────────────────────────────────
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadEgoGraph();
     loadEpisodes();
     return () => {
-      if (graphAbortRef.current) graphAbortRef.current.abort();
+      if (graphAbortRef.current)   graphAbortRef.current.abort();
       if (episodeAbortRef.current) episodeAbortRef.current.abort();
     };
   }, [loadEgoGraph, loadEpisodes]);
 
+  // ── derived ───────────────────────────────────────────────────────────────
+  const { state: focusState, derived: focusDerived } = focus;
+
+  // centreNodeId for NeuralDisc: only pass it when ego-focus should recenter
+  const centreNodeForDisc = focusDerived.shouldRecenter
+    ? focusState.focusedNodeId
+    : (dannyId ?? null);       // ego default anchors Danny
+
+  const isDannyCentered = focusState.focusedNodeId === dannyId
+    || focusState.viewMode === 'overview';
+
+  // Panel should show when there is a focused node and panel is open
+  const showPanel = focusState.isPanelOpen && focusState.focusedNodeId !== null;
+  const focusedNode = graphNodes.find(n => n.id === focusState.focusedNodeId) ?? null;
+  const connectionCount = focusedNode
+    ? graphEdges.filter(e => e.source_node_id === focusedNode.id || e.target_node_id === focusedNode.id).length
+    : undefined;
+
   return (
     <div className="flex h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)] bg-zinc-950">
-      {/* Left: Context Stream (Episodes) — collapsible */}
+      {/* ── left: episode stream (unchanged) ─────────────────────────────── */}
       {!streamCollapsed && (
         <div className="w-80 flex-shrink-0 border-r border-zinc-800 transition-all duration-200">
           <EpisodeStream
@@ -272,11 +320,12 @@ export default function MemoryGraphPage() {
         </div>
       )}
 
-      {/* Right: Neural Knowledge Disc */}
-      <div className="flex-1 flex flex-col relative">
-        {/* Toolbar */}
+      {/* ── centre: graph canvas ──────────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col relative min-w-0">
+        {/* toolbar */}
         <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 bg-zinc-900/80 flex-shrink-0">
-          {!isDannyCentered && dannyIdRef.current && (
+          {/* Danny / home button */}
+          {!isDannyCentered && dannyId && (
             <button
               onClick={returnToDanny}
               className="text-xs flex items-center gap-1.5 text-teal-400 hover:text-teal-300 transition-colors px-2 py-1 rounded bg-teal-500/10 hover:bg-teal-500/20"
@@ -286,12 +335,21 @@ export default function MemoryGraphPage() {
             </button>
           )}
 
-          {focusedNodeId && (
-            <span className="text-xs text-zinc-400">
-              {graphNodes.length} nodes &middot; {graphEdges.length} edges
+          {/* Mode indicator */}
+          {focusState.viewMode !== 'overview' && (
+            <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-widest">
+              {MODE_LABELS[focusState.viewMode]}
             </span>
           )}
 
+          {/* Node + edge count */}
+          {graphNodes.length > 0 && (
+            <span className="text-xs text-zinc-600">
+              {graphNodes.length} nodes · {graphEdges.length} edges
+            </span>
+          )}
+
+          {/* Error */}
           {graphError && (
             <span className="text-xs text-red-400 flex items-center gap-1">
               <AlertCircle className="h-3 w-3" />
@@ -301,20 +359,34 @@ export default function MemoryGraphPage() {
 
           <div className="flex-1" />
 
+          {/* Ego-focus quick action (when in soft-focus) */}
+          {(focusState.viewMode === 'soft-focus') && focusState.focusedNodeId && (
+            <button
+              onClick={() => handleEgoFocus(focusState.focusedNodeId!)}
+              className="text-xs flex items-center gap-1 text-zinc-400 hover:text-zinc-200 px-2 py-1 rounded hover:bg-zinc-800 transition-colors"
+              title="Recenter graph on focused node"
+            >
+              <Maximize2 className="h-3 w-3" />
+              Deep focus
+            </button>
+          )}
+
           {/* Sidebar toggle */}
           <button
             onClick={() => setStreamCollapsed(c => !c)}
             className="text-xs flex items-center gap-1 text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-1 rounded"
             title={streamCollapsed ? 'Show sidebar' : 'Hide sidebar'}
           >
-            {streamCollapsed ? <PanelLeft className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
+            {streamCollapsed
+              ? <PanelLeft className="h-3.5 w-3.5" />
+              : <PanelLeftClose className="h-3.5 w-3.5" />}
           </button>
 
-          {/* Diagnostics Panel Toggle */}
+          {/* Dev diagnostics toggle */}
           <button
             onClick={() => setShowDiagnostics(d => !d)}
             className={`text-xs px-2 py-1 rounded transition-colors ${
-              showDiagnostics ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
+              showDiagnostics ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-700 hover:text-zinc-500'
             }`}
           >
             Dev
@@ -322,18 +394,14 @@ export default function MemoryGraphPage() {
 
           {showDiagnostics && (
             <div className="flex items-center gap-2 text-[10px] font-mono bg-zinc-950/50 px-2 py-1 rounded border border-zinc-800">
-              <span className="text-blue-400">Fetch {diagnostics.fetch}ms</span>
-              <span className="text-zinc-600">|</span>
-              <span className="text-purple-400">Layout {diagnostics.layout}ms</span>
-              <span className="text-zinc-600">|</span>
-              <span className="text-teal-400">Render {diagnostics.render}ms</span>
-              <span className="text-zinc-600">|</span>
-              <span className="text-amber-400">Hover {diagnostics.hover}ms</span>
-              <span className="text-zinc-600">|</span>
-              <span className="text-zinc-300">Total {diagnostics.total}ms</span>
-
+              <span className="text-blue-400">F {diagnostics.fetch}ms</span>
+              <span className="text-zinc-700">|</span>
+              <span className="text-purple-400">L {diagnostics.layout}ms</span>
+              <span className="text-zinc-700">|</span>
+              <span className="text-teal-400">R {diagnostics.render}ms</span>
+              <span className="text-zinc-700">|</span>
+              <span className="text-amber-400">H {diagnostics.hover}ms</span>
               <div className="w-px h-3 bg-zinc-800 mx-1" />
-
               <button
                 onClick={() => setEnableEffects(e => !e)}
                 className={`px-1.5 py-0.5 rounded border transition-colors ${
@@ -344,10 +412,9 @@ export default function MemoryGraphPage() {
               >
                 FX {enableEffects ? 'ON' : 'OFF'}
               </button>
-
               {process.env.NODE_ENV === 'development' && (
                 <button
-                  onClick={() => (window as any).__crashPixi?.()}
+                  onClick={() => (window as unknown as { __crashPixi?: () => void }).__crashPixi?.()}
                   className="bg-red-900/50 text-red-300 px-1.5 py-0.5 rounded hover:bg-red-800/50 border border-red-800/50 ml-1"
                 >
                   GPU Crash
@@ -365,10 +432,10 @@ export default function MemoryGraphPage() {
           </a>
         </div>
 
-        {/* Canvas */}
-        <div className="flex-1 relative">
+        {/* canvas area */}
+        <div className="flex-1 relative min-h-0">
           {graphLoading && (
-            <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/80 z-10">
+            <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/80 z-10 pointer-events-none">
               <Loader2 className="h-6 w-6 animate-spin text-zinc-400" />
             </div>
           )}
@@ -377,15 +444,40 @@ export default function MemoryGraphPage() {
             key={discKey}
             nodes={graphNodes}
             edges={graphEdges}
-            centerNodeId={focusedNodeId}
+            centerNodeId={centreNodeForDisc}
+            viewMode={focusState.viewMode}
+            dimAlpha={focusDerived.dimAlpha}
+            dimEdgeAlpha={focusDerived.dimEdgeAlpha}
+            showParticles={focusDerived.showParticles}
+            useCurvedEdges={focusDerived.useCurvedEdges}
             onNodeClick={handleGraphNodeClick}
             onBackgroundClick={handleGraphBackgroundClick}
             onContextRestored={handleContextRestored}
             onDiagnostics={handleDiagnostics}
             enableEffects={enableEffects}
           />
+
+          {/* Subtle bottom-left branding */}
+          <span className="absolute bottom-3 left-4 text-[9px] text-zinc-800 select-none tracking-wider uppercase pointer-events-none">
+            Rhodey OS · Knowledge Graph
+          </span>
         </div>
       </div>
+
+      {/* ── right: memory detail panel ────────────────────────────────────── */}
+      {showPanel && (
+        <div className="w-80 flex-shrink-0 border-l border-zinc-800 flex flex-col">
+          <MemoryDetailPanel
+            node={focusedNode}
+            items={memories.state.items}
+            loading={memories.state.loading}
+            error={memories.state.error}
+            connectionCount={connectionCount}
+            onClose={handlePanelClose}
+            onFocusNode={handleEgoFocus}
+          />
+        </div>
+      )}
     </div>
   );
 }
