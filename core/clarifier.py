@@ -229,6 +229,19 @@ def handle_response(shortcode: str, answer: str) -> dict:
     }
     if context:
         source_update["clarification_answer"] = context
+        
+    if source_table == "pending_graph_nodes" and response_type == "approved" and question_type in ["auto_merge", "disambiguation"]:
+        pn_res = supabase.table("pending_graph_nodes").select("label, type").eq("id", source_id).maybe_single().execute()
+        if pn_res and pn_res.data:
+            from core.lib.graph_rules import find_similar_node, execute_graph_node_merge
+            similar = find_similar_node(pn_res.data["label"], pn_res.data["type"], threshold=0.85)
+            if similar:
+                target_id = similar[0]["id"]
+                # First check if the source node actually exists in graph_nodes
+                # Sometimes pending nodes are just labels and haven't been created yet.
+                gn_res = supabase.table("graph_nodes").select("id").eq("label", pn_res.data["label"]).maybe_single().execute()
+                if gn_res and gn_res.data:
+                    execute_graph_node_merge(gn_res.data["id"], target_id, "clarification_merge")
     
     supabase.table(source_table).update(source_update).eq("id", source_id).execute()
     

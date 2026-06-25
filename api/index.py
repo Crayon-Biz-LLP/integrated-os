@@ -630,11 +630,8 @@ async def graph_merge_action_route(request: Request):
             loser_id = source_node_id
             winner_id = target_canonical
 
-        supabase.table('graph_nodes').update({'canonical_id': winner_id}).eq('id', loser_id).execute()
-        
-        # Rewire edges to point to the winner
-        supabase.table('graph_edges').update({'source_node_id': winner_id}).eq('source_node_id', loser_id).execute()
-        supabase.table('graph_edges').update({'target_node_id': winner_id}).eq('target_node_id', loser_id).execute()
+        from core.lib.graph_rules import execute_graph_node_merge
+        execute_graph_node_merge(loser_id, winner_id, "ui_merge_accept")
         
         supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', int(pending_id)).execute()
 

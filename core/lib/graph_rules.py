@@ -1,5 +1,6 @@
 from core.services.db import get_supabase
 import difflib
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -44,6 +45,38 @@ VALID_EDGE_MATRIX = {
     ('practice',       'practice'):    ['ASSOCIATED_WITH'],
 }
 
+RELATIONSHIP_ALIASES = {
+    ("person", "organization"): {
+        "WORKS_FOR": "WORKS_AT",
+        "EMPLOYED_BY": "WORKS_AT",
+        "EMPLOYEE_OF": "MEMBER_OF",
+        "EMPLOYEE": "MEMBER_OF",
+    },
+    ("person", "project"): {
+        "LEAD": "LEADS",
+        "CONTRIBUTES_TO": "WORKS_ON",
+    },
+    ("person", "person"): {
+        "MEETS_WITH": "MET_WITH",
+        "DISCUSSES": "DISCUSSED_WITH",
+        "TALKS_TO": "DISCUSSED_WITH",
+    },
+    ("person", "event"): {
+        "ATTENDS": "ATTENDED",
+    },
+    ("task", "project"): {
+        "PART_OF": "BELONGS_TO",
+    },
+}
+
+def canonicalize_relationship(rel: str, source_type: str, target_type: str) -> str:
+    """Map relationship variants to canonical forms."""
+    if not rel:
+        return ""
+    rel_upper = rel.upper()
+    alias_map = RELATIONSHIP_ALIASES.get((source_type, target_type), {})
+    return alias_map.get(rel_upper, rel_upper)
+
 _alias_cache = None
 
 def resolve_alias(label: str) -> str:
@@ -84,7 +117,42 @@ NOISE_LABELS = {
     'god', 'app', 'book', 'system', 'project', 'mission', 'church', 'family', 'wife', 'father', 'mother', 'brother', 'sister', 'son', 'daughter', 'husband', 'operations', 'revenue', 'identity', 'prayer', 'revenue'
 }
 
-def resolve_canonical_label(raw_label: str) -> dict:
+def normalize_label_comparison(label: str) -> str:
+    """Normalize a label for comparison/dedup purposes only.
+    Output is NEVER stored — only used for matching.
+    
+    Transformations:
+    - strip whitespace
+    - lowercase
+    - collapse multiple spaces to single space
+    
+    Characters STRIPPED: . , ; : ! ? ( ) [ ] { }
+    Characters KEPT: a-z 0-9 apostrophe(') hyphen(-) underscore(_) spaces
+    """
+    if not label:
+        return ""
+    label = label.strip().lower()
+    label = re.sub(r'\s+', ' ', label)
+    label = re.sub(r'[.,;:!?()\[\]{}]', '', label)
+    return label.strip()
+
+def normalize_label_display(label: str) -> str:
+    """Canonical display form for storage.
+    
+    Transformations:
+    - strip whitespace
+    - collapse multiple spaces to single space
+    
+    Characters KEPT: everything (apostrophes, hyphens, original casing)
+    NO title-case, NO lowercasing, NO character removal.
+    """
+    if not label:
+        return ""
+    label = label.strip()
+    label = re.sub(r'\s+', ' ', label)
+    return label
+
+def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
     """Returns the closest canonical match for a raw label.
     
     Resolution chain:
@@ -97,7 +165,7 @@ def resolve_canonical_label(raw_label: str) -> dict:
     
     Returns: {"label": canonical_label, "node_id": id_or_none, "node_type": type, "exists_in_pending": bool, "confidence": float}
     """
-    label = raw_label.strip()
+    label = normalize_label_display(raw_label)
     
     # 1. Alias check
     label = resolve_alias(label)
@@ -110,11 +178,12 @@ def resolve_canonical_label(raw_label: str) -> dict:
         "confidence": 0.0
     }
     
-    # 2. Length check
     if len(label) < 3:
         return result
         
-    # 3. ILIKE match against graph_nodes
+    # We will use ILIKE against the raw display label for now, since we can't easily 
+    # normalize DB labels in a simple select query without a derived column.
+    # ILIKE on the display label is safe and catches casing differences.
     if len(label) >= 4:
         try:
             gn_res = supabase.table("graph_nodes").select("id, label, type").ilike("label", label).maybe_single().execute()
@@ -157,6 +226,17 @@ def resolve_canonical_label(raw_label: str) -> dict:
         result["confidence"] = 0.0
         return result
         
+    # 7. Conservative fuzzy match as last resort
+    if node_type and len(label) >= 4:
+        fuzzy = find_similar_node(label, node_type, threshold=0.85)
+        if fuzzy:
+            top = fuzzy[0]
+            result["label"] = top["label"]
+            result["node_id"] = top["id"]
+            result["node_type"] = top["type"]
+            result["confidence"] = 0.75  # Needs edge approval but reuses node
+            return result
+
     # Unmatched but passes filters
     return result
 
@@ -193,6 +273,146 @@ def get_canonical_id(node_id: str) -> str:
         current = next_res.data
     return current["id"]
 
+
+def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "user_merge") -> dict:
+    """
+    Merge source graph_node into target graph_node.
+    
+    Idempotent: if source_node.canonical_id is already set, skip.
+    """
+    if source_id == target_id:
+        return {"success": False, "message": "Source and target are the same node"}
+
+    src_res = supabase.table("graph_nodes").select("*").eq("id", source_id).maybe_single().execute()
+    tgt_res = supabase.table("graph_nodes").select("*").eq("id", target_id).maybe_single().execute()
+    
+    if not src_res or not src_res.data or not tgt_res or not tgt_res.data:
+        return {"success": False, "message": "Source or target node not found"}
+        
+    src_node = src_res.data
+    if src_node.get("canonical_id"):
+        return {"success": True, "message": "Node already merged"}
+
+    # 1. Load edges where source or target is involved
+    src_out_res = supabase.table("graph_edges").select("*").eq("source_node_id", source_id).execute()
+    src_in_res = supabase.table("graph_edges").select("*").eq("target_node_id", source_id).execute()
+    
+    tgt_out_res = supabase.table("graph_edges").select("*").eq("source_node_id", target_id).execute()
+    tgt_in_res = supabase.table("graph_edges").select("*").eq("target_node_id", target_id).execute()
+    
+    src_out = src_out_res.data or []
+    src_in = src_in_res.data or []
+    tgt_out = tgt_out_res.data or []
+    tgt_in = tgt_in_res.data or []
+    
+    edges_to_delete = []
+    edges_to_update_out = []
+    edges_to_update_in = []
+    
+    # 2. Reconcile OUTGOING edges (source -> X vs target -> X)
+    tgt_out_map = { f"{e['relationship']}|{e['target_node_id']}": e for e in tgt_out }
+    
+    for src_edge in src_out:
+        key = f"{src_edge['relationship']}|{src_edge['target_node_id']}"
+        if key in tgt_out_map:
+            tgt_edge = tgt_out_map[key]
+            edges_to_delete.append(src_edge['id'])
+            
+            # Merge metadata into the target edge
+            src_meta = src_edge.get("metadata") or {}
+            tgt_meta = tgt_edge.get("metadata") or {}
+            merged_meta = {**src_meta, **tgt_meta}
+            
+            all_sources = set()
+            if tgt_meta.get("source_text"):
+                all_sources.update([s.strip() for s in tgt_meta["source_text"].split(",") if s.strip()])
+            if src_meta.get("source_text"):
+                all_sources.update([s.strip() for s in src_meta["source_text"].split(",") if s.strip()])
+                
+            if all_sources:
+                merged_meta["source_text"] = ", ".join(all_sources)
+                
+            supabase.table("graph_edges").update({"metadata": merged_meta}).eq("id", tgt_edge["id"]).execute()
+        else:
+            edges_to_update_out.append(src_edge['id'])
+
+    # 3. Reconcile INCOMING edges (X -> source vs X -> target)
+    tgt_in_map = { f"{e['source_node_id']}|{e['relationship']}": e for e in tgt_in }
+    
+    for src_edge in src_in:
+        key = f"{src_edge['source_node_id']}|{src_edge['relationship']}"
+        if key in tgt_in_map:
+            tgt_edge = tgt_in_map[key]
+            edges_to_delete.append(src_edge['id'])
+            
+            src_meta = src_edge.get("metadata") or {}
+            tgt_meta = tgt_edge.get("metadata") or {}
+            merged_meta = {**src_meta, **tgt_meta}
+            
+            all_sources = set()
+            if tgt_meta.get("source_text"):
+                all_sources.update([s.strip() for s in tgt_meta["source_text"].split(",") if s.strip()])
+            if src_meta.get("source_text"):
+                all_sources.update([s.strip() for s in src_meta["source_text"].split(",") if s.strip()])
+                
+            if all_sources:
+                merged_meta["source_text"] = ", ".join(all_sources)
+                
+            supabase.table("graph_edges").update({"metadata": merged_meta}).eq("id", tgt_edge["id"]).execute()
+        else:
+            edges_to_update_in.append(src_edge['id'])
+
+    # Handle self-referential loops created by merging
+    for eid in edges_to_update_out[:]:
+        edge = next(e for e in src_out if e['id'] == eid)
+        if edge['target_node_id'] == target_id:
+            edges_to_delete.append(eid)
+            edges_to_update_out.remove(eid)
+            
+    for eid in edges_to_update_in[:]:
+        edge = next(e for e in src_in if e['id'] == eid)
+        if edge['source_node_id'] == target_id:
+            if eid not in edges_to_delete:
+                edges_to_delete.append(eid)
+            if eid in edges_to_update_in:
+                edges_to_update_in.remove(eid)
+
+    # 4. Safe Deletions
+    if edges_to_delete:
+        for i in range(0, len(edges_to_delete), 100):
+            batch = edges_to_delete[i:i+100]
+            supabase.table("graph_edges").delete().in_("id", batch).execute()
+
+    # 5. Safe Repointing
+    if edges_to_update_out:
+        for i in range(0, len(edges_to_update_out), 100):
+            batch = edges_to_update_out[i:i+100]
+            supabase.table("graph_edges").update({"source_node_id": target_id}).in_("id", batch).execute()
+            
+    if edges_to_update_in:
+        for i in range(0, len(edges_to_update_in), 100):
+            batch = edges_to_update_in[i:i+100]
+            supabase.table("graph_edges").update({"target_node_id": target_id}).in_("id", batch).execute()
+
+    # 6. Merge metadata
+    tgt_node = tgt_res.data
+    src_meta = src_node.get("metadata") or {}
+    tgt_meta = tgt_node.get("metadata") or {}
+    merged_meta = {**src_meta, **tgt_meta}
+    
+    # 7. Set canonical_id
+    supabase.table("graph_nodes").update({
+        "canonical_id": target_id,
+        "metadata": src_meta  # Keep original meta on the loser
+    }).eq("id", source_id).execute()
+    
+    # Update target node meta
+    supabase.table("graph_nodes").update({"metadata": merged_meta}).eq("id", target_id).execute()
+    
+    from core.lib.audit_logger import audit_log_sync
+    audit_log_sync("pulse", "INFO", f"Merged node {src_node['label']} into {tgt_node['label']} ({provenance})")
+    
+    return {"success": True, "message": f"Merged {src_node['label']} into {tgt_node['label']}"}
 
 def propose_merge(source_node_id: str, target_node_id: str) -> dict:
     src_res = supabase.table("graph_nodes").select("label, type").eq("id", source_node_id).maybe_single().execute()
