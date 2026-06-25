@@ -3,6 +3,19 @@
 ## Project Overview
 FastAPI-based executive command system deployed as Vercel serverless functions (Python 3.11, matches CI). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 
+## Session Anchored Summary (Jun 25, 2026 — Part 4)
+
+### Progress Done This Session
+- **Comprehensive Graph Deduplication & Merge Pipeline**: Eliminated structural gaps causing duplicate clarifications and duplicate graph edges/nodes.
+  - **Relationship Aliasing**: Added `RELATIONSHIP_ALIASES` to `graph_rules.py` (e.g., mapping `WORKS_FOR` and `EMPLOYED_BY` to `WORKS_AT`). Now enforced consistently across edge creation.
+  - **Label Normalization Split**: Separated label normalization into non-destructive `normalize_label_comparison` (strips punctuation/casing for matching only) and `normalize_label_display` (preserves typographic fidelity for storage).
+  - **Actual Node Merge Execution**: Built `execute_graph_node_merge()` to handle true idempotent node merging — actively loading, reconciling, and deduplicating edge overlaps before safely repointing remaining edges to avoid unique constraint violations.
+  - **Fuzzy Canonicalization**: Upgraded `resolve_canonical_label()` with an optional `node_type` param and 85% fallback similarity check to trap spelling variants.
+- **Database Hygiene & Protection**:
+  - **Constraints**: Migrated a partial UNIQUE index to `pending_graph_edges` (`idx_unique_pending_edge`) where `status = 'pending'`, preventing duplicate pending edges from ever accumulating again (`db/08_pending_edges_cleanup_and_constraint.sql`).
+  - **Node Cleanup Script**: Built `scripts/clean_duplicate_nodes.py` to hunt down historical case-variant duplicates. Features an intelligent `AUTO_SAFE` vs `MANUAL_REVIEW` classifier (flagging acronyms and edge collisions).
+  - **Production Remediation**: Ran the cleanup script against live DB — safely collapsed 36 historical duplicate groups (74 nodes) and archived 41 duplicate pending edges. The `graph_nodes` table is now completely normalized.
+
 ## Session Anchored Summary (Jun 24, 2026 — Part 3)
 
 ### Progress Done This Session
@@ -77,7 +90,9 @@ FastAPI-based executive command system deployed as Vercel serverless functions (
 
 ### Key Decisions This Session
 - **Strict Configuration Segregation**: The local AI (`opencode.json`) tokens for Vercel/Supabase are entirely separated from the deployed backend environment variables (`SUPABASE_SERVICE_ROLE_KEY`).
-- **Complete reliance on PostgreSQL Triggers**: The Python layer no longer touches `is_current` or `supersedes_id` during updates — all temporal versioning is managed strictly by `BEFORE UPDATE` database triggers.
+- **Temporal triggers** (`db/02_temporal_lineage_triggers.sql`) are installed on `tasks` and `canonical_pages` only. `projects`, `memories`, and `resources` have `is_current`/`version`/`supersedes_id` columns but no triggers — application code manages versioning for those tables.
+- The `tasks` trigger only versions on changes to: `title`, `status`, `project_id`, `priority`, `deadline`, `reminder_at`. Sync-only fields (`google_event_id`, `google_task_id`, `completed_at`) are intentionally excluded and update in-place without archiving.
+- Production `DELETE` is used on: `graph_nodes`/`graph_edges` (merge and rejection — both `graph_edges` FKs have `ON DELETE CASCADE`, so node deletion is irreversible), `memories` (undo command), `resources` (`cleanup_duplicates.py` standalone script). Tables without production `DELETE`: `tasks`, `projects`, `messages`, `raw_dumps`, `pending_graph_nodes`, `pending_graph_edges`, `people`, `organizations`, `canonical_pages`, `audit_logs`. Deleting a project `SET NULL`s its tasks, memories, and resources — those rows persist orphaned with no error or archival.
 - **`recurrence="none"` fix**: Guard changed to `td.get('recurrence') not in ['none', '']` — string `"none"` is truthy in Python.
 - **UNTIL boundary**: `"No upcoming instances found"` string from `skip_recurring_instance` is the signal to fall through to permanent `done` close.
 - **404 heal order**: DB nulled *before* re-provisioning — if re-provision fails, DB is clean rather than pointing to dead event.
@@ -168,6 +183,8 @@ Vercel auto-deploys `main` branch. All routes rewritten to `api/index.py` (see `
 - **Retrieval tables**: `retrieval_passages`, `retrieval_phrase_nodes` (with GIN trigram index), `retrieval_node_stats`, `retrieval_passage_phrase_links`, `retrieval_memory_bundle_links`, `retrieval_alias_edges` (3760 heuristic synonym bridges), `retrieval_index_runs` (checkpoint/resume).
 - `backfill_graph.py` syncs graph edges from memories (has LLM fallback: Gemini → Gemma → OpenRouter). Excludes `raw_dumps` from extraction. Uses strict 5-node-type / 16-edge-type ontology with entity grounding.
 - **Graph integrity**: Five layers — (1) Guard A deletes stale project edges before inserting new ones; (2) Guard B rejects hallucinated nodes via text-anchoring validation (no AUTHORED exception); (3) Guard C (HITL) gates ALL edges through `pending_graph_edges` + high-risk nodes through `pending_graph_nodes`; (4) Guard D dedup prevents label-drift re-insertion; (5) `concept` nodes supported via **Concept Fluidity (Synaptic Plasticity)** upgrade — extracted via `concept_sweep_batch.py`, deduped via 85%+ similarity check with 1-click merge, protected by HITL approval. No concept auto-creation. **Phase 1 Guards**: Guard 2 (`is_real_project`) hard-rejects ungrounded projects, Guard 3 (`has_structural_anchor`) flags ungrounded people/orgs.
+- `projects_name_org_unique` is a partial unique index on `(name, organization_id WHERE organization_id IS NOT NULL)`. Null-org projects have no name-uniqueness guard (currently zero such rows exist).
+- `tasks.dedup_key` has a partial UNIQUE index `idx_tasks_dedup_unique` (`WHERE status NOT IN ('done','cancelled') AND is_current = true`). Backs the app-level dedup check in `create_task()` with a hard DB guard.
 
 ### External Integrations
 - **Gemini AI**: Briefing (`gemini-3.5-flash`), Classification (`gemini-3.1-flash-lite`), Embeddings (`gemini-embedding-2-preview`)
