@@ -86,6 +86,7 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick, onTaskDon
             <TableHead className="section-label py-3 px-4 text-left">Status</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Priority</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Project</TableHead>
+            <TableHead className="section-label py-3 px-4 text-left">Org</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Due</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Actions</TableHead>
           </TableRow>
@@ -93,7 +94,7 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick, onTaskDon
         <TableBody>
           {tasks.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+              <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
                 No tasks found
               </TableCell>
             </TableRow>
@@ -121,6 +122,9 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick, onTaskDon
                 </TableCell>
                 <TableCell>
                   <span className="text-sm text-muted-foreground/70">{task.project_name}</span>
+                </TableCell>
+                <TableCell>
+                  <span className="text-sm text-muted-foreground/70">{task.organization_name || '-'}</span>
                 </TableCell>
                 <TableCell>
                   <span className={isOverdue(task) ? 'text-destructive text-xs font-medium' : 'text-xs text-muted-foreground/60 font-mono'}>

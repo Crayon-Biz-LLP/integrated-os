@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from "@/lib/supabase-server";
 
 export async function GET(req: NextRequest) {
   const supabase = await createServerSupabaseClient();
-  const isOrgRoutingEnabled = process.env.ORG_ROUTING_ENABLED === "1" || process.env.ORG_ROUTING_ENABLED === "true";
+  const isOrgRoutingEnabled = true;
 
   if (!isOrgRoutingEnabled) {
     return NextResponse.json([]);

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Task, Project } from '@/lib/tasks/types';
-import { fetchProjects, updateTaskProject } from '@/lib/tasks/api';
+import { fetchProjects, fetchOrganizations, updateTaskProject } from '@/lib/tasks/api';
 import {
   Dialog,
   DialogContent,
@@ -23,38 +23,48 @@ interface ChangeProjectDialogProps {
 
 export function ChangeProjectDialog({ task, open, onOpenChange, onSuccess }: ChangeProjectDialogProps) {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [organizations, setOrganizations] = useState<{ id: string; name: string }[]>([]);
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (open) {
-      fetchProjects().then((data) => {
-        setProjects(data);
+      Promise.all([fetchProjects(), fetchOrganizations()]).then(([projData, orgData]) => {
+        setProjects(projData);
+        setOrganizations(orgData);
         if (task) {
           setSelectedId(task.project_id);
+          setSelectedOrgId(task.organization_id || null);
         }
         setSearch('');
       });
     }
   }, [open, task]);
 
+  const orgProjects = selectedOrgId
+    ? projects.filter(p => p.organization_id === selectedOrgId)
+    : projects.filter(p => !p.organization_id);
+
   const filteredProjects = search
-    ? projects.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
-    : projects;
+    ? orgProjects.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
+    : orgProjects;
 
   const handleSave = async () => {
     if (!task) return;
     
     setSaving(true);
     try {
-      await updateTaskProject(task.id, selectedId);
+      await updateTaskProject(task.id, selectedId, selectedOrgId);
       const updatedProject = projects.find(p => p.id === selectedId);
+      const updatedOrg = organizations.find(o => o.id === selectedOrgId);
       onSuccess({
         ...task,
         project_id: selectedId,
         project_name: updatedProject?.name ?? 'Inbox',
-        organization_id: updatedProject?.organization_id ?? null,
+        organization_id: selectedOrgId,
+        organization_name: updatedOrg?.name ?? null,
       });
     } catch (error) {
       console.error('Failed to update task project:', error);
@@ -64,28 +74,38 @@ export function ChangeProjectDialog({ task, open, onOpenChange, onSuccess }: Cha
     }
   };
 
+  const hasChanges = task?.project_id !== selectedId || (task?.organization_id || null) !== selectedOrgId;
+
   if (!task) return null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>Change Project</DialogTitle>
+          <DialogTitle>Change Organization & Project</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
           <div>
-            <p className="text-sm text-muted-foreground mb-2">Task</p>
-            <p className="text-sm font-medium line-clamp-2">{task.title}</p>
+            <p className="text-sm text-muted-foreground mb-2">Organization</p>
+            <select
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm mb-2"
+              value={selectedOrgId || ''}
+              onChange={(e) => {
+                const newOrgId = e.target.value || null;
+                setSelectedOrgId(newOrgId);
+                setSelectedId(null);
+              }}
+            >
+              <option value="">No Organization</option>
+              {organizations.map(org => (
+                <option key={org.id} value={org.id}>{org.name}</option>
+              ))}
+            </select>
           </div>
 
           <div>
-            <p className="text-sm text-muted-foreground mb-2">Current Project</p>
-            <p className="text-sm">{task.project_name}</p>
-          </div>
-
-          <div>
-            <p className="text-sm text-muted-foreground mb-2">Select New Project</p>
+            <p className="text-sm text-muted-foreground mb-2">Project</p>
             <Input
               placeholder="Search projects..."
               value={search}
@@ -93,6 +113,11 @@ export function ChangeProjectDialog({ task, open, onOpenChange, onSuccess }: Cha
               className="mb-2"
             />
             <div className="max-h-48 overflow-y-auto rounded-md border">
+              {filteredProjects.length === 0 && (
+                <div className="p-3 text-sm text-muted-foreground text-center">
+                  No projects found.
+                </div>
+              )}
               {filteredProjects.map((project) => (
                 <button
                   key={project.id}
@@ -112,7 +137,7 @@ export function ChangeProjectDialog({ task, open, onOpenChange, onSuccess }: Cha
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={saving || selectedId === task.project_id}>
+          <Button onClick={handleSave} disabled={saving || !hasChanges}>
             {saving ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />

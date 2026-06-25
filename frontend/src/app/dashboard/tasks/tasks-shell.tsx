@@ -57,7 +57,7 @@ export function TasksShell({
   initialStats: TaskStats;
   projects: Project[];
 }) {
-  const [tasks] = useState(initialTasks);
+  const [tasks, setTasks] = useState(initialTasks);
   const [doneTaskIds, setDoneTaskIds] = useState<Set<number>>(new Set());
   const [filters, setFilters] = useState<TaskFiltersType>(defaultFilters);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
@@ -87,6 +87,7 @@ export function TasksShell({
 
   const handleProjectUpdated = useCallback((updatedTask: Task) => {
     setSelectedTask(updatedTask);
+    setTasks((prev) => prev.map((t) => (t.id === updatedTask.id ? updatedTask : t)));
   }, []);
 
   const handleTaskDone = useCallback(async (task: Task) => {

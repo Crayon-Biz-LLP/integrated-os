@@ -89,6 +89,11 @@ export function TaskDetailSheet({ task, open, onOpenChange, onChangeProjectClick
             </div>
 
             <div>
+              <p className="section-label mb-1">Organization</p>
+              <span className="text-sm text-foreground">{task.organization_name || '-'}</span>
+            </div>
+
+            <div>
               <p className="section-label mb-1">Due Date</p>
               <span className="text-sm text-foreground">{formatDateTime(task.reminder_at || task.deadline)}</span>
             </div>

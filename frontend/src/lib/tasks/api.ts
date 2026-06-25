@@ -6,11 +6,22 @@ export async function fetchProjects(): Promise<Project[]> {
   return res.json();
 }
 
-export async function updateTaskProject(taskId: number, projectId: number | null): Promise<void> {
+export async function fetchOrganizations(): Promise<{ id: string; name: string }[]> {
+  const res = await fetch(`/api/organizations`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch organizations");
+  return res.json();
+}
+
+export async function updateTaskProject(taskId: number, projectId: number | null, organizationId?: string | null): Promise<void> {
+  const body: any = { project_id: projectId };
+  if (organizationId !== undefined) {
+    body.organization_id = organizationId;
+  }
+  
   const res = await fetch(`/api/tasks/${taskId}/project`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project_id: projectId }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error("Failed to update task project");
 }
