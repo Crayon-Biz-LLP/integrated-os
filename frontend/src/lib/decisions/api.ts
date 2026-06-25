@@ -34,6 +34,19 @@ export async function decideGraphEdge(id: number, decision: 'approve' | 'reject'
   }
 }
 
+export async function submitClarification(shortcode: string, answer: string): Promise<any> {
+  const res = await fetch('/api/clarification', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ shortcode, answer }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to submit clarification' }));
+    throw new Error(err.detail || 'Failed to submit clarification');
+  }
+  return res.json();
+}
+
 export async function decideMergeProposal(id: number, decision: 'accept' | 'reject', swap?: boolean): Promise<void> {
   const res = await fetch('/api/graph-merge-action', {
     method: 'POST',

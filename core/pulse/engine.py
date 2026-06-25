@@ -414,13 +414,12 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
 
 async def discover_new_clusters():
-    """Weekly cluster discovery. Analyzes unmapped resources for natural groupings
+    """Continuous cluster discovery. Analyzes unmapped resources for natural groupings
     and creates new clusters when 3+ related resources form a coherent theme."""
     try:
-        thirty_days_ago = (datetime.now(timezone(timedelta(hours=5, minutes=30))) - timedelta(days=30)).isoformat()
         unclustered_res = supabase.table('resources').select(
             'id, url, title, summary, strategic_note, category'
-        ).is_('cluster_id', None).gt('created_at', thirty_days_ago).limit(100).execute()
+        ).is_('cluster_id', None).limit(100).execute()
         unclustered = unclustered_res.data or []
         if len(unclustered) < 3:
             audit_log_sync("pulse", "INFO", f"📍 Cluster discovery: only {len(unclustered)} unmapped resources, need 3+.")
@@ -599,13 +598,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             error("pulse", f"Batch enrichment failed, continuing pulse: {e}", format_error(e))
             batch_enrich_results = []
 
-        # --- 0.2 PERIODIC CLUSTER DISCOVERY (Sundays only) ---
-        now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-        if now_ist.weekday() == 6:
-            try:
-                await discover_new_clusters()
-            except Exception as e:
-                error("pulse", f"Cluster discovery failed, continuing pulse: {e}", format_error(e))
+        # --- 0.2 CONTINUOUS CLUSTER DISCOVERY ---
+        try:
+            await discover_new_clusters()
+        except Exception as e:
+            error("pulse", f"Cluster discovery failed, continuing pulse: {e}", format_error(e))
         
         # --- 1. READ: Fetch and Lock ---
         # 1.1 Fetch pending, staged, synced, partially_synced, and awaiting_completion_match items
@@ -747,7 +744,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                             if url_match:
                                 actual_url = url_match.group(0).rstrip('.,;:!?)"\'')
                                 try:
-                                    supabase.table('resources').insert({"url": actual_url}).execute()
+                                    existing = supabase.table('resources').select('id').eq('url', actual_url).limit(1).execute()
+                                    if not existing.data:
+                                        supabase.table('resources').insert({"url": actual_url}).execute()
                                 except Exception as e:
                                     audit_log_sync("pulse", "WARNING", f"Resource insert failed for URL in note: {e}")
                     
@@ -1062,7 +1061,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             hindsight_empty = True
 
         recent_lib = supabase.table('resources')\
-            .select('url, category, title, summary, strategic_note, created_at')\
+            .select('id, url, category, title, summary, strategic_note, created_at')\
             .gt('created_at', thirty_days_ago)\
             .order('created_at', desc=True)\
             .limit(50)\
@@ -1072,14 +1071,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             enriched_items = []
             for r in recent_lib.data:
                 note = r.get('strategic_note') or ""
-                enriched_items.append(f"[{r['category']}] {r['title']} | {note}".strip())
+                enriched_items.append(f"[ID:{r['id']}] [{r['category']}] {r['title']} | {note}".strip())
             pattern_context = " | ".join(enriched_items)
         else:
             pattern_context = "None"
         
         newly_enriched_context = "None"
         if batch_enrich_results:
-            newly_enriched_lines = [f"[{r.get('category', 'LINK')}] {r.get('title', 'Unknown')} | {r.get('strategic_note', '')}" for r in batch_enrich_results]
+            newly_enriched_lines = [f"[ID:{r.get('id', '?')}] [{r.get('category', 'LINK')}] {r.get('title', 'Unknown')} | {r.get('strategic_note', '')}" for r in batch_enrich_results]
             newly_enriched_context = " | ".join(newly_enriched_lines)
         
         link_context = "None"
@@ -1091,7 +1090,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 label = r.get('title') or r.get('url', 'Unknown')
                 cat = r.get('category') or 'RAW'
                 note = r.get('strategic_note') or ''
-                url_lines.append(f"[{cat}] {label} | {note}".strip().rstrip('| '))
+                url_lines.append(f"[ID:{r['id']}] [{cat}] {label} | {note}".strip().rstrip('| '))
             recent_urls_context = "\n".join(url_lines)
         else:
             recent_urls_context = "None"
@@ -1105,6 +1104,12 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             graph_node_projects, 
             match_count=5
         )
+
+        active_clusters_res = supabase.table('clusters').select('title, description').eq('status', 'active').execute()
+        if active_clusters_res.data:
+            active_clusters_context = "\n".join([f"- {c['title']}: {c.get('description', '')}" for c in active_clusters_res.data])
+        else:
+            active_clusters_context = "None"
         
         # 🤖 AGENT 1: DEPENDENCY AGENT (uses graph_edges for task dependencies)
         dependency_context = await check_task_dependencies(active_tasks)
@@ -1262,6 +1267,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         - PROJECTS:
         {project_details}
         - PEOPLE: {json.dumps(people_names)}
+        - ACTIVE CLUSTERS:
+        {active_clusters_context}
         - ACTIONABLE TASKS (DAY FILTERED): {compressed_tasks_final}
         - ALL SYSTEM TASKS (FOR ID MATCHING): {universal_task_map[:3000]}
         - RECENT LIBRARY PATTERNS: {pattern_context}
@@ -1397,12 +1404,12 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             STRATEGIC AUDIT INSTRUCTIONS:
             - BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects.
             - CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
-            - PATTERN DETECTION: Review RECENTLY VAULTED RESOURCES and NEW INPUTS. If you see 3+ related URLs on a new topic, you MAY suggest a new cluster in the `new_clusters` JSON array. (Clusters are ONLY for grouping URLs).
+            - PATTERN DETECTION: Review RECENTLY VAULTED RESOURCES and NEWLY ENRICHED RESOURCES. If you see 3+ related URLs on a new topic, invent a cluster name and use the `link_resource_to_cluster` tool to assign all 3+ resource IDs to that new cluster name (it will auto-create).
             - THE VAULT GATE: These updates go to the DATABASE only.
             - THE BRIEFING GATE: You are STRICTLY FORBIDDEN from mentioning new resources or new clusters in the briefing UNLESS Danny specifically used the word "Vault" or "Cluster" in the NEW INPUTS.
 
             CLUSTER vs. INCUBATOR FRAMEWORK:
-            - CLUSTER ASSEMBLY: Evaluate every URL against ACTIVE CLUSTERS. If a URL provides a "component" for a cluster, assign the "cluster_name".
+            - CLUSTER ASSEMBLY: Evaluate every URL against ACTIVE CLUSTERS. If a URL provides a "component" for an existing cluster, use the `link_resource_to_cluster` tool with the resource's [ID:X].
             - THE INCUBATOR AUDIT: If an input represents a high-potential standalone product idea NOT related to current goals, tag it as project_name: "INCUBATOR".
             - SPARK DETECTION: If a link is a "Spark" (brand new project concept), create a log with entry_type: "SPARK".
 

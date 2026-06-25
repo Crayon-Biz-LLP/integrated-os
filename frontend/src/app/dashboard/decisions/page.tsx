@@ -26,13 +26,13 @@ export default async function DecisionsPage() {
     supabase
       .from("pending_graph_edges")
       .select("*")
-      .eq("status", "pending")
+      .in("status", ["pending", "awaiting_clarification"])
       .order("created_at", { ascending: false })
       .limit(2000),
     supabase
       .from("pending_graph_nodes")
       .select("*")
-      .in("status", ["pending", "flagged"])
+      .in("status", ["pending", "flagged", "awaiting_clarification"])
       .order("created_at", { ascending: false })
       .limit(1000),
     supabase
@@ -68,6 +68,32 @@ export default async function DecisionsPage() {
   const graphNodes = (nodeRes.data ?? []) as GraphPendingNode[];
   const rejectedNodes = (rejectedRes.data ?? []) as GraphPendingNode[];
   const mergeProposals = (mergeRes.data ?? []) as GraphMergeProposal[];
+
+  const edgeClarificationIds = graphItems.filter(i => i.status === 'awaiting_clarification').map(i => i.id.toString());
+  const nodeClarificationIds = graphNodes.filter(n => n.status === 'awaiting_clarification').map(n => n.id.toString());
+
+  const clarMap = new Map();
+  if (edgeClarificationIds.length > 0) {
+    const res = await supabase.from('clarification_feedback').select('*').eq('source_table', 'pending_graph_edges').in('source_id', edgeClarificationIds);
+    if (res.data) res.data.forEach(c => clarMap.set(`pending_graph_edges:${c.source_id}`, c));
+  }
+  if (nodeClarificationIds.length > 0) {
+    const res = await supabase.from('clarification_feedback').select('*').eq('source_table', 'pending_graph_nodes').in('source_id', nodeClarificationIds);
+    if (res.data) res.data.forEach(c => clarMap.set(`pending_graph_nodes:${c.source_id}`, c));
+  }
+
+  for (const item of graphItems) {
+    if (item.status === 'awaiting_clarification') {
+      const clar = clarMap.get(`pending_graph_edges:${item.id}`);
+      if (clar) (item as any).clarification = clar;
+    }
+  }
+  for (const node of graphNodes) {
+    if (node.status === 'awaiting_clarification') {
+      const clar = clarMap.get(`pending_graph_nodes:${node.id}`);
+      if (clar) (node as any).clarification = clar;
+    }
+  }
 
   const memIds = [...new Set([
     ...graphItems.map(i => i.source_text?.match(/^memories:(\d+)$/)).filter(Boolean).map(m => parseInt(m![1])),

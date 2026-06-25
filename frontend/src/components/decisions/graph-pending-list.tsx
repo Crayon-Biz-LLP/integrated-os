@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { checkSimilarGraphEdges, decideGraphEdge } from '@/lib/decisions/api';
+import { checkSimilarGraphEdges, decideGraphEdge, submitClarification } from '@/lib/decisions/api';
 import type { GraphPendingEdge } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -61,6 +61,7 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
   const [contextText, setContextText] = useState('');
   const [similarEdges, setSimilarEdges] = useState<Record<number, any[]>>({});
   const [detailsExpanded, setDetailsExpanded] = useState<Record<number, boolean>>({});
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<number, string>>({});
 
   useEffect(() => {
     setItems(initialItems);
@@ -94,6 +95,20 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
       console.error('Failed to decide graph edge:', error);
       if (item) setItems((prev) => [...prev, item]);
       toast.error('Failed to save decision. Item has been restored.');
+    }
+  };
+
+  const handleClarification = async (item: GraphPendingEdge, answerText: string) => {
+    if (!item.clarification) return;
+    const previousItems = [...items];
+    setItems((prev) => prev.filter((i) => i.id !== item.id));
+    try {
+      await submitClarification(item.clarification.shortcode, answerText);
+      toast.success('Clarification submitted');
+    } catch (err) {
+      console.error(err);
+      setItems(previousItems);
+      toast.error('Failed to submit clarification');
     }
   };
 
@@ -207,6 +222,36 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
               </div>
             ) : (
               <>
+                {item.clarification && (
+                  <div className="mb-4 bg-purple-900/20 border border-purple-500/50 p-3 rounded-md">
+                    <p className="text-sm font-medium text-purple-300 mb-2">
+                      🤔 {item.clarification.question}
+                    </p>
+                    {item.clarification.question_type === 'grounding' ? (
+                      <div className="flex gap-2">
+                        <Input
+                          value={clarificationAnswers[item.id] || ''}
+                          onChange={(e) => setClarificationAnswers(prev => ({ ...prev, [item.id]: e.target.value }))}
+                          placeholder="Type answer here..."
+                          className="h-8 text-sm flex-1 bg-zinc-900/50"
+                        />
+                        <Button size="sm" className="bg-purple-600 hover:bg-purple-700 h-8" onClick={() => handleClarification(item, clarificationAnswers[item.id] || '')}>
+                          Submit
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" className="h-8 text-green-400 border-green-900 hover:bg-green-900/30" onClick={() => handleClarification(item, 'yes')}>
+                          Yes
+                        </Button>
+                        <Button size="sm" variant="outline" className="h-8 text-red-400 border-red-900 hover:bg-red-900/30" onClick={() => handleClarification(item, 'no')}>
+                          No
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                
                 <div className="flex flex-wrap items-center gap-2 mb-3 bg-zinc-900/50 p-3 rounded-md font-mono text-sm">
                   <span className="text-blue-400 font-semibold">{item.source_label}</span>
                   <span className="text-zinc-500">→</span>
@@ -292,31 +337,35 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
                     <span>{formatDistanceToNow(parseISO(item.created_at), { addSuffix: true })}</span>
                   </div>
                   <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      className="bg-green-600 hover:bg-green-700"
-                      onClick={() => handleDecision(item.id, 'approve')}
-                    >
-                      <Check className="h-4 w-4 mr-1" />
-                      Approve
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => startEdit(item)}
-                    >
-                      <Pencil className="h-4 w-4 mr-1" />
-                      Edit
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="text-red-400 hover:bg-red-500/20"
-                      onClick={() => handleDecision(item.id, 'reject')}
-                    >
-                      <X className="h-4 w-4 mr-1" />
-                      Reject
-                    </Button>
+                    {!item.clarification && (
+                      <>
+                        <Button
+                          size="sm"
+                          className="bg-green-600 hover:bg-green-700"
+                          onClick={() => handleDecision(item.id, 'approve')}
+                        >
+                          <Check className="h-4 w-4 mr-1" />
+                          Approve
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => startEdit(item)}
+                        >
+                          <Pencil className="h-4 w-4 mr-1" />
+                          Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-red-400 hover:bg-red-500/20"
+                          onClick={() => handleDecision(item.id, 'reject')}
+                        >
+                          <X className="h-4 w-4 mr-1" />
+                          Reject
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               </>

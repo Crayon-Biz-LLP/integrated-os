@@ -119,6 +119,19 @@ def evaluate_edge(edge_data: dict, batch_mode: bool = False) -> Optional[dict]:
     if not from_lbl or not to_lbl:
         return None
         
+    # Check if this label pair has already been resolved or asked about.
+    # This suppresses duplicate low-confidence clarifications and false-positive
+    # contradictions for relationship variants.
+    already_handled = supabase.table("pending_graph_edges")\
+        .select("id")\
+        .eq("source_label", from_lbl)\
+        .eq("target_label", to_lbl)\
+        .neq("status", "pending")\
+        .limit(1)\
+        .execute()
+    if already_handled and already_handled.data:
+        return None
+        
     s_node = supabase.table("graph_nodes").select("id").eq("label", from_lbl).maybe_single().execute()
     t_node = supabase.table("graph_nodes").select("id").eq("label", to_lbl).maybe_single().execute()
     
@@ -218,6 +231,30 @@ def handle_response(shortcode: str, answer: str) -> dict:
         source_update["clarification_answer"] = context
     
     supabase.table(source_table).update(source_update).eq("id", source_id).execute()
+    
+    # If an edge was approved via clarification, promote it to the permanent graph_edges table
+    if source_table == "pending_graph_edges" and response_type == "approved":
+        pe_res = supabase.table("pending_graph_edges").select("*").eq("id", source_id).maybe_single().execute()
+        if pe_res and pe_res.data:
+            pe = pe_res.data
+            s_node = supabase.table("graph_nodes").select("id").eq("label", pe["source_label"]).maybe_single().execute()
+            t_node = supabase.table("graph_nodes").select("id").eq("label", pe["target_label"]).maybe_single().execute()
+            if s_node and s_node.data and t_node and t_node.data:
+                meta = {"source": "clarification_approval", "pending_id": source_id}
+                if context:
+                    meta["context"] = context
+                if pe.get("source_text"):
+                    memories = [m.strip() for m in pe["source_text"].split(",") if m.strip()]
+                    if memories:
+                        meta["contributing_memories"] = memories
+                
+                supabase.table("graph_edges").upsert({
+                    "source_node_id": s_node.data["id"],
+                    "target_node_id": t_node.data["id"],
+                    "relationship": pe["relationship"],
+                    "weight": 1.0,
+                    "metadata": meta
+                }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
     
     return {"status": "ok", "action": response_type, "context": context}
 

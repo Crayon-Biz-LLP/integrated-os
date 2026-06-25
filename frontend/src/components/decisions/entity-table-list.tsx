@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { checkSimilarGraphNodes, renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes, decideGraphNode, changePendingGraphNodeType } from '@/lib/decisions/api';
+import { checkSimilarGraphNodes, renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes, decideGraphNode, changePendingGraphNodeType, submitClarification } from '@/lib/decisions/api';
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -97,6 +97,7 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
   
   const [deleteId, setDeleteId] = useState<number | string | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<number, string>>({});
 
   useEffect(() => {
     if (scope === 'pending') {
@@ -129,6 +130,20 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
       }
     } catch (e: any) {
       toast.error(e.message || `Failed to ${decision}`);
+    }
+  };
+
+  const handleClarification = async (item: GraphPendingNode, answerText: string) => {
+    if (!item.clarification) return;
+    const previousItems = [...items];
+    setItems((prev) => prev.filter((i) => i.id !== item.id));
+    try {
+      await submitClarification(item.clarification.shortcode, answerText);
+      toast.success('Clarification submitted');
+    } catch (err) {
+      console.error(err);
+      setItems(previousItems);
+      toast.error('Failed to submit clarification');
     }
   };
 
@@ -250,7 +265,8 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
           </TableHeader>
           <TableBody>
             {filteredItems.map((item) => (
-              <TableRow key={item.id}>
+              <React.Fragment key={item.id}>
+              <TableRow>
                 <TableCell className="font-medium">
                   {editingId === item.id ? (
                     <div className="flex items-center gap-2">
@@ -318,7 +334,7 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
                 <TableCell className="text-right">
                   {editingId !== item.id && mergingId !== item.id && (
                     <div className="flex justify-end gap-1">
-                      {scope === 'pending' && (
+                      {scope === 'pending' && !item.clarification && (
                         <>
                           <Button
                             size="icon"
@@ -389,6 +405,40 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
                   )}
                 </TableCell>
               </TableRow>
+              {item.clarification && (
+                <TableRow className="bg-purple-900/10 hover:bg-purple-900/10">
+                  <TableCell colSpan={5} className="py-3">
+                    <div className="flex flex-col gap-2">
+                      <p className="text-sm font-medium text-purple-300">
+                        🤔 {item.clarification.question}
+                      </p>
+                      {item.clarification.question_type === 'grounding' ? (
+                        <div className="flex gap-2 max-w-md">
+                          <Input
+                            value={clarificationAnswers[item.id] || ''}
+                            onChange={(e) => setClarificationAnswers(prev => ({ ...prev, [item.id]: e.target.value }))}
+                            placeholder="Type answer here..."
+                            className="h-8 text-sm flex-1 bg-zinc-900/50"
+                          />
+                          <Button size="sm" className="bg-purple-600 hover:bg-purple-700 h-8" onClick={() => handleClarification(item, clarificationAnswers[item.id] || '')}>
+                            Submit
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="outline" className="h-8 text-green-400 border-green-900 hover:bg-green-900/30" onClick={() => handleClarification(item, 'yes')}>
+                            Yes
+                          </Button>
+                          <Button size="sm" variant="outline" className="h-8 text-red-400 border-red-900 hover:bg-red-900/30" onClick={() => handleClarification(item, 'no')}>
+                            No
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}
+              </React.Fragment>
             ))}
           </TableBody>
         </Table>

@@ -456,7 +456,9 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
     if match:
         actual_url = match.group(0).rstrip('.,;:!?)"\'')
         try:
-            supabase.table('resources').insert({"url": actual_url}).execute()
+            existing = supabase.table('resources').select('id').eq('url', actual_url).limit(1).execute()
+            if not existing.data:
+                supabase.table('resources').insert({"url": actual_url}).execute()
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Resource insert failed for URL: {e}")
 

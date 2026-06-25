@@ -35,8 +35,14 @@ export interface GraphPendingEdge {
   relationship: string;
   source_text: string;
   confidence: number;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'awaiting_clarification';
   created_at: string;
+  clarification?: {
+    shortcode: string;
+    question: string;
+    question_type: string;
+    answer?: string;
+  };
   eval_context?: {
     justification?: string;
     [key: string]: any;
@@ -59,8 +65,14 @@ export interface GraphPendingNode {
   label: string;
   type: string;
   source_text: string;
-  status: 'pending' | 'flagged' | 'approved' | 'rejected';
+  status: 'pending' | 'flagged' | 'approved' | 'rejected' | 'awaiting_clarification';
   created_at: string;
+  clarification?: {
+    shortcode: string;
+    question: string;
+    question_type: string;
+    answer?: string;
+  };
   eval_context?: {
     justification?: string;
     linked_entity?: string;
