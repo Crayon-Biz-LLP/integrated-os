@@ -4,7 +4,7 @@ import dynamic from 'next/dynamic';
 import { useEffect, useCallback, useRef } from 'react';
 import {
   AlertCircle, ArrowLeft, User,
-  PanelLeftClose, PanelLeft, Maximize2,
+  PanelLeftClose, PanelLeft, PanelRightClose, PanelRight, Maximize2,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -52,9 +52,53 @@ export default function MemoryGraphPage() {
 
   // ── ui toggles ────────────────────────────────────────────────────────────
   const [streamCollapsed,  setStreamCollapsed]  = useState(false);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [showDiagnostics,  setShowDiagnostics]  = useState(false);
   const [enableEffects,    setEnableEffects]     = useState(true);
   const [discKey,          setDiscKey]           = useState(0);
+
+  // ── resizable panes & responsive ──────────────────────────────────────────
+  const [leftWidth, setLeftWidth] = useState(320);
+  const [rightWidth, setRightWidth] = useState(320);
+  const [resizing, setResizing] = useState<'left' | 'right' | null>(null);
+
+  // Auto-collapse on small screens
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setStreamCollapsed(true);
+      setInspectorCollapsed(true);
+      // Reduce default widths on small screens
+      if (window.innerWidth < 768) {
+        setLeftWidth(window.innerWidth);
+        setRightWidth(window.innerWidth);
+      } else {
+        setLeftWidth(280);
+        setRightWidth(280);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!resizing) return;
+    const handleMove = (e: PointerEvent) => {
+      if (resizing === 'left') {
+        const newWidth = Math.max(240, Math.min(e.clientX, 600));
+        setLeftWidth(newWidth);
+      } else {
+        const newWidth = Math.max(240, Math.min(window.innerWidth - e.clientX, 600));
+        setRightWidth(newWidth);
+      }
+    };
+    const handleUp = () => setResizing(null);
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+  }, [resizing]);
 
   // ── diagnostics ───────────────────────────────────────────────────────────
   const [diagnostics, setDiagnostics] = useState({ fetch: 0, layout: 0, render: 0, hover: 0, total: 0 });
@@ -198,6 +242,7 @@ export default function MemoryGraphPage() {
   const handleGraphNodeClick = useCallback(
     async (node: GraphNode) => {
       focus.clickNode(node.id);
+      setInspectorCollapsed(false); // auto-expand on click
       // Soft-focus: load neighbourhood (which may change graph data slightly)
       // and memory stream in parallel; no centering on this node yet
       await Promise.all([
@@ -220,6 +265,7 @@ export default function MemoryGraphPage() {
   const handleEgoFocus = useCallback(
     (nodeId: string) => {
       focus.triggerEgoFocus(nodeId);
+      setInspectorCollapsed(false);
       // Reload ego-graph centred on this node so layout pins it
       loadNeighborhood(nodeId);
     },
@@ -227,8 +273,8 @@ export default function MemoryGraphPage() {
   );
 
   const handlePanelClose = useCallback(() => {
-    focus.closeDetail();
-  }, [focus]);
+    setInspectorCollapsed(true);
+  }, []);
 
   // ── episode-stream interactions (unchanged) ───────────────────────────────
 
@@ -245,6 +291,7 @@ export default function MemoryGraphPage() {
       const entityId = episode.graph_node_ids[0];
       if (entityId) {
         focus.clickNode(entityId);
+        setInspectorCollapsed(false);
         await loadNeighborhood(entityId);
         memories.load(entityId);
       }
@@ -258,6 +305,7 @@ export default function MemoryGraphPage() {
       const entityId = await resolveMemoryToEntity(memoryId);
       if (entityId) {
         focus.clickNode(entityId);
+        setInspectorCollapsed(false);
         await loadNeighborhood(entityId);
         memories.load(entityId);
       }
@@ -299,10 +347,10 @@ export default function MemoryGraphPage() {
   const focusedNode = graphNodes.find(n => n.id === focusState.focusedNodeId) ?? null;
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)] bg-zinc-950">
+    <div className={`flex h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)] bg-zinc-950 ${resizing ? 'select-none' : ''}`}>
       {/* ── left: graph finder ───────────────────────────────────────────── */}
       {!streamCollapsed && (
-        <div className="w-80 flex-shrink-0 border-r border-zinc-800 transition-all duration-200">
+        <div style={{ width: leftWidth }} className="flex-shrink-0 border-r border-zinc-800 transition-all duration-200">
           <GraphFinder
             episodes={episodes}
             loading={episodesLoading}
@@ -322,8 +370,16 @@ export default function MemoryGraphPage() {
         </div>
       )}
 
+      {/* ── left resizer ─────────────────────────────────────────────────── */}
+      {!streamCollapsed && (
+        <div
+          className="w-1.5 cursor-col-resize bg-transparent hover:bg-teal-500/50 active:bg-teal-500/80 transition-colors z-30 flex-shrink-0"
+          onPointerDown={(e) => { e.preventDefault(); setResizing('left'); }}
+        />
+      )}
+
       {/* ── centre: graph canvas ──────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col relative min-w-0">
+      <div className="flex-1 flex flex-col relative min-w-0" style={{ pointerEvents: resizing ? 'none' : 'auto' }}>
         {/* toolbar */}
         <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 bg-zinc-900/80 flex-shrink-0">
           {/* Danny / home button */}
@@ -373,15 +429,26 @@ export default function MemoryGraphPage() {
             </button>
           )}
 
-          {/* Sidebar toggle */}
+          {/* Left Sidebar toggle */}
           <button
             onClick={() => setStreamCollapsed(c => !c)}
             className="text-xs flex items-center gap-1 text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-1 rounded"
-            title={streamCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+            title={streamCollapsed ? 'Show Finder' : 'Hide Finder'}
           >
             {streamCollapsed
               ? <PanelLeft className="h-3.5 w-3.5" />
               : <PanelLeftClose className="h-3.5 w-3.5" />}
+          </button>
+
+          {/* Right Sidebar toggle */}
+          <button
+            onClick={() => setInspectorCollapsed(c => !c)}
+            className="text-xs flex items-center gap-1 text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-1 rounded"
+            title={inspectorCollapsed ? 'Show Inspector' : 'Hide Inspector'}
+          >
+            {inspectorCollapsed
+              ? <PanelRight className="h-3.5 w-3.5" />
+              : <PanelRightClose className="h-3.5 w-3.5" />}
           </button>
 
           {/* Dev diagnostics toggle */}
@@ -460,9 +527,18 @@ export default function MemoryGraphPage() {
         </div>
       </div>
 
+      {/* ── right resizer ────────────────────────────────────────────────── */}
+      {!inspectorCollapsed && (
+        <div
+          className="w-1.5 cursor-col-resize bg-transparent hover:bg-teal-500/50 active:bg-teal-500/80 transition-colors z-30 flex-shrink-0"
+          onPointerDown={(e) => { e.preventDefault(); setResizing('right'); }}
+        />
+      )}
+
       {/* ── right: graph inspector ────────────────────────────────────────── */}
-      <div className="w-80 flex-shrink-0 border-l border-zinc-800 flex flex-col z-20 bg-zinc-950">
-        <GraphInspector
+      {!inspectorCollapsed && (
+        <div style={{ width: rightWidth }} className="flex-shrink-0 border-l border-zinc-800 flex flex-col z-20 bg-zinc-950">
+          <GraphInspector
           node={focusedNode}
           allNodes={graphNodes}
           allEdges={graphEdges}
@@ -475,8 +551,9 @@ export default function MemoryGraphPage() {
             const targetNode = graphNodes.find(n => n.id === nodeId);
             if (targetNode) handleGraphNodeClick(targetNode);
           }}
-        />
-      </div>
+          />
+        </div>
+      )}
     </div>
   );
 }
