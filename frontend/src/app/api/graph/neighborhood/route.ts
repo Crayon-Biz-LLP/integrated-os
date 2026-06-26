@@ -62,12 +62,16 @@ export async function GET(req: NextRequest) {
 
   const { data: centerNode } = await supabase
     .from("graph_nodes")
-    .select("id,label,type,canonical_page_id")
+    .select("id,label,type,canonical_page_id,metadata")
     .eq("id", effectiveNodeId)
     .single();
 
   if (!centerNode) {
     return NextResponse.json({ error: "Node not found" }, { status: 404 });
+  }
+  
+  if ((centerNode.type === "memory" || centerNode.type === "raw_dump") && centerNode.metadata?.preview) {
+    centerNode.label = centerNode.metadata.preview;
   }
 
   const { data: edges } = await supabase
@@ -100,11 +104,19 @@ export async function GET(req: NextRequest) {
   if (neighborIds.size > 0) {
     const { data: nodes } = await supabase
       .from("graph_nodes")
-      .select("id,label,type,canonical_page_id")
+      .select("id,label,type,canonical_page_id,metadata")
       .in("id", Array.from(neighborIds))
       .order("reference_count", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(200);
+      
+    if (nodes) {
+      nodes.forEach((n: any) => {
+        if ((n.type === "memory" || n.type === "raw_dump") && n.metadata?.preview) {
+          n.label = n.metadata.preview;
+        }
+      });
+    }
     neighborNodes = nodes || [];
   }
 

@@ -85,13 +85,22 @@ export async function GET(req: NextRequest) {
       const data = await fetchAllPaginated(
         supabase,
         "graph_nodes",
-        "id,label,type,canonical_page_id",
+        "id,label,type,canonical_page_id,metadata",
         (q) => {
           let q2 = q.order("type", { ascending: true });
           if (pageId) q2 = q2.eq("canonical_page_id", Number(pageId));
           return q2;
         },
       );
+      
+      if (data) {
+        data.forEach((n: any) => {
+          if ((n.type === "memory" || n.type === "raw_dump") && n.metadata?.preview) {
+            n.label = n.metadata.preview;
+          }
+        });
+      }
+      
       return NextResponse.json(data || [], {
         headers: {
           "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",

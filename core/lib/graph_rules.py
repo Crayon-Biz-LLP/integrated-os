@@ -480,3 +480,12 @@ def has_structural_anchor(label: str, node_type: str) -> bool:
         return len(result.data) > 0
     except Exception:
         return True
+
+def make_memory_preview(content: str, max_words: int = 4) -> str | None:
+    """Extract first 2-4 meaningful words from memory content as a short title."""
+    import re
+    if not content:
+        return None
+    words = re.findall(r'[A-Za-z]\w+', content)
+    meaningful = [w for w in words if len(w) > 2][:max_words]
+    return ' '.join(meaningful) if meaningful else None

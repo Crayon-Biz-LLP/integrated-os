@@ -774,13 +774,19 @@ def run_backfill():
                 # Create memory node
                 memory_label = f"Memory_{mem['id']}"
                 try:
+                    from core.lib.graph_rules import make_memory_preview
+                    preview = make_memory_preview(mem.get('content', ''))
+                    meta = {
+                        "source": "backfill_graph",
+                        "memory_id": str(mem['id'])
+                    }
+                    if preview:
+                        meta["preview"] = preview
+
                     supabase.table('graph_nodes').upsert({
                         "label": memory_label,
                         "type": "memory",
-                        "metadata": {
-                            "source": "backfill_graph",
-                            "memory_id": str(mem['id'])
-                        }
+                        "metadata": meta
                     }, on_conflict="label").execute()
                     processed += 1
                 except Exception as e:

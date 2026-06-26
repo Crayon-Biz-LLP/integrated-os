@@ -979,7 +979,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
 
 BYPASS_APPROVAL_TYPES = {'concept'}
 
-def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_type: str):
+def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_type: str, source_content: str = ""):
     """
     Unified extraction insertion pipeline.
     source_type: 'task', 'memory', 'raw_dump'
@@ -997,10 +997,17 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
         if source_node_res and source_node_res.data:
             root_node_id = source_node_res.data['id']
         else:
+            meta = {f"{source_type}_id": source_id, "source": "insert_extracted_entities"}
+            if source_content:
+                from core.lib.graph_rules import make_memory_preview
+                preview = make_memory_preview(source_content)
+                if preview:
+                    meta["preview"] = preview
+
             new_node = supabase.table('graph_nodes').insert({
                 "label": source_label,
                 "type": source_type,
-                "metadata": {f"{source_type}_id": source_id, "source": "insert_extracted_entities"}
+                "metadata": meta
             }).execute()
             root_node_id = new_node.data[0]['id']
     except Exception:

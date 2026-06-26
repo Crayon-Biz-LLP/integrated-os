@@ -117,7 +117,7 @@ export async function GET(req: NextRequest) {
     batches.map((batch) =>
       supabase
         .from("graph_nodes")
-        .select("id,label,type,canonical_page_id,canonical_id")
+        .select("id,label,type,canonical_page_id,canonical_id,metadata")
         .in("id", batch)
         .order("reference_count", { ascending: false })
         .order("created_at", { ascending: false })
@@ -128,6 +128,9 @@ export async function GET(req: NextRequest) {
   for (const result of nodeResults) {
     for (const node of result.data || []) {
       if (!allNodeMap.has(node.id) && !node.canonical_id) {
+        if ((node.type === "memory" || node.type === "raw_dump") && node.metadata?.preview) {
+          node.label = node.metadata.preview;
+        }
         allNodeMap.set(node.id, node);
       }
     }

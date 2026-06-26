@@ -96,12 +96,17 @@ def ensure_memory_node_exists(memory_id: str, content: str) -> str:
             .execute()
         if existing and existing.data:
             return memory_label
+            
+        from core.lib.graph_rules import make_memory_preview
+        preview = make_memory_preview(content)
+        meta = {"source": "concept-sweep-fallback", "preview": preview or content[:100]}
+        
         supabase.table("graph_nodes").insert({
             "label": memory_label,
             "type": "memory",
             "db_record_id": str(memory_id),
             "epistemic_status": "asserted",
-            "metadata": {"source": "concept-sweep-fallback", "preview": content[:100]}
+            "metadata": meta
         }).execute()
         print(f"    Created fallback memory node for {memory_id}")
     except Exception as e:

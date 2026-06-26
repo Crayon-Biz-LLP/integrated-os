@@ -71,7 +71,7 @@ Text: "{text}"
         if not nodes and not edges:
             return [], []
             
-        insert_extracted_entities(nodes=nodes, edges=edges, source_id=str(source_id), source_type=source_type)
+        insert_extracted_entities(nodes=nodes, edges=edges, source_id=str(source_id), source_type=source_type, source_content=text)
         print(f"🕸️ Real-time entities extracted for {source_type} {source_id}: {len(nodes)} nodes, {len(edges)} edges routed to pending")
         
         # Look up canonical orgs and projects from extracted nodes for enrichment
