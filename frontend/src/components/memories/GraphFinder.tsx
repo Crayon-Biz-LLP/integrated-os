@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
-import { Clock, FileText, ChevronDown, ChevronRight, Hash, Search, Database } from 'lucide-react';
+import { Clock, FileText, ChevronDown, ChevronRight, Hash, Search, Database, Link2, Link2Off, ArrowDownAZ, ArrowUpAZ, Component, BarChart2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Episode } from '@/lib/memories/stream';
 import type { GraphNode } from '@/lib/memories/types';
@@ -19,9 +19,13 @@ interface GraphFinderProps {
   onLoadMore: () => void;
   onNavigateNode?: (nodeId: string) => void;
   graphLoading?: boolean;
+  entityTypeFilter?: string | null;
+  onFilterByType?: (type: string | null) => void;
+  graphLinked?: boolean;
+  onToggleGraphLinked?: () => void;
 }
 
-type TabType = 'all' | 'people' | 'projects' | 'concepts';
+type TabType = 'all' | 'people' | 'organizations' | 'projects' | 'concepts' | 'clusters' | 'tasks';
 
 function relativeTime(dateStr: string | null): string {
   if (!dateStr) return '';
@@ -208,11 +212,16 @@ export default function GraphFinder({
   onLoadMore,
   onNavigateNode,
   graphLoading,
+  entityTypeFilter,
+  onFilterByType,
+  graphLinked,
+  onToggleGraphLinked,
 }: GraphFinderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<TabType>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showEntityExplorer, setShowEntityExplorer] = useState(true);
+  const [sortMode, setSortMode] = useState<'alpha-asc' | 'alpha-desc' | 'type' | 'connections'>('alpha-asc');
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -258,8 +267,11 @@ export default function GraphFinder({
       
       return ep.entities.some(e => {
         if (activeTab === 'people') return e.type === 'person';
+        if (activeTab === 'organizations') return e.type === 'organization';
         if (activeTab === 'projects') return e.type === 'project';
         if (activeTab === 'concepts') return e.type === 'concept' || e.type === 'emotional_state';
+        if (activeTab === 'clusters') return e.type === 'cluster';
+        if (activeTab === 'tasks') return e.type === 'task';
         return false;
       });
     });
@@ -310,30 +322,75 @@ export default function GraphFinder({
           </button>
         </div>
 
-        {!showEntityExplorer && (
-          <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-hide">
-            {(['all', 'people', 'projects', 'concepts'] as TabType[]).map(tab => (
+        <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-hide">
+          {(['all', 'people', 'organizations', 'projects', 'concepts', 'clusters', 'tasks'] as TabType[]).map(tab => {
+            const isActive = activeTab === tab;
+            const isFilteredInGraph = showEntityExplorer && graphLinked && isActive && tab !== 'all';
+            return (
               <button
                 key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap ${
-                  activeTab === tab 
-                    ? 'bg-zinc-800 text-zinc-200' 
-                    : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+                onClick={() => {
+                  setActiveTab(tab);
+                  if (showEntityExplorer && onFilterByType && graphLinked) {
+                    if (tab === 'all') onFilterByType(null);
+                    else if (tab === 'people') onFilterByType('person');
+                    else if (tab === 'organizations') onFilterByType('organization');
+                    else if (tab === 'projects') onFilterByType('project');
+                    else if (tab === 'concepts') onFilterByType('concept');
+                    else if (tab === 'clusters') onFilterByType('cluster');
+                    else if (tab === 'tasks') onFilterByType('task');
+                  }
+                }}
+                className={`text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap border ${
+                  isActive 
+                    ? isFilteredInGraph
+                      ? 'bg-zinc-800 text-teal-400 border-teal-500/30'
+                      : 'bg-zinc-800 text-zinc-200 border-zinc-700' 
+                    : 'text-zinc-500 border-transparent hover:text-zinc-300 hover:bg-zinc-800/50'
                 }`}
               >
                 {tab}
               </button>
-            ))}
-          </div>
-        )}
+            );
+          })}
+        </div>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {showEntityExplorer ? (
           /* ── Entity Explorer Mode ───────────────────────────────────────────── */
           <div className="p-3">
-            <div className="text-xs text-zinc-500 mb-3 ml-1">Every entity in the current graph view</div>
+            <div className="flex items-center justify-between mb-3 pl-1 pr-0.5">
+              <div className="text-xs text-zinc-500">Every entity in view</div>
+              <div className="flex items-center gap-1.5">
+                {/* Sort control */}
+                <select 
+                  value={sortMode}
+                  onChange={(e) => setSortMode(e.target.value as any)}
+                  className="bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-400 rounded px-1.5 py-0.5 outline-none focus:border-zinc-700"
+                >
+                  <option value="alpha-asc">A–Z</option>
+                  <option value="alpha-desc">Z–A</option>
+                  <option value="type">By Type</option>
+                </select>
+
+                {/* Graph Link Toggle */}
+                {onToggleGraphLinked && (
+                  <button
+                    onClick={onToggleGraphLinked}
+                    className={`flex items-center justify-center p-1 rounded border transition-colors ${
+                      graphLinked 
+                        ? 'bg-teal-500/10 border-teal-500/30 text-teal-400 hover:bg-teal-500/20' 
+                        : 'bg-zinc-800/50 border-zinc-700/50 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300'
+                    }`}
+                    title={graphLinked ? 'Filter linked to graph' : 'Filter only affects list'}
+                  >
+                    {graphLinked ? <Link2 className="h-3.5 w-3.5" /> : <Link2Off className="h-3.5 w-3.5" />}
+                  </button>
+                )}
+              </div>
+            </div>
+            
             {graphLoading && allNodes.length === 0 ? (
               <div className="flex flex-wrap gap-1.5 px-1">
                 {[...Array(12)].map((_, i) => (
@@ -344,7 +401,25 @@ export default function GraphFinder({
               <div className="flex flex-wrap gap-1.5">
                 {allNodes
                   .filter(n => searchQuery ? n.label.toLowerCase().includes(searchQuery.toLowerCase()) : true)
-                  .sort((a, b) => a.label.localeCompare(b.label))
+                  .filter(n => {
+                    if (activeTab === 'all') return true;
+                    if (activeTab === 'people') return n.type === 'person';
+                    if (activeTab === 'organizations') return n.type === 'organization';
+                    if (activeTab === 'projects') return n.type === 'project';
+                    if (activeTab === 'concepts') return n.type === 'concept' || n.type === 'emotional_state';
+                    if (activeTab === 'clusters') return n.type === 'cluster';
+                    if (activeTab === 'tasks') return n.type === 'task';
+                    return true;
+                  })
+                  .sort((a, b) => {
+                    if (sortMode === 'alpha-asc') return a.label.localeCompare(b.label);
+                    if (sortMode === 'alpha-desc') return b.label.localeCompare(a.label);
+                    if (sortMode === 'type') {
+                      if (a.type !== b.type) return a.type.localeCompare(b.type);
+                      return a.label.localeCompare(b.label);
+                    }
+                    return 0;
+                  })
                   .map(n => (
                   <button
                     key={n.id}

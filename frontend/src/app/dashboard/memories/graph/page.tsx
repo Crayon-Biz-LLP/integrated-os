@@ -1,12 +1,11 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef, useState, useMemo } from 'react';
 import {
   AlertCircle, ArrowLeft, User,
   PanelLeftClose, PanelLeft, PanelRightClose, PanelRight, Maximize2,
 } from 'lucide-react';
-import { useState } from 'react';
 
 import { fetchNeighborhood, fetchEgoGraph, fetchEpisodes, resolveMemoryToEntity } from '@/lib/memories/stream';
 import type { Episode } from '@/lib/memories/stream';
@@ -43,6 +42,33 @@ export default function MemoryGraphPage() {
   // The ref below shadows it for use inside callbacks without re-triggering effects.
   const [dannyId,    setDannyId]        = useState<string | null>(null);
   const dannyIdRef = useRef<string | null>(null);
+
+  // ── graph filtering ───────────────────────────────────────────────────────
+  const [entityTypeFilter, setEntityTypeFilter] = useState<string | null>(null);
+  const [graphLinked, setGraphLinked] = useState(true);
+
+  // Derive display nodes/edges when filtering is active
+  const { displayGraphNodes, displayGraphEdges } = useMemo(() => {
+    if (!entityTypeFilter || !graphLinked) {
+      return { displayGraphNodes: graphNodes, displayGraphEdges: graphEdges };
+    }
+    
+    // For 'concepts', we group 'concept' and 'emotional_state' together
+    const isConcept = entityTypeFilter === 'concept';
+    const displayNodes = graphNodes.filter(n => 
+      isConcept 
+        ? (n.type === 'concept' || n.type === 'emotional_state')
+        : n.type === entityTypeFilter
+    );
+    
+    // Filter edges to only include those where both ends exist in displayNodes
+    const allowedNodeIds = new Set(displayNodes.map(n => n.id));
+    const displayEdges = graphEdges.filter(e => 
+      allowedNodeIds.has(e.source_node_id) && allowedNodeIds.has(e.target_node_id)
+    );
+    
+    return { displayGraphNodes: displayNodes, displayGraphEdges: displayEdges };
+  }, [graphNodes, graphEdges, entityTypeFilter, graphLinked]);
 
   // ── focus context (state machine) ─────────────────────────────────────────
   const focus = useFocusContext();
@@ -345,7 +371,7 @@ export default function MemoryGraphPage() {
   const isDannyCentered = focusState.focusedNodeId === dannyId
     || focusState.viewMode === 'overview';
 
-  const focusedNode = graphNodes.find(n => n.id === focusState.focusedNodeId) ?? null;
+  const focusedNode = displayGraphNodes.find(n => n.id === focusState.focusedNodeId) ?? null;
 
   return (
     <div className={`flex h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)] bg-zinc-950 ${resizing ? 'select-none' : ''}`}>
@@ -355,7 +381,7 @@ export default function MemoryGraphPage() {
           <GraphFinder
             episodes={episodes}
             loading={episodesLoading}
-            allNodes={graphNodes}
+            allNodes={displayGraphNodes}
             focusedNode={focusedNode}
             expandedEpisodeId={expandedEpisodeId}
             expandedMemoryId={expandedMemoryId}
@@ -364,8 +390,12 @@ export default function MemoryGraphPage() {
             onMemoryClick={handleMemoryClick}
             onLoadMore={loadMoreEpisodes}
             graphLoading={graphLoading}
+            entityTypeFilter={entityTypeFilter}
+            onFilterByType={setEntityTypeFilter}
+            graphLinked={graphLinked}
+            onToggleGraphLinked={() => setGraphLinked(l => !l)}
             onNavigateNode={(nodeId) => {
-              const targetNode = graphNodes.find(n => n.id === nodeId);
+              const targetNode = displayGraphNodes.find(n => n.id === nodeId);
               if (targetNode) handleGraphNodeClick(targetNode);
             }}
           />
@@ -403,9 +433,14 @@ export default function MemoryGraphPage() {
           )}
 
           {/* Node + edge count */}
-          {graphNodes.length > 0 && (
+          {displayGraphNodes.length > 0 && (
             <span className="text-xs text-zinc-600">
-              {graphNodes.length} nodes · {graphEdges.length} edges
+              {displayGraphNodes.length} nodes · {displayGraphEdges.length} edges
+              {entityTypeFilter && graphLinked && (
+                <span className="ml-2 px-1.5 py-0.5 bg-zinc-800 text-zinc-400 rounded">
+                  Filtered: {entityTypeFilter}
+                </span>
+              )}
             </span>
           )}
 
@@ -507,8 +542,8 @@ export default function MemoryGraphPage() {
         <div className="flex-1 relative min-h-0">
           <NeuralDisc
             key={discKey}
-            nodes={graphNodes}
-            edges={graphEdges}
+            nodes={displayGraphNodes}
+            edges={displayGraphEdges}
             centerNodeId={centreNodeForDisc}
             viewMode={focusState.viewMode}
             dimAlpha={focusDerived.dimAlpha}
@@ -543,15 +578,15 @@ export default function MemoryGraphPage() {
         <div style={{ width: rightWidth }} className="flex-shrink-0 border-l border-zinc-800 flex flex-col z-20 bg-zinc-950">
           <GraphInspector
           node={focusedNode}
-          allNodes={graphNodes}
-          allEdges={graphEdges}
+          allNodes={displayGraphNodes}
+          allEdges={displayGraphEdges}
           items={memories.state.items}
           loading={memories.state.loading}
           error={memories.state.error}
           onClose={handlePanelClose}
           onFocusNode={handleEgoFocus}
           onNavigateNode={(nodeId) => {
-            const targetNode = graphNodes.find(n => n.id === nodeId);
+            const targetNode = displayGraphNodes.find(n => n.id === nodeId);
             if (targetNode) handleGraphNodeClick(targetNode);
           }}
           />
