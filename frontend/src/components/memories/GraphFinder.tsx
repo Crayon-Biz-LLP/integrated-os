@@ -1,19 +1,22 @@
 'use client';
 
-import { useRef, useEffect, useCallback } from 'react';
-import { Clock, FileText, ChevronDown, ChevronRight, Hash } from 'lucide-react';
+import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
+import { Clock, FileText, ChevronDown, ChevronRight, Hash, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Episode } from '@/lib/memories/stream';
 
-interface EpisodeStreamProps {
+interface GraphFinderProps {
   episodes: Episode[];
   loading: boolean;
   expandedEpisodeId: string | null;
   expandedMemoryId: number | null;
+  selectedNodeId: string | null;
   onToggleEpisode: (episode: Episode) => void;
   onMemoryClick: (memoryId: number) => void;
   onLoadMore: () => void;
 }
+
+type TabType = 'all' | 'people' | 'projects' | 'concepts';
 
 function relativeTime(dateStr: string | null): string {
   if (!dateStr) return '';
@@ -53,17 +56,19 @@ function EpisodeCard({
   episode,
   isExpanded,
   expandedMemoryId,
+  isSelected,
   onToggle,
   onMemoryClick,
 }: {
   episode: Episode;
   isExpanded: boolean;
   expandedMemoryId: number | null;
+  isSelected: boolean;
   onToggle: () => void;
   onMemoryClick: (memoryId: number) => void;
 }) {
   return (
-    <div className="border-b border-zinc-800/50">
+    <div className={`border-b border-zinc-800/50 transition-colors ${isSelected ? 'bg-zinc-800/20' : ''}`}>
       <motion.button
         layout="position"
         initial={{ opacity: 0, y: 10 }}
@@ -175,16 +180,19 @@ function EpisodeCard({
   );
 }
 
-export default function EpisodeStream({
+export default function GraphFinder({
   episodes,
   loading,
   expandedEpisodeId,
   expandedMemoryId,
+  selectedNodeId,
   onToggleEpisode,
   onMemoryClick,
   onLoadMore,
-}: EpisodeStreamProps) {
+}: GraphFinderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [activeTab, setActiveTab] = useState<TabType>('all');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -201,15 +209,62 @@ export default function EpisodeStream({
     return () => el.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
+  const filteredEpisodes = useMemo(() => {
+    return episodes.filter(ep => {
+      // Filter by search
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        const matchesTitle = ep.title?.toLowerCase().includes(q);
+        const matchesSummary = ep.summary?.toLowerCase().includes(q);
+        const matchesEntity = ep.entities.some(e => e.label.toLowerCase().includes(q));
+        if (!matchesTitle && !matchesSummary && !matchesEntity) return false;
+      }
+      
+      // Filter by tab
+      if (activeTab === 'all') return true;
+      
+      return ep.entities.some(e => {
+        if (activeTab === 'people') return e.type === 'person';
+        if (activeTab === 'projects') return e.type === 'project';
+        if (activeTab === 'concepts') return e.type === 'concept' || e.type === 'emotional_state';
+        return false;
+      });
+    });
+  }, [episodes, activeTab, searchQuery]);
+
   return (
     <div className="flex flex-col h-full bg-zinc-950 border-r border-zinc-800">
       <div className="px-4 py-3 border-b border-zinc-800">
-        <h2 className="text-sm font-semibold text-zinc-100">Life Stream</h2>
-        <p className="text-xs text-zinc-500 mt-0.5">Grouped memory episodes</p>
+        <div className="relative mb-3">
+          <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-zinc-500" />
+          <input 
+            type="text" 
+            placeholder="Search graph..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="w-full bg-zinc-900 border border-zinc-800 rounded-md pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 transition-colors"
+          />
+        </div>
+        
+        <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-hide">
+          {(['all', 'people', 'projects', 'concepts'] as TabType[]).map(tab => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap ${
+                activeTab === tab 
+                  ? 'bg-zinc-800 text-zinc-200' 
+                  : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        {loading && episodes.length === 0 && (
+        {loading && filteredEpisodes.length === 0 && (
           <div className="p-4 space-y-3">
             {[...Array(4)].map((_, i) => (
               <div key={i} className="animate-pulse space-y-2">
@@ -229,19 +284,20 @@ export default function EpisodeStream({
         )}
 
         <div className="relative">
-          {episodes.map((ep) => (
+          {filteredEpisodes.map((ep) => (
             <EpisodeCard
               key={ep.id}
               episode={ep}
               isExpanded={ep.id === expandedEpisodeId}
               expandedMemoryId={expandedMemoryId}
+              isSelected={selectedNodeId !== null && ep.graph_node_ids.includes(selectedNodeId)}
               onToggle={() => onToggleEpisode(ep)}
               onMemoryClick={onMemoryClick}
             />
           ))}
         </div>
 
-        {loading && episodes.length > 0 && (
+        {loading && filteredEpisodes.length > 0 && (
           <div className="flex justify-center py-4">
             <div className="h-4 w-4 rounded-full border border-zinc-600 border-t-transparent animate-spin" />
           </div>

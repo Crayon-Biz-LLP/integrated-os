@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useCallback, useRef } from 'react';
 import {
-  Loader2, AlertCircle, ArrowLeft, User,
+  AlertCircle, ArrowLeft, User,
   PanelLeftClose, PanelLeft, Maximize2,
 } from 'lucide-react';
 import { useState } from 'react';
@@ -15,9 +15,9 @@ import type { GraphNode, GraphEdge } from '@/lib/memories/types';
 import { useFocusContext } from '@/lib/memories/useFocusContext';
 import { useNodeMemories } from '@/lib/memories/useNodeMemories';
 
-const EpisodeStream   = dynamic(() => import('@/components/memories/EpisodeStream'),    { ssr: false });
+const GraphFinder   = dynamic(() => import('@/components/memories/GraphFinder'),    { ssr: false });
 const NeuralDisc      = dynamic(() => import('@/components/memories/NeuralDisc'),       { ssr: false });
-const MemoryDetailPanel = dynamic(() => import('@/components/memories/MemoryDetailPanel'), { ssr: false });
+const GraphInspector = dynamic(() => import('@/components/memories/GraphInspector'), { ssr: false });
 
 // ── mode badge labels ─────────────────────────────────────────────────────────
 const MODE_LABELS: Record<string, string> = {
@@ -37,7 +37,7 @@ export default function MemoryGraphPage() {
   // ── graph data ────────────────────────────────────────────────────────────
   const [graphNodes,   setGraphNodes]   = useState<GraphNode[]>([]);
   const [graphEdges,   setGraphEdges]   = useState<GraphEdge[]>([]);
-  const [graphLoading, setGraphLoading] = useState(true);
+  const [, setGraphLoading] = useState(true);
   const [graphError,   setGraphError]   = useState<string | null>(null);
   // dannyId needs to drive render (toolbar visibility, isDannyCentered) so it lives in state.
   // The ref below shadows it for use inside callbacks without re-triggering effects.
@@ -296,8 +296,6 @@ export default function MemoryGraphPage() {
   const isDannyCentered = focusState.focusedNodeId === dannyId
     || focusState.viewMode === 'overview';
 
-  // Panel should show when there is a focused node and panel is open
-  const showPanel = focusState.isPanelOpen && focusState.focusedNodeId !== null;
   const focusedNode = graphNodes.find(n => n.id === focusState.focusedNodeId) ?? null;
 
   return (
@@ -305,11 +303,12 @@ export default function MemoryGraphPage() {
       {/* ── left: episode stream (unchanged) ─────────────────────────────── */}
       {!streamCollapsed && (
         <div className="w-80 flex-shrink-0 border-r border-zinc-800 transition-all duration-200">
-          <EpisodeStream
+          <GraphFinder
             episodes={episodes}
             loading={episodesLoading}
             expandedEpisodeId={expandedEpisodeId}
             expandedMemoryId={expandedMemoryId}
+            selectedNodeId={focusState.focusedNodeId}
             onToggleEpisode={handleEpisodeClick}
             onMemoryClick={handleMemoryClick}
             onLoadMore={loadMoreEpisodes}
@@ -431,12 +430,6 @@ export default function MemoryGraphPage() {
 
         {/* canvas area */}
         <div className="flex-1 relative min-h-0">
-          {graphLoading && (
-            <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/80 z-10 pointer-events-none">
-              <Loader2 className="h-6 w-6 animate-spin text-zinc-400" />
-            </div>
-          )}
-
           <NeuralDisc
             key={discKey}
             nodes={graphNodes}
@@ -461,21 +454,23 @@ export default function MemoryGraphPage() {
         </div>
       </div>
 
-      {/* ── right: memory detail panel ────────────────────────────────────── */}
-      {showPanel && (
-        <div className="w-80 flex-shrink-0 border-l border-zinc-800 flex flex-col">
-          <MemoryDetailPanel
-            node={focusedNode}
-            allNodes={graphNodes}
-            allEdges={graphEdges}
-            items={memories.state.items}
-            loading={memories.state.loading}
-            error={memories.state.error}
-            onClose={handlePanelClose}
-            onFocusNode={handleEgoFocus}
-          />
-        </div>
-      )}
+      {/* ── right: graph inspector ────────────────────────────────────────── */}
+      <div className="w-80 flex-shrink-0 border-l border-zinc-800 flex flex-col z-20 bg-zinc-950">
+        <GraphInspector
+          node={focusedNode}
+          allNodes={graphNodes}
+          allEdges={graphEdges}
+          items={memories.state.items}
+          loading={memories.state.loading}
+          error={memories.state.error}
+          onClose={handlePanelClose}
+          onFocusNode={handleEgoFocus}
+          onNavigateNode={(nodeId) => {
+            const targetNode = graphNodes.find(n => n.id === nodeId);
+            if (targetNode) handleGraphNodeClick(targetNode);
+          }}
+        />
+      </div>
     </div>
   );
 }

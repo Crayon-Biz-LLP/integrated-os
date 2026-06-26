@@ -277,7 +277,7 @@ function drawCurvedEdge(
   g.quadraticCurveTo(cx, cy, tx, ty);
 }
 
-// ── component ─────────────────────────────────────────────────────────────────
+  // ── component ─────────────────────────────────────────────────────────────────
 
 export default function NeuralDisc({
   nodes: nodesProp,
@@ -300,6 +300,7 @@ export default function NeuralDisc({
 
   const [dimensions,           setDimensions]           = useState({ width: 600, height: 600 });
   const [contextLost,          setContextLost]           = useState(false);
+  const [isReady,              setIsReady]               = useState(false);
   const [hoveredNodeId,        setHoveredNodeId]         = useState<string | null>(null);
   const [prefersReducedMotion, setPrefersReducedMotion]  = useState(false);
   const [, setZoomVersion] = useState(0);
@@ -476,6 +477,10 @@ export default function NeuralDisc({
     setZoomVersion(v => v + 1);
 
     setLayoutData(result);
+    // Add a slight delay for smoother visual entrance
+    requestAnimationFrame(() => {
+      setIsReady(true);
+    });
   }, [nodesProp, edgesProp, centerNodeId, dimensions.width, dimensions.height]);
 
   // ── zoom helpers ──────────────────────────────────────────────────────────
@@ -997,7 +1002,9 @@ export default function NeuralDisc({
   return (
     <div
       ref={containerRef}
-      className="w-full h-full relative bg-zinc-950 overflow-hidden focus:outline-none focus-visible:ring-1 focus-visible:ring-zinc-600 focus-visible:ring-inset"
+      className={`w-full h-full relative bg-zinc-950 overflow-hidden focus:outline-none focus-visible:ring-1 focus-visible:ring-zinc-600 focus-visible:ring-inset transition-opacity duration-1000 ${
+        isReady ? 'opacity-100' : 'opacity-0'
+      }`}
       tabIndex={0}
       role="application"
       aria-label="Rhodey OS Knowledge Graph. Use arrow keys to navigate nodes, Enter to focus, Escape to return to overview."

@@ -123,8 +123,8 @@ function SkeletonCard() {
 
 // ── main component ────────────────────────────────────────────────────────────
 
-export interface MemoryDetailPanelProps {
-  /** Selected graph node. Panel hidden when null. */
+export interface GraphInspectorProps {
+  /** Selected graph node. If null, shows overview. */
   node: GraphNode | null;
   /** All nodes in current neighborhood */
   allNodes: GraphNode[];
@@ -140,9 +140,11 @@ export interface MemoryDetailPanelProps {
   onClose: () => void;
   /** Promote to ego-focus (explicit deep focus) */
   onFocusNode: (nodeId: string) => void;
+  /** Navigate to another node */
+  onNavigateNode?: (nodeId: string) => void;
 }
 
-export default function MemoryDetailPanel({
+export default function GraphInspector({
   node,
   allNodes,
   allEdges,
@@ -151,8 +153,63 @@ export default function MemoryDetailPanel({
   error,
   onClose,
   onFocusNode,
-}: MemoryDetailPanelProps) {
-  if (!node) return null;
+  onNavigateNode,
+}: GraphInspectorProps) {
+  if (!node) {
+    // ── Default Overview State ───────────────────────────────────────────────
+    const nodeCount = allNodes.length;
+    const edgeCount = allEdges.length;
+    const topEntities = [...allNodes]
+      .filter(n => n.type !== 'concept' && n.type !== 'emotional_state')
+      .slice(0, 8);
+
+    return (
+      <div className="flex flex-col h-full bg-zinc-950/95 border-l border-zinc-800/80 backdrop-blur-sm" role="complementary">
+        <div className="px-4 py-5 border-b border-zinc-800/60">
+          <h2 className="text-base font-semibold text-zinc-100">Graph Overview</h2>
+          <p className="text-xs text-zinc-500 mt-1">Select a node to inspect its context and evidence.</p>
+        </div>
+        <div className="p-4 space-y-6">
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-2">Network Health</p>
+            <div className="flex gap-4">
+              <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-lg p-3 flex-1">
+                <div className="text-2xl font-light text-zinc-300">{nodeCount}</div>
+                <div className="text-[10px] text-zinc-500 uppercase tracking-widest mt-1">Nodes</div>
+              </div>
+              <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-lg p-3 flex-1">
+                <div className="text-2xl font-light text-zinc-300">{edgeCount}</div>
+                <div className="text-[10px] text-zinc-500 uppercase tracking-widest mt-1">Connections</div>
+              </div>
+            </div>
+          </div>
+          
+          {topEntities.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-2">Visible Anchors</p>
+              <div className="flex flex-wrap gap-1.5">
+                {topEntities.map(e => (
+                  <button
+                    key={e.id}
+                    onClick={() => onNavigateNode?.(e.id)}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded text-[10px] bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-700 transition-colors"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: TYPE_COLOUR[e.type] || '#52525b' }} />
+                    {e.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="mt-auto flex-shrink-0 px-4 py-2 border-t border-zinc-800/40">
+          <p className="text-[9px] text-zinc-700 select-none tracking-wider uppercase">
+            Rhodey OS · Knowledge Graph
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const colour = TYPE_COLOUR[node.type] || '#52525b';
   const typeLabel = TYPE_LABEL[node.type] || node.type;
@@ -289,9 +346,13 @@ export default function MemoryDetailPanel({
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {connectedConcepts.slice(0, 5).map(c => (
-                    <span key={c.id} className="px-2 py-0.5 rounded text-[10px] bg-zinc-800/50 text-zinc-300 border border-zinc-700/50">
+                    <button
+                      key={c.id}
+                      onClick={() => onNavigateNode?.(c.id)}
+                      className="px-2 py-0.5 rounded text-[10px] bg-zinc-800/50 text-zinc-300 border border-zinc-700/50 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
+                    >
                       {c.label}
-                    </span>
+                    </button>
                   ))}
                   {connectedConcepts.length > 5 && (
                     <span className="px-2 py-0.5 rounded text-[10px] text-zinc-500">
@@ -310,10 +371,14 @@ export default function MemoryDetailPanel({
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {connectedEntities.slice(0, 6).map(e => (
-                    <span key={e.id} className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] bg-zinc-900 border border-zinc-800 text-zinc-300">
+                    <button
+                      key={e.id}
+                      onClick={() => onNavigateNode?.(e.id)}
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-700 transition-colors"
+                    >
                       <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: TYPE_COLOUR[e.type] || '#52525b' }} />
                       {e.label}
-                    </span>
+                    </button>
                   ))}
                   {connectedEntities.length > 6 && (
                     <span className="px-2 py-0.5 rounded text-[10px] text-zinc-500">
