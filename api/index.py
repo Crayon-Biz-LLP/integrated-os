@@ -360,7 +360,7 @@ async def update_task_status(request: Request, task_id: int):
             return {"success": True, "task": task, "message": f"Task already {current_status}"}
 
         # --- RECURRING TASK: done = skip instance, cancelled = end series ---
-        if task.get('recurrence') and new_status == 'done':
+        if task.get('recurrence') not in [None, '', 'none'] and new_status == 'done':
             skip_msg = ""
             if task.get('google_event_id'):
                 skip_msg = skip_recurring_instance(task_id)
