@@ -36,7 +36,7 @@ async function resolveRootNodeId(supabase: any): Promise<{ id: string; label: st
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const depth = Math.min(Number(searchParams.get("depth")) || 2, 3);
-  const cap = Math.min(Number(searchParams.get("cap")) || 80, 200);
+  const cap = Math.min(Number(searchParams.get("cap")) || 500, 1000);
 
   const supabase = await createServerSupabaseClient();
 

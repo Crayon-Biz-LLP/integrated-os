@@ -1,19 +1,23 @@
 'use client';
 
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
-import { Clock, FileText, ChevronDown, ChevronRight, Hash, Search } from 'lucide-react';
+import { Clock, FileText, ChevronDown, ChevronRight, Hash, Search, Database } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Episode } from '@/lib/memories/stream';
+import type { GraphNode } from '@/lib/memories/types';
 
 interface GraphFinderProps {
   episodes: Episode[];
   loading: boolean;
+  allNodes?: GraphNode[];
+  focusedNode?: GraphNode | null;
   expandedEpisodeId: string | null;
   expandedMemoryId: number | null;
   selectedNodeId: string | null;
   onToggleEpisode: (episode: Episode) => void;
   onMemoryClick: (memoryId: number) => void;
   onLoadMore: () => void;
+  onNavigateNode?: (nodeId: string) => void;
 }
 
 type TabType = 'all' | 'people' | 'projects' | 'concepts';
@@ -40,6 +44,16 @@ function stripMetadata(text: string | null): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+const TYPE_COLOUR: Record<string, string> = {
+  person:          '#3b82f6',
+  organization:    '#14b8a6',
+  project:         '#8b5cf6',
+  cluster:         '#a855f7',
+  task:            '#f59e0b',
+  concept:         '#71717a',
+  emotional_state: '#f43f5e',
+};
 
 function typeColor(type: string | undefined): string {
   switch (type) {
@@ -183,16 +197,20 @@ function EpisodeCard({
 export default function GraphFinder({
   episodes,
   loading,
+  allNodes = [],
+  focusedNode,
   expandedEpisodeId,
   expandedMemoryId,
   selectedNodeId,
   onToggleEpisode,
   onMemoryClick,
   onLoadMore,
+  onNavigateNode,
 }: GraphFinderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<TabType>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [showEntityExplorer, setShowEntityExplorer] = useState(false);
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -208,6 +226,19 @@ export default function GraphFinder({
     el.addEventListener('scroll', handleScroll);
     return () => el.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
+
+  // Derived stats
+  const typeCounts = useMemo(() => {
+    const counts = { person: 0, organization: 0, project: 0, concept: 0, other: 0 };
+    allNodes.forEach(n => {
+      if (n.type === 'person') counts.person++;
+      else if (n.type === 'organization') counts.organization++;
+      else if (n.type === 'project') counts.project++;
+      else if (n.type === 'concept' || n.type === 'emotional_state') counts.concept++;
+      else counts.other++;
+    });
+    return counts;
+  }, [allNodes]);
 
   const filteredEpisodes = useMemo(() => {
     return episodes.filter(ep => {
@@ -234,7 +265,22 @@ export default function GraphFinder({
 
   return (
     <div className="flex flex-col h-full bg-zinc-950 border-r border-zinc-800">
-      <div className="px-4 py-3 border-b border-zinc-800">
+      
+      {/* ── top section: search, breadcrumb, stats ───────────────────────────── */}
+      <div className="px-4 pt-3 pb-2 border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur-md z-10 shrink-0">
+        
+        {/* Breadcrumb */}
+        <div className="flex items-center gap-1.5 mb-3 text-[10px] uppercase tracking-widest text-zinc-500 font-semibold h-4">
+          <Database className="h-3 w-3" />
+          <span>Graph</span>
+          {focusedNode && (
+            <>
+              <ChevronRight className="h-2.5 w-2.5 opacity-50" />
+              <span className="text-zinc-300 truncate max-w-[150px]">{focusedNode.label}</span>
+            </>
+          )}
+        </div>
+
         <div className="relative mb-3">
           <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-zinc-500" />
           <input 
@@ -242,30 +288,75 @@ export default function GraphFinder({
             placeholder="Search graph..."
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            className="w-full bg-zinc-900 border border-zinc-800 rounded-md pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 transition-colors"
+            className="w-full bg-zinc-900 border border-zinc-800/80 rounded-md pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 transition-colors"
           />
         </div>
         
-        <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-hide">
-          {(['all', 'people', 'projects', 'concepts'] as TabType[]).map(tab => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap ${
-                activeTab === tab 
-                  ? 'bg-zinc-800 text-zinc-200' 
-                  : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
+        {/* Stats Bar */}
+        <div className="flex items-center justify-between mb-3 px-1">
+          <div className="flex items-center gap-2 text-[9px] text-zinc-500 uppercase tracking-widest font-semibold">
+            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500/80"></span>{typeCounts.person}</span>
+            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-teal-500/80"></span>{typeCounts.organization}</span>
+            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-purple-500/80"></span>{typeCounts.project}</span>
+            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-zinc-500/80"></span>{typeCounts.concept}</span>
+          </div>
+          <button 
+            onClick={() => setShowEntityExplorer(s => !s)}
+            className="text-[9px] uppercase tracking-widest font-semibold text-zinc-400 hover:text-zinc-200 transition-colors bg-zinc-800/50 px-1.5 py-0.5 rounded border border-zinc-700/50"
+          >
+            {showEntityExplorer ? 'Hide Entities' : 'All Entities'}
+          </button>
         </div>
+
+        {!showEntityExplorer && (
+          <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-hide">
+            {(['all', 'people', 'projects', 'concepts'] as TabType[]).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap ${
+                  activeTab === tab 
+                    ? 'bg-zinc-800 text-zinc-200' 
+                    : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        {loading && filteredEpisodes.length === 0 && (
-          <div className="p-4 space-y-3">
+        {showEntityExplorer ? (
+          /* ── Entity Explorer Mode ───────────────────────────────────────────── */
+          <div className="p-3">
+            <div className="text-xs text-zinc-500 mb-3 ml-1">Every entity in the current graph view</div>
+            <div className="flex flex-wrap gap-1.5">
+              {allNodes
+                .filter(n => searchQuery ? n.label.toLowerCase().includes(searchQuery.toLowerCase()) : true)
+                .sort((a, b) => a.label.localeCompare(b.label))
+                .map(n => (
+                <button
+                  key={n.id}
+                  onClick={() => onNavigateNode?.(n.id)}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] border transition-colors ${
+                    selectedNodeId === n.id 
+                      ? 'bg-zinc-800 border-zinc-600 text-zinc-100' 
+                      : 'bg-zinc-900 border-zinc-800/80 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: TYPE_COLOUR[n.type] || '#52525b' }} />
+                  <span className="truncate max-w-[140px]">{n.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          /* ── Episode Stream Mode ───────────────────────────────────────────── */
+          <>
+            {loading && filteredEpisodes.length === 0 && (
+              <div className="p-4 space-y-3">
             {[...Array(4)].map((_, i) => (
               <div key={i} className="animate-pulse space-y-2">
                 <div className="h-4 w-2/3 rounded bg-zinc-800" />
@@ -301,6 +392,8 @@ export default function GraphFinder({
           <div className="flex justify-center py-4">
             <div className="h-4 w-4 rounded-full border border-zinc-600 border-t-transparent animate-spin" />
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

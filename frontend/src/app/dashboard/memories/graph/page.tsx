@@ -156,7 +156,7 @@ export default function MemoryGraphPage() {
     const start = performance.now();
 
     try {
-      const res = await fetchEgoGraph(2, 80, abortController.signal);
+      const res = await fetchEgoGraph(2, 500, abortController.signal);
       if (currentSeq !== sequenceRef.current) return;
       dannyIdRef.current = res.danny_id;
       setDannyId(res.danny_id);
@@ -300,18 +300,24 @@ export default function MemoryGraphPage() {
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] lg:h-[calc(100vh-4rem)] bg-zinc-950">
-      {/* ── left: episode stream (unchanged) ─────────────────────────────── */}
+      {/* ── left: graph finder ───────────────────────────────────────────── */}
       {!streamCollapsed && (
         <div className="w-80 flex-shrink-0 border-r border-zinc-800 transition-all duration-200">
           <GraphFinder
             episodes={episodes}
             loading={episodesLoading}
+            allNodes={graphNodes}
+            focusedNode={focusedNode}
             expandedEpisodeId={expandedEpisodeId}
             expandedMemoryId={expandedMemoryId}
             selectedNodeId={focusState.focusedNodeId}
             onToggleEpisode={handleEpisodeClick}
             onMemoryClick={handleMemoryClick}
             onLoadMore={loadMoreEpisodes}
+            onNavigateNode={(nodeId) => {
+              const targetNode = graphNodes.find(n => n.id === nodeId);
+              if (targetNode) handleGraphNodeClick(targetNode);
+            }}
           />
         </div>
       )}

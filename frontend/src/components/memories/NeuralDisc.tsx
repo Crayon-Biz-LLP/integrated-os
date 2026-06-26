@@ -59,6 +59,7 @@ interface LayoutNode {
   x: number;
   y: number;
   z: number;
+  radialNorm: number; // 0 (center) to 1 (outer edge)
   degree: number;
   // Transient projection data
   projX: number;
@@ -192,6 +193,7 @@ function computeLayout(
       x: nx,
       y: ny,
       z: nz,
+      radialNorm: maxR > 0 ? (r / maxR) : 0,
       degree: degreeMap.get(n.id) ?? 0,
       projX: 0, projY: 0, projScale: 1
     };
@@ -944,9 +946,10 @@ export default function NeuralDisc({
         rn.circle.zIndex = -z2; // PixiJS draws higher zIndex on top. Smaller z2 = closer = higher zIndex.
 
         // Alpha falloff for distant nodes
-        // Only dim them if they aren't already dimmed by focus state
         if (rn.circle.alpha > dimAlpha) {
-           rn.circle.alpha = Math.min(1.0, scaleFact);
+           // Majestic falloff: scaleFact (z-depth) + radialNorm (outer edges fade into darkness)
+           const radialDim = 1.0 - (n.radialNorm * 0.65); 
+           rn.circle.alpha = Math.max(dimAlpha, Math.min(1.0, scaleFact) * radialDim);
         }
 
         if (rn.glow) {
@@ -955,6 +958,9 @@ export default function NeuralDisc({
           rn.glow.scale.set(scaleFact * breathe);
           if (rn.isCentre) {
              rn.glow.alpha = 0.35 + Math.sin(time * 2.5) * 0.08;
+          } else {
+             // Glow also fades out on the periphery
+             rn.glow.alpha = Math.max(0, rn.glow.alpha * (1.0 - n.radialNorm * 0.5));
           }
         }
 
@@ -963,6 +969,10 @@ export default function NeuralDisc({
           // Position label below the scaled node
           rn.text.y = n.projY + (rn.radius * scaleFact * breathe) + 9;
           rn.text.scale.set(Math.max(0.6, scaleFact));
+          // Fade text on the periphery
+          if (rn.text.alpha > dimAlpha) {
+             rn.text.alpha = Math.max(dimAlpha, Math.min(1.0, scaleFact) * (1.0 - n.radialNorm * 0.5));
+          }
         }
       });
       
@@ -984,6 +994,9 @@ export default function NeuralDisc({
         const zAvg = (s.projScale + t.projScale) / 2;
         const isBack = zAvg < 1.0; 
         const g = isBack ? backEdgesGraphics : frontEdgesGraphics;
+        
+        const rAvg = (s.radialNorm + t.radialNorm) / 2;
+        const radialDim = 1.0 - (rAvg * 0.65);
 
         const color = re.edgeClass === 'hero' ? 0x71717a 
                   : re.edgeClass === 'related' ? 0x52525b 
@@ -991,9 +1004,12 @@ export default function NeuralDisc({
         const width = re.edgeClass === 'hero' ? 1.8 
                   : re.edgeClass === 'related' ? 1.2 
                   : 0.8;
-        const alpha = re.edgeClass === 'ambient' ? resolvedDimEdgeAlpha 
-                  : re.edgeClass === 'related' ? 0.3 * zAvg
-                  : 0.65 * zAvg; // Fade out edges going into the distance
+        const baseAlpha = re.edgeClass === 'ambient' ? resolvedDimEdgeAlpha 
+                  : re.edgeClass === 'related' ? 0.3 
+                  : 0.65;
+        
+        // Majestic dimming for edges
+        const alpha = Math.max(resolvedDimEdgeAlpha, baseAlpha * zAvg * radialDim);
 
         g.stroke({ width: width * zAvg, color, alpha });
 

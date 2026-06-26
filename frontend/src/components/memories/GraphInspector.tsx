@@ -252,6 +252,19 @@ export default function GraphInspector({
   if (topRelations.length > 0) {
     whyItMatters += ` Primarily associated through ${topRelations[0].toLowerCase().replace(/_/g, ' ')}.`;
   }
+  
+  // Format direct edges for Edge Flow
+  const edgeFlow = nodeEdges.map(e => {
+    const isOutbound = e.source_node_id === node.id;
+    const targetId = isOutbound ? e.target_node_id : e.source_node_id;
+    const targetNode = allNodes.find(n => n.id === targetId);
+    return {
+      id: e.id,
+      relationship: e.relationship,
+      isOutbound,
+      targetNode
+    };
+  }).filter(e => e.targetNode !== undefined);
 
   return (
     <div
@@ -390,6 +403,42 @@ export default function GraphInspector({
             )}
           </div>
         </div>
+
+        {/* ── live edge flow ─────────────────────────────────────────────────── */}
+        {edgeFlow.length > 0 && (
+          <div className="px-4 py-4 border-b border-zinc-800/40 bg-zinc-950/50">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">
+                Direct Connections
+              </p>
+              <span className="text-[10px] text-zinc-600 tabular-nums">{edgeFlow.length} edges</span>
+            </div>
+            <div className="space-y-1.5">
+              {edgeFlow.slice(0, 15).map(e => (
+                <div key={e.id} className="flex items-center gap-2 text-xs group">
+                  <span className="text-zinc-600 shrink-0 w-4 text-center">
+                    {e.isOutbound ? '→' : '←'}
+                  </span>
+                  <span className="text-[9px] uppercase tracking-wider text-zinc-500 bg-zinc-900/80 px-1.5 py-0.5 rounded border border-zinc-800/60 shrink-0 w-24 truncate text-center">
+                    {e.relationship.replace(/_/g, ' ')}
+                  </span>
+                  <button
+                    onClick={() => onNavigateNode?.(e.targetNode!.id)}
+                    className="truncate text-left text-zinc-300 hover:text-zinc-100 transition-colors flex items-center gap-1.5 flex-1 min-w-0"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: TYPE_COLOUR[e.targetNode!.type] || '#52525b' }} />
+                    <span className="truncate">{e.targetNode!.label}</span>
+                  </button>
+                </div>
+              ))}
+              {edgeFlow.length > 15 && (
+                <div className="text-xs text-zinc-500 pt-1 text-center">
+                  + {edgeFlow.length - 15} more connections
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ── memory stream ──────────────────────────────────────────────────── */}
         {/* section heading */}
