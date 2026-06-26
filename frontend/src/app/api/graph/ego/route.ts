@@ -36,7 +36,7 @@ async function resolveRootNodeId(supabase: any): Promise<{ id: string; label: st
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const depth = Math.min(Number(searchParams.get("depth")) || 2, 3);
-  const cap = Math.min(Number(searchParams.get("cap")) || 500, 1000);
+  const cap = Math.min(Number(searchParams.get("cap")) || 2500, 2500);
 
   const supabase = await createServerSupabaseClient();
 
@@ -80,12 +80,12 @@ export async function GET(req: NextRequest) {
     let hop2NeighborIds = new Set<string>();
     let hop2Edges: any[] = [];
 
-    for (const entityId of entityNodeIds.slice(0, 30)) {
+    for (const entityId of entityNodeIds.slice(0, 60)) {
       const { data: eEdges } = await supabase
         .from("graph_edges")
         .select("id,source_node_id,target_node_id,relationship,weight")
         .or(`source_node_id.eq.${entityId},target_node_id.eq.${entityId}`)
-        .limit(20);
+        .limit(30);
 
       if (eEdges) {
         for (const e of eEdges) {

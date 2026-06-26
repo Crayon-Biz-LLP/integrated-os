@@ -34,7 +34,7 @@ export async function fetchNeighborhood(nodeId: string, signal?: AbortSignal): P
   return res.json();
 }
 
-export async function fetchEgoGraph(depth = 2, cap = 500, signal?: AbortSignal): Promise<EgoGraphResponse> {
+export async function fetchEgoGraph(depth = 2, cap = 2500, signal?: AbortSignal): Promise<EgoGraphResponse> {
   const res = await fetch(`/api/graph/ego?depth=${depth}&cap=${cap}`, {
     cache: 'no-store',
     signal,

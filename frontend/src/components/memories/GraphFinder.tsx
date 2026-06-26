@@ -210,7 +210,7 @@ export default function GraphFinder({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<TabType>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [showEntityExplorer, setShowEntityExplorer] = useState(false);
+  const [showEntityExplorer, setShowEntityExplorer] = useState(true);
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;

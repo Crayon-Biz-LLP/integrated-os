@@ -153,14 +153,14 @@ function computeLayout(
       'link',
       d3.forceLink<SimNode, typeof simEdges[0]>(simEdges)
         .id(d => d.id)
-        .distance(100)
-        .strength(0.6),
+        .distance(50)
+        .strength(0.4),
     )
-    .force('charge', d3.forceManyBody().strength(-250))
+    .force('charge', d3.forceManyBody().strength(-120))
     .force('centre', d3.forceCenter(0, 0))
-    .force('collide', d3.forceCollide(40));
+    .force('collide', d3.forceCollide(20));
 
-  sim.tick(300);
+  sim.tick(500);
   sim.stop();
 
   // Find max radius to bound the sphere
@@ -495,10 +495,7 @@ export default function NeuralDisc({
     setZoomVersion(v => v + 1);
 
     setLayoutData(result);
-    // Add a slight delay for smoother visual entrance
-    requestAnimationFrame(() => {
-      setIsReady(true);
-    });
+    setIsReady(true);
   }, [nodesProp, edgesProp, centerNodeId, dimensions.width, dimensions.height]);
 
   // ── zoom helpers ──────────────────────────────────────────────────────────
@@ -714,20 +711,20 @@ export default function NeuralDisc({
       const isNodeActive = !isFocused || isConnected;
 
       // ── node radius by role and mode ───────────────────────────────────
-      let radius = 8;
-      if (isCentre)    radius = 15;
+      let radius = 6;
+      if (isCentre)    radius = 22;
       else if (isHovered || isKbFocused) radius = 13;
       else if (isFocused) {
-        radius = isConnected ? 11 : 7;
+        radius = isConnected ? 9 : 5;
       } else {
-        radius = Math.min(11, 7 + Math.floor(n.degree / 3));
+        radius = Math.min(9, 6 + Math.floor(n.degree / 4));
       }
 
       // ── glow ─────────────────────────────────────────────────────────
       let glow: Graphics | undefined;
       if (isNodeActive && shouldRenderEffects) {
         glow = new Graphics();
-        glow.circle(0, 0, isCentre ? 22 : (isHovered || isKbFocused ? 18 : 13));
+        glow.circle(0, 0, isCentre ? 36 : (isHovered || isKbFocused ? 18 : 13));
         glow.fill({
           color: colour,
           alpha: isCentre || isHovered ? 0.35 : (isFocused && isConnected ? 0.20 : 0.10),
@@ -820,7 +817,7 @@ export default function NeuralDisc({
             : n.label;
 
         let fontSize = 9;
-        if (isCentre)               fontSize = 11;
+        if (isCentre)               fontSize = 13;
         else if (isHovered || isKbFocused) fontSize = 10;
         else if (currentViewMode === 'overview' && n.degree > 4) fontSize = 10;
 
@@ -1165,8 +1162,8 @@ export default function NeuralDisc({
   return (
     <div
       ref={containerRef}
-      className={`w-full h-full relative bg-zinc-950 overflow-hidden focus:outline-none focus-visible:ring-1 focus-visible:ring-zinc-600 focus-visible:ring-inset transition-opacity duration-1000 ${
-        isReady ? 'opacity-100' : 'opacity-0'
+       className={`w-full h-full relative bg-zinc-950 overflow-hidden focus:outline-none focus-visible:ring-1 focus-visible:ring-zinc-600 focus-visible:ring-inset transition-opacity duration-300 ${
+         isReady ? 'opacity-100' : 'opacity-0'
       }`}
       tabIndex={0}
       role="application"

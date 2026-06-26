@@ -80,7 +80,7 @@ function MemoryCard({ item }: { item: StreamItem }) {
             </span>
           )}
           <span className="text-[9px] text-zinc-500 border border-zinc-700/50 bg-zinc-800/30 px-1.5 py-0.5 rounded flex-shrink-0">
-            Direct mention
+            Related
           </span>
           <span className="text-[10px] text-zinc-600 flex items-center gap-1 flex-shrink-0 ml-1">
             <Clock className="h-2.5 w-2.5" />
@@ -445,7 +445,7 @@ export default function GraphInspector({
         <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800/40 sticky top-0 bg-zinc-950/90 backdrop-blur-sm z-10">
           <Brain className="h-3.5 w-3.5 text-zinc-500" />
           <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
-            Supporting Evidence
+            Recent Context
           </span>
           {!loading && items.length > 0 && (
             <span className="ml-auto text-[10px] text-zinc-600 tabular-nums">

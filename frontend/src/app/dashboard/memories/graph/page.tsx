@@ -200,7 +200,7 @@ export default function MemoryGraphPage() {
     const start = performance.now();
 
     try {
-      const res = await fetchEgoGraph(2, 500, abortController.signal);
+      const res = await fetchEgoGraph(2, 2500, abortController.signal);
       if (currentSeq !== sequenceRef.current) return;
       dannyIdRef.current = res.danny_id;
       setDannyId(res.danny_id);
