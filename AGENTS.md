@@ -3,6 +3,17 @@
 ## Project Overview
 FastAPI-based executive command system deployed as Vercel serverless functions (Python 3.11, matches CI). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 
+## Codebase Discovery Workflow
+
+**Use codebase-memory / graph search (`search_graph`, `trace_path`, `get_code_snippet`) as the primary discovery path for all structural questions.** This includes: finding functions, classes, routes, variables; tracing callers/callees; understanding data flow; discovering dependencies; and impact analysis.
+
+Use **grep/ripgrep only as a fallback** when:
+1. The index is stale or unavailable
+2. The question is a literal text-search problem (string literals, error messages, config values)
+3. The graph/index cannot resolve the file or relationship
+
+For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
+
 ## Session Anchored Summary (Jun 25, 2026 — Part 4)
 
 ### Progress Done This Session
@@ -284,7 +295,7 @@ Some workflows use an **external cron service** because GitHub Actions free plan
 
 ### Token Awareness
 - **Warn before heavy operations.** Before reading 5+ files at once, running extensive multi-file search operations, or any action expected to consume significant context, flag it to the user: "This will read N files / search across N paths — may be token-heavy."
-- **Prefer targeted reads over bulk.** Use `grep` + `read` with specific line ranges instead of reading entire large files blindly.
+- **Prefer targeted reads over bulk.** Use `get_code_snippet` / `search_graph` + `read` with specific line ranges instead of reading entire large files blindly.
 - **Session length check.** If a session exceeds ~20 tool calls or is trending toward high context, proactively suggest the user start a fresh session for cleaner context.
 
 ### Canonical Import Paths (DRY — Non-Negotiable)
@@ -423,7 +434,7 @@ When making infrastructure changes:
 
 2. **Debugging Process (/diagnose):**
    - When the user pastes an error log (e.g., from `audit_logs` in Supabase), immediately jump to the "Hypothesize" and "Verify" steps.
-   - Use the explore subagent or grep to trace the data flow and verify your hypothesis before proposing a fix.
+   - Use the explore subagent or graph search (`trace_path`, `search_graph`) to trace the data flow and verify your hypothesis before proposing a fix. Fall back to grep only if the graph index cannot resolve the relationship.
 
 3. **Domain Documentation & ADRs:**
    - The "Shared Domain Language" and high-level "Architectural Decisions" are stored in the `product-summary/` folder.
