@@ -61,6 +61,44 @@ def group_nodes(nodes: List[dict]) -> Dict[str, List[dict]]:
     # Filter to only groups with duplicates
     return {k: v for k, v in groups.items() if len(v) > 1}
 
+def group_fuzzy(nodes: List[dict]) -> Dict[str, List[dict]]:
+    """Secondary grouping: catch same-type person nodes where one label is a substring
+    or close token variant of another (e.g. 'Abhishek' vs 'Abhishek Paul')."""
+    import difflib
+    person_nodes = [n for n in nodes if n.get('type') == 'person']
+    groups = {}
+    assigned = set()
+    
+    for i, n1 in enumerate(person_nodes):
+        if n1['id'] in assigned:
+            continue
+        cluster = [n1]
+        assigned.add(n1['id'])
+        l1 = n1['label'].lower().strip()
+        
+        for j, n2 in enumerate(person_nodes):
+            if n2['id'] in assigned or i == j:
+                continue
+            l2 = n2['label'].lower().strip()
+            
+            # Substring check: one label contains the other (token boundary)
+            if l1 in l2 or l2 in l1:
+                cluster.append(n2)
+                assigned.add(n2['id'])
+                continue
+            
+            # SequenceMatcher for token overlap
+            ratio = difflib.SequenceMatcher(None, l1, l2).ratio()
+            if ratio >= 0.5:
+                cluster.append(n2)
+                assigned.add(n2['id'])
+        
+        if len(cluster) > 1:
+            key = f"person|fuzzy_{cluster[0]['label']}_{cluster[-1]['label']}"
+            groups[key] = cluster
+    
+    return groups
+
 def get_node_edge_count(supabase, node_id: str) -> int:
     out_res = supabase.table("graph_edges").select("id", count="exact").eq("source_node_id", node_id).execute()
     in_res = supabase.table("graph_edges").select("id", count="exact").eq("target_node_id", node_id).execute()
@@ -104,13 +142,18 @@ def main():
     print(f"Total active nodes: {len(nodes)}")
     
     groups = group_nodes(nodes)
-    print(f"Found {len(groups)} duplicate groups.\n")
+    print(f"Found {len(groups)} exact duplicate groups.\n")
+    
+    fuzzy_groups = group_fuzzy(nodes)
+    if fuzzy_groups:
+        print(f"Found {len(fuzzy_groups)} fuzzy alias groups.\n")
     
     supabase = get_supabase()
     
     safe_groups = 0
     manual_groups = 0
     
+    # Process exact groups
     for key, group in groups.items():
         classification = classify_group(group)
         is_safe = classification == "AUTO_SAFE"
@@ -137,6 +180,24 @@ def main():
             
         if not is_dry_run and args.apply_safe_only and is_safe:
             print(f"--> Applying AUTO_SAFE merge for: {key}")
+            target, sources = select_target_and_source(group, supabase)
+            print(f"    Selected target: {target['label']} ({target['id']})")
+            for src_id in sources:
+                res = execute_graph_node_merge(src_id, target['id'], provenance="duplicate_cleanup_script")
+                print(f"    Merge result: {res['message']}")
+        print()
+    
+    # Process fuzzy groups (always MANUAL_REVIEW)
+    for key, group in fuzzy_groups.items():
+        manual_groups += 1
+        classification = "MANUAL_REVIEW: Fuzzy alias match"
+        print(f"Group: {key} [{classification}]")
+        for i, n in enumerate(group):
+            edges = get_node_edge_count(supabase, n['id'])
+            print(f"  {i+1}. {n['label']} ({n['id']}) - {edges} edges")
+        
+        if args.apply_group and args.apply_group in key:
+            print(f"--> Applying merge for fuzzy group: {key}")
             target, sources = select_target_and_source(group, supabase)
             print(f"    Selected target: {target['label']} ({target['id']})")
             for src_id in sources:

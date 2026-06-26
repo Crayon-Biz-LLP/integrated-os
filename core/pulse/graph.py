@@ -6,7 +6,7 @@ import json
 import asyncio
 from core.lib.audit_logger import audit_log_sync
 from core.lib.people_utils import normalize_person_name
-from core.lib.graph_rules import find_similar_node, validate_edge, resolve_alias, resolve_canonical_label, canonicalize_relationship, normalize_label_display, normalize_label_comparison
+from core.lib.graph_rules import find_similar_node, validate_edge, resolve_alias, resolve_canonical_label, canonicalize_relationship, normalize_label_display, normalize_label_comparison, get_canonical_id
 
 supabase = get_supabase()
 
@@ -213,10 +213,15 @@ async def _ensure_danny_edge(label: str, node_type: str):
         danny_id = danny_res.data["id"]
 
         label = normalize_label_display(label)
-        target_res = supabase.table("graph_nodes").select("id").ilike("label", label).maybe_single().execute()
+        # Resolve through aliases table (e.g. Sunju → Sunjula Daniel)
+        label = resolve_alias(label)
+        target_res = supabase.table("graph_nodes").select("id, canonical_id").ilike("label", label).maybe_single().execute()
         if not target_res or not target_res.data:
             return
         target_id = target_res.data["id"]
+        # Follow canonical_id chain if this node has been merged into another
+        if target_res.data.get("canonical_id"):
+            target_id = get_canonical_id(target_id)
 
         existing = supabase.table("graph_edges").select("id")\
             .eq("source_node_id", danny_id)\

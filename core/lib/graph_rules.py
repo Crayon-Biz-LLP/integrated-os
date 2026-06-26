@@ -186,10 +186,22 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
     # ILIKE on the display label is safe and catches casing differences.
     if len(label) >= 4:
         try:
-            gn_res = supabase.table("graph_nodes").select("id, label, type").ilike("label", label).maybe_single().execute()
+            gn_res = supabase.table("graph_nodes").select("id, label, type, canonical_id").ilike("label", label).maybe_single().execute()
             if gn_res and gn_res.data:
+                node_id = gn_res.data["id"]
+                canonical_id = gn_res.data.get("canonical_id")
+                if canonical_id:
+                    # Follow canonical chain
+                    canonical = get_canonical_id(node_id)
+                    canonical_res = supabase.table("graph_nodes").select("id, label, type").eq("id", canonical).maybe_single().execute()
+                    if canonical_res and canonical_res.data:
+                        result["label"] = canonical_res.data["label"]
+                        result["node_id"] = canonical_res.data["id"]
+                        result["node_type"] = canonical_res.data["type"]
+                        result["confidence"] = 1.0
+                        return result
                 result["label"] = gn_res.data["label"]
-                result["node_id"] = gn_res.data["id"]
+                result["node_id"] = node_id
                 result["node_type"] = gn_res.data["type"]
                 result["confidence"] = 1.0
                 return result

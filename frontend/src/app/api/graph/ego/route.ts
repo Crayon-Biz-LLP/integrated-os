@@ -117,7 +117,7 @@ export async function GET(req: NextRequest) {
     batches.map((batch) =>
       supabase
         .from("graph_nodes")
-        .select("id,label,type,canonical_page_id")
+        .select("id,label,type,canonical_page_id,canonical_id")
         .in("id", batch)
         .order("reference_count", { ascending: false })
         .order("created_at", { ascending: false })
@@ -127,7 +127,7 @@ export async function GET(req: NextRequest) {
   const allNodeMap = new Map<string, any>();
   for (const result of nodeResults) {
     for (const node of result.data || []) {
-      if (!allNodeMap.has(node.id)) {
+      if (!allNodeMap.has(node.id) && !node.canonical_id) {
         allNodeMap.set(node.id, node);
       }
     }
