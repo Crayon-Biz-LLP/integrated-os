@@ -37,7 +37,7 @@ export default function MemoryGraphPage() {
   // ── graph data ────────────────────────────────────────────────────────────
   const [graphNodes,   setGraphNodes]   = useState<GraphNode[]>([]);
   const [graphEdges,   setGraphEdges]   = useState<GraphEdge[]>([]);
-  const [, setGraphLoading] = useState(true);
+  const [graphLoading, setGraphLoading] = useState(true);
   const [graphError,   setGraphError]   = useState<string | null>(null);
   // dannyId needs to drive render (toolbar visibility, isDannyCentered) so it lives in state.
   // The ref below shadows it for use inside callbacks without re-triggering effects.
@@ -108,7 +108,8 @@ export default function MemoryGraphPage() {
   const graphAbortRef   = useRef<AbortController | null>(null);
   const episodeLimitRef = useRef(40);
   const episodeFilterRef = useRef<string | null>(null);
-  const sequenceRef = useRef(0);
+  const graphSequenceRef = useRef(0);
+  const episodeSequenceRef = useRef(0);
 
   // ── data fetchers (unchanged from original page.tsx) ─────────────────────
 
@@ -116,17 +117,17 @@ export default function MemoryGraphPage() {
     if (episodeAbortRef.current) episodeAbortRef.current.abort();
     const abortController = new AbortController();
     episodeAbortRef.current = abortController;
-    const currentSeq = ++sequenceRef.current;
+    const currentSeq = ++episodeSequenceRef.current;
 
     episodeFilterRef.current = nodeId ?? null;
     setEpisodesLoading(true);
 
     try {
       const res = await fetchEpisodes(nodeId ?? undefined, episodeLimitRef.current, abortController.signal);
-      if (currentSeq !== sequenceRef.current) return;
+      if (currentSeq !== episodeSequenceRef.current) return;
       setEpisodes(res.episodes);
     } catch (e: unknown) {
-      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== sequenceRef.current)) return;
+      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== episodeSequenceRef.current)) return;
       setEpisodes([]);
     } finally {
       if (episodeAbortRef.current === abortController) setEpisodesLoading(false);
@@ -138,7 +139,7 @@ export default function MemoryGraphPage() {
     episodeLimitRef.current += 20;
     const abortController = new AbortController();
     episodeAbortRef.current = abortController;
-    const currentSeq = sequenceRef.current;
+    const currentSeq = episodeSequenceRef.current;
 
     setEpisodesLoading(true);
     try {
@@ -147,13 +148,13 @@ export default function MemoryGraphPage() {
         episodeLimitRef.current,
         abortController.signal,
       );
-      if (currentSeq !== sequenceRef.current) return;
+      if (currentSeq !== episodeSequenceRef.current) return;
       setEpisodes(prev => {
         const existing = new Set(prev.map(e => e.id));
         return [...prev, ...res.episodes.filter(e => !existing.has(e.id))];
       });
     } catch (e: unknown) {
-      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== sequenceRef.current)) return;
+      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== episodeSequenceRef.current)) return;
     } finally {
       if (episodeAbortRef.current === abortController) {
         episodeAbortRef.current = null;
@@ -163,7 +164,7 @@ export default function MemoryGraphPage() {
   }, []);
 
   const loadNeighborhood = useCallback(async (nodeId: string) => {
-    const currentSeq = ++sequenceRef.current;
+    const currentSeq = ++graphSequenceRef.current;
     if (graphAbortRef.current) graphAbortRef.current.abort();
     const abortController = new AbortController();
     graphAbortRef.current = abortController;
@@ -174,13 +175,13 @@ export default function MemoryGraphPage() {
 
     try {
       const res = await fetchNeighborhood(nodeId, abortController.signal);
-      if (currentSeq !== sequenceRef.current) return;
+      if (currentSeq !== graphSequenceRef.current) return;
       setGraphNodes(res.nodes || []);
       setGraphEdges(res.edges || []);
       const fetchTime = Math.round(performance.now() - start);
       setDiagnostics(d => ({ ...d, fetch: fetchTime, total: fetchTime + d.layout + d.render }));
     } catch (e: unknown) {
-      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== sequenceRef.current)) return;
+      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== graphSequenceRef.current)) return;
       setGraphError(e instanceof Error ? e.message : 'Failed to load graph');
       const fetchTime = Math.round(performance.now() - start);
       setDiagnostics(d => ({ ...d, fetch: fetchTime, total: fetchTime }));
@@ -190,7 +191,7 @@ export default function MemoryGraphPage() {
   }, []);
 
   const loadEgoGraph = useCallback(async () => {
-    const currentSeq = ++sequenceRef.current;
+    const currentSeq = ++graphSequenceRef.current;
     if (graphAbortRef.current) graphAbortRef.current.abort();
     const abortController = new AbortController();
     graphAbortRef.current = abortController;
@@ -201,7 +202,7 @@ export default function MemoryGraphPage() {
 
     try {
       const res = await fetchEgoGraph(2, 2500, abortController.signal);
-      if (currentSeq !== sequenceRef.current) return;
+      if (currentSeq !== graphSequenceRef.current) return;
       dannyIdRef.current = res.danny_id;
       setDannyId(res.danny_id);
       setGraphNodes(res.nodes || []);
@@ -209,7 +210,7 @@ export default function MemoryGraphPage() {
       const fetchTime = Math.round(performance.now() - start);
       setDiagnostics(d => ({ ...d, fetch: fetchTime, total: fetchTime + d.layout + d.render }));
     } catch (e: unknown) {
-      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== sequenceRef.current)) return;
+      if (e instanceof Error && (e.name === 'AbortError' || currentSeq !== graphSequenceRef.current)) return;
       setGraphError(e instanceof Error ? e.message : 'Failed to load graph');
       setGraphNodes([]);
       setGraphEdges([]);
@@ -362,6 +363,7 @@ export default function MemoryGraphPage() {
             onToggleEpisode={handleEpisodeClick}
             onMemoryClick={handleMemoryClick}
             onLoadMore={loadMoreEpisodes}
+            graphLoading={graphLoading}
             onNavigateNode={(nodeId) => {
               const targetNode = graphNodes.find(n => n.id === nodeId);
               if (targetNode) handleGraphNodeClick(targetNode);
@@ -518,6 +520,7 @@ export default function MemoryGraphPage() {
             onContextRestored={handleContextRestored}
             onDiagnostics={handleDiagnostics}
             enableEffects={enableEffects}
+            loading={graphLoading}
           />
 
           {/* Subtle bottom-left branding */}

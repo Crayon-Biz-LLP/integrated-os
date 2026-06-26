@@ -18,6 +18,7 @@ interface GraphFinderProps {
   onMemoryClick: (memoryId: number) => void;
   onLoadMore: () => void;
   onNavigateNode?: (nodeId: string) => void;
+  graphLoading?: boolean;
 }
 
 type TabType = 'all' | 'people' | 'projects' | 'concepts';
@@ -206,6 +207,7 @@ export default function GraphFinder({
   onMemoryClick,
   onLoadMore,
   onNavigateNode,
+  graphLoading,
 }: GraphFinderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<TabType>('all');
@@ -332,25 +334,33 @@ export default function GraphFinder({
           /* ── Entity Explorer Mode ───────────────────────────────────────────── */
           <div className="p-3">
             <div className="text-xs text-zinc-500 mb-3 ml-1">Every entity in the current graph view</div>
-            <div className="flex flex-wrap gap-1.5">
-              {allNodes
-                .filter(n => searchQuery ? n.label.toLowerCase().includes(searchQuery.toLowerCase()) : true)
-                .sort((a, b) => a.label.localeCompare(b.label))
-                .map(n => (
-                <button
-                  key={n.id}
-                  onClick={() => onNavigateNode?.(n.id)}
-                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] border transition-colors ${
-                    selectedNodeId === n.id 
-                      ? 'bg-zinc-800 border-zinc-600 text-zinc-100' 
-                      : 'bg-zinc-900 border-zinc-800/80 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                  }`}
-                >
-                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: TYPE_COLOUR[n.type] || '#52525b' }} />
-                  <span className="truncate max-w-[140px]">{n.label}</span>
-                </button>
-              ))}
-            </div>
+            {graphLoading && allNodes.length === 0 ? (
+              <div className="flex flex-wrap gap-1.5 px-1">
+                {[...Array(12)].map((_, i) => (
+                  <div key={i} className="h-6 w-24 rounded bg-zinc-900/50 border border-zinc-800/50 animate-pulse" />
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {allNodes
+                  .filter(n => searchQuery ? n.label.toLowerCase().includes(searchQuery.toLowerCase()) : true)
+                  .sort((a, b) => a.label.localeCompare(b.label))
+                  .map(n => (
+                  <button
+                    key={n.id}
+                    onClick={() => onNavigateNode?.(n.id)}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] border transition-colors ${
+                      selectedNodeId === n.id 
+                        ? 'bg-zinc-800 border-zinc-600 text-zinc-100' 
+                        : 'bg-zinc-900 border-zinc-800/80 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: TYPE_COLOUR[n.type] || '#52525b' }} />
+                    <span className="truncate max-w-[140px]">{n.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           /* ── Episode Stream Mode ───────────────────────────────────────────── */

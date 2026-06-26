@@ -43,6 +43,7 @@ interface NeuralDiscProps {
   onDiagnostics?: (metrics: { layout: number; render: number; hover: number }) => void;
   onContextRestored?: () => void;
   enableEffects?: boolean;
+  loading?: boolean;
 }
 
 interface SimNode extends d3.SimulationNodeDatum {
@@ -313,6 +314,7 @@ export default function NeuralDisc({
   onDiagnostics,
   onContextRestored,
   enableEffects = true,
+  loading = false,
 }: NeuralDiscProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const appRef       = useRef<Application | null>(null);
@@ -1144,6 +1146,15 @@ export default function NeuralDisc({
     contextLost, enableEffects, prefersReducedMotion,
     viewMode, dimAlpha, dimEdgeAlpha, showParticles, useCurvedEdges,
   ]);
+
+  if (loading && nodesProp.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-zinc-500 bg-zinc-950 p-6 text-center absolute inset-0 z-10 pointer-events-none">
+        <div className="h-6 w-6 rounded-full border-2 border-teal-500/20 border-t-teal-500 animate-spin mb-3" />
+        <p className="text-xs text-zinc-500 uppercase tracking-widest font-semibold animate-pulse">Loading Knowledge Graph...</p>
+      </div>
+    );
+  }
 
   // ── context-loss fallback ─────────────────────────────────────────────────
   if (contextLost) {

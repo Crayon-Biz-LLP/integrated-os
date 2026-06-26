@@ -163,6 +163,8 @@ export default function GraphInspector({
       .filter(n => n.type !== 'concept' && n.type !== 'emotional_state')
       .slice(0, 8);
 
+    const isLoading = nodeCount === 0;
+
     return (
       <div className="flex flex-col h-full bg-zinc-950/95 border-l border-zinc-800/80 backdrop-blur-sm" role="complementary">
         <div className="px-4 py-5 border-b border-zinc-800/60">
@@ -173,31 +175,39 @@ export default function GraphInspector({
           <div>
             <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-2">Network Health</p>
             <div className="flex gap-4">
-              <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-lg p-3 flex-1">
-                <div className="text-2xl font-light text-zinc-300">{nodeCount}</div>
+              <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-lg p-3 flex-1 relative overflow-hidden">
+                {isLoading && <div className="absolute inset-0 bg-zinc-800/20 animate-pulse" />}
+                <div className="text-2xl font-light text-zinc-300">{isLoading ? '-' : nodeCount}</div>
                 <div className="text-[10px] text-zinc-500 uppercase tracking-widest mt-1">Nodes</div>
               </div>
-              <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-lg p-3 flex-1">
-                <div className="text-2xl font-light text-zinc-300">{edgeCount}</div>
+              <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-lg p-3 flex-1 relative overflow-hidden">
+                {isLoading && <div className="absolute inset-0 bg-zinc-800/20 animate-pulse" />}
+                <div className="text-2xl font-light text-zinc-300">{isLoading ? '-' : edgeCount}</div>
                 <div className="text-[10px] text-zinc-500 uppercase tracking-widest mt-1">Connections</div>
               </div>
             </div>
           </div>
           
-          {topEntities.length > 0 && (
+          {(isLoading || topEntities.length > 0) && (
             <div>
               <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-2">Visible Anchors</p>
               <div className="flex flex-wrap gap-1.5">
-                {topEntities.map(e => (
-                  <button
-                    key={e.id}
-                    onClick={() => onNavigateNode?.(e.id)}
-                    className="flex items-center gap-1.5 px-2 py-1 rounded text-[10px] bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-700 transition-colors"
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: TYPE_COLOUR[e.type] || '#52525b' }} />
-                    {e.label}
-                  </button>
-                ))}
+                {isLoading ? (
+                  [...Array(6)].map((_, i) => (
+                    <div key={i} className="h-6 w-16 rounded bg-zinc-900/50 border border-zinc-800/50 animate-pulse" />
+                  ))
+                ) : (
+                  topEntities.map(e => (
+                    <button
+                      key={e.id}
+                      onClick={() => onNavigateNode?.(e.id)}
+                      className="flex items-center gap-1.5 px-2 py-1 rounded text-[10px] bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-700 transition-colors"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: TYPE_COLOUR[e.type] || '#52525b' }} />
+                      {e.label}
+                    </button>
+                  ))
+                )}
               </div>
             </div>
           )}
