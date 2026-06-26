@@ -34,13 +34,9 @@ interface NeuralDiscProps {
   edges: GraphEdge[];
   centerNodeId: string | null;
   viewMode: ViewMode;
-  /** Whether to dim non-connected nodes/edges */
   dimAlpha: number;
-  /** Alpha for non-connected edges */
   dimEdgeAlpha: number;
-  /** Whether particles should render */
   showParticles: boolean;
-  /** Whether to use curved edges */
   useCurvedEdges: boolean;
   onNodeClick: (node: GraphNode) => void;
   onBackgroundClick: () => void;
@@ -59,17 +55,15 @@ interface LayoutNode {
   id: string;
   label: string;
   type: string;
+  // Base 3D coordinates
   x: number;
   y: number;
-  /** Number of edges connected to this node in the current view */
+  z: number;
   degree: number;
-}
-
-interface SimEdge {
-  id: string;
-  relationship: string;
-  source: SimNode;
-  target: SimNode;
+  // Transient projection data
+  projX: number;
+  projY: number;
+  projScale: number;
 }
 
 interface LayoutEdge {
@@ -112,8 +106,6 @@ function computeLayout(
   nodes: GraphNode[],
   edges: GraphEdge[],
   centerId: string | null,
-  width: number,
-  height: number,
 ): { layoutNodes: LayoutNode[]; layoutEdges: LayoutEdge[] } {
   if (nodes.length === 0) return { layoutNodes: [], layoutEdges: [] };
 
@@ -131,7 +123,7 @@ function computeLayout(
     type: n.type,
   }));
 
-  const simEdges: SimEdge[] = edges
+  const simEdges = edges
     .filter(
       e =>
         nodes.some(n => n.id === e.source_node_id) &&
@@ -147,10 +139,10 @@ function computeLayout(
   if (centerId !== null) {
     const centre = simNodes.find(n => n.id === centerId);
     if (centre) {
-      centre.x  = width / 2;
-      centre.y  = height / 2;
-      centre.fx = width / 2;
-      centre.fy = height / 2;
+      centre.x  = 0;
+      centre.y  = 0;
+      centre.fx = 0;
+      centre.fy = 0;
     }
   }
 
@@ -158,26 +150,52 @@ function computeLayout(
     .forceSimulation(simNodes)
     .force(
       'link',
-      d3.forceLink<SimNode, SimEdge>(simEdges)
+      d3.forceLink<SimNode, typeof simEdges[0]>(simEdges)
         .id(d => d.id)
-        .distance(120)
+        .distance(100)
         .strength(0.6),
     )
-    .force('charge', d3.forceManyBody().strength(-300))
-    .force('centre', d3.forceCenter(width / 2, height / 2))
-    .force('collide', d3.forceCollide(30));
+    .force('charge', d3.forceManyBody().strength(-250))
+    .force('centre', d3.forceCenter(0, 0))
+    .force('collide', d3.forceCollide(40));
 
   sim.tick(300);
   sim.stop();
 
-  const layoutNodes: LayoutNode[] = simNodes.map(n => ({
-    id: n.id,
-    label: n.label,
-    type: n.type,
-    x: n.x ?? width / 2,
-    y: n.y ?? height / 2,
-    degree: degreeMap.get(n.id) ?? 0,
-  }));
+  // Find max radius to bound the sphere
+  let maxR = 1;
+  simNodes.forEach(n => {
+    const r = Math.sqrt((n.x ?? 0)**2 + (n.y ?? 0)**2);
+    if (r > maxR) maxR = r;
+  });
+
+  const layoutNodes: LayoutNode[] = simNodes.map((n, i) => {
+    const nx = n.x ?? 0;
+    const ny = n.y ?? 0;
+    const r = Math.sqrt(nx*nx + ny*ny);
+    
+    // Inflate flat layout into a sphere. 
+    // Outer nodes curve backwards or forwards.
+    // Pseudo-random hemisphere assignment based on index to distribute evenly.
+    const hemisphere = (i % 2 === 0) ? 1 : -1;
+    // z = sqrt(R^2 - r^2) * hemisphere
+    // We scale Z slightly down to make it an oblate spheroid (disc-like) for better reading
+    let nz = Math.sqrt(Math.max(0, maxR*maxR - r*r)) * hemisphere * 0.7;
+    
+    // Core node stays exactly at 0,0,0
+    if (n.id === centerId) nz = 0;
+
+    return {
+      id: n.id,
+      label: n.label,
+      type: n.type,
+      x: nx,
+      y: ny,
+      z: nz,
+      degree: degreeMap.get(n.id) ?? 0,
+      projX: 0, projY: 0, projScale: 1
+    };
+  });
 
   const nodeMap = new Map<string, LayoutNode>(layoutNodes.map(n => [n.id, n]));
   const layoutEdges: LayoutEdge[] = simEdges
@@ -463,16 +481,14 @@ export default function NeuralDisc({
       nodesProp,
       edgesProp,
       centerNodeId,
-      dimensions.width,
-      dimensions.height,
     );
     lastMetrics.current.layout = Math.round(performance.now() - startLayout);
 
     // Only reset zoom/pan when centerNodeId actually changes (ego-focus recentering)
     // or when the node set changes (new graph). Do not reset on mode changes.
-    viewTransformRef.current = { x: 0, y: 0, scale: 1 };
+    viewTransformRef.current = { x: dimensions.width / 2, y: dimensions.height / 2, scale: 1 };
     mainContainerRef.current?.scale.set(1);
-    mainContainerRef.current?.position.set(0, 0);
+    mainContainerRef.current?.position.set(dimensions.width / 2, dimensions.height / 2);
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setZoomVersion(v => v + 1);
 
@@ -503,11 +519,11 @@ export default function NeuralDisc({
   const resetView = useCallback(() => {
     const mc = mainContainerRef.current;
     if (!mc) return;
-    viewTransformRef.current = { x: 0, y: 0, scale: 1 };
+    viewTransformRef.current = { x: dimensions.width / 2, y: dimensions.height / 2, scale: 1 };
     mc.scale.set(1);
-    mc.position.set(0, 0);
+    mc.position.set(dimensions.width / 2, dimensions.height / 2);
     setZoomVersion(v => v + 1);
-  }, []);
+  }, [dimensions.width, dimensions.height]);
 
   // ── keyboard virtual cursor ───────────────────────────────────────────────
   const handleKeyDown = useCallback(
@@ -641,139 +657,51 @@ export default function NeuralDisc({
     const tx = viewTransformRef.current;
     mainContainer.scale.set(tx.scale);
     mainContainer.position.set(tx.x, tx.y);
+    mainContainer.sortableChildren = true;
     app.stage.addChild(mainContainer);
     mainContainerRef.current = mainContainer;
 
-    // ── edge layer ────────────────────────────────────────────────────────
-    const edgesContainer = new Container();
-    edgesContainer.eventMode = 'none';
-    mainContainer.addChild(edgesContainer);
+    // ── layers ────────────────────────────────────────────────────────────
+    const backEdgesGraphics = new Graphics();
+    backEdgesGraphics.zIndex = -1000;
+    mainContainer.addChild(backEdgesGraphics);
 
-    const ambientEdgeGraphics = new Graphics();
-    const relatedEdgeGraphics = new Graphics();
-    const heroEdgeGraphics    = new Graphics();
-    edgesContainer.addChild(ambientEdgeGraphics);
-    edgesContainer.addChild(relatedEdgeGraphics);
-    edgesContainer.addChild(heroEdgeGraphics);
+    const frontEdgesGraphics = new Graphics();
+    frontEdgesGraphics.zIndex = 1000;
+    mainContainer.addChild(frontEdgesGraphics);
 
-    const useCurves = useCurvedEdges && currentViewMode !== 'overview';
-    const isEgoFocus = currentViewMode === 'ego-focus';
-
-    layoutEdges.forEach(e => {
-      let edgeClass: 'ambient' | 'related' | 'hero' = 'ambient';
-
-      if (isFocused) {
-        if (e.source.id === effectiveFocusId || e.target.id === effectiveFocusId) {
-          edgeClass = 'hero';
-        } else if (connectedIds.has(e.source.id) && connectedIds.has(e.target.id)) {
-          edgeClass = 'related';
-        }
-      } else {
-        // Overview mode: all edges are ambient
-        edgeClass = 'ambient';
-      }
-
-      const g = edgeClass === 'hero' ? heroEdgeGraphics 
-              : edgeClass === 'related' ? relatedEdgeGraphics 
-              : ambientEdgeGraphics;
-
-      if (useCurves) {
-        drawCurvedEdge(g, e.source.x, e.source.y, e.target.x, e.target.y, 14);
-      } else {
-        g.moveTo(e.source.x, e.source.y);
-        g.lineTo(e.target.x, e.target.y);
-      }
-
-      // Add relationship labels on hero edges in ego-focus mode
-      if (isEgoFocus && edgeClass === 'hero') {
-        const mx = (e.source.x + e.target.x) / 2;
-        const my = (e.source.y + e.target.y) / 2;
-        // Subtle relation label
-        const relText = new Text({
-          text: e.relationship.replace(/_/g, ' '),
-          style: new TextStyle({
-            fill: 0x71717a,
-            fontSize: 7,
-            fontFamily: 'system-ui, sans-serif',
-            letterSpacing: 0.5,
-          }),
-        });
-        relText.anchor.set(0.5);
-        
-        if (useCurves) {
-          const dx = e.target.x - e.source.x;
-          const dy = e.target.y - e.source.y;
-          const len = Math.sqrt(dx * dx + dy * dy) || 1;
-          const px = -dy / len;
-          const py = dx / len;
-          relText.x = mx + px * 14;
-          relText.y = my + py * 14;
-        } else {
-          relText.x = mx;
-          relText.y = my;
-        }
-
-        // Only add text if it's not too cluttered (e.g. limit by zoom or just let them overlap)
-        if (scale > 0.8) {
-          edgesContainer.addChild(relText);
-        }
-      }
-    });
-
-    // Ambient edge style
-    const resolvedDimEdgeAlpha = isFocused ? dimEdgeAlpha : 0.08;
-    ambientEdgeGraphics.stroke({ width: 0.8, color: 0x3f3f46, alpha: resolvedDimEdgeAlpha });
-
-    // Related edge style
-    relatedEdgeGraphics.stroke({ width: 1.2, color: 0x52525b, alpha: 0.3 });
-
-    // Hero edge style
-    heroEdgeGraphics.stroke({ width: 1.8, color: 0x71717a, alpha: 0.65 });
-
-    // ── glow layer ────────────────────────────────────────────────────────
     const glowContainer = new Container();
     if (shouldRenderEffects)
       glowContainer.filters = [new BlurFilter({ strength: 8, quality: 2 })];
     glowContainer.eventMode = 'none';
+    glowContainer.zIndex = -500;
     mainContainer.addChild(glowContainer);
 
-    // ── particle layer ────────────────────────────────────────────────────
     const particlesContainer = new Container();
     particlesContainer.eventMode = 'none';
-    // Only add particle container when particles are enabled
+    particlesContainer.zIndex = 1001;
     if (shouldRenderEffects && showParticles) mainContainer.addChild(particlesContainer);
 
-    let tickerCb: ((time: unknown) => void) | null = null;
-    let centreCircleGraphics: Graphics | null = null;
-    let centreGlowGraphics:   Graphics | null = null;
-    const edgeParticles: {
-      sprite: Graphics; sx: number; sy: number; ex: number; ey: number;
-      speed: number; offset: number;
-    }[] = [];
-
-    // ── particle seeding (ego-focus only) ─────────────────────────────────
-    if (shouldRenderEffects && showParticles) {
-      layoutEdges.forEach(e => {
-        const isEdgeActive =
-          e.source.id === currentCentreId || e.target.id === currentCentreId;
-        if (!isEdgeActive) return;
-        const p = new Graphics();
-        p.circle(0, 0, 1.5);
-        p.fill({ color: 0xd4d4d8, alpha: 0.85 });
-        particlesContainer.addChild(p);
-        edgeParticles.push({
-          sprite: p,
-          sx: e.source.x, sy: e.source.y,
-          ex: e.target.x, ey: e.target.y,
-          speed: 0.25 + Math.random() * 0.35,
-          offset: Math.random(),
-        });
-      });
-    }
-
-    // ── nodes layer ───────────────────────────────────────────────────────
     const nodesContainer = new Container();
+    nodesContainer.sortableChildren = true;
+    nodesContainer.zIndex = 0;
     mainContainer.addChild(nodesContainer);
+
+    // ── scene data prep ───────────────────────────────────────────────────
+    const useCurves = useCurvedEdges && currentViewMode !== 'overview';
+    const isEgoFocus = currentViewMode === 'ego-focus';
+
+    interface RenderNode {
+      layoutNode: LayoutNode;
+      circle: Graphics;
+      glow?: Graphics;
+      text?: Text;
+      isCentre: boolean;
+      isHovered: boolean;
+      isKbFocused: boolean;
+      radius: number;
+    }
+    const renderNodes: RenderNode[] = [];
 
     layoutNodes.forEach(n => {
       const colour = COLOR_MAP[n.type] ?? 0x52525b;
@@ -781,63 +709,89 @@ export default function NeuralDisc({
       const isHovered    = n.id === currentHoverId;
       const isKbFocused  = n.id === currentKbId;
       const isConnected  = connectedIds.has(n.id);
-      // In overview: no dimming; in focus modes: dim non-connected
       const isNodeActive = !isFocused || isConnected;
 
       // ── node radius by role and mode ───────────────────────────────────
-      let radius = 8; // overview default
+      let radius = 8;
       if (isCentre)    radius = 15;
       else if (isHovered || isKbFocused) radius = 13;
       else if (isFocused) {
         radius = isConnected ? 11 : 7;
       } else {
-        // overview: scale by degree (higher-degree nodes are slightly bigger)
         radius = Math.min(11, 7 + Math.floor(n.degree / 3));
       }
 
       // ── glow ─────────────────────────────────────────────────────────
+      let glow: Graphics | undefined;
       if (isNodeActive && shouldRenderEffects) {
-        const glow = new Graphics();
+        glow = new Graphics();
         glow.circle(0, 0, isCentre ? 22 : (isHovered || isKbFocused ? 18 : 13));
         glow.fill({
           color: colour,
           alpha: isCentre || isHovered ? 0.35 : (isFocused && isConnected ? 0.20 : 0.10),
         });
-        glow.x = n.x;
-        glow.y = n.y;
         glowContainer.addChild(glow);
-        if (isCentre) centreGlowGraphics = glow;
       }
 
       // ── circle ───────────────────────────────────────────────────────
       const circle = new Graphics();
-      const isConcept = n.type === 'concept' || n.type === 'emotional_state';
-
-      circle.circle(0, 0, radius);
       
-      if (isConcept) {
-        // Concept nodes are hollow with a colored stroke
-        circle.fill({ color: colour, alpha: 0.15 });
-        circle.stroke({
-          width: isCentre ? 2.5 : 1.5,
-          color: colour,
-          alpha: isNodeActive ? (isKbFocused ? 1.0 : 0.9) : dimAlpha,
-        });
-      } else {
-        // Standard entity nodes are solid
+      const isPerson = n.type === 'person';
+      const isConcept = n.type === 'concept' || n.type === 'emotional_state';
+      const isProject = n.type === 'project';
+      const isOrganization = n.type === 'organization';
+      const isCluster = n.type === 'cluster';
+
+      if (isPerson) {
+        // Person: Solid nucleus with a soft inner glow/dot
+        circle.circle(0, 0, radius);
         circle.fill({ color: colour });
-        circle.stroke({
-          width: isCentre ? 2.5 : 1.5,
-          color: isKbFocused ? 0xffffff : 0x18181b,
-          alpha: isKbFocused ? 0.9 : 1.0,
-        });
+        circle.circle(0, 0, radius * 0.4);
+        circle.fill({ color: 0xffffff, alpha: 0.3 }); // Inner highlight
+      } else if (isOrganization) {
+        // Organization: Square/Diamond-like or just a thick robust ring
+        circle.roundRect(-radius, -radius, radius * 2, radius * 2, radius * 0.3);
+        circle.fill({ color: colour, alpha: 0.8 });
+        circle.stroke({ width: 2, color: 0xffffff, alpha: 0.2 });
+      } else if (isProject) {
+        // Project: Hexagon or just a distinct geometric node
+        circle.poly([
+          0, -radius,
+          radius * 0.866, -radius * 0.5,
+          radius * 0.866, radius * 0.5,
+          0, radius,
+          -radius * 0.866, radius * 0.5,
+          -radius * 0.866, -radius * 0.5,
+        ]);
+        circle.fill({ color: colour, alpha: 0.9 });
+      } else if (isCluster) {
+        // Cluster: Multiple concentric rings
+        circle.circle(0, 0, radius);
+        circle.stroke({ width: 1.5, color: colour, alpha: 0.8 });
+        circle.circle(0, 0, radius * 0.6);
+        circle.stroke({ width: 1, color: colour, alpha: 0.5 });
+        circle.circle(0, 0, radius * 0.2);
+        circle.fill({ color: colour, alpha: 0.9 });
+      } else if (isConcept) {
+        // Concept: Hollow orbital ring with a tiny core
+        circle.circle(0, 0, radius);
+        circle.fill({ color: colour, alpha: 0.1 });
+        circle.stroke({ width: 1.5, color: colour, alpha: 0.8 });
+        circle.circle(0, 0, radius * 0.2);
+        circle.fill({ color: colour, alpha: 0.6 });
+      } else {
+        // Default (Task, Place, Memory, etc.)
+        circle.circle(0, 0, radius * 0.8);
+        circle.fill({ color: colour, alpha: 0.6 });
       }
 
-      circle.x      = n.x;
-      circle.y      = n.y;
-      circle.alpha  = isNodeActive ? 1.0 : dimAlpha;
-      if (isCentre) centreCircleGraphics = circle;
+      // Selection ring for keyboard/hover
+      if (isKbFocused || isHovered) {
+        circle.circle(0, 0, radius + 4);
+        circle.stroke({ width: 1, color: 0xffffff, alpha: 0.5 });
+      }
 
+      circle.alpha  = isNodeActive ? 1.0 : dimAlpha;
       circle.eventMode = 'static';
       circle.cursor    = 'pointer';
 
@@ -849,12 +803,13 @@ export default function NeuralDisc({
       });
       circle.on('pointerenter', () => {
         setHoveredNodeId(nodeId);
-        setKbFocusNodeId(null); // pointer takes over from keyboard
+        setKbFocusNodeId(null);
       });
       circle.on('pointerleave', () => setHoveredNodeId(null));
       nodesContainer.addChild(circle);
 
       // ── label ────────────────────────────────────────────────────────
+      let text: Text | undefined;
       if (labelIdsToShow.has(n.id)) {
         const truncLen = scale < 0.8 ? 14 : 20;
         const labelStr =
@@ -862,13 +817,12 @@ export default function NeuralDisc({
             ? n.label.slice(0, truncLen) + '…'
             : n.label;
 
-        // Bigger font for high-degree overview anchors
         let fontSize = 9;
         if (isCentre)               fontSize = 11;
         else if (isHovered || isKbFocused) fontSize = 10;
         else if (currentViewMode === 'overview' && n.degree > 4) fontSize = 10;
 
-        const text = new Text({
+        text = new Text({
           text: labelStr,
           style: new TextStyle({
             fill:       isHovered || isKbFocused ? 0xffffff : 0xd4d4d8,
@@ -878,36 +832,229 @@ export default function NeuralDisc({
           }),
         });
         text.anchor.set(0.5);
-        text.x     = n.x;
-        text.y     = n.y + radius + 9;
         text.alpha = isNodeActive ? 1.0 : Math.min(dimAlpha + 0.1, 0.4);
         text.eventMode = 'none';
         nodesContainer.addChild(text);
       }
+
+      renderNodes.push({ layoutNode: n, circle, glow, text, isCentre, isHovered, isKbFocused, radius });
     });
 
-    // ── ticker: breathe + particles ───────────────────────────────────────
-    if (shouldRenderEffects && (centreCircleGraphics || edgeParticles.length > 0)) {
-      tickerCb = () => {
-        const time = performance.now() / 1000;
-        if (centreCircleGraphics && !centreCircleGraphics.destroyed) {
-          const breathe = 1 + Math.sin(time * 2.5) * 0.05; // gentle, 0.4 Hz
-          centreCircleGraphics.scale.set(breathe);
-          if (centreGlowGraphics && !centreGlowGraphics.destroyed) {
-            centreGlowGraphics.scale.set(breathe);
-            centreGlowGraphics.alpha = 0.35 + Math.sin(time * 2.5) * 0.08;
+    interface RenderEdge {
+      layoutEdge: LayoutEdge;
+      edgeClass: 'ambient' | 'related' | 'hero';
+      relText?: Text;
+    }
+    const renderEdges: RenderEdge[] = [];
+
+    layoutEdges.forEach(e => {
+      let edgeClass: 'ambient' | 'related' | 'hero' = 'ambient';
+      if (isFocused) {
+        if (e.source.id === effectiveFocusId || e.target.id === effectiveFocusId) {
+          edgeClass = 'hero';
+        } else if (connectedIds.has(e.source.id) && connectedIds.has(e.target.id)) {
+          edgeClass = 'related';
+        }
+      }
+
+      let relText: Text | undefined;
+      if (isEgoFocus && edgeClass === 'hero' && scale > 0.8) {
+        relText = new Text({
+          text: e.relationship.replace(/_/g, ' '),
+          style: new TextStyle({
+            fill: 0x71717a,
+            fontSize: 7,
+            fontFamily: 'system-ui, sans-serif',
+            letterSpacing: 0.5,
+          }),
+        });
+        relText.anchor.set(0.5);
+        mainContainer.addChild(relText);
+      }
+
+      renderEdges.push({ layoutEdge: e, edgeClass, relText });
+    });
+
+    const edgeParticles: {
+      sprite: Graphics; sx: number; sy: number; ex: number; ey: number;
+      sz: number; ez: number;
+      speed: number; offset: number;
+    }[] = [];
+
+    if (shouldRenderEffects && showParticles) {
+      layoutEdges.forEach(e => {
+        const isEdgeActive =
+          e.source.id === currentCentreId || e.target.id === currentCentreId;
+        if (!isEdgeActive) return;
+        const p = new Graphics();
+        p.circle(0, 0, 1.5);
+        p.fill({ color: 0xd4d4d8, alpha: 0.85 });
+        particlesContainer.addChild(p);
+        edgeParticles.push({
+          sprite: p,
+          sx: e.source.x, sy: e.source.y, sz: e.source.z,
+          ex: e.target.x, ey: e.target.y, ez: e.target.z,
+          speed: 0.25 + Math.random() * 0.35,
+          offset: Math.random(),
+        });
+      });
+    }
+
+    // ── ticker: 3D Projection & Rendering ─────────────────────────────────
+    let tickerCb: ((time: unknown) => void) | null = null;
+    
+    tickerCb = () => {
+      const time = performance.now() / 1000;
+      
+      // Gentle orbital rotation
+      const yaw = time * 0.08;
+      const pitch = Math.sin(time * 0.1) * 0.15;
+      
+      const cosY = Math.cos(yaw);
+      const sinY = Math.sin(yaw);
+      const cosP = Math.cos(pitch);
+      const sinP = Math.sin(pitch);
+      
+      const FOV = 1000;
+
+      // 1. Project nodes
+      renderNodes.forEach(rn => {
+        const n = rn.layoutNode;
+        // Apply Yaw (around Y axis)
+        const x1 = n.x * cosY - n.z * sinY;
+        const z1 = n.z * cosY + n.x * sinY;
+        // Apply Pitch (around X axis)
+        const y2 = n.y * cosP - z1 * sinP;
+        const z2 = z1 * cosP + n.y * sinP;
+        
+        // Perspective divide
+        const safeZ2 = Math.max(-FOV + 10, z2);
+        const scaleFact = FOV / (FOV + safeZ2);
+        n.projX = x1 * scaleFact;
+        n.projY = y2 * scaleFact;
+        n.projScale = scaleFact;
+
+        // Apply to sprites
+        rn.circle.x = n.projX;
+        rn.circle.y = n.projY;
+        
+        // Subtle breathing for active nodes
+        const breathe = rn.isCentre ? 1 + Math.sin(time * 2.5) * 0.05 : 1;
+        rn.circle.scale.set(scaleFact * breathe);
+        rn.circle.zIndex = -z2; // PixiJS draws higher zIndex on top. Smaller z2 = closer = higher zIndex.
+
+        // Alpha falloff for distant nodes
+        // Only dim them if they aren't already dimmed by focus state
+        if (rn.circle.alpha > dimAlpha) {
+           rn.circle.alpha = Math.min(1.0, scaleFact);
+        }
+
+        if (rn.glow) {
+          rn.glow.x = n.projX;
+          rn.glow.y = n.projY;
+          rn.glow.scale.set(scaleFact * breathe);
+          if (rn.isCentre) {
+             rn.glow.alpha = 0.35 + Math.sin(time * 2.5) * 0.08;
           }
         }
-        edgeParticles.forEach(p => {
-          if (!p.sprite.destroyed) {
-            const progress = ((time * p.speed) + p.offset) % 1.0;
-            p.sprite.x = p.sx + (p.ex - p.sx) * progress;
-            p.sprite.y = p.sy + (p.ey - p.sy) * progress;
+
+        if (rn.text) {
+          rn.text.x = n.projX;
+          // Position label below the scaled node
+          rn.text.y = n.projY + (rn.radius * scaleFact * breathe) + 9;
+          rn.text.scale.set(Math.max(0.6, scaleFact));
+        }
+      });
+      
+      // Sort nodes for correct occlusion
+      nodesContainer.sortChildren();
+
+      // 2. Draw Edges
+      backEdgesGraphics.clear();
+      frontEdgesGraphics.clear();
+      
+      const resolvedDimEdgeAlpha = isFocused ? dimEdgeAlpha : 0.08;
+
+      renderEdges.forEach(re => {
+        const s = re.layoutEdge.source;
+        const t = re.layoutEdge.target;
+        
+        // Average Z to determine back/front occlusion
+        // Approximation: if both are behind origin, draw in back container.
+        const zAvg = (s.projScale + t.projScale) / 2;
+        const isBack = zAvg < 1.0; 
+        const g = isBack ? backEdgesGraphics : frontEdgesGraphics;
+
+        const color = re.edgeClass === 'hero' ? 0x71717a 
+                  : re.edgeClass === 'related' ? 0x52525b 
+                  : 0x3f3f46;
+        const width = re.edgeClass === 'hero' ? 1.8 
+                  : re.edgeClass === 'related' ? 1.2 
+                  : 0.8;
+        const alpha = re.edgeClass === 'ambient' ? resolvedDimEdgeAlpha 
+                  : re.edgeClass === 'related' ? 0.3 * zAvg
+                  : 0.65 * zAvg; // Fade out edges going into the distance
+
+        g.stroke({ width: width * zAvg, color, alpha });
+
+        if (useCurves) {
+          drawCurvedEdge(g, s.projX, s.projY, t.projX, t.projY, 14 * zAvg);
+        } else {
+          g.moveTo(s.projX, s.projY);
+          g.lineTo(t.projX, t.projY);
+        }
+
+        if (re.relText) {
+          const mx = (s.projX + t.projX) / 2;
+          const my = (s.projY + t.projY) / 2;
+          if (useCurves) {
+            const dx = t.projX - s.projX;
+            const dy = t.projY - s.projY;
+            const len = Math.sqrt(dx * dx + dy * dy) || 1;
+            const px = -dy / len;
+            const py = dx / len;
+            re.relText.x = mx + px * 14 * zAvg;
+            re.relText.y = my + py * 14 * zAvg;
+          } else {
+            re.relText.x = mx;
+            re.relText.y = my;
           }
-        });
-      };
-      app.ticker.add(tickerCb);
-    }
+          re.relText.scale.set(zAvg);
+          // Label is front/back based on edge
+          re.relText.zIndex = isBack ? -999 : 999;
+        }
+      });
+      mainContainer.sortChildren();
+
+      // 3. Particles
+      edgeParticles.forEach(p => {
+        if (!p.sprite.destroyed) {
+          const progress = ((time * p.speed) + p.offset) % 1.0;
+          
+          // Interpolate 3D coordinates
+          const x = p.sx + (p.ex - p.sx) * progress;
+          const y = p.sy + (p.ey - p.sy) * progress;
+          const z = p.sz + (p.ez - p.sz) * progress;
+          
+          // Project
+          const x1 = x * cosY - z * sinY;
+          const z1 = z * cosY + x * sinY;
+          const y2 = y * cosP - z1 * sinP;
+          const z2 = z1 * cosP + y * sinP;
+          
+          const safeZ2 = Math.max(-FOV + 10, z2);
+          const scaleFact = FOV / (FOV + safeZ2);
+          p.sprite.x = x1 * scaleFact;
+          p.sprite.y = y2 * scaleFact;
+          p.sprite.scale.set(scaleFact);
+          p.sprite.zIndex = -z2;
+        }
+      });
+      if (shouldRenderEffects && showParticles) {
+        particlesContainer.sortChildren();
+      }
+    };
+    app.ticker.add(tickerCb);
 
     // ── drag-to-pan (with background-click detection) ─────────────────────
     let isDragging  = false;
