@@ -1147,15 +1147,6 @@ export default function NeuralDisc({
     viewMode, dimAlpha, dimEdgeAlpha, showParticles, useCurvedEdges,
   ]);
 
-  if (loading && nodesProp.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-zinc-500 bg-zinc-950 p-6 text-center absolute inset-0 z-10 pointer-events-none">
-        <div className="h-6 w-6 rounded-full border-2 border-teal-500/20 border-t-teal-500 animate-spin mb-3" />
-        <p className="text-xs text-zinc-500 uppercase tracking-widest font-semibold animate-pulse">Loading Knowledge Graph...</p>
-      </div>
-    );
-  }
-
   // ── context-loss fallback ─────────────────────────────────────────────────
   if (contextLost) {
     return (
@@ -1171,17 +1162,24 @@ export default function NeuralDisc({
   const zoomPercent = Math.round(viewTransformRef.current.scale * 100);
 
   return (
-    <div
-      ref={containerRef}
-       className={`w-full h-full relative bg-zinc-950 overflow-hidden focus:outline-none focus-visible:ring-1 focus-visible:ring-zinc-600 focus-visible:ring-inset transition-opacity duration-300 ${
-         isReady ? 'opacity-100' : 'opacity-0'
-      }`}
-      tabIndex={0}
-      role="application"
-      aria-label="Rhodey OS Knowledge Graph. Use arrow keys to navigate nodes, Enter to focus, Escape to return to overview."
-      onKeyDown={handleKeyDown}
-    >
-      {/* Zoom controls */}
+    <div className="relative w-full h-full">
+      {(loading && nodesProp.length === 0) && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-500 bg-zinc-950 z-20 pointer-events-none">
+          <div className="h-6 w-6 rounded-full border-2 border-teal-500/20 border-t-teal-500 animate-spin mb-3" />
+          <p className="text-xs uppercase tracking-widest font-semibold animate-pulse">Loading Knowledge Graph...</p>
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        className={`w-full h-full relative bg-zinc-950 overflow-hidden focus:outline-none focus-visible:ring-1 focus-visible:ring-zinc-600 focus-visible:ring-inset transition-opacity duration-300 ${
+          isReady ? 'opacity-100' : 'opacity-0'
+        }`}
+        tabIndex={0}
+        role="application"
+        aria-label="Rhodey OS Knowledge Graph. Use arrow keys to navigate nodes, Enter to focus, Escape to return to overview."
+        onKeyDown={handleKeyDown}
+      >
+        {/* Zoom controls */}
       <div className="absolute bottom-4 right-4 flex flex-col items-center gap-0.5 z-20 select-none">
         <button
           onClick={() => zoomTo(1.3)}
@@ -1205,6 +1203,7 @@ export default function NeuralDisc({
           title="Reset view"
         >Fit</button>
       </div>
+    </div>
     </div>
   );
 }
