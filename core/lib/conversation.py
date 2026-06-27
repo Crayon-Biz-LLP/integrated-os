@@ -2,7 +2,7 @@ from core.services.db import get_supabase
 import uuid
 
 SESSION_TIMEOUT_MINUTES = 60
-MAX_HISTORY_TOKENS = 2000
+MAX_HISTORY_TOKENS = 5000
 
 def _approx_tokens(text: str) -> int:
     """Approximate token count based on character length (~4 chars/token)."""
@@ -131,10 +131,34 @@ def get_or_create_session(chat_id: int, message_text: str = None) -> tuple:
     thread_id, active_anchor = resolve_thread(chat_id, message_text)
     return thread_id, get_history(thread_id), active_anchor
 
+def _compress_to_summary(pairs: list) -> str:
+    """Build a compact extractive summary from overflow conversation pairs."""
+    parts = []
+    for p in pairs:
+        user = p.get('user')
+        if user and user.get('content'):
+            content = user['content'].strip()
+            if content and len(content) > 3:
+                parts.append(content[:150])
+    if not parts:
+        return ""
+    summary = " · ".join(parts)
+    if len(summary) > 800:
+        summary = summary[:797] + "..."
+    return summary
+
+def _store_thread_summary(session_id: str, summary: str):
+    """Persist thread summary to conversation_threads row."""
+    try:
+        get_supabase().table('conversation_threads').update({'summary': summary}).eq('id', session_id).execute()
+    except Exception:
+        pass
+
 def get_history(session_id: str, max_tokens: int = MAX_HISTORY_TOKENS) -> list:
     """
     Get conversation history for a thread (session_id = thread_id), truncated by token budget.
-    Builds user+bot pairs, then drops oldest pairs from front until within max_tokens.
+    Builds user+bot pairs, drops oldest pairs from front until within max_tokens.
+    On first overflow, compresses dropped pairs into a thread summary and stores it.
     """
     res = get_supabase().table('conversations') \
         .select('role, intent, content, token_count') \
@@ -176,14 +200,43 @@ def get_history(session_id: str, max_tokens: int = MAX_HISTORY_TOKENS) -> list:
         for p in pairs
     )
 
+    if total <= max_tokens:
+        return pairs
+
+    # Overflow: capture dropped pairs before popping
+    overflow = []
     while total > max_tokens and len(pairs) > 1:
         removed = pairs.pop(0)
         total -= (
             (removed.get('user') or {}).get('token_count', 0) +
             (removed.get('bot') or {}).get('token_count', 0)
         )
+        overflow.append(removed)
+
+    # Lazy summarization: store overflow summary only if thread has none yet
+    if overflow:
+        try:
+            t_res = get_supabase().table('conversation_threads') \
+                .select('summary').eq('id', session_id).execute()
+            if t_res.data and not t_res.data[0].get('summary'):
+                summary = _compress_to_summary(overflow)
+                if summary:
+                    _store_thread_summary(session_id, summary)
+        except Exception:
+            pass
 
     return pairs
+
+def get_thread_summary(thread_id: str) -> str:
+    """Retrieve stored compressed summary for a thread."""
+    try:
+        t_res = get_supabase().table('conversation_threads') \
+            .select('summary').eq('id', thread_id).execute()
+        if t_res.data and t_res.data[0].get('summary'):
+            return t_res.data[0]['summary']
+    except Exception:
+        pass
+    return ""
 
 def log_exchange(session_id: str, role: str, intent: str, content: str, chat_id: int, metadata: dict = None):
     """Insert an exchange row into conversations. Maps session_id to thread_id."""

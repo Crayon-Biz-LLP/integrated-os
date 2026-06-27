@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import age_tag, resolve_expiry
 from core.pulse.context import context_provider
-from core.lib.conversation import get_history, log_exchange, format_history_for_prompt
+from core.lib.conversation import get_history, log_exchange, format_history_for_prompt, get_thread_summary
 from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_BY_KEYWORD
 from core.llm.fallback import generate_content_with_fallback
@@ -869,6 +869,60 @@ async def safe_fetch(coro, default=None):
         audit_log_sync("webhook", "WARNING", f"Safe fetch failed: {e}")
         return default
 
+def _build_rich_anchor(graph_node_id, name):
+    """Build a structured active_anchor with entity type, last task/project, and context snippet."""
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    anchor = {
+        "id": str(graph_node_id) if graph_node_id else None,
+        "name": name,
+        "type": "entity",
+        "last_action": None,
+        "last_task_id": None,
+        "last_project_id": None,
+        "last_org_id": None,
+        "last_summary_snippet": None,
+        "last_mentioned_at": now_ist.isoformat()
+    }
+    try:
+        node_res = supabase.table('graph_nodes').select('type').eq('id', graph_node_id).execute()
+        if node_res.data:
+            anchor["type"] = node_res.data[0].get('type', 'entity')
+    except Exception:
+        pass
+    try:
+        task_res = supabase.table('tasks') \
+            .select('id, title, project_id, organization_id, status') \
+            .eq('is_current', True) \
+            .neq('status', 'done') \
+            .neq('status', 'cancelled') \
+            .or_(f"title.ilike.%{name}%,metadata->>entity.ilike.%{name}%") \
+            .order('created_at', desc=True) \
+            .limit(1) \
+            .execute()
+        if task_res.data:
+            t = task_res.data[0]
+            anchor["last_task_id"] = str(t['id'])
+            anchor["last_action"] = t.get('status', '')
+            if t.get('project_id'):
+                anchor["last_project_id"] = str(t['project_id'])
+            if t.get('organization_id'):
+                anchor["last_org_id"] = str(t['organization_id'])
+    except Exception:
+        pass
+    try:
+        mem_res = supabase.table('memories') \
+            .select('content') \
+            .eq('is_current', True) \
+            .ilike('content', f'%{name}%') \
+            .order('created_at', desc=True) \
+            .limit(1) \
+            .execute()
+        if mem_res.data:
+            anchor["last_summary_snippet"] = mem_res.data[0].get('content', '')[:200]
+    except Exception:
+        pass
+    return anchor
+
 async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None):
     """On-Demand Brain Interrogation - Universal Question Answering."""
     search_task = None
@@ -882,7 +936,20 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         try:
             anchor_context = ""
             if active_anchor:
-                anchor_context = f"Active entity context (the last entity we were discussing): {active_anchor.get('name', '')}"
+                parts = [f"Active context: {active_anchor.get('name', '')}"]
+                if active_anchor.get('type'):
+                    parts.append(f"Type: {active_anchor['type']}")
+                if active_anchor.get('last_action'):
+                    parts.append(f"Last activity: {active_anchor['last_action']}")
+                if active_anchor.get('last_summary_snippet'):
+                    parts.append(f"Recent context: {active_anchor['last_summary_snippet'][:200]}")
+                anchor_context = "\n".join(parts)
+            # Load thread summary for broader conversational context
+            thread_summary = ""
+            if session_id:
+                thread_summary = get_thread_summary(session_id)
+            if thread_summary:
+                anchor_context += f"\nEarlier in conversation: {thread_summary[:500]}"
             resolve_prompt = f"""You are Rhodey's query parser.
 Task 1: Rewrite the following query to be fully self-contained by replacing any pronouns or vague references (e.g. it, that, he, the first one) with the specific entities or context they refer to from the conversation history. If the query is already clear, output it unchanged.
 Task 2: Extract the primary entity (project, person, or organization) from the resolved query. If there is no clear entity, output "None".
@@ -922,7 +989,6 @@ Query: {query}"""
             audit_log_sync("webhook", "WARNING", f"Anaphora/Entity resolution failed: {e}")
 
         # If we found a new entity, try to resolve it to a graph node to set as anchor
-        new_anchor = None
         if resolved_entity:
             try:
                 # Fast search for exact or partial match in graph_nodes
@@ -947,8 +1013,7 @@ Query: {query}"""
                                         ec[nid] = ec.get(nid, 0) + 1
                         chosen = max(matches, key=lambda n: ec.get(n['id'], 0))
                     
-                    new_anchor = {"id": str(chosen['id']), "name": chosen['label']}
-                    active_anchor = new_anchor
+                    active_anchor = _build_rich_anchor(chosen['id'], chosen['label'])
                     
                     # Persist active_anchor to thread record for follow-up queries
                     if session_id:
