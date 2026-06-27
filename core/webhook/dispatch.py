@@ -17,6 +17,7 @@ from core.pulse.graph import hybrid_search_graph
 from core.agents.quick_process import process_single_dump, get_tasks_service
 from core.retrieval.pipeline import schedule_index_memory
 from core.pulse.entity_extractor import extract_and_link_entities
+from core.pulse.entity_resolver import resolve_entities_from_text
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:
@@ -312,6 +313,56 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             audit_log_sync("webhook", "WARNING", f"Inline processing failed for dump {dump_id}: {e}")
 
 
+async def _enrich_memory_entities(text: str, memory_id: int):
+    """Shared helper for handle_project_update and handle_confident_note"""
+    chosen_org_id = None
+    chosen_proj_id = None
+    reason = "no_match"
+    
+    try:
+        # 1. Try LLM extraction first (builds graph edges)
+        extracted = await extract_and_link_entities(text, str(memory_id), 'memory')
+        org_candidates, proj_candidates = extracted if extracted else ([], [])
+        
+        if len(proj_candidates) == 1:
+            chosen_proj_id = proj_candidates[0]['id']
+            if proj_candidates[0].get('org_id'):
+                chosen_org_id = proj_candidates[0]['org_id']
+                reason = "llm_project_implied_org"
+            elif len(org_candidates) == 1:
+                chosen_org_id = org_candidates[0]
+                reason = "llm_single_match_both"
+            else:
+                reason = "llm_single_match_project"
+        elif len(org_candidates) == 1:
+            chosen_org_id = org_candidates[0]
+            reason = "llm_single_match_org"
+            
+        # 2. Fallback to deterministic n-gram resolver if LLM missed
+        if not chosen_org_id and not chosen_proj_id:
+            res_org, res_proj, res_reason = resolve_entities_from_text(text)
+            if res_org or res_proj:
+                chosen_org_id = res_org
+                chosen_proj_id = res_proj
+                reason = f"deterministic_fallback: {res_reason}"
+                
+        # 3. Apply updates if found
+        if chosen_org_id or chosen_proj_id:
+            update_data = {}
+            if chosen_org_id:
+                update_data['organization_id'] = chosen_org_id
+            if chosen_proj_id:
+                update_data['project_id'] = chosen_proj_id
+            supabase.table('memories').update(update_data).eq('id', memory_id).execute()
+            
+        audit_log_sync("webhook", "INFO", f"Memory enrichment {memory_id} | reason={reason} | chosen_org={chosen_org_id} chosen_proj={chosen_proj_id}")
+        return chosen_org_id, chosen_proj_id
+        
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"Shared entity enrichment failed for memory {memory_id}: {e}")
+        return None, None
+
+
 async def handle_project_update(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None):
     # ── Idempotency guard ──
     if is_recent_raw_dump(text, source):
@@ -385,28 +436,7 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
             memory_id = result.data[0]["id"]
             schedule_index_memory(memory_id, text, "note", "webhook")
             
-            try:
-                extracted = await extract_and_link_entities(text, memory_id, 'memory')
-                org_candidates, proj_candidates = extracted if extracted else ([], [])
-                
-                if len(proj_candidates) == 1:
-                    chosen_proj_id = proj_candidates[0]['id']
-                    if proj_candidates[0].get('org_id'):
-                        chosen_org_id = proj_candidates[0]['org_id']
-                    elif len(org_candidates) == 1:
-                        chosen_org_id = org_candidates[0]
-                elif len(org_candidates) == 1:
-                    chosen_org_id = org_candidates[0]
-                
-                if chosen_org_id or chosen_proj_id:
-                    update_data = {}
-                    if chosen_org_id:
-                        update_data['organization_id'] = chosen_org_id
-                    if chosen_proj_id:
-                        update_data['project_id'] = chosen_proj_id
-                    supabase.table('memories').update(update_data).eq('id', memory_id).execute()
-            except Exception as e:
-                audit_log_sync("webhook", "WARNING", f"Entity extraction failed for update: {e}")
+            chosen_org_id, chosen_proj_id = await _enrich_memory_entities(text, memory_id)
                 
         if dump_id:
             supabase.table('raw_dumps').update({"status": "processed", "is_processed": True}).eq('id', dump_id).execute()
@@ -556,43 +586,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         if result and result.data:
             memory_id = result.data[0]["id"]
             schedule_index_memory(memory_id, text, "note", "webhook")
-            try:
-                extracted = await extract_and_link_entities(text, memory_id, 'memory')
-                org_candidates, proj_candidates = extracted if extracted else ([], [])
-                
-                chosen_org_id = None
-                chosen_proj_id = None
-                reason = "no_match"
-                
-                if len(proj_candidates) == 1:
-                    chosen_proj_id = proj_candidates[0]['id']
-                    if proj_candidates[0].get('org_id'):
-                        chosen_org_id = proj_candidates[0]['org_id']
-                        reason = "project_implied_org"
-                    elif len(org_candidates) == 1:
-                        chosen_org_id = org_candidates[0]
-                        reason = "single_match_both"
-                    else:
-                        reason = "single_match_project"
-                elif len(proj_candidates) > 1:
-                    reason = "ambiguous_project"
-                elif len(org_candidates) == 1:
-                    chosen_org_id = org_candidates[0]
-                    reason = "single_match_org"
-                elif len(org_candidates) > 1:
-                    reason = "ambiguous_org"
-                
-                if chosen_org_id or chosen_proj_id:
-                    update_data = {}
-                    if chosen_org_id:
-                        update_data['organization_id'] = chosen_org_id
-                    if chosen_proj_id:
-                        update_data['project_id'] = chosen_proj_id
-                    supabase.table('memories').update(update_data).eq('id', memory_id).execute()
-                
-                audit_log_sync("webhook", "INFO", f"Memory enrichment {memory_id} | reason={reason} | orgs={len(org_candidates)} projs={len(proj_candidates)} | chosen_org={chosen_org_id} chosen_proj={chosen_proj_id}")
-            except Exception as e:
-                audit_log_sync("webhook", "WARNING", f"Entity extraction or enrichment for note failed: {e}")
+            await _enrich_memory_entities(text, memory_id)
         
         # Mark dump as processed
         if dump_id:

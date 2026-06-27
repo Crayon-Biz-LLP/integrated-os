@@ -40,6 +40,7 @@ RULES:
   - Use canonical names for known entities: "Danny" (not "I", "me", "user"), "Mother" (not "Amma", "amma").
   - Do not extract pronouns or generic terms ("he", "the project", "loops") as nodes.
 - KNOWN ENTITIES (use exact spelling if referring to these): {known_str}
+- AVOID COMBINING ENTITIES: Never combine an organization and a project into a single label. E.g. "Armour Cyber AI Gateway" must be split into "Armour Cyber" (organization) and "AI Gateway" (project).
 - TYPE GUIDANCE:
   - "place": A physical location, venue, or geographic area (e.g. "St. Mary's Church", "Kakkanad office").
   - "event": A scheduled or past occurrence with a time/date (e.g. "Sunday service", "team standup").
