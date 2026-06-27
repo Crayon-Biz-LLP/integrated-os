@@ -27,6 +27,8 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
             # get anchor
             t_res = supabase.table('conversation_threads').select('active_anchor').eq('id', thread_id).execute()
             anchor = t_res.data[0].get('active_anchor') if t_res.data else None
+            from core.lib.audit_logger import audit_log_sync
+            audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via workflow_resume")
             return thread_id, anchor
             
         # 3. Exact entity thread match
@@ -51,6 +53,8 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
                     if existing.data:
                         thread_id = existing.data[0]['id']
                         _touch_thread(thread_id)
+                        from core.lib.audit_logger import audit_log_sync
+                        audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via exact_entity_match (existing)")
                         return thread_id, existing.data[0].get('active_anchor')
                     else:
                         new_thread = supabase.table('conversation_threads').insert({
@@ -60,6 +64,8 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
                             'entity_id': e_id,
                             'routing_confidence': reason
                         }).execute()
+                        from core.lib.audit_logger import audit_log_sync
+                        audit_log_sync("routing", "INFO", f"Routed to new thread {new_thread.data[0]['id']} via exact_entity_match (new)")
                         return new_thread.data[0]['id'], None
             except Exception as inner_e:
                 print(f"Entity resolution failed in thread routing: {inner_e}")
@@ -84,8 +90,10 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
                 
             if last_msg.data and last_msg.data[0]['role'] == 'bot':
                 content = last_msg.data[0]['content']
-                if content.strip().endswith('?') or 'clarification' in content.lower():
+                if content.strip().endswith('?') or 'clarification' in content.lower() or 'ready to add that to your calendar' in content.lower():
                     _touch_thread(thread_id)
+                    from core.lib.audit_logger import audit_log_sync
+                    audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via prior_bot_question")
                     return thread_id, last_thread.data[0].get('active_anchor')
 
         # 5. Else general
@@ -99,12 +107,16 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
         if general.data:
             thread_id = general.data[0]['id']
             _touch_thread(thread_id)
+            from core.lib.audit_logger import audit_log_sync
+            audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via fallback_general (existing)")
             return thread_id, general.data[0].get('active_anchor')
         else:
             new_thread = supabase.table('conversation_threads').insert({
                 'chat_id': chat_id,
                 'thread_type': 'general'
             }).execute()
+            from core.lib.audit_logger import audit_log_sync
+            audit_log_sync("routing", "INFO", f"Routed to new thread {new_thread.data[0]['id']} via fallback_general (new)")
             return new_thread.data[0]['id'], None
 
     except Exception as e:

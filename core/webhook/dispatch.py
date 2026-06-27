@@ -504,6 +504,22 @@ Return JSON:
         elif analysis.get("needs_question") and analysis.get("suggested_question"):
             followup_msg = f"\n\n{analysis['suggested_question']}"
             
+            # PRODUCER WIRING: If LLM proposed a workflow, save it so "yes" replies can resume it
+            w_type = analysis.get("proposed_workflow")
+            if w_type:
+                try:
+                    supabase.table('conversation_workflows').insert({
+                        "chat_id": chat_id,
+                        "thread_id": session_id,
+                        "workflow_type": w_type,
+                        "payload": analysis.get("proposed_payload", {}),
+                        "awaiting_user_input": True,
+                        "status": "active"
+                    }).execute()
+                    audit_log_sync("workflow", "INFO", f"Created {w_type} workflow for thread {session_id}")
+                except Exception as e:
+                    audit_log_sync("workflow", "ERROR", f"Failed to create workflow: {e}")
+            
         ack = receipt or "✅ Update logged and entities extracted."
         reply_text = f"{ack}{followup_msg}"
         await send_telegram(chat_id, reply_text)

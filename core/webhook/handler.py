@@ -8,6 +8,7 @@ from core.webhook.telegram import send_telegram, download_telegram_file, answer_
 from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
 from core.webhook.email import process_email_pending_decision, handle_ed_command
+from core.webhook.workflows import check_and_resume_workflow
 from core.webhook.utils import process_channel_pending_decision
 
 
@@ -870,6 +871,14 @@ async def process_webhook(update: dict):
             return {"success": True}
 
         session_id, history, active_anchor = get_or_create_session(chat_id, message_text=text)
+
+        # ── CONSUMER PRECEDENCE: Check active workflow before normal routing ──
+        try:
+            workflow_handled = await check_and_resume_workflow(chat_id, text, session_id)
+            if workflow_handled:
+                return {"success": True}
+        except Exception as e:
+            audit_log_sync("workflow", "ERROR", f"Workflow check failed, falling open: {e}")
 
         try:
             # Check for empty /note continuation state
