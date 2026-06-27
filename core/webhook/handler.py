@@ -869,7 +869,7 @@ async def process_webhook(update: dict):
             await handle_ed_command(text, chat_id)
             return {"success": True}
 
-        session_id, history, active_anchor = get_or_create_session(chat_id)
+        session_id, history, active_anchor = get_or_create_session(chat_id, message_text=text)
 
         try:
             # Check for empty /note continuation state
