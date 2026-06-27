@@ -2,7 +2,7 @@ from core.services.db import get_supabase
 import uuid
 from datetime import datetime, timezone
 
-SESSION_TIMEOUT_MINUTES = 15
+SESSION_TIMEOUT_MINUTES = 60
 MAX_HISTORY_TOKENS = 2000
 
 def _approx_tokens(text: str) -> int:

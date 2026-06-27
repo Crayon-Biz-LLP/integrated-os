@@ -283,7 +283,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             audit_log_sync("webhook", "ERROR", f"Failed to fetch existing dump by dedup_key: {e2}")
 
     ack = receipt or "Logged."
-    await send_telegram(chat_id, f"{ack}")
+    # Removed early ack to avoid double-send (C1 & C2)
 
     # Inline: process the dump immediately (fire-and-forget)
     if dump_id:
@@ -293,7 +293,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             
             if result.get('action') == 'clarify':
                 question = result.get('question', "Could you provide more details?")
-                reply = f"{ack}\n\n{question}\n\n_Context: \"{text[:100]}...\"_"
+                reply = f"{question}\n\n_Context: \"{text[:100]}...\"_"
                 await send_telegram(chat_id, reply)
                 supabase.table('raw_dumps').update({
                     "status": "clarify_needed",
@@ -304,6 +304,9 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
                 supabase.table('raw_dumps').update({"status": "synced"}).eq('id', dump_id).execute()
                 audit_log_sync("webhook", "INFO", f"Inline processed dump {dump_id}: {result['action']}")
                 
+                # Send the ack now that processing is done
+                await send_telegram(chat_id, f"{ack}")
+                
                 # Check if there is a calendar conflict warning to send
                 conflict = result.get('conflict_warning')
                 if conflict:
@@ -311,6 +314,9 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
                     
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Inline processing failed for dump {dump_id}: {e}")
+            await send_telegram(chat_id, f"{ack}")
+    else:
+        await send_telegram(chat_id, f"{ack}")
 
 
 async def _enrich_memory_entities(text: str, memory_id: int):
@@ -363,7 +369,7 @@ async def _enrich_memory_entities(text: str, memory_id: int):
         return None, None
 
 
-async def handle_project_update(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None):
+async def handle_project_update(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None):
     # ── Idempotency guard ──
     if is_recent_raw_dump(text, source):
         ack = receipt or "Update logged."
@@ -499,15 +505,20 @@ Return JSON:
             followup_msg = f"\n\n{analysis['suggested_question']}"
             
         ack = receipt or "✅ Update logged and entities extracted."
-        await send_telegram(chat_id, f"{ack}{followup_msg}")
+        reply_text = f"{ack}{followup_msg}"
+        await send_telegram(chat_id, reply_text)
+        if session_id:
+            log_exchange(session_id, 'bot', 'PROJECT_UPDATE', reply_text, chat_id)
         
     except Exception as e:
         audit_log_sync("webhook", "WARNING", f"Update analysis failed: {e}")
         ack = receipt or "✅ Update logged."
         await send_telegram(chat_id, f"{ack}")
+        if session_id:
+            log_exchange(session_id, 'bot', 'PROJECT_UPDATE', f"{ack}", chat_id)
 
 
-async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None):
+async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None):
     # ── Idempotency guard: skip if identical content+source inserted within 60s ──
     if is_recent_raw_dump(text, source):
         ack = receipt or "Note vaulted."
@@ -629,7 +640,10 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Failed to mark dump {dump_id} as processed: {e}")
 
-    await send_telegram(chat_id, receipt or "Note vaulted.")
+    final_receipt = receipt or "Note vaulted."
+    await send_telegram(chat_id, final_receipt)
+    if session_id:
+        log_exchange(session_id, 'bot', 'NOTE', final_receipt, chat_id)
 
 async def handle_clarification(text: str, question: str, chat_id: int, session_id: str = None, receipt: str = None):
     ack = receipt or "Copy that. I need one more detail to log this."
@@ -729,7 +743,7 @@ async def resolve_task_note_confirmation(text: str, chat_id: int, session_id: st
 async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None, active_anchor: dict = None):
     history_text = ""
     if session_id:
-        pairs = get_history(session_id, max_tokens=5)
+        pairs = get_history(session_id)
         history_text = format_history_for_prompt(pairs)
 
     if intent == 'TASK':
@@ -761,12 +775,12 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None
         extraction_method = classification.get('extraction_method') if classification else None
-        await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method)
+        await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id)
     elif intent == 'PROJECT_UPDATE':
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None
         extraction_method = classification.get('extraction_method') if classification else None
-        await handle_project_update(text, chat_id, receipt or "Update logged.", source=source, sender=sender, entity=entity, extraction_method=extraction_method)
+        await handle_project_update(text, chat_id, receipt or "Update logged.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id)
     elif intent == 'DELEGATE':
         supabase.table('agent_queue').insert({"query": text, "status": "pending"}).execute()
         ack = classification.get('receipt', "The intern is on it. I'll ping you when the research is ready.") if classification else "The intern is on it. I'll ping you when the research is ready."
