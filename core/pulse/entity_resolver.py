@@ -75,19 +75,30 @@ def resolve_entities_from_text(text: str) -> Tuple[Optional[str], Optional[int],
     elif len(matched_orgs) > 1:
         reason_parts.append(f"org_ambiguous({len(matched_orgs)}_matches)")
         
-    # Infer org from project if org is null
-    if final_proj_id and not final_org_id:
+    # Inference and Collision handling
+    if final_proj_id:
         proj_org_id = matched_projs[0].get('organization_id')
         if proj_org_id:
-            final_org_id = proj_org_id
-            reason_parts.append("org_inferred_from_proj")
-            
-    # Collision check: if project implies org A, but text matches org B
-    if final_proj_id and len(matched_orgs) == 1:
-        proj_org_id = matched_projs[0].get('organization_id')
-        if proj_org_id and proj_org_id != final_org_id:
-            reason_parts.append("org_proj_collision_leaving_org_null")
-            final_org_id = None # safer to leave null on conflict
+            if not final_org_id:
+                # final_org_id is None either because 0 matches or >1 matches
+                if len(matched_orgs) > 1:
+                    # Text had multiple orgs. Is the project's org one of them?
+                    matched_org_ids = [o['id'] for o in matched_orgs]
+                    if proj_org_id in matched_org_ids:
+                        final_org_id = proj_org_id
+                        reason_parts.append("org_inferred_from_proj_resolved_ambiguity")
+                    else:
+                        # Collision: project's org is NOT in the matched orgs
+                        reason_parts.append("org_proj_collision_leaving_org_null")
+                else:
+                    # 0 matched orgs in text. Safe to infer.
+                    final_org_id = proj_org_id
+                    reason_parts.append("org_inferred_from_proj")
+            else:
+                # final_org_id is already set (exactly 1 matched org)
+                if proj_org_id != final_org_id:
+                    reason_parts.append("org_proj_collision_leaving_org_null")
+                    final_org_id = None
             
     reason = " | ".join(reason_parts) if reason_parts else "no_matches"
     
