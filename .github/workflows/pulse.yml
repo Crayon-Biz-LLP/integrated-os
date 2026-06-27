@@ -34,6 +34,19 @@ jobs:
           done
           echo "✅ All secrets present"
 
+      - name: "Guard: no unversioned memories.update() bypassing version_memory_for_update"
+        run: |
+          BAD=$(grep -rn "\.table('memories')\.update({" \
+            --include="*.py" \
+            . || true)
+          if [ -n "$BAD" ]; then
+            echo "❌ Inline memories.update({...}) bypasses version_memory_for_update:"
+            echo "$BAD"
+            echo "Use version_memory_for_update() from core/services/db.py instead."
+            exit 1
+          fi
+          echo "✅ No unversioned memories.update() calls found"
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:

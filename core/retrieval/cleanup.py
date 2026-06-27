@@ -16,10 +16,13 @@ def cleanup_memory_retrieval_index(memory_id: int):
                 .delete() \
                 .in_('passage_id', passage_ids) \
                 .execute()
-            supabase.table('retrieval_passage_triple_links') \
-                .delete() \
-                .in_('passage_id', passage_ids) \
-                .execute()
+            try:
+                supabase.table('retrieval_passage_triple_links') \
+                    .delete() \
+                    .in_('passage_id', passage_ids) \
+                    .execute()
+            except Exception:
+                pass
             supabase.table('retrieval_memory_bundle_links') \
                 .delete() \
                 .eq('memory_id', memory_id) \

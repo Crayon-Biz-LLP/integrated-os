@@ -355,6 +355,62 @@ async def handle_undo_command(text: str, chat_id: int):
         await send_telegram(chat_id, f"⚠️ Undo failed: {e}")
         return {"success": True}
 
+async def handle_audit_command(chat_id: int):
+    try:
+        abandoned = supabase.table('raw_dumps') \
+            .select('id', count='exact') \
+            .eq('status', 'abandoned') \
+            .execute()
+        abandoned_count = abandoned.count or 0
+
+        now = datetime.now(timezone.utc)
+        day_ago = (now - timedelta(hours=24)).isoformat()
+
+        orphans = supabase.table('audit_logs') \
+            .select('id', count='exact') \
+            .eq('service', 'sentinel') \
+            .ilike('message', '%orphan sweep%') \
+            .gte('created_at', day_ago) \
+            .execute()
+        orphans_count = orphans.count or 0
+
+        versions = supabase.table('memories') \
+            .select('id', count='exact') \
+            .eq('is_current', False) \
+            .execute()
+        version_count = versions.count or 0
+
+        version_events = supabase.table('audit_logs') \
+            .select('id', count='exact') \
+            .eq('service', 'db') \
+            .ilike('message', '%version_memory%') \
+            .gte('created_at', day_ago) \
+            .execute()
+        version_events_count = version_events.count or 0
+
+        raw_pending = supabase.table('raw_dumps') \
+            .select('id', count='exact') \
+            .in_('status', ['staged', 'pending']) \
+            .execute()
+        raw_pending_count = raw_pending.count or 0
+
+        lines = [
+            "*SYSTEM AUDIT*",
+            "",
+            f"Abandoned raw dumps: {abandoned_count}",
+            f"Pending/staged raw dumps: {raw_pending_count}",
+            f"Orphans cleaned (24h): {orphans_count} sweep run(s)",
+            f"Memory archives (total): {version_count}",
+            f"Version events (24h): {version_events_count}",
+        ]
+        timestamp = now.strftime("%d %b, %I:%M %p")
+        lines.append(f"\n_As of {timestamp} UTC_")
+        await send_telegram(chat_id, "\n".join(lines))
+    except Exception as e:
+        audit_log_sync("webhook", "ERROR", f"/audit error: {e}")
+        await send_telegram(chat_id, f"⚠️ Audit check failed: {e}")
+
+
 async def handle_command(text: str, chat_id: int):
     reply = ""
 
@@ -440,6 +496,10 @@ async def handle_command(text: str, chat_id: int):
 
     elif text in ['/status', '📊 Status']:
         await handle_status_command(chat_id)
+        return {"success": True}
+
+    elif text in ['/audit']:
+        await handle_audit_command(chat_id)
         return {"success": True}
 
     elif text in ['/practices', '🏃 Practices']:

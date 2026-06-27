@@ -11,6 +11,7 @@ from core.lib.conversation import log_exchange
 
 CONFIRM_PHRASES = {'yes', 'y', 'yep', 'do it', 'go ahead', 'sure', 'ok', 'okay', 'yeah', 'please', 'absolutely'}
 DECLINE_PHRASES = {'no', 'n', 'nope', 'cancel', 'skip', 'nevermind', 'ignore', 'stop'}
+NEGATION_WORDS = {'not', "n't", 'never'}
 
 def get_deterministic_decision(text: str):
     cleaned = re.sub(r'[^\w\s]', '', text.lower()).strip()
@@ -18,14 +19,17 @@ def get_deterministic_decision(text: str):
         return 'confirm'
     if cleaned in DECLINE_PHRASES:
         return 'decline'
-    
+
     words = cleaned.split()
     if len(words) <= 4:
-        if any(w in CONFIRM_PHRASES for w in words) and not any(w in DECLINE_PHRASES for w in words):
+        has_negation = any(w in NEGATION_WORDS for w in words)
+        has_confirm = any(w in CONFIRM_PHRASES for w in words)
+        has_decline = any(w in DECLINE_PHRASES for w in words)
+        if has_confirm and not has_decline and not has_negation:
             return 'confirm'
-        if any(w in DECLINE_PHRASES for w in words) and not any(w in CONFIRM_PHRASES for w in words):
+        if has_decline and not has_confirm and not has_negation:
             return 'decline'
-            
+
     return None
 
 async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> bool:
