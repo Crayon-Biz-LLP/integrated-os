@@ -311,6 +311,172 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Inline processing failed for dump {dump_id}: {e}")
 
+
+async def handle_project_update(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None):
+    # ── Idempotency guard ──
+    if is_recent_raw_dump(text, source):
+        ack = receipt or "Update logged."
+        await send_telegram(chat_id, f"{ack}")
+        return
+
+    # ── Step 1: Insert as staged ──
+    metadata = {"intent": "PROJECT_UPDATE", "entity": entity}
+    if extraction_method is not None:
+        metadata["extraction_method"] = extraction_method
+    dedup_key = hashlib.md5(f"{source}:{text}".encode()).hexdigest()
+    insert_data = {
+        "content": text,
+        "status": "staged",
+        "direction": "incoming",
+        "sender": sender,
+        "message_type": "note",
+        "source": source,
+        "metadata": metadata,
+        "dedup_key": dedup_key
+    }
+    dump_id = None
+    try:
+        dump_res = supabase.table('raw_dumps').insert([insert_data]).execute()
+        dump_id = dump_res.data[0]['id'] if dump_res.data else None
+    except Exception as e:
+        audit_log_sync("webhook", "ERROR", f"Failed to save update dump: {e}")
+        try:
+            existing = supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key).maybe_single().execute()
+            dump_id = existing.data.get('id') if existing.data else None
+        except Exception:
+            pass
+
+    # ── Step 2: Attempt embedding ──
+    try:
+        embedding = (await get_embedding(text)).vector
+        embed_success = bool(embedding and any(embedding))
+    except Exception as e:
+        audit_log_sync("webhook", "ERROR", f"Embedding failed for update: {e}")
+        embedding = None
+        embed_success = False
+        
+    embed_status = 'success' if embed_success else 'failed'
+
+    if not embed_success:
+        if dump_id:
+            supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
+        ack = receipt or "✅ Captured. Memory indexing will retry shortly."
+        await send_telegram(chat_id, f"{ack}")
+        return
+
+    # ── Step 3: Save to memories and Extract Entities ──
+    memory_id = None
+    chosen_org_id = None
+    chosen_proj_id = None
+    try:
+        expires_at = resolve_expiry(text, datetime.now(timezone.utc))
+        expires_iso = expires_at.isoformat() if expires_at else None
+        result = supabase.table('memories').insert({
+            "content": text,
+            "memory_type": "note",
+            "embedding": embedding,
+            "embedding_status": embed_status,
+            "source": "webhook",
+            "metadata": {"entity": entity},
+            "expires_at": expires_iso
+        }).execute()
+        
+        if result and result.data:
+            memory_id = result.data[0]["id"]
+            schedule_index_memory(memory_id, text, "note", "webhook")
+            
+            try:
+                extracted = await extract_and_link_entities(text, memory_id, 'memory')
+                org_candidates, proj_candidates = extracted if extracted else ([], [])
+                
+                if len(proj_candidates) == 1:
+                    chosen_proj_id = proj_candidates[0]['id']
+                    if proj_candidates[0].get('org_id'):
+                        chosen_org_id = proj_candidates[0]['org_id']
+                    elif len(org_candidates) == 1:
+                        chosen_org_id = org_candidates[0]
+                elif len(org_candidates) == 1:
+                    chosen_org_id = org_candidates[0]
+                
+                if chosen_org_id or chosen_proj_id:
+                    update_data = {}
+                    if chosen_org_id:
+                        update_data['organization_id'] = chosen_org_id
+                    if chosen_proj_id:
+                        update_data['project_id'] = chosen_proj_id
+                    supabase.table('memories').update(update_data).eq('id', memory_id).execute()
+            except Exception as e:
+                audit_log_sync("webhook", "WARNING", f"Entity extraction failed for update: {e}")
+                
+        if dump_id:
+            supabase.table('raw_dumps').update({"status": "processed", "is_processed": True}).eq('id', dump_id).execute()
+            
+    except Exception as e:
+        audit_log_sync("webhook", "ERROR", f"Failed to save update to memory: {e}")
+        if dump_id:
+            supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
+        ack = receipt or "✅ Captured. Memory indexing will retry shortly."
+        await send_telegram(chat_id, f"{ack}")
+        return
+
+    # ── Step 4: Optional Follow-up Analysis ──
+    # Ask LLM if we need a single follow-up task or targeted question
+    prompt = f"""You are analyzing a rich project update.
+Update: "{text}"
+
+Does this update contain an EXPLICIT imperative asking to create a task? (e.g., "Remind me to...", "Add a task to...", "I need to..."). If so, set needs_task=true.
+If not, does it leave exactly ONE critical ambiguity that requires a targeted question (e.g., "Who else should know?", "Is this pricing or scope?", "Do you want me to add a task for X?")?
+If neither, or if there are too many actions, just acknowledge.
+
+Return JSON:
+{{
+  "needs_task": boolean,
+  "suggested_task_title": "string or null",
+  "needs_question": boolean,
+  "suggested_question": "string or null"
+}}"""
+
+    try:
+        from core.llm.fallback import generate_content_with_fallback
+        from core.llm.config import WorkloadProfile
+        from core.webhook.classify import CLASSIFICATION_MODEL
+        
+        analysis_res = await generate_content_with_fallback(
+            prompt=prompt,
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model=CLASSIFICATION_MODEL,
+            config={'response_mime_type': 'application/json'}
+        )
+        analysis = analysis_res.parse_json()
+        
+        followup_msg = ""
+        if analysis.get("needs_task") and analysis.get("suggested_task_title"):
+            # Create the task
+            task_title = analysis["suggested_task_title"]
+            try:
+                supabase.table('tasks').insert({
+                    "title": task_title,
+                    "status": "todo",
+                    "priority": "important",
+                    "project_id": chosen_proj_id,
+                    "organization_id": chosen_org_id,
+                    "direction": "inbound"
+                }).execute()
+                followup_msg = f"\n\n_Created follow-up task: {task_title}_"
+            except Exception as e:
+                audit_log_sync("webhook", "WARNING", f"Failed to auto-create follow-up task: {e}")
+        elif analysis.get("needs_question") and analysis.get("suggested_question"):
+            followup_msg = f"\n\n{analysis['suggested_question']}"
+            
+        ack = receipt or "✅ Update logged and entities extracted."
+        await send_telegram(chat_id, f"{ack}{followup_msg}")
+        
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"Update analysis failed: {e}")
+        ack = receipt or "✅ Update logged."
+        await send_telegram(chat_id, f"{ack}")
+
+
 async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None):
     # ── Idempotency guard: skip if identical content+source inserted within 60s ──
     if is_recent_raw_dump(text, source):
@@ -602,6 +768,11 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         entity = classification.get('entity') if classification else None
         extraction_method = classification.get('extraction_method') if classification else None
         await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method)
+    elif intent == 'PROJECT_UPDATE':
+        receipt = classification.get('receipt') if classification else None
+        entity = classification.get('entity') if classification else None
+        extraction_method = classification.get('extraction_method') if classification else None
+        await handle_project_update(text, chat_id, receipt or "Update logged.", source=source, sender=sender, entity=entity, extraction_method=extraction_method)
     elif intent == 'DELEGATE':
         supabase.table('agent_queue').insert({"query": text, "status": "pending"}).execute()
         ack = classification.get('receipt', "The intern is on it. I'll ping you when the research is ready.") if classification else "The intern is on it. I'll ping you when the research is ready."

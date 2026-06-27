@@ -5,7 +5,6 @@ State machine: processing_completion -> awaiting_completion_match | completed | 
 """
 from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm import get_embedding
-import json
 import asyncio
 
 from core.lib.audit_logger import audit_log_sync
@@ -55,6 +54,7 @@ async def handle_confident_completion(
         # ── Stage 2: Embed + write to memories immediately (zero data loss) ──
         embedding = (await get_embedding(text)).vector
         embed_valid = bool(embedding and any(embedding))
+        memory_id = None
         try:
             mem_res = supabase.table("memories").insert({
                 "content":          text,
@@ -69,8 +69,8 @@ async def handle_confident_completion(
                 "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat())
             }).execute()
             if mem_res and mem_res.data:
-                schedule_index_memory(mem_res.data[0]["id"], text,
-                                      "note", "webhook_completion")
+                memory_id = mem_res.data[0]["id"]
+                schedule_index_memory(memory_id, text, "note", "webhook_completion")
         except Exception as mem_err:
             audit_log_sync("completion", "WARNING", f"Memory write failed for dump {dump_id}: {mem_err}")
             pass
@@ -93,7 +93,7 @@ async def handle_confident_completion(
         candidates = [
             t for t in active_tasks
             if any(word in t["title"].lower() for word in title_lower.split() if len(word) > 3)
-        ] or active_tasks[:10]   # fallback: send top 10 if prefilter returns nothing
+        ]
 
         # ── Stage 4: Strict LLM matcher ───────────────────────────────────────
         from core.llm.fallback import generate_content_with_fallback
@@ -138,35 +138,115 @@ Response: {{"matched_task_ids": [...]}}"""
         validated_ids   = [i for i in raw_ids if i in active_id_set]
 
         if not validated_ids:
-            if candidates:
-                # Ask user to pick via text reply
-                MAX_SHOWN = 10
-                lines = [f"{i+1}. {c['title'][:80]}" for i, c in enumerate(candidates[:MAX_SHOWN])]
-                if len(candidates) > MAX_SHOWN:
-                    lines.append(f"...and {len(candidates) - MAX_SHOWN} more")
-                reply = "Which task did you complete? Reply with the number, or 'n' if none of these.\n\n"
-                reply += "\n".join(lines)
-                reply += "\n\nReply 'n' to leave it open."
+            # NO MATCH. Degrade to PROJECT_UPDATE instead of asking user.
+            audit_log_sync("completion", "INFO", f"Override: Strict completion matcher found no task for '{title}'. Degraded dump {dump_id} to PROJECT_UPDATE.")
+            
+            # 1. Update raw_dump
+            supabase.table("raw_dumps").update({
+                "status": "processed", 
+                "is_processed": True,
+                "message_type": "note",
+                "metadata": {
+                    "intent": "PROJECT_UPDATE",
+                    "title": title,
+                    "entity": entity,
+                    "degraded_from_completion": True
+                }
+            }).eq("id", dump_id).execute()
+            
+            # 2. Update memory if it was created
+            if memory_id:
+                supabase.table("memories").update({
+                    "metadata": {
+                        "intent": "PROJECT_UPDATE",
+                        "entity": entity,
+                        "degraded_from_completion": True
+                    }
+                }).eq("id", memory_id).execute()
+                
+                # 3. Extract and link entities
+                try:
+                    from core.pulse.entity_extractor import extract_and_link_entities
+                    extracted = await extract_and_link_entities(text, memory_id, 'memory')
+                    org_candidates, proj_candidates = extracted if extracted else ([], [])
+                    
+                    chosen_org_id = None
+                    chosen_proj_id = None
+                    if len(proj_candidates) == 1:
+                        chosen_proj_id = proj_candidates[0]['id']
+                        if proj_candidates[0].get('org_id'):
+                            chosen_org_id = proj_candidates[0]['org_id']
+                        elif len(org_candidates) == 1:
+                            chosen_org_id = org_candidates[0]
+                    elif len(org_candidates) == 1:
+                        chosen_org_id = org_candidates[0]
+                    
+                    if chosen_org_id or chosen_proj_id:
+                        update_data = {}
+                        if chosen_org_id:
+                            update_data['organization_id'] = chosen_org_id
+                        if chosen_proj_id:
+                            update_data['project_id'] = chosen_proj_id
+                        supabase.table('memories').update(update_data).eq('id', memory_id).execute()
+                except Exception as e:
+                    audit_log_sync("completion", "WARNING", f"Entity extraction failed for degraded update: {e}")
+            
+            # 4. Optional Follow-up Analysis
+            prompt = f"""You are analyzing a rich project update.
+Update: "{text}"
 
-                from core.lib.conversation import get_or_create_session, log_exchange
-                session_id, _, _ = get_or_create_session(chat_id)
-                log_exchange(
-                    session_id, 'bot', 'CLARIFICATION',
-                    json.dumps({
-                        "confirmation": "completion_disambiguation",
-                        "dump_id": dump_id,
-                        "candidate_tasks": candidates[:MAX_SHOWN],
-                        "original": text
-                    }),
-                    chat_id
+Does this update contain an EXPLICIT imperative asking to create a task? (e.g., "Remind me to...", "Add a task to...", "I need to..."). If so, set needs_task=true.
+If not, does it leave exactly ONE critical ambiguity that requires a targeted question (e.g., "Who else should know?", "Is this pricing or scope?", "Do you want me to add a task for X?")?
+If neither, or if there are too many actions, just acknowledge.
+
+Return JSON:
+{{
+  "needs_task": boolean,
+  "suggested_task_title": "string or null",
+  "needs_question": boolean,
+  "suggested_question": "string or null"
+}}"""
+
+            try:
+                from core.llm.fallback import generate_content_with_fallback
+                from core.llm.config import WorkloadProfile
+                                
+                analysis_res = await generate_content_with_fallback(
+                    prompt=prompt,
+                    workload=WorkloadProfile.INTERACTIVE,
+                    primary_model=CLASSIFICATION_MODEL,
+                    config={'response_mime_type': 'application/json'}
                 )
+                analysis = analysis_res.parse_json()
+                
+                followup_msg = ""
+                if analysis.get("needs_task") and analysis.get("suggested_task_title"):
+                    task_title = analysis["suggested_task_title"]
+                    try:
+                        chosen_proj_id = locals().get('chosen_proj_id')
+                        chosen_org_id = locals().get('chosen_org_id')
+                        supabase.table('tasks').insert({
+                            "title": task_title,
+                            "status": "todo",
+                            "priority": "important",
+                            "project_id": chosen_proj_id,
+                            "organization_id": chosen_org_id,
+                            "direction": "inbound"
+                        }).execute()
+                        followup_msg = f"\n\n_Created follow-up task: {task_title}_"
+                    except Exception as e:
+                        audit_log_sync("completion", "WARNING", f"Failed to auto-create follow-up task: {e}")
+                elif analysis.get("needs_question") and analysis.get("suggested_question"):
+                    followup_msg = f"\n\n{analysis['suggested_question']}"
+                    
+                ack = receipt or "✅ Logged as update (no matching task found)."
+                await _send(chat_id, f"{ack}{followup_msg}")
+                
+            except Exception as e:
+                audit_log_sync("completion", "WARNING", f"Update analysis failed: {e}")
+                ack = receipt or "✅ Logged as update (no matching task found)."
+                await _send(chat_id, f"{ack}")
 
-                _park(dump_id, STATUS_AWAITING, "awaiting_clarification")
-                await _send(chat_id, reply)
-                return
-
-            _park(dump_id, STATUS_AWAITING, "no_match")
-            await _send(chat_id, receipt or "Completion logged. Couldn't match a specific task — parked for review.")
             return
 
         await execute_completion_closure(dump_id, validated_ids, chat_id, receipt, entity, active_tasks)

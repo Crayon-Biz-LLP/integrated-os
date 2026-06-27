@@ -656,16 +656,17 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             sort_prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
 
             PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
-            Categorize each input into one of three types:
-            - TASK: Explicit action items, things to do, commitments, reminders, or things Danny wants to track.
-            - COMPLETION: Past tense signals — "finished", "done", "sorted", "checked", "confirmed", "spoke with", "met with", "called", "sent", "I have...", "I've..."
-            - NOTE: Ideas, insights, observations, learnings, or things worth remembering but not actionable
-            - NOISE: Casual conversation, acknowledgments, confirmations, or low-value content
+            Categorize each input into one of five types:
+            - TASK: Explicit action items, things to do, commitments, reminders.
+            - PROJECT_UPDATE: Mixed content like status updates, team changes, finance/invoice mentions, decisions, or meeting fallout.
+            - COMPLETION: Single-action past tense — "finished", "done", "sorted", "sent" (unambiguously closes one specific task)
+            - NOTE: Ideas, insights, observations, learnings (not actionable)
+            - NOISE: Casual conversation, acknowledgments, or low-value content
             Rhodey Rule: Be dismissive of NOISE. If it's low-value chatter, categorize it and keep the brief silent about it.
             If an input is 'Check with X,' categorize it as a TASK for Danny, never as something for the system to do.
 
             Return ONLY a valid JSON array (no markdown, no explanation):
-            [{{"id": {dumps[0]['id']}, "category": "TASK|COMPLETION|NOTE|NOISE"}}, ...]
+            [{{"id": {dumps[0]['id']}, "category": "TASK|COMPLETION|NOTE|PROJECT_UPDATE|NOISE"}}, ...]
 
             Inputs:
             {json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
@@ -709,9 +710,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                     if has_url:
                         gemini_category = 'NOTE'
                         
-                    category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE', 'COMPLETION'] else metadata.get('intent', 'NOISE').upper()
+                    category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE', 'COMPLETION', 'PROJECT_UPDATE'] else metadata.get('intent', 'NOISE').upper()
                     
-                    if category == 'NOTE':
+                    if category in ('NOTE', 'PROJECT_UPDATE'):
                         dump_content = raw_dump.get('content')
                         if dump_content:
                             embedding = (await get_embedding(dump_content)).vector

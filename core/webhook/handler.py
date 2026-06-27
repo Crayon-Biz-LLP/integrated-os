@@ -18,6 +18,28 @@ from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation,
 from core.webhook.commands import handle_command, handle_undo_command
 from core.webhook.multimodal import process_multimodal_content
 
+
+def _has_broader_context_signals(text: str) -> bool:
+    import re
+    words = text.split()
+    if len(words) < 15:
+        # Too short to be a multi-intent project update, even if it has trigger words
+        return False
+        
+    pattern = r'\b(hired|fired|replaced|phase|discussion|meeting|will|continue|invoice|payment|cad|usd|amount|decided|because)\b'
+    matches = re.findall(pattern, text.lower())
+    
+    # If it has 3+ distinct signal words, it's likely a rich update.
+    if len(set(matches)) >= 3:
+        return True
+        
+    # Check for multiple sentences
+    sentences = re.split(r'[.!?]\s+', text)
+    if len(sentences) >= 3 and len(words) > 20:
+        return True
+        
+    return False
+
 # Pending graph clarification state for context collection
 pending_graph_clarifications = {}
 
@@ -1057,6 +1079,11 @@ async def process_webhook(update: dict):
                     await ask_task_update_confirmation(text, classification, chat_id, session_id, matched)
                     return {"success": True}
 
+        if intent == 'COMPLETION' and confidence >= CONFIDENCE_HIGH:
+            if _has_broader_context_signals(text):
+                classification['intent'] = 'PROJECT_UPDATE'
+                intent = 'PROJECT_UPDATE'
+                
         if confidence >= CONFIDENCE_HIGH:
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
         elif possible_intents and len(possible_intents) >= 2 and confidence >= CONFIDENCE_LOW:

@@ -55,7 +55,8 @@ Message: "{text}"
 
 First, determine the category:
 - TASK: An action item, something to do, a commitment, or a reschedule
-- COMPLETION: Past tense — "finished", "done", "sorted", "confirmed", "sent", "wrapped up"
+- PROJECT_UPDATE: Mixed content like status updates, team changes, finance/invoice mentions, decisions, or meeting fallout.
+- COMPLETION: Single-action past tense — "finished the call", "done with the page" (unambiguously closes one specific task)
 - NOTE: Idea, insight, observation (not actionable)
 - NOISE: Casual conversation, acknowledgment, low-value content
 - CLARIFY: If the user asks you to schedule a meeting or task but omits critical info (like time, date, or person) AND it cannot be inferred from the history, or if it is too vague. Generate a specific question in `clarification_question`.
@@ -92,7 +93,7 @@ STRICT RULES:
 
 Return ONLY valid JSON:
 {{
-  "category": "TASK|COMPLETION|NOTE|NOISE|CLARIFY",
+  "category": "TASK|COMPLETION|NOTE|PROJECT_UPDATE|NOISE|CLARIFY",
   "title": "...",
   "project_name": "...",
   "reminder_at": null,
@@ -146,7 +147,7 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
     if category == 'NOISE':
         return {"action": "skipped", "reason": "noise"}
 
-    if category == 'NOTE':
+    if category in ('NOTE', 'PROJECT_UPDATE'):
         if re.search(r'https?://', text):
             await save_url_as_resource(text)
             return {"action": "filed", "type": "resource"}
