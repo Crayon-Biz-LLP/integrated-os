@@ -32,6 +32,9 @@
 - **Pipeline Integrity**: Raw dumps state machine (`staged` → `processed`/`embedding_failed`), `system_audit_logs` table, `dead_letter_queue` table, `log_audit()`/`write_dlq()` utilities, idempotency guard on raw_dumps insert, `is_recent_raw_dump()` check.
 - **Temporal Lineage**: PostgreSQL BEFORE UPDATE triggers on `tasks` and `canonical_pages` tables preserve history without breaking primary keys. Old rows archived as `is_current=false` with incremented version. Memories table also has `is_current`/`version`/`supersedes_id` columns (now correctly typed `int8`).
 - **Frontend Pages**: Fully built Calendar (Day/Week/Month/Agenda views with Google+Outlook sources), Messages (Telegram-style chat interface with auto-scroll, metadata parsing), and Graph (split-pane NeuralDisc + Episode Stream).
+- **Conversational State Engine**: Persistent `conversation_threads` + `conversation_workflows` tables. Thread routing chain (open workflow → exact entity → prior bot question → fallback). Workflow state with deterministic phrase matcher (confirm/decline via set-based matching bypassing LLM), LLM fallback for ambiguous replies, unrelated note preservation, atomic idempotency via `.eq('status', 'active')`, 24h expiry pruning. Query carry-forward persists `active_anchor` to threads for cross-turn anaphora resolution.
+- **Memory Hygiene**: Expiry enforcement in associative retrieval (post-PPR filter). Application-level versioning via `version_memory_for_update()`. Deletion/index cleanup via `cleanup_memory_retrieval_index()` + daily orphan sweep. Raw dump lifecycle cleanup (stale records auto-abandoned after 24h via Sentinel).
+- **Memory Versioning**: `version_memory_for_update()` helper in `core/services/db.py` archiving memories before mutation. Wired into entity enrichment and degraded completion paths.
 
 ### What is broken or incomplete
 - **MISSING**: No Decisions table (P3) — decisions are implicit in tasks/briefings

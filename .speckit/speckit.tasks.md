@@ -470,6 +470,49 @@ This enables natural-language note capture without special syntax.
 - **memories table schema fix**: `supersedes_id`/`superseded_by` changed from `uuid` to `int8` to match the table's primary key type.
 - **Documentation synchronized**: All backlog items marked completed. AGENTS.md, speckit.*, and product-summary/ brought in sync with codebase reality.
 
+## Today's Changes (Jun 27, 2026)
+
+### T-700: Conversational Persistence + Memory Hygiene (Completed)
+**Status**: Completed
+**Details**: Built conversational thread state, workflow engine, and hardened memory hygiene:
+
+**Conversational Threads & Workflows:**
+- `conversation_threads` + `conversation_workflows` tables (migration `db/09_conversation_threads.sql`)
+- `resolve_thread()` routing chain in `core/lib/conversation.py`: open workflow → exact entity → prior bot question → general
+- `check_and_resume_workflow()` in `core/webhook/workflows.py`: deterministic phrase matcher (set-based, saves LLM call for short replies), LLM fallback, unrelated note preservation (does not cancel workflow), atomic idempotency guard, supersede detection
+- Producer wiring in `dispatch.py`: `handle_project_update()`, `handle_confident_task()`, `handle_confident_note()`
+- Consumer precedence in `handler.py`: workflow check before classification
+- Expiry pruning via Sentinel piggyback (`core/pulse/sentinel.py`)
+- 16/16 integration tests passing
+
+**Memory Hygiene:**
+- Memory expiry enforcement: `associative_retrieve()` filters `memories.expires_at` post-PPR
+- Memory versioning: `version_memory_for_update()` in `core/services/db.py` — archives memory before mutation. Wired into enrichment paths in `dispatch.py` and `completion_handler.py`
+- Deletion/index cleanup: `cleanup_memory_retrieval_index()` in `core/retrieval/cleanup.py` — cascading deletion of retrieval tables
+- Daily orphan sweep via Sentinel piggyback (`sweep_orphan_retrieval_entries()`, 20h guard)
+- Raw dump lifecycle: stale `staged`/`pending` >24h → `abandoned` via Sentinel piggyback
+- Migrations cleaned existing orphans in production
+
+**COMPLETION misclassification:**
+- Fixed in `classify.py`: pre-filter checks fuzzy analysis field before keyword-based completion matcher runs
+- Key rule: "A completion has TWO parts — task identifier and completion action"
+
+**Entity Resolver rewrite:**
+- `interrogate_brain()` now uses graph edges instead of conversation history for entity disambiguation
+- Parallel LLM calls for each entity class (person, org, project) with graph as data source
+- Removed fragile history-based prior-anchoring code
+
+**Query carry-forward:**
+- `active_anchor` from entity resolution persisted to thread record
+- Loaded by `resolve_thread()` for next message in same thread
+- Anaphora prompt enhanced with anchor context
+
+### T-701: Memory Hygiene Defence-in-Depth (Deferred)
+**Status**: Deferred
+**What**:
+1. **Memory versioning bypass potential**: Application-level versioning (`version_memory_for_update()`) is easier to skip than a DB trigger. Consider adding a `BEFORE UPDATE` trigger on `memories` as defence-in-depth once confidence in app-level patterns is established.
+2. **Cleanup-by-routine vs cleanup-by-constraint**: Sentinel piggyback orphan sweep (20h window) is pragmatic but not enforced by schema. Consider foreign key + `ON DELETE CASCADE` from retrieval tables to `memories`, or a trigger-based cascade, to eliminate the gap window.
+
 ## Today's Changes (June 23, 2026)
 
 ### T-600: Comprehensive System Audit & Hardening (Tiers 0-5)

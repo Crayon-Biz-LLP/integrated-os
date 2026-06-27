@@ -175,6 +175,36 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
         except Exception as e:
             audit_log_sync("sentinel", "ERROR", f"Clarification dispatch error: {e}")
 
+        # --- PIGGYBACK: Clean up stale raw_dumps ---
+        try:
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+            stale = supabase.table('raw_dumps') \
+                .update({"status": "abandoned"}) \
+                .in_('status', ['staged', 'pending']) \
+                .lt('created_at', cutoff) \
+                .execute()
+            if stale.data:
+                audit_log_sync("sentinel", "INFO",
+                               f"Cleaned {len(stale.data)} stale raw_dumps (staged/pending >24h)")
+        except Exception as e:
+            audit_log_sync("sentinel", "ERROR", f"Raw dump cleanup error: {e}")
+
+        # --- PIGGYBACK: Daily orphan retrieval sweep ---
+        try:
+            last_sweep = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%orphan sweep%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_sweep.data:
+                from core.retrieval.cleanup import sweep_orphan_retrieval_entries
+                sweep_orphan_retrieval_entries()
+                audit_log_sync("sentinel", "INFO", "Daily orphan sweep completed")
+        except Exception as e:
+            audit_log_sync("sentinel", "ERROR", f"Orphan sweep piggyback error: {e}")
+
         # --- PIGGYBACK: Retry failed retrieval index runs ---
         if retrieval_config.indexing_enabled:
             try:

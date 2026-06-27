@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import compute_expires_at
 from core.retrieval.pipeline import schedule_index_memory
+from core.retrieval.cleanup import cleanup_memory_retrieval_index
 from core.webhook.telegram import send_telegram
 from core.webhook.utils import supabase, trigger_github_pulse
 from core.webhook.email import handle_ed_command
@@ -331,8 +332,15 @@ async def handle_undo_command(text: str, chat_id: int):
                 "message_type": "task",
                 "status": "pending",
             }).eq('id', dump_id).execute()
-            # If it was in memories, remove it
+            # If it was in memories, clean up retrieval index then remove it
             try:
+                mem_res = supabase.table('memories').select('id') \
+                    .eq('content', content) \
+                    .eq('source', 'webhook_undo') \
+                    .execute()
+                if mem_res.data:
+                    for m in mem_res.data:
+                        cleanup_memory_retrieval_index(m['id'])
                 supabase.table('memories').delete() \
                     .eq('content', content) \
                     .eq('source', 'webhook_undo') \

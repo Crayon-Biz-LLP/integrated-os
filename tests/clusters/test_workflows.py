@@ -68,13 +68,13 @@ async def test_workflow_unrelated_note_falls_open():
     w_id = w_res.data[0]['id']
     
     try:
-        # Test raw note reply (should be unrelated, workflow cancelled, returns False to fall open)
+        # Test raw note reply (should bypass workflow, stay active, return False to fall open)
         handled = await check_and_resume_workflow(chat_id, "By the way, remind me to buy milk", thread_id)
         assert not handled
         
-        # Verify workflow cancelled
+        # Verify workflow STILL ACTIVE (not cancelled) — unrelated replies bypass without destroying state
         check = supabase.table('conversation_workflows').select('status').eq('id', w_id).execute()
-        assert check.data[0]['status'] == 'cancelled'
+        assert check.data[0]['status'] == 'active'
         
     finally:
         # Cleanup

@@ -14,18 +14,26 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
-## Session Anchored Summary (Jun 25, 2026 — Part 4)
+## Session Anchored Summary (Jun 27, 2026 — Part 6)
 
 ### Progress Done This Session
-- **Comprehensive Graph Deduplication & Merge Pipeline**: Eliminated structural gaps causing duplicate clarifications and duplicate graph edges/nodes.
-  - **Relationship Aliasing**: Added `RELATIONSHIP_ALIASES` to `graph_rules.py` (e.g., mapping `WORKS_FOR` and `EMPLOYED_BY` to `WORKS_AT`). Now enforced consistently across edge creation.
-  - **Label Normalization Split**: Separated label normalization into non-destructive `normalize_label_comparison` (strips punctuation/casing for matching only) and `normalize_label_display` (preserves typographic fidelity for storage).
-  - **Actual Node Merge Execution**: Built `execute_graph_node_merge()` to handle true idempotent node merging — actively loading, reconciling, and deduplicating edge overlaps before safely repointing remaining edges to avoid unique constraint violations.
-  - **Fuzzy Canonicalization**: Upgraded `resolve_canonical_label()` with an optional `node_type` param and 85% fallback similarity check to trap spelling variants.
-- **Database Hygiene & Protection**:
-  - **Constraints**: Migrated a partial UNIQUE index to `pending_graph_edges` (`idx_unique_pending_edge`) where `status = 'pending'`, preventing duplicate pending edges from ever accumulating again (`db/08_pending_edges_cleanup_and_constraint.sql`).
-  - **Node Cleanup Script**: Built `scripts/clean_duplicate_nodes.py` to hunt down historical case-variant duplicates. Features an intelligent `AUTO_SAFE` vs `MANUAL_REVIEW` classifier (flagging acronyms and edge collisions).
-  - **Production Remediation**: Ran the cleanup script against live DB — safely collapsed 36 historical duplicate groups (74 nodes) and archived 41 duplicate pending edges. The `graph_nodes` table is now completely normalized.
+- **COMPLETION misclassification bug fixed**: Messages like "Marcus approved the pricing" were misclassified as COMPLETION (via `contains` keyword match) and routed through the completion handler, which tried to guess which task was completed. Fixed by adding **pre-filter in `classify.py`** that checks the classifier's fuzzy analysis field before the keyword-based completion matcher runs. The key insight (per user): "A completion has TWO parts — a task identifier and a completion action. Don't just match on the action word."
+- **Conversational Persistence (Threads + Workflows)**: Built persistent thread state engine so follow-up replies hours later don't lose context.
+  - **`conversation_threads` + `conversation_workflows` tables** (`db/09_conversation_threads.sql`): UUID-keyed threads with `active_anchor`, entity binding, workflow payload, 24h expiry.
+  - **`resolve_thread()` routing chain** (`core/lib/conversation.py`): open workflow → exact entity match → prior bot question → fallback general. Each decision logged.
+  - **`check_and_resume_workflow()`** (`core/webhook/workflows.py`): deterministic phrase matcher (set-based confirm/decline) bypasses LLM for short replies, LLM fallback for ambiguous, unrelated note preservation (doesn't cancel workflow), atomic idempotency via `.eq('status', 'active')`, supersede detection.
+  - **Producer wiring** (`dispatch.py`): hooks in `handle_project_update()`, `handle_confident_task()`, `handle_confident_note()`.
+  - **Consumer precedence** (`handler.py`): workflow check before classification.
+  - **Expiry pruning**: Sentinel piggyback marks workflows past `expires_at` as `expired`.
+  - **16/16 integration tests passing** covering: workflow resume, unrelated note, multiple workflow, completion misclassify, deletion/cancellation, lineage integrity, merge/dedup, metadata priority, recurrence, timing/scheduling, cross-system partial sync.
+- **Deterministic Entity Resolver**: Rebuilt entity resolution in `interrogate_brain()` to use **graph edges** rather than conversation history. A query like "what about Equisoft?" now spawns parallel LLM calls for each entity class (person, org, project) with the graph as the data source. Removed the fragile history-based prior-anchoring code. Entity types: person, organization, project, place, animal. Uses `associative_retrieve()` for supporting context within each class.
+- **Session continuity**: Fixed `dispatch.py` to use thread-aware `resolve_thread()` instead of always creating new sessions.
+- **Workflow Refinements**: deterministic phrase matcher expanded, unrelated note preservation fixed (unrelated replies bypass without cancelling), expiry pruning in every entry path, atomic idempotency guard, supersede detection.
+- **Query carry-forward**: `active_anchor` from entity resolution persisted to thread record, loaded by `resolve_thread()` for next message in same thread. Anaphora prompt enhanced with anchor context.
+- **Memory expiry enforcement**: `associative_retrieve()` now filters expired `memories.expires_at` (post-PPR).
+- **Raw dump lifecycle cleanup**: Sentinel piggyback marks stale `staged`/`pending` raw dumps >24h as `abandoned`. Migration cleaned existing orphans.
+- **Memory versioning integrity**: `version_memory_for_update()` helper archives memories before mutation. Wired into entity enrichment and degraded completion paths.
+- **Deletion/index cleanup**: `cleanup_memory_retrieval_index()` cascades cleanup through retrieval tables. Daily `sweep_orphan_retrieval_entries()` via Sentinel piggyback (20h guard). Migration cleaned existing orphans.
 
 ## Session Anchored Summary (Jun 24, 2026 — Part 3)
 

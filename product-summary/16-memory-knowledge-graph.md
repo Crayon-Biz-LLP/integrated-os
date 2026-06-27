@@ -277,6 +277,26 @@ Four per-site flags control which read paths use associative retrieval. All are 
 - **Alias edge backfill:** 3760 heuristic edges bridge synonymous labels (e.g., "Paulsons" ↔ "Paulsons Ledgers").
 - **No shadow mode:** Legacy pgvector path (`match_memories_hybrid`) remains as fallback but is no longer the primary.
 
+## Memory Expiry Enforcement
+
+Time-bound memories (e.g. "remind me next week", "expires in 2h") are stored with `expires_at` set at ingestion. The **associative retrieval** path filters expired memories in `associative_retrieve()` (post-PPR query against `memories.expires_at`). The legacy `match_memories_hybrid` RPC already had expiry filtering — this was a gap in the newer associative path that is now closed.
+
+## Memory Versioning
+
+Memories have `is_current`, `version`, `supersedes_id` columns (typed `int8`) but are versioned by **application code** (`version_memory_for_update()` in `core/services/db.py`), not by a database trigger. This is the architecture decision — memories are deemed higher-churn and lower-risk than tasks/canonical-pages, so application-level versioning is sufficient.
+
+Two enrichment paths call `version_memory_for_update()` before mutation:
+- `dispatch.py:_enrich_memory_entities()` — sets `organization_id`/`project_id` after entity extraction
+- `completion_handler.py` — entity enrichment in degraded completion path
+
+**Caveat**: Application-level versioning is easier to bypass than a DB trigger. Any future memory update path that forgets to call `version_memory_for_update()` can reintroduce silent overwrite bugs. A `BEFORE UPDATE` trigger on `memories` is the defence-in-depth layer once confidence in application code patterns is established.
+
+## Deletion / Index Cleanup
+
+The undo delete path in `commands.py` calls `cleanup_memory_retrieval_index()` (in `core/retrieval/cleanup.py`) before deleting a memory. This cascading cleanup removes all rows from `retrieval_passages`, `retrieval_memory_bundle_links`, and `retrieval_index_runs` for the given `memory_id`.
+
+A standalone `sweep_orphan_retrieval_entries()` function runs daily via the Sentinel piggyback and catches any orphans from code paths that bypassed cleanup. **Caveat**: This is cleanup-by-routine, not cleanup-by-constraint. Orphans survive ~20h before the sweep catches them. A foreign key with `ON DELETE CASCADE` or a trigger-based cascade is the stricter alternative.
+
 ### Visual Exploration
 The brain graph page (`/dashboard/memories/graph`) renders the graph as a split-pane interactive view:
 - **Left pane**: Episode Stream — clustered memories grouped by shared entity, source thread, or time window. Cards show title, summary, entity badges (color-coded), and memory count. Click to expand raw memories beneath. Collapsible via toolbar toggle.

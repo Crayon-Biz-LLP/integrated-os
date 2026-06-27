@@ -291,3 +291,19 @@ To prevent `NoneType` and `AttributeError` crashes, the system enforces the foll
    # Good:
    existing = json.loads(row.get('content') or '[]')
    ```
+
+## Memory Versioning Integrity
+
+Two code paths (`dispatch.py:_enrich_memory_entities()` and `completion_handler.py`) were updating memories in place without archiving the previous state. Fixed by adding **`version_memory_for_update()`** in `core/services/db.py` — reads current memory, inserts archived copy with `is_current=false`, returns update dict with bumped `version` + `supersedes_id`. Both enrichment paths now call this before `.update()`.
+
+This follows the same temporal lineage pattern as the task/canonical-pages triggers, but in application code per the architecture decision.
+
+## Deletion / Index Cleanup Integrity
+
+The undo delete path (`commands.py`) now runs **`cleanup_memory_retrieval_index()`** (`core/retrieval/cleanup.py`) before deleting — cascading removal of `retrieval_passages`, `retrieval_memory_bundle_links`, `retrieval_index_runs` for the given `memory_id`. A daily orphan sweep via `sweep_orphan_retrieval_entries()` catches any orphans from code paths that bypassed cleanup (runs once per 20h via Sentinel piggyback).
+
+## Raw Dump Lifecycle Cleanup
+
+Raw dumps could get stuck in `staged` or `pending` status due to exceptions in the processing pipeline. The **Sentinel** (every 5min) now piggybacks a cleanup step: marks `staged`/`pending` raw_dumps older than 24h as `abandoned`. This prevents permanent table debt accumulation without a dedicated janitor run.
+
+A migration cleaned existing stale rows in production.

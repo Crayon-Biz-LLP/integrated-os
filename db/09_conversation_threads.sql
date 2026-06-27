@@ -49,3 +49,9 @@ WHERE status = 'active';
 -- Link existing conversations table
 ALTER TABLE conversations ADD COLUMN thread_id UUID REFERENCES conversation_threads(id) ON DELETE CASCADE;
 ALTER TABLE conversations ADD COLUMN workflow_id UUID REFERENCES conversation_workflows(id) ON DELETE SET NULL;
+
+-- Grants
+GRANT ALL PRIVILEGES ON TABLE conversation_threads TO service_role;
+GRANT ALL PRIVILEGES ON TABLE conversation_workflows TO service_role;
+GRANT ALL PRIVILEGES ON TABLE conversation_threads TO authenticated;
+GRANT ALL PRIVILEGES ON TABLE conversation_workflows TO authenticated;

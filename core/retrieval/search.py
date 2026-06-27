@@ -135,6 +135,24 @@ async def associative_retrieve(
     if not memory_scores:
         return ExplainableBundle(query=query, items=[], latency_ms=int((time.time() - start) * 1000))
 
+    # Filter expired memories before ranking
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        expired_res = supabase.table("memories") \
+            .select("id") \
+            .in_("id", list(memory_scores.keys())) \
+            .lt("expires_at", now_iso) \
+            .execute()
+        expired_ids = {r["id"] for r in (expired_res.data or [])}
+        if expired_ids:
+            memory_scores = {k: v for k, v in memory_scores.items() if k not in expired_ids}
+            debug["expired_filtered"] = len(expired_ids)
+    except Exception:
+        pass
+
+    if not memory_scores:
+        return ExplainableBundle(query=query, items=[], latency_ms=int((time.time() - start) * 1000))
+
     # 7. Blended ranking
     memory_ids = list(memory_scores.keys())
     
@@ -731,13 +749,17 @@ async def search_memories_compat(
     if enabled:
         bundle = await associative_retrieve(query=query_text, top_k=top_k)
         results = []
+        now_iso = datetime.now(timezone.utc).isoformat()
         for item in bundle.items:
             mem = supabase.table("memories") \
-                .select("id, content, memory_type, created_at") \
+                .select("id, content, memory_type, created_at, expires_at") \
                 .eq("id", item.memory_id) \
                 .maybe_single() \
                 .execute()
             if mem and mem.data:
+                expires = mem.data.get("expires_at")
+                if expires and expires < now_iso:
+                    continue
                 mem.data["similarity"] = item.score
                 results.append(mem.data)
         return results

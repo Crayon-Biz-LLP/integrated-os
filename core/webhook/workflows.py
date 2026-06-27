@@ -1,4 +1,6 @@
 import json
+import re
+from datetime import datetime, timezone
 from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
@@ -6,6 +8,25 @@ from core.llm.config import WorkloadProfile
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.webhook.telegram import send_telegram
 from core.lib.conversation import log_exchange
+
+CONFIRM_PHRASES = {'yes', 'y', 'yep', 'do it', 'go ahead', 'sure', 'ok', 'okay', 'yeah', 'please', 'absolutely'}
+DECLINE_PHRASES = {'no', 'n', 'nope', 'cancel', 'skip', 'nevermind', 'ignore', 'stop'}
+
+def get_deterministic_decision(text: str):
+    cleaned = re.sub(r'[^\w\s]', '', text.lower()).strip()
+    if cleaned in CONFIRM_PHRASES:
+        return 'confirm'
+    if cleaned in DECLINE_PHRASES:
+        return 'decline'
+    
+    words = cleaned.split()
+    if len(words) <= 4:
+        if any(w in CONFIRM_PHRASES for w in words) and not any(w in DECLINE_PHRASES for w in words):
+            return 'confirm'
+        if any(w in DECLINE_PHRASES for w in words) and not any(w in CONFIRM_PHRASES for w in words):
+            return 'decline'
+            
+    return None
 
 async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> bool:
     """
@@ -15,6 +36,17 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     """
     supabase = get_supabase()
     
+    # Prune expired workflows first
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        supabase.table('conversation_workflows').update({
+            'status': 'expired',
+            'resolved_at': now_iso,
+            'updated_at': now_iso
+        }).eq('chat_id', chat_id).eq('status', 'active').lt('expires_at', now_iso).execute()
+    except Exception:
+        pass
+
     try:
         res = supabase.table('conversation_workflows') \
             .select('*') \
@@ -30,7 +62,17 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         return False
         
     if len(res.data) > 1:
-        audit_log_sync("workflow", "WARNING", f"Multiple active workflows for chat {chat_id}, ignoring to fail open.")
+        # Mark older ones as superseded
+        sorted_ws = sorted(res.data, key=lambda x: x['created_at'])
+        superseded_ids = [w['id'] for w in sorted_ws[:-1]]
+        now_iso = datetime.now(timezone.utc).isoformat()
+        supabase.table('conversation_workflows').update({
+            'status': 'cancelled', 
+            'resolved_at': now_iso,
+            'updated_at': now_iso
+        }).in_('id', superseded_ids).execute()
+        
+        audit_log_sync("workflow", "WARNING", f"Multiple active workflows for chat {chat_id}. Superseded older ones, falling open.")
         return False
         
     workflow = res.data[0]
@@ -38,55 +80,61 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     w_type = workflow['workflow_type']
     payload = workflow.get('payload') or {}
     
-    # Check if the user confirmed or declined
-    prompt = f"""You are evaluating a user's reply to a pending proposed action.
+    # 1. Deterministic phrase matching (fast path)
+    decision = get_deterministic_decision(text)
+    
+    # 2. LLM Evaluation (slow path)
+    if not decision:
+        prompt = f"""You are evaluating a user's reply to a pending proposed action.
 Proposed Action Type: "{w_type}"
 Proposed Details: {json.dumps(payload)}
 
 User's Reply: "{text}"
 
-Did the user confirm/agree to proceed with the action? (e.g., "yes", "go ahead", "do it", "sure")
-Did the user explicitly decline/cancel it? (e.g., "no", "nevermind", "skip it")
-Or is this an entirely unrelated message that ignores the proposal? (e.g., a new thought, a different task)
+Did the user explicitly confirm/agree to proceed with the action?
+Did the user explicitly decline/cancel it?
+Or is this an entirely unrelated message that ignores the proposal?
 
 Return JSON:
 {{
   "decision": "confirm" | "decline" | "unrelated"
 }}"""
 
-    try:
-        analysis_res = await generate_content_with_fallback(
-            prompt=prompt,
-            workload=WorkloadProfile.INTERACTIVE,
-            primary_model=CLASSIFICATION_MODEL,
-            config={'response_mime_type': 'application/json'}
-        )
-        analysis = analysis_res.parse_json()
-    except Exception as e:
-        audit_log_sync("workflow", "ERROR", f"LLM eval failed falling open: {e}")
-        return False
-        
-    decision = analysis.get("decision", "unrelated")
-    
+        try:
+            analysis_res = await generate_content_with_fallback(
+                prompt=prompt,
+                workload=WorkloadProfile.INTERACTIVE,
+                primary_model=CLASSIFICATION_MODEL,
+                config={'response_mime_type': 'application/json'}
+            )
+            decision = analysis_res.parse_json().get("decision", "unrelated")
+        except Exception as e:
+            audit_log_sync("workflow", "ERROR", f"LLM eval failed falling open: {e}")
+            return False
+            
+    # 3. Handle Decision
     if decision == "unrelated":
-        # Leave it active or cancel it? The user said "send raw note after a bot question and confirm it lands safely"
-        # We should probably cancel it so it doesn't hang forever, but failing open means returning False.
-        # Let's cancel it so it doesn't pollute future messages.
-        supabase.table('conversation_workflows').update({
-            'status': 'cancelled',
-            'resolved_at': 'now()',
-            'updated_at': 'now()'
-        }).eq('id', w_id).execute()
-        audit_log_sync("workflow", "INFO", f"Workflow {w_id} cancelled due to unrelated reply.")
+        # AVOID CANCELLING: Let the user answer later. Just fall open.
+        audit_log_sync("workflow", "INFO", f"Workflow {w_id} bypassed due to unrelated reply. Remains active.")
         return False
         
-    elif decision == "decline":
-        supabase.table('conversation_workflows').update({
-            'status': 'cancelled',
-            'resolved_at': 'now()',
-            'updated_at': 'now()'
-        }).eq('id', w_id).execute()
+    # ATOMIC UPDATE FOR IDEMPOTENCY
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        update_res = supabase.table('conversation_workflows').update({
+            'status': 'resolved' if decision == 'confirm' else 'cancelled',
+            'resolved_at': now_iso,
+            'updated_at': now_iso
+        }).eq('id', w_id).eq('status', 'active').execute()
         
+        if not update_res.data:
+            audit_log_sync("workflow", "WARNING", f"Workflow {w_id} already resolved concurrently. Skipping.")
+            return True
+    except Exception as e:
+        audit_log_sync("workflow", "ERROR", f"Failed atomic update for {w_id}: {e}")
+        return False
+        
+    if decision == "decline":
         reply_text = "Cancelled."
         await send_telegram(chat_id, reply_text)
         log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
@@ -94,17 +142,11 @@ Return JSON:
         return True
         
     elif decision == "confirm":
-        # Execute the payload
         reply_text = "Done."
         
         if w_type == "calendar_event":
-            # We don't have a calendar creation function yet that takes raw payload, but we can simulate it or call tasks_service
-            # Actually, the user asked to add a calendar event. We can create a task with reminder_at or google_event_id logic
-            # For now, let's create a task
             try:
                 title = payload.get("title", "New Event")
-                
-                # Insert task
                 supabase.table('tasks').insert({
                     "title": title,
                     "status": "todo",
@@ -112,7 +154,6 @@ Return JSON:
                     "direction": "inbound"
                 }).execute()
                 reply_text = f"✅ Added '{title}' to your calendar."
-                
             except Exception as e:
                 reply_text = f"Failed to execute workflow: {e}"
                 
@@ -129,12 +170,6 @@ Return JSON:
             except Exception as e:
                 reply_text = f"Failed to execute workflow: {e}"
 
-        supabase.table('conversation_workflows').update({
-            'status': 'resolved',
-            'resolved_at': 'now()',
-            'updated_at': 'now()'
-        }).eq('id', w_id).execute()
-        
         await send_telegram(chat_id, reply_text)
         log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
         log_exchange(thread_id, 'bot', 'WORKFLOW_RESOLUTION', reply_text, chat_id)

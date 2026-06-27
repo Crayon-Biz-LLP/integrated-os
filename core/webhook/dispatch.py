@@ -18,6 +18,7 @@ from core.agents.quick_process import process_single_dump, get_tasks_service
 from core.retrieval.pipeline import schedule_index_memory
 from core.pulse.entity_extractor import extract_and_link_entities
 from core.pulse.entity_resolver import resolve_entities_from_text
+from core.services.db import version_memory_for_update
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:
@@ -352,13 +353,14 @@ async def _enrich_memory_entities(text: str, memory_id: int):
                 chosen_proj_id = res_proj
                 reason = f"deterministic_fallback: {res_reason}"
                 
-        # 3. Apply updates if found
+        # 3. Apply updates if found (with versioning)
         if chosen_org_id or chosen_proj_id:
             update_data = {}
             if chosen_org_id:
                 update_data['organization_id'] = chosen_org_id
             if chosen_proj_id:
                 update_data['project_id'] = chosen_proj_id
+            update_data = version_memory_for_update(memory_id, update_data)
             supabase.table('memories').update(update_data).eq('id', memory_id).execute()
             
         audit_log_sync("webhook", "INFO", f"Memory enrichment {memory_id} | reason={reason} | chosen_org={chosen_org_id} chosen_proj={chosen_proj_id}")
@@ -514,7 +516,8 @@ Return JSON:
                         "workflow_type": w_type,
                         "payload": analysis.get("proposed_payload", {}),
                         "awaiting_user_input": True,
-                        "status": "active"
+                        "status": "active",
+                        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
                     }).execute()
                     audit_log_sync("workflow", "INFO", f"Created {w_type} workflow for thread {session_id}")
                 except Exception as e:
@@ -877,9 +880,14 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         # Anaphora & Entity Resolution
         resolved_entity = None
         try:
+            anchor_context = ""
+            if active_anchor:
+                anchor_context = f"Active entity context (the last entity we were discussing): {active_anchor.get('name', '')}"
             resolve_prompt = f"""You are Rhodey's query parser.
 Task 1: Rewrite the following query to be fully self-contained by replacing any pronouns or vague references (e.g. it, that, he, the first one) with the specific entities or context they refer to from the conversation history. If the query is already clear, output it unchanged.
 Task 2: Extract the primary entity (project, person, or organization) from the resolved query. If there is no clear entity, output "None".
+
+{anchor_context}
 
 Output JSON format exactly like this:
 {{
@@ -941,6 +949,15 @@ Query: {query}"""
                     
                     new_anchor = {"id": str(chosen['id']), "name": chosen['label']}
                     active_anchor = new_anchor
+                    
+                    # Persist active_anchor to thread record for follow-up queries
+                    if session_id:
+                        try:
+                            supabase.table('conversation_threads').update({
+                                'active_anchor': active_anchor
+                            }).eq('id', session_id).execute()
+                        except Exception as persist_e:
+                            audit_log_sync("webhook", "WARNING", f"Failed to persist active_anchor: {persist_e}")
             except Exception as e:
                 audit_log_sync("webhook", "WARNING", f"Anchor node lookup failed: {e}")
 
@@ -1287,6 +1304,15 @@ Formatting rules:
             if active_anchor:
                 meta["active_anchor"] = active_anchor
             log_exchange(session_id, 'bot', 'QUERY', final_reply, chat_id, metadata=meta)
+            
+            # Persist active_anchor to thread for follow-up query carry-forward
+            if active_anchor:
+                try:
+                    supabase.table('conversation_threads').update({
+                        'active_anchor': active_anchor
+                    }).eq('id', session_id).execute()
+                except Exception as persist_e:
+                    audit_log_sync("webhook", "WARNING", f"Failed to persist end-of-query anchor: {persist_e}")
 
         # Log QUERY response to raw_dumps so it appears in web UI
         try:
