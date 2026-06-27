@@ -58,6 +58,36 @@ Each routing decision is logged to `audit_logs` with reason: `workflow_resume`, 
 
 **Carry-forward flow**: First query "what's happening with Armour Cyber?" → resolves anchor → persists to thread → stores bot reply in conversation history. Follow-up "and the timeline?" → same thread → loads anchor → anaphora resolves "the" → scopes search to Armour Cyber context.
 
+### Phase 4 — Structured Anchor & Thread Summarization (Jun 28, 2026)
+
+**Richer `active_anchor`**: The anchor is no longer a bare `{id, name}` dict. It now carries:
+- `type` — resolved from `graph_nodes.type` (person, organization, project, etc.)
+- `last_action` — status of the most recent non-done/cancelled task mentioning this entity
+- `last_task_id`, `last_project_id`, `last_org_id` — foreign keys for drill-down
+- `last_summary_snippet` — most recent memory featuring this entity (200 chars)
+- `last_mentioned_at` — ISO timestamp of when the anchor was last set
+
+Built in `_build_rich_anchor()` (`dispatch.py:895-924`).
+
+**Anaphora prompt enhancement**: The entity resolution prompt now receives:
+```
+Active context: Equisoft (Type: organization)
+Last activity: in_progress
+Recent context: Equisoft pushed IAM recert timeline by 2 weeks
+Earlier in conversation: Danny said "Prasad has bandwidth" ...
+```
+
+This lets the LLM rewrite "what's the status on that?" → "what's the status on the Equisoft IAM recertification deadline?" with concrete context instead of guessing from a name string.
+
+**Thread summarization (`conversation.py`)**:
+- When conversation history exceeds 5000 tokens, overflow pairs are compressed into an extractive summary (key user messages concatenated, capped at 800 chars)
+- Summary stored on `conversation_threads.summary`
+- Loaded by `get_thread_summary()` and injected into the anaphora prompt
+- Compression happens lazily — only on first overflow per thread
+- History window raised from 2000 → 5000 tokens (~5-8 exchanges preserved)
+
+**No API or schema changes**: `active_anchor` is already JSONB; new keys merge in without migration.
+
 ## Storage
 
 All paths funnel through `core/lib/conversation.py`:

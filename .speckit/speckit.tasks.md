@@ -539,3 +539,15 @@ This enables natural-language note capture without special syntax.
 - **11-test integration suite built** (`tests/clusters/`): 7 cluster files covering merge/dedup, deletion/cancellation (2a/2b/2c), lineage integrity, metadata persistence, recurrence boundary, timezone documentation, cross-system partial sync. DB confirmed clean post-suite.
 - **Task 247 manually closed**: `recurrence="none"` fix allowed it to complete correctly. Now `done, is_current=true, version=2, supersedes_id=385`.
 - **Committed and pushed** to `main` (`06d9c84`).
+
+## Today's Changes (June 28, 2026)
+
+### T-702: Structured Active Anchor & Thread Summarization
+**Status**: Completed
+**Files**: `core/lib/conversation.py`, `core/webhook/dispatch.py`
+**Details**:
+- **Richer `active_anchor`**: Upgraded from bare `{id, name}` to structured JSONB with `type` (from `graph_nodes.type`), `last_action`, `last_task_id`, `last_project_id`, `last_org_id`, `last_summary_snippet` (from most recent memory), `last_mentioned_at`. Built `_build_rich_anchor()` helper (`dispatch.py:895-924`).
+- **Thread summarization on overflow**: `get_history()` captures overflow pairs when history exceeds 5000 tokens, compresses them into an extractive summary (capped at 800 chars), stores on `conversation_threads.summary`. `get_thread_summary()` loads summary for injection into anaphora prompt. Lazy — first overflow only.
+- **History window expanded**: `MAX_HISTORY_TOKENS` 2000 → 5000 (~5-8 exchanges).
+- **Anaphora prompt enhanced**: Now receives `Active context` (name + type), `Last activity`, `Recent context` (last memory snippet), and `Earlier in conversation` (thread summary) — providing enough signal to resolve "what's the status on that?" without guessing.
+- **All 36 cluster tests passing**: Ruff clean.

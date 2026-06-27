@@ -14,6 +14,14 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
+## Session Anchored Summary (Jun 28, 2026 — Part 7)
+
+### Progress Done This Session
+- **Richer `active_anchor` structure**: Upgraded `active_anchor` from bare `{id, name}` to structured JSONB with `type` (person/org/project), `last_action`, `last_task_id`, `last_project_id`, `last_org_id`, `last_summary_snippet`, `last_mentioned_at`. Built `_build_rich_anchor()` helper in `dispatch.py:895-924` that queries graph_nodes for type, last active task, and last memory snippet. The anaphora prompt now receives multi-field context instead of a single name string.
+- **Thread summarization on overflow**: `get_history()` now compresses overflow pairs (when history exceeds 5000 tokens) into an extractive thread summary stored on `conversation_threads.summary`. Summary loaded via `get_thread_summary()` and injected into the anaphora prompt alongside the anchor context. Compression triggers lazily — first overflow only.
+- **History window expanded**: `MAX_HISTORY_TOKENS` raised from 2000 to 5000, preserving ~5-8 exchanges instead of 2-3.
+- **All 36 cluster tests passing**: All integration tests pass. Ruff clean.
+
 ## Session Anchored Summary (Jun 27, 2026 — Part 6)
 
 ### Progress Done This Session
