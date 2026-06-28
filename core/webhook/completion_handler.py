@@ -194,59 +194,20 @@ Response: {{"matched_task_ids": [...]}}"""
                 except Exception as e:
                     audit_log_sync("completion", "WARNING", f"Entity extraction failed for degraded update: {e}")
             
-            # 4. Optional Follow-up Analysis
-            prompt = f"""You are analyzing a rich project update.
-Update: "{text}"
-
-Does this update contain an EXPLICIT imperative asking to create a task? (e.g., "Remind me to...", "Add a task to...", "I need to..."). If so, set needs_task=true.
-If not, does it leave exactly ONE critical ambiguity that requires a targeted question (e.g., "Who else should know?", "Is this pricing or scope?", "Do you want me to add a task for X?")?
-If neither, or if there are too many actions, just acknowledge.
-
-Return JSON:
-{{
-  "needs_task": boolean,
-  "suggested_task_title": "string or null",
-  "needs_question": boolean,
-  "suggested_question": "string or null"
-}}"""
-
+            # 4. Post-capture enrichment (shared helper)
             try:
-                from core.llm.fallback import generate_content_with_fallback
-                from core.llm.config import WorkloadProfile
-                                
-                analysis_res = await generate_content_with_fallback(
-                    prompt=prompt,
-                    workload=WorkloadProfile.INTERACTIVE,
-                    primary_model=CLASSIFICATION_MODEL,
-                    config={'response_mime_type': 'application/json'}
+                from core.webhook.dispatch import _run_post_capture_enrichment
+                chosen_proj_id = locals().get('chosen_proj_id')
+                chosen_org_id = locals().get('chosen_org_id')
+                followup_msg = await _run_post_capture_enrichment(
+                    text, chat_id, None,
+                    chosen_org_id, chosen_proj_id,
+                    receipt=receipt, enable_workflow=False,
                 )
-                analysis = analysis_res.parse_json()
-                
-                followup_msg = ""
-                if analysis.get("needs_task") and analysis.get("suggested_task_title"):
-                    task_title = analysis["suggested_task_title"]
-                    try:
-                        chosen_proj_id = locals().get('chosen_proj_id')
-                        chosen_org_id = locals().get('chosen_org_id')
-                        supabase.table('tasks').insert({
-                            "title": task_title,
-                            "status": "todo",
-                            "priority": "important",
-                            "project_id": chosen_proj_id,
-                            "organization_id": chosen_org_id,
-                            "direction": "inbound"
-                        }).execute()
-                        followup_msg = f"\n\n_Created follow-up task: {task_title}_"
-                    except Exception as e:
-                        audit_log_sync("completion", "WARNING", f"Failed to auto-create follow-up task: {e}")
-                elif analysis.get("needs_question") and analysis.get("suggested_question"):
-                    followup_msg = f"\n\n{analysis['suggested_question']}"
-                    
                 ack = receipt or "✅ Logged as update (no matching task found)."
                 await _send(chat_id, f"{ack}{followup_msg}")
-                
             except Exception as e:
-                audit_log_sync("completion", "WARNING", f"Update analysis failed: {e}")
+                audit_log_sync("completion", "WARNING", f"Update enrichment failed: {e}")
                 ack = receipt or "✅ Logged as update (no matching task found)."
                 await _send(chat_id, f"{ack}")
 

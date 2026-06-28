@@ -320,8 +320,13 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         await send_telegram(chat_id, f"{ack}")
 
 
-async def _enrich_memory_entities(text: str, memory_id: int):
-    """Shared helper for handle_project_update and handle_confident_note"""
+async def _enrich_memory_entities(text: str, memory_id: int, active_anchor: dict = None):
+    """Shared helper for handle_project_update and handle_confident_note.
+
+    If LLM extraction + deterministic fallback both miss, the active_anchor
+    (from the conversation thread) is used as a last-resort anchor so the note
+    is linked to whatever entity the user was just discussing.
+    """
     chosen_org_id = None
     chosen_proj_id = None
     reason = "no_match"
@@ -352,6 +357,15 @@ async def _enrich_memory_entities(text: str, memory_id: int):
                 chosen_org_id = res_org
                 chosen_proj_id = res_proj
                 reason = f"deterministic_fallback: {res_reason}"
+            
+        # 3. Last-resort: inherit from active_anchor (conversation context)
+        if not chosen_org_id and not chosen_proj_id and active_anchor:
+            anchor_org = active_anchor.get('last_org_id')
+            anchor_proj = active_anchor.get('last_project_id')
+            if anchor_org or anchor_proj:
+                chosen_org_id = chosen_org_id or anchor_org
+                chosen_proj_id = chosen_proj_id or anchor_proj
+                reason = f"anchor_inherit: {active_anchor.get('name', '')}"
                 
         # 3. Apply updates if found (with versioning)
         if chosen_org_id or chosen_proj_id:
@@ -371,7 +385,85 @@ async def _enrich_memory_entities(text: str, memory_id: int):
         return None, None
 
 
-async def handle_project_update(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None):
+async def _run_post_capture_enrichment(
+    text: str, chat_id: int, session_id: str,
+    chosen_org_id: int | None, chosen_proj_id: int | None,
+    receipt: str = None, enable_workflow: bool = True,
+    active_anchor: dict = None,
+) -> str:
+    """Post-capture enrichment: ask LLM if the capture implies a task or has a critical ambiguity.
+
+    Returns the follow-up message to append (may be empty). Callers send the receipt themselves.
+    Shared by handle_project_update, handle_confident_note, and handle_confident_completion.
+    """
+    anchor_hint = ""
+    if active_anchor:
+        anchor_name = active_anchor.get('name', '')
+        if anchor_name:
+            anchor_hint = f"\nConversation context: the user was recently discussing '{anchor_name}'. Use this to disambiguate references."
+
+    prompt = f"""You are analyzing a captured note or update.
+Capture: "{text}"{anchor_hint}
+
+Does this capture contain an EXPLICIT imperative asking to create a task? (e.g., "Remind me to...", "Add a task to...", "I need to..."). If so, set needs_task=true.
+If not, does it leave exactly ONE critical ambiguity that requires a targeted question (e.g., "Who else should know?", "Is this pricing or scope?", "Do you want me to add a task for X?")?
+If neither, or if there are too many actions, just acknowledge.
+
+Return JSON:
+{{
+  "needs_task": boolean,
+  "suggested_task_title": "string or null",
+  "needs_question": boolean,
+  "suggested_question": "string or null"
+}}"""
+
+    analysis_res = await generate_content_with_fallback(
+        prompt=prompt,
+        workload=WorkloadProfile.INTERACTIVE,
+        primary_model=CLASSIFICATION_MODEL,
+        config={'response_mime_type': 'application/json'}
+    )
+    analysis = analysis_res.parse_json()
+
+    followup_msg = ""
+    if analysis.get("needs_task") and analysis.get("suggested_task_title"):
+        task_title = analysis["suggested_task_title"]
+        try:
+            supabase.table('tasks').insert({
+                "title": task_title,
+                "status": "todo",
+                "priority": "important",
+                "project_id": chosen_proj_id,
+                "organization_id": chosen_org_id,
+                "direction": "inbound"
+            }).execute()
+            followup_msg = f"\n\n_Created follow-up task: {task_title}_"
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING", f"Failed to auto-create follow-up task: {e}")
+    elif analysis.get("needs_question") and analysis.get("suggested_question"):
+        followup_msg = f"\n\n{analysis['suggested_question']}"
+
+        if enable_workflow:
+            w_type = analysis.get("proposed_workflow")
+            if w_type:
+                try:
+                    supabase.table('conversation_workflows').insert({
+                        "chat_id": chat_id,
+                        "thread_id": session_id,
+                        "workflow_type": w_type,
+                        "payload": analysis.get("proposed_payload", {}),
+                        "awaiting_user_input": True,
+                        "status": "active",
+                        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+                    }).execute()
+                    audit_log_sync("workflow", "INFO", f"Created {w_type} workflow for thread {session_id}")
+                except Exception as e:
+                    audit_log_sync("workflow", "ERROR", f"Failed to create workflow: {e}")
+
+    return followup_msg
+
+
+async def handle_project_update(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None):
     # ── Idempotency guard ──
     if is_recent_raw_dump(text, source):
         ack = receipt or "Update logged."
@@ -444,7 +536,7 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
             memory_id = result.data[0]["id"]
             schedule_index_memory(memory_id, text, "note", "webhook")
             
-            chosen_org_id, chosen_proj_id = await _enrich_memory_entities(text, memory_id)
+            chosen_org_id, chosen_proj_id = await _enrich_memory_entities(text, memory_id, active_anchor)
                 
         if dump_id:
             supabase.table('raw_dumps').update({"status": "processed", "is_processed": True}).eq('id', dump_id).execute()
@@ -457,87 +549,28 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
         await send_telegram(chat_id, f"{ack}")
         return
 
-    # ── Step 4: Optional Follow-up Analysis ──
-    # Ask LLM if we need a single follow-up task or targeted question
-    prompt = f"""You are analyzing a rich project update.
-Update: "{text}"
-
-Does this update contain an EXPLICIT imperative asking to create a task? (e.g., "Remind me to...", "Add a task to...", "I need to..."). If so, set needs_task=true.
-If not, does it leave exactly ONE critical ambiguity that requires a targeted question (e.g., "Who else should know?", "Is this pricing or scope?", "Do you want me to add a task for X?")?
-If neither, or if there are too many actions, just acknowledge.
-
-Return JSON:
-{{
-  "needs_task": boolean,
-  "suggested_task_title": "string or null",
-  "needs_question": boolean,
-  "suggested_question": "string or null"
-}}"""
-
+    # ── Step 4: Post-capture enrichment (shared helper) ──
     try:
-        from core.llm.fallback import generate_content_with_fallback
-        from core.llm.config import WorkloadProfile
-        from core.webhook.classify import CLASSIFICATION_MODEL
-        
-        analysis_res = await generate_content_with_fallback(
-            prompt=prompt,
-            workload=WorkloadProfile.INTERACTIVE,
-            primary_model=CLASSIFICATION_MODEL,
-            config={'response_mime_type': 'application/json'}
+        followup_msg = await _run_post_capture_enrichment(
+            text, chat_id, session_id,
+            chosen_org_id, chosen_proj_id,
+            receipt=receipt, enable_workflow=True,
+            active_anchor=active_anchor,
         )
-        analysis = analysis_res.parse_json()
-        
-        followup_msg = ""
-        if analysis.get("needs_task") and analysis.get("suggested_task_title"):
-            # Create the task
-            task_title = analysis["suggested_task_title"]
-            try:
-                supabase.table('tasks').insert({
-                    "title": task_title,
-                    "status": "todo",
-                    "priority": "important",
-                    "project_id": chosen_proj_id,
-                    "organization_id": chosen_org_id,
-                    "direction": "inbound"
-                }).execute()
-                followup_msg = f"\n\n_Created follow-up task: {task_title}_"
-            except Exception as e:
-                audit_log_sync("webhook", "WARNING", f"Failed to auto-create follow-up task: {e}")
-        elif analysis.get("needs_question") and analysis.get("suggested_question"):
-            followup_msg = f"\n\n{analysis['suggested_question']}"
-            
-            # PRODUCER WIRING: If LLM proposed a workflow, save it so "yes" replies can resume it
-            w_type = analysis.get("proposed_workflow")
-            if w_type:
-                try:
-                    supabase.table('conversation_workflows').insert({
-                        "chat_id": chat_id,
-                        "thread_id": session_id,
-                        "workflow_type": w_type,
-                        "payload": analysis.get("proposed_payload", {}),
-                        "awaiting_user_input": True,
-                        "status": "active",
-                        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
-                    }).execute()
-                    audit_log_sync("workflow", "INFO", f"Created {w_type} workflow for thread {session_id}")
-                except Exception as e:
-                    audit_log_sync("workflow", "ERROR", f"Failed to create workflow: {e}")
-            
         ack = receipt or "✅ Update logged and entities extracted."
         reply_text = f"{ack}{followup_msg}"
         await send_telegram(chat_id, reply_text)
         if session_id:
             log_exchange(session_id, 'bot', 'PROJECT_UPDATE', reply_text, chat_id)
-        
     except Exception as e:
-        audit_log_sync("webhook", "WARNING", f"Update analysis failed: {e}")
+        audit_log_sync("webhook", "WARNING", f"Update enrichment failed: {e}")
         ack = receipt or "✅ Update logged."
         await send_telegram(chat_id, f"{ack}")
         if session_id:
             log_exchange(session_id, 'bot', 'PROJECT_UPDATE', f"{ack}", chat_id)
 
 
-async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None):
+async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None):
     # ── Idempotency guard: skip if identical content+source inserted within 60s ──
     if is_recent_raw_dump(text, source):
         ack = receipt or "Note vaulted."
@@ -601,6 +634,8 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         return
 
     # ── Step 3: Save to memories (success path) ──
+    chosen_org_id = None
+    chosen_proj_id = None
     try:
         expires_at = resolve_expiry(text, datetime.now(timezone.utc))
         expires_iso = expires_at.isoformat() if expires_at else None
@@ -616,7 +651,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         if result and result.data:
             memory_id = result.data[0]["id"]
             schedule_index_memory(memory_id, text, "note", "webhook")
-            await _enrich_memory_entities(text, memory_id)
+            chosen_org_id, chosen_proj_id = await _enrich_memory_entities(text, memory_id, active_anchor)
         
         # Mark dump as processed
         if dump_id:
@@ -652,7 +687,24 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Resource insert failed for URL: {e}")
 
-    # ── Step 4: Mark as processed ──
+    # ── Step 4: Post-capture enrichment (selective for notes) ──
+    # Gate: only fire for substantive captures (>10 words with entities, or >25 words).
+    # Prevents nagging on trivial one-liners like "ok" or "got it".
+    _note_words = text.split()
+    _is_substantial = len(_note_words) > 25 or (len(_note_words) > 10 and (chosen_org_id or chosen_proj_id))
+    followup_msg = ""
+    if _is_substantial:
+        try:
+            followup_msg = await _run_post_capture_enrichment(
+                text, chat_id, session_id,
+                chosen_org_id, chosen_proj_id,
+                receipt=receipt, enable_workflow=True,
+                active_anchor=active_anchor,
+            )
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING", f"Note enrichment failed: {e}")
+
+    # ── Step 5: Mark as processed ──
     if dump_id:
         try:
             supabase.table('raw_dumps').update({"status": "processed", "is_processed": True}).eq('id', dump_id).execute()
@@ -660,7 +712,11 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             audit_log_sync("webhook", "WARNING", f"Failed to mark dump {dump_id} as processed: {e}")
 
     final_receipt = receipt or "Note vaulted."
-    await send_telegram(chat_id, final_receipt)
+    if followup_msg:
+        # Enrichment produced a follow-up — send that instead of the plain receipt
+        await send_telegram(chat_id, f"{final_receipt}{followup_msg}")
+    else:
+        await send_telegram(chat_id, final_receipt)
     if session_id:
         log_exchange(session_id, 'bot', 'NOTE', final_receipt, chat_id)
 
@@ -794,12 +850,12 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None
         extraction_method = classification.get('extraction_method') if classification else None
-        await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id)
+        await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor)
     elif intent == 'PROJECT_UPDATE':
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None
         extraction_method = classification.get('extraction_method') if classification else None
-        await handle_project_update(text, chat_id, receipt or "Update logged.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id)
+        await handle_project_update(text, chat_id, receipt or "Update logged.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor)
     elif intent == 'DELEGATE':
         supabase.table('agent_queue').insert({"query": text, "status": "pending"}).execute()
         ack = classification.get('receipt', "The intern is on it. I'll ping you when the research is ready.") if classification else "The intern is on it. I'll ping you when the research is ready."
