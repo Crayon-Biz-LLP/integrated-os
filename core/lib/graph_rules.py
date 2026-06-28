@@ -175,6 +175,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
         "node_id": None,
         "node_type": None,
         "exists_in_pending": False,
+        "is_rejected": False,
         "confidence": 0.0
     }
     
@@ -210,14 +211,20 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
             
         # 4. ILIKE match against pending_graph_nodes
         try:
-            pgn_res = supabase.table("pending_graph_nodes").select("id, label, type").ilike("label", label).in_("status", ["pending", "approved", "merge_proposed", "flagged"]).maybe_single().execute()
+            pgn_res = supabase.table("pending_graph_nodes").select("id, label, type, status").ilike("label", label).maybe_single().execute()
             if pgn_res and pgn_res.data:
-                result["label"] = pgn_res.data["label"]
-                result["node_id"] = str(pgn_res.data["id"])
-                result["node_type"] = pgn_res.data["type"]
-                result["exists_in_pending"] = True
-                result["confidence"] = 0.95
-                return result
+                if pgn_res.data["status"] == "rejected":
+                    result["label"] = pgn_res.data["label"]
+                    result["is_rejected"] = True
+                    result["confidence"] = 0.0
+                    return result
+                elif pgn_res.data["status"] in ["pending", "approved", "merge_proposed", "flagged"]:
+                    result["label"] = pgn_res.data["label"]
+                    result["node_id"] = str(pgn_res.data["id"])
+                    result["node_type"] = pgn_res.data["type"]
+                    result["exists_in_pending"] = True
+                    result["confidence"] = 0.95
+                    return result
         except Exception:
             pass
             

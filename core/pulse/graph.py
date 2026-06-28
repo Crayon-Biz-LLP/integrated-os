@@ -346,7 +346,9 @@ Format:
                     "target_label": t_label,
                     "relationship": rel,
                     "source_text": "graph_approval_inference",
-                    "status": "pending"
+                    "status": "pending",
+                    "source_type": s_type,
+                    "target_type": t_type
                 }).execute()
                 
             inferred.append(f"{s_label} → {rel} → {t_label}")
@@ -554,7 +556,9 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                         "relationship": "WORKS_ON",
                         "source_text": f"tasks:{task_id}",
                         "source_table": "task_engine",
-                        "status": "pending"
+                        "status": "pending",
+                        "source_type": "task",
+                        "target_type": "project"
                     }).execute()
                 except Exception as e:
                     audit_log_sync("pulse", "WARNING", f"Failed to insert WORKS_ON pending edge: {e}")
@@ -584,7 +588,9 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                             "relationship": "INVOLVES",
                             "source_text": f"tasks:{task_id}",
                             "source_table": "task_engine",
-                            "status": "pending"
+                            "status": "pending",
+                            "source_type": "task",
+                            "target_type": "person"
                         }).execute()
                     except Exception as e:
                         audit_log_sync("pulse", "WARNING", f"Failed to insert INVOLVES pending edge: {e}")
@@ -1048,7 +1054,9 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
     resolved_labels = {}
     for lbl in all_labels:
         resolved = resolve_canonical_label(lbl)
-        if resolved["confidence"] == 0.0 and len(resolved["label"]) >= 3:
+        if resolved.get("is_rejected"):
+            resolved["needs_creation"] = False
+        elif resolved["confidence"] == 0.0 and len(resolved["label"]) >= 3:
             # Looks real but has no match anywhere. Determine type.
             typ = extracted_nodes.get(lbl, "concept")
             resolved["node_type"] = typ
@@ -1114,7 +1122,9 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                                     "relationship": "KNOWS",
                                     "source_text": f"{source_type}:{source_id}",
                                     "source_table": source_type,
-                                    "status": "pending"
+                                    "status": "pending",
+                                    "source_type": "person",
+                                    "target_type": typ
                                 }).execute()
                             else:
                                 # Merge provenance
@@ -1197,6 +1207,9 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
         if not s_res or not t_res:
             continue
 
+        if s_res.get("is_rejected") or t_res.get("is_rejected"):
+            continue
+
         # Skip noise
         if s_res["confidence"] == 0.0 and not s_res.get("needs_creation"):
             continue
@@ -1216,7 +1229,9 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
             "relationship": rel,
             "source_text": f"{source_type}:{source_id}",
             "source_table": source_type,
-            "status": "pending"
+            "status": "pending",
+            "source_type": s_res.get("node_type"),
+            "target_type": t_res.get("node_type")
         })
 
     if pending_edges_batch:

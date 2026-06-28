@@ -37,6 +37,8 @@ export interface GraphPendingEdge {
   confidence: number;
   status: 'pending' | 'approved' | 'rejected' | 'awaiting_clarification';
   created_at: string;
+  source_type?: string;
+  target_type?: string;
   clarification?: {
     shortcode: string;
     question: string;

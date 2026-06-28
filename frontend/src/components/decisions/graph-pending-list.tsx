@@ -254,10 +254,12 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
                 
                 <div className="flex flex-wrap items-center gap-2 mb-3 bg-zinc-900/50 p-3 rounded-md font-mono text-sm">
                   <span className="text-blue-400 font-semibold">{item.source_label}</span>
+                  {item.source_type && <span className="text-zinc-500 text-xs font-normal">({item.source_type})</span>}
                   <span className="text-zinc-500">→</span>
                   <span className="text-amber-400 font-bold">{item.relationship}</span>
                   <span className="text-zinc-500">→</span>
                   <span className="text-cyan-400 font-semibold">{item.target_label}</span>
+                  {item.target_type && <span className="text-zinc-500 text-xs font-normal">({item.target_type})</span>}
                 </div>
                 
                 {item.eval_context && item.eval_context.justification && (

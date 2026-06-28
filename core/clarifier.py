@@ -115,6 +115,8 @@ def evaluate_edge(edge_data: dict, batch_mode: bool = False) -> Optional[dict]:
     from_lbl = edge_data.get("source_label")
     to_lbl = edge_data.get("target_label")
     rel = edge_data.get("relationship", "").upper()
+    from_type = edge_data.get("source_type", "entity")
+    to_type = edge_data.get("target_type", "entity")
     
     if not from_lbl or not to_lbl:
         return None
@@ -148,7 +150,7 @@ def evaluate_edge(edge_data: dict, batch_mode: bool = False) -> Optional[dict]:
                     return {
                         "shortcode": next_shortcode(),
                         "question_type": "edge_contradiction",
-                        "question": f'New edge says "{from_lbl} {rel} {to_lbl}" but existing says "{ex_rel}". Which is correct?',
+                        "question": f'New edge says "{from_lbl} ({from_type}) {rel} {to_lbl} ({to_type})" but existing says "{ex_rel}". Which is correct?',
                         "priority": "high",
                         "batch": batch_mode
                     }
@@ -158,7 +160,7 @@ def evaluate_edge(edge_data: dict, batch_mode: bool = False) -> Optional[dict]:
         return {
             "shortcode": next_shortcode(),
             "question_type": "edge_confidence",
-            "question": f'I am unsure if {from_lbl} {rel} {to_lbl}. Is this correct?',
+            "question": f'I am unsure if {from_lbl} ({from_type}) {rel} {to_lbl} ({to_type}). Is this correct?',
             "priority": "low",
             "batch": batch_mode
         }
