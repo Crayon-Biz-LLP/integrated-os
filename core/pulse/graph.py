@@ -1224,6 +1224,30 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
         
         rel = canonicalize_relationship(rel, s_res.get("node_type"), t_res.get("node_type"))
 
+        s_id = s_res.get("node_id") or node_id_map.get(s_c)
+        t_id = t_res.get("node_id") or node_id_map.get(t_c)
+
+        def is_valid_uuid(val):
+            if not val:
+                return False
+            try:
+                import uuid
+                uuid.UUID(str(val))
+                return True
+            except ValueError:
+                return False
+
+        if is_valid_uuid(s_id) and is_valid_uuid(t_id):
+            permanent_edge_res = supabase.table("graph_edges")\
+                .select("id")\
+                .eq("source_node_id", str(s_id))\
+                .eq("target_node_id", str(t_id))\
+                .eq("relationship", rel)\
+                .limit(1).execute()
+            if permanent_edge_res and permanent_edge_res.data:
+                # Silently skip creating a pending edge since we already know this permanently
+                continue
+
         pending_edges_batch.append({
             "source_label": s_c,
             "target_label": t_c,
