@@ -49,6 +49,57 @@ from core.retrieval.pipeline import schedule_index_memory
 # ──────────────────────────────────────────
 # RECURRING TASK AUTO-EXPIRY
 # ──────────────────────────────────────────
+# B4: Briefing history helpers
+_BRIEFING_HISTORY_HOURS = 48
+_BRIEFING_HISTORY_LIMIT = 3
+
+def _store_briefing_to_history(briefing_text: str):
+    """Store a condensed summary of this briefing in memories for future context."""
+    if not briefing_text:
+        return
+    try:
+        # Extract a compact summary (first 200 chars of substantive content)
+        summary = briefing_text.strip()[:200].replace('\n', ' ').strip()
+        supabase.table('memories').insert({
+            'content': f"[BRIEFING] {summary}",
+            'memory_type': 'pulse_briefing',
+            'source': 'pulse_engine',
+            'expires_at': (datetime.now(timezone.utc) + timedelta(hours=_BRIEFING_HISTORY_HOURS * 2)).isoformat()
+        }).execute()
+    except Exception:
+        pass
+
+def _get_recent_briefings_context() -> str:
+    """B4: Return a string listing what was already briefed, so the AI avoids repetition.
+    
+    Returns empty string if no recent briefings exist (fail-open).
+    """
+    try:
+        rows = supabase.table('memories') \
+            .select('content, created_at') \
+            .eq('memory_type', 'pulse_briefing') \
+            .eq('is_current', True) \
+            .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=_BRIEFING_HISTORY_HOURS)).isoformat()) \
+            .order('created_at', desc=True) \
+            .limit(_BRIEFING_HISTORY_LIMIT) \
+            .execute()
+        if not rows.data:
+            return ""
+        parts = []
+        for r in rows.data:
+            content = r.get('content', '')
+            created = r.get('created_at', '')[:16] if r.get('created_at') else ''
+            if content:
+                # Strip [BRIEFING] prefix for the prompt
+                cleaned = content.replace('[BRIEFING]', '').strip()
+                parts.append(f"- [{created}] {cleaned}")
+        if not parts:
+            return ""
+        return f"PREVIOUSLY BRIEFED (last {len(parts)} briefings — do NOT repeat this content verbatim):\n" + "\n".join(parts)
+    except Exception:
+        return ""
+
+
 def _auto_expire_recurring_tasks():
     """Parse RRULE UNTIL/COUNT on active recurring tasks. If the recurrence has
     ended, mark the task as auto-expired (status=cancelled) so it stops
@@ -192,9 +243,12 @@ class PulseOutput(BaseModel):
 
 # --- 📋 DECISION PULSE (No AI, just pending decisions) ---
 async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
+    from core.lib.audit_logger import set_trace_id
+    set_trace_id()
+    
     from core.pulse.run_logger import create_pulse_run, complete_pulse_run
     from core.lib.redis_cache import acquire_lock, release_lock
-
+    
     pulse_secret = os.getenv("PULSE_SECRET")
     if pulse_secret and auth_secret != pulse_secret:
         return {"error": "Unauthorized.", "status": 401}
@@ -514,6 +568,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         request_id: Unique ID for idempotency (e.g. from GitHub Actions)
         trigger: The source trigger (e.g. 'api', 'cron', 'github_action')
     """
+    from core.lib.audit_logger import set_trace_id
+    set_trace_id(request_id)
+    
     from core.pulse.run_logger import create_pulse_run, complete_pulse_run
     from core.lib.redis_cache import acquire_lock, release_lock
 
@@ -1470,8 +1527,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         - Do not invent domains.
         """
 
+        # B4: Load briefing history to avoid repetition
+        briefing_history_context = _get_recent_briefings_context()
+
         # --- BUILD SYSTEM INSTRUCTION ---
         system_instruction_text = f"""{system_persona}
+            
+            {briefing_history_context}
 
             MANDATE — SILENCE PROTOCOL & HALLUCINATION GUARD:
             - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
@@ -1610,6 +1672,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 show_keyboard=False
             )
         
+        # B4: Store briefing history for future context
+        if send_success and briefing_text:
+            _store_briefing_to_history(briefing_text)
+
         # Log Pulse briefing to raw_dumps so it appears in web UI
         if send_success and briefing_text:
             try:

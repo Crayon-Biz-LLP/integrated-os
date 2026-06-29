@@ -142,7 +142,7 @@ async def trigger_github_pulse() -> bool:
     try:
         github_token = os.getenv("GITHUB_TOKEN")
         if not github_token:
-            print("ERROR: GITHUB_TOKEN not set")
+            audit_log_sync("webhook", "ERROR", "GITHUB_TOKEN not set")
             return False
 
         owner = os.getenv("GITHUB_OWNER", "Crayon-Biz-LLP")
@@ -164,7 +164,7 @@ async def trigger_github_pulse() -> bool:
             response = await client.post(url, json=payload, headers=headers, timeout=10)
 
             if response.status_code == 204:
-                print("✓ GitHub Actions workflow triggered successfully")
+                audit_log_sync("webhook", "INFO", "GitHub Actions workflow triggered successfully")
                 return True
             else:
                 audit_log_sync("webhook", "ERROR", f"GitHub dispatch failed: {response.status_code}")

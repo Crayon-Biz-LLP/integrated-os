@@ -7,8 +7,23 @@ import contextvars
 import traceback
 from core.services.db import get_supabase
 
-# Optional context variable for request correlation
+# D3: Context variable for request-level tracing
 trace_id_var = contextvars.ContextVar('trace_id', default=None)
+
+def set_trace_id(trace_id: str = None) -> str:
+    """D3: Set or generate a trace_id for the current request context.
+    Returns the trace_id. Use at every entry point (webhook, pulse, API)."""
+    import uuid
+    if not trace_id:
+        trace_id = str(uuid.uuid4())[:12]  # Short 12-char trace_id for readability
+    trace_id_var.set(trace_id)
+    return trace_id
+
+
+def get_trace_id() -> str:
+    """D3: Get the current trace_id or empty string."""
+    tid = trace_id_var.get()
+    return tid or ""
 
 try:
     supabase = get_supabase()

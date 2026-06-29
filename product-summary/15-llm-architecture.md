@@ -24,6 +24,8 @@ All LLM interactions flow through a centralized `core/llm/` module. This is the 
 
 When the classification LLM fails or falls back entirely (e.g., network error, rate limit), the system does not surface a `CLARIFICATION_NEEDED` intent that would require user disambiguation. Instead, `core/llm/constants.py` defines `SAFE_HOLD_CLASSIFICATION` which emits `{"intent": "NOTE", "confidence": 1.0}`. This means degraded classifications are silently vaulted as notes with embeddings — the content is persisted but never pollutes the task pipeline with false positives.
 
+> **Full C3 fallback contract**: `core/FALLBACK_CONTRACTS.md` — C3 section. This is the authoritative source for test assertions.
+
 ### Workload Profiles & Timeouts
 
 Defined in `core/llm/config.py`. Each workload profile specifies `timeout_s`, `max_retries`, and `limiter_mode`:

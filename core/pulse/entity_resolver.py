@@ -16,10 +16,18 @@ def _get_ngrams(words: list[str], n: int) -> set[str]:
         ngrams.add(' '.join(words[i:i+n]))
     return ngrams
 
+def _normalize_for_substring(s: str) -> str:
+    """Light normalization for substring matching — removes punctuation joins like hyphens."""
+    if not s:
+        return ""
+    s = re.sub(r'[^\w\s]', ' ', s.lower())
+    return ' '.join(s.split())
+
+
 def resolve_entities_from_text(text: str) -> Tuple[Optional[str], Optional[int], str]:
     """
     Deterministic candidate resolver for orgs and projects.
-    Uses exact/alias matching on normalized n-grams.
+    X4: Uses exact n-gram matching first, then substring ILIKE fallback.
     Returns (organization_id, project_id, reason_log_string)
     """
     supabase = get_supabase()
@@ -41,20 +49,35 @@ def resolve_entities_from_text(text: str) -> Tuple[Optional[str], Optional[int],
     text_ngrams = set()
     for i in range(1, 5):
         text_ngrams.update(_get_ngrams(words, i))
-        
-    # 3. Match orgs
+    
+    # 3. Light substring-normalized text for ILIKE fallback
+    substr_text = _normalize_for_substring(text)
+    
+    # 4. Match orgs — exact n-gram first, then substring fallback
     matched_orgs = []
     for org in orgs:
         norm_name = _normalize(org['name'])
         if norm_name in text_ngrams:
             matched_orgs.append(org)
-            
-    # 4. Match projects
+    if not matched_orgs:
+        # X4: substring ILIKE fallback
+        for org in orgs:
+            norm_name = _normalize_for_substring(org['name'])
+            if norm_name and norm_name in substr_text:
+                matched_orgs.append(org)
+                
+    # 5. Match projects — exact n-gram first, then substring fallback
     matched_projs = []
     for proj in projs:
         norm_name = _normalize(proj['name'])
         if norm_name in text_ngrams:
             matched_projs.append(proj)
+    if not matched_projs:
+        # X4: substring ILIKE fallback
+        for proj in projs:
+            norm_name = _normalize_for_substring(proj['name'])
+            if norm_name and norm_name in substr_text:
+                matched_projs.append(proj)
             
     # 5. Apply confidence rules
     final_org_id = None

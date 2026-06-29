@@ -67,7 +67,7 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
                 try:
                     client.table('tasks').update({'title': title}).eq('id', guard['matched_id']).execute()
                     client.table('messages').update({'danny_decision': 'merged'}).eq('id', row['id']).execute()
-                    print(f"Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' → '{title}'")
+                    audit_log_sync("webhook", "INFO", f"Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' → '{title}'")
                     return {
                         "success": True, "action": "updated",
                         "message": f"Updated task [{guard['matched_id']}] with richer title: {title}"
@@ -108,13 +108,13 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
         client.table('messages').update({'danny_decision': 'approved'}).eq('id', row['id']).execute()
 
         if guard['result'] == 'flag':
-            print(f"Staged to raw_dumps with possible_duplicate flag: {title}")
+            audit_log_sync("webhook", "INFO", f"Staged to raw_dumps with possible_duplicate flag: {title}")
             return {
                 "success": True, "action": "approved",
                 "message": f"Task staged: {title}\n⚠️ Looks similar to '{guard['matched_title']}' — kept both."
             }
 
-        print(f"Staged to raw_dumps via email approval: {title}")
+        audit_log_sync("webhook", "INFO", f"Staged to raw_dumps via email approval: {title}")
         return {"success": True, "action": "approved", "message": f"Task staged: {title}"}
 
     elif decision == 'reject':
@@ -302,8 +302,8 @@ async def send_outlook_draft(draft: dict) -> tuple:
                 if response.status_code == 202:
                     return (True, None)
 
-            print(f"Outlook send failed for draft {draft['id']}: HTTP {response.status_code}: {response.text}")
-            print("Status remains 'sent' to prevent double-send attempts.")
+            audit_log_sync("webhook", "ERROR", f"Outlook send failed for draft {draft['id']}: HTTP {response.status_code}: {response.text}")
+            audit_log_sync("webhook", "INFO", "Status remains 'sent' to prevent double-send attempts.")
             return (False, f"HTTP {response.status_code}: {response.text}")
 
     except Exception as e:

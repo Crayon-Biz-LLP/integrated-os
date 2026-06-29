@@ -35,6 +35,8 @@
 - **Conversational State Engine**: Persistent `conversation_threads` + `conversation_workflows` tables. Thread routing chain (open workflow → exact entity → prior bot question → fallback). Workflow state with deterministic phrase matcher (confirm/decline via set-based matching bypassing LLM), LLM fallback for ambiguous replies, unrelated note preservation, atomic idempotency via `.eq('status', 'active')`, 24h expiry pruning. Query carry-forward persists structured `active_anchor` (`{id, name, type, last_action, last_task_id, last_project_id, last_org_id, last_summary_snippet, last_mentioned_at}`) to threads for cross-turn anaphora resolution. Thread summarization on overflow (5000 token budget, extractive compression stored on `conversation_threads.summary`, loaded into anaphora prompt alongside anchor context).
 - **Memory Hygiene**: Expiry enforcement in associative retrieval (post-PPR filter). Application-level versioning via `version_memory_for_update()`. Deletion/index cleanup via `cleanup_memory_retrieval_index()` + daily orphan sweep. Raw dump lifecycle cleanup (stale records auto-abandoned after 24h via Sentinel).
 - **Memory Versioning**: `version_memory_for_update()` helper in `core/services/db.py` archiving memories before mutation. Wired into entity enrichment and degraded completion paths.
+- **Memory Expiry Sweep (M5)**: Sentinel piggyback sweeps `memories WHERE expires_at < now` every 12h, cascades cleanup through retrieval index tables via `cleanup_memory_retrieval_index()`, then runs orphan sweep.
+- **Orphan Calendar Cleanup (T4)**: Sentinel piggyback finds cancelled recurring tasks with lingering `google_event_id`, deletes the Google Calendar event series, and nulls the ID to prevent ghost re-creation.
 
 ### What is broken or incomplete
 - **MISSING**: No Decisions table (P3) — decisions are implicit in tasks/briefings [COMPLETED]
@@ -44,18 +46,16 @@
 - **DEFERRED**: TF-002 Graph Edge Expiry — last_confirmed_at/valid_until — edges older than 90 days auto-expired via sentinel [COMPLETED]
 - **DEFERRED**: TF-003 People Table Enrichment — organization_name, last_interaction_date from graph edges [COMPLETED]
 
-### Rhodey Audit — Pending Items
+### Rhodey Audit — Good-to-Have (Future Backlog)
 
-| # | Item | Effort | Type | Status |
-|---|------|--------|------|--------|
-| B1 | Briefing prompt compression 4K→2K | ~1h | Optimization | Pending |
-| B3 | Briefing personalization (Sunday-only learner → adaptive) | ~3h | Enhancement | Pending |
-| K3 | Proactive thread resumption — "Anything update on X?" nudge | ~2h | Feature | Pending |
-| K4 | Workflow expiry nudge — "Still working on this?" before expiry | ~2h | Feature | Pending |
-| T5 | Delegation tracking dashboard — "Waiting on" visibility | ~4h | Feature | Pending |
-| S3 | Energy-aware scheduling — personality profiling for task ordering | ~4h | New capability | Pending |
-| S5 | Follow-up auto-cancel — when inbound reply resolves it | ~1d | Feature | Needs inbound infra |
-| M2 | Validate associative retrieval after M1 flip — manual QA | ~1h | QA | Needs M1 env var confirmed |
+| # | Item | Effort | Type | Notes |
+|---|------|--------|------|-------|
+| X1 | Increase `recent_tasks` cache TTL 60→300s | ~5m | Optimization | Already deployed in this session |
+| K3 | Proactive thread resumption — "Anything update on X?" nudge for threads idle >3d | ~1h | Feature | Risk of over-nudging; sentinel piggyback |
+| K4 | Workflow expiry nudge — "Still working on this?" before 24h workflow expiry | ~1h | Feature | sentinel piggyback + audit_log gate |
+| B3 | Briefing personalization — feed user reactions into Sunday learner | ~3h | Enhancement | Needs `briefing_feedback` table |
+| B1 | Briefing prompt compression — holistic token budget allocator | ~2h | Optimization | Gemini context window easily absorbs current size |
+| S3 | Energy-aware scheduling — task complexity classification + calendar density analysis | ~4h | New capability | Privacy-adjacent; needs explicit opt-in design |
 
 ---
 
@@ -197,4 +197,40 @@
 - `pending_graph_edges` deduped via normalised ILIKE matching with status-awareness
 
 **Out of scope**: Graph edge expiry (P4 — deferred), decisions table (P3 — deferred)
+
+---
+
+### SPEC-009: Simulation Tests — Rhodey Autonomous Behaviours [IN PROGRESS]
+
+**What**: 5-suite simulation test plan to validate T1, S5, M5, T4, K2, C3, X3 autonomous behaviours with quantified assertions before committing the 14-file uncommitted batch (626 insertions, 80 deletions).
+
+**Fallback contracts**: All degraded-mode behaviour is codified in `core/FALLBACK_CONTRACTS.md`. Tests assert against those contracts, not against implementation internals.
+
+**Suites**:
+
+| Suite | Focus | Behaviours | Key Assertions |
+|-------|-------|------------|----------------|
+| 1 | Positive path + call order | T1, S5, T4, M5 | Exact DB mutation order per sentinel piggyback |
+| 2 | Cognitive routing | K2, C3, X3 | K2: entity matching prioritisation, silent fallback. C3: SAFE_HOLD output + vaulted-as-NOTE. X3: embedding boost applied to semantically related tasks |
+| 3 | Boundary / no-op | All 7 | Empty inputs, unknown entities, no-op conditions (nothing to escalate, no expired memories, no orphan events) |
+| 4 | Idempotency | T1, S5, T4, M5 | First run: state mutated. Second run: NO new state mutations (no `tasks.update`, no `memories.delete`, no new audit_log write beyond harmless reads). Allow: audit_log SELECT queries |
+| 5 | Failure paths (fail-closed/open/retry) | All 7 | Explicit outcome per path: fail-closed (task creation blocked), fail-open (graceful degradation with audit WARNING), retry-then-fail (M5 per-item cleanup). Each WARNING/ERROR log must carry the same `trace_id` as the triggering event — use `set_trace_id("test-...")` |
+
+**Idempotency nuance (Suite 4)**:
+- Assert "no state mutations" not "absolutely nothing"
+- Second run may produce harmless `SELECT` queries on `audit_logs` (the idempotency gate itself)
+- Deny: new `tasks.update()`, new `memories.delete()`, new `tasks.insert()`, new `calendar.events.delete()`
+- Deny: new `audit_logs` INFO writes for actual work done
+
+**trace_id assertion (Suite 5)**:
+- Set known `trace_id` via `set_trace_id("test-<scenario>")` before triggering each failure
+- After failure: query `audit_logs WHERE metadata->>'trace_id' = 'test-<scenario>' AND level IN ('WARNING','ERROR')`
+- Assert ≥ 1 matching row
+
+**Teardown (shared fixture)**:
+1. No `[SIM_TEST]` rows remain in any table (memories, tasks, raw_dumps, graph_nodes, audit_logs)
+2. No orphan retrieval/index rows for the sandbox namespace (retrieval_passages, retrieval_phrase_nodes with no corresponding memories.id)
+3. Run `sweep_orphan_retrieval_entries()` after each suite teardown to verify clean state
+
+**Execution**: All suites run with `SANDBOX_DB=true`, mocked Google APIs (Calendar, Tasks), mocked Telegram, mocked LLM. Existing 36-test regression suite must continue to pass.
 

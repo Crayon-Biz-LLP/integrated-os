@@ -61,7 +61,7 @@ class ContextProvider:
             'projects': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:projects"),
             'people': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:people"),
             'calendar': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:calendar"),
-            'recent_tasks': SimpleCache(ttl_seconds=60, redis_key="rhodey:cache:recent_tasks"),
+            'recent_tasks': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:recent_tasks"),
             'organizations': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:organizations")
         }
         
@@ -166,7 +166,7 @@ class ContextProvider:
         if delta_days > max_days:
             end_date = start_date + timedelta(days=max_days)
 
-        cache_key = f"rhodey:cache:calendar_range:{start_date.isoformat()}:{end_date.isoformat()}:{max_days}"
+        cache_key = f"rhodey:cache:calendar_range:{start_date.strftime('%Y-%m-%d')}:{end_date.strftime('%Y-%m-%d')}:{max_days}"
         cached = cache_get(cache_key)
         if cached is not None:
             return cached
@@ -324,7 +324,35 @@ class ContextProvider:
             else:
                 semantic_pool.append({"task": t, "formatted": formatted, "score": 0.0})
                 
-        # For tasks, lexical/recency ranking is faster and safer
+        # --- X3: Embedding-aware similarity boost ---
+        # Use query embedding to find semantically related memories, then boost
+        # tasks that those memories reference.
+        boosted_task_ids = set()
+        if query_text:
+            try:
+                from core.retrieval.search import search_memories_compat
+                related = await search_memories_compat(
+                    query_text=query_text,
+                    top_k=10,
+                    threshold=0.5,
+                    recency_weight=0.1,
+                    importance_weight=0.1,
+                )
+                if related:
+                    for mem in related:
+                        content = mem.get('content', '')
+                        # Extract task ID references from memory content
+                        for tid in re.findall(r'\[ID:(\d+)\]', content):
+                            boosted_task_ids.add(int(tid))
+                        # Also check title mentions (case-insensitive)
+                        content_lower = content.lower()
+                        for item in semantic_pool:
+                            title_lower = item['task'].get('title', '').lower()
+                            if title_lower and len(title_lower) > 3 and title_lower in content_lower:
+                                boosted_task_ids.add(item['task']['id'])
+            except Exception:
+                pass  # Fail-open: embedding boost degrades gracefully
+        
         for item in semantic_pool:
             t = item["task"]
             score = 0.0
@@ -339,8 +367,10 @@ class ContextProvider:
                 elif days_old > 14:
                     score -= 20
             except Exception:
-                # Non-critical: recency scoring degrades gracefully without created_at
                 pass
+            # X3: Embedding-aware boost
+            if t['id'] in boosted_task_ids:
+                score += 100
             item["score"] = score
             
         semantic_pool.sort(key=lambda x: x["score"], reverse=True)

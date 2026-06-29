@@ -259,7 +259,6 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
                     audit_log_sync("sentinel", "ERROR", f"Failed to send Telegram nudge for {title}")
             except Exception as event_err:
                 audit_log_sync("sentinel", "ERROR", f"Event processing failed for {event.get('summary', 'unknown')}: {event_err}")
-                print(f"❌ Event processing error: {event_err}")
                 
         # --- PIGGYBACK: Weekly catch-up sweep (Sunday only) ---
         try:
@@ -536,6 +535,126 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
         except Exception as del_err:
             audit_log_sync("sentinel", "WARNING", f"Delegation alert error (non-critical): {del_err}")
 
+        # --- PIGGYBACK: T1 Priority auto-escalation ---
+        try:
+            last_esc_sweep = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%auto-escalation%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_esc_sweep.data:
+                esc_candidates = supabase.table('tasks') \
+                    .select('id, title, created_at, priority, status, organization_id') \
+                    .eq('is_current', True) \
+                    .eq('status', 'todo') \
+                    .eq('priority', 'important') \
+                    .execute()
+                escalated = []
+                for t in (esc_candidates.data or []):
+                    ca = t.get('created_at', '')
+                    if not ca:
+                        continue
+                    try:
+                        created_dt = datetime.fromisoformat(str(ca).replace('Z', '+00:00'))
+                        days_old = (datetime.now(timezone.utc) - created_dt).days
+                        if days_old >= 7:
+                            supabase.table('tasks').update({'priority': 'urgent'}).eq('id', t['id']).execute()
+                            escalated.append(t['title'][:50])
+                    except Exception:
+                        pass
+                if escalated:
+                    audit_log_sync("sentinel", "INFO", f"auto-escalation: {len(escalated)} task(s) escalated to urgent")
+        except Exception as esc_err:
+            audit_log_sync("sentinel", "WARNING", f"Auto-escalation error (non-critical): {esc_err}")
+
+        # --- PIGGYBACK: S5 Follow-up auto-cancel ---
+        # Close stale waiting_on tasks (>14d) that are unlikely to resolve
+        try:
+            last_auto_cancel = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%auto-cancel%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_auto_cancel.data:
+                stale_waiting = supabase.table('tasks') \
+                    .select('id, title, created_at, reminder_at, committed_to') \
+                    .eq('is_current', True) \
+                    .eq('status', 'todo') \
+                    .eq('direction', 'waiting_on') \
+                    .execute()
+                cancelled = []
+                for t in (stale_waiting.data or []):
+                    touch = t.get('reminder_at') or t.get('created_at', '')
+                    if not touch:
+                        continue
+                    try:
+                        touch_dt = datetime.fromisoformat(str(touch).replace('Z', '+00:00'))
+                        if touch_dt.tzinfo is None:
+                            touch_dt = touch_dt.replace(tzinfo=timezone.utc)
+                        days_stale = (datetime.now(timezone.utc) - touch_dt).days
+                        if days_stale >= 14:
+                            supabase.table('tasks').update({'status': 'cancelled'}).eq('id', t['id']).execute()
+                            cancelled.append(t['title'][:60])
+                    except Exception:
+                        pass
+                if cancelled:
+                    audit_log_sync("sentinel", "INFO", f"auto-cancel: {len(cancelled)} stale waiting_on task(s) auto-cancelled (>14d)")
+        except Exception as ac_err:
+            audit_log_sync("sentinel", "WARNING", f"Auto-cancel error (non-critical): {ac_err}")
+
+        # --- PIGGYBACK: M5 Expired memory sweep ---
+        try:
+            last_mem_sweep = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%memory sweep%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_mem_sweep.data:
+                expired = supabase.table('memories') \
+                    .select('id') \
+                    .lt('expires_at', datetime.now(timezone.utc).isoformat()) \
+                    .execute()
+                expired_ids = [m['id'] for m in (expired.data or [])]
+                if expired_ids:
+                    from core.retrieval.cleanup import cleanup_memory_retrieval_index
+                    failed = 0
+                    for mid in expired_ids:
+                        ok = False
+                        for attempt in range(2):  # Retry once per item
+                            try:
+                                cleanup_memory_retrieval_index(mid)
+                                supabase.table('memories').delete().eq('id', mid).execute()
+                                ok = True
+                                break
+                            except Exception:
+                                if attempt == 0:
+                                    continue  # Retry
+                        if not ok:
+                            failed += 1
+                            audit_log_sync("sentinel", "WARNING",
+                                f"memory sweep: failed to clean up memory {mid} after 2 attempts")
+                    if failed > len(expired_ids) // 2:
+                        audit_log_sync("sentinel", "WARNING",
+                            f"memory sweep: {failed}/{len(expired_ids)} items failed cleanup")
+                    audit_log_sync("sentinel", "INFO",
+                        f"memory sweep: {len(expired_ids) - failed}/{len(expired_ids)} expired memory(s) removed")
+                    # Also run orphan sweep after cleanup
+                    try:
+                        from core.retrieval.cleanup import sweep_orphan_retrieval_entries
+                        sweep_orphan_retrieval_entries()
+                    except Exception:
+                        pass
+                else:
+                    audit_log_sync("sentinel", "INFO", "memory sweep: no expired memories found")
+        except Exception as mem_err:
+            audit_log_sync("sentinel", "WARNING", f"Memory sweep error (non-critical): {mem_err}")
+
         # --- PIGGYBACK: Retry failed retrieval index runs ---
         if retrieval_config.indexing_enabled:
             try:
@@ -548,6 +667,27 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
             except Exception as e:
                 audit_log_sync("sentinel", "ERROR",
                                f"Retry sweeper error: {e}")
+
+        # --- PIGGYBACK: T4 Orphan recurring calendar events ---
+        try:
+            orphan_res = supabase.table('tasks') \
+                .select('id, title, google_event_id, recurrence') \
+                .eq('is_current', True) \
+                .eq('status', 'cancelled') \
+                .not_.is_('google_event_id', 'null') \
+                .execute()
+            orphan_events = []
+            for t in (orphan_res.data or []):
+                rec = t.get('recurrence', '')
+                if rec and rec.lower() not in ('', 'none'):
+                    from core.services.google_service import delete_calendar_event
+                    delete_calendar_event(t['google_event_id'])
+                    supabase.table('tasks').update({'google_event_id': None}).eq('id', t['id']).execute()
+                    orphan_events.append(t['title'][:50])
+            if orphan_events:
+                audit_log_sync("sentinel", "INFO", f"orphan calendar: {len(orphan_events)} recurring event(s) cleaned up for cancelled tasks")
+        except Exception as oe_err:
+            audit_log_sync("sentinel", "WARNING", f"Orphan calendar cleanup error (non-critical): {oe_err}")
 
         await complete_pulse_run(supabase, run_id, status="completed",
             metadata={"alerted": alerted_count})

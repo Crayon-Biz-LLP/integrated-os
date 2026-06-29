@@ -2,6 +2,7 @@ import os
 import asyncio
 import mimetypes
 import httpx
+from core.lib.audit_logger import audit_log_sync
 
 
 def _chunk_message(text: str, max_len: int = 4000) -> list[str]:
@@ -74,10 +75,10 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
                         await asyncio.sleep(1)
                 except Exception as e:
                     if attempt == 0:
-                        print(f"Telegram chunk {i+1}/{total} retrying: {e}")
+                        audit_log_sync("telegram", "WARNING", f"Telegram chunk {i+1}/{total} retrying: {e}")
                         await asyncio.sleep(1)
                     else:
-                        print(f"Telegram chunk {i+1}/{total} failed after retry: {e}")
+                        audit_log_sync("telegram", "ERROR", f"Telegram chunk {i+1}/{total} failed after retry: {e}")
                         success = False
                         last_failed = i
     # Notify user if some chunks were lost
@@ -143,4 +144,4 @@ async def answer_callback_query(callback_query_id: str, text: str = None):
         try:
             await client.post(url, json=payload)
         except Exception as e:
-            print(f"Failed to answer callback query: {e}")
+            audit_log_sync("telegram", "ERROR", f"Failed to answer callback query: {e}")

@@ -10,6 +10,7 @@ from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
+from core.lib.audit_logger import audit_log_sync
 
 supabase = get_supabase()
 
@@ -88,7 +89,7 @@ Web Search Results:
                     try:
                         await send_telegram(int(telegram_chat_id), f"**Research Complete:** {task_snippet}\n\nThe dossier is in your staging area.")
                     except Exception as e:
-                        print(f"Telegram notify failed for task {task_id}: {e}")
+                        audit_log_sync("research_agent", "WARNING", f"Telegram notify failed for task {task_id}: {e}")
 
                 supabase.table('agent_queue').update({
                     "status": "completed",
@@ -98,14 +99,14 @@ Web Search Results:
                 print(f"Completed: {task_text[:30]}...")
 
             except Exception as e:
-                print(f"Error processing {task_id}: {e}")
+                audit_log_sync("research_agent", "ERROR", f"Error processing {task_id}: {e}")
                 supabase.table('agent_queue').update({
                     "status": "failed",
                     "metadata": json.dumps({"error": str(e)})
                 }).eq('id', task_id).execute()
 
     except Exception as e:
-        print(f"Agent error: {e}")
+        audit_log_sync("research_agent", "ERROR", f"Agent error: {e}")
 
 
 if __name__ == '__main__':

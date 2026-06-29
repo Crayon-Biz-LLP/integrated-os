@@ -1,5 +1,7 @@
 from core.services.db import get_supabase
 import uuid
+import re
+from datetime import datetime, timezone
 
 from core.llm.compat import call_llm_with_fallback_sync
 
@@ -14,63 +16,331 @@ def _touch_thread(thread_id: str):
     try:
         get_supabase().table('conversation_threads').update({'last_active_at': 'now()'}).eq('id', thread_id).execute()
     except Exception as e:
-        print(f"Failed to touch thread {thread_id}: {e}")
+        from core.lib.audit_logger import audit_log_sync
+        audit_log_sync("conversation", "WARNING", f"Failed to touch thread {thread_id}: {e}")
 
-def resolve_thread(chat_id: int, text: str = None) -> tuple:
-    """Returns (thread_id, active_anchor)"""
+def _entity_is_primary_topic(text: str, entity_name: str) -> bool:
+    """K2: Check if entity_name is the primary subject of text, not a side mention.
+    
+    Heuristic: if entity name is a large proportion of the content, or appears
+    at the start of the message, it's likely the primary topic.
+    A side mention ('talked to X about Y') should not reroute the thread.
+    """
+    if not text or not entity_name:
+        return False
+    norm_text = text.lower().strip()
+    norm_entity = entity_name.lower().strip()
+    
+    # Direct match: text IS the entity or starts with it
+    if norm_text == norm_entity or norm_text.startswith(norm_entity + " "):
+        return True
+    
+    # Entity name appears as a large proportion of text (>25% of words)
+    text_words = set(norm_text.split())
+    entity_words = norm_entity.split()
+    if entity_words and len(text_words) > 1:
+        overlap = sum(1 for w in entity_words if w in text_words)
+        if overlap / len(text_words) >= 0.25:
+            return True
+    
+    # Check for common side-mention patterns
+    side_patterns = [
+        r'\b(?:talked to|spoke with|met with|had lunch with|from|at|works at)\s+' + re.escape(norm_entity),
+        r'\b' + re.escape(norm_entity) + r'\s+(?:is|was|said|mentioned|confirmed)',
+    ]
+    for pat in side_patterns:
+        if re.search(pat, norm_text):
+            return False  # It's a side mention
+    
+    # If entity appears multiple times, it's likely the topic
+    return norm_text.count(norm_entity) >= 2
+
+
+def _fetch_entity_candidates(text: str, chat_id: int) -> list:
+    """K2: Fetch all entity candidate threads from text, ranked by recency + confidence.
+    
+    Returns list of dicts with thread_id, active_anchor, entity_name, score.
+    Uses deterministic resolver first, then LLM fallback for obvious misses.
+    """
+    candidates = []
+    
+    # 1. Try deterministic n-gram resolver
+    try:
+        from core.pulse.entity_resolver import resolve_entities_from_text
+        org_id, proj_id, reason = resolve_entities_from_text(text)
+        
+        candidates.extend(_resolve_entity_to_candidates(chat_id, 'organization', org_id, "deterministic", text))
+        candidates.extend(_resolve_entity_to_candidates(chat_id, 'project', proj_id, "deterministic", text))
+    except Exception:
+        pass
+    
+    # 2. LLM fallback — if no candidates, check if text references a known entity
+    if not candidates:
+        try:
+            llm_candidates = _llm_entity_disambiguation(text, chat_id)
+            if llm_candidates:
+                candidates.extend(llm_candidates)
+                from core.lib.audit_logger import audit_log_sync
+                audit_log_sync("routing", "INFO", f"LLM entity disambiguation found {len(llm_candidates)} candidate(s)")
+        except Exception:
+            pass
+    
+    # 3. Sort by score descending
+    candidates.sort(key=lambda c: c.get('score', 0), reverse=True)
+    return candidates
+
+
+def _resolve_entity_to_candidates(chat_id: int, entity_type: str, entity_id, source: str, text: str) -> list:
+    """K2: Convert a single entity match to ranked candidates with thread info."""
+    if not entity_id:
+        return []
+    
+    supabase = get_supabase()
+    results = []
+    e_id = str(entity_id)
+    
+    # Fetch entity name for primary-topic check
+    entity_name = ""
+    if entity_type == 'organization':
+        r = supabase.table('organizations').select('name').eq('id', entity_id).maybe_single().execute()
+        if r.data:
+            entity_name = r.data.get('name', '')
+    elif entity_type == 'project':
+        r = supabase.table('projects').select('name').eq('id', entity_id).maybe_single().execute()
+        if r.data:
+            entity_name = r.data.get('name', '')
+    
+    # Primary topic check — filter out side mentions
+    if entity_name and text and not _entity_is_primary_topic(text, entity_name):
+        return []
+    
+    # Check for existing thread
+    thread = supabase.table('conversation_threads') \
+        .select('id, active_anchor, last_active_at') \
+        .eq('chat_id', chat_id) \
+        .eq('thread_type', 'entity') \
+        .eq('entity_type', entity_type) \
+        .eq('entity_id', e_id) \
+        .is_('archived_at', 'null') \
+        .order('last_active_at', desc=True) \
+        .limit(1) \
+        .execute()
+    
+    base_score = 90 if entity_type == 'project' else 80
+    
+    if thread.data and thread.data[0].get('id'):
+        t = thread.data[0]
+        last_active = t.get('last_active_at')
+        boost = 0
+        if last_active:
+            try:
+                hours_ago = (datetime.now(timezone.utc) - datetime.fromisoformat(last_active.replace('Z', '+00:00'))).total_seconds() / 3600
+                if hours_ago <= 24:
+                    boost = 10
+                elif hours_ago <= 72:
+                    boost = 5
+            except Exception:
+                pass
+        results.append({
+            'thread_id': t['id'],
+            'active_anchor': t.get('active_anchor'),
+            'entity_name': entity_name,
+            'entity_type': entity_type,
+            'entity_id': e_id,
+            'score': base_score + boost,
+            'source': source,
+            'is_new': False
+        })
+    else:
+        results.append({
+            'thread_id': None,
+            'active_anchor': None,
+            'entity_name': entity_name,
+            'entity_type': entity_type,
+            'entity_id': e_id,
+            'score': base_score - 20,
+            'source': source,
+            'is_new': True
+        })
+    
+    return results
+
+
+def _llm_entity_disambiguation(text: str, chat_id: int) -> list:
+    """K2: LLM fallback when n-gram resolver finds nothing.
+    
+    Uses Gemini to check if text references a known entity.
+    Returns list of candidate dicts (same format as _resolve_entity_to_candidates).
+    """
     supabase = get_supabase()
     
+    # Fetch known org and project names
+    orgs = supabase.table('organizations').select('id, name').execute().data or []
+    projs = supabase.table('projects').select('id, name').eq('status', 'active').execute().data or []
+    
+    if not orgs and not projs:
+        return []
+    
+    known_orgs = [o['name'] for o in orgs]
+    known_projs = [p['name'] for p in projs]
+    
+    prompt = f"""Given this message: "{text}"
+
+Known organizations: {', '.join(known_orgs) if known_orgs else 'none'}
+Known projects: {', '.join(known_projs) if known_projs else 'none'}
+
+Does the message refer to any of these entities as its PRIMARY topic?
+If yes, respond with: ORGANIZATION|project_name or PROJECT|project_name
+If the entity is only a side mention (e.g., "talked to X from Y"), respond with: NONE
+If no entity matches, respond with: NONE
+
+Response (one line only):"""
+    
+    resp = call_llm_with_fallback_sync(prompt, model="gemini-3.1-flash-lite", is_critical=False)
+    result = resp.text.strip().upper() if resp and resp.text else ""
+    
+    candidates = []
+    
+    if result.startswith("ORGANIZATION|"):
+        name = result.split("|", 1)[1].strip()
+        for o in orgs:
+            if o['name'].lower() == name.lower():
+                thread = supabase.table('conversation_threads') \
+                    .select('id, active_anchor') \
+                    .eq('chat_id', chat_id) \
+                    .eq('thread_type', 'entity') \
+                    .eq('entity_type', 'organization') \
+                    .eq('entity_id', str(o['id'])) \
+                    .is_('archived_at', 'null') \
+                    .order('last_active_at', desc=True) \
+                    .limit(1) \
+                    .execute()
+                if thread.data:
+                    candidates.append({
+                        'thread_id': thread.data[0]['id'],
+                        'active_anchor': thread.data[0].get('active_anchor'),
+                        'entity_name': o['name'],
+                        'entity_type': 'organization',
+                        'entity_id': str(o['id']),
+                        'score': 85,
+                        'source': 'llm',
+                        'is_new': False
+                    })
+                else:
+                    candidates.append({
+                        'thread_id': None,
+                        'active_anchor': None,
+                        'entity_name': o['name'],
+                        'entity_type': 'organization',
+                        'entity_id': str(o['id']),
+                        'score': 65,
+                        'source': 'llm',
+                        'is_new': True
+                    })
+                break
+                
+    elif result.startswith("PROJECT|"):
+        name = result.split("|", 1)[1].strip()
+        for p in projs:
+            if p['name'].lower() == name.lower():
+                thread = supabase.table('conversation_threads') \
+                    .select('id, active_anchor') \
+                    .eq('chat_id', chat_id) \
+                    .eq('thread_type', 'entity') \
+                    .eq('entity_type', 'project') \
+                    .eq('entity_id', str(p['id'])) \
+                    .is_('archived_at', 'null') \
+                    .order('last_active_at', desc=True) \
+                    .limit(1) \
+                    .execute()
+                if thread.data:
+                    candidates.append({
+                        'thread_id': thread.data[0]['id'],
+                        'active_anchor': thread.data[0].get('active_anchor'),
+                        'entity_name': p['name'],
+                        'entity_type': 'project',
+                        'entity_id': str(p['id']),
+                        'score': 90,
+                        'source': 'llm',
+                        'is_new': False
+                    })
+                else:
+                    candidates.append({
+                        'thread_id': None,
+                        'active_anchor': None,
+                        'entity_name': p['name'],
+                        'entity_type': 'project',
+                        'entity_id': str(p['id']),
+                        'score': 70,
+                        'source': 'llm',
+                        'is_new': True
+                    })
+                break
+    
+    return candidates
+
+
+def resolve_thread(chat_id: int, text: str = None) -> tuple:
+    """Returns (thread_id, active_anchor)
+    
+    Routing priority (K2):
+    1. Open workflow (1 active workflow → that thread)
+    2. Entity match with disambiguation (best candidate by recency + confidence)
+    3. Prior bot question (last thread where bot asked a question)
+    4. General fallback (create or reuse general thread)
+
+    K2 FALLBACK CONTRACT (see core/FALLBACK_CONTRACTS.md):
+    - Inner catch (entity resolution failure): logged WARNING, falls through to
+      priority 4 (general fallback). No user-visible artifact.
+    - Outer catch (any routing failure): logged ERROR, returns brand-new UUID
+      with no anchor. Creates NO conversation_history row, sends NO receipt,
+      generates NO user-visible message. The caller receives empty history
+      [] and proceeds normally — any receipt emitted is from classification
+      (C3 fallback contract), not from thread routing.
+    """
     try:
+        supabase = get_supabase()
+        
         # 1. Open workflow bound to chat_id
         workflows = supabase.table('conversation_workflows').select('thread_id').eq('chat_id', chat_id).eq('status', 'active').execute()
         if workflows.data and len(workflows.data) == 1:
             thread_id = workflows.data[0]['thread_id']
             _touch_thread(thread_id)
-            # get anchor
             t_res = supabase.table('conversation_threads').select('active_anchor').eq('id', thread_id).execute()
             anchor = t_res.data[0].get('active_anchor') if t_res.data else None
             from core.lib.audit_logger import audit_log_sync
             audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via workflow_resume")
             return thread_id, anchor
-            
-        # 3. Exact entity thread match
+
+        # 2. Entity match with disambiguation (K2)
         if text:
             try:
-                from core.pulse.entity_resolver import resolve_entities_from_text
-                org_id, proj_id, reason = resolve_entities_from_text(text)
-                
-                if proj_id or org_id:
-                    e_type = 'project' if proj_id else 'organization'
-                    e_id = str(proj_id) if proj_id else str(org_id)
-                    
-                    existing = supabase.table('conversation_threads') \
-                        .select('id, active_anchor') \
-                        .eq('chat_id', chat_id) \
-                        .eq('thread_type', 'entity') \
-                        .eq('entity_type', e_type) \
-                        .eq('entity_id', e_id) \
-                        .is_('archived_at', 'null') \
-                        .execute()
-                        
-                    if existing.data:
-                        thread_id = existing.data[0]['id']
-                        _touch_thread(thread_id)
+                candidates = _fetch_entity_candidates(text, chat_id)
+                if candidates:
+                    best = candidates[0]
+                    if best.get('thread_id'):
+                        _touch_thread(best['thread_id'])
                         from core.lib.audit_logger import audit_log_sync
-                        audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via exact_entity_match (existing)")
-                        return thread_id, existing.data[0].get('active_anchor')
-                    else:
+                        audit_log_sync("routing", "INFO",
+                            f"Routed to thread {best['thread_id']} via entity_disambiguated "
+                            f"(entity={best.get('entity_name','')}, score={best.get('score',0)}, source={best.get('source','')})")
+                        return best['thread_id'], best.get('active_anchor')
+                    elif best.get('is_new'):
+                        # Create new entity thread
                         new_thread = supabase.table('conversation_threads').insert({
                             'chat_id': chat_id,
                             'thread_type': 'entity',
-                            'entity_type': e_type,
-                            'entity_id': e_id,
-                            'routing_confidence': reason
+                            'entity_type': best.get('entity_type'),
+                            'entity_id': best.get('entity_id'),
+                            'routing_confidence': best.get('source', '')
                         }).execute()
                         from core.lib.audit_logger import audit_log_sync
-                        audit_log_sync("routing", "INFO", f"Routed to new thread {new_thread.data[0]['id']} via exact_entity_match (new)")
+                        audit_log_sync("routing", "INFO",
+                            f"Routed to new thread {new_thread.data[0]['id']} via entity_disambiguated (new, {best.get('entity_name','')})")
                         return new_thread.data[0]['id'], None
             except Exception as inner_e:
-                print(f"Entity resolution failed in thread routing: {inner_e}")
+                from core.lib.audit_logger import audit_log_sync
+                audit_log_sync("routing", "WARNING", f"Entity resolution failed in thread routing: {inner_e}")
 
         # 4. Last active non-archived thread (if previous bot turn ended with question)
         last_thread = supabase.table('conversation_threads') \
@@ -122,7 +392,8 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
             return new_thread.data[0]['id'], None
 
     except Exception as e:
-        print(f"Thread routing failed, falling back to new session: {e}")
+        from core.lib.audit_logger import audit_log_sync
+        audit_log_sync("routing", "ERROR", f"Thread routing failed, falling back to new session: {e}")
         return str(uuid.uuid4()), None
 
 def get_or_create_session(chat_id: int, message_text: str = None) -> tuple:

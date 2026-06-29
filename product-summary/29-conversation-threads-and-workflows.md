@@ -29,6 +29,8 @@ Inbound message
 
 Each routing decision is logged to `audit_logs` with reason: `workflow_resume`, `exact_entity_match`, `prior_bot_question`, or `fallback_general`.
 
+**K2 fallback contract**: When the entity resolver or LLM disambiguation fails, the routing path falls through to a general thread (inner catch) or a brand-new UUID session (outer catch). Neither path sends a user-visible error or receipt. See `core/FALLBACK_CONTRACTS.md` — K2 section for exact assertions.
+
 **Legacy compatibility**: `get_or_create_session()` now maps transparently to thread IDs. All existing `log_exchange()` calls work unchanged.
 
 ### Phase 2 — Workflow State Engine (`core/webhook/workflows.py`)

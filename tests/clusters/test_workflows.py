@@ -41,9 +41,7 @@ async def test_workflow_yes_reply():
         # Cleanup
         supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
         supabase.table('conversation_threads').delete().eq('id', thread_id).execute()
-
-@pytest.mark.asyncio
-async def test_workflow_unrelated_note_falls_open():
+        supabase.table('tasks').delete().eq('title', 'Test Event').execute()
     supabase = get_supabase()
     chat_id = 9999998
     thread_id = str(uuid.uuid4())

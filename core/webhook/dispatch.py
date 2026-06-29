@@ -494,8 +494,8 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
         try:
             existing = supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key).maybe_single().execute()
             dump_id = existing.data.get('id') if existing.data else None
-        except Exception:
-            pass
+        except Exception as dedup_err:
+            audit_log_sync("webhook", "WARNING", f"Dedup lookup failed for {dedup_key}: {dedup_err}")
 
     # ── Step 2: Attempt embedding ──
     try:

@@ -17,6 +17,14 @@ _classify_limiter = SlidingWindowLimiter(max_calls=15, per_seconds=60, redis_key
 
 
 async def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]", conversation_history: str = "") -> dict:
+    # ---
+    # C3 FALLBACK CONTRACT (see core/FALLBACK_CONTRACTS.md):
+    # On LLM failure or rate-limit wait > 3s: returns SAFE_HOLD_CLASSIFICATION
+    # = {"intent":"NOTE","confidence":1.0,"entity":"INBOX","title":"Fallback Note",
+    #    "receipt":"Message vaulted safely (AI classification temporarily unavailable)."}
+    # The message is vaulted as a NOTE — embedded into memories, never enters
+    # task/completion pipeline. No Telegram error shown.
+    # ---
     # --- M3: Query caching ---
     # Cache key includes text + conversation history (the two most variable inputs)
     # Context and core_json change rarely and don't warrant cache-busting
@@ -50,14 +58,19 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     except Exception:
         pass  # Fail-open: if corrections module is unavailable, skip silently
 
-    # --- C3: Fetch entity labels from graph (fail-open) ---
+    # --- C3: Fetch entity labels from graph (fail-open, Redis-cached) ---
     entities_str = ''
+    mentioned_entities_str = ''
     try:
-        node_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'project', 'organization']).limit(30).execute()
-        if node_res and node_res.data:
-            people = [n['label'] for n in node_res.data if n['type'] == 'person'][:8]
-            projects = [n['label'] for n in node_res.data if n['type'] == 'project'][:8]
-            orgs = [n['label'] for n in node_res.data if n['type'] == 'organization'][:8]
+        node_data = cache_get('rhodey:entities:graph_nodes')
+        if node_data is None:
+            node_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'project', 'organization']).order('updated_at', desc=True).nullslast().limit(30).execute()
+            node_data = node_res.data if node_res and node_res.data else []
+            cache_set('rhodey:entities:graph_nodes', node_data, ttl=300)
+        if node_data:
+            people = [n['label'] for n in node_data if n['type'] == 'person'][:8]
+            projects = [n['label'] for n in node_data if n['type'] == 'project'][:8]
+            orgs = [n['label'] for n in node_data if n['type'] == 'organization'][:8]
             entity_lines = []
             if people:
                 entity_lines.append(f"People: {', '.join(people)}")
@@ -66,11 +79,27 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
             if orgs:
                 entity_lines.append(f"Organizations: {', '.join(orgs)}")
             entities_str = '\n'.join(entity_lines)
+
+            # Detect which entities the user's message mentions
+            text_lower = text.lower()
+            mentioned = []
+            for n in node_data:
+                label = n['label']
+                if label.lower() in text_lower and label not in mentioned:
+                    mentioned.append(label)
+            mentioned = mentioned[:5]
+            if mentioned:
+                mentioned_entities_str = f"MENTIONED ENTITIES: {', '.join(mentioned)}"
     except Exception:
         pass  # Fail-open: if graph query fails, skip silently
 
     learned_section = f"\n    {corrections_str}\n    " if corrections_str else ""
-    entities_section = f"\n    KNOWN ENTITIES:\n    {entities_str}\n    " if entities_str else ""
+    if entities_str:
+        entities_section = f"\n    KNOWN ENTITIES:\n    {entities_str}\n    {mentioned_entities_str}\n    "
+    elif mentioned_entities_str:
+        entities_section = f"\n    {mentioned_entities_str}\n    "
+    else:
+        entities_section = ""
 
     prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy. If it's after 9 PM, append a dry command to sign off (e.g., 'Go be a dad').
 
@@ -106,6 +135,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - PROJECT UPDATES: "Qhord timeline is tight", "pricing page still open" — status updates without explicit action → NOTE, not TASK.
     - IDEAS: "What if Atna is middleware instead of full platform?" — speculative or conceptual thoughts → NOTE, not TASK.
     - QUERY: The user is asking a question to retrieve information from their past notes, tasks, the vault, OR their schedule/calendar (e.g., "What did the analyst say?", "What's the status of Qhord?", "Meetings this week?").
+    - ENTITY-AWARE QUERY: If the message references a KNOWN ENTITY from the list above (especially in MENTIONED ENTITIES), and the sentence structure is interrogative or asks "what about", "status of", "where is", "how is", "tell me about" — classify as QUERY, not TASK or COMPLETION. Questions about known entities are almost always information retrieval, not action items.
     - DISAMBIGUATION: If confidence < 0.8 and you're torn between multiple intents, list alternatives in "possible_intents". For example, if a message could be either a QUERY or a TASK, set intent to your best guess and possible_intents to ["TASK", "QUERY"]. Leave as an empty array if you're confident.
     - CONVERSATION HISTORY: Use the CONVERSATION HISTORY block above to disambiguate vague follow-ups. If Danny says "reschedule the 2pm" after discussing calendar, route as TASK. The history tells you what the current topic is.
     - DELEGATE: Research, competitor audits, or autonomous web research.

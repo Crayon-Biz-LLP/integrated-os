@@ -674,7 +674,7 @@ async def hybrid_search_graph(query: str, node_id: str = None) -> str:
                 if vector_res.data:
                     nodes_res = vector_res
             except Exception as vector_err:
-                print(f"Vector fallback search failed (RPC may not exist): {vector_err}")
+                audit_log_sync("graph", "WARNING", f"Vector fallback search failed (RPC may not exist): {vector_err}")
 
         if not nodes_res.data:
             return ""
