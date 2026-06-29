@@ -1,4 +1,5 @@
 from core.services.db import get_supabase
+from core.decisions import record_decision
 import os
 import httpx
 from datetime import datetime, timezone, timedelta
@@ -66,6 +67,20 @@ async def process_channel_pending_decision(channel: str, pending_id: int, decisi
         'danny_decision': decision_val,
         'decided_at': datetime.now(timezone.utc).isoformat()
     }).eq('id', pending_id).execute()
+
+    # Record a decision in the structured decisions table
+    try:
+        record_decision(
+            decision_type="channel_approval" if is_approved else "channel_rejection",
+            title=title[:120],
+            context=f"{channel} item #{pending_id}: {summary[:200] if summary else title[:200]}",
+            entity_type="message",
+            entity_id=str(pending_id),
+            confidence=1.0,
+            source=f"{channel}_decision_pulse",
+        )
+    except Exception as dec_err:
+        audit_log_sync("webhook", "WARNING", f"Failed to record channel decision: {dec_err}")
 
     return {"success": True, "message": f"Task from {channel} {action_msg}.", "action": decision_val}
 

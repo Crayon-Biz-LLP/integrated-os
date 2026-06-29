@@ -7,6 +7,7 @@ import asyncio
 from core.lib.audit_logger import audit_log_sync
 from core.lib.people_utils import normalize_person_name
 from core.lib.graph_rules import find_similar_node, validate_edge, resolve_alias, resolve_canonical_label, canonicalize_relationship, normalize_label_display, normalize_label_comparison, get_canonical_id
+from core.decisions import record_decision
 
 supabase = get_supabase()
 
@@ -381,6 +382,19 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
             # Cascade reject edges
             supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('source_label', label).execute()
             supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('target_label', label).execute()
+            # Record rejection decision
+            try:
+                record_decision(
+                    decision_type="graph_node_rejection",
+                    title=f"Rejected {pending_item.get('type', 'node')}: {label}",
+                    context=f"Pending node #{pending_id} rejected.",
+                    entity_type="graph_node",
+                    entity_id=str(pending_id),
+                    confidence=1.0,
+                    source="decision_pulse",
+                )
+            except Exception as dec_err:
+                audit_log_sync("pulse", "WARNING", f"Failed to record graph node rejection: {dec_err}")
             return {"success": True, "action": "rejected", "message": f"Rejected node and related edges for {label}"}
 
         if decision == 'approve':
@@ -435,9 +449,21 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                     }).eq('id', pending_id).execute()
                 else:
                     supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
+                    # Record decision
+                    try:
+                        record_decision(
+                            decision_type="graph_node_approval",
+                            title=f"Approved {node_type}: {label}",
+                            context=f"Pending node #{pending_id} approved. Source: {source_text[:200] if source_text else 'N/A'}",
+                            entity_type="graph_node",
+                            entity_id=str(pending_id),
+                            confidence=1.0,
+                            source="decision_pulse",
+                        )
+                    except Exception as dec_err:
+                        audit_log_sync("pulse", "WARNING", f"Failed to record graph node decision: {dec_err}")
                     # Cascade auto-approve related concepts and EVOKES edges
                     from core.pulse.auto_approve import auto_approve_concepts_and_evokes
-                    import asyncio
                     asyncio.create_task(auto_approve_concepts_and_evokes(label))
 
             return result
@@ -458,6 +484,19 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             
         if decision == 'reject':
             supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('id', pending_id).execute()
+            # Record rejection decision
+            try:
+                record_decision(
+                    decision_type="graph_edge_rejection",
+                    title=f"Rejected edge: {pe['source_label']} → {pe['relationship']} → {pe['target_label']}",
+                    context=f"Pending edge #{pending_id} rejected.",
+                    entity_type="graph_edge",
+                    entity_id=str(pending_id),
+                    confidence=1.0,
+                    source="decision_pulse",
+                )
+            except Exception as dec_err:
+                audit_log_sync("pulse", "WARNING", f"Failed to record graph edge rejection: {dec_err}")
             return {"success": True, "action": "rejected", "message": "Rejected edge."}
             
         if decision == 'approve':
@@ -517,7 +556,21 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                 'source_node_id': s_id,
                 'target_node_id': t_id
             }).eq('id', pending_id).execute()
-            
+
+            # Record decision
+            try:
+                record_decision(
+                    decision_type="graph_edge_approval",
+                    title=f"Approved edge: {s_label} → {rel} → {t_label}",
+                    context=f"Pending edge #{pending_id} approved. Source: {(pe.get('source_text') or '')[:200]}",
+                    entity_type="graph_edge",
+                    entity_id=str(pending_id),
+                    confidence=1.0,
+                    source="decision_pulse",
+                )
+            except Exception as dec_err:
+                audit_log_sync("pulse", "WARNING", f"Failed to record graph edge decision: {dec_err}")
+
             return {"success": True, "action": "approved", "message": f"Approved edge: {s_label} → {rel} → {t_label}"}
             
     except Exception as e:

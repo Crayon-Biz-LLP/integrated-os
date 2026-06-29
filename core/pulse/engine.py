@@ -824,12 +824,23 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         day = now.isoweekday()  # Monday=1, Sunday=7
         hour = now.hour
 
-        is_weekend = (day == 6 or day == 7)
+        # B5: Nuanced weekend filtering — transitions instead of binary
+        # Friday 7PM+ and Saturday/Sunday = weekend mode
+        # Sunday 7PM+ = pre-Monday (weekday mode resumes)
+        is_weekend = (day == 6 or day == 7) or (day == 5 and hour >= 19)
+        is_pre_monday = (day == 7 and hour >= 19)  # Sunday evening preloads Monday
         is_monday_morning = (day == 1 and hour < 11)
 
-        if is_weekend:
+        if is_weekend and not is_pre_monday:
             briefing_mode = "⚪ CHORES & 💡 IDEAS (Weekend Rest)"
             system_persona = "Focus ONLY on Home, Family, and Chores. Explicitly hide Work tasks. Be relaxed."
+        elif is_pre_monday:
+            briefing_mode = "🌙 Pre-Monday: Loading the board."
+            system_persona = "Pre-load Monday. Show Work tasks that start tomorrow. Keep Home visible but deprioritized. Be direct."
+        elif day == 5 and hour < 19:
+            # Friday before 7PM = normal weekday (closing loop)
+            briefing_mode = "Closing the loop: Friday sign off."
+            system_persona = "Push Danny to close work tasks so he can transition to weekend. Log pending items. Be dry."
         else:
             # 🌅 MORNING: Extended to Noon to catch your first run
             if hour < 12:
@@ -850,6 +861,23 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
 
         # --- 1.3 BANDWIDTH & BUFFER CHECK ---
         is_overloaded = len(active_tasks) > 15
+
+        # --- 1.3 PRIORITY DECAY (T1) ---
+        # Auto-downgrade stale 'urgent' tasks to 'high' after 7 days
+        try:
+            seven_days_ago_iso = (now - timedelta(days=7)).isoformat()
+            stale_urgent = supabase.table('tasks')\
+                .select('id, title, created_at')\
+                .eq('is_current', True)\
+                .eq('status', 'todo')\
+                .eq('priority', 'urgent')\
+                .lt('created_at', seven_days_ago_iso)\
+                .execute()
+            for st in (stale_urgent.data or []):
+                supabase.table('tasks').update({'priority': 'high'}).eq('id', st['id']).execute()
+                audit_log_sync("pulse", "INFO", f"📉 Priority decay: '{st['title']}' urgent → high (>{7}d stale)")
+        except Exception as dec_err:
+            audit_log_sync("pulse", "WARNING", f"Priority decay check failed: {dec_err}")
 
         # --- 1.3.1 STRATEGIC TASK FILTERING (Robust Horizon Guard) ---
         filtered_tasks = []
@@ -1122,7 +1150,15 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         temporal_context = await detect_temporal_patterns()
         
         # 🤖 AGENT 4: SERENDIPITY ENGINE (cross-domain connections)
-        serendipity_context = await serendipity_engine(active_tasks, people, recent_lib.data or [])
+        # S6: Inject weekly patterns for cross-domain insight
+        weekly_patterns_str = ""
+        try:
+            wp_row = next((c for c in core if c.get('key') == 'weekly_patterns'), None)
+            if wp_row and wp_row.get('content'):
+                weekly_patterns_str = wp_row['content']
+        except Exception:
+            pass
+        serendipity_context = await serendipity_engine(active_tasks, people, recent_lib.data or [], pattern_context=weekly_patterns_str or None)
         
         # 🕸️ AGENT 4.5: GRAPH CENTRALITY (hub detection)
         centrality_context = await get_graph_centrality_context()
@@ -1138,6 +1174,61 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             session_memory = last_pulse_row['content'] if last_pulse_row else "None"
         except Exception:
             session_memory = "None"
+
+        # --- 📊 DELTA BRIEFING: Compare with briefing history (last 5 snapshots) ---
+        delta_context = "None"
+        try:
+            hist_row = next((c for c in core if c.get('key') == 'briefing_history'), None)
+            history = json.loads(hist_row['content']) if hist_row and hist_row.get('content') else []
+
+            curr_task_ids = set(str(t.get('id')) for t in filtered_tasks)
+
+            # Compare against the most recent snapshot
+            if history:
+                prev = history[0]
+                prev_task_ids = set(prev.get('task_ids', []))
+                prev_completed_ids = set(prev.get('completed_ids', []))
+                new_ids = curr_task_ids - prev_task_ids
+                dropped_ids = prev_task_ids - curr_task_ids - prev_completed_ids
+                delta_lines = []
+                if new_ids:
+                    new_titles = [t.get('title', '') for t in filtered_tasks if str(t.get('id')) in new_ids]
+                    delta_lines.append(f"🆕 NEW since last briefing: {', '.join(new_titles[:5])}")
+                if dropped_ids:
+                    delta_lines.append(f"📍 {len(dropped_ids)} task(s) moved off the active board")
+                if delta_lines:
+                    delta_context = "\n".join(delta_lines)
+                else:
+                    delta_context = "No significant changes since last briefing."
+
+                # Multi-briefing pattern detection (if 3+ snapshots)
+                if len(history) >= 3:
+                    recurring_drops = set()
+                    for prev_snap in history[:5]:
+                        prev_ids = set(prev_snap.get('task_ids', []))
+                        dropped_ids_prev = prev_ids - curr_task_ids
+                        recurring_drops.update(dropped_ids_prev)
+                    if recurring_drops and len(recurring_drops) >= 2:
+                        delta_lines.append(f"🔄 {len(recurring_drops)} task(s) appeared and dropped across multiple briefings — review?")
+                        delta_context = "\n".join(delta_lines)
+            else:
+                delta_context = "First briefing — no history to compare."
+
+            # Store current snapshot (prepend, keep last 5)
+            curr_snapshot = {
+                'task_ids': list(curr_task_ids),
+                'completed_ids': [],
+                'timestamp': now.isoformat()
+            }
+            history.insert(0, curr_snapshot)
+            history = history[:5]  # Keep last 5
+            chk = supabase.table('core_config').select('id').eq('key', 'briefing_history').execute()
+            if chk.data:
+                supabase.table('core_config').update({"content": json.dumps(history)}).eq('key', 'briefing_history').execute()
+            else:
+                supabase.table('core_config').insert({"key": "briefing_history", "content": json.dumps(history)}).execute()
+        except Exception as e:
+            audit_log_sync("pulse", "WARNING", f"Delta briefing history error: {e}")
         
         audit_log_sync("pulse", "INFO", "📦 Step 5: Building context...")
         # --- 2. THINK Phase ---
@@ -1233,6 +1324,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         
         HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
         {hindsight_context}
+
+        WEEKLY PATTERNS (auto-detected productivity insights):
+        {weekly_patterns_str if weekly_patterns_str else "None"}
         
         GRAPH INTELLIGENCE {graph_task_context}
         
@@ -1256,6 +1350,9 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         
         ADAPTIVE LEARNING (briefing optimization):
         {adaptive_context if adaptive_context else "None"}
+
+        DELTA (Changes since last briefing):
+        {delta_context}
         
         SESSION MEMORY (Last Briefing Summary):
         {session_memory}

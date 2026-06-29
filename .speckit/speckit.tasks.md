@@ -551,3 +551,90 @@ This enables natural-language note capture without special syntax.
 - **History window expanded**: `MAX_HISTORY_TOKENS` 2000 → 5000 (~5-8 exchanges).
 - **Anaphora prompt enhanced**: Now receives `Active context` (name + type), `Last activity`, `Recent context` (last memory snippet), and `Earlier in conversation` (thread summary) — providing enough signal to resolve "what's the status on that?" without guessing.
 - **All 36 cluster tests passing**: Ruff clean.
+
+## Rhodey Audit (Jun 29, 2026)
+
+### [COMPLETED] T-RHODE-001: X1 — Task cache TTL 30→300
+**File**: `core/pulse/context.py:60`
+**Status**: Completed
+**Change**: `get_all_open_tasks()` cache TTL increased from 30s to 300s (5 min) to reduce Supabase load.
+
+### [COMPLETED] T-RHODE-002: T4 — Skipped instances metadata on recurring tasks
+**File**: `core/pulse/tools.py`
+**Status**: Completed
+**Change**: `skip_recurring_instance()` now stores skipped dates in `task.metadata.skipped_instances[]`. `metadata` added to select columns. `import json` added.
+
+### [COMPLETED] T-RHODE-003: K1 — Abstractive thread summaries
+**File**: `core/lib/conversation.py:136-178`
+**Status**: Completed
+**Change**: `_compress_to_summary()` now uses `call_llm_with_fallback_sync` for abstractive 2-3 sentence summary via Gemini. Fails back to extractive concatenation if LLM unavailable.
+
+### [COMPLETED] T-RHODE-004: D5 — Rate limiter before LLM classify
+**File**: `core/webhook/classify.py`
+**Status**: Completed
+**Change**: `SlidingWindowLimiter` (15 requests / 60s window, redis_key="rhodey:rate_limit:classify") added before the LLM call in `classify_with_llm()`. If estimated wait > 3s, returns `SAFE_HOLD_CLASSIFICATION`. Fail-open on Redis failure (falls through to normal LLM path).
+
+### [PENDING] T-RHODE-005: B1 — Briefing prompt compression 4K→2K
+**File**: `core/pulse/engine.py`
+**Effort**: ~1h
+**Change**: Inject a pre-compression step in `build_pulse_context()` — deduplicate project summaries, truncate individual memory excerpts to 1 sentence each, merge "upcoming tasks" / "recent tasks" / "overdue tasks" into a single compact block. Target: context assembly produces ≤2000 tokens.
+**Deploy safe**: YES — purely additive prompt engineering
+
+### [PENDING] T-RHODE-006: B3 — Briefing personalization
+**File**: `core/pulse/engine.py`, `core/pulse/context.py`
+**Effort**: ~3h
+**Change**: Add a `user_profile` TTL cache with key signals:
+- Day of week: Sunday = "reflect & plan" tone; Mon-Thu = "execution" tone; Fri = "wrap-up" tone
+- Recent sentiment: Pull last 5 memories' sentiment scores, adjust briefing positivity/mitigation framing
+- Active context: If `conversation_threads.active_anchor` has value, inject "You were discussing X — here's the update."
+**Deploy safe**: YES — additive; no existing behavior changes
+
+### [PENDING] T-RHODE-007: K3 — Proactive thread resumption
+**File**: `core/pulse/sentinel.py`, `core/lib/conversation.py`
+**Effort**: ~2h
+**Change**: In the sentinel nudge, check `conversation_threads` for threads with `updated_at > 4h` and `updated_at < 48h` that have no completed workflow. Send a Telegram nudge: "📌 Anything update on [project/task]?" once per thread, with `last_nudged_at` cooldown on the thread record.
+**Deploy safe**: YES — additive, only sends new messages
+
+### [PENDING] T-RHODE-008: K4 — Workflow expiry nudge
+**File**: `core/pulse/sentinel.py`, `core/webhook/workflows.py`
+**Effort**: ~2h
+**Change**: In the sentinel loop, check `conversation_workflows` for active workflows where `expires_at < now + 2h`. Send: "⏳ [workflow name] will expire soon. Still working on this?" with Yes/No inline keyboard.
+**Deploy safe**: YES — additive
+
+### [PENDING] T-RHODE-009: T5 — Delegation tracking dashboard
+**File**: `core/pulse/context.py`, `api/index.py` (new endpoint)
+**Effort**: ~4h
+**Change**:
+1. New `/api/delegations` endpoint: queries tasks with `direction='waiting_on'`, grouped by `committed_to` person. Returns summary + per-task detail.
+2. Pulse context section: "👤 Delegations — waiting on [person] for [n] tasks" with per-person counts.
+**Deploy safe**: YES — additive, read-only
+
+### [PENDING] T-RHODE-010: S3 — Energy-aware scheduling
+**File**: New module `core/skills/scheduling.py`
+**Effort**: ~4h
+**Change**:
+1. Personality profiling: Track task completion times from `tasks.completed_at` to infer user's productive windows (morning creative vs afternoon admin).
+2. Task ordering: Reorder the "Suggested schedule" section in pulse briefings — high-focus tasks during detected peak hours, admin during off-peak.
+3. Sunday scheduling: On Sundays, generate a full-week suggested schedule.
+**Deploy safe**: YES — additive, opt-in via feature flag
+
+### [PENDING] T-RHODE-011: S5 — Follow-up auto-cancel
+**File**: `core/webhook/handler.py`, `core/webhook/dispatch.py`
+**Effort**: ~1d
+**Change**: When a message comes in about a task with `direction='waiting_on'` and the inbound text indicates resolution ("got it", "yes", "they confirmed"), check if the `waiting_on` task should auto-cancel. Requires:
+1. Inbound entity resolution to match `committed_to` name
+2. Sentiment + keyword analysis for resolution signal
+3. Prompt user: "✅ [person] confirmed [task] — cancel the waiting task?" with Yes/No
+**Deploy safe**: NO — needs inbound infra (entity matching + workflow)
+**Dependencies**: T-700 (workflows) stable, entity resolution stable
+
+### [ACTION REQUIRED] T-RHODE-M1: Enable associative retrieval in production
+**Action**: User to set `RETRIEVAL_ASSOCIATIVE_ENABLED=true` in Vercel env vars for both backends
+**Verification**: After flip, run one manual query like "what about Equisoft?" — compare result quality vs before. Check Vercel logs for 4xx/5xx.
+**Dependencies**: None — env var only
+**Risk**: LOW — feature-flag gated; fail-open path exists
+
+### [BLOCKED] T-RHODE-M2: Validate associative retrieval results
+**Action**: After M1, run before/after query comparison
+**Status**: Blocked on T-RHODE-M1
+**QA**: Send 3-5 test queries and compare result relevance.

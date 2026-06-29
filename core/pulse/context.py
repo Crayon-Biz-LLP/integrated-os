@@ -1,5 +1,6 @@
 from core.llm import get_embedding
 import time
+import re
 import asyncio
 from datetime import datetime, timezone, timedelta
 
@@ -56,7 +57,7 @@ class ContextProvider:
     """
     def __init__(self):
         self.caches = {
-            'tasks': SimpleCache(ttl_seconds=30, redis_key="rhodey:cache:tasks"),
+            'tasks': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:tasks"),
             'projects': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:projects"),
             'people': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:people"),
             'calendar': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:calendar"),
@@ -118,14 +119,14 @@ class ContextProvider:
         try:
             google_ev = await asyncio.to_thread(get_google_calendar_events, target_date)
             events.extend(google_ev)
-        except Exception:
-            pass
+        except Exception as e:
+            audit_log_sync('context', 'WARNING', f'Google calendar fetch failed: {e}')
             
         try:
             outlook_ev = await asyncio.to_thread(get_outlook_calendar_events, target_date)
             events.extend(outlook_ev)
-        except Exception:
-            pass
+        except Exception as e:
+            audit_log_sync('context', 'WARNING', f'Outlook calendar fetch failed: {e}')
             
         events.sort(key=lambda x: x.get("time", ""))
         self.caches['calendar'].set(events)
@@ -194,15 +195,15 @@ class ContextProvider:
                     "title": e.get("summary", "Untitled"),
                     "source": "google",
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            audit_log_sync('context', 'WARNING', f'Google calendar range fetch failed: {e}')
 
         try:
             from core.services.outlook_service import get_outlook_calendar_events_range
             outlook_ev = await asyncio.to_thread(get_outlook_calendar_events_range, start_date, end_date)
             events.extend(outlook_ev)
-        except Exception:
-            pass
+        except Exception as e:
+            audit_log_sync('context', 'WARNING', f'Outlook calendar range fetch failed: {e}')
 
         events.sort(key=lambda x: x.get("time", ""))
         
@@ -233,7 +234,7 @@ class ContextProvider:
                 lines.append(f"- {r.get('url', '')}")
             return "\n".join(lines)
         except Exception as e:
-            print(f"Resource hydration failed: {e}")
+            audit_log_sync('context', 'WARNING', f'Resource hydration failed: {e}')
             return "None"
 
     async def get_practices_context(self):
@@ -250,7 +251,7 @@ class ContextProvider:
                 lines.append(f"- {p.get('label', '')} ({status}, {freq})")
             return "\n".join(lines)
         except Exception as e:
-            print(f"Practices hydration failed: {e}")
+            audit_log_sync('context', 'WARNING', f'Practices hydration failed: {e}')
             return "None"
 
     async def get_calendar_context_formatted(self, target_date):
@@ -338,6 +339,7 @@ class ContextProvider:
                 elif days_old > 14:
                     score -= 20
             except Exception:
+                # Non-critical: recency scoring degrades gracefully without created_at
                 pass
             item["score"] = score
             
@@ -396,7 +398,7 @@ class ContextProvider:
             return "\n".join(lines)
             
         except Exception as e:
-            print(f"Memory hydration failed: {e}")
+            audit_log_sync('context', 'WARNING', f'Memory hydration failed: {e}')
             return [] if return_raw else "None"
 
     async def get_email_context(self, query_text: str, match_count: int = 3):
@@ -419,7 +421,7 @@ class ContextProvider:
                 lines.append(f"- From {e.get('sender', '')}: {e.get('subject', '')} ({e.get('body_summary', '')})")
             return "\n".join(lines)
         except Exception as e:
-            print(f"Email hydration failed: {e}")
+            audit_log_sync('context', 'WARNING', f'Email hydration failed: {e}')
             return "None"
 
     async def get_whatsapp_context(self, query_text: str, match_count: int = 5):
@@ -442,7 +444,7 @@ class ContextProvider:
                 lines.append(f"- {m.get('sender_name', '')}: {m.get('message_text', '')}")
             return "\n".join(lines)
         except Exception as e:
-            print(f"WhatsApp hydration failed: {e}")
+            audit_log_sync('context', 'WARNING', f'WhatsApp hydration failed: {e}')
             return "None"
 
     async def get_pending_decisions_context(self):
@@ -480,7 +482,7 @@ class ContextProvider:
                 return "None"
             return "\n\n".join(result_blocks)
         except Exception as e:
-            print(f"Pending decisions hydration failed: {e}")
+            audit_log_sync('context', 'WARNING', f'Pending decisions hydration failed: {e}')
             return "None"
 
     async def get_cross_referenced_context(self, query_text: str, task_inputs: list, people: list, projects: list, match_count: int = 5):
@@ -509,8 +511,8 @@ class ContextProvider:
             content = m.get('content', '')
             content_lower = content.lower()
             
-            # Check if this memory mentions any known entities
-            found_entities = [term for term in entity_terms if term in content_lower and len(term) > 3]
+            # Check if this memory mentions any known entities (word-boundary match)
+            found_entities = [term for term in entity_terms if len(term) > 3 and re.search(r'\b' + re.escape(term) + r'\b', content_lower)]
             
             prefix = f"[{m.get('memory_type', 'note').upper()}]"
             if found_entities:
@@ -552,4 +554,5 @@ async def _shadow_comparison(query: str, current_memories: list, top_k: int):
             f"overlap={len(overlap)} {bundle.latency_ms}ms"
         )
     except Exception:
-        pass  # Shadow mode failures must never affect the production path
+        # Shadow mode failures must never affect the production path
+        audit_log_sync('retrieval', 'WARNING', 'Shadow mode comparison failed (non-critical)')

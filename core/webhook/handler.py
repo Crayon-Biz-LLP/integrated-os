@@ -1,11 +1,12 @@
 import os
 import json
 import re
+import uuid
 from datetime import datetime, timezone, timedelta
-from core.lib.audit_logger import audit_log_sync
+from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.conversation import get_or_create_session, log_exchange, format_history_for_prompt
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
-from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS
+from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
 from core.webhook.email import process_email_pending_decision, handle_ed_command
 from core.webhook.workflows import check_and_resume_workflow
@@ -63,7 +64,7 @@ async def resolve_graph_person_context(chat_id: int, context_text: str, pending_
         del pending_graph_clarifications[chat_id]
 
 async def process_callback_query(callback_query: dict):
-    from core.lib.audit_logger import audit_log_sync
+    trace_id_var.set(str(uuid.uuid4())[:12])
     callback_id = callback_query.get('id')
     data = callback_query.get('data', '')
     message = callback_query.get('message', {})
@@ -76,7 +77,7 @@ async def process_callback_query(callback_query: dict):
 
     owner_id = os.getenv("TELEGRAM_CHAT_ID")
     if not owner_id or str(chat_id) != str(owner_id):
-        print(f"Unauthorized callback from Chat ID: {chat_id}")
+        audit_log_sync("webhook", "WARNING", f"Unauthorized callback from Chat ID: {chat_id}")
         return {"success": True}
         
     try:
@@ -222,6 +223,10 @@ async def process_callback_query(callback_query: dict):
     return {"success": True}
 
 async def process_webhook(update: dict):
+    # Generate correlation ID for this request
+    req_trace_id = str(uuid.uuid4())[:12]
+    trace_id_var.set(req_trace_id)
+    
     try:
         update_id = update.get('update_id')
         if update_id and isinstance(update_id, (int, float)):
@@ -235,7 +240,7 @@ async def process_webhook(update: dict):
             except Exception as e:
                 error_msg = str(e)
                 if "23505" in error_msg or "already exists" in error_msg.lower() or "duplicate key" in error_msg.lower():
-                    print(f"Telegram retry detected for update {update_id}. Skipping.")
+                    audit_log_sync("webhook", "INFO", f"Telegram retry detected for update {update_id}. Skipping.")
                     return {"success": True, "message": "Already processed"}
                 else:
                     audit_log_sync("webhook", "WARNING", f"Deduplication check error: {error_msg}")
@@ -250,9 +255,9 @@ async def process_webhook(update: dict):
 
         if intent_signal == 'JOURNAL_SYNC':
             if auth_secret != os.getenv("PULSE_SECRET"):
-                print("Unauthorized Journal Sync attempt.")
+                audit_log_sync("webhook", "WARNING", "Unauthorized Journal Sync attempt.")
                 return {"status": "unauthorized", "message": "Invalid Secret"}
-            print("JOURNAL_SYNC signal received from Google Sheets.")
+            audit_log_sync("webhook", "INFO", "JOURNAL_SYNC signal received from Google Sheets.")
             triggered = await trigger_github_pulse()
             if triggered:
                 owner_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -290,7 +295,7 @@ async def process_webhook(update: dict):
 
         owner_id = os.getenv("TELEGRAM_CHAT_ID")
         if not owner_id or str(chat_id) != str(owner_id):
-            print(f"Unauthorized access from Chat ID: {chat_id}")
+            audit_log_sync("webhook", "WARNING", f"Unauthorized access from Chat ID: {chat_id}")
             return {"message": "Unauthorized"}
 
         if not text:
@@ -848,7 +853,7 @@ async def process_webhook(update: dict):
                                 if _new_entries:
                                     supabase.table('core_config').update({'content': json.dumps(_existing + _new_entries)}).eq('key', 'dismissed_practice_variants').execute()
                                 await send_telegram(chat_id, f"Dismissed: {_n.get('label', '')}")
-                                print(f"SHORTCODE DROP: Dismissed practice '{_n.get('label', '')}' via shortcode.")
+                                audit_log_sync("webhook", "INFO", f"SHORTCODE DROP: Dismissed practice '{_n.get('label', '')}' via shortcode.")
                                 return {"success": True}
                         except Exception as _sc_practice_err:
                             audit_log_sync("webhook", "WARNING", f"Shortcode practice fallback error: {_sc_practice_err}")
@@ -1029,7 +1034,7 @@ async def process_webhook(update: dict):
 
                 label = node.get('label', practice_name)
                 await send_telegram(chat_id, f"Dismissed: {label}")
-                print(f"DROP: Dismissed practice '{label}' — {len(new_entries)} variants excluded.")
+                audit_log_sync("webhook", "INFO", f"DROP: Dismissed practice '{label}' — {len(new_entries)} variants excluded.")
 
             except Exception as _drop_err:
                 audit_log_sync("webhook", "WARNING", f"/drop error: {_drop_err}")
@@ -1044,7 +1049,7 @@ async def process_webhook(update: dict):
         intent = classification.get('intent', 'TASK')
         confidence = classification.get('confidence', 0.5)
 
-        print(f"Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
+        audit_log_sync("webhook", "INFO", f"Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
 
         user_meta = {}
         if active_anchor:
@@ -1070,12 +1075,14 @@ async def process_webhook(update: dict):
 
         receipt = classification.get('receipt')
 
-        CONFIDENCE_HIGH = 0.8
-        CONFIDENCE_LOW = 0.5
+        # C2: Dynamic per-intent confidence thresholds
+        thresholds = INTENT_THRESHOLDS.get(intent, (0.8, 0.5))
+        CONFIDENCE_HIGH = thresholds[0]
+        CONFIDENCE_LOW = thresholds[1]
         possible_intents = classification.get('possible_intents', [])
 
         if intent == 'TASK' and confidence >= CONFIDENCE_HIGH and detect_opportunity_language(text):
-            print(f"Opportunity language detected — asking confirmation for: {text[:50]}...")
+            audit_log_sync("webhook", "INFO", f"Opportunity language detected — asking confirmation for: {text[:50]}...")
             await ask_task_or_note_confirmation(text, classification, chat_id, session_id)
             return {"success": True}
 
@@ -1084,7 +1091,7 @@ async def process_webhook(update: dict):
             if first_word in UPDATE_TRIGGER_WORDS:
                 matched = check_task_overlap_for_update(text)
                 if matched:
-                    print(f"Task update overlap detected — asking: {text[:50]}...")
+                    audit_log_sync("webhook", "INFO", f"Task update overlap detected — asking: {text[:50]}...")
                     await ask_task_update_confirmation(text, classification, chat_id, session_id, matched)
                     return {"success": True}
 
@@ -1096,7 +1103,7 @@ async def process_webhook(update: dict):
         if confidence >= CONFIDENCE_HIGH:
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
         elif possible_intents and len(possible_intents) >= 2 and confidence >= CONFIDENCE_LOW:
-            print(f"Ambiguous ({possible_intents}) — asking user")
+            audit_log_sync("webhook", "INFO", f"Ambiguous ({possible_intents}) — asking user")
             await ask_intent_disambiguation(text, possible_intents, chat_id, session_id)
         elif intent == 'CLARIFICATION_NEEDED':
             await handle_clarification(

@@ -774,6 +774,11 @@ async def resolve_disambiguation(text: str, chat_id: int, session_id: str, last_
         if not intent:
             return False
     original = last_clarification.get("original", text)
+    # --- #10 Feedback Loop: Track disambiguation override ---
+    prev_intent = last_clarification.get("classification", {}).get("intent", "UNKNOWN")
+    if prev_intent != "UNKNOWN" and intent and prev_intent != intent:
+        audit_log_sync("webhook", "INFO",
+            f"FEEDBACK_OVERRIDE: user corrected '{prev_intent}' → '{intent}' | text='{original[:80]}'")
     log_exchange(session_id, 'user', intent, text, chat_id)
     classification = {"title": original, "intent": intent}
     await route_by_intent(intent, original, chat_id, session_id, classification=classification)
@@ -810,6 +815,11 @@ async def resolve_task_note_confirmation(text: str, chat_id: int, session_id: st
         return False
     original = last_clarification.get("original", text)
     classification = last_clarification.get("classification", {"title": original})
+    # --- #10 Feedback Loop: Track classification override ---
+    prev_intent = classification.get('intent', 'UNKNOWN')
+    if prev_intent != 'UNKNOWN' and prev_intent != intent:
+        audit_log_sync("webhook", "INFO",
+            f"FEEDBACK_OVERRIDE: user corrected '{prev_intent}' → '{intent}' | text='{original[:80]}'")
     classification["intent"] = intent
     log_exchange(session_id, 'user', intent, text, chat_id)
     await route_by_intent(intent, original, chat_id, session_id, classification=classification)

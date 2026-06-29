@@ -267,7 +267,7 @@ async def detect_temporal_patterns() -> str:
         audit_log_sync("pulse", "WARNING", f"⚠️ Temporal Pattern Detector failed (non-critical): {e}")
         return ""
 
-async def serendipity_engine(active_tasks: list, people: list, resources: list, max_paths: int = 30) -> str:
+async def serendipity_engine(active_tasks: list, people: list, resources: list, max_paths: int = 30, pattern_context: str = None) -> str:
     """
     SERENDIPITY ENGINE: Surfaces unexpected multi-hop connections in the knowledge graph.
     Uses PostgreSQL Recursive CTEs to find hidden 2nd and 3rd degree links between today's tasks
@@ -298,7 +298,18 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list, 
         
         if not start_node_ids:
             return "No graph nodes found for active tasks."
-            
+
+        # S6: Add pattern-detected active projects as seed nodes for cross-domain insight
+        if pattern_context:
+            try:
+                pattern_terms = [t.split(':', 1)[1].strip() for t in pattern_context.split('|') if ':' in t]
+                if pattern_terms:
+                    pattern_nodes = supabase.table('graph_nodes').select('id').in_('label', pattern_terms).execute()
+                    if pattern_nodes and pattern_nodes.data:
+                        start_node_ids.extend([n['id'] for n in pattern_nodes.data])
+            except Exception:
+                pass
+
         # Add people and resources as seed nodes
         entity_labels = []
         for p in people:

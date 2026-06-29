@@ -12,6 +12,7 @@ from core.lib.time_utils import compute_expires_at
 from core.webhook.utils import supabase
 from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import version_memory_for_update
+from core.decisions import record_decision
 from datetime import datetime, timezone
 
     # ── Constants ─────────────────────────────────────────────────────────────────
@@ -273,6 +274,22 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
         audit_log_sync("completion", "INFO", f"execute_completion_closure: success. closed_ids={closed_ids}")
 
     if closed_ids:
+        # Record a decision for each completed task
+        try:
+            for task_id in closed_ids:
+                task_title = next((t["title"] for t in active_tasks if t["id"] == task_id), f"Task #{task_id}")
+                record_decision(
+                    decision_type="task_completion",
+                    title=f"Completed: {task_title}",
+                    context=entity or "completion_handler",
+                    entity_type="task",
+                    entity_id=str(task_id),
+                    confidence=1.0,
+                    source="completion_handler",
+                )
+        except Exception as dec_err:
+            audit_log_sync("completion", "WARNING", f"Failed to record completion decision: {dec_err}")
+
         closed_titles = ", ".join(
             t["title"] for t in active_tasks if t["id"] in closed_ids
         )

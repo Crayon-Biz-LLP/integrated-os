@@ -1,6 +1,8 @@
 from core.services.db import get_supabase
 import uuid
 
+from core.llm.compat import call_llm_with_fallback_sync
+
 SESSION_TIMEOUT_MINUTES = 60
 MAX_HISTORY_TOKENS = 5000
 
@@ -132,20 +134,47 @@ def get_or_create_session(chat_id: int, message_text: str = None) -> tuple:
     return thread_id, get_history(thread_id), active_anchor
 
 def _compress_to_summary(pairs: list) -> str:
-    """Build a compact extractive summary from overflow conversation pairs."""
+    """K1: Abstractive summary of overflow conversation pairs via LLM.
+
+    Generates 2-3 sentence summary capturing topic, decisions, key outcomes.
+    Falls back to extractive concatenation if LLM unavailable (fail-open).
+    """
     parts = []
     for p in pairs:
         user = p.get('user')
-        if user and user.get('content'):
-            content = user['content'].strip()
-            if content and len(content) > 3:
-                parts.append(content[:150])
+        bot = p.get('bot')
+        user_content = (user or {}).get('content', '').strip()
+        bot_content = (bot or {}).get('content', '').strip() if bot else ''
+        if user_content:
+            parts.append(f"User: {user_content[:200]}")
+        if bot_content:
+            parts.append(f"Rhodey: {bot_content[:200]}")
     if not parts:
         return ""
-    summary = " · ".join(parts)
-    if len(summary) > 800:
-        summary = summary[:797] + "..."
-    return summary
+
+    raw = "\n".join(parts)
+    if len(raw) > 3000:
+        raw = raw[:3000] + "..."
+
+    try:
+        prompt = f"""Summarize this conversation thread in 2-3 sentences.
+Capture: the topic, any decisions made, and key outcomes.
+Be concise — this will be used as memory context for future replies.
+
+Conversation:
+{raw}
+
+Summary:"""
+        resp = call_llm_with_fallback_sync(prompt, model="gemini-3.1-flash-lite", is_critical=False)
+        summary = resp.text.strip()
+        if summary and len(summary) < 600:
+            return summary
+    except Exception:
+        pass
+
+    # Fail-open: fall back to extractive concatenation
+    condensed = " · ".join(p[:150] for p in parts)
+    return condensed[:800]
 
 def _store_thread_summary(session_id: str, summary: str):
     """Persist thread summary to conversation_threads row."""

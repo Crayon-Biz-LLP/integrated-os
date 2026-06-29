@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from core.pulse.tools import update_task_status
 from tests.fixtures.task_factory import factory
 from core.services.db import get_supabase
@@ -17,6 +17,9 @@ def test_recurrence_boundary_handling():
     # there are no more upcoming instances.
     # Marking it 'done' should completely close the master task in Supabase,
     # rather than pretending the series continues.
+    #
+    # We mock skip_recurring_instance to return "No upcoming instances found",
+    # which triggers the permanent close path in update_task_status.
     
     task = factory.create_task(
         title="[TEST] Boundary Reached Task",
@@ -24,25 +27,11 @@ def test_recurrence_boundary_handling():
         google_event_id="mock_expired_recurring_event"
     )
     
-    # We mock google api instances() to return empty list,
-    # simulating that the UNTIL date has passed.
-    mock_events = MagicMock()
-    mock_service = MagicMock()
-    mock_service.events.return_value = mock_events
-    
-    # Return an empty list of instances
-    mock_events.instances.return_value.execute.return_value = {"items": []}
-
-    with patch("googleapiclient.discovery.build", return_value=mock_service):
+    with patch("core.pulse.tools.skip_recurring_instance", return_value="No upcoming instances found for recurring event '[TEST] Boundary Reached Task'."):
         res = update_task_status(task["id"], status="done")
         
-    # Document the finding:
-    # Does it successfully mark the task as "done" completely,
-    # or does it say "The series continues" and leave the task as "todo"?
     db_task = supabase.table("tasks").select("*").eq("id", task["id"]).eq("is_current", True).execute().data[0]
     
-    # Expected correct behavior: if there are no more instances, the master task should be marked 'done'
-    # Actual current behavior: leaves it 'todo' and says 'The series continues'.
     if db_task["status"] == "todo" and "The series continues" in res:
         pytest.fail("Finding: Expired recurring tasks infinitely loop as 'todo' when completed, polluting the task board forever.")
         

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 from typing import List
 
@@ -349,7 +350,7 @@ def skip_recurring_instance(task_id: int, date_str: str = None):
     If no date_str is provided, the next upcoming instance is skipped.
     date_str format: YYYY-MM-DD (optional, defaults to next instance)."""
     try:
-        task_ref = supabase.table('tasks').select('id, title, recurrence, google_event_id').eq('id', task_id).maybe_single().execute()
+        task_ref = supabase.table('tasks').select('id, title, recurrence, google_event_id, metadata').eq('id', task_id).maybe_single().execute()
         if not task_ref.data:
             return f"Task {task_id} not found."
 
@@ -395,6 +396,22 @@ def skip_recurring_instance(task_id: int, date_str: str = None):
         instance = items[0]
         instance_id = instance.get('id')
         instance_start = instance.get('start', {}).get('dateTime', 'unknown')
+
+        # T4: Store skipped instance date to prevent ghost re-creation
+        try:
+            existing_meta = td.get('metadata') or {}
+            if isinstance(existing_meta, str):
+                existing_meta = json.loads(existing_meta)
+            skipped = existing_meta.get('skipped_instances', [])
+            instance_date = instance_start[:10] if instance_start else ''
+            if instance_date and instance_date not in skipped:
+                skipped.append(instance_date)
+                existing_meta['skipped_instances'] = skipped
+                supabase.table('tasks').update({
+                    'metadata': existing_meta
+                }).eq('id', task_id).execute()
+        except Exception:
+            pass
 
         delete_calendar_instance(e_id, instance_id)
         return f"Skipped instance on {instance_start} of '{td['title']}'."

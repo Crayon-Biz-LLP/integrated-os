@@ -5,6 +5,7 @@ from email.utils import parsedate_to_datetime
 
 from core.services.google_service import get_google_creds, _MemoryCache
 from core.skills.outlook_token_helper import refresh_outlook_token
+from core.lib.audit_logger import audit_log_sync
 
 def search_gmail_sent(query: str, limit: int = 5) -> list:
     """Searches Gmail Sent folder for emails matching the query."""
@@ -50,7 +51,7 @@ def search_gmail_sent(query: str, limit: int = 5) -> list:
             
         return parsed_results
     except Exception as e:
-        print(f"Gmail sent search failed: {e}")
+        audit_log_sync('email_search', 'WARNING', f'Gmail sent search failed: {e}')
         return []
 
 
@@ -104,5 +105,5 @@ def search_outlook_sent(query: str, limit: int = 5) -> list:
             
         return parsed_results
     except Exception as e:
-        print(f"Outlook sent search failed: {e}")
+        audit_log_sync('email_search', 'WARNING', f'Outlook sent search failed: {e}')
         return []

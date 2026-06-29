@@ -12,6 +12,41 @@ from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.retrieval.config import config as retrieval_config
 from core.retrieval.pipeline import retry_failed_index_runs
+from core.decisions import expire_stale_decisions
+
+def get_recently_ended_events(minutes_ended_min=5, minutes_ended_max=30):
+    """Fetch events that ended between X and Y minutes ago — for post-meeting capture prompts.
+
+    Google Calendar API filters by START time, so we fetch a wider window and filter
+    by actual end time in Python.
+    """
+    service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
+    now = datetime.now(timezone.utc)
+    # Wider window: fetch events that started up to 2 hours before the end window
+    time_min = (now - timedelta(minutes=minutes_ended_max + 120)).isoformat()
+
+    try:
+        events_res = service.events().list(
+            calendarId='primary',
+            timeMin=time_min,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+
+        ended = []
+        for ev in events_res.get('items', []):
+            end_raw = ev.get('end', {}).get('dateTime')
+            if not end_raw:
+                continue
+            end_dt = datetime.fromisoformat(end_raw.replace('Z', '+00:00'))
+            mins_ago = (now - end_dt).total_seconds() / 60
+            if minutes_ended_min <= mins_ago <= minutes_ended_max:
+                ended.append(ev)
+        return ended
+    except Exception as e:
+        audit_log_sync("sentinel", "ERROR", f"Failed to fetch recently ended events: {e}")
+        return []
+
 
 def get_upcoming_events(minutes_ahead=60):
     """Fetch events starting between now and X minutes from now."""
@@ -40,32 +75,107 @@ def get_upcoming_events(minutes_ahead=60):
         return []
 
 async def fetch_event_context(title: str, supabase):
-    """Grabs a few relevant tasks or memories for the event context."""
-    # Extremely basic text search on title words. In a prod app, we'd use pg_vector or embeddings.
+    """S2: Rich meeting prep context — graph-connected people, task edges, recent emails, and memories."""
     words = [w for w in title.split() if len(w) > 3]
     if not words:
         return ""
-    
+
     query = " | ".join(words)
-    context_str = ""
+    context_parts = []
+    matched_people = []
+
     try:
-        # Check active tasks
+        # 1. Relevant active tasks
         tasks_res = supabase.table('tasks')\
-            .select('title, status')\
+            .select('title, status, priority, direction, committed_to')\
             .eq('is_current', True)\
             .not_.in_('status', ['done', 'cancelled'])\
             .text_search('title', query)\
-            .limit(3)\
+            .limit(5)\
             .execute()
-            
         if tasks_res.data:
-            context_str += "📌 Relevant Pending Tasks:\n"
+            context_parts.append("📌 Relevant Pending Tasks:")
             for t in tasks_res.data:
-                context_str += f"- {t['title']}\n"
+                dir_str = ""
+                if t.get('direction') == 'waiting_on':
+                    dir_str = f" [WAITING ON: {t.get('committed_to', '?')}]"
+                elif t.get('direction') == 'outbound':
+                    dir_str = f" [OWED TO: {t.get('committed_to', '?')}]"
+                context_parts.append(f"- [{t.get('priority', 'important')}] {t['title']}{dir_str}")
     except Exception:
         pass
-        
-    return context_str
+
+    try:
+        # 2. Graph-connected people — find people mentioned in event title
+        people_res = supabase.table('graph_nodes')\
+            .select('id, label, metadata')\
+            .eq('type', 'person')\
+            .execute()
+        matched_people = []
+        for p in (people_res.data or []):
+            if p['label'].lower() in title.lower():
+                matched_people.append(p)
+        if matched_people:
+            context_parts.append("👥 People in this meeting:")
+            for p in matched_people[:5]:
+                person_id = p.get('metadata', {}).get('people_id') if isinstance(p.get('metadata'), dict) else None
+                # Find their active tasks
+                if person_id:
+                    try:
+                        ptasks = supabase.table('graph_edges')\
+                            .select('target_node_id, relationship')\
+                            .eq('source_node_id', p['id'])\
+                            .in_('relationship', ['INVOLVES', 'WORKS_ON', 'ASSIGNED_TO'])\
+                            .limit(3)\
+                            .execute()
+                        task_count = len(ptasks.data or [])
+                        context_parts.append(f"- {p['label']}: {task_count} active task connection(s)")
+                    except Exception:
+                        context_parts.append(f"- {p['label']}")
+                else:
+                    context_parts.append(f"- {p['label']}")
+    except Exception:
+        pass
+
+    try:
+        # 3. Recent emails from/to matched people (last 7 days)
+        if matched_people:
+            person_names = [p['label'] for p in matched_people[:3]]
+            seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            email_conditions = [f'sender_name.ilike.%{name}%' for name in person_names]
+            email_res = supabase.table('messages')\
+                .select('sender_name, subject, created_at')\
+                .eq('channel', 'email')\
+                .gte('created_at', seven_days_ago)\
+                .or_(','.join(email_conditions))\
+                .order('created_at', desc=True)\
+                .limit(3)\
+                .execute()
+            if email_res.data:
+                context_parts.append("📧 Recent emails:")
+                for e in email_res.data:
+                    context_parts.append(f"- From {e.get('sender_name', '?')}: {(e.get('subject', '')[:60])}")
+    except Exception:
+        pass
+
+    try:
+        # 4. Semantically related memories (last 30 days)
+        from core.retrieval.search import search_memories_compat
+        memories = await search_memories_compat(
+            query_text=title,
+            top_k=3,
+            threshold=0.6,
+            recency_weight=0.5,
+            importance_weight=0.2
+        )
+        if memories:
+            context_parts.append("🧠 Relevant memories:")
+            for m in memories[:3]:
+                context_parts.append(f"- [{m.get('memory_type', '')}] {m.get('content', '')[:100]}")
+    except Exception:
+        pass
+
+    return "\n".join(context_parts) if context_parts else ""
 
 async def process_sentinel(auth_secret: str, trigger: str = "cron"):
     from core.pulse.run_logger import create_pulse_run, complete_pulse_run
@@ -151,6 +261,104 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
                 audit_log_sync("sentinel", "ERROR", f"Event processing failed for {event.get('summary', 'unknown')}: {event_err}")
                 print(f"❌ Event processing error: {event_err}")
                 
+        # --- PIGGYBACK: Weekly catch-up sweep (Sunday only) ---
+        try:
+            if now.weekday() == 6:  # Sunday
+                last_sweep = supabase.table('audit_logs') \
+                    .select('id') \
+                    .eq('service', 'sentinel') \
+                    .ilike('message', '%weekly_sweep%') \
+                    .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()) \
+                    .limit(1) \
+                    .execute()
+                if not last_sweep.data:
+                    sweep_lines = []
+                    # Stale tasks (>14 days, not done/cancelled)
+                    fourteen_days_ago = (now - timedelta(days=14)).isoformat()
+                    stale_res = supabase.table('tasks') \
+                        .select('id, title, created_at, reminder_at') \
+                        .eq('is_current', True) \
+                        .eq('status', 'todo') \
+                        .lt('created_at', fourteen_days_ago) \
+                        .limit(10) \
+                        .execute()
+                    if stale_res.data:
+                        sweep_lines.append(f"⏳ {len(stale_res.data)} task(s) stale >14 days:")
+                        for t in stale_res.data[:5]:
+                            try:
+                                created = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00'))
+                                days_old = (now - created).days
+                                sweep_lines.append(f"  • {t['title']} ({days_old}d old)")
+                            except Exception:
+                                sweep_lines.append(f"  • {t.get('title', 'Untitled')}")
+                    # Unresolved clarifications
+                    clar_res = supabase.table('clarification_feedback') \
+                        .select('id, question_text, created_at') \
+                        .is_('resolved_at', 'null') \
+                        .gt('expires_at', now.isoformat()) \
+                        .limit(5) \
+                        .execute()
+                    if clar_res.data:
+                        sweep_lines.append(f"❓ {len(clar_res.data)} unanswered clarification(s)")
+                    # Pending graph nodes
+                    pg_res = supabase.table('pending_graph_nodes') \
+                        .select('id, label, type') \
+                        .eq('status', 'pending') \
+                        .order('created_at', desc=True) \
+                        .limit(10) \
+                        .execute()
+                    if pg_res.data:
+                        sweep_lines.append(f"🕸️ {len(pg_res.data)} pending graph node(s)")
+                    # Pending edges
+                    pe_res = supabase.table('pending_graph_edges') \
+                        .select('id') \
+                        .eq('status', 'pending') \
+                        .limit(10) \
+                        .execute()
+                    if pe_res.data:
+                        sweep_lines.append(f"🔗 {len(pe_res.data)} pending graph edge(s)")
+                    # Expire stale decisions (past their expires_at)
+                    try:
+                        expired_count = expire_stale_decisions()
+                        if expired_count:
+                            sweep_lines.append(f"⏰ {expired_count} expired decision(s) auto-closed")
+                    except Exception as dec_err:
+                        audit_log_sync("sentinel", "WARNING", f"Decision expiry failed: {dec_err}")
+
+                    if sweep_lines:
+                        sweep_msg = "📋 *Weekly Sweep — Items Needing Attention*\n\n" + "\n".join(sweep_lines)
+                        await send_telegram(int(telegram_chat_id), sweep_msg)
+                        audit_log_sync("sentinel", "INFO", "weekly_sweep: Sent weekly catch-up summary")
+                    else:
+                        audit_log_sync("sentinel", "INFO", "weekly_sweep: All clear — nothing stale")
+        except Exception as e:
+            audit_log_sync("sentinel", "ERROR", f"Weekly sweep error: {e}")
+
+        # --- PIGGYBACK: Post-event capture prompts ---
+        # Fire 5-30 min after an event ends, asking for notes/outcomes.
+        try:
+            post_events = get_recently_ended_events(minutes_ended_min=5, minutes_ended_max=30)
+            for event in post_events:
+                event_id = event.get('id')
+                title = event.get('summary', 'Untitled Event')
+
+                search_str = f"Sentinel_PostCapture:{event_id}"
+                recent_log = supabase.table('audit_logs') \
+                    .select('id') \
+                    .eq('service', 'sentinel') \
+                    .ilike('message', f"%{search_str}%") \
+                    .limit(1) \
+                    .execute()
+                if recent_log.data:
+                    continue
+
+                msg = f"📝 **Meeting just ended: {title}**\nAny notes, decisions, or follow-ups from this? Just type naturally and I'll capture it."
+                success = await send_telegram(int(telegram_chat_id), msg)
+                if success:
+                    audit_log_sync("sentinel", "INFO", f"{search_str} - Post-capture prompt for {title}")
+        except Exception as e:
+            audit_log_sync("sentinel", "ERROR", f"Post-event capture error: {e}")
+
         # --- PIGGYBACK: Dispatch unanswered clarifications ---
         try:
             clarifications_res = supabase.table('clarification_feedback') \
@@ -189,6 +397,16 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
         except Exception as e:
             audit_log_sync("sentinel", "ERROR", f"Raw dump cleanup error: {e}")
 
+        # --- PIGGYBACK: Classifier feedback ingestion ---
+        try:
+            from core.webhook.feedback_loop import ingest_feedback_overrides
+            corrections_count = ingest_feedback_overrides()
+            if corrections_count > 0:
+                audit_log_sync("sentinel", "INFO",
+                               f"Feedback ingestion: {corrections_count} correction(s) processed")
+        except Exception as e:
+            audit_log_sync("sentinel", "WARNING", f"Feedback ingestion piggyback error (non-critical): {e}")
+
         # --- PIGGYBACK: Daily orphan retrieval sweep ---
         try:
             last_sweep = supabase.table('audit_logs') \
@@ -204,6 +422,119 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
                 audit_log_sync("sentinel", "INFO", "Daily orphan sweep completed")
         except Exception as e:
             audit_log_sync("sentinel", "ERROR", f"Orphan sweep piggyback error: {e}")
+
+        # --- PIGGYBACK: Graph edge expiry (TF-002) ---
+        try:
+            last_edge_sweep = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%graph edge expiry%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_edge_sweep.data:
+                result = supabase.rpc('expire_stale_graph_edges', {'expiry_days': 90}).execute()
+                expired_count = result.data if result.data else 0
+                if expired_count:
+                    audit_log_sync("sentinel", "INFO", f"🕸️ Graph edge expiry: {expired_count} stale edges marked")
+                else:
+                    audit_log_sync("sentinel", "INFO", "🕸️ Graph edge expiry: no stale edges found")
+        except Exception as e:
+            audit_log_sync("sentinel", "WARNING", f"Graph edge expiry error (non-critical): {e}")
+
+        # --- PIGGYBACK: People enrichment from graph edges (TF-003) ---
+        try:
+            last_people_sweep = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%people enrichment%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_people_sweep.data:
+                from core.lib.people_utils import enrich_people_from_graph
+                enriched = enrich_people_from_graph()
+                if enriched:
+                    audit_log_sync("sentinel", "INFO", f"👥 People enrichment: {enriched} person(s) updated from graph edges")
+                else:
+                    audit_log_sync("sentinel", "INFO", "👥 People enrichment: no updates needed")
+        except Exception as e:
+            audit_log_sync("sentinel", "WARNING", f"People enrichment error (non-critical): {e}")
+
+        # --- PIGGYBACK: S4 Pattern detection (Sunday only) ---
+        try:
+            if now.weekday() == 6:  # Sunday
+                last_pattern_sweep = supabase.table('audit_logs') \
+                    .select('id') \
+                    .eq('service', 'sentinel') \
+                    .ilike('message', '%pattern detection%') \
+                    .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()) \
+                    .limit(1) \
+                    .execute()
+                if not last_pattern_sweep.data:
+                    from core.pulse.patterns import detect_completion_patterns, format_patterns_for_briefing
+                    patterns = detect_completion_patterns()
+                    patterns_str = format_patterns_for_briefing(patterns)
+                    if patterns_str and patterns.get('insights'):
+                        # Store for next briefing to consume
+                        supabase.table('core_config').upsert({
+                            'key': 'weekly_patterns',
+                            'content': patterns_str
+                        }, on_conflict='key').execute()
+                        audit_log_sync('sentinel', 'INFO', f'Pattern detection: {len(patterns["insights"])} insight(s) stored')
+                    else:
+                        audit_log_sync('sentinel', 'INFO', 'Pattern detection: no significant patterns found')
+        except Exception as pat_err:
+            audit_log_sync('sentinel', 'WARNING', f'Pattern detection error (non-critical): {pat_err}')
+
+        # --- PIGGYBACK: S1 Proactive delegation alerts ---
+        # Check waiting_on tasks that are stale (>3 days) and push a nudge
+        try:
+            last_del_sweep = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%delegation alert%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_del_sweep.data:
+                waiting_tasks = supabase.table('tasks') \
+                    .select('id, title, created_at, reminder_at, committed_to, direction') \
+                    .eq('is_current', True) \
+                    .eq('status', 'todo') \
+                    .eq('direction', 'waiting_on') \
+                    .not_.is_('committed_to', 'null') \
+                    .execute()
+                stale_delegations = []
+                for t in (waiting_tasks.data or []):
+                    last_touch = t.get('reminder_at') or t.get('created_at')
+                    if not last_touch:
+                        continue
+                    try:
+                        touch_dt = datetime.fromisoformat(str(last_touch).replace('Z', '+00:00').replace(' ', 'T'))
+                        if touch_dt.tzinfo is None:
+                            touch_dt = touch_dt.replace(tzinfo=timezone.utc)
+                        days_stale = (datetime.now(timezone.utc) - touch_dt).days
+                        if days_stale >= 3:
+                            stale_delegations.append({
+                                'title': t['title'],
+                                'person': t['committed_to'],
+                                'days': days_stale,
+                                'task_id': t['id']
+                            })
+                    except Exception:
+                        pass
+                if stale_delegations:
+                    stale_delegations.sort(key=lambda x: x['days'], reverse=True)
+                    del_lines = ["⏳ *Delegation Stale — Needs Attention*\n"]
+                    for d in stale_delegations[:5]:
+                        del_lines.append(f"• Waiting on *{d['person']}* for {d['days']}d: {d['title']}")
+                    del_msg = "\n".join(del_lines)
+                    success = await send_telegram(int(telegram_chat_id), del_msg)
+                    if success:
+                        audit_log_sync("sentinel", "INFO", f"delegation alert: {len(stale_delegations)} stale delegation(s) flagged")
+        except Exception as del_err:
+            audit_log_sync("sentinel", "WARNING", f"Delegation alert error (non-critical): {del_err}")
 
         # --- PIGGYBACK: Retry failed retrieval index runs ---
         if retrieval_config.indexing_enabled:

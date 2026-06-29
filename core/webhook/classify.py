@@ -1,16 +1,32 @@
 from core.services.db import get_supabase
+import hashlib
 import re
 from datetime import datetime, timezone, timedelta
 
 from core.lib.audit_logger import audit_log_sync
+from core.lib.redis_cache import cache_get, cache_set
+from core.lib.rate_limiter import SlidingWindowLimiter
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.llm.constants import SAFE_HOLD_CLASSIFICATION, CLASSIFICATION_MODEL
 
 supabase = get_supabase()
 
+# D5: Rate limiter — max 15 classify calls per 60s (flash-lite free tier ceiling)
+_classify_limiter = SlidingWindowLimiter(max_calls=15, per_seconds=60, redis_key="rhodey:rate_limit:classify")
+
 
 async def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]", conversation_history: str = "") -> dict:
+    # --- M3: Query caching ---
+    # Cache key includes text + conversation history (the two most variable inputs)
+    # Context and core_json change rarely and don't warrant cache-busting
+    cache_hash = hashlib.sha256((text + (conversation_history or "")).encode()).hexdigest()[:16]
+    cache_key = f"rhodey:classify:{cache_hash}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        audit_log_sync("webhook", "INFO", f"Classification cache hit: {text[:30]}...")
+        return dict(cached)  # Return a copy to prevent callers from mutating the cached dict
+
     ist_offset = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist_offset)
     current_hour = ist_hour if ist_hour is not None else now.hour
@@ -26,6 +42,36 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     if context:
         context_str = "\n\nPrevious messages for context:\n" + "\n".join([f"- {c['content']}" for c in context])
 
+    # --- C1: Fetch learned corrections (fail-open) ---
+    corrections_str = ''
+    try:
+        from core.webhook.feedback_loop import get_learned_corrections
+        corrections_str = get_learned_corrections()
+    except Exception:
+        pass  # Fail-open: if corrections module is unavailable, skip silently
+
+    # --- C3: Fetch entity labels from graph (fail-open) ---
+    entities_str = ''
+    try:
+        node_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'project', 'organization']).limit(30).execute()
+        if node_res and node_res.data:
+            people = [n['label'] for n in node_res.data if n['type'] == 'person'][:8]
+            projects = [n['label'] for n in node_res.data if n['type'] == 'project'][:8]
+            orgs = [n['label'] for n in node_res.data if n['type'] == 'organization'][:8]
+            entity_lines = []
+            if people:
+                entity_lines.append(f"People: {', '.join(people)}")
+            if projects:
+                entity_lines.append(f"Projects: {', '.join(projects)}")
+            if orgs:
+                entity_lines.append(f"Organizations: {', '.join(orgs)}")
+            entities_str = '\n'.join(entity_lines)
+    except Exception:
+        pass  # Fail-open: if graph query fails, skip silently
+
+    learned_section = f"\n    {corrections_str}\n    " if corrections_str else ""
+    entities_section = f"\n    KNOWN ENTITIES:\n    {entities_str}\n    " if entities_str else ""
+
     prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy. If it's after 9 PM, append a dry command to sign off (e.g., 'Go be a dad').
 
     PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
@@ -33,7 +79,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     Message: "{text}"{context_str}{conversation_history}
     CURRENT TIME CONTEXT: It's the {time_phase}.
     IDENTITY & BUSINESS CONTEXT: {core_json}
-
+    {entities_section}{learned_section}
     Return ONLY valid JSON (no markdown, no explanation):
     {{
         "intent": "TASK|COMPLETION|NOTE|PROJECT_UPDATE|NOISE|CLARIFICATION_NEEDED|DELEGATE|QUERY|DECLARE_PRACTICE|DAILY_BRIEF",
@@ -76,6 +122,16 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     - STRATEGIC CORRECTIONS: If Danny starts a message with 'Record this for the Vault', 'Correction for the Historian', or 'Correction of Record', classify it immediately as a NOTE with 1.0 confidence. These are manual strategic overrides and must never be ignored.
     - META-SYSTEM CONTENT: Allow content that talks about 'Atna', 'Solvstrat', or 'Qhord' even if the message is long or complex. These are high-value strategic inputs."""
 
+    # D5: Rate limit check before LLM call (fail-open on Redis failure)
+    try:
+        wait = _classify_limiter._get_wait_secs()
+        if wait > 3:
+            audit_log_sync("webhook", "WARNING", f"Classification rate limited (wait={wait:.1f}s), returning safe hold")
+            cache_set(cache_key, SAFE_HOLD_CLASSIFICATION, ttl=300)
+            return SAFE_HOLD_CLASSIFICATION
+    except Exception:
+        pass  # Fail-open: if limiter is unavailable, proceed with LLM call
+
     try:
         resp = await generate_content_with_fallback(
             prompt=prompt,
@@ -84,7 +140,10 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
             is_classification=True,
             config={'response_mime_type': 'application/json'}
         )
-        return resp.parse_json()
+        result = resp.parse_json()
+        # Cache successful classification for 5 minutes
+        cache_set(cache_key, result, ttl=300)
+        return result
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Classification parse error: {e}")
         return SAFE_HOLD_CLASSIFICATION
@@ -110,7 +169,7 @@ def detect_opportunity_language(text: str) -> bool:
             return True
     return False
 
-UPDATE_TRIGGER_WORDS = {'update', 'reschedule', 'reschedule', 'change', 'move', 'push', 'postpone', 'delay', 'bring', 'advance'}
+UPDATE_TRIGGER_WORDS = {'update', 'reschedule', 'change', 'move', 'push', 'postpone', 'delay', 'bring', 'advance'}
 
 
 def check_task_overlap_for_update(text: str) -> list:
@@ -151,6 +210,21 @@ INTENT_OPTIONS = {
     "p": ("DECLARE_PRACTICE", "🏃 Practice — track a habit"),
     "c": ("COMPLETION", "✅ Completion — marked a task done"),
     "x": ("NOISE", "👍 Nothing — just noise"),
+}
+
+# C2: Dynamic per-intent confidence thresholds
+# (high, low) tuples — COMPLETION needs higher bar, NOTE lower bar
+INTENT_THRESHOLDS = {
+    'TASK': (0.8, 0.5),
+    'COMPLETION': (0.85, 0.6),
+    'NOTE': (0.7, 0.4),
+    'QUERY': (0.75, 0.5),
+    'PROJECT_UPDATE': (0.8, 0.5),
+    'NOISE': (0.6, 0.3),
+    'DELEGATE': (0.8, 0.5),
+    'DECLARE_PRACTICE': (0.85, 0.5),
+    'DAILY_BRIEF': (0.75, 0.5),
+    'CLARIFICATION_NEEDED': (0.8, 0.5),
 }
 
 INTENT_BY_KEYWORD = {}

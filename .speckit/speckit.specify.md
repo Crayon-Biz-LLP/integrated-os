@@ -37,10 +37,25 @@
 - **Memory Versioning**: `version_memory_for_update()` helper in `core/services/db.py` archiving memories before mutation. Wired into entity enrichment and degraded completion paths.
 
 ### What is broken or incomplete
-- **MISSING**: No Decisions table (P3) — decisions are implicit in tasks/briefings
-- **MISSING**: No graph edge expiry (P4) — edges older than 6 months may be stale  
-- **MISSING**: People table enrichment (P5) — org, last_interaction_date, notes columns not yet populated
-- **DEFERRED**: Graph UI polish — PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range
+- **MISSING**: No Decisions table (P3) — decisions are implicit in tasks/briefings [COMPLETED]
+- **MISSING**: No graph edge expiry (P4) — edges older than 6 months may be stale [COMPLETED]
+- **MISSING**: People table enrichment (P5) — org, last_interaction_date, notes columns not yet populated [COMPLETED]
+- **DEFERRED**: Graph UI polish — PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range [STILL DEFERRED]
+- **DEFERRED**: TF-002 Graph Edge Expiry — last_confirmed_at/valid_until — edges older than 90 days auto-expired via sentinel [COMPLETED]
+- **DEFERRED**: TF-003 People Table Enrichment — organization_name, last_interaction_date from graph edges [COMPLETED]
+
+### Rhodey Audit — Pending Items
+
+| # | Item | Effort | Type | Status |
+|---|------|--------|------|--------|
+| B1 | Briefing prompt compression 4K→2K | ~1h | Optimization | Pending |
+| B3 | Briefing personalization (Sunday-only learner → adaptive) | ~3h | Enhancement | Pending |
+| K3 | Proactive thread resumption — "Anything update on X?" nudge | ~2h | Feature | Pending |
+| K4 | Workflow expiry nudge — "Still working on this?" before expiry | ~2h | Feature | Pending |
+| T5 | Delegation tracking dashboard — "Waiting on" visibility | ~4h | Feature | Pending |
+| S3 | Energy-aware scheduling — personality profiling for task ordering | ~4h | New capability | Pending |
+| S5 | Follow-up auto-cancel — when inbound reply resolves it | ~1d | Feature | Needs inbound infra |
+| M2 | Validate associative retrieval after M1 flip — manual QA | ~1h | QA | Needs M1 env var confirmed |
 
 ---
 

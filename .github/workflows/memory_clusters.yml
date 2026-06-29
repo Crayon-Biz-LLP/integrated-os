@@ -1,0 +1,40 @@
+name: Memory Clustering (M5)
+
+on:
+  schedule:
+    # Weekly on Sunday at 3 AM UTC (8:30 AM IST)
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+jobs:
+  cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run memory clustering
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: |
+          python -c "
+          import asyncio
+          from core.pulse.memory_clusters import build_memory_clusters
+          result = asyncio.run(build_memory_clusters())
+          print(f'Clusters created: {result[\"clusters_created\"]}')
+          print(f'Clusters reused: {result[\"clusters_reused\"]}')
+          print(f'Orphans: {result[\"orphans_count\"]}')
+          print(f'Seeds processed: {result[\"seeds_processed\"]}')
+          print(f'Quality histogram: {result[\"quality_histogram\"]}')
+          "
