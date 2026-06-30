@@ -1,3 +1,4 @@
+from core.context import execute_context_strategy, BRIEFING_CONFIG, HINDSIGHT_CONFIG
 from core.services.db import get_supabase
 from core.llm import get_embedding
 import asyncio
@@ -7,6 +8,7 @@ from core.lib.time_utils import age_tag
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.retrieval.config import config as retrieval_config
+from core.actions import ActionResult, accumulate_action
 
 supabase = get_supabase()
 
@@ -31,6 +33,7 @@ async def write_outcome_memory(task_title: str, project_name: str = None):
             "source": "pulse_outcome"
         }).execute()
         memory_id = result.data[0]['id']
+        accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label=label))
         from core.retrieval.pipeline import schedule_index_memory
         asyncio.create_task(schedule_index_memory(memory_id, label, "outcome", "pulse_outcome"))
         print(f"🧠 Outcome memory written: {label}")
@@ -64,40 +67,23 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
         return ""
 
     try:
-        from core.retrieval.search import search_memories_compat
-        memories = await search_memories_compat(
-            query_text=query_text,
-            top_k=max_memories,
-            threshold=0.7,
-            recency_weight=0.4,
-            importance_weight=0.2,
-            use_associative=retrieval_config.associative_enabled_recent_memories,
+        # Pass to the context registry
+        result = await execute_context_strategy(
+            query=query_text,
+            strategy=BRIEFING_CONFIG
         )
-
-        if memories:
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-            memories = [m for m in memories
-                        if m.get('created_at')
-                        and m['created_at'] >= cutoff]
-
+        
+        memories = result.matched_items
         if not memories:
             return ""
-
-        # Shadow mode: run associative retrieval alongside for comparison
-        if retrieval_config.shadow_mode and query_text:
-            from core.pulse.context import _shadow_comparison
-            asyncio.create_task(_shadow_comparison(query_text, memories, max_memories))
-
-        # Format memories for briefing context
+            
         memory_entries = []
         for m in memories:
-            memory_type = m.get('memory_type', 'note')
-            content = m.get('content', '')[:200]  # Truncate to 200 chars
-            memory_entries.append(f"{age_tag(m.get('created_at'))} [{memory_type.upper()}] {content}")
-
-        result = "\n".join(memory_entries)
-        print(f"🧠 Retrieved {len(memories)} relevant memories for briefing")
-        return result
+            memory_type = m.metadata.get('memory_type', 'note')
+            content_text = m.content[:200]
+            memory_entries.append(f"{age_tag(m.metadata.get('created_at'))} [{memory_type.upper()}] {content_text}")
+            
+        return "\n".join(memory_entries)
 
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Recent memories retrieval failed: {e}")
@@ -131,15 +117,12 @@ async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top
 
         async def fetch_memories_for_query(query_name: str, query_text: str):
             try:
-                from core.retrieval.search import search_memories_compat
-                return await search_memories_compat(
-                    query_text=query_text,
-                    top_k=top_k,
-                    threshold=0.6,
-                    recency_weight=0.4,
-                    importance_weight=0.2,
-                    use_associative=retrieval_config.associative_enabled_hindsight,
+                res = await execute_context_strategy(
+                    query=query_text,
+                    strategy=HINDSIGHT_CONFIG,
+                    extracted_entities=entity_terms
                 )
+                return [m.metadata for m in res.matched_items]
             except Exception as e:
                 audit_log_sync("pulse", "ERROR", f"Hindsight query error ({query_name}): {e}")
                 return []

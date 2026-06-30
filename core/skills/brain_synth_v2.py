@@ -164,17 +164,14 @@ async def synth_entity(entity_id, entity_name, org_name, org_context, is_org=Fal
         entity_embedding_res = await get_embedding(entity_name)
         entity_embedding = entity_embedding_res.vector if entity_embedding_res else None
 
-        # 1. Memories (via associative retrieve compat)
+        # 1. Memories (via context registry)
         try:
-            from core.retrieval.search import search_memories_compat
-            mem = await search_memories_compat(
-                query_text=entity_name,
-                top_k=30,
-                threshold=0.5,
-                recency_weight=0.3,
-                importance_weight=0.2,
-                use_associative=True
+            from core.context import execute_context_strategy, BRAIN_SYNTH_CONFIG
+            res = await execute_context_strategy(
+                query=entity_name,
+                strategy=BRAIN_SYNTH_CONFIG
             )
+            mem = [m.metadata for m in res.matched_items]
             
             org_memories = []
             if is_org:

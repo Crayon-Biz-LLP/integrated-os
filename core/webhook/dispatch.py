@@ -12,6 +12,9 @@ from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_BY_KEYWORD
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
+from core.actions import ActionResult, accumulate_action
+from core.prompts.query import build_interrogate_brain_prompt, build_anaphora_resolution_prompt
+from core.prompts.briefing import build_daily_brief_prompt
 from core.webhook.utils import is_recent_raw_dump, supabase
 from core.pulse.graph import hybrid_search_graph
 from core.agents.quick_process import process_single_dump, get_tasks_service
@@ -196,9 +199,14 @@ Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
             primary_model=CLASSIFICATION_MODEL,
-            config={'max_output_tokens': 800}
+            config={'response_mime_type': 'application/json', 'max_output_tokens': 800}
         )
-        reply = response.text.strip()
+        try:
+            data = response.parse_json()
+            reply = data.get("user_facing_summary", "").strip()
+        except Exception as e:
+            audit_log_sync("webhook", "ERROR", f"Daily brief JSON parse failed: {e}. Failing closed.")
+            reply = None  # Will trigger fallback generator
 
     except Exception as e:
         audit_log_sync("webhook", "WARNING", f"Daily brief generation failed: {e}")
@@ -409,12 +417,16 @@ Does this capture contain an EXPLICIT imperative asking to create a task? (e.g.,
 If not, does it leave exactly ONE critical ambiguity that requires a targeted question (e.g., "Who else should know?", "Is this pricing or scope?", "Do you want me to add a task for X?")?
 If neither, or if there are too many actions, just acknowledge.
 
+If `needs_question` is true and you're asking for permission to take an action (e.g., "Do you want me to add a task for X?"), set `proposed_workflow` to "task_creation" or "calendar_event" and include the title in `proposed_payload`. If the question is purely for disambiguation (e.g., "Who else should know?"), set `proposed_workflow` to "awaiting_disambiguation_confirmation".
+
 Return JSON:
 {{
   "needs_task": boolean,
   "suggested_task_title": "string or null",
   "needs_question": boolean,
-  "suggested_question": "string or null"
+  "suggested_question": "string or null",
+  "proposed_workflow": "string or null",
+  "proposed_payload": {{}}
 }}"""
 
     analysis_res = await generate_content_with_fallback(
@@ -429,7 +441,7 @@ Return JSON:
     if analysis.get("needs_task") and analysis.get("suggested_task_title"):
         task_title = analysis["suggested_task_title"]
         try:
-            supabase.table('tasks').insert({
+            res = supabase.table('tasks').insert({
                 "title": task_title,
                 "status": "todo",
                 "priority": "important",
@@ -437,28 +449,34 @@ Return JSON:
                 "organization_id": chosen_org_id,
                 "direction": "inbound"
             }).execute()
-            followup_msg = f"\n\n_Created follow-up task: {task_title}_"
+            task_id = res.data[0]['id'] if res.data else None
+            accumulate_action(ActionResult(action_type="task_create", status="executed" if task_id else "failed", entity_id=task_id, human_label=task_title))
         except Exception as e:
+            accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))
             audit_log_sync("webhook", "WARNING", f"Failed to auto-create follow-up task: {e}")
     elif analysis.get("needs_question") and analysis.get("suggested_question"):
         followup_msg = f"\n\n{analysis['suggested_question']}"
 
         if enable_workflow:
-            w_type = analysis.get("proposed_workflow")
-            if w_type:
-                try:
-                    supabase.table('conversation_workflows').insert({
-                        "chat_id": chat_id,
-                        "thread_id": session_id,
-                        "workflow_type": w_type,
-                        "payload": analysis.get("proposed_payload", {}),
-                        "awaiting_user_input": True,
-                        "status": "active",
-                        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
-                    }).execute()
-                    audit_log_sync("workflow", "INFO", f"Created {w_type} workflow for thread {session_id}")
-                except Exception as e:
-                    audit_log_sync("workflow", "ERROR", f"Failed to create workflow: {e}")
+            w_type = analysis.get("proposed_workflow") or "awaiting_disambiguation_confirmation"
+            payload = analysis.get("proposed_payload") or {}
+            
+            if not analysis.get("proposed_workflow"):
+                audit_log_sync("workflow", "WARNING", f"Enrichment asked question without proposed_workflow. Defaulting to awaiting_disambiguation_confirmation. Q: {analysis.get('suggested_question', '')[:80]}...")
+            
+            try:
+                supabase.table('conversation_workflows').insert({
+                    "chat_id": chat_id,
+                    "thread_id": session_id,
+                    "workflow_type": w_type,
+                    "payload": payload,
+                    "awaiting_user_input": True,
+                    "status": "active",
+                    "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+                }).execute()
+                audit_log_sync("workflow", "INFO", f"Created {w_type} workflow for thread {session_id}")
+            except Exception as e:
+                audit_log_sync("workflow", "ERROR", f"Failed to create workflow: {e}")
 
     return followup_msg
 
@@ -537,6 +555,7 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
             schedule_index_memory(memory_id, text, "note", "webhook")
             
             chosen_org_id, chosen_proj_id = await _enrich_memory_entities(text, memory_id, active_anchor)
+            accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label="Update logged"))
                 
         if dump_id:
             supabase.table('raw_dumps').update({"status": "processed", "is_processed": True}).eq('id', dump_id).execute()
@@ -652,6 +671,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             memory_id = result.data[0]["id"]
             schedule_index_memory(memory_id, text, "note", "webhook")
             chosen_org_id, chosen_proj_id = await _enrich_memory_entities(text, memory_id, active_anchor)
+            accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label="Note vaulted"))
         
         # Mark dump as processed
         if dump_id:
@@ -1016,22 +1036,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 thread_summary = get_thread_summary(session_id)
             if thread_summary:
                 anchor_context += f"\nEarlier in conversation: {thread_summary[:500]}"
-            resolve_prompt = f"""You are Rhodey's query parser.
-Task 1: Rewrite the following query to be fully self-contained by replacing any pronouns or vague references (e.g. it, that, he, the first one) with the specific entities or context they refer to from the conversation history. If the query is already clear, output it unchanged.
-Task 2: Extract the primary entity (project, person, or organization) from the resolved query. If there is no clear entity, output "None".
-
-{anchor_context}
-
-Output JSON format exactly like this:
-{{
-  "resolved_query": "...",
-  "primary_entity": "..."
-}}
-
-CONVERSATION HISTORY:
-{conversation_history if conversation_history else "None"}
-
-Query: {query}"""
+            resolve_prompt = build_anaphora_resolution_prompt(anchor_context, conversation_history, query)
 
             resolve_response = await generate_content_with_fallback(
                 prompt=resolve_prompt,
@@ -1372,46 +1377,21 @@ Query: {query}"""
             header = "🧠 Here's what I found:"
 
         now_str = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%A, %d %B %Y, %H:%M %p IST')
-        prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
-
-CURRENT TIME: {now_str}
-
-Danny is asking a question. You have access to his: {sources_str}.
-
-CRITICAL OUTPUT FORMAT - YOU MUST USE EXACTLY THIS STRUCTURE:
-
-[Answer to the question]
-- Answer the specific question directly in your first sentence.
-- If context includes emails, call recordings, or previously rejected items matching the query: summarize the relevant ones (who, what, when, key details) BEFORE listing tasks/events. If rejected items match, note they were rejected and ask to re-engage.
-- Otherwise, list the relevant tasks/events in bullet points directly.
-- If an event is marked [PAST], explicitly mention that it already happened.
-- DO NOT invent custom headings like 'Immediate Priorities' or 'Today's Bottleneck'.
-
-**Context:**
-- Only if relevant: 1-3 sentences with deeper insight: patterns across sources, blockers, urgency, or previously rejected items still relevant to the question.
-- NEVER put this section first.
-- NEVER repeat data already covered in the Answer section.
-
-IMPORTANT: Stop generating immediately after the Context section. Do NOT analyze your own response. End the message cleanly.
-
-{context_str}{conversation_history}
-
-Question: {query}
-
-Formatting rules:
-- Emoji goes at the **start** of each task/event line
-- Do NOT use `###` headers — use **bold** or plain text
-- Bullet points only, no numbered lists
-- Always use [MEMORY] or [RESOURCE] brackets when citing."""
+        prompt = build_interrogate_brain_prompt(now_str, sources_str, context_str, conversation_history, query)
 
         response = await generate_content_with_fallback(
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
             primary_model=CLASSIFICATION_MODEL,
-            config={'max_output_tokens': 800}
+            config={'response_mime_type': 'application/json', 'max_output_tokens': 800}
         )
 
-        answer = response.text.strip()
+        try:
+            data = response.parse_json()
+            answer = data.get("user_facing_summary", "").strip()
+        except Exception as e:
+            audit_log_sync("webhook", "ERROR", f"interrogate_brain JSON parse failed: {e}. Failing closed.")
+            answer = "🧠 *I found some information, but had trouble formatting it safely.*"
         
         proactive_msg = ""
         if active_anchor:

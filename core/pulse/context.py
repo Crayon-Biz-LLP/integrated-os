@@ -330,22 +330,20 @@ class ContextProvider:
         boosted_task_ids = set()
         if query_text:
             try:
-                from core.retrieval.search import search_memories_compat
-                related = await search_memories_compat(
-                    query_text=query_text,
-                    top_k=10,
-                    threshold=0.5,
-                    recency_weight=0.1,
-                    importance_weight=0.1,
+                from core.context import execute_context_strategy, HYDRATE_TASKS_CONFIG
+                res = await execute_context_strategy(
+                    query=query_text,
+                    strategy=HYDRATE_TASKS_CONFIG
                 )
+                related = [m.metadata for m in res.matched_items]
                 if related:
                     for mem in related:
-                        content = mem.get('content', '')
+                        content_str = mem.get('content', '')
                         # Extract task ID references from memory content
-                        for tid in re.findall(r'\[ID:(\d+)\]', content):
+                        for tid in re.findall(r'\[ID:(\d+)\]', content_str):
                             boosted_task_ids.add(int(tid))
                         # Also check title mentions (case-insensitive)
-                        content_lower = content.lower()
+                        content_lower = content_str.lower()
                         for item in semantic_pool:
                             title_lower = item['task'].get('title', '').lower()
                             if title_lower and len(title_lower) > 3 and title_lower in content_lower:
@@ -403,15 +401,12 @@ class ContextProvider:
             return [] if return_raw else "None"
             
         try:
-            from core.retrieval.search import search_memories_compat
-            memories = await search_memories_compat(
-                query_text=query_text,
-                top_k=match_count,
-                threshold=0.6,
-                recency_weight=recency_weight,
-                importance_weight=0.2,
-                use_associative=retrieval_config.associative_enabled_hydrate,
+            from core.context import execute_context_strategy, HYDRATE_MEMORIES_CONFIG
+            res = await execute_context_strategy(
+                query=query_text,
+                strategy=HYDRATE_MEMORIES_CONFIG
             )
+            memories = [m.metadata for m in res.matched_items]
             if return_raw:
                 return memories
 

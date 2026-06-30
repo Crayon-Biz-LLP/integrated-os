@@ -70,6 +70,7 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [28-clarification-loop-guards.md](28-clarification-loop-guards.md) | Entity grounding guards, URL quarantine, clarification loop architecture, organizations table, validation window |
 | [29-conversation-threads-and-workflows.md](29-conversation-threads-and-workflows.md) | Persistent threads, workflow state engine, query carry-forward across turns |
 | [29-conversational-persistence-memory-hygiene.md](29-conversational-persistence-memory-hygiene.md) | Memory expiry, versioning, deletion cleanup, raw dump lifecycle, query carry-forward |
+| [30-context-registry-truth-boundary.md](30-context-registry-truth-boundary.md) | Context registry (entity-grounded retrieval, 6 strategies, hard/soft gates) + truth boundary (post-generation claim validation, action receipts) + prompt registry + JSON fail-closed |
 
 ### Use Cases
 | File | What It Covers |

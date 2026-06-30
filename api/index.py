@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from core.lib.audit_logger import trace_id_var
+from core.actions import begin_action_context, clear_action_context
 
 from core.webhook import (
     process_channel_pending_decision,
@@ -59,12 +60,15 @@ async def webhook_route(request: Request):
     update = await request.json()
     req_id = f"tg_{update.get('update_id', uuid.uuid4().hex[:8])}"
     trace_id_var.set(req_id)
+    begin_action_context()
     try:
         await process_webhook(update)
         return {"success": True}
     except Exception as e:
         print(f"Webhook route error: {e}")
         raise HTTPException(status_code=500, detail="Internal processing error")
+    finally:
+        clear_action_context()
 
 def verify_hmac(payload: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
@@ -1237,6 +1241,7 @@ async def whatsapp_ingest_route(request: Request):
         if not hmac.compare_digest(provided, expected_secret):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
+    begin_action_context()
     try:
         try:
             body = await request.json()
@@ -1267,6 +1272,8 @@ async def whatsapp_ingest_route(request: Request):
     except Exception as e:
         print(f"WhatsApp ingest error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        clear_action_context()
 
 
 # --- DRIVE WEBHOOK (Receives Google Drive push notifications) ---

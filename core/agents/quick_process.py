@@ -9,6 +9,7 @@ from core.lib.audit_logger import info, audit_log_sync
 from core.services.db import get_supabase,  fetch_active_projects, zombie_recovery
 from core.services.google_service import format_rfc3339, sync_to_calendar, sync_to_google, delete_calendar_event, get_tasks_service
 from core.webhook.classify import CLASSIFICATION_MODEL
+from core.actions import ActionResult, accumulate_action
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.lib.time_utils import compute_expires_at
@@ -165,7 +166,9 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
                 "entities_mentioned": result.get("entities_mentioned") or [],
                 "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat())
             }).execute()
-            memory_id = ins_res.data[0]['id']
+            memory_id = ins_res.data[0]['id'] if ins_res.data else None
+            if memory_id:
+                accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label="Note captured"))
         except Exception as e:
             audit_log_sync("quick_process", "WARNING", f"Memory insert failed: {e}")
             
@@ -379,8 +382,10 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
     try:
         insert_res = supabase.table('tasks').insert(task_insert).execute()
         task_id = insert_res.data[0]['id']
+        accumulate_action(ActionResult(action_type="task_create", status="executed", entity_id=task_id, human_label=title))
     except Exception as e:
         audit_log_sync("quick_process", "ERROR", f"Task insert failed: {e}")
+        accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))
         return {"action": "error", "reason": str(e)}
 
     e_id = None

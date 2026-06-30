@@ -14,6 +14,7 @@ from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import version_memory_for_update
 from core.decisions import record_decision
 from datetime import datetime, timezone
+from core.actions import ActionResult, accumulate_action
 
     # ── Constants ─────────────────────────────────────────────────────────────────
 COMPLETION_MESSAGE_TYPE = "completion"
@@ -70,9 +71,9 @@ async def handle_confident_completion(
                 },
                 "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat())
             }).execute()
-            if mem_res and mem_res.data:
-                memory_id = mem_res.data[0]["id"]
-                schedule_index_memory(memory_id, text, "note", "webhook_completion")
+            memory_id = mem_res.data[0]['id'] if mem_res.data else None
+            accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label="Completion logged"))
+            schedule_index_memory(memory_id, text, "note", "webhook_completion")
         except Exception as mem_err:
             audit_log_sync("completion", "WARNING", f"Memory write failed for dump {dump_id}: {mem_err}")
             pass

@@ -7,6 +7,7 @@ from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
+from core.actions import ActionResult, accumulate_action
 
 supabase = get_supabase()
 
@@ -176,6 +177,7 @@ def create_task(title: str, project_id: int = None, organization_name: str = Non
             return "Failed to create task."
             
         task_id = res.data[0]['id']
+        accumulate_action(ActionResult(action_type="task_create", status="executed", entity_id=task_id, human_label=title))
         e_id, g_id = None, None
         
         if new_reminder:
@@ -211,6 +213,7 @@ def create_task(title: str, project_id: int = None, organization_name: str = Non
             "Approve this org via Decisions first.)" if org_unresolved else ""
         )
     except Exception as e:
+        accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))
         return f"Error creating task: {str(e)}"
 
 @rhodey_tools.register

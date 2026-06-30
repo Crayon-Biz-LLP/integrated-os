@@ -8,6 +8,7 @@ from core.llm.config import WorkloadProfile
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.webhook.telegram import send_telegram
 from core.lib.conversation import log_exchange
+from core.actions import ActionResult, accumulate_action
 
 CONFIRM_PHRASES = {'yes', 'y', 'yep', 'do it', 'go ahead', 'sure', 'ok', 'okay', 'yeah', 'please', 'absolutely'}
 DECLINE_PHRASES = {'no', 'n', 'nope', 'cancel', 'skip', 'nevermind', 'ignore', 'stop'}
@@ -89,20 +90,8 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     
     # 2. LLM Evaluation (slow path)
     if not decision:
-        prompt = f"""You are evaluating a user's reply to a pending proposed action.
-Proposed Action Type: "{w_type}"
-Proposed Details: {json.dumps(payload)}
-
-User's Reply: "{text}"
-
-Did the user explicitly confirm/agree to proceed with the action?
-Did the user explicitly decline/cancel it?
-Or is this an entirely unrelated message that ignores the proposal?
-
-Return JSON:
-{{
-  "decision": "confirm" | "decline" | "unrelated"
-}}"""
+        from core.prompts.workflow import build_workflow_resume_prompt
+        prompt = build_workflow_resume_prompt(w_type, payload, text)
 
         try:
             analysis_res = await generate_content_with_fallback(
@@ -148,31 +137,31 @@ Return JSON:
     elif decision == "confirm":
         reply_text = "Done."
         
-        if w_type == "calendar_event":
+        if w_type == "calendar_event" or w_type == "task_creation" or w_type == "awaiting_actionable_confirmation":
             try:
-                title = payload.get("title", "New Event")
-                supabase.table('tasks').insert({
+                title = payload.get("title", "New Item")
+                res = supabase.table('tasks').insert({
                     "title": title,
                     "status": "todo",
                     "priority": "normal",
                     "direction": "inbound"
                 }).execute()
-                reply_text = f"✅ Added '{title}' to your calendar."
+                task_id = res.data[0]['id'] if res.data else None
+                accumulate_action(ActionResult(
+                    action_type="calendar_create" if w_type == "calendar_event" else "task_create",
+                    status="executed" if task_id else "failed",
+                    entity_id=task_id,
+                    human_label=title
+                ))
             except Exception as e:
-                reply_text = f"Failed to execute workflow: {e}"
+                accumulate_action(ActionResult(
+                    action_type="calendar_create" if w_type == "calendar_event" else "task_create",
+                    status="failed",
+                    evidence={"error": str(e)}
+                ))
                 
-        elif w_type == "task_creation":
-            try:
-                title = payload.get("title", "New Task")
-                supabase.table('tasks').insert({
-                    "title": title,
-                    "status": "todo",
-                    "priority": "normal",
-                    "direction": "inbound"
-                }).execute()
-                reply_text = f"✅ Task created: {title}"
-            except Exception as e:
-                reply_text = f"Failed to execute workflow: {e}"
+        elif w_type == "awaiting_disambiguation_confirmation":
+            pass # No database mutation, just acknowledging.
 
         await send_telegram(chat_id, reply_text)
         log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)

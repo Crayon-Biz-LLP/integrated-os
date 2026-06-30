@@ -14,6 +14,51 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
+## Session Anchored Summary (Jun 30, 2026 — Part 8)
+
+### Progress Done This Session
+- **Hallucination Fix — Truth Boundary + Context Registry**: Eliminated LLM hallucination of unexecuted actions and pre-flight context leakage (Dog walk → Shifrah) via two layered subsystems:
+  - **`core/actions.py` (Truth Boundary)**: `ActionResult` dataclass, contextvar accumulator, `validate_action_claims()` scanner/rewriter with `CLAIM_LEXICON` phrase-family classifier + `RESERVED_ACTION_PATTERNS` regex, `render_actions()` deterministic renderer, `can_claim_action()` gate. Wired into `send_telegram()` as the final send boundary invariant — snapshots evidence, validates claims, appends receipts, drains context. Added `awaiting_actionable_confirmation` and `awaiting_disambiguation_confirmation` workflow branches. Six use sites wired (workflows.py, dispatch.py, completion_handler.py, quick_process.py, pulse/tools.py, pulse/memory.py).
+  - **`core/context/` (Context Registry)**: `schema.py`, `config.py`, `gates.py`, `pipeline.py` — 6 named strategies (`PRE_FLIGHT_CONFIG`, `BRIEFING_CONFIG`, `HINDSIGHT_CONFIG`, `HYDRATE_TASKS_CONFIG`, `HYDRATE_MEMORIES_CONFIG`, `BRAIN_SYNTH_CONFIG`). Entity-grounding gates (hard/soft/none). Neutral context penalty (0.5x). `semantic_requires_anchor=True` for PreFlight. All 6 callers migrated: `sentinel.py` (fetch_event_context), `memory.py` (2), `context.py` (2), `brain_synth_v2.py` (1).
+  - **`core/prompts/` (Prompt Registry)**: Separated all prompts from inline code into `guards.py`, `query.py`, `briefing.py`, `classify.py`, `workflow.py`, `ingest.py`.
+  - **Structured Outputs + JSON Fail-Close**: `interrogate_brain`, `handle_daily_brief`, `process_sentinel` now fail closed — raw `.text.strip()` replaced with deterministic safe text on JSON parse failure.
+  - **Observability**: Structured audit logging for `context_registry` — logs strategy, threshold, gate_mode, candidate/rejected/final counts, neutral vs grounded counts, rejection reasons, `semantic_skipped_no_anchor`.
+  - **Sentinel prompt rewritten**: From speculative "Write a Pre-Flight Briefing" to fact-only "Below is verified context. Restate only what is shown." Prevents AI inference from absent context.
+- **32 test suite (all passing)**:
+  - `tests/sim/test_context_registry.py` (8 tests: T1-T8): dog walk empty, anchored retrieval, anchor failure, stale anchor, grounded outranks neutral, neutral survives, hard gate rejects, soft gate downranks
+  - `tests/sim/test_simulated_flows.py` (11 tests): 6 hallucination claim stripping (task, calendar, attendance, evidence-present, multi-action, receipt), 3 JSON fail-closed (malformed, valid, empty context), 2 session continuity (follow-up anchor, sequential meeting isolation)
+  - `tests/unit/test_context_registry.py` (7 tests): gate logic, dog_walk pre-flight, shifrah meeting, noise stress, neutral context dominance
+  - `tests/unit/test_actions.py` (6 tests): render executed/failed, validate unbacked/backed/monitoring claims, contextvar lifecycle
+- **LIVE_DB validation**: All 19 simulation tests verified against real Supabase. Two bugs found and fixed:
+  - **T2 fix**: Word-level entity matching in `core/context/pipeline.py` — `[SIM_TEST]` prefix prevented label matching; added query-term overlap check + matched query words appended to `query_entities` for gate overlap
+  - **T13 fix**: Test assertion checked positional args (`call_args[0][0]`) but `generate_content_with_fallback` receives prompt as keyword arg `prompt=` — switched to `call.kwargs.get("prompt", "")`
+  - **pytest.ini env override**: `pytest.ini` env section overrides LIVE_DB=true env vars. Workaround: `-c /dev/null` with explicit asyncio config.
+
+### Key Decisions This Session
+- **Two-layered hallucination defense**: Truth boundary (post-generation claim validation) + Context registry (pre-retrieval entity grounding) rather than a single heuristic.
+- **`contextvars` over explicit returns**: `ActionResult` accumulator avoids signature explosion across ~15 mutation sites.
+- **`send_telegram()` as final chokepoint**: Single invariant for evidence snapshot, validation, receipt appending, and context draining — with `skip_validation` param for internal messages.
+- **Two workflow confirmation states**: `awaiting_actionable_confirmation` (action-claim disputes) vs `awaiting_disambiguation_confirmation` (entity/meaning ambiguity) — not one generic type.
+- **PreFlight semantic requires anchor**: `semantic_requires_anchor=True` in `PRE_FLIGHT_CONFIG` — no semantic retrieval unless a grounded person/org/project anchor exists. Prevents "Dog walk → Shifrah" leak.
+- **Neutral context penalty (0.5x)**: Prevents entity-less semantic noise from overriding grounded facts.
+- **Entity resolution via graph nodes**: Replaced capitalization regex with `graph_nodes` table lookup for people/orgs/projects. Word-level matching handles test prefixes like `[SIM_TEST]`.
+- **JSON fail-closed**: `interrogate_brain`, `handle_daily_brief`, `process_sentinel` use deterministic safe text on parse failure instead of raw `.text.strip()`.
+
+### Key Files (Truth Boundary + Context Registry)
+- `core/actions.py` — Truth boundary: claim lexicon, validate_action_claims, contextvar accumulator, render_actions
+- `core/context/` — New registry: `schema.py`, `config.py`, `gates.py`, `pipeline.py`, `__init__.py`
+- `core/prompts/` — Prompt registry: `guards.py`, `query.py`, `briefing.py`, `classify.py`, `workflow.py`, `ingest.py`
+- `core/webhook/telegram.py` — `send_telegram()`: final chokepoint with validation and receipt appending
+- `core/webhook/dispatch.py` — Structured outputs + JSON fail-closed for interrogate_brain, handle_daily_brief
+- `core/pulse/sentinel.py` — `fetch_event_context()` migrated to PRE_FLIGHT_CONFIG; fact-only prompt
+- `core/services/memory.py` — `get_recent_memories_for_briefing()`, `retrieve_hindsight_memories()` migrated
+- `core/pulse/context.py` — `hydrate_tasks_context()`, `hydrate_memories_context()` migrated
+- `core/skills/brain_synth_v2.py` — Entity memory retrieval migrated to BRAIN_SYNTH_CONFIG
+- `tests/sim/test_context_registry.py` — 8 simulation tests (T1-T8)
+- `tests/sim/test_simulated_flows.py` — 11 tests (T9-T14)
+- `tests/unit/test_context_registry.py` — 7 unit tests
+- `tests/unit/test_actions.py` — 6 unit tests
+
 ## Session Anchored Summary (Jun 28, 2026 — Part 7)
 
 ### Progress Done This Session

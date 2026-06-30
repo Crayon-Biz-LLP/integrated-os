@@ -5,6 +5,8 @@ import httpx
 from core.lib.audit_logger import audit_log_sync
 
 
+from core.actions import snapshot_action_context, validate_action_claims, render_actions, drain_action_context
+
 def _chunk_message(text: str, max_len: int = 4000) -> list[str]:
     if len(text) <= max_len:
         return [text]
@@ -22,74 +24,96 @@ def _chunk_message(text: str, max_len: int = 4000) -> list[str]:
         text = text[split_at:].lstrip()
     return chunks
 
-async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True, inline_keyboard: list = None):
-    chunks = _chunk_message(message_text)
-    total = len(chunks)
-    telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
-    success = True
-    last_failed = -1
-    async with httpx.AsyncClient() as client:
-        for i, chunk in enumerate(chunks):
-            suffix = f"({i+1}/{total})"
-            if total > 1:
-                if i == 0:
-                    nl = chunk.find('\n')
-                    if nl != -1:
-                        chunk = chunk[:nl] + " " + suffix + chunk[nl:]
+async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True, inline_keyboard: list = None, skip_validation: bool = False):
+    try:
+        evidence = snapshot_action_context()
+        if not skip_validation:
+            message_text, downgrades = validate_action_claims(message_text, evidence)
+            if downgrades:
+                # Build detailed observability event
+                audit_log_sync("actions", "HALLUCINATION_BLOCKED", {
+                    "downgrade_count": len(downgrades),
+                    "downgrade_categories": list(set(d["action_type"] for d in downgrades)),
+                    "action_evidence_count": len(evidence),
+                    "downgrades": downgrades
+                })
+            
+        receipts = render_actions(evidence)
+        if receipts:
+            receipts_text = "\n".join(receipts)
+            # Only append if not already in the message to avoid duplication during transition
+            if receipts_text.strip() not in message_text:
+                message_text = f"{message_text}\n\n{receipts_text}"
+
+        chunks = _chunk_message(message_text)
+        total = len(chunks)
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
+        success = True
+        last_failed = -1
+        async with httpx.AsyncClient() as client:
+            for i, chunk in enumerate(chunks):
+                suffix = f"({i+1}/{total})"
+                if total > 1:
+                    if i == 0:
+                        nl = chunk.find('\n')
+                        if nl != -1:
+                            chunk = chunk[:nl] + " " + suffix + chunk[nl:]
+                        else:
+                            chunk = chunk + " " + suffix
                     else:
-                        chunk = chunk + " " + suffix
-                else:
-                    chunk = suffix + "\n\n" + chunk
-            payload = {
-                "chat_id": chat_id,
-                "text": chunk,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True,
-            }
-            if inline_keyboard and i == total - 1:
-                payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
-            elif show_keyboard and i == total - 1:
-                payload["reply_markup"] = {
-                    "keyboard": [
-                        [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
-                        [{"text": "🚀 Cluster"}, {"text": "📚 Library"}],
-                        [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}],
-                        [{"text": "📊 Status"}]
-                    ],
-                    "resize_keyboard": True,
-                    "persistent": True,
+                        chunk = suffix + "\n\n" + chunk
+                payload = {
+                    "chat_id": chat_id,
+                    "text": chunk,
+                    "parse_mode": "Markdown",
+                    "disable_web_page_preview": True,
                 }
-            # Send with one retry
-            for attempt in range(2):
-                try:
-                    resp = await client.post(url, json=payload)
-                    if resp.status_code == 400 and "can't parse entities" in resp.text.lower():
-                        clean = chunk.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
-                        payload["text"] = clean
-                        payload.pop("parse_mode", None)
+                if inline_keyboard and i == total - 1:
+                    payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+                elif show_keyboard and i == total - 1:
+                    payload["reply_markup"] = {
+                        "keyboard": [
+                            [{"text": "🔴 Urgent"}, {"text": "📋 Brief"}],
+                            [{"text": "🚀 Cluster"}, {"text": "📚 Library"}],
+                            [{"text": "🧭 Season Context"}, {"text": "🔓 Vault"}],
+                            [{"text": "📊 Status"}]
+                        ],
+                        "resize_keyboard": True,
+                        "persistent": True,
+                    }
+                # Send with one retry
+                for attempt in range(2):
+                    try:
                         resp = await client.post(url, json=payload)
-                    if resp.status_code == 200:
-                        break
-                    if attempt == 0:
-                        await asyncio.sleep(1)
-                except Exception as e:
-                    if attempt == 0:
-                        audit_log_sync("telegram", "WARNING", f"Telegram chunk {i+1}/{total} retrying: {e}")
-                        await asyncio.sleep(1)
-                    else:
-                        audit_log_sync("telegram", "ERROR", f"Telegram chunk {i+1}/{total} failed after retry: {e}")
-                        success = False
-                        last_failed = i
-    # Notify user if some chunks were lost
-    if not success and last_failed >= 0 and last_failed < total - 1:
-        try:
-            note = f"⚠️ *Response incomplete* — part {last_failed+2}/{total} failed to send."
-            async with httpx.AsyncClient() as client:
-                await client.post(url, json={"chat_id": chat_id, "text": note, "parse_mode": "Markdown"})
-        except Exception:
-            pass
-    return success
+                        if resp.status_code == 400 and "can't parse entities" in resp.text.lower():
+                            clean = chunk.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+                            payload["text"] = clean
+                            payload.pop("parse_mode", None)
+                            resp = await client.post(url, json=payload)
+                        if resp.status_code == 200:
+                            break
+                        if attempt == 0:
+                            await asyncio.sleep(1)
+                    except Exception as e:
+                        if attempt == 0:
+                            audit_log_sync("telegram", "WARNING", f"Telegram chunk {i+1}/{total} retrying: {e}")
+                            await asyncio.sleep(1)
+                        else:
+                            audit_log_sync("telegram", "ERROR", f"Telegram chunk {i+1}/{total} failed after retry: {e}")
+                            success = False
+                            last_failed = i
+        # Notify user if some chunks were lost
+        if not success and last_failed >= 0 and last_failed < total - 1:
+            try:
+                note = f"⚠️ *Response incomplete* — part {last_failed+2}/{total} failed to send."
+                async with httpx.AsyncClient() as client:
+                    await client.post(url, json={"chat_id": chat_id, "text": note, "parse_mode": "Markdown"})
+            except Exception:
+                pass
+        return success
+    finally:
+        drain_action_context()
 
 async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
     """Download file from Telegram and return (bytes, mime_type)."""

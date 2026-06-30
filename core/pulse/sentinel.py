@@ -1,3 +1,4 @@
+from core.context import execute_context_strategy, PRE_FLIGHT_CONFIG
 from core.llm.constants import SYNTHESIS_MODEL
 from core.services.db import get_supabase
 import os
@@ -75,107 +76,25 @@ def get_upcoming_events(minutes_ahead=60):
         return []
 
 async def fetch_event_context(title: str, supabase):
-    """S2: Rich meeting prep context — graph-connected people, task edges, recent emails, and memories."""
-    words = [w for w in title.split() if len(w) > 3]
+    """S2: Rich meeting prep context using Context Registry."""
+    words = [w for w in title.split() if w.lower() not in ['a', 'an', 'the', 'in', 'on', 'at', 'with', 'for']]
     if not words:
         return ""
-
-    query = " | ".join(words)
-    context_parts = []
-    matched_people = []
-
-    try:
-        # 1. Relevant active tasks
-        tasks_res = supabase.table('tasks')\
-            .select('title, status, priority, direction, committed_to')\
-            .eq('is_current', True)\
-            .not_.in_('status', ['done', 'cancelled'])\
-            .text_search('title', query)\
-            .limit(5)\
-            .execute()
-        if tasks_res.data:
-            context_parts.append("📌 Relevant Pending Tasks:")
-            for t in tasks_res.data:
-                dir_str = ""
-                if t.get('direction') == 'waiting_on':
-                    dir_str = f" [WAITING ON: {t.get('committed_to', '?')}]"
-                elif t.get('direction') == 'outbound':
-                    dir_str = f" [OWED TO: {t.get('committed_to', '?')}]"
-                context_parts.append(f"- [{t.get('priority', 'important')}] {t['title']}{dir_str}")
-    except Exception:
-        pass
-
-    try:
-        # 2. Graph-connected people — find people mentioned in event title
-        people_res = supabase.table('graph_nodes')\
-            .select('id, label, metadata')\
-            .eq('type', 'person')\
-            .execute()
-        matched_people = []
-        for p in (people_res.data or []):
-            if p['label'].lower() in title.lower():
-                matched_people.append(p)
-        if matched_people:
-            context_parts.append("👥 People in this meeting:")
-            for p in matched_people[:5]:
-                person_id = p.get('metadata', {}).get('people_id') if isinstance(p.get('metadata'), dict) else None
-                # Find their active tasks
-                if person_id:
-                    try:
-                        ptasks = supabase.table('graph_edges')\
-                            .select('target_node_id, relationship')\
-                            .eq('source_node_id', p['id'])\
-                            .in_('relationship', ['INVOLVES', 'WORKS_ON', 'ASSIGNED_TO'])\
-                            .limit(3)\
-                            .execute()
-                        task_count = len(ptasks.data or [])
-                        context_parts.append(f"- {p['label']}: {task_count} active task connection(s)")
-                    except Exception:
-                        context_parts.append(f"- {p['label']}")
-                else:
-                    context_parts.append(f"- {p['label']}")
-    except Exception:
-        pass
-
-    try:
-        # 3. Recent emails from/to matched people (last 7 days)
-        if matched_people:
-            person_names = [p['label'] for p in matched_people[:3]]
-            seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-            email_conditions = [f'sender_name.ilike.%{name}%' for name in person_names]
-            email_res = supabase.table('messages')\
-                .select('sender_name, subject, created_at')\
-                .eq('channel', 'email')\
-                .gte('created_at', seven_days_ago)\
-                .or_(','.join(email_conditions))\
-                .order('created_at', desc=True)\
-                .limit(3)\
-                .execute()
-            if email_res.data:
-                context_parts.append("📧 Recent emails:")
-                for e in email_res.data:
-                    context_parts.append(f"- From {e.get('sender_name', '?')}: {(e.get('subject', '')[:60])}")
-    except Exception:
-        pass
-
-    try:
-        # 4. Semantically related memories (last 30 days)
-        from core.retrieval.search import search_memories_compat
-        memories = await search_memories_compat(
-            query_text=title,
-            top_k=3,
-            threshold=0.6,
-            recency_weight=0.5,
-            importance_weight=0.2
-        )
-        if memories:
-            context_parts.append("🧠 Relevant memories:")
-            for m in memories[:3]:
-                context_parts.append(f"- [{m.get('memory_type', '')}] {m.get('content', '')[:100]}")
-    except Exception:
-        pass
-
-    return "\n".join(context_parts) if context_parts else ""
+    
+    query = " ".join(words)
+    
+    # Capitalized words as a fallback hint
+    import re
+    entities = re.findall(r'\b[A-Z][a-z]+\b', title)
+    entities = [e for e in entities if e.lower() not in ['a', 'an', 'the', 'in', 'on', 'at', 'with', 'for']]
+    
+    result = await execute_context_strategy(
+        query=query,
+        strategy=PRE_FLIGHT_CONFIG,
+        extracted_entities=entities
+    )
+    
+    return result.get_formatted_context()
 
 async def process_sentinel(auth_secret: str, trigger: str = "cron"):
     from core.pulse.run_logger import create_pulse_run, complete_pulse_run
@@ -235,16 +154,33 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
                 
                 msg = f"🚨 **ALARM: Meeting in {mins_until} mins!**\n📅 {title}"
                 if context:
-                    prompt = f"Write a 1-2 sentence maximum 'Pre-Flight Briefing' for a meeting called '{title}'. Here is some context from my system. Be extremely brief, do not use pleasantries. Just say what I need to know.\n\nContext:\n{context}"
+                    prompt = f"""Below is verified context for a meeting called '{title}'. Restate only what is shown in 1-2 sentences. Do not guess connections between the context and the meeting. If context is empty, say 'No relevant context found.'
+
+Return ONLY valid JSON:
+{{
+  "answer_type": "status_only",
+  "user_facing_summary": "The 1-2 sentence briefing.",
+  "claimed_actions": [],
+  "needs_execution": false
+}}
+
+Context:
+{context}"""
                     
                     try:
                         ai_briefing = await generate_content_with_fallback(
                             prompt=prompt,
                             workload=WorkloadProfile.SYNTHESIS,
                             primary_model=os.getenv("GEMINI_FLASH_MODEL", SYNTHESIS_MODEL),
-                            config={"temperature": 0.2}
+                            config={"temperature": 0.2, "response_mime_type": "application/json"}
                         )
-                        msg += f"\n\n🧠 **Pre-Flight Context:**\n{ai_briefing.text.strip()}"
+                        try:
+                            data = ai_briefing.parse_json()
+                            summary = data.get("user_facing_summary", "").strip()
+                        except Exception as e:
+                            audit_log_sync("sentinel", "ERROR", f"Sentinel JSON parse failed: {e}. Failing closed.")
+                            summary = "Context generation failed formatting."
+                        msg += f"\n\n🧠 **Pre-Flight Context:**\n{summary}"
                     except Exception as e:
                         audit_log_sync("sentinel", "WARNING", f"AI context generation failed: {e}")
                         msg += f"\n\n🧠 **Context found:**\n{context}"
