@@ -55,9 +55,19 @@ async def execute_context_strategy(
                 .limit(5)\
                 .execute()
             for t in (tasks_res.data or []):
+                # Re-append commitment tags and priority for richer context
+                task_str = t['title']
+                direction = t.get('direction')
+                committed_to = t.get('committed_to', 'someone')
+                priority = t.get('priority', 'important')
+                if direction == 'waiting_on':
+                    task_str += f" [WAITING ON: {committed_to}]"
+                elif direction == 'outbound':
+                    task_str += f" [OWED TO: {committed_to}]"
+                task_str += f" ({priority}) [ID:{t['id']}]"
                 matched_items.append(RetrievalItem(
                     item_id=f"task_{t['id']}",
-                    content=t['title'],
+                    content=task_str,
                     metadata=t,
                     score=1.0,
                     source="tasks"
@@ -74,9 +84,21 @@ async def execute_context_strategy(
             for p in (people_res.data or []):
                 p_label_lower = p['label'].lower()
                 if p_label_lower in query.lower() or any(t in p_label_lower for t in query_terms):
+                    # 2nd-hop: count active task connections via graph_edges
+                    task_count_str = ""
+                    try:
+                        edge_res = supabase.table('graph_edges')\
+                            .select('id', count='exact')\
+                            .eq('source_node_id', p['id'])\
+                            .execute()
+                        edge_count = edge_res.count if hasattr(edge_res, 'count') else len(edge_res.data or [])
+                        if edge_count:
+                            task_count_str = f": {edge_count} active connection(s)"
+                    except Exception:
+                        pass
                     matched_items.append(RetrievalItem(
                         item_id=f"person_{p['id']}",
-                        content=p['label'],
+                        content=f"{p['label']}{task_count_str}",
                         metadata=p,
                         score=1.0,
                         source="people"

@@ -14,6 +14,7 @@ from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.actions import ActionResult, accumulate_action
 from core.prompts.query import build_interrogate_brain_prompt, build_anaphora_resolution_prompt
+from core.prompts.workflow import build_enrichment_prompt
 from core.webhook.utils import is_recent_raw_dump, supabase
 from core.pulse.graph import hybrid_search_graph
 from core.agents.quick_process import process_single_dump, get_tasks_service
@@ -411,24 +412,7 @@ async def _run_post_capture_enrichment(
         if anchor_name:
             anchor_hint = f"\nConversation context: the user was recently discussing '{anchor_name}'. Use this to disambiguate references."
 
-    prompt = f"""You are analyzing a captured note or update.
-Capture: "{text}"{anchor_hint}
-
-Does this capture contain an EXPLICIT imperative asking to create a task? (e.g., "Remind me to...", "Add a task to...", "I need to..."). If so, set needs_task=true.
-If not, does it leave exactly ONE critical ambiguity that requires a targeted question (e.g., "Who else should know?", "Is this pricing or scope?", "Do you want me to add a task for X?")?
-If neither, or if there are too many actions, just acknowledge.
-
-If `needs_question` is true and you're asking for permission to take an action (e.g., "Do you want me to add a task for X?"), set `proposed_workflow` to "task_creation" or "calendar_event" and include the title in `proposed_payload`. If the question is purely for disambiguation (e.g., "Who else should know?"), set `proposed_workflow` to "awaiting_disambiguation_confirmation".
-
-Return JSON:
-{{
-  "needs_task": boolean,
-  "suggested_task_title": "string or null",
-  "needs_question": boolean,
-  "suggested_question": "string or null",
-  "proposed_workflow": "string or null",
-  "proposed_payload": {{}}
-}}"""
+    prompt = build_enrichment_prompt(text, anchor_hint)
 
     analysis_res = await generate_content_with_fallback(
         prompt=prompt,

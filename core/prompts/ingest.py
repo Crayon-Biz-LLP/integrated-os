@@ -26,6 +26,8 @@ First, determine the category:
 - PROJECT_UPDATE: Mixed content like status updates, team changes, finance/invoice mentions, decisions, or meeting fallout.
 - COMPLETION: Single-action past tense — "finished the call", "done with the page" (unambiguously closes one specific task)
 - NOTE: Idea, insight, observation (not actionable)
+- NOISE: Casual conversation, acknowledgment, low-value content
+- CLARIFY: If the user asks you to schedule a meeting or task but omits critical info (like time, date, or person) AND it cannot be inferred from the history, or if it is too vague. Generate a specific question in `clarification_question`.
 
 Then extract the requested fields for that category.
 Return ONLY a valid JSON object matching the chosen category.
@@ -36,14 +38,15 @@ Options for project names (pick the closest match or use "INBOX" if none fit):
 If TASK:
 {{
   "category": "TASK",
-  "title": "Clear action statement (start with verb)",
+  "title": "Clear action statement (start with verb). If answering a clarification, merge new detail with original subject into a complete title.",
   "project": "One of the provided project names or INBOX",
   "duration_mins": 15,
   "priority": "normal|important|urgent",
   "direction": "inbound|outbound|waiting_on",
   "committed_to": "Person or organization name if this is a promise to them (or null)",
-  "reminder_at": "YYYY-MM-DDTHH:MM:00+05:30 (Only if a specific time is mentioned or heavily implied. Must be future)",
-  "explicit_time": true/false (true ONLY if the user explicitly said "remind me at X", "tomorrow at Y", etc.)
+  "reminder_at": "ISO-8601 datetime in IST (UTC+05:30). Examples: 'today 3pm' -> '2026-06-22T15:00:00+05:30', 'tomorrow' -> '2026-06-23T09:00:00+05:30'. (Only if mentioned or heavily implied. Must be future)",
+  "explicit_time": true/false (true ONLY if the user explicitly said "remind me at X", "tomorrow at Y", etc.),
+  "recurrence": "iCalendar RRULE string if recurring is mentioned (e.g., 'RRULE:FREQ=WEEKLY;BYDAY=MO'). Otherwise null."
 }}
 
 If PROJECT_UPDATE or NOTE:

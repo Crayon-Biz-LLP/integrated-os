@@ -1167,8 +1167,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             newly_enriched_lines = [f"[ID:{r.get('id', '?')}] [{r.get('category', 'LINK')}] {r.get('title', 'Unknown')} | {r.get('strategic_note', '')}" for r in batch_enrich_results]
             newly_enriched_context = " | ".join(newly_enriched_lines)
         
-        link_context = "None"
-
         # Re-use recent_lib data for URLs instead of querying again
         if recent_lib.data:
             url_lines = []
@@ -1291,9 +1289,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # --- 2. THINK Phase ---
         audit_log_sync("pulse", "INFO", '🤖 Building prompt...')
 
-        project_details = build_routing_context(legacy_projects)
-
-        people_names = [p['name'] for p in people]
         # Phase 2: Context Hydration Engine
         query_focus = f"Briefing for {briefing_mode}"
         compressed_tasks_final, universal_task_map = await context_provider.hydrate_tasks_context(query_focus)
@@ -1356,20 +1351,58 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # --- 🧭 LAYER 4: MORNING PULSE NARRATIVE ---
         from core.pulse.context_salience import generate_morning_pulse
         morning_pulse_narrative = ""
-        if briefing_mode == 'Morning Pulse' and relevant_project_names:
+        if "Morning Status" in briefing_mode and relevant_project_names:
             morning_pulse_narrative = generate_morning_pulse(relevant_project_names)
 
-        from core.prompts.briefing import build_pulse_briefing_prompt
+        from core.prompts.briefing import build_pulse_briefing_prompt, build_pulse_system_instruction
+
+        # --- MAP VARIABLES FOR PROMPT BUILDER ---
+        canonical_context = master_page_context
+        cluster_task_list = compressed_tasks_final
+        new_inputs = new_inputs_text
+        session_memory_context = session_memory
+
+        practices_parts = []
+        if new_practice_labels:
+            practices_parts.append(f"New practices detected: {', '.join(new_practice_labels)}")
+        if correlation_insights:
+            practices_parts.extend(correlation_insights)
+        practices_context = "\n".join(practices_parts) if practices_parts else "None"
+
+        urgency_parts = []
+        if overdue_tasks:
+            urgency_parts.append("⚠️ OVERDUE URGENT:")
+            for ot in overdue_tasks:
+                urgency_parts.append(f"  - {ot}")
+        if stale_context:
+            urgency_parts.append("⏳ STALE LOOPS:")
+            urgency_parts.append(stale_context)
+        urgency_lists = "\n".join(urgency_parts) if urgency_parts else "None"
+
+        new_input_tags = " | ".join([d.get('status', '') for d in dumps[:5]]) if dumps else "None"
+
+        people_names = ", ".join([p['name'] for p in people])
+
         prompt = build_pulse_briefing_prompt(
             conversation_history, season_config, briefing_mode, current_time_str,
             is_overloaded, is_monday_morning, json.dumps(overdue_tasks), stale_context, system_context,
             is_hindsight_stale, hindsight_empty, calendar_context, recent_memories_context,
             hindsight_context, weekly_patterns_str, graph_task_context, morning_pulse_narrative,
             serendipity_context, canonical_context, delta_context, practices_context,
-            cluster_task_list, urgency_lists, new_inputs, new_input_tags, session_memory_context
+            cluster_task_list, urgency_lists, new_inputs, new_input_tags, session_memory_context,
+            pattern_context=pattern_context,
+            newly_enriched_context=newly_enriched_context,
+            recent_urls_context=recent_urls_context,
+            active_clusters_context=active_clusters_context,
+            dependency_context=dependency_context,
+            social_graph_context=social_graph_context,
+            temporal_context=temporal_context,
+            centrality_context=centrality_context,
+            adaptive_context=adaptive_context,
+            people_names=str(people_names),
         )
 
-        orgs_list = await context_provider.get_organizations()
+        # --- PROJECT ROUTING (for system instruction) ---
         project_routing_logic = f"""
         PROJECT AND ORGANIZATION ROUTING LOGIC:
         Match each task to the MOST SPECIFIC active project using the hierarchy below.
@@ -1396,77 +1429,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # B4: Load briefing history to avoid repetition
         briefing_history_context = _get_recent_briefings_context()
 
-        # --- BUILD SYSTEM INSTRUCTION ---
-        system_instruction_text = f"""{system_persona}
-            
-            {briefing_history_context}
-
-            MANDATE — SILENCE PROTOCOL & HALLUCINATION GUARD:
-            - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
-            - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
-            - NEVER proactively invent tasks or ideas. ONLY track what is manually entered or already exists.
-            - If NEW INPUTS is "None" or empty, you MUST return completely empty arrays for `completed_task_ids`, `new_tasks`, `new_projects`, and `resources` [].
-            - NEVER "make up", guess, or generate example tasks.
-            - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
-            - ONLY track what is manually entered in NEW INPUTS.
-
-            {project_routing_logic}
-            
-            DRIFT DETECTION (Temporal Lineage):
-            - Check if active projects have been updated 3+ times in 48 hours.
-            - If DRIFT detected, add: "⚠️ DRIFT ALERT: Project '{{name}}' changed {{count}} times in 48h. Bottleneck?"
-            - Use detect_drift(project_name) to check (returns update_count).
-            
-            RESOURCE CAPTURE LOGIC:
-            - Identify any URLs in the NEW INPUTS. For each URL: CATEGORIZE (GITHUB, ARTICLE, X_THREAD, LINKEDIN, or TOOL), SUMMARIZE (1-sentence description), PROJECT MATCH (if relates to existing project).
-            - Do NOT create a task for URLs. Just save them to the "resources" array.
-            - STRICT CLUSTER MATCHING: ONLY assign a `cluster_id` if the resource is a direct "building block" for an ACTIVE CLUSTER. If it is just a "cool tool" or "interesting read," leave `cluster_id` as NULL.
-
-            SERENDIPITY PROTOCOL:
-            - Under the "SERENDIPITY FINDS" context, you have been given a sample of multi-hop connections.
-            - Review the connections. If you find a truly surprising, non-obvious link (e.g., a past meeting with someone related to today's task), mention it exactly as a one-sentence insight in the briefing.
-            - STRICTLY FORBIDDEN: Do not merge multiple paths together. Do not hallucinate relationships. If all paths are boring, skip them entirely.
-
-            STRATEGIC AUDIT INSTRUCTIONS:
-            - BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects.
-            - CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
-            - PATTERN DETECTION: Review RECENTLY VAULTED RESOURCES and NEWLY ENRICHED RESOURCES. If you see 3+ related URLs on a new topic, invent a cluster name and use the `link_resource_to_cluster` tool to assign all 3+ resource IDs to that new cluster name (it will auto-create).
-            - THE VAULT GATE: These updates go to the DATABASE only.
-            - THE BRIEFING GATE: You are STRICTLY FORBIDDEN from mentioning new resources or new clusters in the briefing UNLESS Danny specifically used the word "Vault" or "Cluster" in the NEW INPUTS.
-
-            CLUSTER vs. INCUBATOR FRAMEWORK:
-            - CLUSTER ASSEMBLY: Evaluate every URL against ACTIVE CLUSTERS. If a URL provides a "component" for an existing cluster, use the `link_resource_to_cluster` tool with the resource's [ID:X].
-            - THE INCUBATOR AUDIT: If an input represents a high-potential standalone product idea NOT related to current goals, tag it as project_name: "INCUBATOR".
-            - SPARK DETECTION: If a link is a "Spark" (brand new project concept), create a log with entry_type: "SPARK".
-
-            DYNAMIC TASK MATCHING:
-            - Compare inputs against ALL SYSTEM TASKS.
-            - If Danny says "I'm done" or "Completed," mark the status as `done`.
-            - RECURRING TASK: `done` skips this week's instance (deletes next occurrence from Calendar, writes an outcome memory, series continues). `cancelled` ends the entire series (deletes all from Calendar). NEVER use `update_task_status` with `status=cancelled` unless Danny explicitly says "cancel the series" or "end it forever".
-            - SKIP INSTANCE: If Danny says "skip next" or "cancel this week's" for a recurring event, call the `skip_recurring_instance` tool with the matching task_id. Do NOT mark the task as done or cancelled.
-            - RESCHEDULE AMBIGUITY: If Danny asks to "reschedule" or "move" a recurring event (e.g., "move the Armour meeting to Wednesday"), call `ask_user_approval` to clarify: does he want to (A) skip the next instance and create a standalone event for the new date, or (B) shift the entire series? Do NOT assume one or the other.
-            - DURATION ASSIGNMENT: Assign `estimated_duration` based on task type:
-            - 15 minutes for routine tasks (emails, quick replies, status updates)
-            - 45 minutes for anything related to Pilots, Sales, or high-stakes Cluster 10 items
-            - Default to 15 minutes if unspecified
-            
-            DRIFT ALERTS (Temporal Lineage):
-            {drift_context}
-            
-            INSTRUCTIONS:
-            1. STRICT DATA FIDELITY: You are strictly forbidden from inventing or hallucinating data to fill the JSON. If there is no explicit command in NEW INPUTS, do nothing.
-            2. ZERO-DUMP PROTOCOL: If NEW INPUTS is empty or "None", the "new_tasks", "completed_task_ids", "new_projects", and "new_people" arrays MUST remain 100% empty [].
-            3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects.
-            4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out.
-            5. STALE LOOPS: If STALE_TASKS exists, always include the ⏳ Stale Loops section — never suppress it regardless of mode.
-            6. CHECK FOR COMPLETION: Compare inputs against ALL SYSTEM TASKS to identify IDs finished by Danny.
-            6a. UPDATE DETECTION: If a user says "Update [title]" or "Reschedule [title]" or "Change [title] to [new time]", IMMEDIATELY search ALL SYSTEM TASKS for the matching task. Return it in completed_task_ids with the updated reminder_at and/or duration_mins — NOT in new_tasks.
-            7. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When Danny mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
-            7a. RECURRENCE RULES: If Danny says "every Monday", "weekly", "daily", output an iCalendar RRULE string in "recurrence" (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO"). If he specifies an end date like "until December", append the UNTIL clause in UTC format (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261231T000000Z"). Otherwise leave it null.
-            8. AUTO-ONBOARDING: If a new client is mentioned, add to "new_projects" (organization_name: Solvstrat). For other domains, only create a project if Danny explicitly commands it. If a new Person is mentioned, add to "new_people".
-            9. STRATEGIC WEIGHTING: Grade items (1-10) based on Cashflow Recovery (₹30L debt).
-            10. WEEKEND FILTER: If isWeekend is true, do NOT suggest or list Work tasks in the briefing.
-            """
+        # --- BUILD SYSTEM INSTRUCTION (via briefing.py) ---
+        system_instruction_text = build_pulse_system_instruction(
+            system_persona=system_persona,
+            briefing_history_context=briefing_history_context,
+            routing_logic=project_routing_logic,
+            drift_context=drift_context,
+        )
 
         # --- AI GENERATION ---
         # 🛡️ Step 1: Initialize variables to prevent "UnboundLocalError"
