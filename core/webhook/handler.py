@@ -4,6 +4,7 @@ import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync, trace_id_var
+from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
 from core.lib.conversation import get_or_create_session, log_exchange, format_history_for_prompt
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
 from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
@@ -223,9 +224,10 @@ async def process_callback_query(callback_query: dict):
     return {"success": True}
 
 async def process_webhook(update: dict):
-    # Generate correlation ID for this request
+    # Generate correlation IDs for this request
     req_trace_id = str(uuid.uuid4())[:12]
     trace_id_var.set(req_trace_id)
+    set_decision_chain_id()
     
     try:
         update_id = update.get('update_id')
@@ -943,6 +945,15 @@ async def process_webhook(update: dict):
             except Exception:
                 pass
 
+        # ── "Why" conversational short-circuit ──
+        _why_phrases = ('why did', 'why didn\'t', 'why was', 'why wasn\'t', 'why is', 'why does',
+                         'how come', 'explain why', 'why did you', 'why wasn\'t that', 'why not')
+        _tl = text.strip().lower()
+        if _tl == '/why' or any(_tl.startswith(p) for p in _why_phrases):
+            from core.webhook.why_handler import handle_why
+            await handle_why(chat_id, session_id)
+            return {"success": True}
+
         if text.strip().lower() in ('/today', '/brief', '/day'):
             history_text = format_history_for_prompt(history)
             log_exchange(session_id, 'user', 'DAILY_BRIEF', text, chat_id, metadata={"active_anchor": active_anchor} if active_anchor else None)
@@ -1050,6 +1061,16 @@ async def process_webhook(update: dict):
         confidence = classification.get('confidence', 0.5)
 
         audit_log_sync("webhook", "INFO", f"Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
+
+        # Log classification stage for "/why"
+        _entity = classification.get('entity', '')
+        await log_decision(
+            stage=DecisionStage.CLASSIFICATION,
+            query_text=text,
+            resolved_entities=[_entity] if _entity else [],
+            reason_codes=[],
+            summary=f"Classified as {intent} ({confidence:.0%})"
+        )
 
         user_meta = {}
         if active_anchor:

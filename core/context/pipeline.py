@@ -3,6 +3,7 @@ from core.context.schema import RetrievalItem, ContextResult
 from core.context.config import StrategyConfig
 from core.context.gates import apply_entity_grounding_gate
 from core.lib.audit_logger import audit_log_sync
+from core.lib.decision_audit import log_decision, DecisionStage, ReasonCode
 from core.services.db import get_supabase
 
 async def execute_context_strategy(
@@ -142,13 +143,48 @@ async def execute_context_strategy(
 
     # 4. Enforce top_k across blended results
     kept.sort(key=lambda x: x.score, reverse=True)
+    gated_snapshot = list(kept)
     kept = kept[:strategy.top_k]
 
-    # 5. Observability Logging
+    # Items that passed gates but were cut by top_k
+    top_k_cut = [item for item in gated_snapshot if item not in kept]
+
+    # 5. Decision Audit Logging (structured for "/why" command)
     rejection_reasons = {}
     for d in decisions:
         if d.action == "reject":
             rejection_reasons[d.reason] = rejection_reasons.get(d.reason, 0) + 1
+
+    decision_included = [
+        {"id": item.item_id, "content": item.content, "score": item.score, "source": item.source}
+        for item in kept
+    ]
+    decision_excluded = []
+    for d in decisions:
+        if d.action == "reject":
+            matching = next((m for m in matched_items if m.item_id == d.item_id), None)
+            if matching:
+                decision_excluded.append({
+                    "id": matching.item_id, "content": matching.content,
+                    "score": matching.score, "source": matching.source,
+                    "reason": d.reason
+                })
+    for item in top_k_cut:
+        decision_excluded.append({
+            "id": item.item_id, "content": item.content,
+            "score": item.score, "source": item.source,
+            "reason": ReasonCode.TOP_K_TRUNCATED
+        })
+
+    await log_decision(
+        stage=DecisionStage.CONTEXT_REGISTRY,
+        query_text=query,
+        resolved_entities=query_entities,
+        included_items=decision_included,
+        excluded_items=decision_excluded,
+        reason_codes=list(rejection_reasons.keys()) + ([ReasonCode.TOP_K_TRUNCATED] if top_k_cut else []),
+        summary=f"Context for {strategy.name}: candidates={len(matched_items)} final={len(kept)}"
+    )
 
     neutral_count = sum(1 for d in decisions if d.action == "neutral_keep")
     grounded_count = sum(1 for d in decisions if d.action == "grounded_keep")
@@ -159,19 +195,20 @@ async def execute_context_strategy(
         "top_k": strategy.top_k,
         "gate_mode": strategy.gate_mode,
         "candidate_count": len(matched_items),
-        "rejected_count": len(excluded),
+        "rejected_count": len(excluded) + len(top_k_cut),
         "final_count": len(kept),
         "neutral_keep_count": neutral_count,
         "grounded_keep_count": grounded_count,
         "rejection_reasons": rejection_reasons,
-        "semantic_skipped_no_anchor": semantic_skipped_no_anchor
+        "semantic_skipped_no_anchor": semantic_skipped_no_anchor,
+        "top_k_cut": len(top_k_cut)
     })
 
     exclusion_reasons = {d.item_id: d.reason for d in decisions if d.action == "reject"}
 
     return ContextResult(
         matched_items=kept,
-        excluded_items=excluded,
+        excluded_items=excluded + top_k_cut,
         exclusion_reasons=exclusion_reasons,
         gate_decisions=decisions,
         ranking_features_used=["semantic", "recency", "importance"]

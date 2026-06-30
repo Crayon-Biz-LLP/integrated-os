@@ -666,6 +666,14 @@ This enables natural-language note capture without special syntax.
 
 ---
 
+### [COMPLETED] T-PHASE10-001: `/why` Decision Audit
+**Files**: `core/lib/decision_audit.py`, `core/webhook/why_handler.py`, `core/context/pipeline.py`, `core/webhook/dispatch.py`, `core/webhook/handler.py`, `db/16_decision_audit.sql`
+**Fix**: Added structured decision audit logging (`audit_logs` table, `service='decision_audit'`) for 4 stages: classification, routing, context_registry, retrieval. Added conversational `/why` short-circuit in handler. Formats and sends a human-readable explanation of the last bot response.
+**Tests**: 8 unit tests + 6 integration tests in `test_why.py`.
+**Deploy safe**: YES — additive feature.
+
+---
+
 ### [ACTION REQUIRED] T-RHODE-M1: Enable associative retrieval in production
 **Action**: User to set `RETRIEVAL_ASSOCIATIVE_ENABLED=true` in Vercel env vars for both backends
 **Verification**: After flip, run one manual query like "what about Equisoft?" — compare result quality vs before. Check Vercel logs for 4xx/5xx.

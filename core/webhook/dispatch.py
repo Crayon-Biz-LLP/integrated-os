@@ -18,6 +18,7 @@ from core.webhook.utils import is_recent_raw_dump, supabase
 from core.pulse.graph import hybrid_search_graph
 from core.agents.quick_process import process_single_dump, get_tasks_service
 from core.retrieval.pipeline import schedule_index_memory
+from core.lib.decision_audit import log_decision, DecisionStage, set_decision_chain_id, get_decision_chain_id
 from core.pulse.entity_extractor import extract_and_link_entities
 from core.pulse.entity_resolver import resolve_entities_from_text
 from core.services.db import version_memory_for_update
@@ -233,6 +234,7 @@ Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or
 
     if session_id:
         log_exchange(session_id, 'bot', 'DAILY_BRIEF', reply, chat_id)
+        _persist_chain_id(session_id)
 
     try:
         supabase.table('raw_dumps').insert([{
@@ -845,10 +847,36 @@ async def resolve_task_note_confirmation(text: str, chat_id: int, session_id: st
     return True
 
 async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None, active_anchor: dict = None):
+    # Generate or retrieve decision_chain_id for this request
+    cid = get_decision_chain_id()
+    if not cid:
+        cid = set_decision_chain_id()
+
     history_text = ""
     if session_id:
         pairs = get_history(session_id)
         history_text = format_history_for_prompt(pairs)
+
+    handler_map = {
+        'TASK': 'handle_confident_task',
+        'DAILY_BRIEF': 'handle_daily_brief',
+        'QUERY': 'interrogate_brain',
+        'COMPLETION': 'handle_confident_completion',
+        'NOTE': 'handle_confident_note',
+        'PROJECT_UPDATE': 'handle_project_update',
+        'DELEGATE': 'handle_delegate',
+        'DECLARE_PRACTICE': 'handle_declare_practice',
+        'NOISE': 'handle_noise',
+    }
+    handler_name = handler_map.get(intent, 'handle_clarification')
+    confidence = classification.get('confidence', 0) if classification else 0
+    await log_decision(
+        stage=DecisionStage.ROUTING,
+        query_text=text,
+        resolved_entities=[classification.get('entity', '')] if classification and classification.get('entity') else [],
+        reason_codes=[],
+        summary=f"Routing {intent} ({confidence:.0%}) → {handler_name}"
+    )
 
     if intent == 'TASK':
         title = classification.get('title', text) if classification else text
@@ -895,6 +923,8 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         await handle_noise(chat_id)
     else:
         await handle_clarification(text, "Could you provide more details?", chat_id, session_id=session_id)
+
+    _persist_chain_id(session_id)
 
 _searching_locks = set()
 
@@ -1378,6 +1408,18 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         now_str = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%A, %d %B %Y, %H:%M %p IST')
         prompt = build_interrogate_brain_prompt(now_str, sources_str, context_str, conversation_history, query)
 
+        # Log retrieval stage for "/why"
+        entity_name = active_anchor["name"] if active_anchor else resolved_entity
+        retrieved_items = [{"id": src, "content": src, "score": 1.0, "source": "interrogate_brain"} for src in available_sources]
+        await log_decision(
+            stage=DecisionStage.RETRIEVAL,
+            query_text=query,
+            resolved_entities=[entity_name] if entity_name else [],
+            included_items=retrieved_items,
+            reason_codes=[],
+            summary=f"interrogate_brain: {len(available_sources)} sources consulted — {sources_str}"
+        )
+
         response = await generate_content_with_fallback(
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
@@ -1423,6 +1465,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                     }).eq('id', session_id).execute()
                 except Exception as persist_e:
                     audit_log_sync("webhook", "WARNING", f"Failed to persist end-of-query anchor: {persist_e}")
+            _persist_chain_id(session_id)
 
         # Log QUERY response to raw_dumps so it appears in web UI
         try:
@@ -1574,4 +1617,18 @@ async def handle_declare_practice(text: str, chat_id: int, classification: dict)
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"handle_declare_practice error: {e}")
         await send_telegram(chat_id, "⚠️ Something went wrong. Try again.")
+
+
+def _persist_chain_id(session_id: str):
+    """Store the current decision_chain_id on the conversation thread."""
+    from core.lib.decision_audit import get_decision_chain_id
+    cid = get_decision_chain_id()
+    if not cid or not session_id:
+        return
+    try:
+        supabase.table('conversation_threads').update({
+            'last_decision_chain_id': cid
+        }).eq('id', session_id).execute()
+    except Exception:
+        pass
 

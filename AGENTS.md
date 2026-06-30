@@ -14,6 +14,38 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
+## Session Anchored Summary (Jun 30, 2026 — Part 10: /why Decision Audit Command)
+
+### Progress Done This Session
+- **Phase 10 — `/why` Decision Audit**: Added a conversational "why did you..." command that explains the last bot response — what was classified, how the context was filtered, what sources were retrieved — using structured audit records stored per request.
+  - **`core/lib/decision_audit.py` (NEW)**: `ReasonCode` enum (9 codes: `no_entity_overlap`, `below_threshold`, `top_k_truncated`, etc.), `DecisionStage` enum (classification, routing, context_registry, retrieval), `decision_chain_id_var` contextvar, `set_decision_chain_id()` / `get_decision_chain_id()`, `log_decision()` async helper that writes to `audit_logs` with `service='decision_audit'` and strict metadata schema.
+  - **`core/lib/decision_audit.py`** — `_truncate_items()` helper limits items to top-5 with 100-char content snippets.
+  - **`core/context/pipeline.py`**: Added `log_decision(stage=CONTEXT_REGISTRY)` call alongside existing `audit_log_sync`. Before top-k truncation, saves `gated_snapshot`. After truncation, builds `decision_included` (final kept items) and `decision_excluded` (gate-rejected + top-k-cut items with reason codes). Both lists passed to `log_decision()`. Also propagates top-k-cut count into the existing summary audit log (`rejected_count` now includes top_k_cut; `excluded_items` in ContextResult now includes them).
+  - **`core/webhook/dispatch.py`**: Added `log_decision` import. `route_by_intent()` generates/reads `decision_chain_id` via `get_decision_chain_id()`/`set_decision_chain_id()`, logs `ROUTING` stage with intent, confidence, handler name. `interrogate_brain()` logs `RETRIEVAL` stage with sources consulted and resolved entity anchor, right before the LLM call. `_persist_chain_id(session_id)` helper writes `last_decision_chain_id` to `conversation_threads`. Called from: `route_by_intent()` after all handlers, `interrogate_brain()` alongside existing anchor persist, `handle_daily_brief()` in the session_id block.
+  - **`core/webhook/handler.py`**: `set_decision_chain_id()` called at top of `process_webhook()` alongside `trace_id_var.set()`. `log_decision(stage=CLASSIFICATION)` called after `classify_intent()` with intent, confidence, entity. "Why" short-circuit detection added before the `/today` block: detects `/why` and conversational phrases (`"why did"`, `"how come"`, `"explain why"`, `"why was"`, `"why didn't"`, `"why is"`, `"why does"`, `"why wasn't"`). Routes to `handle_why(chat_id, session_id)`.
+  - **`core/webhook/why_handler.py` (NEW)**: `_resolve_chain_id()` reads `last_decision_chain_id` from thread by session_id, with fallback to latest non-archived thread for chat. `_fetch_decision_records()` queries `audit_logs` filtered by chain_id (Python-side filter on JSONB metadata). `format_decision_chain()` renders per-stage blocks: Classification/Routing show summary; Context Filter shows kept/excluded items with reason labels; Retrieval shows sources list. `handle_why()` orchestrates the flow and sends via `send_telegram(skip_validation=True)`.
+  - **`db/16_decision_audit.sql` + Migration applied**: `ALTER TABLE conversation_threads ADD COLUMN last_decision_chain_id TEXT` + `CREATE INDEX idx_audit_logs_decision_chain_id ON audit_logs ((metadata->>'decision_chain_id')) WHERE service='decision_audit'`.
+  - **`tests/unit/test_why.py` (NEW)**: 8 unit tests W1-W8: empty chain message, classification render, context-registry kept/excluded with reason labels, top-k truncation reason, multi-stage ordering, handle_why no-chain early return, chain-id resolution priority, metadata filter correctness. All 8 passing. All 35 tests (27 existing + 8 new) passing. Ruff clean on all touched files.
+
+### Key Decisions This Session
+- **Contextvar for decision_chain_id**: Reuses the existing `trace_id_var` pattern from `audit_logger.py`. No signature changes needed in `route_by_intent`, `interrogate_brain`, or `execute_context_strategy`.
+- **`audit_logs` table reused for decision audit**: `service='decision_audit'` distinguishes from other services. Index on `metadata->>'decision_chain_id'` enables fast chain lookup.
+- **Python-side chain_id filter in `_fetch_decision_records()`**: PostgREST JSONB path filtering requires exact syntax that varies across versions. Python-side filter is version-safe, and the volume of decision_audit records per chain is tiny (3-4 rows).
+- **Reason codes over prose**: `ReasonCode` enum with 9 values maps to user-readable labels in `_REASON_LABELS`. Formatter renders "no entity overlap with your query" not raw code strings.
+- **"Why" triggers conversational, not just `/why`**: `startswith` check against tuple of phrases. Both `/why` and "how come you included that?" trigger it.
+- **Top-k-cut items added to excluded_items in ContextResult**: Items that pass gates but are removed by `top_k` are now surfaced in `excluded_items` with `reason=TOP_K_TRUNCATED`. Previously they were silently dropped.
+- **`_persist_chain_id` placement**: Called at end of `route_by_intent()` (covers TASK/NOTE/PROJECT_UPDATE/etc.), inside `interrogate_brain()` session block (QUERY), and in `handle_daily_brief()` session block (`/today`). Covers all main response paths without touching unrelated code paths (shortcodes, commands, workflows).
+- **v1 scope**: 4 decision stages only (classification, routing, context_registry, retrieval). Prompt logging and action-claim stripping deferred. Reply-to-message resolution deferred (v1 always uses thread's latest chain_id).
+
+### Key Files (Phase 10)
+- `core/lib/decision_audit.py` (NEW) — ReasonCode, DecisionStage, contextvar, log_decision()
+- `core/webhook/why_handler.py` (NEW) — resolve, fetch, format, send
+- `core/context/pipeline.py` — log_decision CONTEXT_REGISTRY, top-k-cut tracking
+- `core/webhook/dispatch.py` — log_decision ROUTING+RETRIEVAL, _persist_chain_id(), set_decision_chain_id() in route_by_intent
+- `core/webhook/handler.py` — set_decision_chain_id() at webhook entry, log_decision CLASSIFICATION, "why" short-circuit
+- `db/16_decision_audit.sql` — migration (applied)
+- `tests/unit/test_why.py` — W1-W8 (8 passing unit tests)
+
 ## Session Anchored Summary (Jun 30, 2026 — Part 9: Pre-Flight Context Fix + Cleanup)
 
 ### Progress Done This Session
