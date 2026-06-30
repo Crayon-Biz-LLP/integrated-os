@@ -47,9 +47,9 @@ Pre-retrieval entity-grounding layer. Controls what context is fetched for each 
 
 ### Entity Resolution
 - Graph node lookup (`graph_nodes` table, types: person/organization/project)
-- Word-level matching (not full-label substring) handles test prefixes
+- Word-level matching (not full-label substring) handles test prefixes and multi-word labels
 - Matched query terms appended to `query_entities` for gate overlap checks
-- Fallback: capitalized words in query text as entity hints
+- Memory entity extraction uses graph node labels (Fix D) — replaces `\b[A-Z][a-z]+\b` regex which produced false positives ("Quick", "Friday") and missed multi-word labels ("Armour Cyber")
 
 ---
 
@@ -77,13 +77,52 @@ Three critical functions now return deterministic safe text on JSON parse failur
 
 ---
 
+## Phase 9 — Pre-Flight Context Fix (Jun 30, 2026)
+
+### The Gap
+Handover memories (IDs 1092, 1093) were never indexed for associative retrieval — zero rows in `retrieval_passages`, `retrieval_phrase_nodes`, `retrieval_index_runs`. Root cause: `schedule_index_memory` used `asyncio.create_task(index_memory(...))` which is killed when Vercel serverless returns a response (~2s) before the 15s LLM extraction completes. Additionally, `RETRIEVAL_INDEXING_ENABLED` defaults to `false` (all retrieval features OFF per `config.py`).
+
+Since `associative_enabled=true` in production, `search_memories_compat` called `associative_retrieve()` which queries retrieval tables — not `memories.embedding` directly. New memories were invisible to the sentinel's pre-flight context.
+
+### Fix A — Legacy Vector Path for Pre-Flight
+`pipeline.py` passes `use_associative=False` to `search_memories_compat` for `PRE_FLIGHT_CONFIG` only. This uses the `match_memories_hybrid` RPC (pgvector on `memories.embedding` column) instead of associative retrieval. New memories populate `embedding` at creation time (`dispatch.py`) and are findable immediately — no indexing dependency.
+
+### Fix B — Config Tuning
+- `top_k`: 3 → 12 (wider net for pre-flight context)
+- `threshold`: 0.7 → 0.55 (lower barrier for marginal matches)
+- Removed `"emails"` from `fact_sources` (dead source — never wired)
+- `Literal` type annotation on `fact_sources`: cleaned to `"tasks" | "people"`
+
+### Fix C — Index Queue
+Replaced fire-and-forget `asyncio.create_task(index_memory(...))` with a reliable queue:
+1. `schedule_index_memory()` does a synchronous INSERT into `pending_retrieval_index_jobs` (~5ms)
+2. New `process_pending_index_jobs(max_jobs=2)` sweeps pending jobs with atomic status claiming
+3. Calls `index_memory()` from the sentinel piggyback (not the webhook response lifecycle)
+4. Retry tracking: 3 failed attempts → `dead_letter` status
+5. Partial UNIQUE index `idx_pending_index_jobs_memory` prevents duplicate active jobs per memory_id
+6. Migration: `db/10_pending_index_jobs.sql`
+
+### Fix D — Graph Label Entity Extraction
+Entity extraction from memory content now matches against `known_labels_lower` dict (populated from `graph_nodes` during anchor resolution) rather than the `\b[A-Z][a-z]+\b` regex. Benefits:
+- No false positives: "Quick", "Friday", "The", "So" are not treated as entities
+- Multi-word labels preserved: "Armour Cyber" matches correctly
+- Case-insensitive matching via lowercased labels
+- Only person/org/project nodes serve as entity sources — excludes noise
+
+### Backfill
+4 pending index jobs queued at `priority=1` for unindexed memories: IDs 1092, 1093, 1110, 1115. Next sentinel run will process them.
+
+---
+
 ## Test Coverage
 
 | Suite | Tests | Type | Scope |
 |---|---|---|---|
 | `tests/sim/test_context_registry.py` | 8 | LIVE_DB | T1–T8: gates, anchor resolution, ranking |
 | `tests/sim/test_simulated_flows.py` | 11 | LIVE_DB | T9–T14: claims, JSON fail, session continuity |
-| `tests/unit/test_context_registry.py` | 7 | Unit | Gate logic, isolation, neutral context |
+| `tests/sim/test_index_queue.py` | 4 | LIVE_DB | C1–C4: enqueue, process, dedupe, retry→dead_letter |
+| `tests/sim/test_preflight_context.py` | 2 | LIVE_DB | P1: routing assertion (use_associative=False); P2: entity extraction |
+| `tests/unit/test_context_registry.py` | 7 | Unit | Gate logic, isolation, neutral context, pre-flight isolation |
 | `tests/unit/test_actions.py` | 6 | Unit | Render, validate, lifecycle |
 
-Run: `LIVE_DB=true PYTHONPATH=. pytest -c /dev/null -o asyncio_mode=auto tests/sim/ -v`
+Run: `LIVE_DB=true PYTHONPATH=. pytest -c /dev/null -o asyncio_mode=auto tests/sim/ tests/unit/ -v`

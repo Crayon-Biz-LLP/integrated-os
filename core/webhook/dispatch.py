@@ -14,7 +14,6 @@ from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.actions import ActionResult, accumulate_action
 from core.prompts.query import build_interrogate_brain_prompt, build_anaphora_resolution_prompt
-from core.prompts.briefing import build_daily_brief_prompt
 from core.webhook.utils import is_recent_raw_dump, supabase
 from core.pulse.graph import hybrid_search_graph
 from core.agents.quick_process import process_single_dump, get_tasks_service

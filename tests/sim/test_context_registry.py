@@ -1,7 +1,7 @@
 import pytest
 import os
 from unittest.mock import patch, MagicMock
-from core.context import execute_context_strategy, PRE_FLIGHT_CONFIG, HYDRATE_MEMORIES_CONFIG
+from core.context import execute_context_strategy, PRE_FLIGHT_CONFIG
 from core.context.schema import RetrievalItem
 from core.context.gates import apply_entity_grounding_gate
 
@@ -28,16 +28,25 @@ async def test_dog_walk_returns_empty(seed_test_data):
 @skip_unless_live_db
 @pytest.mark.asyncio
 async def test_walk_with_shifrah_returns_grounded(seed_test_data):
-    """T2 — 'walk with Shifrah' → grounded memory keeps."""
+    """T2 — 'walk with Shifrah' → grounded memory keeps.
+
+    PRE_FLIGHT_CONFIG now uses threshold=0.55 and top_k=12 (was 0.7/3),
+    so the vector search returns more real production memories alongside
+    the [SIM_TEST] test data. Those with non-overlapping entities are
+    correctly rejected by the hard gate. The key assertion: Shifrah-related
+    items survive grounding, unrelated items are excluded.
+    """
     res = await execute_context_strategy("walk with Shifrah", PRE_FLIGHT_CONFIG, extracted_entities=[])
-    # Should have at least a people match and/or memory
-    assert len(res.matched_items) >= 1
+    # Shifrah person node should be in matched_items
+    person_items = [i for i in res.matched_items if i.source == "people"]
+    assert len(person_items) >= 1
+    assert any("[SIM_TEST] Shifrah" in i.content for i in person_items)
     # At least one memory item should mention Shifrah
     memory_items = [i for i in res.matched_items if i.source == "memories"]
-    if memory_items:
-        assert any("Shifrah" in i.content for i in memory_items)
-    # No items should be excluded
-    assert len(res.excluded_items) == 0
+    shifrah_memories = [i for i in memory_items if "Shifrah" in i.content]
+    assert len(shifrah_memories) >= 1
+    # Non-Shifrah items should be excluded by the hard gate
+    assert len(res.excluded_items) >= 1
 
 
 @skip_unless_live_db

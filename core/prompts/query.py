@@ -1,4 +1,3 @@
-from typing import Optional
 from core.prompts.guards import inject_guards
 
 def build_interrogate_brain_prompt(

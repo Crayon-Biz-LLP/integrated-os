@@ -1,8 +1,7 @@
 import pytest
-import asyncio
 from core.context.schema import RetrievalItem
 from core.context.gates import apply_entity_grounding_gate
-from core.context.config import PRE_FLIGHT_CONFIG, BRAIN_SYNTH_CONFIG
+from core.context.config import PRE_FLIGHT_CONFIG
 
 def test_hard_gate_rejects_unmatched_entities():
     items = [
@@ -62,26 +61,31 @@ async def test_dog_walk_pre_flight():
     async def mock_search(*args, **kwargs):
         return [{"id": 1, "content": "Unity prayer walk with Shifrah", "similarity": 0.9}]
         
-    # Mock db to return empty
+    # Mock db to return graph nodes (so entity extraction can find "Shifrah" in memory content)
     mock_db = MagicMock()
     mock_db.table().select().eq().not_.in_().text_search().limit().execute.return_value = MagicMock(data=[])
-    mock_db.table().select().eq().execute.return_value = MagicMock(data=[])
-    
+    mock_db.table().select().in_().execute.return_value = MagicMock(data=[
+        {"label": "Shifrah", "type": "person"},
+        {"label": "Vasanth", "type": "person"},
+    ])
+    mock_db.table().select().eq().execute.return_value = MagicMock(data=[{"id": 100, "label": "Shifrah", "metadata": {}}])
+
     with patch("core.context.pipeline.get_supabase", return_value=mock_db), \
          patch("core.retrieval.search.search_memories_compat", side_effect=mock_search):
-        
+
         # Extracted entities is empty (since "Dog walk" has no known entities)
         res = await execute_context_strategy("Dog walk", PRE_FLIGHT_CONFIG, extracted_entities=[])
-        
+
         # Because semantic_requires_anchor=True, semantic search shouldn't even run!
         assert len(res.matched_items) == 0
-        
+
         # Let's force it to run by bypassing the anchor check
         PRE_FLIGHT_CONFIG.semantic_requires_anchor = False
         res = await execute_context_strategy("Dog walk", PRE_FLIGHT_CONFIG, extracted_entities=[])
         PRE_FLIGHT_CONFIG.semantic_requires_anchor = True
-        
-        # Now it ran, found "Shifrah" memory, but the hard gate should reject it
+
+        # Now it ran, found "Shifrah" memory. Entity extraction finds "Shifrah" in content,
+        # but query_entities is empty (no anchor matched "Dog walk") → hard gate rejects.
         assert len(res.excluded_items) == 1
         assert "No anchor overlap" in res.exclusion_reasons["memory_1"]
         assert len(res.matched_items) == 0
@@ -133,10 +137,13 @@ async def test_noise_stress_dog_walk():
             {"id": 5, "content": "Prayer walk", "similarity": 0.80},
         ]
         
-    # Mock db to return no matching people
+    # Mock db to return no matching people but valid graph nodes (so entity extraction doesn't crash)
     mock_db = MagicMock()
     mock_db.table().select().eq().not_.in_().text_search().limit().execute.return_value = MagicMock(data=[])
-    mock_db.table().select().in_().execute.return_value = MagicMock(data=[])
+    mock_db.table().select().in_().execute.return_value = MagicMock(data=[
+        {"label": "Shifrah", "type": "person"},
+        {"label": "Vasanth", "type": "person"},
+    ])
     mock_db.table().select().eq().execute.return_value = MagicMock(data=[])
     
     with patch("core.context.pipeline.get_supabase", return_value=mock_db), \

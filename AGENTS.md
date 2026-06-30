@@ -14,6 +14,38 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
+## Session Anchored Summary (Jun 30, 2026 — Part 9: Pre-Flight Context Fix + Cleanup)
+
+### Progress Done This Session
+- **Pre-Flight Context Gap — Root Cause Identified and Fixed**: Handover memories (IDs 1092, 1093) had zero rows in `retrieval_passages` / `retrieval_phrase_nodes` / `retrieval_index_runs` — `schedule_index_memory` used `asyncio.create_task` that is killed on Vercel serverless return, and `RETRIEVAL_INDEXING_ENABLED` defaults to `false`. Four fixes applied:
+  - **Fix A — Legacy vector path**: `pipeline.py` passes `use_associative=False` to `search_memories_compat` for `PRE_FLIGHT_CONFIG` only. Calls `match_memories_hybrid` RPC (pgvector on `memories.embedding` column) directly — no associative-index dependency. New memories findable immediately.
+  - **Fix B — Config tuning**: `PRE_FLIGHT_CONFIG` — `top_k=3→12`, `threshold=0.7→0.55`, removed `"emails"` from `fact_sources`. `Literal` type cleaned to `"tasks" | "people"`.
+  - **Fix C — Index queue**: Replaced `asyncio.create_task(index_memory(...))` with synchronous INSERT into `pending_retrieval_index_jobs` table. New `process_pending_index_jobs(max_jobs=2)` sweeps in sentinel piggyback with atomic status claiming, retry tracking (3 → dead_letter). Migration `db/10_pending_index_jobs.sql`.
+  - **Fix D — Graph label entity extraction**: Memory entity extraction uses `known_labels_lower` dict from graph node labels (person/org/project) instead of `\b[A-Z][a-z]+\b` regex. Eliminates false positives ("Quick", "Friday") and preserves multi-word labels ("Armour Cyber").
+  - **Backfill**: 4 pending index jobs queued for unindexed memories (1092, 1093, 1110, 1115) at `priority=1`.
+- **Test suite**: `tests/sim/test_index_queue.py` (C1-C4: enqueue, process, dedupe, retry→dead_letter) + `tests/sim/test_preflight_context.py` (P1: routing assertion, P2: entity extraction). Updated T2 in `test_context_registry.py` for new config thresholds. Fixed 3 unit test mocks (missing `graph_nodes` return_value for Fix D). Ruff clean. **27/27 tests passing**.
+- **Temp file cleanup**: Removed 7 `patch_*.py` files and `resolve_test.py`.
+- **Cleanup predicates**: Added `pending_retrieval_index_jobs` to `tests/sim/conftest.py` auto-cleanup.
+
+### Key Decisions This Session
+- **PRE_FLIGHT uses legacy pgvector over associative retrieval**: New memories populate `embedding` at creation time but may never be indexed. Legacy path queries `memories.embedding` directly — no indexing step required.
+- **Index queue over fire-and-forget**: Decouples indexing work from webhook response lifecycle. Atomic status claiming prevents double-processing.
+- **Entity extraction via graph node labels over regex**: Stops false positives ("Quick", "Friday") and preserves multi-word labels that regex `\b[A-Z][a-z]+\b` would split.
+- **Coverage target**: 27 tests (14 sim + 13 unit) for the truth boundary + context registry + pre-flight fix.
+
+### Key Files (Phase 9)
+- `core/context/pipeline.py` — Fix A: `use_associative=False` for PRE_FLIGHT; Fix D: entity extraction via `known_labels_lower` dict
+- `core/context/config.py` — Fix B: PRE_FLIGHT_CONFIG tuned (top_k=12, threshold=0.55, fact_sources cleaned)
+- `core/retrieval/pipeline.py` — Fix C: `schedule_index_memory` enqueues to `pending_retrieval_index_jobs`; new `process_pending_index_jobs()` with atomic claim, retry, dead-letter
+- `core/retrieval/config.py` — `associative_enabled` default = OFF; `schedule_index_memory` default = OFF
+- `core/retrieval/search.py` — `search_memories_compat` calls `match_memories_hybrid` when `use_associative=False`
+- `core/pulse/sentinel.py` — Piggyback now calls `process_pending_index_jobs(max_jobs=2)`
+- `db/10_pending_index_jobs.sql` — Migration for `pending_retrieval_index_jobs` table
+- `tests/sim/test_index_queue.py` — 4 tests (C1-C4)
+- `tests/sim/test_preflight_context.py` — 2 tests (P1-P2)
+- `tests/sim/test_context_registry.py` — 8 tests (T1-T8, T2 updated)
+- `tests/sim/conftest.py` — Cleanup predicate for `pending_retrieval_index_jobs`
+
 ## Session Anchored Summary (Jun 30, 2026 — Part 8)
 
 ### Progress Done This Session
@@ -43,21 +75,6 @@ For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the p
 - **Neutral context penalty (0.5x)**: Prevents entity-less semantic noise from overriding grounded facts.
 - **Entity resolution via graph nodes**: Replaced capitalization regex with `graph_nodes` table lookup for people/orgs/projects. Word-level matching handles test prefixes like `[SIM_TEST]`.
 - **JSON fail-closed**: `interrogate_brain`, `handle_daily_brief`, `process_sentinel` use deterministic safe text on parse failure instead of raw `.text.strip()`.
-
-### Key Files (Truth Boundary + Context Registry)
-- `core/actions.py` — Truth boundary: claim lexicon, validate_action_claims, contextvar accumulator, render_actions
-- `core/context/` — New registry: `schema.py`, `config.py`, `gates.py`, `pipeline.py`, `__init__.py`
-- `core/prompts/` — Prompt registry: `guards.py`, `query.py`, `briefing.py`, `classify.py`, `workflow.py`, `ingest.py`
-- `core/webhook/telegram.py` — `send_telegram()`: final chokepoint with validation and receipt appending
-- `core/webhook/dispatch.py` — Structured outputs + JSON fail-closed for interrogate_brain, handle_daily_brief
-- `core/pulse/sentinel.py` — `fetch_event_context()` migrated to PRE_FLIGHT_CONFIG; fact-only prompt
-- `core/services/memory.py` — `get_recent_memories_for_briefing()`, `retrieve_hindsight_memories()` migrated
-- `core/pulse/context.py` — `hydrate_tasks_context()`, `hydrate_memories_context()` migrated
-- `core/skills/brain_synth_v2.py` — Entity memory retrieval migrated to BRAIN_SYNTH_CONFIG
-- `tests/sim/test_context_registry.py` — 8 simulation tests (T1-T8)
-- `tests/sim/test_simulated_flows.py` — 11 tests (T9-T14)
-- `tests/unit/test_context_registry.py` — 7 unit tests
-- `tests/unit/test_actions.py` — 6 unit tests
 
 ## Session Anchored Summary (Jun 28, 2026 — Part 7)
 

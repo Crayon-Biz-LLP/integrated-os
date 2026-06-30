@@ -7,7 +7,6 @@ from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import age_tag
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.retrieval.config import config as retrieval_config
 from core.actions import ActionResult, accumulate_action
 
 supabase = get_supabase()

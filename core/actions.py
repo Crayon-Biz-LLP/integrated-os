@@ -2,7 +2,6 @@ import contextvars
 import re
 from dataclasses import dataclass, field
 from typing import Literal, Optional
-from core.lib.audit_logger import audit_log_sync
 
 ActionType = Literal["task_create", "task_update", "calendar_create", "memory_save", 
                      "workflow_propose", "draft_create", "reminder_set", "none"]
@@ -68,7 +67,7 @@ def render_actions(results: list[ActionResult]) -> list[str]:
             lines.append(f"⚠️ {r.action_type.replace('_', ' ').capitalize()} failed: {error}")
         elif r.status == "proposed":
             lines.append(f"💡 Can do: {label}" if label else "")
-    return [l for l in lines if l]
+    return [ln for ln in lines if ln]
 
 # Post-generation validator
 # Substring lexicon for claim classification

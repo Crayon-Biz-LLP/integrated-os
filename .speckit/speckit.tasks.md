@@ -628,6 +628,44 @@ This enables natural-language note capture without special syntax.
 **Deploy safe**: NO — needs inbound infra (entity matching + workflow)
 **Dependencies**: T-700 (workflows) stable, entity resolution stable
 
+---
+
+### [COMPLETED] T-PHASE9-001: Pre-flight context — use legacy pgvector path
+**Files**: `core/context/pipeline.py`, `core/context/config.py`
+**Fix**: PRE_FLIGHT_CONFIG now calls `search_memories_compat` with `use_associative=False`, routing to `match_memories_hybrid` RPC (pgvector on `memories.embedding`). Eliminates dependency on associative retrieval index — new memories findable immediately.
+**Config**: `top_k=3→12`, `threshold=0.7→0.55`, removed dead `"emails"` fact source.
+**Deploy safe**: YES — additive routing change
+
+---
+
+### [COMPLETED] T-PHASE9-002: Index queue — fire-and-forget replacement
+**Files**: `core/retrieval/pipeline.py`, `core/pulse/sentinel.py`, `db/10_pending_index_jobs.sql`
+**Fix**: `schedule_index_memory` no longer uses `asyncio.create_task` (killed on Vercel return). Instead inserts a synchronous `pending` row into `pending_retrieval_index_jobs`. New `process_pending_index_jobs(max_jobs=2)` sweeps in sentinel piggyback with atomic status claiming, 3-retry dead-letter lifecycle.
+**Deploy safe**: YES — additive (old path still exists but defunct)
+
+---
+
+### [COMPLETED] T-PHASE9-003: Entity extraction via graph labels
+**File**: `core/context/pipeline.py`
+**Fix**: Memory entity extraction uses `known_labels_lower` dict from graph node labels (person/org/project) instead of `\b[A-Z][a-z]+\b` regex. Stops false positives ("Quick", "Friday") and preserves multi-word labels ("Armour Cyber").
+**Deploy safe**: YES — isolated to PRE_FLIGHT path
+
+---
+
+### [COMPLETED] T-PHASE9-004: Backfill unindexed handover memories
+**File**: Ad-hoc `supabase.table("pending_retrieval_index_jobs").insert(...)` calls
+**Work**: Queued 4 pending jobs for memories 1092, 1093, 1110, 1115 at priority=1
+**Verification**: Next sentinel run indexes them via `process_pending_index_jobs`
+
+---
+
+### [COMPLETED] T-PHASE9-005: Pre-flight context test suite
+**Files**: `tests/sim/test_index_queue.py` (4 tests), `tests/sim/test_preflight_context.py` (2 tests)
+**Coverage**: C1 (enqueue), C2 (process completes), C3 (dedupe), C4 (retry→dead_letter), P1 (routing assertion), P2 (entity extraction)
+**Updated**: T2 in `test_context_registry.py`, 3 unit test mocks in `test_context_registry.py`
+
+---
+
 ### [ACTION REQUIRED] T-RHODE-M1: Enable associative retrieval in production
 **Action**: User to set `RETRIEVAL_ASSOCIATIVE_ENABLED=true` in Vercel env vars for both backends
 **Verification**: After flip, run one manual query like "what about Equisoft?" — compare result quality vs before. Check Vercel logs for 4xx/5xx.

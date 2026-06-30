@@ -16,11 +16,14 @@ async def execute_context_strategy(
     import re
     supabase = get_supabase()
     query_entities = list(extracted_entities or [])
-    
+
     matched_items: List[RetrievalItem] = []
     query_terms = set(re.findall(r'\b\w{3,}\b', query.lower()))
-    
+
     # 0. Resolve Anchors (Graph Nodes)
+    # Load all person/org/project labels once — reused for both anchor resolution
+    # and memory entity extraction (Fix D: replaces fragile regex).
+    known_node_labels: List[str] = []
     try:
         nodes_res = supabase.table('graph_nodes')\
             .select('label, type')\
@@ -28,6 +31,7 @@ async def execute_context_strategy(
             .execute()
         for n in (nodes_res.data or []):
             label_lower = n['label'].lower()
+            known_node_labels.append(n['label'])
             if (label_lower in query.lower() or any(t in label_lower for t in query_terms)) and n['label'] not in query_entities:
                 query_entities.append(n['label'])
                 for t in query_terms:
@@ -35,7 +39,10 @@ async def execute_context_strategy(
                         query_entities.append(t)
     except Exception as e:
         audit_log_sync("context_registry", "WARNING", f"Anchor resolution failed: {e}")
-    
+
+    # Pre-build a lowercased lookup for O(1) entity matching inside memory loop
+    known_labels_lower = {lbl.lower(): lbl for lbl in known_node_labels}
+
     # 1. Fact Sources
     if "tasks" in strategy.fact_sources:
         try:
@@ -56,7 +63,7 @@ async def execute_context_strategy(
                 ))
         except Exception:
             pass
-            
+
     if "people" in strategy.fact_sources:
         try:
             people_res = supabase.table('graph_nodes')\
@@ -75,41 +82,51 @@ async def execute_context_strategy(
                     ))
         except Exception:
             pass
-            
+
     semantic_skipped_no_anchor = False
-    
+
     # 2. Semantic Search
     run_semantic = strategy.semantic_enabled
     if strategy.semantic_requires_anchor and not query_entities:
         run_semantic = False
         semantic_skipped_no_anchor = True
-        
+
     if run_semantic:
         try:
             from core.retrieval.search import search_memories_compat
+            # PRE_FLIGHT always uses the legacy vector path (match_memories_hybrid RPC)
+            # so it can find ALL memories regardless of associative-retrieval indexing
+            # status. New memories have their embedding column populated at creation
+            # time (dispatch.py), but are often NOT yet present in retrieval_passages /
+            # retrieval_phrase_nodes because the fire-and-forget asyncio.create_task
+            # in schedule_index_memory does not survive Vercel serverless shutdown.
+            # The legacy path queries the memories.embedding column directly via
+            # pgvector — no indexing step required.
+            # Other strategies (BRIEFING, HINDSIGHT, etc.) continue to use the
+            # associative path for deep graph-traversal context.
+            use_assoc = None if strategy.name != "PRE_FLIGHT" else False
             memories = await search_memories_compat(
                 query_text=query,
                 top_k=strategy.top_k,
                 threshold=strategy.threshold,
                 recency_weight=strategy.weights.recency,
                 importance_weight=strategy.weights.importance,
+                use_associative=use_assoc,
             )
             for m in (memories or []):
-                # Basic mock entity extraction for memory content to support gates.
-                # In real system, this should use `extract_triples` or similar, 
-                # but we'll use a naive check against known people for demonstration in this fix.
-                # For this PR, we assume any capitalized word > 3 chars might be an entity, 
-                # but to be safe we'll just parse out capitalized words.
-                # Actually, a safer hack: check if "Shifrah" is in the text if we are running the test.
-                words = re.findall(r'\b[A-Z][a-z]+\b', m.get('content', ''))
-                ents = list(set([w for w in words if len(w) > 3]))
-                
-                # Special hardcode for test
-                if "Shifrah" in m.get('content', '') and "Shifrah" not in ents:
-                    ents.append("Shifrah")
-                    
-                m['entities'] = ents
-                
+                # Fix D: Extract entities from memory content by matching against
+                # known graph node labels (person/org/project) loaded during anchor
+                # resolution above. This replaces the fragile \b[A-Z][a-z]+\b regex
+                # which missed acronyms ("AI"), short names ("Sai"), mixed-case
+                # ("Armour Cyber"), and produced false positives ("The", "So", "But").
+                content_lower = m.get('content', '').lower()
+                ents = [
+                    canonical
+                    for lbl_lower, canonical in known_labels_lower.items()
+                    if lbl_lower in content_lower
+                ]
+                m['entities'] = list(set(ents))
+
                 matched_items.append(RetrievalItem(
                     item_id=f"memory_{m['id']}",
                     content=m.get('content', ''),
@@ -119,23 +136,23 @@ async def execute_context_strategy(
                 ))
         except Exception as e:
             audit_log_sync("context_registry", "WARNING", f"Semantic search failed: {e}")
-            
+
     # 3. Apply Gates
     kept, excluded, decisions = apply_entity_grounding_gate(matched_items, query_entities, strategy.gate_mode)
-    
+
     # 4. Enforce top_k across blended results
     kept.sort(key=lambda x: x.score, reverse=True)
     kept = kept[:strategy.top_k]
-    
+
     # 5. Observability Logging
     rejection_reasons = {}
     for d in decisions:
         if d.action == "reject":
             rejection_reasons[d.reason] = rejection_reasons.get(d.reason, 0) + 1
-            
+
     neutral_count = sum(1 for d in decisions if d.action == "neutral_keep")
     grounded_count = sum(1 for d in decisions if d.action == "grounded_keep")
-    
+
     audit_log_sync("context_registry", "INFO", f"Context for {strategy.name}: candidates={len(matched_items)} final={len(kept)}", {
         "strategy": strategy.name,
         "threshold": strategy.threshold,
@@ -149,9 +166,9 @@ async def execute_context_strategy(
         "rejection_reasons": rejection_reasons,
         "semantic_skipped_no_anchor": semantic_skipped_no_anchor
     })
-    
+
     exclusion_reasons = {d.item_id: d.reason for d in decisions if d.action == "reject"}
-    
+
     return ContextResult(
         matched_items=kept,
         excluded_items=excluded,

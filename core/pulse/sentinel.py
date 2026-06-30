@@ -12,7 +12,7 @@ from core.pulse.calendar import MemoryCache
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.retrieval.config import config as retrieval_config
-from core.retrieval.pipeline import retry_failed_index_runs
+from core.retrieval.pipeline import retry_failed_index_runs, process_pending_index_jobs
 from core.decisions import expire_stale_decisions
 
 def get_recently_ended_events(minutes_ended_min=5, minutes_ended_max=30):
@@ -590,6 +590,20 @@ Context:
                     audit_log_sync("sentinel", "INFO", "memory sweep: no expired memories found")
         except Exception as mem_err:
             audit_log_sync("sentinel", "WARNING", f"Memory sweep error (non-critical): {mem_err}")
+
+        # --- PIGGYBACK: Process pending retrieval index jobs ---
+        # Processes memories that were enqueued by schedule_index_memory() but not
+        # yet indexed (replaces fire-and-forget asyncio.create_task which was killed
+        # by Vercel serverless shutdown before indexing could complete).
+        # Max 2 jobs per run to stay within the 30 s sentinel timeout.
+        if retrieval_config.indexing_enabled:
+            try:
+                indexed = await process_pending_index_jobs(max_jobs=2)
+                if indexed > 0:
+                    audit_log_sync("sentinel", "INFO",
+                                   f"Index queue sweep: {indexed} memory(ies) indexed")
+            except Exception as e:
+                audit_log_sync("sentinel", "WARNING", f"Index queue sweep error: {e}")
 
         # --- PIGGYBACK: Retry failed retrieval index runs ---
         if retrieval_config.indexing_enabled:

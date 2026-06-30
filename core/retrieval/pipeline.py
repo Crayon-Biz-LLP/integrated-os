@@ -320,17 +320,147 @@ async def retry_failed_index_runs(max_retries: int = 3,
 
 
 def schedule_index_memory(memory_id: int, content: str,
-                           memory_type: str, source: str):
-    """Fire-and-forget index_memory if retrieval indexing is enabled.
-    Safe to call from async functions with a running event loop.
-    Silent no-op if indexing is disabled or no event loop is running.
+                           memory_type: str, source: str,
+                           priority: int = 0):
+    """Enqueue a retrieval index job for a memory.
+
+    Replaces the old fire-and-forget asyncio.create_task(index_memory(...)).
+    The old pattern was unreliable on Vercel serverless: background tasks are
+    killed when the function returns a response, so newly created memories were
+    never indexed and became invisible to associative_retrieve().
+
+    This implementation inserts a pending job row synchronously (~5 ms).
+    The sentinel piggyback (process_pending_index_jobs) processes these jobs in
+    batches every ~5 minutes with atomic status claiming and retry tracking.
+    If a job already exists for this memory (pending/processing), this is a
+    no-op — avoids duplicate queue entries.
     """
     if not config.indexing_enabled:
         return
     try:
-        asyncio.create_task(index_memory(
-            memory_id=memory_id, content=content,
-            memory_type=memory_type, source=source,
-        ))
-    except RuntimeError:
-        pass  # No event loop in current thread
+        existing = supabase.table("pending_retrieval_index_jobs") \
+            .select("id") \
+            .eq("memory_id", memory_id) \
+            .in_("status", ["pending", "processing"]) \
+            .limit(1) \
+            .execute()
+        if existing and existing.data:
+            return  # Already queued
+
+        supabase.table("pending_retrieval_index_jobs").insert({
+            "memory_id": memory_id,
+            "content": content,
+            "memory_type": memory_type or "note",
+            "source": source,
+            "priority": priority,
+            "status": "pending",
+        }).execute()
+    except Exception as e:
+        audit_log_sync("retrieval", "WARNING",
+                       f"schedule_index_memory: failed to enqueue job for memory {memory_id}: {e}")
+
+
+async def process_pending_index_jobs(max_jobs: int = 2) -> int:
+    """Process pending retrieval index jobs.  Called by the sentinel piggyback.
+
+    Processes up to max_jobs per call to stay within the sentinel's 30 s timeout
+    (each index_memory call takes ~10-15 s due to LLM extraction).
+
+    Flow:
+      1. SELECT pending jobs ordered by priority DESC, created_at ASC.
+      2. Atomically claim each job (UPDATE WHERE status='pending').
+      3. Call index_memory() for the claimed job.
+      4. Mark completed / failed.  Failed jobs are retried up to 3 times before
+         being escalated to dead_letter.
+
+    Returns the number of jobs processed.
+    """
+    if not config.indexing_enabled:
+        return 0
+
+    try:
+        rows = supabase.table("pending_retrieval_index_jobs") \
+            .select("id, memory_id, content, memory_type, source, retry_count") \
+            .eq("status", "pending") \
+            .order("priority", desc=True) \
+            .order("created_at", desc=False) \
+            .limit(max_jobs) \
+            .execute()
+    except Exception as e:
+        audit_log_sync("retrieval", "WARNING", f"process_pending_index_jobs: fetch failed: {e}")
+        return 0
+
+    if not rows or not rows.data:
+        return 0
+
+    processed = 0
+    for job in rows.data:
+        job_id = job["id"]
+        memory_id = job["memory_id"]
+
+        # Atomic claim — only one sentinel run wins the race
+        try:
+            claim = supabase.table("pending_retrieval_index_jobs") \
+                .update({
+                    "status": "processing",
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                }) \
+                .eq("id", job_id) \
+                .eq("status", "pending") \
+                .execute()
+            if not claim.data:
+                continue  # Another sentinel run already claimed it
+        except Exception as e:
+            audit_log_sync("retrieval", "WARNING",
+                           f"process_pending_index_jobs: claim failed for job {job_id}: {e}")
+            continue
+
+        try:
+            success = await index_memory(
+                memory_id=memory_id,
+                content=job["content"],
+                memory_type=job.get("memory_type", "note"),
+                source=job.get("source", "sentinel-sweep"),
+            )
+        except Exception as e:
+            success = False
+            audit_log_sync("retrieval", "ERROR",
+                           f"process_pending_index_jobs: index_memory failed for memory {memory_id}: {e}")
+
+        retry_count = (job.get("retry_count") or 0) + 1
+        if success:
+            try:
+                supabase.table("pending_retrieval_index_jobs") \
+                    .update({
+                        "status": "completed",
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                    }) \
+                    .eq("id", job_id) \
+                    .execute()
+            except Exception:
+                pass
+            audit_log_sync("retrieval", "INFO",
+                           f"process_pending_index_jobs: indexed memory {memory_id} (job {job_id})")
+        else:
+            new_status = "dead_letter" if retry_count >= 3 else "pending"
+            try:
+                supabase.table("pending_retrieval_index_jobs") \
+                    .update({
+                        "status": new_status,
+                        "retry_count": retry_count,
+                        "error": f"index_memory returned False (attempt {retry_count})",
+                    }) \
+                    .eq("id", job_id) \
+                    .execute()
+            except Exception:
+                pass
+            audit_log_sync(
+                "retrieval",
+                "WARNING" if new_status == "pending" else "ERROR",
+                f"process_pending_index_jobs: memory {memory_id} attempt {retry_count} "
+                f"→ {new_status}",
+            )
+
+        processed += 1
+
+    return processed

@@ -1,12 +1,11 @@
 import pytest
 import os
 import json
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 from core.actions import (
     begin_action_context, clear_action_context, snapshot_action_context,
     ActionResult, accumulate_action, validate_action_claims, render_actions
 )
-from core.webhook.telegram import send_telegram
 
 skip_unless_live_db = pytest.mark.skipif(
     os.getenv("LIVE_DB") != "true",
@@ -159,7 +158,6 @@ class TestJSONFailClosed:
 
     def test_fallback_no_context_message(self):
         """When context is empty and LLM fails, 'No relevant context found.' is shown."""
-        from core.pulse.sentinel import process_sentinel
         # Test the prompt path directly by verifying the sentinel code's behavior
         # when context is empty: the prompt has a fallback for empty context.
         # If context is empty and the LLM fails, the pre-flight section is not appended.
@@ -200,7 +198,7 @@ class TestSessionContinuity:
 
             mock_gen.return_value = mock_response
 
-            result = await interrogate_brain(
+            await interrogate_brain(
                 query="Who is confirmed?",
                 chat_id=999999999,
                 session_id=session_id
@@ -231,9 +229,6 @@ class TestSessionContinuity:
         res_b = await execute_context_strategy("Vasanth sync", PRE_FLIGHT_CONFIG, extracted_entities=[])
         # Note: Vasanth should be resolved from graph_nodes if available.
         # If it's in the seed data, we'll get a people match.
-        people_b = [i for i in res_b.matched_items if i.source == "people"]
-        any_vasanth = any("Vasanth" in i.content for i in res_b.matched_items)
-
         # Meeting B should have some context (people match at minimum)
         # But we shouldn't assert on specific counts since it depends on seeded data
         assert len(res_b.gate_decisions) >= 0  # at least the pipeline ran

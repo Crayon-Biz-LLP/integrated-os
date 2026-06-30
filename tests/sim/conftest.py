@@ -1,5 +1,4 @@
 import pytest
-import os
 from unittest.mock import patch, MagicMock
 from core.lib.audit_logger import set_trace_id
 from core.services.db import get_supabase
@@ -19,6 +18,7 @@ _CLEANUP_PREDICATES = {
     'retrieval_index_runs': ('error_message', '[SIM_TEST]%'),
     'retrieval_passages': None,  # deleted via memory cascade
     'raw_dumps':       ('text', '[SIM_TEST]%'),
+    'pending_retrieval_index_jobs': None,  # cleaned via per-test finally block
 }
 
 
@@ -52,7 +52,7 @@ def _verify_cleanup(table: str, col: str, pattern: str, expected: int = 0):
         res = supabase.table(table).select('id', count='exact').ilike(col, pattern).execute()
         actual = res.count if hasattr(res, 'count') else len(res.data or [])
         assert actual == expected, f"Cleanup verification failed for {table}: expected {expected}, got {actual}"
-    except Exception as e:
+    except Exception:
         # If table doesn't exist or query fails, skip verification
         pass
 
