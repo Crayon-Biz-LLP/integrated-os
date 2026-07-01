@@ -12,6 +12,7 @@ pypdf==6.13.3
 python-docx==1.1.2
 openpyxl==3.1.2
 # Development/Linting
+ruff==0.4.5
 pre-commit==4.6.0
 pytest==9.0.3
 pytest-asyncio==1.4.0

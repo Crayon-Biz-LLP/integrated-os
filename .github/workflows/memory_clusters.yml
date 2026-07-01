@@ -54,7 +54,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-        run: python scripts/run_clustering.py
+        run: python scripts/run_memory_clusters.py
 
   notify_failure:
     runs-on: ubuntu-latest
