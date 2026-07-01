@@ -2,12 +2,6 @@ import re
 from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 
-BLOCKLIST_PEOPLE = {
-    "wife", "parents", "sister's family", "sisters family", "customer",
-    "employee", "finance manager", "kids", "author", "narrator",
-    "user", "mother", "aunt", "uncle", "pastor",
-}
-
 PEOPLE_TITLES = [
     "pastor ", "dr. ", "dr ", "mr. ", "mr ", "mrs. ", "mrs ",
     "ms. ", "ms ", "rev. ", "rev ", "fr. ", "fr ", "saint ",
@@ -27,7 +21,16 @@ def normalize_person_name(name: str) -> str:
 
 
 def is_blocklisted_person(name: str) -> bool:
-    return bool(name) and normalize_person_name(name) in BLOCKLIST_PEOPLE
+    """Dynamic check — no hardcoded blocklist.
+    Only blocks names too short to be real people.
+    Everything else passes through to the existing guards:
+    - resolve_canonical_label() checks pending_graph_nodes rejected entries
+    - Entity extraction has text-anchoring validation
+    - HITL requires approval for new person nodes
+    - Sync functions skip orphaned [DELETED] entries"""
+    if not name:
+        return True
+    return len(normalize_person_name(name)) < 2
 
 
 def enrich_people_from_graph() -> int:
