@@ -1,0 +1,69 @@
+name: Clean Duplicate Nodes (Weekly)
+
+on:
+  schedule:
+    # Weekly on Sunday at 4 AM UTC (9:30 AM IST)
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+
+jobs:
+  dedupe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          for secret in "$SUPABASE_URL" "$SUPABASE_SERVICE_ROLE_KEY"; do
+            if [ -z "$secret" ]; then
+              echo "❌ Missing required secrets"
+              exit 1
+            fi
+          done
+          echo "✅ Secrets present"
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Auto-Safe Merge (Dry Run First)
+        id: dry_run
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          echo "🔍 Running dry run to preview AUTO_SAFE merges..."
+          python scripts/clean_duplicate_nodes.py --dry-run 2>&1 | tee /tmp/dedup_dry.txt
+          DEDUP_OUTPUT=$(cat /tmp/dedup_dry.txt)
+          echo "$DEDUP_OUTPUT" >> $GITHUB_STEP_SUMMARY
+          echo "dry_output<<EOF" >> $GITHUB_OUTPUT
+          echo "$DEDUP_OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Apply Auto-Safe Merges
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          echo "🔄 Applying AUTO_SAFE merges..."
+          python scripts/clean_duplicate_nodes.py --apply-safe-only 2>&1 | tail -20
+
+  notify_failure:
+    runs-on: ubuntu-latest
+    needs: dedupe
+    if: failure()
+    steps:
+      - name: Notify on failure
+        run: |
+          echo "⚠️ Duplicate Node Cleanup FAILED at $(date)"
+          echo "Check logs: https://github.com/${{ github.repository }}/actions"

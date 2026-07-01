@@ -67,6 +67,8 @@ async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: 
                 raise NonRetryableError(f"Gemini non-retryable error: {e}") from e
 
     # If we get here, all clients hit a quota error
+    if last_error is None:
+        raise RuntimeError("All Gemini clients exhausted without catching a quota or timeout error")
     raise last_error
 
 async def call_openrouter(model: str, prompt: str, timeout_s: float = 120.0, **kwargs) -> Tuple[str, Optional[List[Any]], Any]:

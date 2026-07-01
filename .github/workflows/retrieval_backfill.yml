@@ -1,0 +1,78 @@
+name: Retrieval Index Backfill
+
+on:
+  schedule:
+    # Weekly on Monday at 3 AM UTC (8:30 AM IST) — runs after Sunday's cluster job
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: 'Batch size per round (default 5, max 20)'
+        required: false
+        default: '5'
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+        run: |
+          for secret in "$SUPABASE_URL" "$SUPABASE_SERVICE_ROLE_KEY" "$GEMINI_API_KEY" "$UPSTASH_REDIS_REST_URL"; do
+            if [ -z "$secret" ]; then
+              echo "❌ One or more required secrets are missing"
+              exit 1
+            fi
+          done
+          echo "✅ All secrets present"
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Warn about first-run cost
+        run: |
+          echo "⚠️  FIRST RUN WARNING"
+          echo "On the first run, this backfill processes ALL unindexed memories."
+          echo "This hits Gemini embedding API for every memory — expensive on rate limit."
+          echo "Batch size 5 by default; increase to 20 only after confirming rate limits."
+          echo "The backfill IS resumable (checkpointed to retrieval_index_runs table)."
+          echo ""
+
+      - name: Run Backfill (Resumable, Conservative Batch)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          RETRIEVAL_INDEXING_ENABLED: "true"
+          BACKFILL_BATCH_SIZE: "${{ github.event.inputs.batch_size || '5' }}"
+        run: |
+          echo "🔵 Running backfill with batch_size=$BACKFILL_BATCH_SIZE"
+          python scripts/run_backfill.py
+
+  notify_failure:
+    runs-on: ubuntu-latest
+    needs: backfill
+    if: failure()
+    steps:
+      - name: Notify on failure
+        run: |
+          echo "⚠️ Retrieval Index Backfill FAILED at $(date)"
+          echo "Check logs: https://github.com/${{ github.repository }}/actions"

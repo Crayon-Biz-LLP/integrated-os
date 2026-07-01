@@ -1,15 +1,15 @@
-name: Weekly Maintenance — Orphan Cleanup + Memory Clustering
+name: Concept Sweep (Weekly)
 
 on:
   schedule:
-    # Weekly on Sunday at 3 AM UTC (8:30 AM IST)
-    - cron: '0 3 * * 0'
+    # Weekly on Saturday at 4 AM UTC (9:30 AM IST)
+    - cron: '0 4 * * 6'
   workflow_dispatch:
 
 jobs:
-  weekly:
+  sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Code
@@ -29,39 +29,29 @@ jobs:
           done
           echo "✅ All secrets present"
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: pip install -r requirements.txt
 
-      - name: Step 1 — Orphan Cleanup
-        id: cleanup
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          echo "🧹 Running orphan cleanup..."
-          python -m core.agents.cleanup_orphans --yes 2>&1 | tail -10
-          echo "✅ Orphan cleanup complete"
-
-      - name: Step 2 — Memory Clustering (M5)
+      - name: Run Concept Sweep
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-        run: python scripts/run_clustering.py
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+        run: python scripts/concept_sweep_batch.py
 
   notify_failure:
     runs-on: ubuntu-latest
-    needs: weekly
+    needs: sweep
     if: failure()
     steps:
       - name: Notify on failure
         run: |
-          echo "⚠️ Weekly Maintenance FAILED at $(date)"
+          echo "⚠️ Concept Sweep FAILED at $(date)"
           echo "Check logs: https://github.com/${{ github.repository }}/actions"

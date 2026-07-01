@@ -1,0 +1,76 @@
+name: CI — Test Suite
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        id: secrets_check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          for secret in "$SUPABASE_URL" "$SUPABASE_SERVICE_ROLE_KEY" "$GEMINI_API_KEY"; do
+            if [ -z "$secret" ]; then
+              echo "❌ REQUIRED_SECRETS_MISSING"
+              echo "secret_missing=true" >> $GITHUB_OUTPUT
+              exit 0  # Don't fail — tests may work with mocks
+            fi
+          done
+          echo "secret_missing=false" >> $GITHUB_OUTPUT
+          echo "✅ All required secrets present"
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint — Ruff check
+        run: ruff check .
+
+      - name: Run Unit Tests
+        env:
+          LIVE_DB: ${{ steps.secrets_check.outputs.secret_missing == 'false' && 'true' || 'false' }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PULSE_SECRET: ${{ secrets.PULSE_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: |
+          if [ "$LIVE_DB" = "true" ]; then
+            echo "🔵 Running with LIVE_DB=true (real Supabase)"
+            pytest tests/ -v -c /dev/null 2>&1 | tail -50
+          else
+            echo "🟡 Secrets missing — running unit tests only (mock mode)"
+            pytest tests/unit/ -v 2>&1 | tail -50
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "⚠️ CI Test Suite FAILED"
+          echo "Check logs: https://github.com/${{ github.repository }}/actions"

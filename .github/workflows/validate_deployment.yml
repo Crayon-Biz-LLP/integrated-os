@@ -1,0 +1,130 @@
+name: Validate Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_timestamp:
+        description: 'Deployment timestamp (ISO format, e.g. 2026-07-01T12:00:00)'
+        required: false
+        default: ''
+  # Auto-trigger after successful CI test run on main
+  workflow_run:
+    workflows: ['CI — Test Suite']
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  validate:
+    # For workflow_run triggers: only run if the triggering workflow succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name != 'workflow_run' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          for secret in "$SUPABASE_URL" "$SUPABASE_SERVICE_ROLE_KEY"; do
+            if [ -z "$secret" ]; then
+              echo "❌ Missing required secrets"
+              exit 1
+            fi
+          done
+          echo "✅ Secrets present"
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine Timestamp
+        id: timestamp
+        run: |
+          if [ -n "${{ github.event.inputs.deploy_timestamp }}" ]; then
+            echo "ts=${{ github.event.inputs.deploy_timestamp }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "ts=${{ github.event.workflow_run.created_at }}" >> $GITHUB_OUTPUT
+          else
+            echo "ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Wait for Vercel Deployment
+        id: wait_vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "🟡 VERCEL_TOKEN or VERCEL_PROJECT_ID not set — sleeping 30s instead"
+            sleep 30
+            echo "state=sleep_fallback" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "🔵 Waiting for Vercel deployment to reach READY..."
+          POLL_INTERVAL=15
+          MAX_RETRIES=20  # 5 min total
+          RETRY=0
+
+          while [ $RETRY -lt $MAX_RETRIES ]; do
+            RETRY=$((RETRY + 1))
+
+            # Fetch the latest production deployment with HTTP status check
+            HTTP_CODE=$(curl -s -o /tmp/vercel_resp.json -w "%{http_code}" \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&limit=1&target=production")
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "  ⚠️ Vercel API returned HTTP $HTTP_CODE — sleeping 30s and proceeding"
+              sleep 30
+              echo "state=api_error" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            STATE=$(python3 -c "import json; d=json.load(open('/tmp/vercel_resp.json')); print(d['deployments'][0].get('state','unknown') if d.get('deployments') else 'none')" 2>/dev/null || echo "parse_fail")
+            URL=$(python3 -c "import json; d=json.load(open('/tmp/vercel_resp.json')); print('https://'+d['deployments'][0].get('url','') if d.get('deployments') else '')" 2>/dev/null || echo "")
+
+            echo "  Attempt $RETRY/$MAX_RETRIES — State: $STATE"
+
+            if [ "$STATE" = "READY" ]; then
+              echo "✅ Vercel deployment is READY at $URL"
+              echo "state=ready" >> $GITHUB_OUTPUT
+              echo "url=$URL" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            if [ "$STATE" = "ERROR" ] || [ "$STATE" = "CANCELED" ]; then
+              echo "❌ Vercel deployment failed with state: $STATE"
+              echo "state=$STATE" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+
+            sleep $POLL_INTERVAL
+          done
+
+          echo "⚠️ Vercel deployment did not reach READY within 5 min — proceeding anyway"
+          echo "state=timeout" >> $GITHUB_OUTPUT
+
+      - name: Run Deployment Validation
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          echo "🔍 Validating deployment since ${{ steps.timestamp.outputs.ts }}..."
+          python scripts/validate_deployment.py "${{ steps.timestamp.outputs.ts }}" 2>&1
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "⚠️ Deployment Validation FAILED after successful tests"
+          echo "Check logs: https://github.com/${{ github.repository }}/actions"

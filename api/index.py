@@ -37,6 +37,7 @@ from core.pulse import (
     format_rfc3339,
 )
 from core.pulse.tools import skip_recurring_instance
+from core.pulse.maintenance import process_maintenance
 from core.services.db import get_supabase
 
 app = FastAPI(title="Integrated-OS")
@@ -138,6 +139,31 @@ async def decision_pulse_route(request: Request):
 
     result = await process_decision_pulse(auth_secret=cron_secret, trigger="cron")
     return result
+
+# --- MAINTENANCE RUNNER (Independent of Sentinel) ---
+@app.api_route("/api/maintenance", methods=["GET", "POST"])
+async def maintenance_route(request: Request):
+    """Triggered by cron-job.org or GitHub Actions — runs maintenance tasks.
+
+    Independent of the sentinel process. If sentinel fails, maintenance still runs.
+    Supports query param ?mode=standard|daily|weekly.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
+
+    if not cron_secret:
+        raise HTTPException(status_code=500, detail="CRON_SECRET missing")
+
+    if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    mode = request.query_params.get("mode", "standard")
+    if mode not in ("standard", "daily", "weekly"):
+        raise HTTPException(status_code=400, detail="mode must be standard, daily, or weekly")
+
+    result = await process_maintenance(mode=mode)
+    return result
+
 
 # --- EVENING ROUNDUP ---
 @app.api_route("/api/roundup", methods=["GET", "POST"])

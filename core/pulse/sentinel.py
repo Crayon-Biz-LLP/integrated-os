@@ -11,9 +11,6 @@ from core.webhook.telegram import send_telegram
 from core.pulse.calendar import MemoryCache
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.retrieval.config import config as retrieval_config
-from core.retrieval.pipeline import retry_failed_index_runs, process_pending_index_jobs
-from core.decisions import expire_stale_decisions
 
 def get_recently_ended_events(minutes_ended_min=5, minutes_ended_max=30):
     """Fetch events that ended between X and Y minutes ago — for post-meeting capture prompts.
@@ -253,12 +250,7 @@ Context:
                     if pe_res.data:
                         sweep_lines.append(f"🔗 {len(pe_res.data)} pending graph edge(s)")
                     # Expire stale decisions (past their expires_at)
-                    try:
-                        expired_count = expire_stale_decisions()
-                        if expired_count:
-                            sweep_lines.append(f"⏰ {expired_count} expired decision(s) auto-closed")
-                    except Exception as dec_err:
-                        audit_log_sync("sentinel", "WARNING", f"Decision expiry failed: {dec_err}")
+                    # Decision expiry deferred to maintenance.py (weekly_housekeeping)
 
                     if sweep_lines:
                         sweep_msg = "📋 *Weekly Sweep — Items Needing Attention*\n\n" + "\n".join(sweep_lines)
@@ -318,20 +310,6 @@ Context:
         except Exception as e:
             audit_log_sync("sentinel", "ERROR", f"Clarification dispatch error: {e}")
 
-        # --- PIGGYBACK: Clean up stale raw_dumps ---
-        try:
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            stale = supabase.table('raw_dumps') \
-                .update({"status": "abandoned"}) \
-                .in_('status', ['staged', 'pending']) \
-                .lt('created_at', cutoff) \
-                .execute()
-            if stale.data:
-                audit_log_sync("sentinel", "INFO",
-                               f"Cleaned {len(stale.data)} stale raw_dumps (staged/pending >24h)")
-        except Exception as e:
-            audit_log_sync("sentinel", "ERROR", f"Raw dump cleanup error: {e}")
-
         # --- PIGGYBACK: Classifier feedback ingestion ---
         try:
             from core.webhook.feedback_loop import ingest_feedback_overrides
@@ -341,60 +319,6 @@ Context:
                                f"Feedback ingestion: {corrections_count} correction(s) processed")
         except Exception as e:
             audit_log_sync("sentinel", "WARNING", f"Feedback ingestion piggyback error (non-critical): {e}")
-
-        # --- PIGGYBACK: Daily orphan retrieval sweep ---
-        try:
-            last_sweep = supabase.table('audit_logs') \
-                .select('id') \
-                .eq('service', 'sentinel') \
-                .ilike('message', '%orphan sweep%') \
-                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()) \
-                .limit(1) \
-                .execute()
-            if not last_sweep.data:
-                from core.retrieval.cleanup import sweep_orphan_retrieval_entries
-                sweep_orphan_retrieval_entries()
-                audit_log_sync("sentinel", "INFO", "Daily orphan sweep completed")
-        except Exception as e:
-            audit_log_sync("sentinel", "ERROR", f"Orphan sweep piggyback error: {e}")
-
-        # --- PIGGYBACK: Graph edge expiry (TF-002) ---
-        try:
-            last_edge_sweep = supabase.table('audit_logs') \
-                .select('id') \
-                .eq('service', 'sentinel') \
-                .ilike('message', '%graph edge expiry%') \
-                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()) \
-                .limit(1) \
-                .execute()
-            if not last_edge_sweep.data:
-                result = supabase.rpc('expire_stale_graph_edges', {'expiry_days': 90}).execute()
-                expired_count = result.data if result.data else 0
-                if expired_count:
-                    audit_log_sync("sentinel", "INFO", f"🕸️ Graph edge expiry: {expired_count} stale edges marked")
-                else:
-                    audit_log_sync("sentinel", "INFO", "🕸️ Graph edge expiry: no stale edges found")
-        except Exception as e:
-            audit_log_sync("sentinel", "WARNING", f"Graph edge expiry error (non-critical): {e}")
-
-        # --- PIGGYBACK: People enrichment from graph edges (TF-003) ---
-        try:
-            last_people_sweep = supabase.table('audit_logs') \
-                .select('id') \
-                .eq('service', 'sentinel') \
-                .ilike('message', '%people enrichment%') \
-                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()) \
-                .limit(1) \
-                .execute()
-            if not last_people_sweep.data:
-                from core.lib.people_utils import enrich_people_from_graph
-                enriched = enrich_people_from_graph()
-                if enriched:
-                    audit_log_sync("sentinel", "INFO", f"👥 People enrichment: {enriched} person(s) updated from graph edges")
-                else:
-                    audit_log_sync("sentinel", "INFO", "👥 People enrichment: no updates needed")
-        except Exception as e:
-            audit_log_sync("sentinel", "WARNING", f"People enrichment error (non-critical): {e}")
 
         # --- PIGGYBACK: S4 Pattern detection (Sunday only) ---
         try:
@@ -542,81 +466,7 @@ Context:
         except Exception as ac_err:
             audit_log_sync("sentinel", "WARNING", f"Auto-cancel error (non-critical): {ac_err}")
 
-        # --- PIGGYBACK: M5 Expired memory sweep ---
-        try:
-            last_mem_sweep = supabase.table('audit_logs') \
-                .select('id') \
-                .eq('service', 'sentinel') \
-                .ilike('message', '%memory sweep%') \
-                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()) \
-                .limit(1) \
-                .execute()
-            if not last_mem_sweep.data:
-                expired = supabase.table('memories') \
-                    .select('id') \
-                    .lt('expires_at', datetime.now(timezone.utc).isoformat()) \
-                    .execute()
-                expired_ids = [m['id'] for m in (expired.data or [])]
-                if expired_ids:
-                    from core.retrieval.cleanup import cleanup_memory_retrieval_index
-                    failed = 0
-                    for mid in expired_ids:
-                        ok = False
-                        for attempt in range(2):  # Retry once per item
-                            try:
-                                cleanup_memory_retrieval_index(mid)
-                                supabase.table('memories').delete().eq('id', mid).execute()
-                                ok = True
-                                break
-                            except Exception:
-                                if attempt == 0:
-                                    continue  # Retry
-                        if not ok:
-                            failed += 1
-                            audit_log_sync("sentinel", "WARNING",
-                                f"memory sweep: failed to clean up memory {mid} after 2 attempts")
-                    if failed > len(expired_ids) // 2:
-                        audit_log_sync("sentinel", "WARNING",
-                            f"memory sweep: {failed}/{len(expired_ids)} items failed cleanup")
-                    audit_log_sync("sentinel", "INFO",
-                        f"memory sweep: {len(expired_ids) - failed}/{len(expired_ids)} expired memory(s) removed")
-                    # Also run orphan sweep after cleanup
-                    try:
-                        from core.retrieval.cleanup import sweep_orphan_retrieval_entries
-                        sweep_orphan_retrieval_entries()
-                    except Exception:
-                        pass
-                else:
-                    audit_log_sync("sentinel", "INFO", "memory sweep: no expired memories found")
-        except Exception as mem_err:
-            audit_log_sync("sentinel", "WARNING", f"Memory sweep error (non-critical): {mem_err}")
-
-        # --- PIGGYBACK: Process pending retrieval index jobs ---
-        # Processes memories that were enqueued by schedule_index_memory() but not
-        # yet indexed (replaces fire-and-forget asyncio.create_task which was killed
-        # by Vercel serverless shutdown before indexing could complete).
-        # Max 2 jobs per run to stay within the 30 s sentinel timeout.
-        if retrieval_config.indexing_enabled:
-            try:
-                indexed = await process_pending_index_jobs(max_jobs=2)
-                if indexed > 0:
-                    audit_log_sync("sentinel", "INFO",
-                                   f"Index queue sweep: {indexed} memory(ies) indexed")
-            except Exception as e:
-                audit_log_sync("sentinel", "WARNING", f"Index queue sweep error: {e}")
-
-        # --- PIGGYBACK: Retry failed retrieval index runs ---
-        if retrieval_config.indexing_enabled:
-            try:
-                retried = await retry_failed_index_runs(
-                    max_retries=3, batch_size=10, retry_delay_seconds=0
-                )
-                if retried > 0:
-                    audit_log_sync("sentinel", "INFO",
-                                   f"Retry sweeper retried {retried} failed index runs")
-            except Exception as e:
-                audit_log_sync("sentinel", "ERROR",
-                               f"Retry sweeper error: {e}")
+        # Memory sweep, index queue, and retry-failed-runs deferred to maintenance.py (daily mode)
 
         # --- PIGGYBACK: T4 Orphan recurring calendar events ---
         try:

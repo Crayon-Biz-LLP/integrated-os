@@ -431,7 +431,7 @@ async def build_memory_clusters() -> dict:
         for seed in seeds:
             seed_id = seed["id"]
             personalization = {seed_id: seed["weight"]}
-            ppr_raw = personalized_pagerank(adjacency, personalization, damping=PPR_DAMPING, max_iter=PPR_ITERATIONS)
+            ppr_raw = personalized_pagerank(adjacency, personalization, damping=PPR_DAMPING, iterations=PPR_ITERATIONS)
             ppr_norm = normalize_scores(ppr_raw)
 
             # Aggregate phrase scores → memory scores
