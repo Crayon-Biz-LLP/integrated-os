@@ -201,10 +201,10 @@ Based on the CURRENT PHASE ({briefing_mode}) and the NEW INPUTS, generate your r
 
 HARD CONSTRAINTS (Non-Negotiable):
 - VERTICALITY MANDATE: You are STRICTLY FORBIDDEN from writing lists as sentences. Every icon (🔴, 🟡, ✅, 🚀) MUST start on a brand new line.
-- SECTION HEADERS: Section headers (e.g., 🚀 Work, 🏠 Home) MUST be preceded by two newlines and followed by one newline.
+- SECTION HEADERS: Section headers (e.g., 🚀 Work, 🏠 Home) MUST be preceded by one newline and followed by one newline.
 - PERSONA OVERRIDE: Even in 'minimal' or 'night' modes, formatting must remain structured. Do not use '1.' or '2.' for sections; use the designated Headers.
 - NEWLINE MANDATE: Every icon (🔴, 🟡, ✅, 🚀) MUST be preceded by a carriage return.
-- HEADER SPACING: Double-space before headers (e.g., \n\n🚀 Work) and single-space after them.
+- HEADER SPACING: Single-space before headers (e.g., \n🚀 Work) and single-space after them.
 - NO NUMBERING: Use headers and icons only. Never use '1.' or '2.' to separate strategic points.
 - TONAL GUARD: Keep the 'Intel: Vaulted' or 'Intel: Secured' style for the Night phase, but never sacrifice vertical layout.
 - STRICT DATA FIDELITY FOR BRIEFING: You are STRICTLY FORBIDDEN from listing any task in ANY task section (Work, Home, Church, Ideas, or Done) that does not appear verbatim in the SYSTEM TASKS list provided below. EXCEPT: The 📅 Schedule section, which MUST pull directly from the CALENDAR EVENTS TODAY context provided above. Do NOT surface tasks from HINDSIGHT MEMORIES, Canonical Pages, or any other context into the briefing output. All context is for intelligence and routing only — NEVER for output.
