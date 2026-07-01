@@ -199,6 +199,7 @@ INTENT_OPTIONS = {
     "r": ("DELEGATE", "🤖 Research — look something up"),
     "p": ("DECLARE_PRACTICE", "🏃 Practice — track a habit"),
     "c": ("COMPLETION", "✅ Completion — marked a task done"),
+    "ru": ("ROLE_UPDATE", "👤 Role Update — update someone's role"),
     "x": ("NOISE", "👍 Nothing — just noise"),
 }
 
@@ -214,6 +215,7 @@ INTENT_THRESHOLDS = {
     'DELEGATE': (0.8, 0.5),
     'DECLARE_PRACTICE': (0.85, 0.5),
     'DAILY_BRIEF': (0.75, 0.5),
+    'ROLE_UPDATE': (0.75, 0.5),
     'CLARIFICATION_NEEDED': (0.8, 0.5),
 }
 

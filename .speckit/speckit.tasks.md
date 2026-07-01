@@ -729,3 +729,17 @@ This enables natural-language note capture without special syntax.
 3. Blocklisted 19 deleted labels as `rejected` in `pending_graph_nodes`.
 4. Marked 19 orphaned people rows with `[DELETED]` suffix in their role field.
 **Verification**: Post-sync counts confirmed (105 person nodes, 29 org nodes with db_record_id, 22 project nodes). No dangling edges. Ruff clean.
+
+---
+
+### [COMPLETED] T-ROLE-001: ROLE_UPDATE intent — detect role attributions
+**Files**: `core/prompts/classify.py`, `core/webhook/classify.py`, `core/webhook/dispatch.py`, `core/lib/people_utils.py`
+**Change**: Added `ROLE_UPDATE` intent to the classification system so that messages like "Marcus Durai is the Pastor of Ashraya Chennai Central" are detected and routed to a dedicated handler that updates `people.role` instead of creating a task or note.
+**Details**:
+- Classify prompt: Added `ROLE_UPDATE` to intent list, added `person_name`, `role_title`, `org_name` JSON fields, and detection rules for role attribution patterns (including pronoun resolution via conversation history).
+- `classify.py`: Added `ROLE_UPDATE` to `INTENT_OPTIONS` (shortcode `ru`) and `INTENT_THRESHOLDS` (high=0.75, low=0.5).
+- `dispatch.py`: Added `handle_role_update()` — resolves person via `people` table (ILIKE), falls back to graph_nodes, creates new people entry if needed, updates `role` and `organization_name`, sends Telegram confirmation. Also creates SERVES_AT graph edge when org exists.
+- `route_by_intent()`: Wired `ROLE_UPDATE` into handler_map and if/elif chain.
+- `people_utils.py`: Added "pastor" to BLOCKLIST_PEOPLE to prevent entity extraction from creating a person node from the role title.
+- **Data fixes**: pe6847 (Pastor → LEADS → ACC) rejected as role-title duplicate. pe6866 relationship updated from PASTOR to SERVES_AT for correct resolution. Marcus Durai people.role set to "Pastor of Ashraya Chennai Central".
+**Deploy safe**: YES — additive intent. Existing tasks/notes continue to work unchanged.

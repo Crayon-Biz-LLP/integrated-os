@@ -796,6 +796,59 @@ async def resolve_task_note_confirmation(text: str, chat_id: int, session_id: st
     await route_by_intent(intent, original, chat_id, session_id, classification=classification)
     return True
 
+async def handle_role_update(text: str, chat_id: int, classification: dict, source="telegram"):
+    """Handle ROLE_UPDATE intent — update people.role from a role attribution."""
+    person_name = classification.get('person_name', '').strip()
+    role_title = classification.get('role_title', '').strip()
+    org_name = classification.get('org_name', '').strip()
+
+    if not person_name:
+        await send_telegram(chat_id, "I couldn't identify who to update. Please specify the person's name.")
+        return
+    if not role_title:
+        await send_telegram(chat_id, "I need to know what role to set. Please specify the role.")
+        return
+
+    # Resolve person in people table
+    try:
+        res = supabase.table('people').select('id, name, role').ilike('name', f'%{person_name}%').limit(1).execute()
+        if res and res.data:
+            person = res.data[0]
+            person_id = person['id']
+        else:
+            # Check graph nodes for the person label
+            gn = supabase.table('graph_nodes').select('id, label').eq('type', 'person').ilike('label', f'%{person_name}%').limit(1).execute()
+            if gn and gn.data:
+                new_people = supabase.table('people').insert({
+                    'name': gn.data[0]['label'],
+                    'role': f"{role_title} of {org_name}" if org_name else role_title,
+                    'organization_name': org_name or None,
+                    'source': 'role_update'
+                }).execute()
+                person_id = new_people.data[0]['id']
+                await send_telegram(chat_id, f"👤 Created people entry for {gn.data[0]['label']} with role: {role_title}" + (f" at {org_name}." if org_name else "."))
+            else:
+                await send_telegram(chat_id, f"I don't recognize '{person_name}' in the system. Please add them first.")
+                return
+
+        update_data = {}
+        if org_name:
+            update_data['organization_name'] = org_name
+        new_role = f"{role_title} of {org_name}" if org_name else role_title
+        if person.get('role') and new_role not in person['role']:
+            update_data['role'] = f"{person['role']}; {new_role}"
+        elif not person.get('role'):
+            update_data['role'] = new_role
+        if update_data:
+            supabase.table('people').update(update_data).eq('id', person_id).execute()
+
+        msg = f"✅ Role updated: {person_name} → {role_title}" + (f" at {org_name}." if org_name else ".")
+        await send_telegram(chat_id, msg)
+    except Exception as e:
+        audit_log_sync("webhook", "ERROR", f"Role update failed: {e}")
+        await send_telegram(chat_id, "I encountered an error updating the role. Please try again.")
+
+
 async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None, active_anchor: dict = None):
     # Generate or retrieve decision_chain_id for this request
     cid = get_decision_chain_id()
@@ -816,6 +869,7 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         'PROJECT_UPDATE': 'handle_project_update',
         'DELEGATE': 'handle_delegate',
         'DECLARE_PRACTICE': 'handle_declare_practice',
+        'ROLE_UPDATE': 'handle_role_update',
         'NOISE': 'handle_noise',
     }
     handler_name = handler_map.get(intent, 'handle_clarification')
@@ -869,6 +923,8 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         await send_telegram(chat_id, f"✓ {ack}")
     elif intent == 'DECLARE_PRACTICE':
         await handle_declare_practice(text, chat_id, classification or {})
+    elif intent == 'ROLE_UPDATE':
+        await handle_role_update(text, chat_id, classification or {}, source=source)
     elif intent == 'NOISE':
         await handle_noise(chat_id)
     else:

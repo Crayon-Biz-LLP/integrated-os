@@ -18,15 +18,18 @@ IDENTITY & BUSINESS CONTEXT: {core_json}
 {entities_section}{learned_section}
 Return ONLY valid JSON (no markdown, no explanation):
 {{
-    "intent": "TASK|COMPLETION|NOTE|PROJECT_UPDATE|NOISE|CLARIFICATION_NEEDED|DELEGATE|QUERY|DECLARE_PRACTICE|DAILY_BRIEF",
+    "intent": "TASK|COMPLETION|NOTE|PROJECT_UPDATE|NOISE|CLARIFICATION_NEEDED|DELEGATE|QUERY|DECLARE_PRACTICE|DAILY_BRIEF|ROLE_UPDATE",
     "confidence": 0.0-1.0,
     "entity": "SOLVSTRAT|QHORD|PERSONAL|ASHRAYA|INBOX",
     "title": "extracted task title",
     "time_context": "time info if any",
     "clarification_question": "question if needed",
     "receipt": "Stealth status report (no entity names).",
-    "possible_intents": ["TASK", "COMPLETION", "NOTE", "PROJECT_UPDATE", "QUERY", "DAILY_BRIEF", "DELEGATE", "DECLARE_PRACTICE", "NOISE"],
-    "reasoning": "brief logic"
+    "possible_intents": ["TASK", "COMPLETION", "NOTE", "PROJECT_UPDATE", "QUERY", "DAILY_BRIEF", "DELEGATE", "DECLARE_PRACTICE", "NOISE", "ROLE_UPDATE"],
+    "reasoning": "brief logic",
+    "person_name": "extracted person name (for ROLE_UPDATE only)",
+    "role_title": "role title like Pastor or Treasurer (for ROLE_UPDATE only)",
+    "org_name": "organization name like Ashraya Chennai Central (for ROLE_UPDATE only)"
 }}
 
 Rules:
@@ -48,6 +51,7 @@ Rules:
 - DELEGATE: Research, competitor audits, or autonomous web research.
 - DECLARE_PRACTICE: If Danny says "I want to [activity] every [timeframe]" (like a habit), "I'm going to start [activity]", "Track [activity] for me", "I want to build a practice of [activity]" — classify as DECLARE_PRACTICE. Extract the practice name into the title field. Route to the most relevant entity. NOTE: Explicit requests to schedule meetings or calendar blocks are TASKS, not practices.
 - DAILY_BRIEF: Danny is asking explicitly for his daily briefing or a "good morning" overview. Examples: "good morning", "what's my day look like?", "give me my daily brief". For specific schedule questions like "meetings today?" or "what's on my calendar?", use QUERY instead. Extract into title: "Daily Briefing". Entity: INBOX.
+- ROLE_UPDATE: If Danny says "[person] is the [role] of [org]", "update that [person] is [role]", "set [person]'s role to [role] at [org]", or similar role attribution statements — classify as ROLE_UPDATE. Extract person_name (the person's full name), role_title (their role), and org_name (the organization). Use conversation history to resolve pronouns like "he" to person_name. Route entity to the most relevant tag. Example: "Marcus Durai is the Pastor of Ashraya Chennai Central" → intent=ROLE_UPDATE, person_name="Marcus Durai", role_title="Pastor", org_name="Ashraya Chennai Central", entity=ASHRAYA.
 - RECEIPT RULE: Receipts must be confirmation-only. Use: '[Subject] logged for [Time/Day].'
 - LITERAL SUBJECT RULE: Mirror Danny's verb. (e.g., 'Check with Vasanth' → 'Vasanth check-in logged').
 - ZERO DATA LOSS: Never drop qualifiers like 'Canadian project' or 'Zoho API'.

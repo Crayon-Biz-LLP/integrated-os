@@ -5,7 +5,7 @@ from core.lib.audit_logger import audit_log_sync
 BLOCKLIST_PEOPLE = {
     "wife", "parents", "sister's family", "sisters family", "customer",
     "employee", "finance manager", "kids", "author", "narrator",
-    "user", "mother", "aunt", "uncle",
+    "user", "mother", "aunt", "uncle", "pastor",
 }
 
 PEOPLE_TITLES = [
