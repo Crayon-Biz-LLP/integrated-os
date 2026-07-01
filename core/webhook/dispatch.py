@@ -14,6 +14,7 @@ from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.actions import ActionResult, accumulate_action
 from core.prompts.query import build_interrogate_brain_prompt, build_anaphora_resolution_prompt
+from core.prompts.briefing import build_daily_brief_prompt
 from core.prompts.workflow import build_enrichment_prompt
 from core.webhook.utils import is_recent_raw_dump, supabase
 from core.pulse.graph import hybrid_search_graph
@@ -146,55 +147,20 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
                 return "None"
             return "\n".join(f"- {i}" for i in items)
 
-        prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
+        calendar_text = fmt_list(
+            ('[PAST] ' if e.get('is_past') else '') + e['title'] + (' at ' + e['time'][:16].replace('T', ' ')) if e.get('time') else e['title']
+            for e in events_list
+        ) if events_list else None
 
-CURRENT TIME: {now.strftime('%A, %d %B %Y, %H:%M %p IST')}
-
-Danny is asking for his daily brief for {day_label.lower()}. You have his calendar events, his full active task list, overdue items, and recent completions. Identify what matters and cut through the noise.
-
-CRITICAL OUTPUT FORMAT - YOU MUST USE EXACTLY THIS STRUCTURE:
-
-[Direct Answer / Schedule]
-- Start by listing the CALENDAR EVENTS as a simple bulleted list. 
-- If an event is marked [PAST], explicitly mention that it already happened, or group it separately from upcoming events. You know the current time.
-- DO NOT invent custom headings like 'Immediate Priorities', 'Scheduled', or 'Today's Bottleneck'. 
-- DO NOT sort by urgency. Calendar MUST come first.
-
-**Context:**
-- Add 1-3 sentences about overdue tasks, blockers, or urgency.
-- NEVER put this section first.
-
-IMPORTANT: Stop generating immediately after the Context section. Do NOT analyze your own response. End the message cleanly.
-
-{conversation_history}
-
-{day_label.upper()} — {target.strftime('%A, %d %B')}
-
-CALENDAR EVENTS:
-{fmt_list(('[PAST] ' if e.get('is_past') else '') + e['title'] + (' at ' + e['time'][:16].replace('T', ' ')) if e.get('time') else e['title'] for e in events_list) if events_list else "None"}
-
-ACTIVE TASKS:
-{fmt_list(active_tasks_list) if active_tasks_list else "None"}
-
-OVERDUE:
-{fmt_list(overdue_tasks) if overdue_tasks else "None"}
-
-RECENTLY COMPLETED (24h):
-{fmt_list(recently_completed) if recently_completed else "None"}
-
-Formatting rules:
-- Emoji goes at the **start** of each task line, not at the end
-- Pick emojis naturally: 💰 money, 🏠 home, 📋 admin, 🛠️ work, 🏛️ ashraya/church, etc.
-- Do NOT use `###` headers — use **bold** or just plain text for section breaks
-- Do NOT prefix tasks with "TASK" — just list them cleanly. Do NOT include intent labels like TASK, NOTE, or QUERY anywhere in your response.
-- Bullet points only, no numbered lists
-
-Example:
-**Focus here** — bottleneck callout.
-* 💰 Task name [Project]
-* 📋 Another task [Project]
-
-Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or RESOURCE without brackets. Preserve the [Project] bracket from the task data exactly as shown."""
+        prompt = build_daily_brief_prompt(
+            now_str=now.strftime('%A, %d %B %Y, %H:%M %p IST'),
+            day_label=day_label.lower(),
+            conversation_history=conversation_history,
+            calendar_text=calendar_text,
+            overdue_text=fmt_list(overdue_tasks),
+            todo_text=fmt_list(active_tasks_list),
+            recent_done_text=fmt_list(recently_completed)
+        )
 
         response = await generate_content_with_fallback(
             prompt=prompt,

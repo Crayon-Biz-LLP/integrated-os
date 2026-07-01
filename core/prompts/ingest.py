@@ -1,5 +1,5 @@
-from core.prompts.guards import inject_guards
 from datetime import datetime, timezone, timedelta
+
 
 def build_quick_process_prompt(text: str, projects: list, history_text: str = "") -> str:
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
@@ -9,11 +9,7 @@ def build_quick_process_prompt(text: str, projects: list, history_text: str = ""
         for p in projects
     ]) if projects else "  - General (tag: INBOX)"
 
-    guards = inject_guards("ingest")
-
-    return f"""{guards}
-
-You are Danny's task processor. Analyze this message.
+    return f"""You are Danny's task processor. Analyze this message.
 
 Current date and time: {date_context}
 
@@ -29,41 +25,50 @@ First, determine the category:
 - NOISE: Casual conversation, acknowledgment, low-value content
 - CLARIFY: If the user asks you to schedule a meeting or task but omits critical info (like time, date, or person) AND it cannot be inferred from the history, or if it is too vague. Generate a specific question in `clarification_question`.
 
-Then extract the requested fields for that category.
-Return ONLY a valid JSON object matching the chosen category.
-
-Options for project names (pick the closest match or use "INBOX" if none fit):
+Active projects for routing:
 {project_lines}
 
-If TASK:
+If TASK or COMPLETION, extract these fields:
+- title: Brief action-oriented title (2-8 words). If this is answering a clarification (e.g. "Tomorrow at 3pm"), merge the new detail with the original subject from the history into a complete title.
+- project_name: Exact project name from the list above that best matches. Use "General" if none match.
+- reminder_at: ISO-8601 datetime in IST (UTC+05:30) based on the current date above. If no time given, return null.
+  Examples: "today 3pm" → "{now_ist.strftime('%Y-%m-%d')}T15:00:00+05:30"
+            "tomorrow" → "{(now_ist + timedelta(days=1)).strftime('%Y-%m-%d')}"
+            "next Friday 2pm" → "2026-05-22T14:00:00+05:30"
+            "6:30 pm today" → "{now_ist.strftime('%Y-%m-%d')}T18:30:00+05:30"
+- duration_mins: Estimated minutes (15 for quick tasks, 45 for meetings/calls)
+- priority: "urgent", "important", or "low"
+- recurrence: iCalendar RRULE string if recurring is mentioned (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO" or "RRULE:FREQ=WEEKLY;BYDAY=WE;UNTIL=20260831T000000Z"). Otherwise null.
+- direction: "inbound" | "outbound" | "waiting_on" (default: inbound)
+- committed_to: Person name if the task involves a commitment to or from someone
+
+If NOTE, extract as structured fields if clear from the text:
+- sentiment_score: -1.0 to 1.0 (null if unclear)
+- sentiment: single word label (e.g., "frustrated", "grateful", "neutral")
+- entities_mentioned: ["Marcus", "Equisoft"] (named entities only)
+
+If COMPLETION: set status to "done"
+
+
+STRICT RULES:
+- If the message is ONLY a URL with no instruction, classify as NOTE
+- Never create tasks from URLs unless there is a clear action instruction
+- Never make up or hallucinate details not in the message
+
+Return ONLY valid JSON:
 {{
-  "category": "TASK",
-  "title": "Clear action statement (start with verb). If answering a clarification, merge new detail with original subject into a complete title.",
-  "project": "One of the provided project names or INBOX",
+  "category": "TASK|COMPLETION|NOTE|PROJECT_UPDATE|NOISE|CLARIFY",
+  "title": "...",
+  "project_name": "...",
+  "reminder_at": null,
+  "recurrence": null,
   "duration_mins": 15,
-  "priority": "normal|important|urgent",
-  "direction": "inbound|outbound|waiting_on",
-  "committed_to": "Person or organization name if this is a promise to them (or null)",
-  "reminder_at": "ISO-8601 datetime in IST (UTC+05:30). Examples: 'today 3pm' -> '2026-06-22T15:00:00+05:30', 'tomorrow' -> '2026-06-23T09:00:00+05:30'. (Only if mentioned or heavily implied. Must be future)",
-  "explicit_time": true/false (true ONLY if the user explicitly said "remind me at X", "tomorrow at Y", etc.),
-  "recurrence": "iCalendar RRULE string if recurring is mentioned (e.g., 'RRULE:FREQ=WEEKLY;BYDAY=MO'). Otherwise null."
-}}
-
-If PROJECT_UPDATE or NOTE:
-{{
-  "category": "PROJECT_UPDATE", // or "NOTE"
-  "sentiment": "positive|neutral|negative|frustrated|excited",
-  "sentiment_score": 0.0 to 1.0,
-  "entities_mentioned": ["Name1", "Name2", "Tool1"] // Array of people, companies, tools
-}}
-
-If COMPLETION:
-{{
-  "category": "COMPLETION",
-  "title": "What was completed (e.g. 'Status sync call', 'Pricing page')"
-}}
-
-RULES:
-- Never create tasks from URLs unless there is a clear action instruction.
-- Never make up or hallucinate details not in the message.
-- If it's a reschedule, set category=TASK and reminder_at=the new time."""
+  "priority": "important",
+  "status": "todo",
+  "clarification_question": "...",
+  "direction": "inbound",
+  "committed_to": null,
+  "sentiment_score": null,
+  "sentiment": null,
+  "entities_mentioned": []
+}}"""

@@ -87,8 +87,9 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
         # Fix 4: Shadow mode A/B comparison hook
         if retrieval_config.shadow_mode:
             try:
+                from core.pulse.context import _shadow_comparison
                 asyncio.create_task(
-                    _shadow_comparison(query_text, memories, max_memories)
+                    _shadow_comparison(query_text, [m.metadata for m in memories], max_memories)
                 )
             except Exception as sh_err:
                 audit_log_sync("pulse", "WARNING", f"Shadow comparison hook failed: {sh_err}")
@@ -104,22 +105,6 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Recent memories retrieval failed: {e}")
         return ""
-
-async def _shadow_comparison(query_text: str, legacy_memories: list, max_memories: int = 5):
-    """Shadow mode: run associative retrieval alongside legacy and log differences."""
-    try:
-        from core.retrieval.search import associative_retrieve
-        assoc_results = await associative_retrieve(
-            query_text=query_text,
-            top_k=max_memories
-        )
-        legacy_ids = {m.item_id for m in legacy_memories}
-        assoc_ids = {r.get('id') for r in (assoc_results or [])}
-        novel = assoc_ids - legacy_ids
-        if novel:
-            audit_log_sync("pulse", "INFO", f"🔬 Shadow: associative found {len(novel)} novel results not in legacy")
-    except Exception as e:
-        audit_log_sync("pulse", "WARNING", f"Shadow comparison failed: {e}")
 
 async def retrieve_hindsight_memories(task_inputs: list, active_tasks: list, top_k: int = 5, entity_terms: list = None) -> tuple:
     """High-Res Hindsight: Multi-signal vector search across tasks and inputs.

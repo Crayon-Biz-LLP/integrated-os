@@ -75,6 +75,7 @@ async def execute_context_strategy(
         except Exception:
             pass
 
+    matched_people_names = []
     if "people" in strategy.fact_sources:
         try:
             people_res = supabase.table('graph_nodes')\
@@ -84,16 +85,19 @@ async def execute_context_strategy(
             for p in (people_res.data or []):
                 p_label_lower = p['label'].lower()
                 if p_label_lower in query.lower() or any(t in p_label_lower for t in query_terms):
-                    # 2nd-hop: count active task connections via graph_edges
+                    matched_people_names.append(p['label'])
+                    # 2nd-hop: count task connections via directed edges
                     task_count_str = ""
                     try:
                         edge_res = supabase.table('graph_edges')\
                             .select('id', count='exact')\
                             .eq('source_node_id', p['id'])\
+                            .in_('relationship', ['INVOLVES', 'WORKS_ON', 'ASSIGNED_TO'])\
+                            .limit(3)\
                             .execute()
                         edge_count = edge_res.count if hasattr(edge_res, 'count') else len(edge_res.data or [])
                         if edge_count:
-                            task_count_str = f": {edge_count} active connection(s)"
+                            task_count_str = f": {edge_count} active task connection(s)"
                     except Exception:
                         pass
                     matched_items.append(RetrievalItem(
@@ -103,6 +107,30 @@ async def execute_context_strategy(
                         score=1.0,
                         source="people"
                     ))
+        except Exception:
+            pass
+
+    if "emails" in strategy.fact_sources and matched_people_names:
+        try:
+            from datetime import datetime, timezone, timedelta
+            seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            email_conditions = [f'sender_name.ilike.%{name}%' for name in matched_people_names[:3]]
+            email_res = supabase.table('messages')\
+                .select('sender_name, subject, created_at')\
+                .eq('channel', 'email')\
+                .gte('created_at', seven_days_ago)\
+                .or_(','.join(email_conditions))\
+                .order('created_at', desc=True)\
+                .limit(3)\
+                .execute()
+            for i, e in enumerate(email_res.data or []):
+                matched_items.append(RetrievalItem(
+                    item_id=f"email_{i}",
+                    content=f"From {e.get('sender_name', '?')}: {(e.get('subject', '')[:60])}",
+                    metadata=e,
+                    score=1.0,
+                    source="emails"
+                ))
         except Exception:
             pass
 

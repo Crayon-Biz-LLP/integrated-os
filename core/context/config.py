@@ -2,6 +2,17 @@ from dataclasses import dataclass
 from typing import Literal, List
 from core.retrieval.ranking import WeightConfig, DEFAULT_WEIGHTS
 
+# Dedicated weight configs matching pre-refactoring behavioral values.
+# Old memory.py explicitly passed recency_weight=0.4, importance_weight=0.2
+# for both get_recent_memories_for_briefing and retrieve_hindsight_memories.
+# The DEFAULT_WEIGHTS (recency=0.15, importance=0.10) diluted these by >2x.
+BRIEFING_WEIGHTS = WeightConfig(
+    semantic=0.25, ppr=0.25, specificity=0.10,
+    recency=0.4, importance=0.2,
+    project_boost=0.10, person_boost=0.05
+)
+HINDSIGHT_WEIGHTS = BRIEFING_WEIGHTS  # Same weights as old hindsight path
+
 @dataclass
 class StrategyConfig:
     name: str
@@ -11,7 +22,7 @@ class StrategyConfig:
     gate_mode: Literal["hard", "soft", "none"]
     semantic_enabled: bool
     semantic_requires_anchor: bool  # If True, semantic search only runs if named anchors exist
-    fact_sources: List[Literal["tasks", "people"]]
+    fact_sources: List[Literal["tasks", "people", "emails"]]
     
 # Pre-Flight: fetch recent, semantically-similar context for upcoming meetings.
 # Uses legacy vector path (pipeline.py forces use_associative=False) so all
@@ -29,7 +40,7 @@ PRE_FLIGHT_CONFIG = StrategyConfig(
     gate_mode="hard",
     semantic_enabled=True,
     semantic_requires_anchor=True,
-    fact_sources=["tasks", "people"]
+    fact_sources=["tasks", "people", "emails"]
 )
 
 # Briefing: blended, grounded
@@ -37,7 +48,7 @@ BRIEFING_CONFIG = StrategyConfig(
     name="BRIEFING",
     threshold=0.7,
     top_k=8,
-    weights=DEFAULT_WEIGHTS,
+    weights=BRIEFING_WEIGHTS,
     gate_mode="hard",
     semantic_enabled=True,
     semantic_requires_anchor=False,  # Briefing can search broadly, but hard gates apply
@@ -49,7 +60,7 @@ HINDSIGHT_CONFIG = StrategyConfig(
     name="HINDSIGHT",
     threshold=0.6,
     top_k=5,
-    weights=DEFAULT_WEIGHTS,
+    weights=HINDSIGHT_WEIGHTS,
     gate_mode="soft",
     semantic_enabled=True,
     semantic_requires_anchor=False,
