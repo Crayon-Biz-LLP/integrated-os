@@ -98,6 +98,8 @@ def build_pulse_briefing_prompt(
     centrality_context: str = "None",
     adaptive_context: str = "None",
     people_names: str = "None",
+    universal_task_map: str = "None",
+    core: str = "None",
 ) -> str:
     guards = inject_guards("briefing")
     return f"""    
@@ -151,8 +153,8 @@ MORNING PULSE GRAPH NARRATIVE (Layer 4 Active Reasoning):
 SERENDIPITY CONTEXT (Hidden connections across the graph):
 {serendipity_context if serendipity_context else "None"}
 
-CANONICAL KNOWLEDGE (System of Record for domains):
-{canonical_context if canonical_context else "None"}
+CANONICAL STRATEGIC TRUTH (The synthesized 'Latest Version' of projects):
+{canonical_context if canonical_context else "No Master Pages yet. Rely on raw context."}
 
 CROSS-SYSTEM DELTA (Sync drift):
 {delta_context if delta_context else "None"}
@@ -162,6 +164,10 @@ ACTIVE PRACTICES (Habits to track):
 
 ACTIVE CLUSTERS (Resource groupings):
 {active_clusters_context}
+
+- IDENTITY: {core}
+
+- ALL SYSTEM TASKS (FOR ID MATCHING): {universal_task_map}
 
 ACTIVE TASKS (Filtered by Clusters + Core Projects):
 {cluster_task_list}

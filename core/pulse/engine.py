@@ -1400,6 +1400,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             centrality_context=centrality_context,
             adaptive_context=adaptive_context,
             people_names=str(people_names),
+            universal_task_map=str(universal_task_map[:3000]),
+            core=json.dumps(core),
         )
 
         # --- PROJECT ROUTING (for system instruction) ---
