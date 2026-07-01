@@ -113,17 +113,73 @@ Strips titles + parentheticals to enable cross-path dedup:
 "Dr. Sarah Smith" → "sarah smith"
 ```
 
-## The Two-Way Graph-Table Bridge
+## The Three-Way Graph-Table Bridge
 
-`backfill_graph.py` runs every Pulse and syncs in both directions:
+`backfill_graph.py` runs every Pulse and syncs in **three directions** — people, organizations, and projects now each have their own dedicated sync function:
 
 ### Graph → Table
-- Person graph nodes without `people_id` → matched or inserted into `people` table
-- Project graph nodes without `legacy_id` → matched against `projects` table, stamped with ID
+- **`sync_person_nodes_to_people_table()`:** Person graph nodes without `graph_node_id` link → matched or inserted into `people` table. **Skips orphaned `[DELETED]`/`[CHANGED TO ORGANIZATION]`/`[MERGED INTO` role flags** to prevent recreating cleaned-up records.
+- Project graph nodes without `db_record_id` → matched against `projects` table, stamped with ID.
 
-### Table → Graph
-- Tasks without graph node entries → `backfill_orphaned_tasks()` creates nodes + WORKS_ON + DISCUSSED_WITH edges
-- Uses `upsert` with `on_conflict="label"` to avoid duplicates
+### Table → Graph (People)
+- **`sync_people_to_graph_nodes()`:** Iterates all `people` rows. For each:
+  1. Checks if a `type='person'` graph_node already exists via `db_record_id`.
+  2. If not, resolves the canonical label via `resolve_canonical_label()` (uses `normalize_label()` under the hood).
+  3. For **orphaned entries** (role contains `[DELETED]`, `[CHANGED TO ORGANIZATION]`, `[MERGED INTO`): skips them entirely — no graph node created.
+  4. Creates `type='person'` graph node with `db_record_id = people.id`, `metadata.source = 'sync:people'`.
+  5. **Verification assertion:** Post-sync count of person-type graph nodes must be within ±5 of total `people` rows (excluding orphans), otherwise raises `AssertionError`.
+
+### Table → Graph (Organizations)
+- **`sync_organizations_to_graph_nodes()`:** Iterates all `organizations` rows. For each:
+  1. Checks for existing graph node via `db_record_id`.
+  2. If existing node has **wrong type** (e.g. `person` instead of `organization`): **deletes old node** (cascades graph_edges), then creates fresh `type='organization'` node. This fixes the historical bug where entity extraction created person-type nodes for organizational entities.
+  3. If no existing node: creates `type='organization'` with `db_record_id`, `metadata.source = 'sync:organizations'`.
+  4. **Verification:** Post-sync count of organization-type graph nodes with `db_record_id` must be ≥ total `organizations` rows minus known label-collision exceptions (same name used as both org and project).
+
+### Table → Graph (Projects)
+- **`sync_projects_to_graph_nodes()`:** Iterates all `projects` rows. For each:
+  1. Checks for existing graph node via `db_record_id`.
+  2. If no existing node: creates `type='project'` with `db_record_id`, `metadata.source = 'sync:projects'`.
+  3. Does NOT delete wrong-type nodes (projects and organizations share labels like "Ashraya", "Solvstrat", "Qhord" — both need to coexist as different graph nodes, but `unique_label` constraint prevents this).
+  4. **Verification:** Post-sync count of project-type graph nodes with `db_record_id` should cover all unique project names.
+
+### Label Resolution Logic (`core/lib/graph_rules.py`)
+
+The canonical label resolver was hardened to prevent **reappearing deleted nodes** — the root cause of the original bug:
+
+**`resolve_canonical_label(label)`:**
+1. Normalizes input via `normalize_label()` (lowercase, strip).
+2. Checks `pending_graph_nodes` for the label with `status='rejected'` — if found, returns `is_rejected=True` (never recreate).
+3. Checks `people` table for the label:
+   - If found AND `people.role` contains `[DELETED]` → returns `is_rejected=True`
+   - If found AND `people.role` contains `[CHANGED TO ORGANIZATION]` → returns `is_rejected=True`
+   - If found AND `people.role` contains `[MERGED INTO` → returns `is_rejected=True`
+   - Otherwise → returns `('person', id, matched_label, is_rejected=False)`
+4. Checks `organizations` table for the label → returns `('organization', id, ...)` on match.
+5. Checks `graph_nodes` for existing non-person nodes → returns type + id.
+6. Falls through to `pending_graph_nodes` for any match.
+
+**`normalize_label(label)`:**
+- Shared helper used by all three sync functions.
+- Lowercases and strips whitespace.
+- Used to build the `label_to_node` dict for O(1) lookup during sync.
+
+### Deletion Provenance (Why Deleted Nodes Stay Deleted)
+
+The system prevents reappearing deleted graph nodes via three independent layers:
+1. **Hard blocklist:** `pending_graph_nodes` with `status='rejected'` — `resolve_canonical_label()` checks this first.
+2. **Soft blocklist:** `people.role` suffix markers — `[DELETED]`, `[CHANGED TO ORGANIZATION]`, `[MERGED INTO` — the sync functions skip these rows entirely.
+3. **Sync exclusion:** `sync_people_to_graph_nodes()` skips orphaned role entries before attempting label resolution. Combined with the exact guard pattern in `resolve_canonical_label()`, even if a new memory re-extracts the same label, it'll hit the blocklist and won't recreate the node.
+
+### Current Coverage (July 2026)
+
+| Domain Table | Rows | Matching graph_nodes (via db_record_id) | Gap Reason |
+|---|---|---|---|
+| `people` | 135 | 105 person-type nodes | 30 orphans (marked `[DELETED]`) |
+| `organizations` | 33 | 29 org-type nodes | 4 label collisions (same name as project node) |
+| `projects` | 16 | 22 project-type nodes | 6 extras from entity extraction without matching `projects` row |
+
+**Label collisions** (same name used for both org + project): Ashraya, Solvstrat, Qhord, PERSONAL. These have `type='project'` graph nodes but also exist as organizations. The sync correctly skips them — both need to coexist but the `unique_label` constraint prevents duplicate labels. This is an accepted data model limitation.
 
 ### Guard Integration
 
@@ -132,5 +188,6 @@ The auto-creation paths now interact with guards:
 - **Project creation (Pulse AI Batch):** When the AI creates a new project via `new_projects`, it inserts into both `projects` table AND `graph_nodes`. This path bypasses Guard 2 because it originates from the AI's structured output (not LLM extraction). The `projects` table entry ensures future extractions of the same project name will be grounded.
 - **Person creation (all 4 paths):** When a new person is created from any path, they enter the `people` table. Future extractions matching this name will be grounded by Guard 3 (`has_structural_anchor()`) and routed to pending with `status='pending'` instead of `status='flagged'`.
 - **Backfill orphaned tasks:** Creates task nodes directly in `graph_nodes` (tasks are structural entities, not extraction entities). Uses `upsert` to avoid duplicates. Transitional edges tagged with `source='transitional'` for the task node cleanup script to manage.
+- **Orphaned role markers:** When a people row is manually marked `[DELETED]` or auto-marked `[CHANGED TO ORGANIZATION]`, both the sync function AND `resolve_canonical_label()` refuse to recreate its graph node. The only way to revive a deleted person is to clear the role suffix manually.
 
 This ensures the knowledge graph and relational tables stay consistent even when one path creates an entity without updating the other.

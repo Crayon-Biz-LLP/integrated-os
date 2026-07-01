@@ -46,6 +46,30 @@ For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the p
 - `db/16_decision_audit.sql` — migration (applied)
 - `tests/unit/test_why.py` — W1-W8 (8 passing unit tests)
 
+## Session Anchored Summary (Jul 1, 2026 — Part 11: Graph Node Sync Fix)
+
+### Progress Done This Session
+- **Problem**: Deleted graph nodes kept reappearing via backfill entity extraction. Wrong-type nodes (organizations created as `person`) were never corrected. Only `people` table had a table→graph sync function — organizations and projects had none.
+- **`sync_people_to_graph_nodes()` fixed** (`core/skills/backfill_graph.py`): Now skips people rows where `role` contains `[DELETED]`, `[CHANGED TO ORGANIZATION]`, or `[MERGED INTO` — these orphaned entries never get graph nodes recreated.
+- **`sync_organizations_to_graph_nodes()` (NEW)**: Creates `type='organization'` graph nodes from `organizations` table. Deletes and recreates wrong-type nodes (e.g., person→organization), cascading graph_edges. Post-sync count assertion verifies coverage.
+- **`sync_projects_to_graph_nodes()` (NEW)**: Creates `type='project'` graph nodes from `projects` table. Doesn't delete wrong-type nodes — labels like "Ashraya" are shared by both org and project, and `unique_label` prevents duplicates.
+- **`resolve_canonical_label()` exact guard** (`core/lib/graph_rules.py`): Three-layer protection — (1) `pending_graph_nodes` rejected-status check, (2) `people.role` suffix marker check (`[DELETED]`/`[CHANGED TO ORGANIZATION]`/`[MERGED INTO`), (3) organizations table lookup before graph_nodes. New shared `normalize_label()` helper.
+- **Data cleanup (SQL)**: 19 wrong-type/reappearing graph nodes deleted, 19 labels blocklisted in `pending_graph_nodes` as `rejected`, 19 orphaned people rows marked `[DELETED]`. 135 people → 105 person graph nodes (30 orphans skipped). 33 orgs → 29 org nodes (4 label collisions). 16 projects → 22 project nodes (6 extras from entity extraction).
+- **Verification**: All post-sync counts confirmed. No dangling edges. Ruff clean.
+- **Documentation**: product-summary/11-people-project-autocreation.md rewritten with full three-way bridge, exact guard, deletion provenance, and current coverage table. speckit.specify.md and speckit.tasks.md updated.
+
+### Key Decisions This Session
+- **sync_organizations deletes wrong-type nodes**: Accepts cascading edge deletion as the cost of correctness. Wrong-type nodes have wrong edges anyway.
+- **sync_projects does NOT delete wrong-type nodes**: Label collision (Ashraya as both org and project) is an accepted data model limitation given `unique_label` constraint on graph_nodes.
+- **`[DELETED]` role suffix instead of hard delete**: Orphaned people rows kept in the database with visual marker. Soft delete allows recovery (clear the suffix) without data loss.
+- **One-way link (db_record_id → domain table)**: `graph_node_id` FK exists but zero rows populate it. Not worth fixing — the sync functions work correctly with the one-way link.
+- **Verification assertions over manual checks**: Post-sync count assertions in `__main__` catch drift without needing a nightly sweep.
+
+### Key Files (Phase 11)
+- `core/skills/backfill_graph.py` — sync_people fix, sync_organizations (NEW), sync_projects (NEW), __main__ wiring + verification
+- `core/lib/graph_rules.py` — resolve_canonical_label() exact guard, normalize_label() helper
+- `product-summary/11-people-project-autocreation.md` — rewritten with three-way bridge docs
+
 ## Session Anchored Summary (Jun 30, 2026 — Part 9: Pre-Flight Context Fix + Cleanup)
 
 ### Progress Done This Session

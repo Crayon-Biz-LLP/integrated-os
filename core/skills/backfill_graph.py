@@ -1436,16 +1436,30 @@ def sync_person_nodes_to_people_table():
     print(f"Synced {synced} person nodes ({added} new people, {skipped} blocklisted).")
 
 
+def _is_orphaned_person_role(role) -> bool:
+    """Check if a people table role field marks this entry as deleted/org-changed/merged."""
+    if not role:
+        return False
+    role_str = str(role)
+    return any(marker in role_str for marker in ["[DELETED]", "[CHANGED TO ORGANIZATION]", "[MERGED INTO"])
+
+
+def _fetch_paginated(table: str, select: str, in_filter_col: str = None, in_filter_val: list = None) -> list:
+    """Paginated fetch with optional IN filter."""
+    return fetch_all_paginated(table, select, in_filter_col=in_filter_col, in_filter_val=in_filter_val)
+
+
 def sync_people_to_graph_nodes():
     """Reverse sync: ensure every people table row has a graph_nodes entry.
-    Creates graph_nodes for orphan people records (e.g. legacy imports, direct inserts)."""
+    Creates graph_nodes for orphan people records (e.g. legacy imports, direct inserts).
+    Skips entries marked [DELETED], [CHANGED TO ORGANIZATION], or [MERGED INTO]."""
     print("\n👤 Reverse sync: people table → graph_nodes...")
-    all_people = fetch_all_paginated("people", "id, name")
+    all_people = _fetch_paginated("people", "id, name, role")
     if not all_people:
         print("No people found.")
         return
 
-    person_nodes = fetch_all_paginated("graph_nodes", "id, label, db_record_id", in_filter_col="type", in_filter_val=["person"])
+    person_nodes = _fetch_paginated("graph_nodes", "id, label, db_record_id", in_filter_col="type", in_filter_val=["person"])
     existing_labels = set()
     existing_db_ids = set()
     for n in (person_nodes or []):
@@ -1462,6 +1476,9 @@ def sync_people_to_graph_nodes():
             skipped += 1
             continue
         if is_blocklisted_person(name):
+            skipped += 1
+            continue
+        if _is_orphaned_person_role(p.get("role")):
             skipped += 1
             continue
         if pid in existing_db_ids or name.lower() in existing_labels:
@@ -1488,6 +1505,171 @@ def sync_people_to_graph_nodes():
 
     print(f"Reverse sync complete: {created} graph nodes created, {skipped} skipped.")
 
+
+def sync_organizations_to_graph_nodes():
+    """Reverse sync: ensure every organizations table row has a graph_nodes entry.
+    Creates organization-type graph nodes with db_record_id → organizations.id.
+    If a wrong-type node (e.g. person) exists with the same label, deletes it first
+    (graph_edges FK ON DELETE CASCADE handles edge cleanup), then creates fresh."""
+    print("\n🏢 Reverse sync: organizations table → graph_nodes...")
+    all_orgs = _fetch_paginated("organizations", "id, name")
+    if not all_orgs:
+        print("No organizations found.")
+        return
+
+    org_nodes = _fetch_paginated("graph_nodes", "id, label, type, db_record_id", in_filter_col="type", in_filter_val=["organization"])
+    existing_db_ids = set()
+    existing_labels = set()
+    for n in (org_nodes or []):
+        if n.get("db_record_id"):
+            existing_db_ids.add(str(n["db_record_id"]))
+        existing_labels.add(n["label"].strip().lower())
+
+    all_graph_nodes = _fetch_paginated("graph_nodes", "id, label, type, db_record_id")
+    label_to_node = {}
+    for n in (all_graph_nodes or []):
+        key = n["label"].strip().lower()
+        if key not in label_to_node:
+            label_to_node[key] = n
+
+    created = 0
+    skipped = 0
+    deleted_wrong = 0
+    for o in all_orgs:
+        oid = str(o["id"])
+        name = o["name"].strip()
+        if not name:
+            skipped += 1
+            continue
+        if oid in existing_db_ids:
+            skipped += 1
+            continue
+
+        key = name.lower()
+        existing = label_to_node.get(key)
+        if existing:
+            if existing["type"] == "person":
+                supabase.table("graph_nodes").update({"canonical_id": None}).eq("canonical_id", existing["id"]).execute()
+                supabase.table("graph_nodes").delete().eq("id", existing["id"]).execute()
+                deleted_wrong += 1
+            elif existing["type"] == "organization":
+                existing_db_id = str(existing["db_record_id"]) if existing.get("db_record_id") else None
+                if existing_db_id and existing_db_id != oid:
+                    supabase.table("graph_nodes").update({"db_record_id": oid}).eq("id", existing["id"]).execute()
+                    existing_db_ids.add(oid)
+                    created += 1
+                    continue
+                elif existing_db_id == oid:
+                    skipped += 1
+                    continue
+                else:
+                    supabase.table("graph_nodes").update({"db_record_id": oid}).eq("id", existing["id"]).execute()
+                    existing_db_ids.add(oid)
+                    created += 1
+                    continue
+            else:
+                skipped += 1
+                continue
+
+        try:
+            supabase.table("graph_nodes").upsert({
+                "label": name,
+                "type": "organization",
+                "epistemic_status": "inferred",
+                "db_record_id": oid,
+                "metadata": {
+                    "source": "organizations_sync",
+                    "organization_id": oid
+                }
+            }, on_conflict="label").execute()
+            existing_db_ids.add(oid)
+            created += 1
+        except Exception as e:
+            audit_log_sync("backfill_graph", "WARNING", f"Failed to create graph node for org '{name}': {e}")
+
+    print(f"Reverse sync complete: {created} graph nodes created, {deleted_wrong} wrong-type nodes deleted, {skipped} skipped.")
+
+
+def sync_projects_to_graph_nodes():
+    """Reverse sync: ensure every projects table row has a graph_nodes entry.
+    Creates project-type graph nodes with db_record_id → projects.id."""
+    print("\n📁 Reverse sync: projects table → graph_nodes...")
+    all_projects = _fetch_paginated("projects", "id, name")
+    if not all_projects:
+        print("No projects found.")
+        return
+
+    proj_nodes = _fetch_paginated("graph_nodes", "id, label, type, db_record_id", in_filter_col="type", in_filter_val=["project"])
+    existing_db_ids = set()
+    existing_labels = set()
+    for n in (proj_nodes or []):
+        if n.get("db_record_id"):
+            existing_db_ids.add(str(n["db_record_id"]))
+        existing_labels.add(n["label"].strip().lower())
+
+    all_graph_nodes = _fetch_paginated("graph_nodes", "id, label, type, db_record_id")
+    label_to_node = {}
+    for n in (all_graph_nodes or []):
+        key = n["label"].strip().lower()
+        if key not in label_to_node:
+            label_to_node[key] = n
+
+    created = 0
+    skipped = 0
+    deleted_wrong = 0
+    for p in all_projects:
+        pid = str(p["id"])
+        name = p["name"].strip()
+        if not name:
+            skipped += 1
+            continue
+        if pid in existing_db_ids:
+            skipped += 1
+            continue
+
+        key = name.lower()
+        existing = label_to_node.get(key)
+        if existing:
+            if existing["type"] == "person":
+                supabase.table("graph_nodes").update({"canonical_id": None}).eq("canonical_id", existing["id"]).execute()
+                supabase.table("graph_nodes").delete().eq("id", existing["id"]).execute()
+                deleted_wrong += 1
+            elif existing["type"] == "project":
+                existing_db_id = str(existing["db_record_id"]) if existing.get("db_record_id") else None
+                if existing_db_id and existing_db_id != pid:
+                    supabase.table("graph_nodes").update({"db_record_id": pid}).eq("id", existing["id"]).execute()
+                    existing_db_ids.add(pid)
+                    created += 1
+                    continue
+                elif existing_db_id == pid:
+                    skipped += 1
+                    continue
+                else:
+                    supabase.table("graph_nodes").update({"db_record_id": pid}).eq("id", existing["id"]).execute()
+                    existing_db_ids.add(pid)
+                    created += 1
+                    continue
+            else:
+                skipped += 1
+                continue
+
+        try:
+            supabase.table("graph_nodes").upsert({
+                "label": name,
+                "type": "project",
+                "epistemic_status": "inferred",
+                "db_record_id": pid,
+                "metadata": {
+                    "source": "projects_sync",
+                    "project_id": pid
+                }
+            }, on_conflict="label").execute()
+            existing_db_ids.add(pid)
+            created += 1
+        except Exception as e:
+            audit_log_sync("backfill_graph", "WARNING", f"Failed to create graph node for project '{name}': {e}")
+
+    print(f"Reverse sync complete: {created} graph nodes created, {deleted_wrong} wrong-type nodes deleted, {skipped} skipped.")
 
 
 def dedup_graph_nodes(dry_run: bool = True):
@@ -1598,5 +1780,24 @@ if __name__ == "__main__":
     sync_project_nodes_to_projects_table()
     sync_person_nodes_to_people_table()
     sync_people_to_graph_nodes()
+    
+    # Run table→graph sync (reverse direction)
+    sync_organizations_to_graph_nodes()
+    sync_projects_to_graph_nodes()
+    
+    # Verification
+    org_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "organization").not_.is_("db_record_id", "null").execute()
+    expected_orgs = supabase.table("organizations").select("*", count="exact").execute()
+    actual_org_count = getattr(org_count, "count", 0) if hasattr(org_count, "count") else len(org_count.data or []) if org_count else 0
+    expected_org_count = getattr(expected_orgs, "count", 0) if hasattr(expected_orgs, "count") else len(expected_orgs.data or [])
+    if actual_org_count < expected_org_count:
+        print(f"⚠️  Org sync mismatch: {actual_org_count}/{expected_org_count} graph nodes created — some orgs missing")
+    
+    proj_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "project").not_.is_("db_record_id", "null").execute()
+    expected_projs = supabase.table("projects").select("*", count="exact").execute()
+    actual_proj_count = getattr(proj_count, "count", 0) if hasattr(proj_count, "count") else len(proj_count.data or []) if proj_count else 0
+    expected_proj_count = getattr(expected_projs, "count", 0) if hasattr(expected_projs, "count") else len(expected_projs.data or [])
+    if actual_proj_count < expected_proj_count:
+        print(f"⚠️  Project sync mismatch: {actual_proj_count}/{expected_proj_count} graph nodes created — some projects missing")
     
     print("✅ All Phase-2 operations complete")

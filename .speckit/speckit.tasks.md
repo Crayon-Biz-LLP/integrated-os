@@ -684,3 +684,48 @@ This enables natural-language note capture without special syntax.
 **Action**: After M1, run before/after query comparison
 **Status**: Blocked on T-RHODE-M1
 **QA**: Send 3-5 test queries and compare result relevance.
+
+---
+
+## Today's Changes (Jul 1, 2026)
+
+### [COMPLETED] T-PHASE11-001: sync_organizations_to_graph_nodes()
+**Files**: `core/skills/backfill_graph.py`
+**Change**: New sync function that creates `type='organization'` graph nodes for all `organizations` table rows. Deletes and recreates wrong-type nodes (person→organization, cascading edges). Wired into `__main__` with post-sync count assertion.
+**Deploy safe**: YES — runs only on Pulse trigger. Handles cascading edge deletion for wrong-type nodes.
+
+---
+
+### [COMPLETED] T-PHASE11-002: sync_projects_to_graph_nodes()
+**Files**: `core/skills/backfill_graph.py`
+**Change**: New sync function that creates `type='project'` graph nodes for all `projects` table rows without existing graph_node. Does NOT delete wrong-type nodes (label collision with orgs). Wired into `__main__`.
+**Deploy safe**: YES — additive.
+
+---
+
+### [COMPLETED] T-PHASE11-003: Fix sync_people_to_graph_nodes() — skip orphaned entries
+**Files**: `core/skills/backfill_graph.py`
+**Change**: `sync_people_to_graph_nodes()` now skips people rows where `role` contains `[DELETED]`, `[CHANGED TO ORGANIZATION]`, or `[MERGED INTO`. These orphaned people entries will never have graph nodes recreated.
+**Deploy safe**: YES — purely exclusionary.
+
+---
+
+### [COMPLETED] T-PHASE11-004: Exact guard pattern in resolve_canonical_label()
+**Files**: `core/lib/graph_rules.py`
+**Change**: `resolve_canonical_label()` now:
+1. Checks `pending_graph_nodes` rejected entries before returning any person match.
+2. Checks `people.role` for `[DELETED]`/`[CHANGED TO ORGANIZATION]`/`[MERGED INTO` — returns `is_rejected=True`.
+3. Falls through to `organizations` table before `graph_nodes` (organizations take precedence over generic graph nodes).
+4. New shared `normalize_label()` helper for consistent label normalization across all sync functions.
+**Deploy safe**: YES — more restrictive matching prevents false positives.
+
+---
+
+### [COMPLETED] T-PHASE11-005: Clean up wrong-type and reappearing graph nodes
+**Files**: Manual SQL (deleted 19 graph nodes, blocklisted 19 pending labels, marked 19 orphaned people rows)
+**Change**: Four SQL operations:
+1. Deleted wrong-type person nodes for Ashraya Chennai Central, Amico, Armour, Auditor (then sync recreated them as organizations).
+2. Deleted 15 reappearing deleted nodes (Andrej, Boys, Broadleaf, CPA, Devil, Dilbert, etc.).
+3. Blocklisted 19 deleted labels as `rejected` in `pending_graph_nodes`.
+4. Marked 19 orphaned people rows with `[DELETED]` suffix in their role field.
+**Verification**: Post-sync counts confirmed (105 person nodes, 29 org nodes with db_record_id, 22 project nodes). No dangling edges. Ruff clean.

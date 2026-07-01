@@ -152,6 +152,11 @@ def normalize_label_display(label: str) -> str:
     label = re.sub(r'\s+', ' ', label)
     return label
 
+def normalize_label(label: str) -> str:
+    """Normalize a label for consistent comparison — matches pending_graph_nodes unique index."""
+    return label.strip().lower() if label else ""
+
+
 def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
     """Returns the closest canonical match for a raw label.
     
@@ -228,18 +233,42 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
         except Exception:
             pass
             
-        # 5. DB lookup for grounded types
-        for tbl, typ in [('projects', 'project'), ('people', 'person'), ('organizations', 'organization')]:
-            try:
-                db_res = supabase.table(tbl).select('id, name').ilike('name', label).maybe_single().execute()
-                if db_res and db_res.data:
+        # 5. DB lookup for grounded types — exact guard pattern (not order-dependent)
+        # 5a: People table — skip if role marks deletion/org-change/merge
+        try:
+            db_res = supabase.table('people').select('id, name, role').ilike('name', label).maybe_single().execute()
+            if db_res and db_res.data:
+                role = str(db_res.data.get('role') or '')
+                if not any(m in role for m in ["[DELETED]", "[CHANGED TO ORGANIZATION]", "[MERGED INTO"]):
                     result["label"] = db_res.data["name"]
-                    result["node_type"] = typ
+                    result["node_type"] = "person"
                     result["confidence"] = 0.9
                     return result
-            except Exception:
-                pass
-            
+        except Exception:
+            pass
+
+        # 5b: Organizations table
+        try:
+            db_res = supabase.table('organizations').select('id, name').ilike('name', label).maybe_single().execute()
+            if db_res and db_res.data:
+                result["label"] = db_res.data["name"]
+                result["node_type"] = "organization"
+                result["confidence"] = 0.9
+                return result
+        except Exception:
+            pass
+
+        # 5c: Projects table
+        try:
+            db_res = supabase.table('projects').select('id, name').ilike('name', label).maybe_single().execute()
+            if db_res and db_res.data:
+                result["label"] = db_res.data["name"]
+                result["node_type"] = "project"
+                result["confidence"] = 0.9
+                return result
+        except Exception:
+            pass
+
     # 6. NOISE_LABELS check
     if label.lower() in NOISE_LABELS:
         result["confidence"] = 0.0

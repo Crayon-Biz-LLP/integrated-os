@@ -51,6 +51,8 @@
 - **DEFERRED**: Graph UI polish — PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range [STILL DEFERRED]
 - **DEFERRED**: TF-002 Graph Edge Expiry — last_confirmed_at/valid_until — edges older than 90 days auto-expired via sentinel [COMPLETED]
 - **DEFERRED**: TF-003 People Table Enrichment — organization_name, last_interaction_date from graph edges [COMPLETED]
+- **KNOWN**: Label collisions — orgs and projects with same name (Ashraya, Solvstrat, Qhord, PERSONAL) can't both have graph nodes due to `unique_label` constraint. Sync skips them gracefully.
+- **KNOWN**: `graph_node_id` FK exists on `people` and `organizations` tables but zero rows have it populated. Domain→graph link is one-way via `graph_nodes.db_record_id` only.
 
 ### Rhodey Audit — Good-to-Have (Future Backlog)
 
@@ -239,4 +241,26 @@
 3. Run `sweep_orphan_retrieval_entries()` after each suite teardown to verify clean state
 
 **Execution**: All suites run with `SANDBOX_DB=true`, mocked Google APIs (Calendar, Tasks), mocked Telegram, mocked LLM. Existing 36-test regression suite must continue to pass.
+
+---
+
+### SPEC-010: Graph Node Sync — Three-Way Table→Graph Bridge [COMPLETED]
+
+**What**: Add sync_organizations_to_graph_nodes() and sync_projects_to_graph_nodes() to `backfill_graph.py`, fix sync_people_to_graph_nodes() to skip orphaned [DELETED] entries, harden `resolve_canonical_label()` with exact guard pattern.
+
+**Why**: Three concrete bugs:
+1. Deleted graph nodes (Andrej Karpathy, Boys, Broadleaf, CPA, etc.) kept reappearing because the backfill's entity extraction re-extracted them and `resolve_canonical_label()` had no guard against deleted provenance.
+2. Wrong-type graph nodes (organizations created as `type='person'` by entity extraction) were never corrected — Ashraya Chennai Central, Amico, Armour, Auditor were all person-type when they should have been organization-type.
+3. Organizations and projects tables had no sync functions — only the `people` table had a table→graph path.
+
+**Acceptance Criteria**:
+- `sync_people_to_graph_nodes()` skips people rows where `role` contains `[DELETED]`, `[CHANGED TO ORGANIZATION]`, `[MERGED INTO` — no graph node created for orphaned people.
+- `sync_organizations_to_graph_nodes()` deletes wrong-type graph nodes (person → organization) and recreates with correct type. Cascading edge deletion is accepted.
+- `sync_projects_to_graph_nodes()` creates project-type graph nodes for all projects rows without one.
+- `resolve_canonical_label()` checks `pending_graph_nodes` rejected entries AND `people.role` suffix markers before returning any match.
+- New shared `normalize_label()` helper in `core/lib/graph_rules.py` used by all sync functions.
+- Post-sync verification assertions in `__main__` prevent silent drift.
+- Old wrong-type nodes manually cleaned up and blocklisted. Pending graph nodes for deleted labels marked `rejected`.
+
+**Out of scope**: Populating `people.graph_node_id` FK (dead column). Fixing label collisions (same name for org + project). Two-way cascade on delete.
 
