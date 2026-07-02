@@ -44,7 +44,6 @@ Formatting rules:
 - Emoji goes at the start of each task/event line
 - Do NOT use ### headers — use **bold** or plain text
 - Bullet points only, no numbered lists
-- Always use [MEMORY] or [RESOURCE] brackets when citing sources.
 
 {context_str}{conversation_history}
 

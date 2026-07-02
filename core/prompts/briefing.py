@@ -59,7 +59,7 @@ Example:
 * 💰 Task name [Project]
 * 📋 Another task [Project]
 
-Always use [MEMORY] or [RESOURCE] brackets when citing — never write MEMORY or RESOURCE without brackets. Preserve the [Project] bracket from the task data exactly as shown."""
+Preserve the [Project] bracket from the task data exactly as shown."""
 
 def build_pulse_briefing_prompt(
     conversation_history: str,
@@ -271,7 +271,6 @@ FORMAT RULES:
 - Provide the text directly. No markdown code blocks surrounding the entire response.
 - Do NOT use `#` headers. Use bold text for sections.
 - For tasks, use bullet points with a relevant emoji at the start of the line.
-- You must always cite the [MEMORY], [PRACTICE], or [RESOURCE] tags at the end of the line if you pull context from them.
 
 THEME AND FOCUS RULES:
 - Focus solely on the most critical constraints, looming deadlines, and high-impact actions. 

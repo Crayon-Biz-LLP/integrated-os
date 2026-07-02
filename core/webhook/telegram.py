@@ -25,6 +25,7 @@ def _chunk_message(text: str, max_len: int = 4000) -> list[str]:
     return chunks
 
 async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True, inline_keyboard: list = None, skip_validation: bool = False):
+    import re
     try:
         evidence = snapshot_action_context()
         if not skip_validation:
@@ -37,6 +38,15 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
                     "action_evidence_count": len(evidence),
                     "downgrades": downgrades
                 })
+
+        # Strip literal bracketed tags
+        message_text = re.sub(r'\[(MEMORY|RESOURCE|TASK|PRACTICE)\]', '', message_text)
+        # Strip common unbracketed trailing tags (often injected by the LLM as a lazy citation)
+        message_text = re.sub(r'\s+(MEMORY|RESOURCE|TASK|PRACTICE)(?=$|\n|[.,!?;:])', '', message_text)
+        # Normalize excessive newlines (max 2 consecutive newlines)
+        message_text = re.sub(r'\n{3,}', '\n\n', message_text)
+        # Clean up any trailing spaces before newlines that the above might have caused
+        message_text = re.sub(r' +\n', '\n', message_text)
             
         receipts = render_actions(evidence)
         if receipts:
