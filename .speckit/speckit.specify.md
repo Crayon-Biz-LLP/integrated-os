@@ -264,3 +264,82 @@
 
 **Out of scope**: Populating `people.graph_node_id` FK (dead column). Fixing label collisions (same name for org + project). Two-way cascade on delete.
 
+---
+
+## Research Log
+
+### RL-001: Agent-Reach (Panniantong/Agent-Reach)
+
+**Evaluated**: Jul 2, 2026
+
+**What it is**: Capability layer for CLI-based AI agents (Claude Code, OpenClaw, Cursor) that installs CLI tools + agent skill files to read/search internet platforms: YouTube (yt-dlp), Twitter/X (twitter-cli), Reddit (OpenCLI/rdt-cli), GitHub (gh CLI), Bilibili (bili-cli), XiaoHongShu (OpenCLI/xiaohongshu-mcp), LinkedIn (linkedin-scraper-mcp), RSS (feedparser), Facebook (OpenCLI), Instagram (OpenCLI), V2EX, Xueqiu, Xiaoyuzhou podcasts. Plus web search via Exa (MCP, free tier). Each platform has primary+fallback backend routing with `agent-reach doctor` diagnostics. MIT license, pip-installable.
+
+**Value to Rhodey**:
+
+| Area | Rhodey Gap | Agent-Reach Solution | Feasibility |
+|------|-----------|---------------------|-------------|
+| YouTube | No way to consume video content or transcripts | yt-dlp for subtitle extraction + search | High — can be added to research GA job (not Vercel-bound) |
+| RSS | No news/blog monitoring | feedparser (zero-config) | High — pip package, trivial integration |
+| GitHub | User sends URLs, no structured repo query | gh CLI for structured `repo view` + search | Medium — gh CLI not in Vercel runtime; better to use httpx→GitHub API directly |
+| Web search | Jina only | Exa via MCP (semantic search, free) | Medium — alternative backend for research_agent.py |
+| Diagnostics | No platform-availability check | `agent-reach doctor` | Low — agent-reach CLI would need to be available |
+
+**Architecture mismatch**: Agent-Reach is designed for interactive CLI agents (Claude Code, OpenClaw) that can run shell commands and install system packages. Rhodey is a serverless Telegram bot (Vercel, 60s timeout). The SKILL.md + agent-prompt approach doesn't translate. Best path: selectively integrate individual tools (yt-dlp, feedparser) into the existing research agent pipeline instead of installing the full suite.
+
+**Verdict**: Selective integration (YouTube + RSS) would add value. Full Agent-Reach install doesn't fit Rhodey's serverless architecture.
+
+---
+
+### RL-002: TimesFM (google-research/timesfm)
+
+**Evaluated**: Jul 2, 2026
+
+**What it is**: Time Series Foundation Model by Google Research. Pre-trained decoder-only transformer for time-series forecasting. v2.5: 200M params, 16K context length, 1K horizon, continuous quantile forecasts (confidence intervals). ICML 2024. PyPI-installable (`pip install timesfm[torch]`), Apache 2.0. Has agent SKILL.md (added Mar 2026). Fine-tuning via LoRA/HuggingFace PEFT available.
+
+**Relevant Rhodey data**:
+
+| Data Source | What's Tracked | TimesFM Use Case |
+|-------------|---------------|------------------|
+| Practices engine | `occurrence_count`, `frequency_observed` (e.g. "3/14days"), `health_score`, `trend`, `last_occurrence` | Forecast practice adherence — predict health_score decline, detect relapse risk before it happens, forecast when a practice will drop below health_score threshold |
+| Tasks | Creation dates, completion dates, deadlines | Forecast completion velocity per project, predict bottlenecks when task volume exceeds historical capacity |
+| Sentiment on memories | `sentiment_score` | Forecast sentiment direction for a project/org over time |
+| Calendar events | Meeting frequency, event patterns | Forecast meeting load — when does it peak? |
+
+**Best-fit: Practice Adherence Forecasting**
+
+Rhodey's practices subsystem already tracks time-series data: occurrence counts over 14-day windows, health scores, trends. TimesFM's strength is exactly this kind of data — periodic, noisy, with limited history. It could:
+- Predict health_score 7/14/21 days out given current trend
+- Flag when a practice's `frequency_observed` is diverging from `frequency_baseline` beyond what historical patterns would predict
+- Generate quantile forecasts ("80% chance health_score drops below 60 in 2 weeks") for sentinel nudges
+
+**Deployment constraint**: TimesFM 2.5 requires PyTorch or JAX/Flax with ~200M params. Won't run on Vercel serverless (cold start + memory). Best fit: integrate into the weekly practices GA job (`core/pulse/engine.py` weekend pulse) which already runs `detect_practices()` and has no 60s timeout.
+
+**Verdict**: Compelling fit for practice adherence forecasting, but blocked by deployment environment. Worth revisiting when/if the practices pipeline is moved off Vercel to a more capable compute target.
+
+---
+
+### RL-003: Archify (tt-a1i/archify)
+
+**Evaluated**: Jul 2, 2026
+
+**What it is**: Agent skill (SKILL.md) for Claude, Codex CLI, and opencode that generates beautiful technical diagrams from plain-English descriptions. 5 diagram types: Architecture (system components), Workflow (swimlane flows), Sequence (API call chains), Data Flow (pipelines + PII boundaries), Lifecycle (state machines). Self-contained HTML output with dark/light theme toggle. Exports to PNG/JPEG/WebP at up to 4× resolution, or dual-theme SVG. Iterate by chat ("add Redis", "move auth to the left"). ~19KB embedded JS, zero runtime dependencies. v2.5 with golden-file CI tests. MIT license.
+
+**How it helps with Rhodey's architecture**:
+
+Archify is a **documentation/communication tool** — not a backend capability. It doesn't integrate into Rhodey's runtime. Instead, it helps the user and the agent *understand and visualize* the system. For Rhodey specifically:
+
+| Use | What Archify Would Generate | Value |
+|-----|---------------------------|-------|
+| High-level architecture | Components: Telegram Bot → FastAPI → Supabase/Postgres → Gemini LLM → Google Calendar/Tasks, with Redis cache layer. Show Vercel deployment boundary vs GA jobs boundary. | **High** — the product-summary/ has 30+ text docs but zero visual diagrams. One architecture diagram would immediately clarify the system shape. |
+| Webhook pipeline workflow | Swimlane: Telegram → handler.py → classify.py → dispatch.py → (route_by_intent → interrogate_brain / handle_confident_task / etc.) → send_telegram | **High** — the classification→routing→response flow has many branches (QUERY, TASK, NOTE, COMPLETION, DELEGATE, NOISE, etc.) that are hard to hold in your head. A workflow diagram makes onboarding and debugging faster. |
+| Context registry flow | Sequence: interrogate_brain → context_provider.hydrate_*() → gate checking → LLM generate | **Medium** — the context pipeline has 6 strategies with entity grounding gates. A diagram would show how context is filtered before reaching the LLM. |
+| Task lifecycle | State machine: todo ↔ in_progress → done/cancelled. Recurring branch: done→skip→next instance. | **Medium** — already documented in temporal lineage triggers, but a lifecycle diagram clarifies the state transitions. |
+| Practice detection flow | Workflow: weekend pulse → detect_practices() → cluster memories → update health_score/trend → build edges → sync canonical | **Medium** — the practices pipeline runs as a background job, making the data flow non-obvious. |
+| Sentinel piggyback operations | Sequence: every 5min → check calendar → check memory expiry → check orphan calendars → check index queue | **Medium** — the sentinel does 5+ different cleanup tasks. A diagram would show ordering and dependencies. |
+
+**Installation fit**:
+
+Archify works with opencode natively (install to `.opencode/skills/` or `.agents/skills/`). Since you're talking to me (an opencode-compatible agent), installing Archify would let me generate diagrams on demand — for example, I could analyze the codebase and produce a Rhodey architecture diagram directly.
+
+**Verdict**: High value for **documentation and communication**. Unlike the previous two tools (backend capabilities), Archify is a documentation aid that slots directly into the agent workflow. Rhodey has extensive textual docs but zero visual architecture diagrams — this is the single highest-impact gap Archify fills. No deployment or runtime integration needed.
+
