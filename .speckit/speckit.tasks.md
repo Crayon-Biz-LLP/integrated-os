@@ -687,6 +687,21 @@ This enables natural-language note capture without special syntax.
 
 ---
 
+## Today's Changes (Jul 2, 2026)
+
+### [COMPLETED] T-MEETILY-001: Desktop Meeting Capture — Meetily Integration
+**Files**: `~/meetily-sync.sh`, `~/Library/LaunchAgents/com.meetily.drive.sync.plist`
+**Status**: Completed
+**Details**: Set up Meetily (Zackriya-Solutions/meetily) on MacBook for desktop meeting recording:
+- Meetily records mic + system audio and saves to `~/Movies/meetily-recordings/`
+- `rclone` installed and configured with `rhodey-calls:` remote pointing to `Crayon/Rhodey OS/Call Recordings` (folder ID: `1gc_1w33Di7W3JkONiYg_Ie2LBujs47ad`)
+- `meetily-sync.sh` script finds all `.mp4` files in Meetily subfolders, renames to parent folder name (ensures uniqueness), and copies flat to Drive
+- `com.meetily.drive.sync` launchd watcher runs the script every 2 minutes
+- Only `.mp4` files are synced — `metadata.json` and `transcripts.json` stay local
+- No code changes to Rhodey — existing `call_ingest.py` pipeline picks up new files from Drive
+
+---
+
 ## Today's Changes (Jul 1, 2026)
 
 ### [COMPLETED] T-PHASE11-001: sync_organizations_to_graph_nodes()

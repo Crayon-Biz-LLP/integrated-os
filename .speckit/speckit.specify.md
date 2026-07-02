@@ -318,7 +318,24 @@ Rhodey's practices subsystem already tracks time-series data: occurrence counts 
 
 ---
 
-### RL-003: Archify (tt-a1i/archify)
+### RL-003: Meetily (Zackriya-Solutions/meetily)
+
+**Evaluated**: Jul 2, 2026
+
+**What it is**: Open-source, privacy-first AI meeting assistant that captures mic + system audio on macOS/Windows/Linux. Uses local Whisper/Parakeet for real-time transcription. Tauri-based desktop app (~10MB). MIT license.
+
+**Integration with Rhodey**:
+- **Role**: Desktop meeting audio capture — replaces phone-dialer recordings for meetings taken on MacBook
+- **Setup**: Installed on MacBook. Processing engine (Qwen 3.5 2B transcription) disabled — used purely as a recorder
+- **Output**: Saves each meeting as a subfolder in `~/Movies/meetily-recordings/` containing `audio.mp4`, `metadata.json`, `transcripts.json`
+- **Sync**: `rclone` + launchd watcher copies only `.mp4` files (renamed by folder name) to `Google Drive → Crayon/Rhodey OS/Call Recordings` every 2 minutes
+- **Downstream**: Existing `call_ingest.py` pipeline picks up new files on its 30-min cron — no code changes needed
+
+**Verdict**: Adopted. Pure recorder role — Rhodey handles all transcription and extraction.
+
+---
+
+### RL-004: Archify (tt-a1i/archify)
 
 **Evaluated**: Jul 2, 2026
 

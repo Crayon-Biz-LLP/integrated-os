@@ -46,6 +46,28 @@ For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the p
 - `db/16_decision_audit.sql` — migration (applied)
 - `tests/unit/test_why.py` — W1-W8 (8 passing unit tests)
 
+## Session Anchored Summary (Jul 2, 2026 — Part 12: Desktop Meeting Capture via Meetily)
+
+### Progress Done This Session
+- **Desktop Meeting Capture**: Set up Meetily (open-source, Zackriya-Solutions/meetily) on the MacBook to record mic + system audio during desktop meetings (Zoom, Meet, Teams). Recordings saved to `~/Movies/meetily-recordings/`.
+- **Auto-Sync to Google Drive**: Installed `rclone` and connected it to Google Drive (`rhodey-calls:` remote). Created `~/meetily-sync.sh` — finds all `.mp4` files in Meetily's subfolders, renames them by parent folder name (ensures uniqueness), and copies them flat to `Crayon/Rhodey OS/Call Recordings`.
+- **launchd Watcher**: Created `~/Library/LaunchAgents/com.meetily.drive.sync.plist` — runs the sync script every 2 minutes, logs to `~/Library/Logs/meetily-drive-sync.log`.
+- **No code changes to Rhodey**: The existing `call_ingest.py` pipeline picks up new `.mp4` files from Drive on its 30-min cron, transcribes with `faster-whisper`, extracts with Gemini, and surfaces in Decision Pulse.
+- **Documentation**: Updated `product-summary/26-call-recording-ingest.md` with full Meetily setup architecture, management commands, and flow diagram. Added RL entry to `.speckit/speckit.specify.md`.
+
+### Key Decisions This Session
+- **Meetily for capture, not transcription**: Processing engine (Qwen 3.5 2B) disabled in Meetily. It's used purely as a recorder. Transcription happens in the existing GHA pipeline.
+- **rclone over Google Drive for Desktop**: rclone installed via Homebrew (no extra GUI install). Configured with `scope: drive` and `root_folder_id` set to the calls folder.
+- **Flattening via script**: Since `rclone` lacks a `--flatten` flag, a `find -exec` script renames each `.mp4` to its parent folder name before copying. No subfolders created in Drive.
+- **`.mp4` only**: `metadata.json` and `transcripts.json` (also created by Meetily) are excluded — only raw audio files sync to Drive.
+
+### Key Files (Part 12)
+- `~/meetily-sync.sh` — Find-and-copy script for flattening Meetily recordings
+- `~/Library/LaunchAgents/com.meetily.drive.sync.plist` — launchd watcher (2-min interval)
+- `product-summary/26-call-recording-ingest.md` — Updated with desktop recording section
+
+---
+
 ## Session Anchored Summary (Jul 1, 2026 — Part 11: Graph Node Sync Fix)
 
 ### Progress Done This Session
