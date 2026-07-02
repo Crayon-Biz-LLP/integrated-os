@@ -23,3 +23,5 @@ data/
 **/venv/
 product-summary/*.log
 *.log
+.pytest_cache/
+.ruff_cache/

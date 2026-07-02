@@ -287,7 +287,9 @@ async def process_webhook(update: dict):
 
         try:
             core_res = supabase.table('core_config').select('key, content').execute()
-            core_json = json.dumps(core_res.data or [])
+            _NOISE_KEYS = {'latest_briefing', 'briefing_history', 'last_pulse_summary'}
+            filtered = [r for r in (core_res.data or []) if r.get('key') not in _NOISE_KEYS]
+            core_json = json.dumps(filtered)
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"core_config fetch failed: {e}")
             core_json = "[]"
@@ -1053,6 +1055,13 @@ async def process_webhook(update: dict):
             return {"success": True}
 
         history_text = format_history_for_prompt(history)
+
+        # Bare URL short-circuit: bypass LLM classification entirely
+        stripped = text.strip()
+        if re.match(r'^https?://\S+$', stripped):
+            audit_log_sync("webhook", "INFO", f"Bare URL short-circuit — routing to NOTE: {stripped[:50]}...")
+            await handle_confident_note(stripped, chat_id, "Repository link logged for the project vault.", source="telegram")
+            return {"success": True}
 
         context = await get_recent_context(limit=2)
         classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json, conversation_history=history_text)

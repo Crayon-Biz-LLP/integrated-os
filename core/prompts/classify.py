@@ -33,6 +33,7 @@ Return ONLY valid JSON (no markdown, no explanation):
 }}
 
 Rules:
+- URL-ONLY MESSAGES: If the message is ONLY a URL with no surrounding instruction, classify as NOTE with the URL as the title. Set receipt to "Repository link logged for the vault."
 - STRICT TITLE FIDELITY: The title field must be a literal extraction of the task as spoken. NEVER add project names, infer entities, or change Danny's wording (e.g., if he says "this OS," do NOT change it to "Qhord OS").
 - PROJECT ROUTING: Route tasks about personal finances, bills, home, or family to PERSONAL. Route Ashraya church administration, operations, accounts to ASHRAYA. Route personal spiritual practices (bible reading, prayer, volunteering) to PERSONAL. Only route to CRAYON if it relates to corporate governance, business taxes, or legal compliance. Route tech/client work to SOLVSTRAT.
 - STATUS vs TASK: Task-referential has-happened actions map to COMPLETION; general wins, observations, and milestones still map to NOTE.
