@@ -68,6 +68,33 @@ For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the p
 
 ---
 
+## Session Anchored Summary (Jul 3, 2026 — Part 13: Classification Context Boundary Fix)
+
+### Progress Done This Session
+- **Problem**: Persistent threads leaked bot response context into the classify prompt. "Who is Binu?" following a URL was misclassified as NOTE with receipt "Repository link logged for the project vault. Now go be a dad." — because the bot receipt was present in the `CONVERSATION HISTORY:` block alongside the user message. The classifier pattern-matched the URL receipt phrase as context for the new message.
+- **`format_classify_context()` (NEW)** in `core/lib/conversation.py`: Replaces raw `CONVERSATION HISTORY:` with a bounded context block containing only (1) optional `THREAD SUMMARY:`, (2) optional `ACTIVE ENTITY: name (type)`, and (3) `PRECEDING TURN: User: <last user message only>`. Bot responses are never included. Header label kept as `CONVERSATION HISTORY:` so existing classify prompt rules still fire.
+- **`_compress_to_classify_summary()` (NEW)** — Separate LLM call (gemini-3.1-flash-lite) with tight prompt: "Summarize the overarching topic... Do NOT include specific actions taken, receipts, bot responses, or outcomes." Keeps classify-safe summaries separate from existing `_compress_to_summary()` (which captures decisions/outcomes for anaphora).
+- **`_store_thread_summary_if_missing()` (NEW)** — Idempotent write via `.is_('summary', 'null')` guard. Prevents overwriting existing summaries.
+- **`_background_summary_check()` (NEW)** — Non-blocking background job fired from `log_exchange()` when `role == 'bot'`, thread has ≥2 user exchanges, and summary doesn't exist yet. Uses `asyncio.create_task` on running loop; `RuntimeError` guard for sync contexts. Errors logged via `audit_log_sync("conversation", "WARNING", ...)`.
+- **`core/webhook/handler.py`**: Both main classify path and `/note` path now use `format_classify_context()` instead of `format_history_for_prompt()`. `get_thread_summary()` and `active_anchor` passed from session triple.
+- **`core/prompts/classify.py`**: Added `PERSON QUERIES` rule ("Who is [name]?" → QUERY). Tightened `URL-ONLY` rule: "NEVER use this receipt" for non-URL messages. Fixed `\S` escape sequence.
+- **`tests/sim/test_thread_classification.py` (NEW)**: 7 simulation tests (S1-S7) — URL + person query, summary present, empty history, entity anchor in context, continuation preserves previous turn, bot receipts stripped from multi-turn context, full end-to-end with real `resolve_thread()` from seeded DB. All bypass `send_telegram`/`route_by_intent` but call through to real Gemini classify. Cleanup verified airtight — mock-session inserts blocked by DB UUID constraint; seeded-thread deletion tracked by UUID and verified zero orphaned rows post-run.
+
+### Key Decisions This Session
+- **`format_classify_context()` over patching `format_history_for_prompt()`**: The existing function is used by response generation (briefings, interrogate_brain) which need full history. A separate bounded-context function for classify only is safer than changing a shared utility.
+- **Separate classify-safe summary**: `_compress_to_classify_summary()` has a topic-only prompt distinct from `_compress_to_summary()` (which captures decisions/outcomes). Prevents action-receipt phrases from leaking into classify context via summaries.
+- **Background summary generation**: Runs after bot response insert as a maintenance job, not a classify dependency. Summaries are optional — classify works fine without them. Fail-open via exception catch + audit log.
+- **`PERSON QUERIES` prompt rule**: Explicit rule that "Who is [name]?" is always QUERY, not NOTE. This is a targeted guard against misclassification even if context is empty. URL-ONLY rule tightened with "NEVER use this receipt" guard to prevent spillover.
+- **Sim tests verify cleanup airtightness**: S1-S6 use fake_session_ids that can't actually insert due to DB UUID enforcement. S7 tracks real thread UUID in fixture `created_threads` list and deletes in `finally` block. Verified zero orphaned rows via post-run sweep script.
+
+### Key Files (Part 13)
+- `core/lib/conversation.py` — format_classify_context(), _compress_to_classify_summary(), _store_thread_summary_if_missing(), _background_summary_check()
+- `core/prompts/classify.py` — PERSON QUERIES rule, URL-ONLY receipt guard
+- `core/webhook/handler.py` — switches classify input from format_history_for_prompt to format_classify_context
+- `tests/sim/test_thread_classification.py` — 7 simulation tests (S1-S7)
+
+---
+
 ## Session Anchored Summary (Jul 1, 2026 — Part 11: Graph Node Sync Fix)
 
 ### Progress Done This Session

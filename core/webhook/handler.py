@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
-from core.lib.conversation import get_or_create_session, log_exchange, format_history_for_prompt
+from core.lib.conversation import get_or_create_session, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
 from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
@@ -981,8 +981,9 @@ async def process_webhook(update: dict):
             
             # 1. Run classifier to get entity extraction
             context = await get_recent_context(limit=2)
-            history_text = format_history_for_prompt(history)
-            classification = await classify_intent(note_content, context, ist_hour=now.hour, core_json=core_json, conversation_history=history_text)
+            thread_summary = get_thread_summary(session_id)
+            classify_context_text = format_classify_context(history, thread_summary=thread_summary, active_anchor=active_anchor)
+            classification = await classify_intent(note_content, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text)
             
             # 2. Lock intent and confidence
             classification['intent'] = 'NOTE'
@@ -1054,7 +1055,8 @@ async def process_webhook(update: dict):
                 await send_telegram(chat_id, "Failed to dismiss practice. Try again.")
             return {"success": True}
 
-        history_text = format_history_for_prompt(history)
+        thread_summary = get_thread_summary(session_id)
+        classify_context_text = format_classify_context(history, thread_summary=thread_summary, active_anchor=active_anchor)
 
         # Bare URL short-circuit: bypass LLM classification entirely
         stripped = text.strip()
@@ -1064,7 +1066,7 @@ async def process_webhook(update: dict):
             return {"success": True}
 
         context = await get_recent_context(limit=2)
-        classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json, conversation_history=history_text)
+        classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text)
 
         intent = classification.get('intent', 'TASK')
         confidence = classification.get('confidence', 0.5)

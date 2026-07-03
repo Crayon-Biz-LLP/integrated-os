@@ -758,3 +758,19 @@ This enables natural-language note capture without special syntax.
 - `people_utils.py`: Added "pastor" to BLOCKLIST_PEOPLE to prevent entity extraction from creating a person node from the role title.
 - **Data fixes**: pe6847 (Pastor → LEADS → ACC) rejected as role-title duplicate. pe6866 relationship updated from PASTOR to SERVES_AT for correct resolution. Marcus Durai people.role set to "Pastor of Ashraya Chennai Central".
 **Deploy safe**: YES — additive intent. Existing tasks/notes continue to work unchanged.
+
+---
+
+### [COMPLETED] T-CLASSIFY-001: Classification context boundary — prevent bot receipt leakage
+**Files**: `core/lib/conversation.py`, `core/prompts/classify.py`, `core/webhook/handler.py`, `tests/sim/test_thread_classification.py`
+**Change**: Replaced raw `CONVERSATION HISTORY:` in classify input with `format_classify_context()` — a bounded context block containing thread summary + active entity + preceding user turn only. Bot responses excluded from classify context.
+**Details**:
+- `format_classify_context()` in `core/lib/conversation.py` — bounded block with THREAD SUMMARY, ACTIVE ENTITY, PRECEDING TURN (user-only)
+- `_compress_to_classify_summary()` — separate topic-only summary via gemini-3.1-flash-lite, explicitly forbids action receipts
+- `_store_thread_summary_if_missing()` — idempotent via `.is_('summary', 'null')` guard
+- `_background_summary_check()` — non-blocking async job fired after bot response insert, fail-open
+- Classify prompt: added PERSON QUERIES rule, tightened URL-ONLY regex, "NEVER use this receipt" guard
+- Handler: `/note` path and main classify path both use `format_classify_context`
+- 7 sim tests (S1-S7): URL + person query, summary present, empty history, anchor in context, pronoun continuation, multi-turn stripping, full end-to-end with real Supabase thread
+- Cleanup audited: mock-session inserts blocked by UUID constraint; seeded threads tracked and deleted by UUID; zero orphaned rows verified post-run
+**Deploy safe**: YES — additive only, `format_history_for_prompt` unchanged for response generation paths

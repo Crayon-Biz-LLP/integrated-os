@@ -454,6 +454,76 @@ def _store_thread_summary(session_id: str, summary: str):
     except Exception:
         pass
 
+def _store_thread_summary_if_missing(session_id: str, summary: str):
+    """Persist thread summary idempotently, only if it doesn't already exist."""
+    try:
+        get_supabase().table('conversation_threads') \
+            .update({'summary': summary}) \
+            .eq('id', session_id) \
+            .is_('summary', 'null') \
+            .execute()
+    except Exception:
+        pass
+
+def _compress_to_classify_summary(pairs: list) -> str:
+    """K1: Generate a topic-level summary specifically for classification context.
+    
+    Captures what was discussed, explicitly avoiding specific actions or receipts
+    to prevent context leakage biasing future classifications.
+    """
+    parts = []
+    for p in pairs:
+        user = p.get('user')
+        bot = p.get('bot')
+        user_content = (user or {}).get('content', '').strip()
+        bot_content = (bot or {}).get('content', '').strip() if bot else ''
+        if user_content:
+            parts.append(f"User: {user_content[:200]}")
+        if bot_content:
+            parts.append(f"Rhodey: {bot_content[:200]}")
+    if not parts:
+        return ""
+
+    raw = "\n".join(parts)
+    if len(raw) > 3000:
+        raw = raw[:3000] + "..."
+
+    try:
+        prompt = f"""Summarize the overarching topic of this conversation in 1-2 sentences.
+Focus strictly on WHAT is being discussed (the subject matter).
+Do NOT include specific actions taken, receipts, bot responses, or outcomes.
+
+Conversation:
+{raw}
+
+Topic Summary:"""
+        resp = call_llm_with_fallback_sync(prompt, model="gemini-3.1-flash-lite", is_critical=False)
+        summary = resp.text.strip()
+        if summary and len(summary) < 600:
+            return summary
+    except Exception:
+        pass
+    return ""
+
+async def _background_summary_check(session_id: str):
+    """Best-effort background job to generate thread summary if needed."""
+    try:
+        res = get_supabase().table('conversation_threads').select('summary').eq('id', session_id).execute()
+        if res.data and res.data[0].get('summary'):
+            return  # Already has a summary
+            
+        conv_res = get_supabase().table('conversations').select('id').eq('thread_id', session_id).eq('role', 'user').execute()
+        if not conv_res.data or len(conv_res.data) < 2:
+            return  # Not enough user exchanges to warrant a summary
+            
+        all_pairs = get_history(session_id, max_tokens=8000)
+        summary = _compress_to_classify_summary(all_pairs)
+        if summary:
+            _store_thread_summary_if_missing(session_id, summary)
+    except Exception as e:
+        from core.lib.audit_logger import audit_log_sync
+        audit_log_sync("conversation", "WARNING", f"Background summary generation failed: {e}")
+
 def get_history(session_id: str, max_tokens: int = MAX_HISTORY_TOKENS) -> list:
     """
     Get conversation history for a thread (session_id = thread_id), truncated by token budget.
@@ -553,9 +623,42 @@ def log_exchange(session_id: str, role: str, intent: str, content: str, chat_id:
         }
         get_supabase().table('conversations').insert(record).execute()
         _touch_thread(session_id)
+        
+        if role == 'bot':
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_background_summary_check(session_id))
+            except RuntimeError:
+                pass  # No running event loop
     except Exception as e:
         from core.lib.audit_logger import audit_log_sync
         audit_log_sync("conversation", "ERROR", f"log_exchange error: {e}")
+
+def format_classify_context(pairs: list, thread_summary: str = "", active_anchor: dict = None) -> str:
+    """Format a bounded context block specifically for classification.
+    
+    Replaces raw conversation history to prevent bot receipt leakage.
+    Uses abstractive thread summary + last user message only.
+    """
+    parts = []
+    
+    if thread_summary:
+        parts.append(f"THREAD SUMMARY: {thread_summary[:500]}")
+    
+    if active_anchor and active_anchor.get('name') and active_anchor.get('type'):
+        parts.append(f"ACTIVE ENTITY: {active_anchor['name']} ({active_anchor['type']})")
+        
+    if pairs:
+        last = pairs[-1]
+        user = last.get('user')
+        if user and user.get('content'):
+            parts.append("PRECEDING TURN:")
+            parts.append(f"User: {user['content'][:500]}")
+            
+    if parts:
+        return "CONVERSATION HISTORY:\n" + "\n".join(parts)
+    return ""
 
 def format_history_for_prompt(pairs: list) -> str:
     """Format conversation history as a CONVERSATION HISTORY block for LLM prompts."""
