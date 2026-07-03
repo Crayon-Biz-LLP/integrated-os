@@ -894,10 +894,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         elif is_pre_monday:
             briefing_mode = "🌙 Pre-Monday: Loading the board."
             system_persona = "Pre-load Monday. Show Work tasks that start tomorrow. Keep Home visible but deprioritized. Be direct."
-        elif day == 5 and hour < 19:
-            # Friday before 7PM = normal weekday (closing loop)
-            briefing_mode = "Closing the loop: Friday sign off."
-            system_persona = "Push Danny to close work tasks so he can transition to weekend. Log pending items. Be dry."
         else:
             # 🌅 MORNING: Extended to Noon to catch your first run
             if hour < 12:
@@ -909,8 +905,12 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 system_persona = "Focused on the main effort. Keep Danny building toward the goal. Be direct."
             # 🌇 CLOSING LOOP: Gear shift to family (3:30 PM to 6:30 PM)
             elif hour < 19:
-                briefing_mode = "Closing the loop: Sign off."
-                system_persona = "Push Danny to close work tasks so he can transition to family. Log pending items. Be dry."
+                if day == 5:
+                    briefing_mode = "Closing the loop: Friday sign off."
+                    system_persona = "Push Danny to close work tasks so he can transition to weekend. Log pending items. Be dry."
+                else:
+                    briefing_mode = "Closing the loop: Sign off."
+                    system_persona = "Push Danny to close work tasks so he can transition to family. Log pending items. Be dry."
             # 🌙 NIGHT: Secure the board (After 7:00 PM)
             else:
                 briefing_mode = "Intel: Vaulted."
