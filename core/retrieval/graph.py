@@ -1,3 +1,4 @@
+import asyncio
 from typing import Optional, Dict
 from core.services.db import get_supabase
 from core.retrieval.schema import PhraseNode, RetrievalEdge, AliasEdge, PassagePhraseLink
@@ -176,18 +177,22 @@ async def update_node_stats():
                 df_map[nid] = set()
             df_map[nid].add(pid)
 
+        records = []
         for node_id, passages in df_map.items():
             df = len(passages)
             spec = (df / n) if n > 0 else 0.5
             spec = min(1.0, max(0.01, spec))
 
+            records.append({
+                "node_id": node_id,
+                "df": df,
+                "source_count": df,
+                "specificity_score": 1.0 - spec,
+            })
+
+        if records:
             supabase.table("retrieval_node_stats") \
-                .upsert({
-                    "node_id": node_id,
-                    "df": df,
-                    "source_count": df,
-                    "specificity_score": 1.0 - spec,
-                }, on_conflict="node_id") \
+                .upsert(records, on_conflict="node_id") \
                 .execute()
 
     except Exception as e:
@@ -198,47 +203,125 @@ async def update_node_stats():
 async def build_triple_graph(triples: list, passage_id: int,
                              source_type: str, source_id: str,
                              known_types: Optional[Dict[str, str]] = None):
-    """Build phrase nodes and edges from extracted triples for a passage."""
+    """Build phrase nodes and edges from extracted triples for a passage.
+
+    Batches DB operations: resolves all nodes in one query, batch-upserts
+    new nodes, edges, and links to minimize sequential HTTP round-trips.
+    """
     known_types = known_types or {}
+    if not triples:
+        return
 
-    created_nodes = {}
+    # Step 1: Collect all unique normalized texts for batch resolution
+    all_texts: dict[str, str] = {}  # normalized_text -> display_text
+    for t in triples:
+        all_texts[t.normalized_subject] = t.subject_text
+        all_texts[t.normalized_object] = t.object_text
 
-    for triple in triples:
-        sub_id = await upsert_phrase_node(PhraseNode(
-            normalized_text=triple.normalized_subject,
-            display_text=triple.subject_text,
-            node_type=classify_node_type(triple.subject_text, known_types),
-        ))
-        obj_id = await upsert_phrase_node(PhraseNode(
-            normalized_text=triple.normalized_object,
-            display_text=triple.object_text,
-            node_type=classify_node_type(triple.object_text, known_types),
-        ))
+    # Step 2: Batch-resolve existing nodes
+    existing: dict[str, int] = {}
+    try:
+        rows = supabase.table("retrieval_phrase_nodes") \
+            .select("id, normalized_text") \
+            .in_("normalized_text", list(all_texts.keys())) \
+            .execute()
+        for r in (rows.data or []):
+            existing[r["normalized_text"]] = r["id"]
+    except Exception as e:
+        audit_log_sync("retrieval", "WARNING",
+                       f"build_triple_graph batch node resolve failed: {e}")
 
-        if sub_id and obj_id:
-            await upsert_retrieval_edge(RetrievalEdge(
-                from_node_id=sub_id,
-                to_node_id=obj_id,
-                edge_type="related",
-                predicate_text=triple.predicate_text,
-                weight=triple.confidence,
-                source_passage_id=passage_id,
-                index_version=INDEX_VERSION,
+    # Step 3: Create new nodes (parallel embeddings)
+    new_texts = [t for t in all_texts if t not in existing]
+    new_nodes: dict[str, int] = {}
+    if new_texts:
+        async def create_and_get_id(text: str) -> tuple[str, int | None]:
+            nid = await upsert_phrase_node(PhraseNode(
+                normalized_text=text,
+                display_text=all_texts[text],
+                node_type=classify_node_type(all_texts[text], known_types),
             ))
+            return (text, nid)
 
-        for nid, role in [(sub_id, "subject"), (obj_id, "object")]:
+        results = await asyncio.gather(*[create_and_get_id(t) for t in new_texts],
+                                       return_exceptions=True)
+        for r in results:
+            if isinstance(r, tuple):
+                text, nid = r
+                if nid:
+                    new_nodes[text] = nid
+            elif isinstance(r, Exception):
+                audit_log_sync("retrieval", "WARNING",
+                               f"build_triple_graph node creation failed: {r}")
+
+    # Build node_id lookup
+    node_ids: dict[str, int] = {**existing, **new_nodes}
+
+    # Step 4: Batch-upsert edges
+    edges = []
+    for t in triples:
+        sub_id = node_ids.get(t.normalized_subject)
+        obj_id = node_ids.get(t.normalized_object)
+        if sub_id and obj_id:
+            edges.append({
+                "from_node_id": sub_id,
+                "to_node_id": obj_id,
+                "edge_type": "related",
+                "predicate_text": t.predicate_text,
+                "weight": t.confidence,
+                "source_passage_id": passage_id,
+                "index_version": INDEX_VERSION,
+            })
+
+    if edges:
+        seen = {}
+        for e in edges:
+            key = (e["from_node_id"], e["to_node_id"], e["edge_type"], e["index_version"])
+            if key not in seen or e["weight"] > seen[key]["weight"]:
+                seen[key] = e
+        unique_edges = list(seen.values())
+        try:
+            supabase.table("retrieval_edges") \
+                .upsert(unique_edges, on_conflict="from_node_id,to_node_id,edge_type,index_version") \
+                .execute()
+        except Exception as e:
+            audit_log_sync("retrieval", "WARNING",
+                           f"build_triple_graph batch edge upsert failed: {e}")
+
+    # Step 5: Batch-upsert passage-phrase links
+    links = []
+    for t in triples:
+        for text, role in [(t.normalized_subject, "subject"),
+                           (t.normalized_object, "object")]:
+            nid = node_ids.get(text)
             if nid and passage_id:
-                await upsert_passage_phrase_link(PassagePhraseLink(
-                    passage_id=passage_id,
-                    node_id=nid,
-                    role=role,
-                    weight=triple.confidence,
-                ))
+                links.append({
+                    "passage_id": passage_id,
+                    "node_id": nid,
+                    "role": role,
+                    "weight": t.confidence,
+                })
 
-        if sub_id:
-            created_nodes[sub_id] = triple.subject_text
-        if obj_id:
-            created_nodes[obj_id] = triple.object_text
+    if links:
+        seen = {}
+        for lnk in links:
+            key = (lnk["passage_id"], lnk["node_id"], lnk["role"])
+            if key not in seen or lnk["weight"] > seen[key]["weight"]:
+                seen[key] = lnk
+        unique_links = list(seen.values())
+        try:
+            supabase.table("retrieval_passage_phrase_links") \
+                .upsert(unique_links, on_conflict="passage_id,node_id,role") \
+                .execute()
+        except Exception as e:
+            audit_log_sync("retrieval", "WARNING",
+                           f"build_triple_graph batch link upsert failed: {e}")
+
+    # Step 6: Alias linking (sequential, per-node)
+    created_nodes: dict[int, str] = {}
+    for text, nid in node_ids.items():
+        if text in all_texts:
+            created_nodes[nid] = all_texts[text]
 
     for nid, display_text in created_nodes.items():
         await _link_textual_aliases(nid, display_text)

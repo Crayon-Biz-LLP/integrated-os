@@ -68,6 +68,33 @@ For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the p
 
 ---
 
+## Session Anchored Summary (Jul 3, 2026 — Part 14: Associative Retrieval Link Coverage Fix)
+
+### Progress Done This Session
+- **Problem**: 525/855 indexed passages (61%) had zero phrase node links despite entity extraction succeeding for 374 of them. The `build_triple_graph()` function ran per-triple sequential upserts, and duplicate constrained tuples within a batch triggered `ON CONFLICT DO UPDATE command cannot affect row a second time` (342 link + 21 edge failures logged in audit_logs). Only 302 passages were reachable by PPR traversal.
+- **Fix A — `core/retrieval/graph.py`**: Refactored `build_triple_graph()` from per-triple sequential to batch operations. Steps 1-2: batch-resolve all nodes in one query, only create missing nodes in parallel via `asyncio.gather()`. Step 4 (edges): collect all edges from all triples, deduplicate on `(from_node_id, to_node_id, edge_type, index_version)` keeping max weight, single batch upsert. Step 5 (links): collect all links from all triples, deduplicate on `(passage_id, node_id, role)` keeping max weight, single batch upsert. Per-triple `upsert_*` helper functions replaced by inline dict construction.
+- **Fix C — `scripts/repair_missing_links.py` (NEW)**: Parse entity labels from enrichment prefix (`[retrieval, entity1, entity2, entity3]`), resolve node_ids from `retrieval_phrase_nodes`, batch upsert links with `role="mention"` in batches of 500. Idempotent — skips passages that already have links. Used dedup before upsert (same pattern as Fix A).
+- **Repair execution**: 704 enriched passages found. Resolved 698/698 unique entity labels to node_ids. Created 1156 links in 3 batches. SQL verification: **704/704 enriched passages now have ≥1 link** (up from 302 pre-repair). 151 plain `[retrieval]` passages remain unlinked (expected — no entities extracted).
+- **Query quality verification**: Ran `compare_retrievals()` for 3 test queries against fully-linked pipeline:
+  - *Arani complaint*: 5 hits (memory 1092 handover note at 0.675, + Armour Cyber context)
+  - *Qhord client wins*: 8 hits (memory 1712 Qhord + 3 customers at 0.648)
+  - *Shebu Chithi drawing*: 8 hits (memory 501 "Danny drew and colored it" at 0.599)
+  Associative results returned promptly (1.8-2.8s) with relevant entities scored first.
+- **Pending index jobs**: Already processed by sentinel cron (4 completed, memories 1092/1093/1110/1115 all have passages).
+- **Documentation**: Updated `product-summary/16-memory-knowledge-graph.md` with chunk enrichment section, batch protocol docs, row count table, and backfill coverage stats. Updated `.speckit/speckit.specify.md` associative engine line.
+
+### Key Decisions This Session
+- **Dedup with max-weight merge rule**: For both edges and links, when duplicate constrained keys exist within a batch, keep the higher weight. This is deterministic and preserves the most confident triple extraction.
+- **`role="mention"` for repair links**: Since PPR traversal doesn't distinguish by role, and subject/object links exist for already-linked passages, mention is a safe catch-all that won't collide with existing links. Verified via reading `_aggregate_to_memories` and `update_node_stats` queries.
+- **Repair script uses enrichment prefix only**: Entity labels in the prefix come from top-3 deduplicated normalized texts — matching `retrieval_phrase_nodes.normalized_text` exactly. For the 151 non-enriched passages with plain `[retrieval]` prefix, no entities exist to link, which is correct.
+- **Repair script debatches to 500-row batches**: PostgREST URL limits make single-batch upserts risky for 1156 rows. Split into 3 batches, each with its own `upsert()` call.
+
+### Key Files (Part 14)
+- `core/retrieval/graph.py` — Fix A: batch operations + dedup before upsert for edges and links
+- `scripts/repair_missing_links.py` (NEW) — Fix C: one-time repair script for existing enriched passages
+- `product-summary/16-memory-knowledge-graph.md` — Updated row counts, chunk enrichment section, batch protocol docs
+- `.speckit/speckit.specify.md` — Updated associative engine line
+
 ## Session Anchored Summary (Jul 3, 2026 — Part 13: Classification Context Boundary Fix)
 
 ### Progress Done This Session

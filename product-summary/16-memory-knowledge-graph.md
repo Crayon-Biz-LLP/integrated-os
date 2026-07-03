@@ -207,32 +207,54 @@ This gives the agent "cross-pulse continuity," allowing it to refer to what it r
 The retrieval layer uses 7 dedicated tables, separate from the main `memories` and `graph_*` tables:
 
 | Table | Purpose | Row Count |
-|-------|---------|-----------|
-| `retrieval_passages` | Chunked memory passages (512-char windows) | 633 |
-| `retrieval_phrase_nodes` | Extracted phrase entities with embedding | 1305 |
-| `retrieval_node_stats` | Per-node degree/frequency statistics | 1292 |
-| `retrieval_passage_phrase_links` | Many-to-many: passages ↔ phrase nodes | 1928 |
-| `retrieval_memory_bundle_links` | Many-to-many: retrieval data ↔ memory IDs | 646 |
+|---|---|---|
+| `retrieval_passages` | Chunked memory passages (512-char windows) | 855 |
+| `retrieval_phrase_nodes` | Extracted phrase entities with embedding | ~1500 |
+| `retrieval_node_stats` | Per-node degree/frequency statistics | ~1500 |
+| `retrieval_passage_phrase_links` | Many-to-many: passages ↔ phrase nodes | 2344 (704 enriched passages linked) |
+| `retrieval_memory_bundle_links` | Many-to-many: retrieval data ↔ memory IDs | ~850 |
 | `retrieval_alias_edges` | Heuristic synonymous label bridges | 3760 |
-| `retrieval_index_runs` | Index operation checkpoint tracking | 470 |
+| `retrieval_index_runs` | Index operation checkpoint tracking | ~480 |
+
+### Chunk Enrichment (Entity Prefix)
+
+When `RETRIEVAL_CHUNK_ENRICHMENT=true` (set in production), passages are re-embedded after entity extraction with an enrichment prefix prepended to the text: `[retrieval, entity1, entity2, entity3] original text...`. This aligns the embedding space of passages with the query-side enrichment in `associative_retrieve()`, improving semantic match for entity-bearing queries.
+
+Of 855 indexed passages:
+- **704** have entity labels extracted (enriched with `[retrieval, entity1, …]` prefix)
+- **151** have a plain `[retrieval]` prefix (LLM extracted no entities — only vector-search discoverable)
 
 ### Forward Indexing Pipeline
 
-Every new memory write triggers `schedule_index_memory()` (`core/retrieval/pipeline.py`):
+Indexing is triggered via the `pending_retrieval_index_jobs` table (written by `schedule_index_memory()`), processed by the Sentinel piggyback via `process_pending_index_jobs()`. This decouples LLM-heavy work from the webhook response path.
 
 ```
-memories.insert
-    → schedule_index_memory(memory_id)
-        → fetch_memory(memory_id)
-        → chunk_into_passages(text)           # 512-char sliding windows
-        → upsert_passages(passages)            # save to retrieval_passages
-        → extract_entities(passages)           # Gemini Flash Lite extraction
-        → upsert_phrase_nodes(entities)        # embed + save to retrieval_phrase_nodes
-        → link_passage_phrases(passages, nodes) # build passage_phrase_links
-        → link_bundle(memory_id, passage_ids)   # build memory_bundle_links
-        → update_node_stats()                   # refresh frequency stats
-        → log_index_run()                       # checkpoint
+pending_retrieval_index_jobs.insert
+    → process_pending_index_jobs()              # Sentinel piggyback
+        → index_memory(memory_id)
+            → chunk_into_passages(text)         # 512-char sliding windows
+            → Phase 1: embed all passages       # parallel asyncio.gather
+            → Phase 2: extract entities         # Gemini Flash Lite, concurrency 3
+            → build_triple_graph()              # batch-resolve nodes, batch-upsert
+                → node resolution (one query)
+                → new node creation (parallel embeddings)
+                → edge batch upsert (deduped)
+                → link batch upsert (deduped)
+                → alias linking (per-node)
+            → Phase 3: re-embed with entities   # if chunk_enrichment enabled
+            → update_node_stats()               # after all jobs complete
+        → mark job completed / dead_letter
 ```
+
+### `build_triple_graph()` Batch Protocol
+
+The function (`core/retrieval/graph.py`) was refactored from per-triple sequential to batch operations:
+
+1. **Node resolution:** One query to `retrieval_phrase_nodes` for all normalized texts, then only create missing nodes in parallel.
+2. **Edge batch upsert:** Collects all edges from all triples, deduplicates on `(from_node_id, to_node_id, edge_type, index_version)` keeping max weight, then single batch upsert.
+3. **Link batch upsert:** Collects all links from all triples, deduplicates on `(passage_id, node_id, role)` keeping max weight, then single batch upsert.
+
+**History:** The initial per-triple implementation caused 342 link and 21 edge upsert failures during backfill — each triple's upsert was sent separately, and duplicate constrained tuples within a batch triggered Postgres `ON CONFLICT DO UPDATE command cannot affect row a second time`. The batch + dedup fix and a one-time repair script (`scripts/repair_missing_links.py`) restored full coverage: all 704 enriched passages now have ≥1 phrase link.
 
 Indexing runs at concurrency 3 (module-level `asyncio.Semaphore(3)`), with jittered backoff on Gemini 429s via multi-key rotation.
 
@@ -260,7 +282,7 @@ Two cache tiers, both in Upstash Redis, fail-open on Redis error:
 
 ### Feature Flags (Env Vars)
 
-Four per-site flags control which read paths use associative retrieval. All are set to `true` in production:
+Five per-site flags control which read paths use associative retrieval. All are set to `true` in production (Vercel env vars):
 
 | Flag | Path Activated | Purpose |
 |------|----------------|---------|
@@ -269,6 +291,7 @@ Four per-site flags control which read paths use associative retrieval. All are 
 | `RETRIEVAL_ASSOCIATIVE_HINDSIGHT` | `memory.py` (hindsight) | Hindsight retrieval uses associative |
 | `RETRIEVAL_ASSOCIATIVE_HYDRATE` | `context.py` | Context hydration uses associative |
 | `RETRIEVAL_INDEXING_ENABLED` | `pipeline.py` | Forward indexing is live |
+| `RETRIEVAL_CHUNK_ENRICHMENT` | `pipeline.py` | Passage chunk entity prefix enrichment |
 
 ### Data Integrity
 

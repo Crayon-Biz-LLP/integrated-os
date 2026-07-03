@@ -88,18 +88,19 @@ async def index_memory(memory_id: int, content: str, memory_type: str,
             _set_run_status(run_id, "completed")
             return True
 
-        inserted_passages = []
-        for p in passages:
-            p_id = await _upsert_passage(p)
-            if p_id:
-                inserted_passages.append((p_id, p))
+        # Phase 1: Embed all passages in parallel
+        embed_tasks = [_upsert_passage(p) for p in passages]
+        embed_results = await asyncio.gather(*embed_tasks)
+        inserted_passages = [
+            (p_id, p) for p_id, p in zip(embed_results, passages) if p_id
+        ]
 
         for p_id, p in inserted_passages:
             if memory_id:
                 await upsert_memory_bundle_link(memory_id, p_id)
 
-        async def process_passage(p_id: int, p: Passage) -> Tuple[bool, bool]:
-            """Returns (had_triples, llm_ok). llm_ok=False means LLM call failed."""
+        async def extract_passage(p_id: int, p: Passage) -> Tuple[bool, bool, list]:
+            """Returns (had_triples, llm_ok, entity_labels)."""
             async with index_semaphore:
                 triples, llm_ok = await extract_triples(
                     text=p.text,
@@ -109,27 +110,33 @@ async def index_memory(memory_id: int, content: str, memory_type: str,
                     index_version=INDEX_VERSION,
                 )
                 if not llm_ok or not triples:
-                    return bool(triples), llm_ok
+                    return bool(triples), llm_ok, []
                 await build_triple_graph(triples, p_id, source_type, source_id)
-                # Phase 3: re-embed with entity labels after extraction
-                # Use both subjects and objects from triples (both are entity mentions)
                 if config.chunk_enrichment and triples:
                     entity_labels = list(dict.fromkeys(
                         [t.normalized_subject for t in triples]
                         + [t.normalized_object for t in triples]
                     ))[:3]
-                    await reembed_passage_with_entities(
-                        passage_id=p_id,
-                        raw_text=p.text,
-                        entity_labels=entity_labels,
-                    )
-                return True, True
+                    return True, True, entity_labels
+                return True, True, []
 
-        tasks = [process_passage(p_id, p) for p_id, p in inserted_passages]
-        results: List[Tuple[bool, bool]] = await asyncio.gather(*tasks)
+        # Phase 2: Extract triples (inside semaphore, rate-limited at 39 RPM)
+        extract_tasks = [extract_passage(p_id, p) for p_id, p in inserted_passages]
+        extract_results: List[Tuple[bool, bool, list]] = await asyncio.gather(*extract_tasks)
 
-        any_failure = any(not r[1] for r in results)
-        any_success = any(r[1] for r in results)
+        # Phase 3: Re-embed with entity labels (outside semaphore)
+        reembed_tasks = [
+            reembed_passage_with_entities(
+                passage_id=p_id, raw_text=p.text, entity_labels=el,
+            )
+            for (p_id, p), (_, _, el) in zip(inserted_passages, extract_results)
+            if el
+        ]
+        if reembed_tasks:
+            await asyncio.gather(*reembed_tasks)
+
+        any_failure = any(not r[1] for r in extract_results)
+        any_success = any(r[1] for r in extract_results)
 
         if not any_success:
             _set_run_status(run_id, "failed",
@@ -141,11 +148,10 @@ async def index_memory(memory_id: int, content: str, memory_type: str,
                             error="Some passage extractions failed (LLM errors)")
             audit_log_sync("retrieval", "WARNING",
                            f"Index {run_id} for {source_type}/{source_id} completed partial: "
-                           f"{sum(1 for r in results if not r[1])}/{len(results)} passages failed")
+                           f"{sum(1 for r in extract_results if not r[1])}/{len(extract_results)} passages failed")
         else:
             _set_run_status(run_id, "completed")
 
-        await update_node_stats()
         return True
 
     except Exception as e:
@@ -544,5 +550,8 @@ async def process_pending_index_jobs(max_jobs: int = 2) -> int:
             )
 
         processed += 1
+
+    if processed:
+        await update_node_stats()
 
     return processed
