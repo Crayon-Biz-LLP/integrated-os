@@ -14,6 +14,8 @@ from core.retrieval.ppr import build_adjacency_from_edges, personalized_pagerank
 from core.retrieval.ranking import rank_memories
 from core.retrieval.schema import ExplainableBundle, ScoredMemory
 
+_MAX_SUPPORTING_PASSAGES = 5
+
 supabase = get_supabase()
 
 
@@ -77,6 +79,21 @@ async def associative_retrieve(
 
     llm_phrases = await llm_task
     query_emb = await emb_task
+
+    # Phase 3: if chunk_enrichment is on, re-embed query with entity prefix
+    # to align with enriched passage embeddings. Uses a generic [retrieval]
+    # prefix so the query embedding space is source_type-agnostic.
+    if config.chunk_enrichment and llm_phrases:
+        entity_part = ", ".join(p.lower() for p in llm_phrases[:3])
+        enriched_query = f"[retrieval, {entity_part}] {query}"
+        try:
+            from core.llm import get_embedding as _get_embedding2
+            enriched_emb = await _get_embedding2(enriched_query)
+            if enriched_emb and enriched_emb.vector:
+                query_emb = enriched_emb.vector
+        except Exception:
+            pass  # Fall back to raw query embedding
+
     lex_candidates = await lex_cand_task
     
     new_llm_phrases = [p for p in llm_phrases if p not in lex_phrases]
@@ -278,41 +295,61 @@ def _parse_query(query: str) -> List[str]:
     return list(phrases)
 
 
+_TSQUERY_SPECIAL = set('&|!()<>')
+
+
+def _build_tsquery(phrases: List[str]) -> str:
+    """Build a tsquery string from phrases using OR.
+
+    Splits multi-word phrases into individual tokens and joins with OR.
+    Result is a valid tsquery input for to_tsquery('simple', ...).
+    Skips words containing tsquery operators to prevent syntax errors.
+    """
+    words = []
+    for phrase in phrases:
+        for word in phrase.lower().split():
+            clean = word.strip(',.!?;:\'\'"')
+            if clean and len(clean) >= 2 and not any(c in clean for c in _TSQUERY_SPECIAL):
+                words.append(clean)
+    # Deduplicate preserving order
+    seen = set()
+    unique = []
+    for w in words:
+        if w not in seen:
+            seen.add(w)
+            unique.append(w)
+    return " | ".join(unique)
+
+
 def _retrieve_phrase_candidates(phrases: List[str], top_k: int = 30) -> List[dict]:
-    """Retrieve candidate phrase nodes matching query phrases (exact ILIKE)."""
+    """Retrieve candidate phrase nodes using Postgres full-text search (tsvector)."""
     if not phrases:
         return []
-        
+
+    tsquery = _build_tsquery(phrases)
+    if not tsquery:
+        return []
+
     candidates = []
     seen = set()
 
     try:
-        # Build an OR filter for ILIKE matches
-        or_filters = []
-        for phrase in phrases:
-            # Escape double quotes if any
-            clean_phrase = phrase.replace('"', '')
-            or_filters.append(f"normalized_text.ilike.%{clean_phrase}%")
-        
-        if or_filters:
-            or_clause = ",".join(or_filters)
-            
-            res = supabase.table("retrieval_phrase_nodes") \
-                .select("id, normalized_text, display_text, node_type") \
-                .or_(or_clause) \
-                .limit(top_k * 2) \
-                .execute()
-                
-            if res and res.data:
-                for row in res.data:
-                    nid = row["id"]
-                    if nid not in seen:
-                        seen.add(nid)
-                        row["similarity"] = 0.5
-                        candidates.append(row)
+        res = supabase.rpc('search_phrase_nodes', {
+            'query_text': tsquery,
+            'result_limit': top_k * 2,
+        }).execute()
+
+        if res and res.data:
+            for row in res.data:
+                nid = row["id"]
+                if nid not in seen:
+                    seen.add(nid)
+                    row["similarity"] = row.get("rank", 0.5)
+                    candidates.append(row)
     except Exception as e:
         from core.lib.audit_logger import audit_log_sync
-        audit_log_sync("retrieval", "WARNING", f"_retrieve_phrase_candidates bulk query failed: {e}")
+        audit_log_sync("retrieval", "WARNING",
+                       f"_retrieve_phrase_candidates tsvector search failed: {e}")
 
     candidates.sort(key=lambda x: x.get("similarity", 0), reverse=True)
     return candidates[:top_k]
@@ -625,6 +662,29 @@ def _compute_person_boost(memory_ids: List[int], person_id: str) -> Dict[int, fl
     return boost
 
 
+def _find_neighbor_ids(
+    passage_ids: List[int],
+    source_map: Dict[tuple, List[tuple]],
+    passage_index_map: Dict[int, int],
+    source_key_map: Dict[int, tuple],
+) -> List[int]:
+    """Find adjacent passages (passage_index ± 1) sharing the same source."""
+    neighbor_ids = []
+    seen = set(passage_ids)
+    for pid in passage_ids:
+        idx = passage_index_map.get(pid)
+        if idx is None:
+            continue
+        source_key = source_key_map.get(pid)
+        if source_key is None:
+            continue
+        for n_pid, n_idx in source_map.get(source_key, []):
+            if n_pid not in seen and abs(n_idx - idx) == 1:
+                neighbor_ids.append(n_pid)
+                seen.add(n_pid)
+    return neighbor_ids
+
+
 def _assemble_bundles(
     top_memories: List[tuple],
     ppr_scores: Dict[int, float],
@@ -636,6 +696,7 @@ def _assemble_bundles(
 
     items = []
     mids = [int(mid) for mid, _ in top_memories]
+    fetch_neighbors = config.context_neighbors
 
     try:
         # 1. Bulk fetch passage links
@@ -655,23 +716,69 @@ def _assemble_bundles(
                     memory_to_passages[mid].append(pid)
                     all_passage_ids.add(pid)
 
-        # 2. Bulk fetch passage text
+        # 2. Bulk fetch passage text (+ metadata for neighbor lookup)
         passage_texts = {}
+        passage_index_map = {}
+        source_key_map = {}
+        source_map: Dict[tuple, List[tuple]] = {}
+
         if all_passage_ids:
+            # Prefer raw_text (user-facing) over text (may be enriched with metadata prefix)
+            txt_col = "raw_text, text" if config.chunk_enrichment else "text"
             txt_res = supabase.table("retrieval_passages") \
-                .select("id, text") \
+                .select(f"id, {txt_col}, passage_index, source_type, source_id") \
                 .in_("id", list(all_passage_ids)) \
                 .execute()
             if txt_res and txt_res.data:
-                passage_texts = {r["id"]: r["text"][:200] for r in txt_res.data}
+                for r in txt_res.data:
+                    display = r.get("raw_text") or r.get("text", "")
+                    passage_texts[r["id"]] = display[:200]
+                    if fetch_neighbors:
+                        idx = r.get("passage_index", 0)
+                        st = r.get("source_type", "")
+                        sid = r.get("source_id", "")
+                        passage_index_map[r["id"]] = idx
+                        skey = (st, sid)
+                        source_key_map[r["id"]] = skey
+                        source_map.setdefault(skey, []).append((r["id"], idx))
 
-        # 3. Bulk fetch passage -> phrase links
-        passage_to_nodes = {pid: [] for pid in all_passage_ids}
+        # 2b. Fetch neighbors if enabled
+        neighbor_ids = []
+        neighbor_texts = {}
+        if fetch_neighbors and source_map:
+            # Collect initial passages per memory to find their neighbors
+            initial_per_memory = {
+                mid: [pid for pid in memory_to_passages.get(mid, []) if pid in passage_texts]
+                for mid in mids
+            }
+            all_initial = set()
+            for pids in initial_per_memory.values():
+                all_initial.update(pids[:3])
+
+            neighbor_ids = _find_neighbor_ids(
+                list(all_initial), source_map, passage_index_map, source_key_map,
+            )
+
+            if neighbor_ids:
+                new_ids = [pid for pid in neighbor_ids if pid not in all_passage_ids]
+                if new_ids:
+                    ntxt = supabase.table("retrieval_passages") \
+                        .select("id, text") \
+                        .in_("id", new_ids) \
+                        .execute()
+                    if ntxt and ntxt.data:
+                        for r in ntxt.data:
+                            neighbor_texts[r["id"]] = r["text"][:200]
+                        passage_texts.update(neighbor_texts)
+
+        # 3. Bulk fetch passage -> phrase links (includes neighbor passages)
+        fetch_pids = all_passage_ids | set(neighbor_ids)
+        passage_to_nodes = {pid: [] for pid in fetch_pids}
         all_node_ids = set()
-        if all_passage_ids:
+        if fetch_pids:
             phrase_res = supabase.table("retrieval_passage_phrase_links") \
                 .select("passage_id, node_id") \
-                .in_("passage_id", list(all_passage_ids)) \
+                .in_("passage_id", list(fetch_pids)) \
                 .execute()
             if phrase_res and phrase_res.data:
                 for row in phrase_res.data:
@@ -691,13 +798,21 @@ def _assemble_bundles(
                 node_texts = {r["id"]: r["display_text"] for r in name_res.data}
 
         # Assemble items
+        neighbor_set = set(neighbor_ids)
         for mid, score in top_memories:
             mid = int(mid)
             passage_ids = memory_to_passages.get(mid, [])
-            supporting = [passage_texts[pid] for pid in passage_ids[:3] if pid in passage_texts]
-            
+
+            # Primary supporting passages: first 3 from this memory
+            primary = [pid for pid in passage_ids[:3] if pid in passage_texts]
+            # Neighbor passages: adjacent to primary, not already primary
+            neighbors = [pid for pid in neighbor_set if pid not in primary]
+            # Merge, cap at _MAX_SUPPORTING_PASSAGES
+            all_supporting_ids = (primary + neighbors)[:_MAX_SUPPORTING_PASSAGES]
+            supporting = [passage_texts[pid] for pid in all_supporting_ids]
+
             nids = []
-            for pid in passage_ids[:3]:
+            for pid in all_supporting_ids:
                 nids.extend(passage_to_nodes.get(pid, []))
             
             nids = list(dict.fromkeys(nids))[:5] # dedup
@@ -706,6 +821,8 @@ def _assemble_bundles(
             explanation_parts = []
             if connected:
                 explanation_parts.append(f"Connected to: {', '.join(connected[:3])}")
+            if neighbors:
+                explanation_parts.append(f"{len(neighbors)} neighbor passage(s) included")
             explanation = "; ".join(explanation_parts) if explanation_parts else "Relevant context"
 
             items.append(ScoredMemory(

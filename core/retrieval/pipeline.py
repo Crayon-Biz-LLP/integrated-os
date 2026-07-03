@@ -111,6 +111,18 @@ async def index_memory(memory_id: int, content: str, memory_type: str,
                 if not llm_ok or not triples:
                     return bool(triples), llm_ok
                 await build_triple_graph(triples, p_id, source_type, source_id)
+                # Phase 3: re-embed with entity labels after extraction
+                # Use both subjects and objects from triples (both are entity mentions)
+                if config.chunk_enrichment and triples:
+                    entity_labels = list(dict.fromkeys(
+                        [t.normalized_subject for t in triples]
+                        + [t.normalized_object for t in triples]
+                    ))[:3]
+                    await reembed_passage_with_entities(
+                        passage_id=p_id,
+                        raw_text=p.text,
+                        entity_labels=entity_labels,
+                    )
                 return True, True
 
         tasks = [process_passage(p_id, p) for p_id, p in inserted_passages]
@@ -143,8 +155,68 @@ async def index_memory(memory_id: int, content: str, memory_type: str,
         return False
 
 
+def _build_enrichment_prefix(source_type: str, entity_labels: list) -> str:
+    """Build a short, stable metadata prefix for embedding enrichment.
+
+    Format: `[source_type, entity1, entity2, entity3]`
+    Keeps prefix under ~80 chars. Deduplicates and limits to top-3 entities.
+    Used for both passage indexing and query embedding to keep spaces aligned.
+    """
+    parts = [source_type]
+    seen = set()
+    for label in entity_labels:
+        clean = label.strip().lower()
+        if clean and clean not in seen:
+            seen.add(clean)
+            parts.append(clean)
+        if len(parts) >= 4:  # source_type + 3 entities max
+            break
+    return "[" + ", ".join(parts) + "]"
+
+
+async def reembed_passage_with_entities(
+    passage_id: int, raw_text: str, entity_labels: list
+) -> bool:
+    """Re-embed a passage with entity labels prepended.
+
+    Called after triple extraction to enrich the embedding with entity context.
+    Updates the passage's embedding and text columns in-place.
+    The raw_text is preserved in the raw_text column.
+    """
+    if not entity_labels:
+        return True  # Nothing to enrich
+
+    # Use generic "retrieval" prefix to align with query-side embedding space
+    prefix = _build_enrichment_prefix("retrieval", entity_labels)
+    enriched_text = f"{prefix} {raw_text}"
+
+    try:
+        emb_res = await get_embedding(enriched_text)
+        if not emb_res or not emb_res.vector:
+            return False
+
+        supabase.table("retrieval_passages") \
+            .update({
+                "text": enriched_text,
+                "embedding": emb_res.vector,
+            }) \
+            .eq("id", passage_id) \
+            .execute()
+        return True
+    except Exception as e:
+        audit_log_sync("retrieval", "WARNING",
+                       f"reembed_passage_with_entities failed for passage {passage_id}: {e}")
+        return False
+
+
 async def _upsert_passage(passage: Passage) -> Optional[int]:
-    """Upsert a passage, return its ID."""
+    """Upsert a passage, return its ID.
+    
+    When RETRIEVAL_CHUNK_ENRICHMENT is enabled, stores raw user text in `raw_text`
+    and embeds `[source_type] text` (source-type-enriched) in `text` + `embedding`.
+    After entity extraction, reembed_passage_with_entities upgrades to
+    `[source_type, entity1, entity2] text`.
+    """
     try:
         existing = supabase.table("retrieval_passages") \
             .select("id") \
@@ -157,25 +229,35 @@ async def _upsert_passage(passage: Passage) -> Optional[int]:
         if existing and existing.data:
             return existing.data["id"]
 
-        emb_res = await get_embedding(passage.text)
+        # Determine what to embed and what to display
+        if config.chunk_enrichment:
+            raw_text = passage.text
+            enriched_text = _build_enrichment_prefix("retrieval", []) + " " + raw_text
+        else:
+            raw_text = passage.text
+            enriched_text = passage.text
+
+        emb_res = await get_embedding(enriched_text)
         if not emb_res or not emb_res.vector:
             audit_log_sync("retrieval", "WARNING",
                            f"Embedding returned None for passage {passage.passage_index} "
                            f"({passage.source_type}/{passage.source_id})")
 
+        row = {
+            "source_type": passage.source_type,
+            "source_id": passage.source_id,
+            "memory_id": passage.memory_id,
+            "passage_index": passage.passage_index,
+            "text": enriched_text,
+            "raw_text": raw_text,
+            "char_count": passage.char_count,
+            "embedding": emb_res.vector if emb_res else None,
+            "source_fingerprint": passage.source_fingerprint,
+            "index_version": passage.index_version,
+            "metadata": passage.metadata,
+        }
         result = supabase.table("retrieval_passages") \
-            .insert({
-                "source_type": passage.source_type,
-                "source_id": passage.source_id,
-                "memory_id": passage.memory_id,
-                "passage_index": passage.passage_index,
-                "text": passage.text,
-                "char_count": passage.char_count,
-                "embedding": emb_res.vector if emb_res else None,
-                "source_fingerprint": passage.source_fingerprint,
-                "index_version": passage.index_version,
-                "metadata": passage.metadata,
-            }) \
+            .insert(row) \
             .execute()
 
         if result and result.data:

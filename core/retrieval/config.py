@@ -47,6 +47,14 @@ class RetrievalConfig:
     def debug_explanations(self) -> bool:
         return os.getenv("RETRIEVAL_DEBUG", "false").lower() == "true"
 
+    @property
+    def context_neighbors(self) -> bool:
+        return os.getenv("RETRIEVAL_CONTEXT_NEIGHBORS", "false").lower() == "true"
+
+    @property
+    def chunk_enrichment(self) -> bool:
+        return os.getenv("RETRIEVAL_CHUNK_ENRICHMENT", "false").lower() == "true"
+
 
 config = RetrievalConfig()
 
