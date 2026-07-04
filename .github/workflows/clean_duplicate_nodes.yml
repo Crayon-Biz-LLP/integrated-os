@@ -34,15 +34,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e .
+        run: pip install -r requirements.txt
 
       - name: Run Auto-Safe Merge (Dry Run First)
         id: dry_run
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           echo "🔍 Running dry run to preview AUTO_SAFE merges..."
           python scripts/clean_duplicate_nodes.py --dry-run 2>&1 | tee /tmp/dedup_dry.txt
@@ -56,6 +55,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           echo "🔄 Applying AUTO_SAFE merges..."
           python scripts/clean_duplicate_nodes.py --apply-safe-only 2>&1 | tail -20

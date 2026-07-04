@@ -35,9 +35,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e .
+        run: pip install -r requirements.txt
 
       - name: Run Concept Sweep
         env:
@@ -46,6 +44,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+          PYTHONPATH: ${{ github.workspace }}
         run: python scripts/concept_sweep_batch.py
 
   notify_failure:

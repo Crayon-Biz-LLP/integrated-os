@@ -41,9 +41,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e .
+        run: pip install -r requirements.txt
 
       - name: Warn about first-run cost
         run: |
@@ -65,6 +63,7 @@ jobs:
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
           RETRIEVAL_INDEXING_ENABLED: "true"
           BACKFILL_BATCH_SIZE: "${{ github.event.inputs.batch_size || '5' }}"
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           echo "🔵 Running backfill with batch_size=$BACKFILL_BATCH_SIZE"
           python scripts/run_backfill.py
