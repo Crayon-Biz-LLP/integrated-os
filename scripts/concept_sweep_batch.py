@@ -19,8 +19,8 @@ def fetch_unprocessed_memories():
     all_memories = memories_res.data or []
     
     # Fetch processed logs
-    logs_res = supabase.table("processing_log").select("source_id").eq("process_type", "concept_sweep").eq("status", "completed").execute()
-    processed_ids = {log["source_id"] for log in (logs_res.data or [])}
+    logs_res = supabase.table("audit_logs").select("metadata").eq("service", "concept_sweep").eq("level", "info").execute()
+    processed_ids = {log["metadata"]["source_id"] for log in (logs_res.data or []) if isinstance(log.get("metadata"), dict) and log["metadata"].get("source_id")}
     
     return [m for m in all_memories if str(m["id"]) not in processed_ids]
 
@@ -246,16 +246,19 @@ def run_batch_sweep():
             
             # Log as processed
             try:
-                supabase.table("processing_log").upsert({
-                    "source_table": "memories",
-                    "source_id": mem_id,
-                    "process_type": "concept_sweep",
-                    "status": "completed",
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
-                    "concepts_extracted": len(nodes)
-                }, on_conflict="source_table,source_id,process_type").execute()
+                supabase.table("audit_logs").insert({
+                    "service": "concept_sweep",
+                    "level": "info",
+                    "message": f"Completed memory {mem_id}",
+                    "metadata": {
+                        "source_table": "memories",
+                        "source_id": mem_id,
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "concepts_extracted": len(nodes)
+                    }
+                }).execute()
             except Exception as e:
-                print(f"    Warning: Failed to write processing_log for {mem_id}: {e}")
+                print(f"    Warning: Failed to write audit_logs for {mem_id}: {e}")
                 
 if __name__ == "__main__":
     run_batch_sweep()
