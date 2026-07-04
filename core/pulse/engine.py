@@ -802,9 +802,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                             if url_match:
                                 actual_url = url_match.group(0).rstrip('.,;:!?)"\'')
                                 try:
-                                    existing = supabase.table('resources').select('id').eq('url', actual_url).limit(1).execute()
+                                    existing = supabase.table('resources').select('id, dismissed_at').eq('url', actual_url).limit(1).execute()
                                     if not existing.data:
                                         supabase.table('resources').insert({"url": actual_url}).execute()
+                                    elif existing.data[0].get('dismissed_at'):
+                                        audit_log_sync("pulse", "INFO", f"Skipped URL resource creation (dismissed): {actual_url}")
                                 except Exception as e:
                                     audit_log_sync("pulse", "WARNING", f"Resource insert failed for URL in note: {e}")
                     

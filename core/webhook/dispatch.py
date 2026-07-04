@@ -652,9 +652,12 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
     if match:
         actual_url = match.group(0).rstrip('.,;:!?)"\'')
         try:
-            existing = supabase.table('resources').select('id').eq('url', actual_url).limit(1).execute()
+            existing = supabase.table('resources').select('id, dismissed_at').eq('url', actual_url).limit(1).execute()
             if not existing.data:
                 supabase.table('resources').insert({"url": actual_url}).execute()
+            elif existing.data[0].get('dismissed_at'):
+                # Resource was explicitly dismissed by user in UI, tell them
+                await send_telegram(chat_id, "Already seen this link and dismissed it. Skipping.")
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Resource insert failed for URL: {e}")
 

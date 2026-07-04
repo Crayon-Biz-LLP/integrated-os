@@ -35,8 +35,10 @@ export async function GET(req: NextRequest) {
         cluster_id,
         created_at,
         enriched_at,
+        dismissed_at,
         clusters!cluster_id(id, title, status, description)
-      `);
+      `)
+      .is('dismissed_at', null);
 
     if (search) {
       query = query.or(

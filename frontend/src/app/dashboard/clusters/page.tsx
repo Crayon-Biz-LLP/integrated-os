@@ -17,9 +17,10 @@ export default async function ClustersPage() {
       .from("resources")
       .select(`
         id, url, title, summary, strategic_note, category,
-        cluster_id, created_at, enriched_at,
+        cluster_id, created_at, enriched_at, dismissed_at,
         clusters!cluster_id(id, title, status, description)
       `)
+      .is('dismissed_at', null)
       .order("created_at", { ascending: false })
       .limit(500),
   ]);
@@ -39,6 +40,7 @@ export default async function ClustersPage() {
       cluster_id: r.cluster_id,
       created_at: r.created_at,
       enriched_at: r.enriched_at,
+      dismissed_at: r.dismissed_at,
       hostname,
       cluster_title: clusterData?.title ?? null,
       cluster_status: clusterData?.status ?? null,

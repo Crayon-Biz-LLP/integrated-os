@@ -72,6 +72,11 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [29-conversational-persistence-memory-hygiene.md](29-conversational-persistence-memory-hygiene.md) | Memory expiry, versioning, deletion cleanup, raw dump lifecycle, query carry-forward |
 | [30-context-registry-truth-boundary.md](30-context-registry-truth-boundary.md) | Context registry (entity-grounded retrieval, 6 strategies, hard/soft gates) + truth boundary (post-generation claim validation, action receipts) + prompt registry + JSON fail-closed |
 
+### Frontend Features
+| File | What It Covers |
+|------|---------------|
+| [32-resource-list-dismiss.md](32-resource-list-dismiss.md) | Resource clusters list view toggle and dismiss/read feature |
+
 ### Use Cases
 | File | What It Covers |
 |------|---------------|

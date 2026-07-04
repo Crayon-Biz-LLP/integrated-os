@@ -8,6 +8,7 @@ export interface Resource {
   cluster_id: number | null;
   created_at: string | null;
   enriched_at: string | null;
+  dismissed_at: string | null;
   cluster_title: string | null;
   cluster_status: string | null;
   cluster_description: string | null;

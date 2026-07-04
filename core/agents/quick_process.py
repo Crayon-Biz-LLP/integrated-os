@@ -29,9 +29,11 @@ async def save_url_as_resource(text: str) -> bool:
         return False
     actual_url = match.group(0).rstrip('.,;:!?)"\'')
     try:
-        existing = supabase.table('resources').select('id').eq('url', actual_url).limit(1).execute()
+        existing = supabase.table('resources').select('id, dismissed_at').eq('url', actual_url).limit(1).execute()
         if not existing.data:
             supabase.table('resources').insert({"url": actual_url}).execute()
+        elif existing.data[0].get('dismissed_at'):
+            audit_log_sync("quick_process", "INFO", f"Skipped URL resource creation (dismissed): {actual_url}")
         return True
     except Exception as e:
         audit_log_sync("quick_process", "WARNING", f"Resource insert failed for URL: {e}")

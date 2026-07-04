@@ -20,3 +20,11 @@ export async function updateResourceCluster(id: number, clusterId: number | null
   });
   if (!res.ok) throw new Error("Failed to update resource cluster");
 }
+
+export async function dismissResource(id: number): Promise<void> {
+  const res = await fetch(`/api/resources/${id}/dismiss`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok) throw new Error("Failed to dismiss resource");
+}

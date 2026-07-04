@@ -774,3 +774,12 @@ This enables natural-language note capture without special syntax.
 - 7 sim tests (S1-S7): URL + person query, summary present, empty history, anchor in context, pronoun continuation, multi-turn stripping, full end-to-end with real Supabase thread
 - Cleanup audited: mock-session inserts blocked by UUID constraint; seeded threads tracked and deleted by UUID; zero orphaned rows verified post-run
 **Deploy safe**: YES — additive only, `format_history_for_prompt` unchanged for response generation paths
+
+---
+
+### [COMPLETED] T-RESOURCE-001: Resource Clusters — List View + Dismiss Feature
+**Files**: `db/20_resources_dismissed.sql`, `frontend/src/app/dashboard/clusters/clusters-shell.tsx`, `frontend/src/app/dashboard/clusters/page.tsx`, `frontend/src/app/api/resources/route.ts`, `frontend/src/app/api/resources/[id]/dismiss/route.ts`, `frontend/src/lib/resources/api.ts`, `frontend/src/lib/resources/types.ts`, `core/webhook/dispatch.py`, `core/agents/quick_process.py`, `core/pulse/engine.py`
+**Change**: Two features on the Knowledge Base page:
+1. **List view toggle**: New grid/list toggle in the header. List view is a flat table with Title, Hostname, Category, Cluster dropdown, Date, and Dismiss button per row.
+2. **Resource dismiss**: `dismissed_at TIMESTAMPTZ` column added to `resources` table. Dismiss buttons in both the list view rows and the split-pane detail view. Dismissed resources are hidden from the UI (`.is('dismissed_at', null)` filter on all queries). URL dedup in the backend checks `dismissed_at` — if the same URL is re-submitted, Rhodey replies "Already seen this link and dismissed it. Skipping." instead of re-storing it.
+**Deploy safe**: YES — additive migration + new API endpoint + hidden behind new UI toggle. Existing resources unaffected.

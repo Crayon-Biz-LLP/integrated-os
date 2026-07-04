@@ -53,6 +53,7 @@
 - **DEFERRED**: TF-003 People Table Enrichment — organization_name, last_interaction_date from graph edges [COMPLETED]
 - **KNOWN**: Label collisions — orgs and projects with same name (Ashraya, Solvstrat, Qhord, PERSONAL) can't both have graph nodes due to `unique_label` constraint. Sync skips them gracefully.
 - **KNOWN**: `graph_node_id` FK exists on `people` and `organizations` tables but zero rows have it populated. Domain→graph link is one-way via `graph_nodes.db_record_id` only.
+- **Resource Clusters List View + Dismiss**: Knowledge Base (`/dashboard/clusters`) has a grid/list view toggle. Resources can be dismissed (sets `dismissed_at`), hidden from UI, and reject re-storage of the same URL on future submission with "Already seen" Telegram reply.
 
 ### Rhodey Audit — Good-to-Have (Future Backlog)
 

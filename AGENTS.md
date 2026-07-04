@@ -14,6 +14,34 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
+## Session Anchored Summary (Jul 4, 2026 — Part 15: Resource Clusters List View + Dismiss)
+
+### Progress Done This Session
+- **Resource Clusters List View + Dismiss**: Added two features to the Knowledge Base (`/dashboard/clusters`) page:
+  - **List view toggle**: Grid/list toggle in the header. List view is a flat table (Title, Hostname, Category, Cluster selector, Date, Dismiss button).
+  - **Resource dismiss**: `resources.dismissed_at TIMESTAMPTZ` column (migration `db/20_resources_dismissed.sql`). Dismiss buttons in both list view rows and split-pane detail view. Dismissed resources hidden from all API queries (`.is('dismissed_at', null)` filter). URL dedup in 3 backend locations (`dispatch.py`, `quick_process.py`, `engine.py`) checks `dismissed_at` — same URL re-submitted later says "Already seen this link and dismissed it. Skipping." instead of re-storing.
+  - New API endpoint: `PATCH /api/resources/[id]/dismiss`
+  - Ruff clean.
+
+### Key Decisions This Session
+- **Hidden, not soft-deleted**: Dismissed resources stay in DB with `dismissed_at` timestamp. They function as dedup keys for future URL re-submission.
+- **Web UI only**: Dismiss is only available from the clusters page, not from Telegram inline flows (per user preference).
+- **Informative Telegram reply**: When a dismissed URL is re-submitted, Rhodey explicitly says "Already seen this link and dismissed it. Skipping." rather than silently ignoring.
+- **Ponytail scope**: No versioning added to dismissed resources — `dismissed_at` is sufficient. No new views or filters for re-showing dismissed resources — they're permanently hidden unless manually restored via DB.
+
+### Key Files (Part 15)
+- `db/20_resources_dismissed.sql` — migration
+- `frontend/src/app/dashboard/clusters/clusters-shell.tsx` — list view + dismiss in both views
+- `frontend/src/app/dashboard/clusters/page.tsx` — pass dismissed_at, filter hidden
+- `frontend/src/app/api/resources/route.ts` — filter dismissed
+- `frontend/src/app/api/resources/[id]/dismiss/route.ts` — NEW dismiss endpoint
+- `frontend/src/lib/resources/api.ts` — dismissResource()
+- `frontend/src/lib/resources/types.ts` — dismissed_at field
+- `core/webhook/dispatch.py` — dedup check + Telegram reply
+- `core/agents/quick_process.py` — dedup check
+- `core/pulse/engine.py` — dedup check
+- `product-summary/32-resource-list-dismiss.md` — documentation
+
 ## Session Anchored Summary (Jun 30, 2026 — Part 10: /why Decision Audit Command)
 
 ### Progress Done This Session

@@ -2,11 +2,12 @@
 
 import { useState, useMemo, useCallback } from 'react';
 import type { Resource, ResourceCluster } from '@/lib/resources/types';
-import { updateResourceCluster, fetchResource, fetchRelatedResources } from '@/lib/resources/api';
-import { Search, Globe, FileText, LayoutGrid, Maximize2, Inbox, ExternalLink, ChevronLeft } from 'lucide-react';
+import { updateResourceCluster, fetchResource, fetchRelatedResources, dismissResource } from '@/lib/resources/api';
+import { Search, Globe, FileText, LayoutGrid, Maximize2, Inbox, ExternalLink, ChevronLeft, List, XCircle } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 const categoryColors: Record<string, string> = {
@@ -37,6 +38,7 @@ export function ClustersShell({
 }) {
   const [resources, setResources] = useState(initialResources);
   const [search, setSearch] = useState('');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   
   // Selection States
   const [expandedClusterId, setExpandedClusterId] = useState<number | 'unmapped' | null>(null);
@@ -110,6 +112,19 @@ export function ClustersShell({
     } catch (err: any) {
       console.error('Failed to update cluster:', err);
       alert('Failed to update cluster: ' + (err.message || 'Unknown error'));
+    }
+  }, [selectedResource]);
+
+  const handleDismiss = useCallback(async (resourceId: number) => {
+    try {
+      await dismissResource(resourceId);
+      setResources(prev => prev.filter(r => r.id !== resourceId));
+      if (selectedResource?.id === resourceId) {
+        setSelectedResource(null);
+      }
+    } catch (err: any) {
+      console.error('Failed to dismiss resource:', err);
+      alert('Failed to dismiss resource: ' + (err.message || 'Unknown error'));
     }
   }, [selectedResource]);
 
@@ -200,24 +215,126 @@ export function ClustersShell({
           </p>
         </div>
 
-        <div className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search across all clusters..."
-            className="pl-9 bg-muted/50 border-border/50 rounded-xl"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+        <div className="flex items-center gap-3 w-full sm:w-auto">
+          <div className="relative w-full sm:w-72">
+            <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search across all clusters..."
+              className="pl-9 bg-muted/50 border-border/50 rounded-xl"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <div className="flex bg-muted/50 rounded-lg p-1 shrink-0 border border-border/50">
+            <button
+              onClick={() => setViewMode('grid')}
+              className={cn("p-1.5 rounded-md transition-colors", viewMode === 'grid' ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground")}
+            >
+              <LayoutGrid className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={cn("p-1.5 rounded-md transition-colors", viewMode === 'list' ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground")}
+            >
+              <List className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Bento Grid */}
-      <div className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 lg:p-8">
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6 auto-rows-[220px]">
-          {renderBentoBox('unmapped', 'Inbox / Unmapped', unmapped, 'Floating resources awaiting categorization.')}
-          {initialClusters.map(c => renderBentoBox(c.id, c.title, grouped[c.id] || [], c.description))}
+      {viewMode === 'grid' ? (
+        <div className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 lg:p-8">
+          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6 auto-rows-[220px]">
+            {renderBentoBox('unmapped', 'Inbox / Unmapped', unmapped, 'Floating resources awaiting categorization.')}
+            {initialClusters.map(c => renderBentoBox(c.id, c.title, grouped[c.id] || [], c.description))}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 lg:p-8">
+          <div className="bg-card border border-border/50 rounded-xl overflow-hidden shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead className="text-xs text-muted-foreground uppercase bg-muted/30 border-b border-border/50">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Title</th>
+                    <th className="px-4 py-3 font-medium">Hostname</th>
+                    <th className="px-4 py-3 font-medium">Category</th>
+                    <th className="px-4 py-3 font-medium">Cluster</th>
+                    <th className="px-4 py-3 font-medium">Date</th>
+                    <th className="px-4 py-3 font-medium text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/30">
+                  {filteredResources.map(r => (
+                    <tr key={r.id} className="hover:bg-muted/10 transition-colors">
+                      <td className="px-4 py-3 max-w-[300px]">
+                        <div className="flex items-center gap-2">
+                          <div className="flex w-6 h-6 rounded-full items-center justify-center shrink-0 bg-muted/50 text-muted-foreground">
+                            {r.url ? <Globe className="h-3 w-3" /> : <FileText className="h-3 w-3" />}
+                          </div>
+                          <a 
+                            href={r.url || '#'} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className={cn("font-medium truncate hover:underline", !r.url && "pointer-events-none")}
+                          >
+                            {getDisplayTitle(r)}
+                          </a>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground truncate max-w-[150px]">
+                        {r.hostname || 'Local'}
+                      </td>
+                      <td className="px-4 py-3">
+                        {r.category ? (
+                          <span className={cn("text-[10px] px-2 py-1 rounded font-bold uppercase shrink-0 whitespace-nowrap", categoryColors[r.category] || "text-muted-foreground bg-muted")}>
+                            {r.category.substring(0,4)}
+                          </span>
+                        ) : <span className="text-muted-foreground/50">-</span>}
+                      </td>
+                      <td className="px-4 py-3">
+                        <select
+                          value={r.cluster_id ? String(r.cluster_id) : 'unmapped'}
+                          onChange={(e) => handleClusterChange(r.id, e.target.value === 'unmapped' ? null : Number(e.target.value))}
+                          className="w-full max-w-[150px] rounded-md border border-border/50 bg-transparent text-xs px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary/20 text-foreground cursor-pointer hover:bg-muted/40"
+                        >
+                          <option value="unmapped">Unmapped</option>
+                          {initialClusters.map((m) => (
+                            <option key={m.id} value={String(m.id)}>
+                              {m.title}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                        {formatDate(r.created_at)}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => handleDismiss(r.id)}
+                          className="h-7 px-2 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                        >
+                          <XCircle className="w-3.5 h-3.5 mr-1" />
+                          Dismiss
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredResources.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-12 text-center text-muted-foreground">
+                        No resources found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Expanded Cluster Modal (Split Pane) */}
       <Dialog 
@@ -326,12 +443,24 @@ export function ClustersShell({
               )}>
                 {selectedResource ? (
                   <div className="flex flex-col p-6 md:p-10 max-w-3xl mx-auto w-full animate-in fade-in slide-in-from-right-4 duration-300">
-                    <button 
-                      onClick={() => setSelectedResource(null)} 
-                      className="md:hidden mb-6 flex items-center w-fit text-sm font-medium text-muted-foreground hover:text-foreground transition-colors bg-muted/50 px-3 py-1.5 rounded-full"
-                    >
-                      <ChevronLeft className="w-4 h-4 mr-1" /> Back to list
-                    </button>
+                    <div className="flex items-center justify-between mb-6">
+                      <button 
+                        onClick={() => setSelectedResource(null)} 
+                        className="md:hidden flex items-center w-fit text-sm font-medium text-muted-foreground hover:text-foreground transition-colors bg-muted/50 px-3 py-1.5 rounded-full"
+                      >
+                        <ChevronLeft className="w-4 h-4 mr-1" /> Back
+                      </button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDismiss(selectedResource.id)}
+                        className="ml-auto text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                      >
+                        <XCircle className="w-4 h-4 mr-2 md:mr-2" />
+                        <span className="hidden md:inline">Dismiss Resource</span>
+                        <span className="md:hidden">Dismiss</span>
+                      </Button>
+                    </div>
 
                     <div className="flex items-center gap-3 mb-6">
                       {selectedResource.category && (
