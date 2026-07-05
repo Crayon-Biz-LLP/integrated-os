@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from supabase import create_client, Client  # noqa: E402
+from core.services.db import maybe_single_safe  # noqa: E402
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),

@@ -1,6 +1,6 @@
 from core.llm.constants import CLASSIFICATION_MODEL
 from core.lib.audit_logger import audit_log_sync
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.pulse.graph import insert_extracted_entities

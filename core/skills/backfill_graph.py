@@ -11,7 +11,7 @@ import uuid
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
 from core.lib.graph_rules import validate_edge, resolve_alias, has_structural_anchor
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 
 
 

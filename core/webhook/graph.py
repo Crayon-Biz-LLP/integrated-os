@@ -5,6 +5,7 @@ from typing import Dict, Any
 from core.webhook.utils import supabase
 from core.services.llm import call_gemini_classify
 from core.lib.audit_logger import audit_log_sync
+from core.services.db import maybe_single_safe
 from core.pulse.graph import create_graph_node_with_db_record
 
 # In-memory session cache

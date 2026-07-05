@@ -11,7 +11,7 @@ from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import compute_expires_at
 from core.webhook.utils import supabase
 from core.retrieval.pipeline import schedule_index_memory
-from core.services.db import version_memory_for_update
+from core.services.db import version_memory_for_update, maybe_single_safe
 from core.decisions import record_decision
 from datetime import datetime, timezone
 from core.actions import ActionResult, accumulate_action

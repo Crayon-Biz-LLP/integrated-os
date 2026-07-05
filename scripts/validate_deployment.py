@@ -2,6 +2,7 @@ import os
 import sys
 from supabase import create_client
 from dotenv import load_dotenv
+from core.services.db import maybe_single_safe
 
 load_dotenv()
 

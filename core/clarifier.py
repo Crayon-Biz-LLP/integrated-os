@@ -1,4 +1,4 @@
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 import uuid
 from typing import Optional
 from datetime import datetime, timezone, timedelta

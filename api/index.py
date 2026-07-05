@@ -38,7 +38,7 @@ from core.pulse import (
 )
 from core.pulse.tools import skip_recurring_instance
 from core.pulse.maintenance import process_maintenance
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 
 app = FastAPI(title="Integrated-OS")
 
@@ -604,7 +604,7 @@ async def graph_merge_action_route(request: Request):
         if not pending_id or action not in ('accept', 'reject'):
             raise HTTPException(status_code=400, detail="id and valid action (accept/reject) required")
 
-        from core.services.db import get_supabase
+        from core.services.db import get_supabase, maybe_single_safe
         supabase = get_supabase()
 
         pending_row = maybe_single_safe(supabase.table('pending_graph_nodes').select('*').eq('id', int(pending_id)))
@@ -709,7 +709,7 @@ async def graph_node_rename_route(pending_id: str, request: Request):
         new_label = body.get('label')
         scope = body.get('scope', 'pending')
         
-        from core.services.db import get_supabase
+        from core.services.db import get_supabase, maybe_single_safe
         supabase = get_supabase()
         
         if scope == 'live':
@@ -808,7 +808,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         if not new_type or new_type not in ['person', 'project', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']:
             raise HTTPException(status_code=400, detail="valid type required")
             
-        from core.services.db import get_supabase
+        from core.services.db import get_supabase, maybe_single_safe
         supabase = get_supabase()
         
         if scope == 'live':
@@ -882,7 +882,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
         else:
             scope = 'pending'
 
-        from core.services.db import get_supabase
+        from core.services.db import get_supabase, maybe_single_safe
         supabase = get_supabase()
         
         if scope == 'live':
@@ -983,7 +983,7 @@ async def graph_node_manual_merge_route(request: Request):
         if not pending_id or not target_id:
             raise HTTPException(status_code=400, detail="id and target_id required")
             
-        from core.services.db import get_supabase
+        from core.services.db import get_supabase, maybe_single_safe
         supabase = get_supabase()
         
         if scope == 'live':

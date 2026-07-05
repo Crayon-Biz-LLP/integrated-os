@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # noqa: E402 — must run before core imports that read env vars
 
-from core.services.db import get_supabase  # noqa: E402
+from core.services.db import get_supabase, maybe_single_safe  # noqa: E402
 
 supabase = get_supabase()
 

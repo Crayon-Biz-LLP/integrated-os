@@ -17,7 +17,7 @@ import hashlib
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 from core.lib.audit_logger import audit_log_sync
 from core.retrieval.ppr import personalized_pagerank, build_adjacency_from_edges, normalize_scores
 

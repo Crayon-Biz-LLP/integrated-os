@@ -23,7 +23,7 @@ from core.retrieval.pipeline import schedule_index_memory
 from core.lib.decision_audit import log_decision, DecisionStage, set_decision_chain_id, get_decision_chain_id
 from core.pulse.entity_extractor import extract_and_link_entities
 from core.pulse.entity_resolver import resolve_entities_from_text
-from core.services.db import version_memory_for_update
+from core.services.db import version_memory_for_update, maybe_single_safe
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:

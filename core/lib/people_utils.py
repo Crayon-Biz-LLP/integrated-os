@@ -1,5 +1,5 @@
 import re
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 from core.lib.audit_logger import audit_log_sync
 
 PEOPLE_TITLES = [

@@ -1,4 +1,4 @@
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 
 from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
