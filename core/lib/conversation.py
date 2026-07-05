@@ -102,11 +102,11 @@ def _resolve_entity_to_candidates(chat_id: int, entity_type: str, entity_id, sou
     # Fetch entity name for primary-topic check
     entity_name = ""
     if entity_type == 'organization':
-        r = supabase.table('organizations').select('name').eq('id', entity_id).maybe_single().execute()
+        r = maybe_single_safe(supabase.table('organizations').select('name').eq('id', entity_id))
         if r.data:
             entity_name = r.data.get('name', '')
     elif entity_type == 'project':
-        r = supabase.table('projects').select('name').eq('id', entity_id).maybe_single().execute()
+        r = maybe_single_safe(supabase.table('projects').select('name').eq('id', entity_id))
         if r.data:
             entity_name = r.data.get('name', '')
     

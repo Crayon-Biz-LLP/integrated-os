@@ -146,6 +146,34 @@ export async function checkSimilarGraphEdges(source: string, target: string, rel
   if (!res.ok) return [];
   return res.json();
 }
+
+export async function fetchAutoDecisions(limit = 100): Promise<any[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const res = await fetch(`/api/auto-decisions?${params.toString()}`);
+  if (!res.ok) {
+    console.error("Failed to fetch auto-decisions:", await res.text());
+    return [];
+  }
+  return await res.json();
+}
+
+export async function verifyAutoDecision(id: number): Promise<boolean> {
+  const res = await fetch(`/api/auto-decisions/${id}/verify`, { method: 'PATCH' });
+  if (!res.ok) {
+    console.error("Failed to verify auto-decision:", await res.text());
+    return false;
+  }
+  return true;
+}
+
+export async function rejectAutoDecision(id: number): Promise<boolean> {
+  const res = await fetch(`/api/auto-decisions/${id}/reject`, { method: 'PATCH' });
+  if (!res.ok) {
+    console.error("Failed to reject auto-decision:", await res.text());
+    return false;
+  }
+  return true;
+}
 export async function fetchLiveGraphNodes(): Promise<any[]> {
   const res = await fetch('/api/graph-nodes/live');
   if (!res.ok) {

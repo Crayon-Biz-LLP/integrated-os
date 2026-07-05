@@ -162,7 +162,7 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                     proj_name = None
                     proj_id = task.get('project_id')
                     if proj_id:
-                        proj_lookup = supabase_client.table('projects').select('name').eq('id', proj_id).maybe_single().execute()
+                        proj_lookup = maybe_single_safe(supabase_client.table('projects').select('name').eq('id', proj_id))
                         proj_name = proj_lookup.data['name'] if proj_lookup.data else None
                     completed.append((title, proj_name))
 

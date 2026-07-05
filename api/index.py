@@ -426,7 +426,7 @@ async def update_task_status(request: Request, task_id: int):
             proj_name = None
             proj_id = task.get('project_id')
             if proj_id:
-                proj_lookup = supabase.table('projects').select('name').eq('id', proj_id).maybe_single().execute()
+                proj_lookup = maybe_single_safe(supabase.table('projects').select('name').eq('id', proj_id))
                 proj_name = proj_lookup.data['name'] if proj_lookup.data else None
             await write_outcome_memory(task_title, proj_name)
 
@@ -607,7 +607,7 @@ async def graph_merge_action_route(request: Request):
         from core.services.db import get_supabase
         supabase = get_supabase()
 
-        pending_row = supabase.table('pending_graph_nodes').select('*').eq('id', int(pending_id)).maybe_single().execute()
+        pending_row = maybe_single_safe(supabase.table('pending_graph_nodes').select('*').eq('id', int(pending_id)))
         if not pending_row or not pending_row.data:
             return {"success": False, "message": "Merge proposal not found."}
 
@@ -640,7 +640,7 @@ async def graph_merge_action_route(request: Request):
         
         from core.lib.graph_rules import get_canonical_id
         
-        source_node_res = supabase.table('graph_nodes').select('id, label').eq('label', pr['label']).maybe_single().execute()
+        source_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label').eq('label', pr['label']))
         source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
         
         target_canonical = get_canonical_id(target_id)
@@ -713,7 +713,7 @@ async def graph_node_rename_route(pending_id: str, request: Request):
         supabase = get_supabase()
         
         if scope == 'live':
-            live_res = supabase.table('graph_nodes').select('label, type').eq('id', pending_id).maybe_single().execute()
+            live_res = maybe_single_safe(supabase.table('graph_nodes').select('label, type').eq('id', pending_id))
             if not live_res or not live_res.data:
                 return {"success": False, "message": "Live node not found"}
             old_label = live_res.data['label']
@@ -736,7 +736,7 @@ async def graph_node_rename_route(pending_id: str, request: Request):
                         supabase.table('pending_graph_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
             
             # Cascade to type overrides table
-            override_res = supabase.table('graph_type_overrides').select('*').eq('label', old_label).maybe_single().execute()
+            override_res = maybe_single_safe(supabase.table('graph_type_overrides').select('*').eq('label', old_label))
             if override_res and override_res.data:
                 override_data = override_res.data
                 supabase.table('graph_type_overrides').delete().eq('label', old_label).execute()
@@ -758,7 +758,7 @@ async def graph_node_rename_route(pending_id: str, request: Request):
         except ValueError:
             return {"success": False, "message": "Invalid pending ID"}
             
-        pending_res = supabase.table('pending_graph_nodes').select('label, type').eq('id', pending_id_int).maybe_single().execute()
+        pending_res = maybe_single_safe(supabase.table('pending_graph_nodes').select('label, type').eq('id', pending_id_int))
         if not pending_res or not pending_res.data:
             return {"success": False, "message": "Pending node not found"}
             
@@ -781,7 +781,7 @@ async def graph_node_rename_route(pending_id: str, request: Request):
                     supabase.table('pending_graph_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
 
         # Cascade to type overrides table
-        override_res = supabase.table('graph_type_overrides').select('*').eq('label', old_label).maybe_single().execute()
+        override_res = maybe_single_safe(supabase.table('graph_type_overrides').select('*').eq('label', old_label))
         if override_res and override_res.data:
             override_data = override_res.data
             supabase.table('graph_type_overrides').delete().eq('label', old_label).execute()
@@ -812,7 +812,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         supabase = get_supabase()
         
         if scope == 'live':
-            live_res = supabase.table('graph_nodes').select('id, label, type, db_record_id').eq('id', pending_id).maybe_single().execute()
+            live_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label, type, db_record_id').eq('id', pending_id))
             if not live_res or not live_res.data:
                 return {"success": False, "message": "Live node not found"}
             label = live_res.data['label']
@@ -822,7 +822,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
             if old_type == 'person' and new_type != 'person':
                 p_id = live_res.data.get('db_record_id')
                 if p_id:
-                    p_res = supabase.table('people').select('role').eq('id', p_id).maybe_single().execute()
+                    p_res = maybe_single_safe(supabase.table('people').select('role').eq('id', p_id))
                     old_role = p_res.data.get('role') if p_res and p_res.data else ""
                     old_role = old_role or ""
                     supabase.table('people').update({'role': f"{old_role} [CHANGED TO {new_type.upper()}]".strip(), 'strategic_weight': 0}).eq('id', p_id).execute()
@@ -836,7 +836,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         except ValueError:
             return {"success": False, "message": "Invalid pending ID"}
             
-        pending_res = supabase.table('pending_graph_nodes').select('id, label, type').eq('id', pending_id_int).maybe_single().execute()
+        pending_res = maybe_single_safe(supabase.table('pending_graph_nodes').select('id, label, type').eq('id', pending_id_int))
         if not pending_res or not pending_res.data:
             return {"success": False, "message": "Pending node not found"}
             
@@ -845,11 +845,11 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         
         # --- Handle people table change type for pending ---
         if old_type == 'person' and new_type != 'person':
-            live_node = supabase.table('graph_nodes').select('db_record_id').eq('label', label).maybe_single().execute()
+            live_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('label', label))
             if live_node and live_node.data:
                 p_id = live_node.data.get('db_record_id')
                 if p_id:
-                    p_res = supabase.table('people').select('role').eq('id', p_id).maybe_single().execute()
+                    p_res = maybe_single_safe(supabase.table('people').select('role').eq('id', p_id))
                     old_role = p_res.data.get('role') if p_res and p_res.data else ""
                     old_role = old_role or ""
                     supabase.table('people').update({'role': f"{old_role} [CHANGED TO {new_type.upper()}]".strip(), 'strategic_weight': 0}).eq('id', p_id).execute()
@@ -886,7 +886,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
         supabase = get_supabase()
         
         if scope == 'live':
-            live_res = supabase.table('graph_nodes').select('label, type, db_record_id').eq('id', pending_id).maybe_single().execute()
+            live_res = maybe_single_safe(supabase.table('graph_nodes').select('label, type, db_record_id').eq('id', pending_id))
             if not live_res or not live_res.data:
                 return {"success": False, "message": "Live node not found"}
             label = live_res.data['label']
@@ -895,7 +895,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
             if live_res.data.get('type') == 'person':
                 p_id = live_res.data.get('db_record_id')
                 if p_id:
-                    p_res = supabase.table('people').select('role').eq('id', p_id).maybe_single().execute()
+                    p_res = maybe_single_safe(supabase.table('people').select('role').eq('id', p_id))
                     old_role = p_res.data.get('role') if p_res and p_res.data else ""
                     old_role = old_role or ""
                     supabase.table('people').update({'role': f"{old_role} [DELETED]".strip(), 'strategic_weight': 0}).eq('id', p_id).execute()
@@ -926,7 +926,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
         except ValueError:
             return {"success": False, "message": "Invalid pending ID"}
             
-        pending_res = supabase.table('pending_graph_nodes').select('label, type').eq('id', pending_id_int).maybe_single().execute()
+        pending_res = maybe_single_safe(supabase.table('pending_graph_nodes').select('label, type').eq('id', pending_id_int))
         if not pending_res or not pending_res.data:
             return {"success": False, "message": "Pending node not found"}
             
@@ -950,13 +950,13 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                     orphaned += 1
                     
         # --- Handle people table & live node cleanup ---
-        live_res = supabase.table('graph_nodes').select('id, type, db_record_id').eq('label', label).maybe_single().execute()
+        live_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type, db_record_id').eq('label', label))
         if live_res and live_res.data:
             l_id = live_res.data['id']
             if live_res.data.get('type') == 'person':
                 p_id = live_res.data.get('db_record_id')
                 if p_id:
-                    p_res = supabase.table('people').select('role').eq('id', p_id).maybe_single().execute()
+                    p_res = maybe_single_safe(supabase.table('people').select('role').eq('id', p_id))
                     old_role = p_res.data.get('role') if p_res and p_res.data else ""
                     old_role = old_role or ""
                     supabase.table('people').update({'role': f"{old_role} [DELETED]".strip(), 'strategic_weight': 0}).eq('id', p_id).execute()
@@ -987,12 +987,12 @@ async def graph_node_manual_merge_route(request: Request):
         supabase = get_supabase()
         
         if scope == 'live':
-            source_res = supabase.table('graph_nodes').select('id, label, type').eq('id', pending_id).maybe_single().execute()
+            source_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label, type').eq('id', pending_id))
             if not source_res or not source_res.data:
                 return {"success": False, "message": "Source live node not found"}
             source_label = source_res.data['label']
             
-            target_res = supabase.table('graph_nodes').select('id, label').eq('id', target_id).maybe_single().execute()
+            target_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label').eq('id', target_id))
             if not target_res or not target_res.data:
                 return {"success": False, "message": "Target live node not found"}
             target_label = target_res.data['label']
@@ -1013,7 +1013,7 @@ async def graph_node_manual_merge_route(request: Request):
             loser_out = supabase.table('graph_edges').select('id, target_node_id, relationship').eq('source_node_id', loser_id).execute()
             for l_edge in (loser_out.data or []):
                 # Check if winner already has this edge
-                w_edge = supabase.table('graph_edges').select('id').eq('source_node_id', winner_id).eq('target_node_id', l_edge['target_node_id']).eq('relationship', l_edge['relationship']).maybe_single().execute()
+                w_edge = maybe_single_safe(supabase.table('graph_edges').select('id').eq('source_node_id', winner_id).eq('target_node_id', l_edge['target_node_id']).eq('relationship', l_edge['relationship']))
                 if w_edge and w_edge.data:
                     # Duplicate exists! Just delete the loser's edge
                     supabase.table('graph_edges').delete().eq('id', l_edge['id']).execute()
@@ -1024,7 +1024,7 @@ async def graph_node_manual_merge_route(request: Request):
             # 2. Target_node_id rewiring (loser -> winner)
             loser_in = supabase.table('graph_edges').select('id, source_node_id, relationship').eq('target_node_id', loser_id).execute()
             for l_edge in (loser_in.data or []):
-                w_edge = supabase.table('graph_edges').select('id').eq('target_node_id', winner_id).eq('source_node_id', l_edge['source_node_id']).eq('relationship', l_edge['relationship']).maybe_single().execute()
+                w_edge = maybe_single_safe(supabase.table('graph_edges').select('id').eq('target_node_id', winner_id).eq('source_node_id', l_edge['source_node_id']).eq('relationship', l_edge['relationship']))
                 if w_edge and w_edge.data:
                     supabase.table('graph_edges').delete().eq('id', l_edge['id']).execute()
                 else:
@@ -1032,11 +1032,11 @@ async def graph_node_manual_merge_route(request: Request):
             
             # --- Handle people table merge ---
             if source_type == 'person':
-                s_meta = supabase.table('graph_nodes').select('metadata').eq('id', loser_id).maybe_single().execute()
+                s_meta = maybe_single_safe(supabase.table('graph_nodes').select('metadata').eq('id', loser_id))
                 s_people_id = s_meta.data.get('metadata', {}).get('people_id') if s_meta and s_meta.data else None
                 
                 if s_people_id:
-                    p_res = supabase.table('people').select('role').eq('id', s_people_id).maybe_single().execute()
+                    p_res = maybe_single_safe(supabase.table('people').select('role').eq('id', s_people_id))
                     old_role = p_res.data.get('role') if p_res and p_res.data else ""
                     old_role = old_role or ""
                     new_role = f"{old_role} [MERGED INTO: {target_label}]".strip()
@@ -1062,7 +1062,7 @@ async def graph_node_manual_merge_route(request: Request):
             return {"success": True, "message": f"Merged live '{source_label}' into '{target_label}'"}
             
         # Source node (pending)
-        source_res = supabase.table('pending_graph_nodes').select('label, type').eq('id', pending_id).maybe_single().execute()
+        source_res = maybe_single_safe(supabase.table('pending_graph_nodes').select('label, type').eq('id', pending_id))
         if not source_res or not source_res.data:
             return {"success": False, "message": "Source pending node not found"}
         source_label = source_res.data['label']
@@ -1080,7 +1080,7 @@ async def graph_node_manual_merge_route(request: Request):
                 return False
 
         if _is_uuid(target_id):
-            target_res = supabase.table('graph_nodes').select('label').eq('id', target_id).maybe_single().execute()
+            target_res = maybe_single_safe(supabase.table('graph_nodes').select('label').eq('id', target_id))
             if target_res and target_res.data:
                 target_label = target_res.data['label']
                 
@@ -1088,7 +1088,7 @@ async def graph_node_manual_merge_route(request: Request):
             # Maybe it's a pending node ID?
             try:
                 t_id = int(target_id)
-                ptarget_res = supabase.table('pending_graph_nodes').select('label').eq('id', t_id).maybe_single().execute()
+                ptarget_res = maybe_single_safe(supabase.table('pending_graph_nodes').select('label').eq('id', t_id))
                 if ptarget_res and ptarget_res.data:
                     target_label = ptarget_res.data['label']
             except ValueError:
@@ -1098,14 +1098,14 @@ async def graph_node_manual_merge_route(request: Request):
             return {"success": False, "message": "Target node not found"}
             
         # --- FIX: Check if pending source was already approved (has live graph_nodes entry) ---
-        live_source = supabase.table('graph_nodes').select('id').eq('label', source_label).maybe_single().execute()
+        live_source = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', source_label))
         if live_source and live_source.data:
             s_live_id = live_source.data['id']
             if _is_uuid(target_id):
                 # Clean conflicting edges before rewiring using loser-first logic
                 loser_out = supabase.table('graph_edges').select('id, target_node_id, relationship').eq('source_node_id', s_live_id).execute()
                 for l_edge in (loser_out.data or []):
-                    w_edge = supabase.table('graph_edges').select('id').eq('source_node_id', target_id).eq('target_node_id', l_edge['target_node_id']).eq('relationship', l_edge['relationship']).maybe_single().execute()
+                    w_edge = maybe_single_safe(supabase.table('graph_edges').select('id').eq('source_node_id', target_id).eq('target_node_id', l_edge['target_node_id']).eq('relationship', l_edge['relationship']))
                     if w_edge and w_edge.data:
                         supabase.table('graph_edges').delete().eq('id', l_edge['id']).execute()
                     else:
@@ -1113,7 +1113,7 @@ async def graph_node_manual_merge_route(request: Request):
                 
                 loser_in = supabase.table('graph_edges').select('id, source_node_id, relationship').eq('target_node_id', s_live_id).execute()
                 for l_edge in (loser_in.data or []):
-                    w_edge = supabase.table('graph_edges').select('id').eq('target_node_id', target_id).eq('source_node_id', l_edge['source_node_id']).eq('relationship', l_edge['relationship']).maybe_single().execute()
+                    w_edge = maybe_single_safe(supabase.table('graph_edges').select('id').eq('target_node_id', target_id).eq('source_node_id', l_edge['source_node_id']).eq('relationship', l_edge['relationship']))
                     if w_edge and w_edge.data:
                         supabase.table('graph_edges').delete().eq('id', l_edge['id']).execute()
                     else:
@@ -1121,10 +1121,10 @@ async def graph_node_manual_merge_route(request: Request):
                 
                 # Handle people table merge
                 if source_type == 'person':
-                    s_node = supabase.table('graph_nodes').select('db_record_id').eq('id', s_live_id).maybe_single().execute()
+                    s_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('id', s_live_id))
                     s_pid = s_node.data.get('db_record_id') if s_node and s_node.data else None
                     if s_pid:
-                        p_res = supabase.table('people').select('role').eq('id', s_pid).maybe_single().execute()
+                        p_res = maybe_single_safe(supabase.table('people').select('role').eq('id', s_pid))
                         old_role = p_res.data.get('role') or ""
                         supabase.table('people').update({'role': f"{old_role} [MERGED INTO: {target_label}]".strip(), 'strategic_weight': 0}).eq('id', s_pid).execute()
                         

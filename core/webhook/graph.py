@@ -116,7 +116,7 @@ async def apply_graph_actions(actions: list, original_items_map: dict) -> dict:
             
         # Re-verify status is still pending to prevent race conditions
         try:
-            current = supabase.table('pending_graph_nodes').select('status').eq('id', node_id).maybe_single().execute()
+            current = maybe_single_safe(supabase.table('pending_graph_nodes').select('status').eq('id', node_id))
             if not current or not current.data or current.data.get('status') != 'pending':
                 results["failed"] += 1
                 results["details"].append(f"g{node_id} failed: no longer pending")

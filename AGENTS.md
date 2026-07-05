@@ -14,6 +14,34 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
+## Session Anchored Summary (Jul 4, 2026 — Part 16: Pattern Learning & Auto-Decision Feedback Fixes)
+
+### Progress Done This Session
+- **Telegram Undo Buttons**: Added inline `↩️ Undo` buttons to the Decision Pulse message for auto-processed items (channels, graph nodes, graph edges). The undo handler in `process_callback_query()` queries the `decisions` table with precise `decision_type` filter (`channel_approval`, `graph_node_approval`, `graph_edge_approval`), calls `reverse_decision()`, and reverts the DB action (messages → pending, graph nodes/edges → pending). 30-minute window for reversibility.
+- **Configurable 70/30 Blend**: Replaced hardcoded cross-subsystem blend weights in `compute_composite_confidence()` with module-level constants: `CROSS_SUBSYSTEM_BLEND_PRIMARY`, `CROSS_SUBSYSTEM_BLEND_CROSS`, `CROSS_SIGNAL_MIN_CONFIDENCE`, `CROSS_COMPOSITE_BOOST_DELTA`.
+- **Entity Type-Weighted Overlap Bonus**: Added `_resolve_entity_type()` helper (single bulk DB query, not 15 sequential) that checks graph_nodes types. Entity overlap bonus now varies: person=0.15, org=0.10, project=0.08, default=0.05.
+- **Missing Import Fixes**: `maybe_single_safe` added to `patterns.py` and `pattern_extractor.py` — resolved 8 pre-existing NameError test failures.
+- **Lint Cleanup**: Removed unused `_auto_shortcodes` in `engine.py`, unused `decision_type` in `handler.py`, unused imports in `planner_critic.py`, renamed ambiguous variable `l` → `lb`.
+- **Test Results**: 75 passed / 2 failed (remaining failures are pre-existing mock setup issue in `test_pattern_extractor.py`, not import bug).
+- **Documentation**: Created `product-summary/33-pattern-learning-undo-fixes.md`, updated `.speckit/speckit.specify.md`, updated AGENTS.md.
+
+### Key Decisions This Session
+- **Decisions table as undo source of truth**: Undo queries the decisions table rather than passing item IDs through callback data. More robust — survives cold starts and doesn't require in-memory state.
+- **Precise decision_type filter**: Each undo target queries its exact decision type to prevent cross-type interference (channels won't match graph node decisions).
+- **30-minute undo window**: Only auto-decisions from the last 30 minutes are reversible via Telegram. Older items must use the Web UI.
+- **Cascade gap acknowledged**: Undoing a graph node does NOT cascade to concept/edge auto-creations from `auto_approve.py` cascade. Acceptable for v1.
+- **Entity type weighting priority**: person > org > project > default. Based on signal strength: person mentions are most relevant in deliberation, org context is secondary, project is tertiary.
+- **_resolve_entity_type uses single bulk query**: `.in_('label', entity_words[:5])` — one DB call replacing up to 15 sequential `ilike` queries.
+
+### Key Files (Phase 16)
+- `core/pulse/engine.py` — Undo keyboard rows after pending-items keyboard
+- `core/webhook/handler.py` — Undo callback handler for channels/graph/edges
+- `core/lib/decision_features.py` — Configurable blend constants
+- `core/lib/planner_critic.py` — Entity type weighting, _resolve_entity_type(), import cleanup
+- `core/pulse/patterns.py` — Missing `maybe_single_safe` import
+- `core/lib/pattern_extractor.py` — Missing `maybe_single_safe` import
+- `product-summary/33-pattern-learning-undo-fixes.md` — Documentation
+
 ## Session Anchored Summary (Jul 4, 2026 — Part 15: Resource Clusters List View + Dismiss)
 
 ### Progress Done This Session

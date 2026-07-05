@@ -6,11 +6,13 @@ from email.utils import getaddresses
 from core.services.google_service import get_google_creds
 from googleapiclient.discovery import build
 from core.lib.audit_logger import audit_log_sync
+from core.lib.telemetry import emit_observation
 from core.webhook.telegram import send_telegram
 from core.webhook.utils import supabase, is_already_in_tasks_table
+from core.services.db import maybe_single_safe
 
 
-async def process_email_pending_decision(pending_id: int, decision: str, supabase_client=None) -> dict:
+async def process_email_pending_decision(pending_id: int, decision: str, supabase_client=None, auto_decided: bool = False) -> dict:
     """Process approve/reject for an email pending task (shared by Telegram + API).
 
     For 'approve': inserts into raw_dumps then sets danny_decision='approved'.
@@ -26,24 +28,22 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
     client = supabase_client or supabase
 
     # Look up pending row
-    row_res = client.table('messages')\
-        .select('*')\
-        .eq('id', pending_id)\
-        .eq('channel', 'email')\
-        .is_('danny_decision', 'null')\
-        .limit(1)\
-        .maybe_single()\
-        .execute()
+    row_res = maybe_single_safe(
+        client.table('messages')
+        .select('*')
+        .eq('id', pending_id)
+        .eq('channel', 'email')
+        .is_('danny_decision', 'null')
+    )
 
     if not row_res.data:
-        decided = client.table('messages')\
-            .select('id, danny_decision')\
-            .eq('id', pending_id)\
-            .eq('channel', 'email')\
-            .not_.is_('danny_decision', 'null')\
-            .limit(1)\
-            .maybe_single()\
-            .execute()
+        decided = maybe_single_safe(
+            client.table('messages')
+            .select('id, danny_decision')
+            .eq('id', pending_id)
+            .eq('channel', 'email')
+            .not_.is_('danny_decision', 'null')
+        )
         if decided and decided.data:
             return {
                 "success": False, "action": "already_decided",
@@ -107,6 +107,16 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
 
         client.table('messages').update({'danny_decision': 'approved'}).eq('id', row['id']).execute()
 
+        await emit_observation(
+            subsystem='email_pipeline',
+            event_type='approval',
+            features={"has_project": bool(row.get('suggested_project')), "is_human": is_human},
+            predicted=title,
+            actual=title,
+            outcome='confirmed',
+            source='email_decision'
+        )
+
         if guard['result'] == 'flag':
             audit_log_sync("webhook", "INFO", f"Staged to raw_dumps with possible_duplicate flag: {title}")
             return {
@@ -119,12 +129,23 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
 
     elif decision == 'reject':
         client.table('messages').update({'danny_decision': 'rejected'}).eq('id', row['id']).execute()
+
+        await emit_observation(
+            subsystem='email_pipeline',
+            event_type='rejection',
+            features={"has_project": bool(row.get('suggested_project')), "is_human": is_human},
+            predicted=title,
+            actual='rejected',
+            outcome='rejected',
+            source='email_decision'
+        )
+
         try:
-            draft_res = supabase.table('email_drafts')\
-                .select('id')\
-                .eq('message_id', email_id)\
-                .maybe_single()\
-                .execute()
+            draft_res = maybe_single_safe(
+                supabase.table('email_drafts')
+                .select('id')
+                .eq('message_id', email_id)
+            )
             if draft_res.data:
                 supabase.table('email_drafts')\
                     .update({'danny_decision': 'skipped'})\
@@ -147,12 +168,12 @@ def get_gmail_service():
 async def send_draft_reply(draft_id: int) -> tuple:
     """Send an approved draft via Gmail or Outlook based on email source. Returns (success: bool, error: str|None)."""
     try:
-        draft_res = supabase.table('email_drafts')\
-            .select('id, message_id, draft_body, status, messages(sender_id, thread_id, source, subject, message_id)')\
-            .eq('id', draft_id)\
-            .eq('status', 'pending')\
-            .maybe_single()\
-            .execute()
+        draft_res = maybe_single_safe(
+            supabase.table('email_drafts')
+            .select('id, message_id, draft_body, status, messages(sender_id, thread_id, source, subject, message_id)')
+            .eq('id', draft_id)
+            .eq('status', 'pending')
+        )
         if not draft_res or not draft_res.data:
             return (False, "Draft not found or already processed.")
         draft = draft_res.data
@@ -366,15 +387,17 @@ async def handle_ed_command(text: str, chat_id: int):
         try:
             success, error = await send_draft_reply(draft_id)
             if success:
-                draft_res = supabase.table('email_drafts')\
-                    .select('message_id')\
-                    .eq('id', draft_id)\
-                    .maybe_single().execute()
+                draft_res = maybe_single_safe(
+                    supabase.table('email_drafts')
+                    .select('message_id')
+                    .eq('id', draft_id)
+                )
                 if draft_res and draft_res.data and draft_res.data.get('message_id'):
-                    email_res = supabase.table('messages')\
-                        .select('sender_id')\
-                        .eq('id', draft_res.data['message_id'])\
-                        .maybe_single().execute()
+                    email_res = maybe_single_safe(
+                        supabase.table('messages')
+                        .select('sender_id')
+                        .eq('id', draft_res.data['message_id'])
+                    )
                     addr = email_res.data.get('sender_id', '') if email_res and email_res.data else ''
                 else:
                     addr = ''
@@ -420,18 +443,20 @@ async def handle_ed_command(text: str, chat_id: int):
                 await send_telegram(chat_id, f"⚠️ Draft [{draft_id}] not found or already processed.")
                 return
 
-            draft_res = supabase.table('email_drafts')\
-                .select('message_id')\
-                .eq('id', draft_id)\
-                .maybe_single().execute()
+            draft_res = maybe_single_safe(
+                supabase.table('email_drafts')
+                .select('message_id')
+                .eq('id', draft_id)
+            )
             if not draft_res or not draft_res.data or not draft_res.data.get('message_id'):
                 await send_telegram(chat_id, f"✅ Draft [{draft_id}] updated.")
                 return
 
-            email_res = supabase.table('messages')\
-                .select('subject, sender_id, sender_name')\
-                .eq('id', draft_res.data['message_id'])\
-                .maybe_single().execute()
+            email_res = maybe_single_safe(
+                supabase.table('messages')
+                .select('subject, sender_id, sender_name')
+                .eq('id', draft_res.data['message_id'])
+            )
             if not email_res or not email_res.data:
                 await send_telegram(chat_id, f"✅ Draft [{draft_id}] updated.")
                 return

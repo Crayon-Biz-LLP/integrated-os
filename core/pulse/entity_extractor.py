@@ -86,14 +86,14 @@ Text: "{text}"
             
             if ntype == "organization":
                 try:
-                    res = supabase.table('organizations').select('id').ilike('name', label).maybe_single().execute()
+                    res = maybe_single_safe(supabase.table('organizations').select('id').ilike('name', label))
                     if res and res.data:
                         org_candidates.append(res.data['id'])
                 except Exception:
                     pass
             elif ntype == "project":
                 try:
-                    res = supabase.table('projects').select('id, organization_id').ilike('name', label).maybe_single().execute()
+                    res = maybe_single_safe(supabase.table('projects').select('id, organization_id').ilike('name', label))
                     if res and res.data:
                         proj_candidates.append({
                             'id': res.data['id'],

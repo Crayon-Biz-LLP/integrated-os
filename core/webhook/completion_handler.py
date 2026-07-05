@@ -141,19 +141,41 @@ Response: {{"matched_task_ids": [...]}}"""
         validated_ids   = [i for i in raw_ids if i in active_id_set]
 
         if not validated_ids:
-            # NO MATCH. Degrade to PROJECT_UPDATE instead of asking user.
-            audit_log_sync("completion", "INFO", f"Override: Strict completion matcher found no task for '{title}'. Degraded dump {dump_id} to PROJECT_UPDATE.")
-            
-            # 1. Update raw_dump
+            # NO MATCH. Check pattern confidence to determine degradation path.
+            from core.lib.telemetry import compute_pattern_confidence, emit_observation
+            _completion_features = {
+                "has_entity": bool(entity),
+                "has_candidates": len(candidates) > 0,
+                "num_active_tasks": len(active_tasks),
+            }
+            _pattern = await compute_pattern_confidence(_completion_features, "completion_matching")
+            _use_note_pattern = _pattern.get("recommendation") == "approve"
+            audit_log_sync("completion", "INFO",
+                f"No task match — pattern confidence: {_pattern.get('rule', 'N/A')} "
+                f"→ {'NOTE' if _use_note_pattern else 'PROJECT_UPDATE'}")
+            _degrade_intent = "NOTE" if _use_note_pattern else "PROJECT_UPDATE"
+
+            await emit_observation(
+                subsystem="completion_matching",
+                event_type="no_match_degraded",
+                features=_completion_features,
+                predicted="COMPLETION",
+                actual=_degrade_intent,
+                outcome="predicted",
+                source="completion_handler",
+            )
+
+            # Update raw_dump
             supabase.table("raw_dumps").update({
                 "status": "processed", 
                 "is_processed": True,
                 "message_type": "note",
                 "metadata": {
-                    "intent": "PROJECT_UPDATE",
+                    "intent": _degrade_intent,
                     "title": title,
                     "entity": entity,
-                    "degraded_from_completion": True
+                    "degraded_from_completion": True,
+                    "pattern_rule": _pattern.get("rule", ""),
                 }
             }).eq("id", dump_id).execute()
             
@@ -235,7 +257,7 @@ async def execute_completion_closure(dump_id: int, validated_ids: list, chat_id:
     failed_tasks = []
 
     for task_id in validated_ids:
-        row_res = supabase.table("tasks").select("id, title, status, google_task_id, google_event_id").eq("id", task_id).maybe_single().execute()
+        row_res = maybe_single_safe(supabase.table("tasks").select("id, title, status, google_task_id, google_event_id").eq("id", task_id))
         row = row_res.data
         if not row:
             audit_log_sync("completion", "WARNING", f"Task {task_id} not found in DB — skipping.")
@@ -368,7 +390,7 @@ def _park(dump_id, status, reason=None, is_processed=False):
     if reason:
         # Append to metadata non-destructively
         try:
-            existing = supabase.table("raw_dumps").select("metadata").eq("id", dump_id).maybe_single().execute()
+            existing = maybe_single_safe(supabase.table("raw_dumps").select("metadata").eq("id", dump_id))
             meta = (existing.data or {}).get("metadata") or {}
             meta["park_reason"] = reason
             update["metadata"] = meta

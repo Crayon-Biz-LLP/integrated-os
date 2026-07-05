@@ -62,6 +62,24 @@ export interface GraphMergeProposal {
   created_at: string;
 }
 
+export interface AutoDecisionItem {
+  id: number;
+  decision_type: string;
+  title: string;
+  context: string | null;
+  rationale: string | null;
+  status: 'active' | 'reversed' | 'superseded' | 'expired';
+  confidence: number;
+  source: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  decided_at: string;
+  verified_at: string | null;
+  expires_at: string | null;
+  auto_decided: boolean;
+  source_ref: string | null;
+}
+
 export interface GraphPendingNode {
   id: number;
   label: string;

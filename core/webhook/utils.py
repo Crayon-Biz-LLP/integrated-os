@@ -5,12 +5,23 @@ import httpx
 from datetime import datetime, timezone, timedelta
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.audit_logger import audit_log_sync
+from core.lib.telemetry import emit_observation
 
 supabase = get_supabase()
 
 
-async def process_channel_pending_decision(channel: str, pending_id: int, decision: str) -> dict:
-    """Shared handler for processing approve/reject for channel-specific pending messages (teams, whatsapp, call)."""
+async def process_channel_pending_decision(channel: str, pending_id: int, decision: str, auto_decided: bool = False, rejection_context: str = None) -> dict:
+    """Shared handler for processing approve/reject for channel-specific pending messages (teams, whatsapp, call).
+    
+    Args:
+        channel: 'call', 'whatsapp', 'teams'
+        pending_id: Message ID in the messages table
+        decision: 'approve' or 'reject'
+        auto_decided: Whether this was an auto-decision (from Decision Pulse)
+        rejection_context: Optional user-provided explanation for rejection
+                          (e.g., "already handled", "wrong project"). Captured from
+                          Telegram shortcode trailing text like "c42 reject, handled offline".
+    """
     row_res = supabase.table('messages')\
         .select('*')\
         .eq('id', pending_id)\
@@ -68,6 +79,20 @@ async def process_channel_pending_decision(channel: str, pending_id: int, decisi
         'decided_at': datetime.now(timezone.utc).isoformat()
     }).eq('id', pending_id).execute()
 
+    # Unified feature construction with context dimensions + rejection reason
+    from core.lib.decision_features import build_decision_features
+    _features = build_decision_features(msg, channel, rejection_context=rejection_context)
+
+    await emit_observation(
+        subsystem=f'{channel}_pipeline',
+        event_type='approval' if is_approved else 'rejection',
+        features=_features,
+        predicted='actionable',
+        actual='actionable' if is_approved else 'rejected',
+        outcome='confirmed' if is_approved else 'rejected',
+        source=f'{channel}_decision_pulse'
+    )
+
     # Record a decision in the structured decisions table
     try:
         record_decision(
@@ -78,6 +103,7 @@ async def process_channel_pending_decision(channel: str, pending_id: int, decisi
             entity_id=str(pending_id),
             confidence=1.0,
             source=f"{channel}_decision_pulse",
+            auto_decided=auto_decided,
         )
     except Exception as dec_err:
         audit_log_sync("webhook", "WARNING", f"Failed to record channel decision: {dec_err}")

@@ -254,7 +254,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         audit_log_sync("webhook", "ERROR", f"Failed to save task dump: {e}")
         # dedup_key collision — fetch existing row
         try:
-            existing = supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key).maybe_single().execute()
+            existing = maybe_single_safe(supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key))
             dump_id = existing.data.get('id') if existing.data else None
         except Exception as e2:
             audit_log_sync("webhook", "ERROR", f"Failed to fetch existing dump by dedup_key: {e2}")
@@ -461,7 +461,7 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Failed to save update dump: {e}")
         try:
-            existing = supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key).maybe_single().execute()
+            existing = maybe_single_safe(supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key))
             dump_id = existing.data.get('id') if existing.data else None
         except Exception as dedup_err:
             audit_log_sync("webhook", "WARNING", f"Dedup lookup failed for {dedup_key}: {dedup_err}")
@@ -569,7 +569,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         audit_log_sync("webhook", "ERROR", f"Failed to save note dump: {e}")
         # dedup_key collision — fetch existing row
         try:
-            existing = supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key).maybe_single().execute()
+            existing = maybe_single_safe(supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key))
             dump_id = existing.data.get('id') if existing.data else None
         except Exception as e2:
             audit_log_sync("webhook", "ERROR", f"Failed to fetch existing dump by dedup_key: {e2}")
@@ -715,15 +715,31 @@ async def handle_clarification(text: str, question: str, chat_id: int, session_i
     except Exception as clar_err:
         audit_log_sync("webhook", "WARNING", f"Failed to log clarification to raw_dumps: {clar_err}")
 
-async def ask_intent_disambiguation(text: str, possible_intents: list, chat_id: int, session_id: str):
+async def ask_intent_disambiguation(text: str, possible_intents: list, chat_id: int, session_id: str, deliberation: dict = None):
     keyboard = []
     for sc, (intent, label) in INTENT_OPTIONS.items():
         if intent in possible_intents:
             keyboard.append([{"text": label, "callback_data": sc}])
     if not keyboard:
         return
-    reply = "🧐 *Not sure what to do with this.* Is it?"
-    log_exchange(session_id, 'bot', 'CLARIFICATION', json.dumps({"possible_intents": possible_intents, "original": text}), chat_id)
+    # Surface deliberation scores when available
+    score_lines = []
+    if deliberation and deliberation.get("candidates"):
+        for c in deliberation["candidates"]:
+            fmt = f"· {c['intent']}: *{c['score']:.0%}* — {c.get('reasoning', '')}"
+            if len(fmt) > 300:
+                fmt = fmt[:300] + "…"
+            score_lines.append(fmt)
+    score_section = "\n".join(score_lines) if score_lines else ""
+    reply = "🧐 *Not sure what to do with this.*"
+    if score_section:
+        reply += f"\n\nBased on what I know:\n{score_section}\n\n_—pick one:_"
+    else:
+        reply += " Is it?"
+    log_exchange(session_id, 'bot', 'CLARIFICATION', json.dumps({
+        "possible_intents": possible_intents, "original": text,
+        "deliberation": deliberation,
+    }), chat_id)
     await send_telegram(chat_id, reply, show_keyboard=False, inline_keyboard=keyboard)
 
 FILLER_WORDS = {'the', 'a', 'an', 'it', 'is', 'was', 'this', 'that', 'to', 'for',

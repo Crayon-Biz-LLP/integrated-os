@@ -55,6 +55,22 @@
 - **KNOWN**: `graph_node_id` FK exists on `people` and `organizations` tables but zero rows have it populated. Domain→graph link is one-way via `graph_nodes.db_record_id` only.
 - **Resource Clusters List View + Dismiss**: Knowledge Base (`/dashboard/clusters`) has a grid/list view toggle. Resources can be dismissed (sets `dismissed_at`), hidden from UI, and reject re-storage of the same URL on future submission with "Already seen" Telegram reply.
 
+### Auto-Decision Feedback Loop & Pattern Learning Fixes (Phase 16)
+
+**What**: Four fixes to close the auto-decision feedback loop and harden the pattern learning subsystem.
+
+**Telegram Undo Buttons**: Auto-processed items now have inline `↩️ Undo` buttons in the Decision Pulse message. Three buttons (channels/graph nodes/edges) are appended below the remaining-pending-items keyboard. The undo handler queries `decisions` table for `auto_decided=true` within last 30 min, calls `reverse_decision()`, and reverts the DB action. Uses precise `decision_type` filter (`channel_approval`, `graph_node_approval`, `graph_edge_approval`) to prevent cross-type interference.
+
+**Configurable Cross-Subsystem Blend**: Replaced hardcoded 0.70/0.30 in `compute_composite_confidence()` with module-level constants in `decision_features.py`: `CROSS_SUBSYSTEM_BLEND_PRIMARY`, `CROSS_SUBSYSTEM_BLEND_CROSS`, `CROSS_SIGNAL_MIN_CONFIDENCE`, `CROSS_COMPOSITE_BOOST_DELTA`.
+
+**Entity Type-Weighted Overlap Bonus**: `deliberate()` now uses `_resolve_entity_type()` helper to check graph_nodes types with a single DB query. Entity overlap bonus varies: person=0.15, org=0.10, project=0.08, default=0.05.
+
+**Missing Import Fixes**: `maybe_single_safe` added to imports in `patterns.py` and `pattern_extractor.py` — resolved 8 pre-existing NameError test failures.
+
+**Key Files**: `core/pulse/engine.py`, `core/webhook/handler.py`, `core/lib/decision_features.py`, `core/lib/planner_critic.py`, `core/pulse/patterns.py`, `core/lib/pattern_extractor.py`.
+
+---
+
 ### Rhodey Audit — Good-to-Have (Future Backlog)
 
 | # | Item | Effort | Type | Notes |

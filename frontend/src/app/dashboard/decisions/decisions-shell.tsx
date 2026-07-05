@@ -7,8 +7,9 @@ import { GraphPendingList } from '@/components/decisions/graph-pending-list';
 import { NodePendingList } from '@/components/decisions/node-pending-list';
 import { MergePendingList } from '@/components/decisions/merge-pending-list';
 import { EntityTableList } from '@/components/decisions/entity-table-list';
-import { Phone, MessageSquare, Network, Box, GitMerge, Users } from 'lucide-react';
-import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphPendingNode, GraphMergeProposal } from '@/lib/decisions/types';
+import { Phone, MessageSquare, Network, Box, GitMerge, Users, Bot } from 'lucide-react';
+import { AutoDecisionList } from '@/components/decisions/auto-decision-list';
+import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphPendingNode, GraphMergeProposal, AutoDecisionItem } from '@/lib/decisions/types';
 
 export function DecisionsShell({
   initialCallItems,
@@ -17,6 +18,7 @@ export function DecisionsShell({
   initialGraphNodes,
   initialMergeProposals,
   initialRejectedNodes,
+  initialAutoDecisions,
 }: {
   initialCallItems: CallPendingItem[];
   initialWhatsappItems: WhatsAppPendingMessage[];
@@ -24,6 +26,7 @@ export function DecisionsShell({
   initialGraphNodes: GraphPendingNode[];
   initialMergeProposals: GraphMergeProposal[];
   initialRejectedNodes?: GraphPendingNode[];
+  initialAutoDecisions?: AutoDecisionItem[];
 }) {
   const entityNodes = initialGraphNodes.filter(n => ["person", "project", "organization"].includes(n.type));
   const rejectedEntityNodes = (initialRejectedNodes || []).filter(n => ["person", "project", "organization"].includes(n.type));
@@ -92,6 +95,15 @@ export function DecisionsShell({
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="auto">
+            <Bot className="h-4 w-4 mr-2" />
+            Auto
+            {(initialAutoDecisions?.length ?? 0) > 0 && (
+              <span className="ml-1.5 text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full tabular-nums">
+                {initialAutoDecisions?.length}
+              </span>
+            )}
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="calls" className="mt-4">
           <CallPendingList items={initialCallItems} />
@@ -111,6 +123,9 @@ export function DecisionsShell({
         </TabsContent>
         <TabsContent value="merge" className="mt-4">
           <MergePendingList items={initialMergeProposals} />
+        </TabsContent>
+        <TabsContent value="auto" className="mt-4">
+          <AutoDecisionList initialItems={initialAutoDecisions ?? []} />
         </TabsContent>
       </Tabs>
     </div>

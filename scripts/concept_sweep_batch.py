@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 load_dotenv()
 
-from core.services.db import get_supabase  # noqa: E402
+from core.services.db import get_supabase, maybe_single_safe  # noqa: E402
 from core.llm.constants import CLASSIFICATION_MODEL  # noqa: E402
 from core.llm.compat import call_llm_with_fallback_sync  # noqa: E402
 from core.skills.backfill_graph import synthesize_content  # noqa: E402
@@ -88,12 +88,12 @@ def ensure_memory_node_exists(memory_id: str, content: str) -> str:
     """Ensure a memory graph node exists, creating one on-the-fly if not. Returns the node label."""
     memory_label = f"Memory {memory_id}"
     try:
-        existing = supabase.table("graph_nodes")\
-            .select("id")\
-            .eq("type", "memory")\
-            .eq("db_record_id", str(memory_id))\
-            .maybe_single()\
-            .execute()
+        existing = maybe_single_safe(
+            supabase.table("graph_nodes")
+            .select("id")
+            .eq("type", "memory")
+            .eq("db_record_id", str(memory_id))
+        )
         if existing and existing.data:
             return memory_label
             
@@ -206,21 +206,23 @@ def run_batch_sweep():
                     continue
                 label = node["label"]
                 try:
-                    edge_res = supabase.table("pending_graph_edges")\
-                        .select("source_label, relationship")\
-                        .ilike("target_label", label)\
-                        .eq("source_text", f"memories:{mem_id}")\
-                        .eq("status", "pending")\
-                        .maybe_single().execute()
+                    edge_res = maybe_single_safe(
+                        supabase.table("pending_graph_edges")
+                        .select("source_label, relationship")
+                        .ilike("target_label", label)
+                        .eq("source_text", f"memories:{mem_id}")
+                        .eq("status", "pending")
+                    )
                         
                     if edge_res and edge_res.data:
                         linked_entity = edge_res.data["source_label"]
                         relationship = edge_res.data["relationship"]
 
                         # Verify the linked_entity exists as a graph node
-                        entity_exists = supabase.table("graph_nodes").select("id")\
-                            .ilike("label", linked_entity)\
-                            .maybe_single().execute()
+                        entity_exists = maybe_single_safe(
+                            supabase.table("graph_nodes").select("id")
+                            .ilike("label", linked_entity)
+                        )
 
                         if not entity_exists or not entity_exists.data:
                             # Fallback: ensure memory node exists and use it as anchor

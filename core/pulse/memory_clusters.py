@@ -644,7 +644,7 @@ def _merge_cluster(cluster_id: int, new_member_ids: set, scores: dict, quality: 
     """Merge new members into existing cluster, update quality if better."""
     _update_cluster_members(cluster_id, new_member_ids, scores)
     # Update quality if new candidate was better
-    existing = supabase.table("memory_clusters").select("quality_score").eq("id", cluster_id).maybe_single().execute()
+    existing = maybe_single_safe(supabase.table("memory_clusters").select("quality_score").eq("id", cluster_id))
     if existing and existing.data and quality > existing.data.get("quality_score", 0):
         supabase.table("memory_clusters").update({
             "quality_score": quality,

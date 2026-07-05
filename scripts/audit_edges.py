@@ -339,7 +339,7 @@ async def run():
                 continue
             del_prefix = parts[1]
             target_label = parts[2]
-            tgt_res = supabase.table("graph_nodes").select("id, label").ilike("label", target_label).maybe_single().execute()
+            tgt_res = maybe_single_safe(supabase.table("graph_nodes").select("id, label").ilike("label", target_label))
             if not tgt_res or not tgt_res.data:
                 print(f"  Target label '{target_label}' not found in graph_nodes")
                 continue
@@ -375,7 +375,7 @@ async def run():
                     print("  Format: reparent <target_label> (scoped to current view)")
                     continue
                 target_label = parts[1]
-                tgt_res = supabase.table("graph_nodes").select("id, label").ilike("label", target_label).maybe_single().execute()
+                tgt_res = maybe_single_safe(supabase.table("graph_nodes").select("id, label").ilike("label", target_label))
                 if not tgt_res or not tgt_res.data:
                     print(f"  Target label '{target_label}' not found in graph_nodes")
                     continue
@@ -443,8 +443,8 @@ async def run():
                     print("  Format: +<source_label> <REL> <target_label>")
                     continue
                 s_label, rel, t_label = parts[0], parts[1].upper(), parts[2]
-                s_res = supabase.table("graph_nodes").select("id, label").ilike("label", s_label).maybe_single().execute()
-                t_res = supabase.table("graph_nodes").select("id, label").ilike("label", t_label).maybe_single().execute()
+                s_res = maybe_single_safe(supabase.table("graph_nodes").select("id, label").ilike("label", s_label))
+                t_res = maybe_single_safe(supabase.table("graph_nodes").select("id, label").ilike("label", t_label))
                 if not s_res or not s_res.data:
                     print(f"  Source '{s_label}' not found")
                     continue
@@ -485,8 +485,8 @@ async def run():
                     print("  Format: +<source_label> <REL> <target_label>")
                     continue
                 s_label, rel, t_label = parts[0], parts[1].upper(), parts[2]
-                s_res = supabase.table("graph_nodes").select("id, label").ilike("label", s_label).maybe_single().execute()
-                t_res = supabase.table("graph_nodes").select("id, label").ilike("label", t_label).maybe_single().execute()
+                s_res = maybe_single_safe(supabase.table("graph_nodes").select("id, label").ilike("label", s_label))
+                t_res = maybe_single_safe(supabase.table("graph_nodes").select("id, label").ilike("label", t_label))
                 if not s_res or not s_res.data:
                     print(f"  Source '{s_label}' not found")
                     continue

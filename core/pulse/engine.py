@@ -14,6 +14,7 @@ from core.lib.audit_logger import info, warning, error, audit_log_sync
 from core.lib.temporal_lineage import detect_drift
 from core.lib.conversation import get_or_create_session, format_history_for_prompt
 from core.lib.time_utils import compute_expires_at
+from core.decisions import record_decision
 
 from core.services.google_service import get_tasks_service
 
@@ -32,7 +33,7 @@ from core.pulse.context import context_provider
 from core.pulse.graph import (
     check_task_dependencies,
     analyze_communication_patterns, fetch_graph_task_context,
-    get_graph_centrality_context
+    get_graph_centrality_context,
 )
 from core.pulse.pipeline import update_heartbeat, check_pipeline_health
 from core.pulse.calendar import (
@@ -177,6 +178,19 @@ def _auto_expire_recurring_tasks():
                     'status': 'cancelled',
                     'completed_at': now.isoformat()
                 }).eq('id', tid).execute()
+                try:
+                    record_decision(
+                        decision_type="task_auto_expiry",
+                        title=f"Auto-expired recurring task #{tid}",
+                        context="Recurrence (RRULE) has ended — no future instances remain.",
+                        entity_type="task",
+                        entity_id=str(tid),
+                        confidence=1.0,
+                        source="pulse_engine",
+                        auto_decided=True,
+                    )
+                except Exception as dec_err:
+                    audit_log_sync("pulse", "WARNING", f"Failed to record auto-expiry decision: {dec_err}")
             audit_log_sync("pulse", "INFO", f"⏰ Auto-expired {len(expired)} recurring tasks (recurrence ended).")
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Auto-expiry check failed: {e}")
@@ -308,8 +322,48 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             elif row['channel'] == 'teams' and row.get('classification') == 'actionable' and len(teams_items) < 5:
                 teams_items.append(row)
 
+        # ── Auto-approve high-confidence channel items before display ──
+        from core.lib.telemetry import compute_pattern_confidence
+        from core.webhook.email import process_email_pending_decision
+        from core.webhook.utils import process_channel_pending_decision
+        from core.pulse.graph import process_graph_pending_decision, process_pending_edge_decision
+
+        auto_approved_ids = set()
+        from core.lib.decision_features import build_decision_features, compute_composite_confidence
+        for item_list in [email_items, call_items, whatsapp_items, teams_items]:
+            for row in list(item_list):
+                channel = row['channel']
+                _features = build_decision_features(row, channel)
+                pattern_result = await compute_composite_confidence(_features, f"{channel}_pipeline")
+                if pattern_result.get("recommendation") in ("approve", "auto_approve"):
+                    if channel == 'email':
+                        await process_email_pending_decision(row['id'], 'approve', auto_decided=True)
+                    else:
+                        await process_channel_pending_decision(channel, row['id'], 'approve', auto_decided=True)
+                    auto_approved_ids.add(row['id'])
+                    audit_log_sync("decision_pulse", "INFO", f"Auto-approved {channel} item {row['id']} ({pattern_result.get('rule', 'N/A')})")
+
+        email_items = [r for r in email_items if r['id'] not in auto_approved_ids]
+        call_items = [r for r in call_items if r['id'] not in auto_approved_ids]
+        whatsapp_items = [r for r in whatsapp_items if r['id'] not in auto_approved_ids]
+        teams_items = [r for r in teams_items if r['id'] not in auto_approved_ids]
+
+        # ── Startup: prune orphaned call_pipeline patterns from old feature hash space ──
+        from core.lib.telemetry import prune_orphaned_patterns
+        try:
+            prune_result = await prune_orphaned_patterns()
+            if prune_result["total_orphans"] > 0:
+                audit_log_sync(
+                    "decision_pulse", "INFO",
+                    f"Pattern migration: pruned {prune_result['deleted']} orphaned patterns "
+                    f"({prune_result['total_orphans']} found, dry_run={prune_result['dry_run']})"
+                )
+        except Exception as prune_err:
+            audit_log_sync("decision_pulse", "WARNING", f"Pattern prune failed (non-blocking): {prune_err}")
+
+        # ── Auto-approve high-confidence graph nodes before display ──
         pending_graph = supabase.table('pending_graph_nodes')\
-            .select('id, label, type')\
+            .select('id, label, type, source_text')\
             .eq('status', 'pending')\
             .order('created_at', desc=False)\
             .limit(5)\
@@ -317,6 +371,19 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         graph_items = pending_graph.data or []
 
+        auto_approved_graph_ids = set()
+        for row in list(graph_items):
+            features = {"node_type": row["type"], "has_context": bool(row.get("source_text"))}
+            pattern_result = await compute_pattern_confidence(features, "entity_extraction")
+            # Hardcoded 0.85 removed — now uses MIN_AUTO_APPROVE_OBSERVATIONS (5 obs) + error-rate demotion
+            if pattern_result.get("recommendation") in ("approve", "auto_approve"):
+                await process_graph_pending_decision(row['id'], 'approve', auto_decided=True)
+                auto_approved_graph_ids.add(row['id'])
+                audit_log_sync("decision_pulse", "INFO", f"Auto-approved graph node {row['id']} ({row['label']}) — {pattern_result.get('rule', 'N/A')}")
+
+        graph_items = [r for r in graph_items if r['id'] not in auto_approved_graph_ids]
+
+        # ── Auto-approve high-confidence graph edges ──
         pending_edges_res = supabase.table('pending_graph_edges')\
             .select('id, source_label, target_label, relationship')\
             .eq('status', 'pending')\
@@ -326,10 +393,67 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             
         pending_edges = pending_edges_res.data or []
 
+        auto_approved_edge_ids = set()
+        for row in list(pending_edges):
+            features = {"relationship": row["relationship"]}
+            pattern_result = await compute_pattern_confidence(features, "graph_edges")
+            if pattern_result.get("recommendation") in ("approve", "auto_approve"):
+                await process_pending_edge_decision(row['id'], 'approve', auto_decided=True)
+                auto_approved_edge_ids.add(row['id'])
+                audit_log_sync("decision_pulse", "INFO",
+                    f"Auto-approved edge {row['id']} ({row['relationship']}) — {pattern_result.get('rule', 'N/A')}")
+            elif pattern_result.get("recommendation") == "suggest" and row.get('source_label') and row.get('target_label'):
+                # Borderline edge: use Planner/Critic deliberate() for cross-subsystem signals
+                try:
+                    from core.lib.planner_critic import deliberate
+                    _edge_text = f"{row['source_label']} {row['relationship']} {row['target_label']}"
+                    delib_result = await deliberate(
+                        candidates=[
+                            {"label": "approve", "primary": pattern_result.get("confidence", 0.5)},
+                            {"label": "review", "primary": 1.0 - pattern_result.get("confidence", 0.5)},
+                        ],
+                        text=_edge_text,
+                        subsystem="graph_edge",
+                    )
+                    if delib_result.get("recommendation") == "auto_execute" and delib_result.get("best") == "approve":
+                        await process_pending_edge_decision(row['id'], 'approve', auto_decided=True)
+                        auto_approved_edge_ids.add(row['id'])
+                        audit_log_sync("decision_pulse", "INFO",
+                            f"Planner-approved edge {row['id']} ({row['relationship']}) — cross-subsystem {delib_result['candidates'][0]['reasoning']}")
+                except Exception as delib_err:
+                    audit_log_sync("decision_pulse", "WARNING", f"Edge deliberation failed (non-blocking): {delib_err}")
+
+        pending_edges = [r for r in pending_edges if r['id'] not in auto_approved_edge_ids]
+
+        # Build deliberation scores for remaining items (show pattern confidence)
+        async def _score_row(row: dict, subsystem: str) -> str:
+            if subsystem == "graph_edges":
+                feat = {"relationship": row["relationship"]}
+            elif subsystem in ("entity_extraction",):
+                feat = {"node_type": row["type"], "has_context": bool(row.get("source_text"))}
+            else:
+                from core.lib.decision_features import build_decision_features
+                channel = subsystem.replace('_pipeline', '') if '_pipeline' in subsystem else subsystem
+                feat = build_decision_features(row, channel)
+            pr = await compute_pattern_confidence(feat, subsystem)
+            if pr["recommendation"] in ("approve", "auto_approve"):
+                return f"✅ *auto* ({pr['rule']})"
+            elif pr["recommendation"] == "suggest":
+                return f"💡 *suggest* ({pr['rule']})"
+            else:
+                return f"🔍 *review* ({pr['rule']})"
+
         total = len(email_items) + len(call_items) + len(whatsapp_items) + len(teams_items) + len(graph_items) + len(pending_edges)
         if total == 0:
             await complete_pulse_run(supabase, run_id, status="completed", metadata={"reason": "no_pending"})
             return {"success": True, "message": "No pending decisions."}
+
+        # ── Build auto-processed digest with inline undo buttons ──
+        auto_total = len(auto_approved_ids) + len(auto_approved_graph_ids) + len(auto_approved_edge_ids)
+        if auto_total > 0:
+            digest_line = f"🤖 *Auto-processed:* {len(auto_approved_ids)} channel items, {len(auto_approved_graph_ids)} graph nodes, {len(auto_approved_edge_ids)} graph edges"
+        else:
+            digest_line = None
 
         openers = [
             "Danny, you got some pending decisions based out of your emails, call logs and beeper messages — your call on each?",
@@ -337,49 +461,60 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             "Emails, call extracts, and texts waiting on a nod. Tap to approve or drop.",
         ]
         lines = [random.choice(openers), ""]
+        if digest_line:
+            lines.append(digest_line)
+            lines.append("")
+            lines.append("_Remaining items need your review:_")
+            lines.append("")
 
         if email_items:
-            lines.append(f"📨 EMAIL DECISIONS ({len(email_items)}) — tap to approve/drop")
+            lines.append(f"📨 EMAIL DECISIONS ({len(email_items)})")
             for row in email_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                 title = row.get('suggested_title') or row.get('subject') or 'Untitled'
-                lines.append(f"[e{row['id']}] {title[:60]}{proj}")
+                score_tag = await _score_row(row, f"{row['channel']}_pipeline")
+                lines.append(f"[e{row['id']}] {title[:50]}{proj} — {score_tag}")
             lines.append("")
 
         if call_items:
-            lines.append(f"📞 CALL EXTRACTS ({len(call_items)}) — tap to approve/drop")
+            lines.append(f"📞 CALL EXTRACTS ({len(call_items)})")
             for row in call_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                 prefix = "📋 " if row.get('action_type') == 'task' else "💡 "
-                lines.append(f"{prefix}[c{row['id']}] {(row.get('suggested_title') or 'Untitled')[:60]}{proj}")
+                score_tag = await _score_row(row, f"{row['channel']}_pipeline")
+                lines.append(f"{prefix}[c{row['id']}] {(row.get('suggested_title') or 'Untitled')[:50]}{proj} — {score_tag}")
             lines.append("")
 
         if whatsapp_items:
-            lines.append(f"💬 WHATSAPP EXTRACTS ({len(whatsapp_items)}) — tap to approve/drop")
+            lines.append(f"💬 WHATSAPP EXTRACTS ({len(whatsapp_items)})")
             for row in whatsapp_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                 from_str = f" — {row['sender_name']}" if row.get('sender_name') else ""
-                lines.append(f"💬 [w{row['id']}] {(row.get('suggested_title') or 'Untitled')[:60]}{proj}{from_str}")
+                score_tag = await _score_row(row, f"{row['channel']}_pipeline")
+                lines.append(f"💬 [w{row['id']}] {(row.get('suggested_title') or 'Untitled')[:50]}{proj}{from_str} — {score_tag}")
             lines.append("")
 
         if teams_items:
-            lines.append(f"🟣 TEAMS CHATS ({len(teams_items)}) — tap to approve/drop")
+            lines.append(f"🟣 TEAMS CHATS ({len(teams_items)})")
             for row in teams_items:
                 proj = f" ({row['suggested_project']})" if row.get('suggested_project') else ""
                 from_str = f" — {row['sender_name']}" if row.get('sender_name') else ""
-                lines.append(f"🟣 [t{row['id']}] {(row.get('suggested_title') or 'Untitled')[:60]}{proj}{from_str}")
+                score_tag = await _score_row(row, f"{row['channel']}_pipeline")
+                lines.append(f"🟣 [t{row['id']}] {(row.get('suggested_title') or 'Untitled')[:50]}{proj}{from_str} — {score_tag}")
             lines.append("")
 
         if graph_items:
-            lines.append(f"🕸️ GRAPH NODES ({len(graph_items)}) — tap to approve/drop")
+            lines.append(f"🕸️ GRAPH NODES ({len(graph_items)})")
             for row in graph_items:
-                lines.append(f"👤 [g{row['id']}] {row['label']} ({row['type']})")
+                score_tag = await _score_row(row, "entity_extraction")
+                lines.append(f"👤 [g{row['id']}] {row['label']} ({row['type']}) — {score_tag}")
             lines.append("")
 
         if pending_edges:
-            lines.append(f"🔗 GRAPH EDGES ({len(pending_edges)}) — tap to approve/edit/drop")
+            lines.append(f"🔗 GRAPH EDGES ({len(pending_edges)})")
             for row in pending_edges:
-                lines.append(f"🔗 [pe{row['id']}] {row['source_label']} → {row['relationship']} → {row['target_label']}")
+                score_tag = await _score_row(row, "graph_edges")
+                lines.append(f"🔗 [pe{row['id']}] {row['source_label']} → {row['relationship']} → {row['target_label']} — {score_tag}")
             lines.append("")
 
         # Show awaiting_details count so items stuck in clarification are visible
@@ -436,6 +571,18 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                     {"text": "✏️ Edit", "callback_data": f"edit_{sc}"},
                     {"text": "❌", "callback_data": f"reject_{sc}"}
                 ])
+            # Add undo buttons for auto-processed items at the bottom of keyboard
+            if auto_total > 0:
+                undo_row = []
+                if auto_approved_ids:
+                    undo_row.append({"text": f"↩️ Undo {len(auto_approved_ids)} channel", "callback_data": "undo_auto_channels"})
+                if auto_approved_graph_ids:
+                    undo_row.append({"text": f"↩️ Undo {len(auto_approved_graph_ids)} node", "callback_data": "undo_auto_graph"})
+                if auto_approved_edge_ids:
+                    undo_row.append({"text": f"↩️ Undo {len(auto_approved_edge_ids)} edge", "callback_data": "undo_auto_edge"})
+                if undo_row:
+                    keyboard.append(undo_row)
+
             send_success = await send_telegram(
                 chat_id=telegram_chat_id,
                 message_text=message,
@@ -934,6 +1081,19 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 .execute()
             for st in (stale_urgent.data or []):
                 supabase.table('tasks').update({'priority': 'high'}).eq('id', st['id']).execute()
+                try:
+                    record_decision(
+                        decision_type="priority_decay",
+                        title=f"Priority decay: '{st['title']}' urgent → high",
+                        context="Task was 'urgent' for more than 7 days without progress. Auto-downgraded.",
+                        entity_type="task",
+                        entity_id=str(st['id']),
+                        confidence=1.0,
+                        source="pulse_engine",
+                        auto_decided=True,
+                    )
+                except Exception as dec_err:
+                    audit_log_sync("pulse", "WARNING", f"Failed to record priority decay decision: {dec_err}")
                 audit_log_sync("pulse", "INFO", f"📉 Priority decay: '{st['title']}' urgent → high (>{7}d stale)")
         except Exception as dec_err:
             audit_log_sync("pulse", "WARNING", f"Priority decay check failed: {dec_err}")
@@ -1496,6 +1656,19 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                         briefing_text = rhythms_text
             except Exception as rhythms_err:
                 audit_log_sync("pulse", "WARNING", f"⚠️ Rhythms section failed: {rhythms_err}")
+
+        # --- 🧠 WHAT I LEARNED THIS WEEK (Sunday only) ---
+        if day == 7 and not is_pre_monday:
+            try:
+                from core.lib.pattern_extractor import build_transparency_report
+                learned_text = await build_transparency_report()
+                if learned_text:
+                    if briefing_text:
+                        briefing_text += "\n\n" + learned_text
+                    else:
+                        briefing_text = learned_text
+            except Exception as learn_err:
+                audit_log_sync("pulse", "WARNING", f"⚠️ Transparency report failed: {learn_err}")
 
         # Append error summary to briefing if any failures occurred
         if error_log:

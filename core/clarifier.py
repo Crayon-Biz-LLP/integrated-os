@@ -134,8 +134,8 @@ def evaluate_edge(edge_data: dict, batch_mode: bool = False) -> Optional[dict]:
     if already_handled and already_handled.data:
         return None
         
-    s_node = supabase.table("graph_nodes").select("id").eq("label", from_lbl).maybe_single().execute()
-    t_node = supabase.table("graph_nodes").select("id").eq("label", to_lbl).maybe_single().execute()
+    s_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", from_lbl))
+    t_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", to_lbl))
     
     if s_node and s_node.data and t_node and t_node.data:
         existing_edges = supabase.table("graph_edges").select("relationship") \
@@ -186,7 +186,7 @@ def handle_response(shortcode: str, answer: str) -> dict:
     """
     supabase = get_supabase()
     
-    res = supabase.table("clarification_feedback").select("*").eq("shortcode", shortcode).maybe_single().execute()
+    res = maybe_single_safe(supabase.table("clarification_feedback").select("*").eq("shortcode", shortcode))
     if not res.data:
         return {"status": "error", "message": "Shortcode not found"}
         
@@ -233,7 +233,7 @@ def handle_response(shortcode: str, answer: str) -> dict:
         source_update["clarification_answer"] = context
         
     if source_table == "pending_graph_nodes" and response_type == "approved" and question_type in ["auto_merge", "disambiguation"]:
-        pn_res = supabase.table("pending_graph_nodes").select("label, type").eq("id", source_id).maybe_single().execute()
+        pn_res = maybe_single_safe(supabase.table("pending_graph_nodes").select("label, type").eq("id", source_id))
         if pn_res and pn_res.data:
             from core.lib.graph_rules import find_similar_node, execute_graph_node_merge
             similar = find_similar_node(pn_res.data["label"], pn_res.data["type"], threshold=0.85)
@@ -241,7 +241,7 @@ def handle_response(shortcode: str, answer: str) -> dict:
                 target_id = similar[0]["id"]
                 # First check if the source node actually exists in graph_nodes
                 # Sometimes pending nodes are just labels and haven't been created yet.
-                gn_res = supabase.table("graph_nodes").select("id").eq("label", pn_res.data["label"]).maybe_single().execute()
+                gn_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pn_res.data["label"]))
                 if gn_res and gn_res.data:
                     execute_graph_node_merge(gn_res.data["id"], target_id, "clarification_merge")
     
@@ -249,11 +249,11 @@ def handle_response(shortcode: str, answer: str) -> dict:
     
     # If an edge was approved via clarification, promote it to the permanent graph_edges table
     if source_table == "pending_graph_edges" and response_type == "approved":
-        pe_res = supabase.table("pending_graph_edges").select("*").eq("id", source_id).maybe_single().execute()
+        pe_res = maybe_single_safe(supabase.table("pending_graph_edges").select("*").eq("id", source_id))
         if pe_res and pe_res.data:
             pe = pe_res.data
-            s_node = supabase.table("graph_nodes").select("id").eq("label", pe["source_label"]).maybe_single().execute()
-            t_node = supabase.table("graph_nodes").select("id").eq("label", pe["target_label"]).maybe_single().execute()
+            s_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pe["source_label"]))
+            t_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pe["target_label"]))
             if s_node and s_node.data and t_node and t_node.data:
                 meta = {"source": "clarification_approval", "pending_id": source_id}
                 if context:

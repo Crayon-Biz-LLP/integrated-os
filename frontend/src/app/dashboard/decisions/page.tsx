@@ -1,5 +1,5 @@
 import { createServerSupabaseClient } from "@/lib/supabase-server";
-import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphPendingNode, GraphMergeProposal } from "@/lib/decisions/types";
+import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphPendingNode, GraphMergeProposal, AutoDecisionItem } from "@/lib/decisions/types";
 import { DecisionsShell } from "./decisions-shell";
 
 export const dynamic = 'force-dynamic';
@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export default async function DecisionsPage() {
   const supabase = await createServerSupabaseClient();
 
-  const [callRes, whatsappRes, graphRes, nodeRes, mergeRes, rejectedRes] = await Promise.all([
+  const [callRes, whatsappRes, graphRes, nodeRes, mergeRes, rejectedRes, autoDecisionsRes] = await Promise.all([
     supabase
       .from("messages")
       .select("*")
@@ -47,6 +47,13 @@ export default async function DecisionsPage() {
       .eq("status", "rejected")
       .order("created_at", { ascending: false })
       .limit(100),
+    supabase
+      .from("decisions")
+      .select("*")
+      .eq("auto_decided", true)
+      .is("verified_at", null)
+      .order("decided_at", { ascending: false })
+      .limit(100),
   ]);
 
   const rawCallItems = callRes.data ?? [];
@@ -68,6 +75,7 @@ export default async function DecisionsPage() {
   const graphNodes = (nodeRes.data ?? []) as GraphPendingNode[];
   const rejectedNodes = (rejectedRes.data ?? []) as GraphPendingNode[];
   const mergeProposals = (mergeRes.data ?? []) as GraphMergeProposal[];
+  const autoDecisions = (autoDecisionsRes.data ?? []) as AutoDecisionItem[];
 
   const edgeClarificationIds = graphItems.filter(i => i.status === 'awaiting_clarification').map(i => i.id.toString());
   const nodeClarificationIds = graphNodes.filter(n => n.status === 'awaiting_clarification').map(n => n.id.toString());
@@ -146,6 +154,7 @@ export default async function DecisionsPage() {
       initialGraphNodes={graphNodes}
       initialMergeProposals={mergeProposals}
       initialRejectedNodes={rejectedNodes}
+      initialAutoDecisions={autoDecisions}
     />
   );
 }

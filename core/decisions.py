@@ -26,6 +26,8 @@ def record_decision(
     source: str = "manual",
     source_ref: str = None,
     expires_at: str = None,
+    auto_decided: bool = False,
+    reversible: bool = True,
 ) -> dict:
     """Record a new decision. Returns the inserted row."""
     supabase = get_supabase()
@@ -35,6 +37,8 @@ def record_decision(
         "status": "active",
         "confidence": confidence,
         "source": source,
+        "auto_decided": auto_decided,
+        "reversible": reversible,
     }
     if context:
         data["context"] = context

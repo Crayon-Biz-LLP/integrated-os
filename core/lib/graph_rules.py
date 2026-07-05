@@ -1,4 +1,4 @@
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 import difflib
 import re
 from dotenv import load_dotenv
@@ -96,7 +96,7 @@ def resolve_alias(label: str) -> str:
         # Write-back async or fire-and-forget
         try:
             # We can't do async easily here, so just sync execute
-            res = supabase.table("person_aliases").select("resolution_count").eq("alias", lookup).maybe_single().execute()
+            res = maybe_single_safe(supabase.table("person_aliases").select("resolution_count").eq("alias", lookup))
             count = res.data.get("resolution_count", 0) if res and res.data else 0
             supabase.table("person_aliases").update({
                 "resolution_count": count + 1,
@@ -192,14 +192,14 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
     # ILIKE on the display label is safe and catches casing differences.
     if len(label) >= 4:
         try:
-            gn_res = supabase.table("graph_nodes").select("id, label, type, canonical_id").ilike("label", label).maybe_single().execute()
+            gn_res = maybe_single_safe(supabase.table("graph_nodes").select("id, label, type, canonical_id").ilike("label", label))
             if gn_res and gn_res.data:
                 node_id = gn_res.data["id"]
                 canonical_id = gn_res.data.get("canonical_id")
                 if canonical_id:
                     # Follow canonical chain
                     canonical = get_canonical_id(node_id)
-                    canonical_res = supabase.table("graph_nodes").select("id, label, type").eq("id", canonical).maybe_single().execute()
+                    canonical_res = maybe_single_safe(supabase.table("graph_nodes").select("id, label, type").eq("id", canonical))
                     if canonical_res and canonical_res.data:
                         result["label"] = canonical_res.data["label"]
                         result["node_id"] = canonical_res.data["id"]
@@ -216,7 +216,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
             
         # 4. ILIKE match against pending_graph_nodes
         try:
-            pgn_res = supabase.table("pending_graph_nodes").select("id, label, type, status").ilike("label", label).maybe_single().execute()
+            pgn_res = maybe_single_safe(supabase.table("pending_graph_nodes").select("id, label, type, status").ilike("label", label))
             if pgn_res and pgn_res.data:
                 if pgn_res.data["status"] == "rejected":
                     result["label"] = pgn_res.data["label"]
@@ -236,7 +236,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
         # 5. DB lookup for grounded types — exact guard pattern (not order-dependent)
         # 5a: People table — skip if role marks deletion/org-change/merge
         try:
-            db_res = supabase.table('people').select('id, name, role').ilike('name', label).maybe_single().execute()
+            db_res = maybe_single_safe(supabase.table('people').select('id, name, role').ilike('name', label))
             if db_res and db_res.data:
                 role = str(db_res.data.get('role') or '')
                 if not any(m in role for m in ["[DELETED]", "[CHANGED TO ORGANIZATION]", "[MERGED INTO"]):
@@ -249,7 +249,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
 
         # 5b: Organizations table
         try:
-            db_res = supabase.table('organizations').select('id, name').ilike('name', label).maybe_single().execute()
+            db_res = maybe_single_safe(supabase.table('organizations').select('id, name').ilike('name', label))
             if db_res and db_res.data:
                 result["label"] = db_res.data["name"]
                 result["node_type"] = "organization"
@@ -260,7 +260,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
 
         # 5c: Projects table
         try:
-            db_res = supabase.table('projects').select('id, name').ilike('name', label).maybe_single().execute()
+            db_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', label))
             if db_res and db_res.data:
                 result["label"] = db_res.data["name"]
                 result["node_type"] = "project"
@@ -305,7 +305,7 @@ def find_similar_node(label: str, node_type: str, threshold: float = 0.55) -> li
 
 
 def get_canonical_id(node_id: str) -> str:
-    node_res = supabase.table("graph_nodes").select("id, canonical_id").eq("id", node_id).maybe_single().execute()
+    node_res = maybe_single_safe(supabase.table("graph_nodes").select("id, canonical_id").eq("id", node_id))
     if not node_res.data:
         return node_id
     current = node_res.data
@@ -315,7 +315,7 @@ def get_canonical_id(node_id: str) -> str:
         if cid in visited:
             return current["id"]
         visited.add(cid)
-        next_res = supabase.table("graph_nodes").select("id, canonical_id").eq("id", cid).maybe_single().execute()
+        next_res = maybe_single_safe(supabase.table("graph_nodes").select("id, canonical_id").eq("id", cid))
         if not next_res.data:
             return current["id"]
         current = next_res.data
@@ -331,8 +331,8 @@ def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "
     if source_id == target_id:
         return {"success": False, "message": "Source and target are the same node"}
 
-    src_res = supabase.table("graph_nodes").select("*").eq("id", source_id).maybe_single().execute()
-    tgt_res = supabase.table("graph_nodes").select("*").eq("id", target_id).maybe_single().execute()
+    src_res = maybe_single_safe(supabase.table("graph_nodes").select("*").eq("id", source_id))
+    tgt_res = maybe_single_safe(supabase.table("graph_nodes").select("*").eq("id", target_id))
     
     if not src_res or not src_res.data or not tgt_res or not tgt_res.data:
         return {"success": False, "message": "Source or target node not found"}
@@ -463,8 +463,8 @@ def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "
     return {"success": True, "message": f"Merged {src_node['label']} into {tgt_node['label']}"}
 
 def propose_merge(source_node_id: str, target_node_id: str) -> dict:
-    src_res = supabase.table("graph_nodes").select("label, type").eq("id", source_node_id).maybe_single().execute()
-    tgt_res = supabase.table("graph_nodes").select("label").eq("id", target_node_id).maybe_single().execute()
+    src_res = maybe_single_safe(supabase.table("graph_nodes").select("label, type").eq("id", source_node_id))
+    tgt_res = maybe_single_safe(supabase.table("graph_nodes").select("label").eq("id", target_node_id))
     
     if not src_res or not src_res.data or not tgt_res or not tgt_res.data:
         return {"success": False, "message": "Node not found"}
@@ -473,10 +473,10 @@ def propose_merge(source_node_id: str, target_node_id: str) -> dict:
     tgt_label = tgt_res.data["label"]
     
     # Check if already proposed
-    existing = supabase.table("pending_graph_nodes")\
-        .select("id, status, merge_candidate_id")\
-        .ilike("label", src_label)\
-        .maybe_single().execute()
+    existing = maybe_single_safe(
+        supabase.table("pending_graph_nodes").select("id, status, merge_candidate_id")
+        .ilike("label", src_label)
+    )
         
     if existing and existing.data:
         if existing.data.get("status") == "merge_proposed" and existing.data.get("merge_candidate_id") == target_node_id:

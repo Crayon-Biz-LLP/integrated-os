@@ -72,6 +72,11 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [29-conversational-persistence-memory-hygiene.md](29-conversational-persistence-memory-hygiene.md) | Memory expiry, versioning, deletion cleanup, raw dump lifecycle, query carry-forward |
 | [30-context-registry-truth-boundary.md](30-context-registry-truth-boundary.md) | Context registry (entity-grounded retrieval, 6 strategies, hard/soft gates) + truth boundary (post-generation claim validation, action receipts) + prompt registry + JSON fail-closed |
 
+### Meta-Cognitive Layer
+| File | What It Covers |
+|------|---------------|
+| [33-pattern-learning-undo-fixes.md](33-pattern-learning-undo-fixes.md) | Pattern learning fixes: Telegram undo buttons, configurable cross-subsystem blend, entity type-weighted overlap bonus, missing import fixes |
+
 ### Frontend Features
 | File | What It Covers |
 |------|---------------|

@@ -220,7 +220,7 @@ def create_task(title: str, project_id: int = None, organization_name: str = Non
 def update_task_status(task_id: int, status: str = "done", duration_mins: int = 15, reminder_at: str = None, recurrence: str = None):
     """Updates a task's status (done/cancelled/todo) and reschedules it if a new reminder_at is provided."""
     try:
-        task_ref = supabase.table('tasks').select('*').eq('id', task_id).maybe_single().execute()
+        task_ref = maybe_single_safe(supabase.table('tasks').select('*').eq('id', task_id))
         if not task_ref.data:
             return f"Task {task_id} not found."
             
@@ -286,16 +286,16 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
 def create_person(name: str, context: str):
     """Records a new person in the Knowledge Graph."""
     try:
-        existing_node = supabase.table('pending_graph_nodes').select('id').eq('label', name).eq('type', 'person').in_('status', ['pending', 'flagged']).maybe_single().execute()
+        existing_node = maybe_single_safe(supabase.table('pending_graph_nodes').select('id').eq('label', name).eq('type', 'person').in_('status', ['pending', 'flagged']))
         if existing_node and existing_node.data:
             return f"Person '{name}' already pending approval (ID: {existing_node.data['id']})."
 
-        existing_live = supabase.table('graph_nodes').select('id, db_record_id, canonical_id').eq('label', name).eq('type', 'person').maybe_single().execute()
+        existing_live = maybe_single_safe(supabase.table('graph_nodes').select('id, db_record_id, canonical_id').eq('label', name).eq('type', 'person'))
         if existing_live and existing_live.data:
             if existing_live.data.get('canonical_id'):
                 from core.lib.graph_rules import get_canonical_id
                 c_id = get_canonical_id(existing_live.data['id'])
-                c_node = supabase.table('graph_nodes').select('db_record_id').eq('id', c_id).maybe_single().execute()
+                c_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('id', c_id))
                 if c_node and c_node.data and c_node.data.get('db_record_id'):
                     return f"Person '{name}' was merged. ID {c_node.data['db_record_id']}"
             db_id = existing_live.data.get('db_record_id')
@@ -310,7 +310,7 @@ def create_person(name: str, context: str):
         }).execute()
         if res.data:
             pending_id = res.data[0]['id']
-            existing_knows = supabase.table('pending_graph_edges').select('id').eq('source_label', 'Danny').eq('target_label', name).eq('relationship', 'KNOWS').in_('status', ['pending', 'approved']).maybe_single().execute()
+            existing_knows = maybe_single_safe(supabase.table('pending_graph_edges').select('id').eq('source_label', 'Danny').eq('target_label', name).eq('relationship', 'KNOWS').in_('status', ['pending', 'approved']))
             if not (existing_knows and existing_knows.data):
                 supabase.table('pending_graph_edges').insert({
                     "source_label": "Danny",
@@ -328,7 +328,7 @@ def create_person(name: str, context: str):
 def link_resource_to_cluster(resource_id: int, cluster_name: str):
     """Links an existing resource to a cluster (creating the cluster if it doesn't exist)."""
     try:
-        exist = supabase.table('clusters').select('id').ilike('title', cluster_name).maybe_single().execute()
+        exist = maybe_single_safe(supabase.table('clusters').select('id').ilike('title', cluster_name))
         if exist.data:
             c_id = exist.data['id']
         else:
@@ -353,7 +353,7 @@ def skip_recurring_instance(task_id: int, date_str: str = None):
     If no date_str is provided, the next upcoming instance is skipped.
     date_str format: YYYY-MM-DD (optional, defaults to next instance)."""
     try:
-        task_ref = supabase.table('tasks').select('id, title, recurrence, google_event_id, metadata').eq('id', task_id).maybe_single().execute()
+        task_ref = maybe_single_safe(supabase.table('tasks').select('id, title, recurrence, google_event_id, metadata').eq('id', task_id))
         if not task_ref.data:
             return f"Task {task_id} not found."
 

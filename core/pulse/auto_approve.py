@@ -1,7 +1,8 @@
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 from core.pulse.graph import create_graph_node_with_db_record
 from core.lib.graph_rules import resolve_canonical_label
 from core.lib.audit_logger import audit_log_sync
+from core.decisions import record_decision
 
 async def auto_approve_concepts_and_evokes(label: str):
     """
@@ -11,7 +12,7 @@ async def auto_approve_concepts_and_evokes(label: str):
     supabase = get_supabase()
     
     # 1. Get live UUID of the entity we just approved
-    entity_res = supabase.table('graph_nodes').select('id').eq('label', label).maybe_single().execute()
+    entity_res = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', label))
     if not entity_res or not entity_res.data:
         return
     entity_uuid = entity_res.data['id']
@@ -36,12 +37,12 @@ async def auto_approve_concepts_and_evokes(label: str):
         concept_uuid = None
 
         # 3. Ensure the concept node exists in graph_nodes
-        concept_res = supabase.table('graph_nodes').select('id').eq('label', concept_label).maybe_single().execute()
+        concept_res = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', concept_label))
         if concept_res and concept_res.data:
             concept_uuid = concept_res.data['id']
         else:
             # Create concept node from pending data
-            pn_res = supabase.table('pending_graph_nodes').select('*').eq('label', concept_label).eq('type', 'concept').maybe_single().execute()
+            pn_res = maybe_single_safe(supabase.table('pending_graph_nodes').select('*').eq('label', concept_label).eq('type', 'concept'))
             if pn_res and pn_res.data:
                 source_text = pn_res.data.get('source_text', '')
                 context = pn_res.data.get('eval_context', {})
@@ -59,7 +60,7 @@ async def auto_approve_concepts_and_evokes(label: str):
                 
             concept_uuid = res.get('node_id') or res.get('merge_candidate_id')
             if not concept_uuid:
-                c_res = supabase.table('graph_nodes').select('id').eq('label', concept_label).maybe_single().execute()
+                c_res = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', concept_label))
                 if c_res and c_res.data:
                     concept_uuid = c_res.data['id']
                 else:
@@ -67,6 +68,21 @@ async def auto_approve_concepts_and_evokes(label: str):
             
             # Mark pending concept as approved
             supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('label', concept_label).eq('type', 'concept').execute()
+            
+            # Record decision for auto-created concept node
+            try:
+                record_decision(
+                    decision_type="concept_auto_creation",
+                    title=f"Auto-created concept: {concept_label}",
+                    context=f"Cascade from approving entity '{label}' — EVOKES relationship",
+                    entity_type="graph_node",
+                    entity_id=str(concept_uuid),
+                    confidence=1.0,
+                    source="auto_approve_cascade",
+                    auto_decided=True,
+                )
+            except Exception as dec_err:
+                audit_log_sync("pulse", "WARNING", f"Failed to record concept creation decision: {dec_err}")
         
         # 4. Extract linked_entity and relationship from context
         linked_entity = context.get('linked_entity', '') if isinstance(context, dict) else ''
@@ -85,7 +101,7 @@ async def auto_approve_concepts_and_evokes(label: str):
         # Store raw linked_entity as fallback metadata when resolution fails
         if linked_entity and not resolved_label and concept_uuid:
             try:
-                node_res = supabase.table('graph_nodes').select('metadata').eq('id', concept_uuid).maybe_single().execute()
+                node_res = maybe_single_safe(supabase.table('graph_nodes').select('metadata').eq('id', concept_uuid))
                 existing_meta = (node_res.data.get('metadata') if node_res and node_res.data else {}) or {}
                 
                 supabase.table('graph_nodes').update({
@@ -117,6 +133,21 @@ async def auto_approve_concepts_and_evokes(label: str):
                 'weight': 1.0,
                 'metadata': {"source": "auto_approve_cascade"}
             }).execute()
+            
+            # Record decision for auto-created edge
+            try:
+                record_decision(
+                    decision_type="edge_auto_creation",
+                    title=f"Auto-created edge: {label} --{relationship_verb}--> {concept_label}",
+                    context=f"Cascade from auto-approve of '{label}' — EVOKES relationship",
+                    entity_type="graph_edge",
+                    entity_id=f"{source_uuid}->{target_uuid}",
+                    confidence=1.0,
+                    source="auto_approve_cascade",
+                    auto_decided=True,
+                )
+            except Exception as dec_err:
+                audit_log_sync("pulse", "WARNING", f"Failed to record edge creation decision: {dec_err}")
             
         # 6. Mark pending edge as approved
         supabase.table('pending_graph_edges').update({'status': 'approved'}).eq('id', edge['id']).execute()

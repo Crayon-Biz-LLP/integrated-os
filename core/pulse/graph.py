@@ -1,10 +1,11 @@
 from core.llm.constants import SYNTHESIS_MODEL
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 from core.llm import get_embedding
 from core.llm.fallback import generate_content_with_fallback
 import json
 import asyncio
 from core.lib.audit_logger import audit_log_sync
+from core.lib.telemetry import emit_observation
 from core.lib.people_utils import normalize_person_name
 from core.lib.graph_rules import find_similar_node, validate_edge, resolve_alias, resolve_canonical_label, canonicalize_relationship, normalize_label_display, normalize_label_comparison, get_canonical_id
 from core.decisions import record_decision
@@ -55,7 +56,7 @@ async def create_graph_node_with_db_record(
                         "merge_candidate_id": top["id"]}
 
         if node_type == 'project':
-            existing = supabase.table('projects').select('id, name').ilike('name', label).maybe_single().execute()
+            existing = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', label))
             if existing and existing.data:
                 project_id = existing.data['id']
                 audit_log_sync("pulse", "INFO", f"Reusing existing project '{label}' (ID {project_id})")
@@ -150,7 +151,7 @@ async def create_graph_node_with_db_record(
             # then link graph_node_id back to it.
             org_db_id = None
             if node_type == 'organization':
-                existing_org = supabase.table('organizations').select('id').ilike('name', label).maybe_single().execute()
+                existing_org = maybe_single_safe(supabase.table('organizations').select('id').ilike('name', label))
                 if existing_org and existing_org.data:
                     org_db_id = existing_org.data['id']
                     audit_log_sync("pulse", "INFO", f"Reusing existing organization '{label}' (ID {org_db_id})")
@@ -208,7 +209,7 @@ async def _ensure_danny_edge(label: str, node_type: str):
     if not rel:
         return
     try:
-        danny_res = supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny").limit(1).maybe_single().execute()
+        danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny"))
         if not danny_res or not danny_res.data:
             return
         danny_id = danny_res.data["id"]
@@ -216,7 +217,7 @@ async def _ensure_danny_edge(label: str, node_type: str):
         label = normalize_label_display(label)
         # Resolve through aliases table (e.g. Sunju → Sunjula Daniel)
         label = resolve_alias(label)
-        target_res = supabase.table("graph_nodes").select("id, canonical_id").ilike("label", label).limit(1).maybe_single().execute()
+        target_res = maybe_single_safe(supabase.table("graph_nodes").select("id, canonical_id").ilike("label", label))
         if not target_res or not target_res.data:
             return
         target_id = target_res.data["id"]
@@ -224,11 +225,12 @@ async def _ensure_danny_edge(label: str, node_type: str):
         if target_res.data.get("canonical_id"):
             target_id = get_canonical_id(target_id)
 
-        existing = supabase.table("graph_edges").select("id")\
-            .eq("source_node_id", danny_id)\
-            .eq("target_node_id", target_id)\
-            .eq("relationship", rel)\
-            .maybe_single().execute()
+        existing = maybe_single_safe(
+            supabase.table("graph_edges").select("id")
+            .eq("source_node_id", danny_id)
+            .eq("target_node_id", target_id)
+            .eq("relationship", rel)
+        )
 
         if not existing or not existing.data:
             supabase.table("graph_edges").insert({
@@ -322,16 +324,17 @@ Format:
             rel = rel.upper()
                 
             # Check existing pending edge
-            existing = supabase.table("pending_graph_edges").select("id")\
-                .ilike("source_label", s_label)\
-                .ilike("target_label", t_label)\
-                .eq("relationship", rel)\
-                .in_("status", ["pending"])\
-                .maybe_single().execute()
+            existing = maybe_single_safe(
+                supabase.table("pending_graph_edges").select("id")
+                .ilike("source_label", s_label)
+                .ilike("target_label", t_label)
+                .eq("relationship", rel)
+                .in_("status", ["pending"])
+            )
                 
             if not existing or not existing.data:
-                s_node_res = supabase.table("graph_nodes").select("type").ilike("label", s_label).limit(1).maybe_single().execute()
-                t_node_res = supabase.table("graph_nodes").select("type").ilike("label", t_label).limit(1).maybe_single().execute()
+                s_node_res = maybe_single_safe(supabase.table("graph_nodes").select("type").ilike("label", s_label))
+                t_node_res = maybe_single_safe(supabase.table("graph_nodes").select("type").ilike("label", t_label))
                 s_type = s_node_res.data.get("type") if s_node_res.data else None
                 t_type = t_node_res.data.get("type") if t_node_res.data else None
                 if s_type and t_type:
@@ -360,9 +363,9 @@ Format:
         return []
 
 
-async def process_graph_pending_decision(pending_id: int, decision: str, context: str = None, new_label: str = None) -> dict:
+async def process_graph_pending_decision(pending_id: int, decision: str, context: str = None, new_label: str = None, auto_decided: bool = False) -> dict:
     try:
-        pending_res = supabase.table('pending_graph_nodes').select('*').eq('id', pending_id).maybe_single().execute()
+        pending_res = maybe_single_safe(supabase.table('pending_graph_nodes').select('*').eq('id', pending_id))
         if not pending_res or not pending_res.data:
             return {"success": False, "action": "not_found", "message": "Graph item not found."}
 
@@ -383,18 +386,27 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
             supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('source_label', label).execute()
             supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('target_label', label).execute()
             # Record rejection decision
-            try:
-                record_decision(
-                    decision_type="graph_node_rejection",
-                    title=f"Rejected {pending_item.get('type', 'node')}: {label}",
-                    context=f"Pending node #{pending_id} rejected.",
-                    entity_type="graph_node",
-                    entity_id=str(pending_id),
-                    confidence=1.0,
-                    source="decision_pulse",
-                )
+            try:                    record_decision(
+                            decision_type="graph_node_rejection",
+                            title=f"Rejected {pending_item.get('type', 'node')}: {label}",
+                            context=f"Pending node #{pending_id} rejected.",
+                            entity_type="graph_node",
+                            entity_id=str(pending_id),
+                            confidence=1.0,
+                            source="decision_pulse",
+                            auto_decided=auto_decided,
+                        )
             except Exception as dec_err:
                 audit_log_sync("pulse", "WARNING", f"Failed to record graph node rejection: {dec_err}")
+            await emit_observation(
+                subsystem='entity_extraction',
+                event_type='rejection',
+                features={"node_type": pending_item.get('type')},
+                predicted=pending_item.get('type'),
+                actual='rejected',
+                outcome='rejected',
+                source='decision_pulse'
+            )
             return {"success": True, "action": "rejected", "message": f"Rejected node and related edges for {label}"}
 
         if decision == 'approve':
@@ -412,17 +424,18 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
 
             # Auto-approve any pending Danny→KNOWS edge for this label before creating node
             # (so _ensure_danny_edge sees the edge already exists and skips)
-            danny_edge_res = supabase.table("pending_graph_edges")\
-                .select("id, source_label, target_label, source_text")\
-                .eq("source_label", "Danny")\
-                .eq("target_label", label)\
-                .eq("relationship", "KNOWS")\
-                .eq("status", "pending")\
-                .maybe_single().execute()
+            danny_edge_res = maybe_single_safe(
+                supabase.table("pending_graph_edges")
+                .select("id, source_label, target_label, source_text")
+                .eq("source_label", "Danny")
+                .eq("target_label", label)
+                .eq("relationship", "KNOWS")
+                .eq("status", "pending")
+            )
             if danny_edge_res and danny_edge_res.data:
                 pe = danny_edge_res.data
-                s_node = supabase.table("graph_nodes").select("id").eq("label", pe["source_label"]).maybe_single().execute()
-                t_node = supabase.table("graph_nodes").select("id").eq("label", pe["target_label"]).maybe_single().execute()
+                s_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pe["source_label"]))
+                t_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pe["target_label"]))
                 if s_node and s_node.data and t_node and t_node.data:
                     supabase.table("graph_edges").upsert({
                         "source_node_id": s_node.data["id"],
@@ -459,12 +472,23 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                             entity_id=str(pending_id),
                             confidence=1.0,
                             source="decision_pulse",
+                            auto_decided=auto_decided,
                         )
                     except Exception as dec_err:
                         audit_log_sync("pulse", "WARNING", f"Failed to record graph node decision: {dec_err}")
                     # Cascade auto-approve related concepts and EVOKES edges
                     from core.pulse.auto_approve import auto_approve_concepts_and_evokes
                     asyncio.create_task(auto_approve_concepts_and_evokes(label))
+
+            await emit_observation(
+                subsystem='entity_extraction',
+                event_type='approval',
+                features={"node_type": node_type, "has_context": bool(context), "source": pending_item.get('source_tag', 'pending_approval')},
+                predicted=node_type,
+                actual=node_type,
+                outcome='confirmed',
+                source='decision_pulse'
+            )
 
             return result
 
@@ -474,7 +498,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
 
 async def process_pending_edge_decision(pending_id: int, decision: str, new_source: str = None, new_target: str = None, new_rel: str = None, context: str | None = None) -> dict:
     try:
-        pe_res = supabase.table('pending_graph_edges').select('*').eq('id', pending_id).maybe_single().execute()
+        pe_res = maybe_single_safe(supabase.table('pending_graph_edges').select('*').eq('id', pending_id))
         if not pe_res or not pe_res.data:
             return {"success": False, "action": "not_found", "message": "Pending edge not found."}
             
@@ -497,6 +521,15 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                 )
             except Exception as dec_err:
                 audit_log_sync("pulse", "WARNING", f"Failed to record graph edge rejection: {dec_err}")
+            await emit_observation(
+                subsystem='entity_extraction',
+                event_type='rejection',
+                features={"relationship": pe['relationship'], "source_type": pe.get('source_type'), "target_type": pe.get('target_type')},
+                predicted=pe['relationship'],
+                actual='rejected',
+                outcome='rejected',
+                source='decision_pulse'
+            )
             return {"success": True, "action": "rejected", "message": "Rejected edge."}
             
         if decision == 'approve':
@@ -505,8 +538,8 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             rel = (new_rel or pe['relationship']).upper()
 
             from core.lib.graph_rules import validate_edge
-            s_node_res = supabase.table('graph_nodes').select('id, type').ilike('label', s_label).limit(1).maybe_single().execute()
-            t_node_res = supabase.table('graph_nodes').select('id, type').ilike('label', t_label).limit(1).maybe_single().execute()
+            s_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type').ilike('label', s_label))
+            t_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type').ilike('label', t_label))
 
             s_data = getattr(s_node_res, 'data', None)
             t_data = getattr(t_node_res, 'data', None)
@@ -570,6 +603,15 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                 )
             except Exception as dec_err:
                 audit_log_sync("pulse", "WARNING", f"Failed to record graph edge decision: {dec_err}")
+
+            await emit_observation(
+                subsystem='entity_extraction',
+                event_type='approval',
+                features={"relationship": rel, "source_type": s_type or pe.get('source_type'), "target_type": t_type or pe.get('target_type')},
+                predicted=pe['relationship'],
+                actual=rel,
+                outcome='confirmed'
+            )
 
             return {"success": True, "action": "approved", "message": f"Approved edge: {s_label} → {rel} → {t_label}"}
             
@@ -1140,7 +1182,7 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                 # To pending
                 status = "pending" if typ in ['person', 'project', 'organization'] else "flagged"
                 try:
-                    pend_check = supabase.table('pending_graph_nodes').select('id').ilike('label', c_lbl).limit(1).maybe_single().execute()
+                    pend_check = maybe_single_safe(supabase.table('pending_graph_nodes').select('id').ilike('label', c_lbl))
                     if not pend_check.data:
                         ins_res = supabase.table('pending_graph_nodes').insert({
                             "label": c_lbl,
@@ -1162,13 +1204,13 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                                     asyncio.run(store_and_send_clarification(clar, "pending_graph_nodes", new_node_id))
                         # If person, also add a pending KNOWS edge from Danny
                         if typ == 'person':
-                            danny_edge_exists = supabase.table("pending_graph_edges")\
-                                .select("id, source_text")\
-                                .ilike("source_label", "Danny")\
-                                .ilike("target_label", c_lbl)\
-                                .eq("relationship", "KNOWS")\
-                                .limit(1)\
-                                .maybe_single().execute()
+                            danny_edge_exists = maybe_single_safe(
+                                supabase.table("pending_graph_edges")
+                                .select("id, source_text")
+                                .ilike("source_label", "Danny")
+                                .ilike("target_label", c_lbl)
+                                .eq("relationship", "KNOWS")
+                            )
                             if not danny_edge_exists or not danny_edge_exists.data:
                                 supabase.table("pending_graph_edges").insert({
                                     "source_label": "Danny",

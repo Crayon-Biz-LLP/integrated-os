@@ -20,9 +20,9 @@ def validate_deployment(deploy_timestamp: str):
         # Check if they are in pending_graph_nodes or organizations
         leaked = []
         for row in res.data:
-            org_check = supabase.table('organizations').select('id').eq('graph_node_id', row['id']).maybe_single().execute()
+            org_check = maybe_single_safe(supabase.table('organizations').select('id').eq('graph_node_id', row['id']))
             if not getattr(org_check, 'data', None):
-                pend = supabase.table('pending_graph_nodes').select('id').eq('label', row['label']).maybe_single().execute()
+                pend = maybe_single_safe(supabase.table('pending_graph_nodes').select('id').eq('label', row['label']))
                 if not getattr(pend, 'data', None):
                     leaked.append(row)
         if leaked:

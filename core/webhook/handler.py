@@ -4,11 +4,13 @@ import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync, trace_id_var
+from core.lib.telemetry import emit_observation
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
 from core.lib.conversation import get_or_create_session, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
 from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
+from core.services.db import maybe_single_safe
 from core.webhook.email import process_email_pending_decision, handle_ed_command
 from core.webhook.workflows import check_and_resume_workflow
 from core.webhook.utils import process_channel_pending_decision
@@ -88,7 +90,7 @@ async def process_callback_query(callback_query: dict):
         persontag_match = re.match(r'^persontag_skip_g(\d+)$', data)
         if persontag_match:
             pending_id = int(persontag_match.group(1))
-            pending_item = supabase.table('pending_graph_nodes').select('label').eq('id', pending_id).maybe_single().execute()
+            pending_item = maybe_single_safe(supabase.table('pending_graph_nodes').select('label').eq('id', pending_id))
             label = pending_item.data.get('label', 'Unknown') if pending_item and pending_item.data else 'Unknown'
             await resolve_graph_person_context(chat_id, None, pending_id, label)
             return {"success": True}
@@ -103,12 +105,151 @@ async def process_callback_query(callback_query: dict):
             await send_telegram(chat_id, "Cancelled. Node stays pending for next Decision Pulse.")
             return {"success": True}
 
+        # Undo auto-processed items callback: "undo_auto_channels", "undo_auto_graph", "undo_auto_edge"
+        undo_match = re.match(r'^undo_auto_(channels|graph|edge)$', data)
+        if undo_match:
+            undo_target = undo_match.group(1)
+            try:
+                from core.decisions import reverse_decision
+                # Find auto-decisions from the last 30 minutes
+                now = datetime.now(timezone.utc)
+                cutoff = (now - timedelta(minutes=30)).isoformat()
+                
+                # Map target to decision types and entity types
+                if undo_target == "channels":
+                    # Channel items use decision_type='channel_approval' (utils.py line 99)
+                    decision_res = supabase.table('decisions').select('id, entity_id, decision_type')\
+                        .eq('auto_decided', True)\
+                        .eq('status', 'active')\
+                        .is_('verified_at', None)\
+                        .gte('decided_at', cutoff)\
+                        .eq('decision_type', 'channel_approval')\
+                        .execute()
+                elif undo_target == "graph":
+                    # Graph nodes use decision_type='graph_node_approval' (graph.py line 468)
+                    decision_res = supabase.table('decisions').select('id, entity_id, decision_type')\
+                        .eq('auto_decided', True)\
+                        .eq('status', 'active')\
+                        .is_('verified_at', None)\
+                        .gte('decided_at', cutoff)\
+                        .eq('decision_type', 'graph_node_approval')\
+                        .execute()
+                else:  # edges
+                    # Graph edges use decision_type='graph_edge_approval' (graph.py line 596)
+                    decision_res = supabase.table('decisions').select('id, entity_id, decision_type')\
+                        .eq('auto_decided', True)\
+                        .eq('status', 'active')\
+                        .is_('verified_at', None)\
+                        .gte('decided_at', cutoff)\
+                        .eq('decision_type', 'graph_edge_approval')\
+                        .execute()
+                
+                undone_count = 0
+                for row in (decision_res.data or []):
+                    decision_id = row['id']
+                    entity_id = row.get('entity_id')
+                    
+                    # Reverse the decision record
+                    reverse_decision(decision_id, rationale="User undid auto-approve via Telegram undo button")
+                    
+                    # Attempt to undo the actual DB action
+                    if undo_target == "channels" and entity_id and entity_id.isdigit():
+                        try:
+                            # Revert message back to pending for re-review
+                            supabase.table('messages').update({'danny_decision': None}).eq('id', int(entity_id)).execute()
+                            undone_count += 1
+                        except Exception:
+                            pass
+                    elif undo_target == "graph" and entity_id:
+                        try:
+                            # Look up the pending_graph_nodes row by id
+                            # Auto-approved graph nodes have entity_id = node UUID
+                            # Move them back to pending
+                            node_check = supabase.table('pending_graph_nodes').select('id')\
+                                .eq('id', int(entity_id))\
+                                .execute()
+                            if node_check.data:
+                                supabase.table('pending_graph_nodes').update({'status': 'pending'})\
+                                    .eq('id', int(entity_id))\
+                                    .execute()
+                                undone_count += 1
+                            else:
+                                # Try by label — find matching pending node
+                                node_res = supabase.table('pending_graph_nodes').select('id, status')\
+                                    .eq('status', 'approved')\
+                                    .execute()
+                                for n in node_res.data or []:
+                                    supabase.table('pending_graph_nodes').update({'status': 'pending'})\
+                                        .eq('id', n['id'])\
+                                        .execute()
+                                    undone_count += 1
+                        except Exception:
+                            pass
+                    elif undo_target == "edge" and entity_id:
+                        try:
+                            supabase.table('pending_graph_edges').update({'status': 'pending'})\
+                                .eq('id', int(entity_id))\
+                                .execute()
+                            undone_count += 1
+                        except Exception:
+                            pass
+                
+                if undone_count > 0:
+                    await send_telegram(chat_id, f"↩️ Undone {undone_count} auto-processed {undo_target} items. They will reappear in the next Decision Pulse for re-review.")
+                else:
+                    await send_telegram(chat_id, "No auto-processed items found to undo in the last 30 minutes. They may have already been verified or reversed.")
+            except Exception as undo_err:
+                audit_log_sync("webhook", "WARNING", f"Undo auto-processed failed: {undo_err}")
+                await send_telegram(chat_id, "⚠️ Failed to undo auto-processed items. Check logs.")
+            return {"success": True}
+
+        # Suggest mode pattern callback: "pattern_approve_{subsystem}_{hash}" or "pattern_skip_{subsystem}_{hash}"
+        pattern_suggest_match = re.match(r'^pattern_(approve|skip)_(.+)$', data)
+        if pattern_suggest_match:
+            pattern_action = pattern_suggest_match.group(1)
+            payload = pattern_suggest_match.group(2)
+            # payload format: {subsystem}_{feature_hash}
+            sep = payload.rfind('_')
+            if sep <= 0:
+                await send_telegram(chat_id, "Invalid pattern callback data.")
+                return {"success": True}
+            subsystem = payload[:sep]
+            feature_hash = payload[sep+1:]
+
+            if pattern_action == 'approve':
+                try:
+                    supabase.table('core_config').upsert({
+                        'key': f'suggest_approved:{subsystem}:{feature_hash}',
+                        'content': datetime.now(timezone.utc).isoformat(),
+                    }, on_conflict='key').execute()
+
+                    pattern_row = maybe_single_safe(
+                        supabase.table('subsystem_patterns')
+                        .select('id, soft_accepted_count')
+                        .eq('subsystem', subsystem)
+                        .eq('feature_hash', feature_hash)
+                    )
+                    current_count = pattern_row.data.get('soft_accepted_count', 0) or 0 if pattern_row.data else 0
+                    supabase.table('subsystem_patterns').update({
+                        'soft_accepted_count': current_count + 1,
+                    }).eq('subsystem', subsystem).eq('feature_hash', feature_hash).execute()
+
+                    await send_telegram(chat_id, f"✅ Pattern auto-approve enabled for {subsystem}")
+                    audit_log_sync("decision_pulse", "INFO", f"Suggest mode approve: {subsystem}:{feature_hash} pattern promoted to auto-approve")
+                except Exception as e:
+                    await send_telegram(chat_id, f"⚠️ Failed to approve pattern: {e}")
+                    audit_log_sync("decision_pulse", "WARNING", f"Suggest mode approve failed: {e}")
+            else:
+                await send_telegram(chat_id, "Pattern skipped. You can review it again in the next Decision Pulse.")
+
+            return {"success": True}
+
         # Merge proposal callback: "merge_accept_123" or "merge_reject_123"
         merge_match = re.match(r'^merge_(accept|reject)_(\d+)$', data)
         if merge_match:
             merge_action = merge_match.group(1)
             pending_id = int(merge_match.group(2))
-            pending_row = supabase.table('pending_graph_nodes').select('*').eq('id', pending_id).maybe_single().execute()
+            pending_row = maybe_single_safe(supabase.table('pending_graph_nodes').select('*').eq('id', pending_id))
             if not pending_row or not pending_row.data:
                 await send_telegram(chat_id, "Merge proposal not found.")
                 return {"success": True}
@@ -126,7 +267,7 @@ async def process_callback_query(callback_query: dict):
                 return {"success": True}
             from core.lib.graph_rules import get_canonical_id
             target_canonical = get_canonical_id(target_id)
-            source_node_res = supabase.table('graph_nodes').select('id').eq('label', pr['label']).maybe_single().execute()
+            source_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', pr['label']))
             source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
             if source_node_id:
                 supabase.table('graph_nodes').update({'canonical_id': target_canonical}).eq('id', source_node_id).execute()
@@ -152,7 +293,7 @@ async def process_callback_query(callback_query: dict):
                 result = await process_channel_pending_decision('whatsapp', sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'pe':
                 if action == 'edit':
-                    pe_res = supabase.table('pending_graph_edges').select('source_label, relationship, target_label').eq('id', sc_int).maybe_single().execute()
+                    pe_res = maybe_single_safe(supabase.table('pending_graph_edges').select('source_label, relationship, target_label').eq('id', sc_int))
                     if not getattr(pe_res, 'data', None):
                         await send_telegram(chat_id, "Edge not found or already processed.")
                         return {"success": True}
@@ -175,7 +316,7 @@ async def process_callback_query(callback_query: dict):
                         del pending_graph_clarifications[chat_id]
                     result = await process_graph_pending_decision(sc_int, 'reject')
                 else:
-                    pending_item = supabase.table('pending_graph_nodes').select('id, label, type').eq('id', sc_int).maybe_single().execute()
+                    pending_item = maybe_single_safe(supabase.table('pending_graph_nodes').select('id, label, type').eq('id', sc_int))
                     if pending_item and pending_item.data:
                         ptype = pending_item.data.get('type')
                         label = pending_item.data.get('label')
@@ -344,13 +485,13 @@ async def process_webhook(update: dict):
             return {"success": True}
 
         _email_approve_match = re.match(r'^[eE](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
-        _email_reject_match = re.match(r'^[eE](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
+        _email_reject_match = re.match(r'^[eE](\d+)\s+(drop|no|reject|skip|dismiss)(?:[,\s]+(.+))?$', text.strip(), re.IGNORECASE)
         _call_approve_match = re.match(r'^[cC](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
-        _call_reject_match = re.match(r'^[cC](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
+        _call_reject_match = re.match(r'^[cC](\d+)\s+(drop|no|reject|skip|dismiss)(?:[,\s]+(.+))?$', text.strip(), re.IGNORECASE)
         _whatsapp_approve_match = re.match(r'^[wW](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
-        _whatsapp_reject_match = re.match(r'^[wW](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
+        _whatsapp_reject_match = re.match(r'^[wW](\d+)\s+(drop|no|reject|skip|dismiss)(?:[,\s]+(.+))?$', text.strip(), re.IGNORECASE)
         _teams_approve_match = re.match(r'^[tT](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
-        _teams_reject_match = re.match(r'^[tT](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
+        _teams_reject_match = re.match(r'^[tT](\d+)\s+(drop|no|reject|skip|dismiss)(?:[,\s]+(.+))?$', text.strip(), re.IGNORECASE)
         _graph_approve_match = re.match(r'^[gG](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
         _graph_reject_match = re.match(r'^[gG](\d+)\s+(drop|no|reject|skip|dismiss)$', text.strip(), re.IGNORECASE)
         _graph_direct_match = re.match(r'^[gG](\d+)\s+(?!(?:yes|approve|do it|yep|add it|drop|no|reject|skip|dismiss|cancel)\b)(.+)$', text.strip(), re.IGNORECASE | re.DOTALL)
@@ -483,7 +624,7 @@ async def process_webhook(update: dict):
         if _graph_approve_match:
             try:
                 _sc = _graph_approve_match.group(1)
-                pending_item = supabase.table('pending_graph_nodes').select('id, label, type').eq('id', int(_sc)).maybe_single().execute()
+                pending_item = maybe_single_safe(supabase.table('pending_graph_nodes').select('id, label, type').eq('id', int(_sc)))
                 if pending_item and pending_item.data:
                     ptype = pending_item.data.get('type')
                     label = pending_item.data.get('label')
@@ -541,7 +682,7 @@ async def process_webhook(update: dict):
             try:
                 _sc = int(_graph_direct_match.group(1))
                 _value = _graph_direct_match.group(2)
-                pending_item = supabase.table('pending_graph_nodes').select('id, label, type').eq('id', _sc).maybe_single().execute()
+                pending_item = maybe_single_safe(supabase.table('pending_graph_nodes').select('id, label, type').eq('id', _sc))
                 if not pending_item or not pending_item.data:
                     await send_telegram(chat_id, "⚠️ Pending item not found.")
                     clear_session(chat_id)
@@ -666,9 +807,11 @@ async def process_webhook(update: dict):
             try:
                 _sc = (_call_approve_match or _call_reject_match).group(1)
                 _is_approve = bool(_call_approve_match)
+                _ctx = (_call_reject_match.group(3) if _call_reject_match and not _is_approve else None)
                 result = await process_channel_pending_decision('call', 
                     pending_id=int(_sc),
-                    decision='approve' if _is_approve else 'reject'
+                    decision='approve' if _is_approve else 'reject',
+                    rejection_context=_ctx
                 )
                 if result['success']:
                     await send_telegram(chat_id, f"✅ {result['message']}")
@@ -687,9 +830,11 @@ async def process_webhook(update: dict):
             try:
                 _sc = (_whatsapp_approve_match or _whatsapp_reject_match).group(1)
                 _is_approve = bool(_whatsapp_approve_match)
+                _ctx = (_whatsapp_reject_match.group(3) if _whatsapp_reject_match and not _is_approve else None)
                 result = await process_channel_pending_decision('whatsapp', 
                     pending_id=int(_sc),
-                    decision='approve' if _is_approve else 'reject'
+                    decision='approve' if _is_approve else 'reject',
+                    rejection_context=_ctx
                 )
                 if result['success']:
                     await send_telegram(chat_id, f"✅ {result['message']}")
@@ -708,9 +853,11 @@ async def process_webhook(update: dict):
             try:
                 _sc = (_teams_approve_match or _teams_reject_match).group(1)
                 _is_approve = bool(_teams_approve_match)
+                _ctx = (_teams_reject_match.group(3) if _teams_reject_match and not _is_approve else None)
                 result = await process_channel_pending_decision('teams', 
                     pending_id=int(_sc),
-                    decision='approve' if _is_approve else 'reject'
+                    decision='approve' if _is_approve else 'reject',
+                    rejection_context=_ctx
                 )
                 if result['success']:
                     await send_telegram(chat_id, f"✅ {result['message']}")
@@ -834,13 +981,12 @@ async def process_webhook(update: dict):
                     # Not found in email, call, or WhatsApp — try practice dismissal (reject only)
                     if not _is_approve:
                         try:
-                            _node_res = supabase.table('graph_nodes') \
-                                .select('id, label, metadata') \
-                                .eq('type', 'practice') \
-                                .eq('metadata->>shortcode', str(_shortcode)) \
-                                .limit(1) \
-                                .maybe_single() \
-                                .execute()
+                            _node_res = maybe_single_safe(
+                                supabase.table('graph_nodes')
+                                .select('id, label, metadata')
+                                .eq('type', 'practice')
+                                .eq('metadata->>shortcode', str(_shortcode))
+                            )
                             if _node_res.data:
                                 _n = _node_res.data
                                 _rm = _n.get('metadata') or {}
@@ -850,7 +996,7 @@ async def process_webhook(update: dict):
                                 _rm['dismissed_at'] = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%Y-%m-%d')
                                 supabase.table('graph_nodes').update({'metadata': _rm}).eq('id', _n['id']).execute()
                                 _variants = _rm.get('variants', [_n.get('label', '')])
-                                _excl = supabase.table('core_config').select('content').eq('key', 'dismissed_practice_variants').maybe_single().execute()
+                                _excl = maybe_single_safe(supabase.table('core_config').select('content').eq('key', 'dismissed_practice_variants'))
                                 _existing = json.loads(_excl.data.get('content') or '[]') if _excl.data else []
                                 _existing_lower = set(v.lower() for v in _existing)
                                 _new_entries = [v for v in _variants if v.lower() not in _existing_lower]
@@ -1031,11 +1177,11 @@ async def process_webhook(update: dict):
                     .execute()
 
                 variants = raw_meta.get('variants', [node.get('label', practice_name)])
-                exclusion_res = supabase.table('core_config') \
-                    .select('content') \
-                    .eq('key', 'dismissed_practice_variants') \
-                    .maybe_single() \
-                    .execute()
+                exclusion_res = maybe_single_safe(
+                    supabase.table('core_config')
+                    .select('content')
+                    .eq('key', 'dismissed_practice_variants')
+                )
                 existing_exclusion = json.loads(exclusion_res.data.get('content') or '[]') if exclusion_res.data else []
                 existing_lower = set(v.lower() for v in existing_exclusion)
                 new_entries = [v for v in variants if v.lower() not in existing_lower]
@@ -1072,6 +1218,51 @@ async def process_webhook(update: dict):
         confidence = classification.get('confidence', 0.5)
 
         audit_log_sync("webhook", "INFO", f"Intent: {intent} ({confidence:.0%}) - {text[:50]}...")
+
+        # ── Auto-execution feedback loop: check if previous Planner auto-execute
+        # needs confirmation or correction based on user's actual intent ──
+        _auto_exec = active_anchor and active_anchor.get('_last_auto_execution')
+        if _auto_exec:
+            _prev_intent = _auto_exec.get('intent')
+            _auto_feat = {
+                "auto_executed": _prev_intent,
+                "user_intent": intent,
+                "auto_confidence": _auto_exec.get('confidence'),
+            }
+            if _prev_intent and _prev_intent != intent:
+                await emit_observation(
+                    subsystem="classification",
+                    event_type="auto_execute_feedback",
+                    features=_auto_feat,
+                    predicted=_prev_intent,
+                    actual=intent,
+                    outcome="corrected",
+                    session_id=session_id,
+                )
+                audit_log_sync(
+                    "webhook", "INFO",
+                    f"Auto-execution corrected: auto={_prev_intent} user={intent}")
+            elif _prev_intent and _prev_intent == intent:
+                await emit_observation(
+                    subsystem="classification",
+                    event_type="auto_execute_feedback",
+                    features=_auto_feat,
+                    predicted=_prev_intent,
+                    actual=intent,
+                    outcome="confirmed",
+                    session_id=session_id,
+                )
+                audit_log_sync(
+                    "webhook", "INFO",
+                    f"Auto-execution confirmed: intent={intent}")
+            # Clear the pending auto-execution
+            active_anchor.pop('_last_auto_execution', None)
+            try:
+                supabase.table('conversation_threads').update({
+                    'active_anchor': active_anchor
+                }).eq('id', session_id).execute()
+            except Exception:
+                pass
 
         # Log classification stage for "/why"
         _entity = classification.get('entity', '')
@@ -1135,8 +1326,75 @@ async def process_webhook(update: dict):
         if confidence >= CONFIDENCE_HIGH:
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
         elif possible_intents and len(possible_intents) >= 2 and confidence >= CONFIDENCE_LOW:
-            audit_log_sync("webhook", "INFO", f"Ambiguous ({possible_intents}) — asking user")
-            await ask_intent_disambiguation(text, possible_intents, chat_id, session_id)
+            # ── Planner/Critic: deliberate on ambiguous intents ──
+            from core.lib.planner_critic import plan_and_critique_intent
+            deliberation = await plan_and_critique_intent(text, classification)
+            if deliberation["recommendation"] == "auto_execute":
+                cand_str = ",".join(
+                    f"{c['intent']}:{c['score']:.2f}"
+                    for c in deliberation["candidates"]
+                )
+                audit_log_sync(
+                    "webhook", "INFO",
+                    f"Planner auto-executed: {deliberation['best']} "
+                    f"(delta={deliberation['delta']:.2f}, [{cand_str}])")
+                classification["intent"] = deliberation["best"]
+                classification["confidence"] = deliberation["candidates"][0]["score"]
+                await route_by_intent(
+                    deliberation["best"], text, chat_id, session_id,
+                    classification=classification, source=source, sender=sender,
+                    active_anchor=active_anchor
+                )
+                # Emit observation so correct auto-executions strengthen patterns
+                _feat = {
+                    "intent": deliberation["best"],
+                    "runner_up": deliberation["runner_up"] or "",
+                    "delta": deliberation["delta"],
+                    "num_candidates": len(deliberation["candidates"]),
+                    "source": source,
+                }
+                _best = deliberation["best"]
+                _conf = deliberation["candidates"][0]["score"]
+                await emit_observation(
+                    subsystem="classification",
+                    event_type="auto_execute",
+                    features=_feat,
+                    predicted=_best,
+                    actual=_best,
+                    outcome="predicted",
+                    confidence=_conf,
+                    session_id=session_id,
+                )
+                # Store pending auto-execution on thread for next-message confirmation
+                _anchor = active_anchor or {}
+                _anchor['_last_auto_execution'] = {
+                    'intent': _best,
+                    'confidence': _conf,
+                    'classified_at': datetime.now(timezone.utc).isoformat(),
+                }
+                try:
+                    supabase.table('conversation_threads').update({
+                        'active_anchor': _anchor
+                    }).eq('id', session_id).execute()
+                except Exception:
+                    pass
+            else:
+                _cands = deliberation["candidates"]
+                runner_up_score = (
+                    _cands[1]["score"] if len(_cands) > 1 else 0
+                )
+                _best_score = _cands[0]["score"]
+                _runner = deliberation["runner_up"]
+                audit_log_sync(
+                    "webhook", "INFO",
+                    f"Planner deferred ({len(possible_intents)} candidates, "
+                    f"best={deliberation['best']}@{_best_score:.2f}, "
+                    f"runner_up={_runner}@{runner_up_score:.2f}, "
+                    f"delta={deliberation['delta']:.2f})")
+                await ask_intent_disambiguation(
+                    text, possible_intents, chat_id, session_id,
+                    deliberation=deliberation,
+                )
         elif intent == 'CLARIFICATION_NEEDED':
             await handle_clarification(
                 text,

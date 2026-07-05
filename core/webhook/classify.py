@@ -131,6 +131,20 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
             config={'response_mime_type': 'application/json'}
         )
         result = resp.parse_json()
+
+        # Boost confidence from learned patterns (fail-open)
+        try:
+            from core.lib.telemetry import compute_pattern_confidence
+            pattern_features = {"intent": result.get("intent", "")}
+            pattern_result = await compute_pattern_confidence(pattern_features, "classification")
+            if pattern_result.get("recommendation") == "approve":
+                original_conf = result.get("confidence", 0.5)
+                boosted = max(original_conf, pattern_result.get("confidence", 0.0))
+                result["confidence"] = boosted
+                audit_log_sync("webhook", "INFO", f"Pattern confidence boost: {original_conf:.2f} → {boosted:.2f} ({pattern_result.get('rule', 'N/A')})")
+        except Exception:
+            pass  # Fail-open
+
         # Cache successful classification for 5 minutes
         cache_set(cache_key, result, ttl=300)
         return result

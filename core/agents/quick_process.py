@@ -6,7 +6,7 @@ import hashlib
 from datetime import datetime, timezone
 
 from core.lib.audit_logger import info, audit_log_sync
-from core.services.db import get_supabase,  fetch_active_projects, zombie_recovery
+from core.services.db import get_supabase, fetch_active_projects, zombie_recovery, maybe_single_safe
 from core.services.google_service import format_rfc3339, sync_to_calendar, sync_to_google, delete_calendar_event, get_tasks_service
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.actions import ActionResult, accumulate_action
@@ -143,10 +143,11 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
 
     task_update_id = metadata.get('task_update_id')
     if task_update_id:
-        task_ref = supabase.table('tasks').select('id, google_task_id, google_event_id, title, status, priority') \
-            .eq('id', task_update_id) \
-            .eq('is_current', True) \
-            .maybe_single().execute()
+        task_ref = maybe_single_safe(
+            supabase.table('tasks').select('id, google_task_id, google_event_id, title, status, priority')
+            .eq('id', task_update_id)
+            .eq('is_current', True)
+        )
         if task_ref.data:
             td = task_ref.data
             e_id = td.get('google_event_id')
@@ -204,15 +205,16 @@ async def process_single_dump(text: str, metadata: dict, tasks_service=None, his
     if category == 'COMPLETION':
         if not matched_id:
             # Fallback to MD5 dedup_key if semantic guard missed it
-            task_ref = supabase.table('tasks').select('id').eq('dedup_key', dedup_key).eq('is_current', True).maybe_single().execute()
+            task_ref = maybe_single_safe(supabase.table('tasks').select('id').eq('dedup_key', dedup_key).eq('is_current', True))
             if task_ref.data:
                 matched_id = task_ref.data['id']
                 
         if matched_id:
-            task_ref = supabase.table('tasks').select('id, google_task_id, google_event_id, title, status') \
-                .eq('id', matched_id) \
-                .eq('is_current', True) \
-                .maybe_single().execute()
+            task_ref = maybe_single_safe(
+                supabase.table('tasks').select('id, google_task_id, google_event_id, title, status')
+                .eq('id', matched_id)
+                .eq('is_current', True)
+            )
             if task_ref.data and task_ref.data['status'] not in ('done', 'cancelled'):
                 td = task_ref.data
                 if td.get('google_event_id'):

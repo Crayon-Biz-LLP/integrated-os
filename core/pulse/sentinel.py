@@ -2,11 +2,32 @@ from core.context import execute_context_strategy, PRE_FLIGHT_CONFIG
 from core.llm.constants import SYNTHESIS_MODEL
 from core.services.db import get_supabase
 import os
+import hashlib
+import json
 from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
 
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import get_google_creds
+
+
+def hash_features_simple(features: dict, subsystem: str) -> str:
+    """Simplified hash computation for sentinel use.
+
+    Mirrors core.lib.telemetry.hash_features for hash chain consistency
+    between sentinel feature hashing and telemetry pattern matching.
+
+    Args:
+        features: Feature dict, e.g. {"source": "telegram", "node_type": "person"}
+        subsystem: Subsystem name for namespacing
+
+    Returns:
+        First 16 chars of MD5 hexdigest
+    """
+    canonical = {k: v for k, v in sorted(features.items()) if v is not None}
+    raw = json.dumps(canonical, sort_keys=True, default=str)
+    return hashlib.md5(f"{subsystem}:{raw}".encode()).hexdigest()[:16]
+
 from core.webhook.telegram import send_telegram
 from core.pulse.calendar import MemoryCache
 from core.llm.fallback import generate_content_with_fallback

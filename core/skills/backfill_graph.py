@@ -601,20 +601,20 @@ def _ensure_edge_label_has_node(lbl: str, memory_id: str, source_table: str, see
     seen.add(lbl)
 
     # Check existing nodes
-    existing = supabase.table("graph_nodes").select("id").eq("label", lbl).maybe_single().execute()
+    existing = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", lbl))
     if existing and existing.data:
         return
-    existing_p = supabase.table("pending_graph_nodes").select("id").eq("label", lbl).maybe_single().execute()
+    existing_p = maybe_single_safe(supabase.table("pending_graph_nodes").select("id").eq("label", lbl))
     if existing_p and existing_p.data:
         return
 
     # Check people/projects tables for type hints
     typ = "concept"
-    people_res = supabase.table("people").select("id").ilike("name", lbl).maybe_single().execute()
+    people_res = maybe_single_safe(supabase.table("people").select("id").ilike("name", lbl))
     if people_res and people_res.data:
         typ = "person"
     else:
-        proj_res = supabase.table("projects").select("id").ilike("name", lbl.strip()).maybe_single().execute()
+        proj_res = maybe_single_safe(supabase.table("projects").select("id").ilike("name", lbl.strip()))
         if proj_res and proj_res.data:
             typ = "project"
 
@@ -921,7 +921,7 @@ def backfill_emotion_edges():
         # We need to do this via Postgres function or multiple calls since Supabase REST API doesn't support complex cross-joins.
         # Alternatively, we can fetch all emotional_state nodes, fetch Danny's ID, and insert edges.
         
-        danny_res = supabase.table("graph_nodes").select("id").eq("label", "Danny").eq("type", "person").maybe_single().execute()
+        danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", "Danny").eq("type", "person"))
         if not danny_res or not danny_res.data:
             print("Danny node not found, skipping emotion edge backfill.")
             return
@@ -1032,7 +1032,7 @@ def backfill_orphaned_tasks():
                 "type": "task",
                 "metadata": {"source": "tasks_table", "task_id": task_id, **meta}
             }, on_conflict="label").execute()
-            node_res = supabase.table("graph_nodes").select("id").eq("label", task_title).maybe_single().execute()
+            node_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", task_title))
             if not node_res or not node_res.data:
                 audit_log_sync("backfill_graph", "WARNING", f"⚠️ Failed to get node for task {task_id}")
                 continue
@@ -1224,7 +1224,7 @@ def backfill_orphaned_node_edges():
     print("\n🕸️  Node Edge Backfill: Checking for isolated/semi-isolated nodes...")
     
     # Get Danny's node ID
-    danny_res = supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny").maybe_single().execute()
+    danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny"))
     if not danny_res or not danny_res.data:
         print("Could not find Danny node.")
         return

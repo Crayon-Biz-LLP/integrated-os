@@ -11,7 +11,7 @@ from core.lib.constants import EmailStatus
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.duplicate_guard import check_duplicate
 from core.retrieval.pipeline import schedule_index_memory
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 from core.services.google_service import get_google_creds, _MemoryCache
 from core.lib.time_utils import compute_expires_at
 from core.services.llm import call_gemini_classify
@@ -102,9 +102,9 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
         
     if matched is not None:
         # Resolve canonical if it exists in graph
-        g_res = supabase.table("graph_nodes").select("canonical_id, db_record_id").eq("db_record_id", str(matched)).maybe_single().execute()
+        g_res = maybe_single_safe(supabase.table("graph_nodes").select("canonical_id, db_record_id").eq("db_record_id", str(matched)))
         if g_res and g_res.data and g_res.data.get("canonical_id"):
-            c_res = supabase.table("graph_nodes").select("db_record_id").eq("id", g_res.data["canonical_id"]).maybe_single().execute()
+            c_res = maybe_single_safe(supabase.table("graph_nodes").select("db_record_id").eq("id", g_res.data["canonical_id"]))
             if c_res and c_res.data and c_res.data.get("db_record_id"):
                 return int(c_res.data["db_record_id"])
         return matched
@@ -335,7 +335,7 @@ def process_sent_email(msg_data: dict, gmail_service) -> tuple:
     msg_id = msg_data['id']
     try:
         # Check if already exists to prevent duplicate processing
-        existing = supabase.table('messages').select('id').eq('channel', 'email').eq('message_id', msg_id).maybe_single().execute()
+        existing = maybe_single_safe(supabase.table('messages').select('id').eq('channel', 'email').eq('message_id', msg_id))
         if existing is not None and existing.data:
             return ('ignored', msg_data.get('snippet', '')[:50])
 
@@ -399,7 +399,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
     subject = None
 
     try:
-        existing = supabase.table('messages').select('id').eq('channel', 'email').eq('message_id', msg_id).maybe_single().execute()
+        existing = maybe_single_safe(supabase.table('messages').select('id').eq('channel', 'email').eq('message_id', msg_id))
         if existing is not None and existing.data:
             return (EmailStatus.IGNORED, msg_data.get('snippet', '')[:50])
     except Exception as e:
@@ -520,7 +520,10 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
             linked_project_id = None
             linked_project_name = classification_data.get('linked_project_name')
             if linked_project_name:
-                project_res = supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').maybe_single().execute()
+                # Exact match first (case-insensitive), fall back to partial
+                project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', linked_project_name))
+                if not getattr(project_res, 'data', None):
+                    project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%'))
                 if getattr(project_res, 'data', None):
                     linked_project_id = project_res.data['id']
 

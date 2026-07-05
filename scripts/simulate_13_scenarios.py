@@ -96,7 +96,7 @@ def test_s2_unknown_org_create_task():
         task_id = int(m.group(1))
         created_task_ids.append(task_id)
         # Confirm organization_id is null
-        row = supabase.table('tasks').select('organization_id').eq('id', task_id).maybe_single().execute()
+        row = maybe_single_safe(supabase.table('tasks').select('organization_id').eq('id', task_id))
         is_null_org = row.data and row.data.get('organization_id') is None
         assert_true(is_null_org, "S2", "organization_id is NULL as expected", f"organization_id is not null: {row.data}")
 
@@ -220,7 +220,7 @@ def test_s6_no_org_internal_project():
     if m:
         proj_id = int(m.group(1))
         created_project_ids.append(proj_id)
-        row = supabase.table('projects').select('organization_id').eq('id', proj_id).maybe_single().execute()
+        row = maybe_single_safe(supabase.table('projects').select('organization_id').eq('id', proj_id))
         is_null_org = row.data and row.data.get('organization_id') is None
         assert_true(is_null_org, "S6", "organization_id is NULL for no-org project (intentional)", f"Unexpected org ID: {row.data}")
         # No project_organizations row expected
@@ -257,7 +257,7 @@ async def test_s7_pending_org_approval():
     assert_true(result.get('success'), "S7", f"Approval returned success: {result}", f"Approval failed: {result}")
 
     # Confirm organizations row was created
-    org_row = supabase.table('organizations').select('id, name, graph_node_id').ilike('name', org_label).maybe_single().execute()
+    org_row = maybe_single_safe(supabase.table('organizations').select('id, name, graph_node_id').ilike('name', org_label))
     org_created = bool(org_row.data)
     assert_true(org_created, "S7", f"organizations row created: {org_row.data}", "No organizations row found after approval")
     if org_row.data:
@@ -267,7 +267,7 @@ async def test_s7_pending_org_approval():
         assert_true(has_backlink, "S7", f"graph_node_id back-linked: {org_row.data['graph_node_id']}", "graph_node_id not set on organizations row")
 
     # Confirm pending_graph_nodes row is now 'approved'
-    pn = supabase.table('pending_graph_nodes').select('status').eq('id', pending_id).maybe_single().execute()
+    pn = maybe_single_safe(supabase.table('pending_graph_nodes').select('status').eq('id', pending_id))
     is_approved = pn.data and pn.data.get('status') == 'approved'
     assert_true(is_approved, "S7", "pending_graph_nodes status = approved", f"Expected approved, got: {pn.data}")
 
@@ -303,7 +303,7 @@ async def test_s8_rejected_pending_node():
     assert_true(result.get('success'), "S8", f"Rejection returned success: {result}", f"Rejection failed: {result}")
 
     # Confirm status is 'rejected'
-    pn = supabase.table('pending_graph_nodes').select('status').eq('id', pending_id).maybe_single().execute()
+    pn = maybe_single_safe(supabase.table('pending_graph_nodes').select('status').eq('id', pending_id))
     is_rejected = pn.data and pn.data.get('status') == 'rejected'
     assert_true(is_rejected, "S8", "pending_graph_nodes status = rejected", f"Expected rejected, got: {pn.data}")
 
@@ -412,7 +412,7 @@ def test_s11_signal_queue_lifecycle():
     ok("S11", f"Signal written with ID {sig_id}")
 
     # Confirm it stays staged (no consumer has deleted it)
-    check = supabase.table('project_creation_signals').select('id').eq('id', sig_id).maybe_single().execute()
+    check = maybe_single_safe(supabase.table('project_creation_signals').select('id').eq('id', sig_id))
     still_there = bool(check.data)
     assert_true(still_there, "S11",
                 "Signal still staged (no consumer ran — expected for future pulse feature)",
@@ -514,7 +514,7 @@ def cleanup():
         try:
             supabase.table('project_organizations').delete().eq('project_id', pid).execute()
             # Clean up graph_nodes by label match (safer than metadata JSON filter)
-            proj_row = supabase.table('projects').select('name').eq('id', pid).maybe_single().execute()
+            proj_row = maybe_single_safe(supabase.table('projects').select('name').eq('id', pid))
             if proj_row and proj_row.data:
                 supabase.table('graph_nodes').delete().eq('label', proj_row.data['name']).execute()
             supabase.table('projects').delete().eq('id', pid).execute()

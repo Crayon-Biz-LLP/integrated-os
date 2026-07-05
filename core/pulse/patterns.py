@@ -9,7 +9,7 @@ Runs weekly (Sunday) via sentinel piggyback. Mines:
 """
 
 from datetime import datetime, timezone, timedelta
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 from core.lib.audit_logger import audit_log_sync
 
 supabase = get_supabase()
@@ -83,7 +83,7 @@ def detect_completion_patterns() -> dict:
         # 2. Project completion clusters (projects with 3+ completions)
         for pid, count in project_completions.items():
             if count >= 3:
-                proj_res = supabase.table('projects').select('name').eq('id', pid).maybe_single().execute()
+                proj_res = maybe_single_safe(supabase.table('projects').select('name').eq('id', pid))
                 if proj_res and proj_res.data:
                     result['project_clusters'].append({
                         'project': proj_res.data['name'],

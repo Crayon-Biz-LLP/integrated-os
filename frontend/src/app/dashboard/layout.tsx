@@ -20,6 +20,7 @@ import {
      House,
      Scale,
      Target,
+     BarChart3,
    } from 'lucide-react';
 import { createBrowserClient } from '@supabase/ssr';
 import { useEffect, useState } from 'react';
@@ -42,6 +43,8 @@ const navItems = [
    { href: '/dashboard/calendar', label: 'Calendar', icon: Calendar },
    { href: '/dashboard/people', label: 'People', icon: Users },
    { href: '/dashboard/clusters', label: 'Clusters', icon: BookOpen },
+   { href: '/dashboard/telemetry', label: 'Telemetry', icon: BarChart3 },
+   { href: '/dashboard/patterns', label: 'Patterns', icon: Brain },
    { href: '/dashboard/health', label: 'Health', icon: Activity },
 ];
 
@@ -58,6 +61,8 @@ const routeTitles: Record<string, string> = {
    '/dashboard/calendar': 'Calendar',
    '/dashboard/people': 'People',
    '/dashboard/clusters': 'Clusters',
+   '/dashboard/telemetry': 'Telemetry',
+   '/dashboard/patterns': 'Patterns',
    '/dashboard/health': 'Health',
  };
 

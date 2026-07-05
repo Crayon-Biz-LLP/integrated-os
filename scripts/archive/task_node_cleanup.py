@@ -24,7 +24,7 @@ def run_cleanup():
         label = node['label']
         
         # Check if the task is done/cancelled
-        task = supabase.table("tasks").select("status").eq("content", label).maybe_single().execute()
+        task = maybe_single_safe(supabase.table("tasks").select("status").eq("content", label))
         if task.data and task.data.get("status") in ["done", "cancelled"]:
             # Check if there are any edges beyond WORKS_ON -> deleted project
             edges = supabase.table("graph_edges").select("id").or_(f"source_node_id.eq.{node_id},target_node_id.eq.{node_id}").execute()

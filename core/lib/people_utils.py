@@ -103,7 +103,7 @@ def enrich_people_from_graph() -> int:
             if rel == 'MEMBER_OF' and not person_stats[person_id]['org_label']:
                 # Find the org label
                 other_id = tgt if src == node_to_people.get(person_id) else src
-                org_node = supabase.table('graph_nodes').select('label').eq('id', other_id).maybe_single().execute()
+                org_node = maybe_single_safe(supabase.table('graph_nodes').select('label').eq('id', other_id))
                 if org_node and org_node.data:
                     person_stats[person_id]['org_label'] = org_node.data['label']
 
