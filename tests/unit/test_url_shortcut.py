@@ -16,7 +16,7 @@ _MOCK_TABLE = MagicMock()
 _MOCK_TABLE.select.return_value.execute.return_value = MagicMock(data=[])
 _MOCK_TABLE.select.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
 _MOCK_TABLE.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
-_MOCK_TABLE.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value = MagicMock(data=None)
+_MOCK_TABLE.select.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = MagicMock(data=None)
 _MOCK_TABLE.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
 _MOCK_TABLE.select.return_value.eq.return_value.order.return_value.execute.return_value = MagicMock(data=[])
 _MOCK_TABLE.select.return_value.in_.return_value.execute.return_value = MagicMock(data=[])
@@ -28,9 +28,22 @@ _MOCK_TABLE.update.return_value.eq.return_value.execute.return_value = MagicMock
 _MOCK_TABLE.upsert.return_value.execute.return_value = MagicMock(data=[])
 _MOCK_DB.table.return_value = _MOCK_TABLE
 
+import importlib  # noqa: E402
 import core.services.db as _db_mod  # noqa: E402
 _db_mod._supabase = _MOCK_DB
 
+# Reload utils.py so supabase = get_supabase() uses the mock
+import core.webhook.utils as _utils_mod  # noqa: E402
+_utils_mod.supabase = _MOCK_DB
+# Full reload to catch any module-level get_supabase() calls
+importlib.reload(_utils_mod)
+
+# Reload handler.py so its from core.webhook.utils import supabase picks up the mock
+import core.webhook.handler as _handler_mod  # noqa: E402
+_handler_mod.supabase = _MOCK_DB
+importlib.reload(_handler_mod)
+
+# Re-import from the reloaded handler
 from core.webhook.handler import process_webhook  # noqa: E402
 
 

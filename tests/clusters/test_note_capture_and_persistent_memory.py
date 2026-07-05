@@ -668,6 +668,7 @@ class TestDeletionCleanup:
 
             passage_res = supabase.table('retrieval_passages').insert({
                 'memory_id': memory_id, 'text': '[TEST] G17 passage',
+                'raw_text': '[TEST] G17 passage',
                 'embedding': [0.0] * 768,
                 'source_type': 'memory', 'source_id': str(memory_id),
                 'passage_index': 0
@@ -710,6 +711,7 @@ class TestDeletionCleanup:
 
             supabase.table('retrieval_passages').insert({
                 'memory_id': valid_memory_id, 'text': '[TEST] G18 valid passage',
+                'raw_text': '[TEST] G18 valid passage',
                 'embedding': [0.0] * 768,
                 'source_type': 'memory', 'source_id': str(valid_memory_id),
                 'passage_index': 0
@@ -722,6 +724,7 @@ class TestDeletionCleanup:
             orphan_memory_id = 99999999
             supabase.table('retrieval_passages').insert({
                 'memory_id': orphan_memory_id, 'text': '[TEST] G18 orphan passage',
+                'raw_text': '[TEST] G18 orphan passage',
                 'embedding': [0.0] * 768,
                 'source_type': 'memory', 'source_id': 'orphan',
                 'passage_index': 0
@@ -842,6 +845,7 @@ class TestEndToEnd:
 
             p_res = supabase.table('retrieval_passages').insert({
                 'memory_id': memory_id, 'text': '[TEST] H19 passage for cleanup',
+                'raw_text': '[TEST] H19 passage for cleanup',
                 'embedding': [0.0] * 768,
                 'source_type': 'memory', 'source_id': str(memory_id),
                 'passage_index': 0
@@ -911,6 +915,7 @@ class TestCleanupRegression:
             def _wire(memory_id: int, suffix: str):
                 p = supabase.table('retrieval_passages').insert({
                     'memory_id': memory_id, 'text': f'{tag} passage {suffix}',
+                    'raw_text': f'{tag} passage {suffix}',
                     'embedding': [0.0] * 768,
                     'source_type': 'memory', 'source_id': str(memory_id),
                     'passage_index': 0

@@ -76,7 +76,7 @@ async def test_detect_drift_returns_empty_when_no_baseline(mock_get_supabase, mo
     ]
 
     mock_supabase = MagicMock()
-    mock_supabase.table.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value = \
+    mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = \
         MagicMock(data=None)
     mock_get_supabase.return_value = mock_supabase
 
@@ -103,7 +103,7 @@ async def test_detect_drift_returns_signals_when_delta_above_threshold(
 
     mock_supabase = MagicMock()
     mock_get_supabase.return_value = mock_supabase
-    mock_supabase.table.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value = \
+    mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = \
         MagicMock(data={"content": json.dumps({"abc123": {"confidence": 0.5, "total_count": 5}})})
 
     result = await detect_drift("classification")
@@ -133,7 +133,7 @@ async def test_detect_drift_ignores_small_deltas(
 
     mock_supabase = MagicMock()
     mock_get_supabase.return_value = mock_supabase
-    mock_supabase.table.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value = \
+    mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = \
         MagicMock(data={"content": json.dumps({"def456": {"confidence": 0.5, "total_count": 5}})})
 
     result = await detect_drift("classification")
@@ -159,7 +159,7 @@ async def test_detect_drift_detects_downward_drift(
 
     mock_supabase = MagicMock()
     mock_get_supabase.return_value = mock_supabase
-    mock_supabase.table.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value = \
+    mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = \
         MagicMock(data={"content": json.dumps({"ghi789": {"confidence": 0.8, "total_count": 5}})})
 
     result = await detect_drift("classification")
