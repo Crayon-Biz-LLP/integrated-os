@@ -2,6 +2,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 from core.lib.audit_logger import set_trace_id
 from core.services.db import get_supabase
+from core.llm.compat import get_embedding_sync
+from core.llm.constants import EMBEDDING_DIMENSION
 
 
 # ── Per-table cleanup predicates ──────────────────────────────────────────
@@ -110,15 +112,31 @@ def seed_test_data():
         if res.data:
             seeded['graph_nodes'][n['label']] = res.data[0]['id']
 
-    # 2. Memories
-    memories = [
-        {'content': '[SIM_TEST] Unity prayer walk with Shifrah from the 90-Day Prayer group', 'memory_type': 'note'},
-        {'content': '[SIM_TEST] Discussed budget with Vasanth, approved Q3 spend', 'memory_type': 'note'},
-        {'content': '[SIM_TEST] I went for a walk in the park', 'memory_type': 'note'},
-        {'content': '[SIM_TEST] Alpha project kickoff went well', 'memory_type': 'note'},
+    # 2. Memories (with embeddings, so match_memories_hybrid RPC can find them)
+    memory_texts = [
+        '[SIM_TEST] Unity prayer walk with Shifrah from the 90-Day Prayer group',
+        '[SIM_TEST] Discussed budget with Vasanth, approved Q3 spend',
+        '[SIM_TEST] I went for a walk in the park',
+        '[SIM_TEST] Alpha project kickoff went well',
     ]
-    for m in memories:
-        res = supabase.table('memories').insert(m).execute()
+    for text in memory_texts:
+        # Generate embedding matching production code (see dispatch.py)
+        # Uses get_embedding_sync which handles event loop management via
+        # nest_asyncio (installed as a test dependency).
+        try:
+            emb_vec = get_embedding_sync(text)
+        except Exception:
+            emb_vec = None
+        if emb_vec is None:
+            # Fallback: small non-zero constant vector.
+            # Zero vector is invisible to pgvector cosine distance (0/0 = NaN),
+            # which gets filtered by the RPC's (embedding <=> q_vec) IS NOT NULL check.
+            emb_vec = [0.01] * EMBEDDING_DIMENSION
+        res = supabase.table('memories').insert({
+            'content': text,
+            'memory_type': 'note',
+            'embedding': emb_vec,
+        }).execute()
         if res.data:
             seeded['memories'].append(res.data[0]['id'])
 
