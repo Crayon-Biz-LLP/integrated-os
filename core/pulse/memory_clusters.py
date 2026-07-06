@@ -580,8 +580,11 @@ async def build_memory_clusters() -> dict:
         )
 
     except Exception as e:
-        audit["errors"].append(str(e))
+        import traceback
+        tb = traceback.format_exc()
+        audit["errors"].append(f"{e}\n{tb}")
         audit_log_sync("memory_clusters", "ERROR", f"Clustering failed: {e}")
+        print(f"CLUSTERING CRASH TRACEBACK:\n{tb}")
 
     return audit
 
