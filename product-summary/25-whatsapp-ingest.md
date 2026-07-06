@@ -16,10 +16,14 @@ HTTP POST → POST /api/whatsapp-ingest (Vercel Python)
 core/skills/whatsapp_ingest.py::process_whatsapp_message()
   1. Dedup check (by phone + text within 24h)
   2. Gemini classification (actionable/fyi/ignored)
-  3. Insert into messages table
-  4. If actionable → pending for Danny's review
-  5. If fyi → optional memories write
-  6. If ignored → skipped
+  3. If ignored → direct insert (danny_decision='skipped')
+  4. If actionable/fyi → supabase.rpc('batch_whatsapp_message')
+     a. Advisory lock on sender_id (pg_advisory_xact_lock)
+     b. Check for existing pending row within 3 min
+     c. Found → append body, upgrade classification if actionable
+     d. Not found → insert new row
+  5. If fyi + new insert → optional memories write
+  6. If fyi + batched → no memory created (conversation already captured)
 ```
 
 ## Database Table
@@ -87,6 +91,9 @@ Prefixed shortcodes (`w{id}`) route directly to `messages` via `core/webhook/wha
 | `api/index.py` | `POST /api/whatsapp-ingest` route |
 | `core/webhook/handler.py` | `w{id}` shortcode routing |
 | `core/pulse/engine.py` | `process_decision_pulse()` — standalone decision pulse (no AI) |
+
+## Batch Window (Conversation Batching)
+To prevent a rapid-fire conversation from flooding the Decision Pulse, same-sender messages within a **3-minute window** are auto-batched into a single `messages` row via a Postgres RPC with advisory lock. See [35-whatsapp-batch-ingest.md](35-whatsapp-batch-ingest.md) for full details.
 
 ## Key Design Decisions
 1. **Separate table** (`messages`) rather than reusing `messages` — keeps WhatsApp independent from the email pipeline

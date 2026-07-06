@@ -109,7 +109,7 @@ def resolve_alias(label: str) -> str:
 
 NOISE_LABELS = {
     # Pronouns
-    'i', 'he', 'she', 'his', 'her', 'they', 'we', 'user', 'the user', 'me', 'my', 'mine',
+    'i', 'he', 'she', 'his', 'her', 'they', 'we', 'user', 'the user', 'me', 'my', 'mine', 'you', 'your', 'yours', 'him', 'us', 'our', 'ours', 'them', 'their', 'theirs',
     # Generic structural terms
     'loops', 'the backlog', 'the author', 'the system', 'the team', 'the person', 'the narrator',
     'nine active projects', 'the board', 'the client', 'the mission', 'the project', 'test', 'docket', 'tasks',

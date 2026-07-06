@@ -501,6 +501,16 @@ FRAGMENTS (Old & New):
             embedding_res = await get_embedding(markdown)
             embedding = embedding_res.vector if embedding_res else None
 
+            # Find matching graph_node by label to link it
+            graph_node_res = await asyncio.to_thread(
+                lambda en=entity_name: supabase.table('graph_nodes') \
+                .select('id') \
+                .ilike('label', en) \
+                .limit(1) \
+                .execute()
+            )
+            graph_node_uuid = graph_node_res.data[0]['id'] if graph_node_res and graph_node_res.data else None
+
             try:
                 if existing_id:
                     version_res = await asyncio.to_thread(
@@ -513,7 +523,7 @@ FRAGMENTS (Old & New):
                     old_version = (version_res.data.get('version') or 0) if version_res.data else 0
 
                     await asyncio.to_thread(
-                        lambda e_id=existing_id, ov=old_version, m=markdown, e=embedding, ts=now_iso, sc=payload_entry['fragment_count']: supabase.table('canonical_pages') \
+                        lambda e_id=existing_id, ov=old_version, m=markdown, e=embedding, ts=now_iso, sc=payload_entry['fragment_count'], gn_uuid=graph_node_uuid: supabase.table('canonical_pages') \
                         .update({
                             "content": m,
                             "embedding": e,
@@ -521,16 +531,28 @@ FRAGMENTS (Old & New):
                             "updated_at": ts,
                             "source_count": sc,
                             "last_synth_at": ts,
-                            "is_sparse": len(m) < 500
+                            "is_sparse": len(m) < 500,
+                            "entity_id": gn_uuid
                         }) \
                         .eq('id', e_id) \
                         .execute()
                     )
 
+                    if graph_node_uuid:
+                        try:
+                            await asyncio.to_thread(
+                                lambda eid=graph_node_uuid, cid=existing_id: supabase.table('graph_nodes') \
+                                .update({"canonical_page_id": cid}) \
+                                .eq('id', eid) \
+                                .execute()
+                            )
+                        except Exception as e:
+                            print(f"Failed to update graph_nodes link for {entity_name}: {e}")
+
                     print(f"Master Page Updated: {entity_name} (v{old_version + 1}, {payload_entry['fragment_count']} fragments)")
                 else:
-                    await asyncio.to_thread(
-                        lambda en=entity_name, pid=project_id, oid=organization_id, m=markdown, e=embedding, ts=now_iso, sc=payload_entry['fragment_count']: supabase.table('canonical_pages').insert({
+                    insert_res = await asyncio.to_thread(
+                        lambda en=entity_name, pid=project_id, oid=organization_id, m=markdown, e=embedding, ts=now_iso, sc=payload_entry['fragment_count'], eid=graph_node_uuid: supabase.table('canonical_pages').insert({
                             "title": en,
                             "project_id": pid,
                             "organization_id": oid,
@@ -541,9 +563,23 @@ FRAGMENTS (Old & New):
                             "updated_at": ts,
                             "source_count": sc,
                             "last_synth_at": ts,
-                            "is_sparse": len(m) < 500
+                            "is_sparse": len(m) < 500,
+                            "entity_id": eid
                         }).execute()
                     )
+                    
+                    if insert_res and insert_res.data and graph_node_uuid:
+                        new_page_id = insert_res.data[0]['id']
+                        try:
+                            await asyncio.to_thread(
+                                lambda eid=graph_node_uuid, cid=new_page_id: supabase.table('graph_nodes') \
+                                .update({"canonical_page_id": cid}) \
+                                .eq('id', eid) \
+                                .execute()
+                            )
+                        except Exception as e:
+                            print(f"Failed to update graph_nodes link for {entity_name}: {e}")
+                            
                     print(f"Master Page Created: {entity_name} ({payload_entry['fragment_count']} fragments)")
             except Exception as e:
                 print(f"DB commit failed for {entity_name}: {e}")

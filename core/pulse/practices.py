@@ -843,10 +843,16 @@ async def sync_practice_canonical_pages():
                     "updated_at": now_iso,
                     "source_count": len(variants) + len(ro),
                     "last_synth_at": now_iso,
-                    "is_sparse": len(content) < 500
+                    "is_sparse": len(content) < 500,
+                    "entity_id": practice_id
                 }).eq('id', existing['id']).execute()
+                
+                # Link graph_node back to canonical_page
+                supabase.table('graph_nodes').update({
+                    "canonical_page_id": existing['id']
+                }).eq('id', practice_id).execute()
             else:
-                supabase.table('canonical_pages').insert({
+                ins_res = supabase.table('canonical_pages').insert({
                     "title": canonical_title,
                     "project_id": None,
                     "content": content,
@@ -856,8 +862,15 @@ async def sync_practice_canonical_pages():
                     "updated_at": now_iso,
                     "source_count": len(variants) + len(ro),
                     "last_synth_at": now_iso,
-                    "is_sparse": len(content) < 500
+                    "is_sparse": len(content) < 500,
+                    "entity_id": practice_id
                 }).execute()
+                
+                if ins_res and ins_res.data:
+                    new_id = ins_res.data[0]['id']
+                    supabase.table('graph_nodes').update({
+                        "canonical_page_id": new_id
+                    }).eq('id', practice_id).execute()
 
             synced += 1
 

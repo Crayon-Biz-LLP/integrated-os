@@ -131,6 +131,7 @@ async def auto_approve_concepts_and_evokes(label: str):
                 'target_node_id': target_uuid,
                 'relationship': relationship_verb,
                 'weight': 1.0,
+                'source_ref': edge.get('source_text') or f"pending_edge:{edge['id']}",
                 'metadata': {"source": "auto_approve_cascade"}
             }).execute()
             

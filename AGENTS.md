@@ -14,6 +14,20 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
+## Session Anchored Summary (Jul 6, 2026 — Part 18: WhatsApp Conversation Batching)
+
+### Progress Done This Session
+- **WhatsApp conversation batching**: Individual WhatsApp messages from a rapid conversation all became separate Decision Pulse items (15–20 in 5 min). Fixed by batching same-sender messages within a 3-minute window into one row.
+- **Atomic RPC with advisory lock**: Created `batch_whatsapp_message()` RPC in `db/21_whatsapp_batch_rpc.sql` that uses `pg_advisory_xact_lock(hashtext(sender_id))` to serialize concurrent messages. Guarantees no lost updates, no duplicate rows — even if two messages arrive at the same millisecond.
+- **Classification upgrade on batch**: If the first message is `fyi` and the next is `actionable`, the batch row upgrades to `actionable`. Summary, title, and project fields update accordingly. Never downgrades.
+- **`received_at` preserved**: Batched rows keep the original first-message timestamp. No ordering drift in Decision Pulse.
+- **`core/skills/whatsapp_ingest.py` restructured**: Ignored messages bypass the RPC (direct insert with `danny_decision='skipped'`). Actionable/FYI go through the batch-or-insert RPC. FYI memory creation only fires on fresh inserts, not batch appends.
+
+### Key Files (Phase 18)
+- `db/21_whatsapp_batch_rpc.sql` — NEW: `batch_whatsapp_message()` RPC with advisory lock
+- `core/skills/whatsapp_ingest.py` — Refactored: replaced 3 insert paths with single RPC call
+- `product-summary/35-whatsapp-batch-ingest.md` — Documentation
+
 ## Session Anchored Summary (Jul 6, 2026 — Part 17: Edge Auto-Approve Fix + Decision Backfill)
 
 ### Progress Done This Session

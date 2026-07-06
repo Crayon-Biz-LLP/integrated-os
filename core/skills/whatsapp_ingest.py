@@ -118,39 +118,58 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
 
     classification = classification_data.get('classification', 'ignored')
 
-    row = {
-        "channel": "whatsapp",
-        "source": "whatsapp",
-        "sender_name": sender_name or sender_phone,
-        "sender_id": sender_phone,
-        "body": message_text.strip(),
-        "classification": classification,
-        "summary": classification_data.get('summary', ''),
-        "suggested_title": classification_data.get('suggested_title'),
-        "suggested_project": classification_data.get('suggested_project'),
-        "has_memory_value": classification_data.get('has_memory_value', False),
-        "received_at": now_iso,
-        "processing_status": "completed",
-        "metadata": {
-            "sender_phone": sender_phone,
-            "linked_person_name": classification_data.get('linked_person_name')
-        }
-    }
-
     if classification == 'ignored':
-        row['danny_decision'] = 'skipped'
-        row['expires_at'] = expires_iso
+        row = {
+            "channel": "whatsapp",
+            "source": "whatsapp",
+            "sender_name": sender_name or sender_phone,
+            "sender_id": sender_phone,
+            "body": message_text.strip(),
+            "classification": classification,
+            "summary": classification_data.get('summary', ''),
+            "suggested_title": classification_data.get('suggested_title'),
+            "suggested_project": classification_data.get('suggested_project'),
+            "has_memory_value": classification_data.get('has_memory_value', False),
+            "received_at": now_iso,
+            "processing_status": "completed",
+            "metadata": {
+                "sender_phone": sender_phone
+            },
+            "danny_decision": "skipped",
+            "expires_at": expires_iso
+        }
         supabase.table('messages').insert(row).execute()
         print(f"[ignored] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "ignored", "classification": classification}
 
-    if classification == 'fyi':
-        row['expires_at'] = expires_iso
-        supabase.table('messages').insert(row).execute()
+    # Actionable and FYI: Atomically batch or insert via RPC
+    rpc_args = {
+        'p_sender_id': sender_phone,
+        'p_sender_name': sender_name or sender_phone,
+        'p_body': message_text.strip(),
+        'p_received_at': now_iso,
+        'p_classification': classification,
+        'p_summary': classification_data.get('summary', ''),
+        'p_suggested_title': classification_data.get('suggested_title'),
+        'p_suggested_project': classification_data.get('suggested_project'),
+        'p_has_memory_value': classification_data.get('has_memory_value', False),
+        'p_linked_person_name': classification_data.get('linked_person_name'),
+        'p_expires_at': expires_iso,
+    }
+    
+    result = supabase.rpc('batch_whatsapp_message', rpc_args).execute()
+    action = result.data.get('action')
+    final_class = result.data.get('classification', classification)
+    
+    if action == 'batched':
+        print(f"[{final_class}] {sender_phone}: Batched into row {result.data['message_id']}")
+        return {"status": "batched", "classification": final_class}
+
+    if final_class == 'fyi':
         if classification_data.get('has_memory_value'):
             mem_content = f"{sender_name or sender_phone}: {classification_data.get('summary', message_text[:200])}"
             embedding = (await get_embedding(mem_content)).vector
-            result = supabase.table('memories').insert({
+            mem_result = supabase.table('memories').insert({
                 "content": mem_content,
                 "memory_type": "relationship_note",
                 "embedding": embedding,
@@ -158,23 +177,19 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
                 "source": "whatsapp",
                 "expires_at": expires_iso
             }).execute()
-            memory_id = result.data[0]['id']
+            memory_id = mem_result.data[0]['id']
             schedule_index_memory(memory_id, mem_content, "relationship_note", "whatsapp")
         print(f"[fyi] {sender_name or sender_phone}: {message_text[:60]}")
-        return {"status": "fyi", "classification": classification}
+        return {"status": "fyi", "classification": final_class}
 
-    if classification == 'actionable':
-        row['expires_at'] = expires_iso
-        supabase.table('messages').insert(row).execute()
-        print(f"[actionable] {sender_name or sender_phone}: {classification_data.get('suggested_title', message_text[:60])}")
-        return {
-            "status": "actionable",
-            "classification": classification,
-            "suggested_title": classification_data.get('suggested_title'),
-            "suggested_project": classification_data.get('suggested_project')
-        }
-
-    return {"status": "unhandled", "classification": classification}
+    # actionable
+    print(f"[actionable] {sender_name or sender_phone}: {classification_data.get('suggested_title', message_text[:60])}")
+    return {
+        "status": "actionable",
+        "classification": final_class,
+        "suggested_title": classification_data.get('suggested_title'),
+        "suggested_project": classification_data.get('suggested_project')
+    }
 
 
 async def main():

@@ -12,6 +12,7 @@ Algorithm:
 Runs weekly via GitHub Actions. Outputs audit artifact.
 """
 
+import json
 import math
 import hashlib
 from collections import Counter, defaultdict
@@ -321,6 +322,13 @@ async def build_memory_clusters() -> dict:
             .execute()
         all_memories = memories_res.data or []
         audit["total_memories"] = len(all_memories)
+
+        # Sanitize embedding values — PostgreSQL vector values may be
+        # returned as a JSON string ("[0.1, 0.2, ...]") or as a list with
+        # string-typed entries (["0.5", 0.3]) after migrations or backfills.
+        # Either form crashes _cosine_sim() (float * str → TypeError).
+        for m in all_memories:
+            m["embedding"] = _sanitize_embedding(m.get("embedding"))
 
         if len(all_memories) < 10:
             audit_log_sync("memory_clusters", "INFO", f"Too few memories ({len(all_memories)}), skipping clustering")
@@ -651,6 +659,23 @@ def _merge_cluster(cluster_id: int, new_member_ids: set, scores: dict, quality: 
         }).eq("id", cluster_id).execute()
 
 
+def _sanitize_embedding(emb):
+    """Coerce an embedding to a list of floats, handling str and list[str|float]."""
+    if emb is None:
+        return []
+    if isinstance(emb, str):
+        try:
+            emb = json.loads(emb)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if isinstance(emb, list):
+        try:
+            return [float(v) if isinstance(v, str) else v for v in emb]
+        except (ValueError, TypeError):
+            return []
+    return []
+
+
 def _compute_centroid(member_ids: list) -> list:
     """Compute centroid embedding from member memory embeddings (batch fetch)."""
     if not member_ids:
@@ -660,7 +685,9 @@ def _compute_centroid(member_ids: list) -> list:
             .select("id, embedding") \
             .in_("id", list(member_ids)) \
             .execute()
-        embeddings = [r["embedding"] for r in (res.data or []) if r.get("embedding")]
+        raw_embeddings = [r["embedding"] for r in (res.data or []) if r.get("embedding")]
+        embeddings = [_sanitize_embedding(e) for e in raw_embeddings]
+        embeddings = [e for e in embeddings if e]  # Drop empty after sanitization
         if not embeddings:
             return [0.0] * 768
         dim = len(embeddings[0])

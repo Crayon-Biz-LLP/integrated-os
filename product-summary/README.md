@@ -27,6 +27,7 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [08b-telegram-commands.md](08b-telegram-commands.md) | All 18 Telegram commands with syntax and behavior |
 | [25-whatsapp-ingest.md](25-whatsapp-ingest.md) | WhatsApp notification ingest via MacroDroid, separate table, approval flow |
 | [26-call-recording-ingest.md](26-call-recording-ingest.md) | Call transcription pipeline, Google Drive webhooks, and AI task extraction |
+| [35-whatsapp-batch-ingest.md](35-whatsapp-batch-ingest.md) | WhatsApp conversation batching — 3-min window, advisory lock, atomic batch-or-insert RPC |
 
 ### The Task System
 | File | What It Covers |

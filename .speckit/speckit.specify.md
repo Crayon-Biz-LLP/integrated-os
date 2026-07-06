@@ -43,6 +43,7 @@
 - **Prompt Registry (`core/prompts/`)**: All prompts separated from inline code: `guards.py`, `query.py`, `briefing.py`, `classify.py`, `workflow.py`, `ingest.py`.
 - **JSON Fail-Closed**: `interrogate_brain`, `handle_daily_brief`, `process_sentinel` use deterministic safe text on JSON parse failure instead of raw `.text.strip()`.
 - **27-test verification suite**: 14 LIVE_DB simulation tests (T1–T8, T9–T14) + 6 new sim tests (C1–C4, P1–P2) + 13 unit tests covering context registry gates, pre-flight isolation, hallucination claim stripping, JSON fallback, index queue lifecycle, and session continuity. All verified against real Supabase.
+- **WhatsApp Conversation Batching**: Same-sender messages within a 3-minute window are auto-batched into one `messages` row via `batch_whatsapp_message()` RPC. Uses `pg_advisory_xact_lock(hashtext(sender_id))` for concurrency safety. Classification upgrades on batch (fyi → actionable). `received_at` preserved from first message. Migration `db/21_whatsapp_batch_rpc.sql`.
 
 ### What is broken or incomplete
 - **MISSING**: No Decisions table (P3) — decisions are implicit in tasks/briefings [COMPLETED]

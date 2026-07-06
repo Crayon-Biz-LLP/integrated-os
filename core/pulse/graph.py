@@ -386,7 +386,8 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
             supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('source_label', label).execute()
             supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('target_label', label).execute()
             # Record rejection decision
-            try:                    record_decision(
+            try:
+                record_decision(
                             decision_type="graph_node_rejection",
                             title=f"Rejected {pending_item.get('type', 'node')}: {label}",
                             context=f"Pending node #{pending_id} rejected.",
@@ -538,11 +539,26 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             rel = (new_rel or pe['relationship']).upper()
 
             from core.lib.graph_rules import validate_edge
-            s_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type').ilike('label', s_label))
-            t_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type').ilike('label', t_label))
+            s_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type, label').ilike('label', s_label))
+            t_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type, label').ilike('label', t_label))
 
             s_data = getattr(s_node_res, 'data', None)
             t_data = getattr(t_node_res, 'data', None)
+
+            # FUZZY MATCH FALLBACK for person/org (if exact match fails)
+            if not s_data and pe.get('source_type') in ('person', 'organization') and len(s_label) > 3:
+                fuzzy_res = supabase.table('graph_nodes').select('id, type, label').eq('type', pe['source_type']).ilike('label', f"{s_label} %").execute()
+                if fuzzy_res and fuzzy_res.data and len(fuzzy_res.data) == 1:
+                    s_data = fuzzy_res.data[0]
+                    s_label = s_data['label']
+                    audit_log_sync("pulse", "INFO", f"Fuzzy matched source '{pe['source_label']}' to '{s_label}'")
+                    
+            if not t_data and pe.get('target_type') in ('person', 'organization') and len(t_label) > 3:
+                fuzzy_res = supabase.table('graph_nodes').select('id, type, label').eq('type', pe['target_type']).ilike('label', f"{t_label} %").execute()
+                if fuzzy_res and fuzzy_res.data and len(fuzzy_res.data) == 1:
+                    t_data = fuzzy_res.data[0]
+                    t_label = t_data['label']
+                    audit_log_sync("pulse", "INFO", f"Fuzzy matched target '{pe['target_label']}' to '{t_label}'")
 
             if not s_data or not t_data:
                 missing = s_label if not s_data else t_label
@@ -578,6 +594,7 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                 'target_node_id': t_id,
                 'relationship': rel,
                 'weight': 1.0,
+                'source_ref': pe.get('source_text') or f"pending_edge:{pending_id}",
                 'metadata': meta
             }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
             

@@ -9,6 +9,10 @@ from googleapiclient.discovery import build
 
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import get_google_creds
+from core.webhook.telegram import send_telegram
+from core.pulse.calendar import MemoryCache
+from core.llm.fallback import generate_content_with_fallback
+from core.llm.config import WorkloadProfile
 
 
 def hash_features_simple(features: dict, subsystem: str) -> str:
@@ -27,11 +31,6 @@ def hash_features_simple(features: dict, subsystem: str) -> str:
     canonical = {k: v for k, v in sorted(features.items()) if v is not None}
     raw = json.dumps(canonical, sort_keys=True, default=str)
     return hashlib.md5(f"{subsystem}:{raw}".encode()).hexdigest()[:16]
-
-from core.webhook.telegram import send_telegram
-from core.pulse.calendar import MemoryCache
-from core.llm.fallback import generate_content_with_fallback
-from core.llm.config import WorkloadProfile
 
 def get_recently_ended_events(minutes_ended_min=5, minutes_ended_max=30):
     """Fetch events that ended between X and Y minutes ago — for post-meeting capture prompts.
@@ -509,6 +508,47 @@ Context:
                 audit_log_sync("sentinel", "INFO", f"orphan calendar: {len(orphan_events)} recurring event(s) cleaned up for cancelled tasks")
         except Exception as oe_err:
             audit_log_sync("sentinel", "WARNING", f"Orphan calendar cleanup error (non-critical): {oe_err}")
+
+        # --- PIGGYBACK: T5 Graph Integrity Sweep ---
+        try:
+            # Copy approved pending edges with node_ids to graph_edges if missing
+            pe_res = supabase.table('pending_graph_edges').select('source_node_id, relationship, target_node_id, shortcode, metadata') \
+                .eq('status', 'approved') \
+                .not_.is_('source_node_id', 'null') \
+                .not_.is_('target_node_id', 'null') \
+                .order('created_at', desc=True).limit(500).execute()
+            
+            if pe_res.data:
+                valid_node_ids = set()
+                n_res = supabase.table("graph_nodes").select("id").execute()
+                if n_res.data:
+                    valid_node_ids = {n['id'] for n in n_res.data}
+                
+                to_insert = []
+                seen = set()
+                for pe in pe_res.data:
+                    if pe["source_node_id"] not in valid_node_ids or pe["target_node_id"] not in valid_node_ids:
+                        continue
+                    key = (pe["source_node_id"], pe["relationship"], pe["target_node_id"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    to_insert.append({
+                        "source_node_id": pe["source_node_id"],
+                        "relationship": pe["relationship"],
+                        "target_node_id": pe["target_node_id"],
+                        "weight": 1.0,
+                        "source_ref": pe.get("source_text") or f"pending_edge:{pe['id']}",
+                        "metadata": pe.get("metadata", {})
+                    })
+                
+                if to_insert:
+                    supabase.table("graph_edges").upsert(
+                        to_insert,
+                        on_conflict="source_node_id, relationship, target_node_id"
+                    ).execute()
+        except Exception as ge_err:
+            audit_log_sync("sentinel", "WARNING", f"Graph integrity sweep error (non-critical): {ge_err}")
 
         await complete_pulse_run(supabase, run_id, status="completed",
             metadata={"alerted": alerted_count})
