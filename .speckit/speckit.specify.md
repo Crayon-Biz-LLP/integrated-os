@@ -54,6 +54,7 @@
 - **KNOWN**: Label collisions — orgs and projects with same name (Ashraya, Solvstrat, Qhord, PERSONAL) can't both have graph nodes due to `unique_label` constraint. Sync skips them gracefully.
 - **KNOWN**: `graph_node_id` FK exists on `people` and `organizations` tables but zero rows have it populated. Domain→graph link is one-way via `graph_nodes.db_record_id` only.
 - **Resource Clusters List View + Dismiss**: Knowledge Base (`/dashboard/clusters`) has a grid/list view toggle. Resources can be dismissed (sets `dismissed_at`), hidden from UI, and reject re-storage of the same URL on future submission with "Already seen" Telegram reply.
+- **Edge Auto-Approve Subsystem Fix (Phase 17)**: Decision Pulse edge auto-approve now correctly queries `entity_extraction` subsystem (was `graph_edges` — zero patterns). Includes `source_type`/`target_type` in features for granular pattern matching (person→concept EVOKES hits 220/220 clean pattern instead of coarse 1,008/1,195). 10 edge + 4 node patterns at 100% confidence auto-approve silently. Historical decision/observation backfill covers 1,107 edges + 136 nodes.
 
 ### Auto-Decision Feedback Loop & Pattern Learning Fixes (Phase 16)
 

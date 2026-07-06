@@ -385,7 +385,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         # ── Auto-approve high-confidence graph edges ──
         pending_edges_res = supabase.table('pending_graph_edges')\
-            .select('id, source_label, target_label, relationship')\
+            .select('id, source_label, target_label, relationship, source_type, target_type')\
             .eq('status', 'pending')\
             .order('created_at', desc=False)\
             .limit(5)\
@@ -395,8 +395,8 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         auto_approved_edge_ids = set()
         for row in list(pending_edges):
-            features = {"relationship": row["relationship"]}
-            pattern_result = await compute_pattern_confidence(features, "graph_edges")
+            features = {"relationship": row["relationship"], "source_type": row.get("source_type"), "target_type": row.get("target_type")}
+            pattern_result = await compute_pattern_confidence(features, "entity_extraction")
             if pattern_result.get("recommendation") in ("approve", "auto_approve"):
                 await process_pending_edge_decision(row['id'], 'approve', auto_decided=True)
                 auto_approved_edge_ids.add(row['id'])
@@ -428,14 +428,17 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
         # Build deliberation scores for remaining items (show pattern confidence)
         async def _score_row(row: dict, subsystem: str) -> str:
             if subsystem == "graph_edges":
-                feat = {"relationship": row["relationship"]}
+                feat = {"relationship": row["relationship"], "source_type": row.get("source_type"), "target_type": row.get("target_type")}
+                _subsystem = "entity_extraction"
             elif subsystem in ("entity_extraction",):
                 feat = {"node_type": row["type"], "has_context": bool(row.get("source_text"))}
+                _subsystem = subsystem
             else:
                 from core.lib.decision_features import build_decision_features
                 channel = subsystem.replace('_pipeline', '') if '_pipeline' in subsystem else subsystem
                 feat = build_decision_features(row, channel)
-            pr = await compute_pattern_confidence(feat, subsystem)
+                _subsystem = subsystem
+            pr = await compute_pattern_confidence(feat, _subsystem)
             if pr["recommendation"] in ("approve", "auto_approve"):
                 return f"✅ *auto* ({pr['rule']})"
             elif pr["recommendation"] == "suggest":

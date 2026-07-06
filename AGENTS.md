@@ -14,6 +14,19 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
+## Session Anchored Summary (Jul 6, 2026 — Part 17: Edge Auto-Approve Fix + Decision Backfill)
+
+### Progress Done This Session
+- **Edge auto-approve subsystem mismatch fixed**: The Decision Pulse auto-approve code queried `compute_pattern_confidence(features, "graph_edges")` but all edge observations were recorded under `"entity_extraction"`. Zero patterns under `"graph_edges"` — edges never auto-approved regardless of confidence. Fixed in `core/pulse/engine.py`: changed subsystem to `"entity_extraction"` and added `source_type`/`target_type` to features for granular pattern matching. Now 10 edge patterns at 100% confidence auto-approve silently.
+- **Decision + observation backfill**: `scripts/backfill_edge_decisions.py` (1,107 approved edges) + `scripts/backfill_node_decisions.py` (136 batch-created nodes). Previously only 43 edge observations existed — Rhodey's pattern learner had no training data for the vast majority of approvals.
+- **`decisions` table grant fix**: `GRANT INSERT, SELECT, UPDATE ON decisions TO service_role` was missing — the service role key couldn't write decisions at all (pre-existing, blocked all edge/node approvals from batch scripts and normal flow).
+
+### Key Files (Phase 17)
+- `core/pulse/engine.py` — Subsystem mismatch fix (3 changes: subsystem + features + SELECT)
+- `scripts/backfill_edge_decisions.py` — Edge backfill (1,107 edges)
+- `scripts/backfill_node_decisions.py` — Node backfill (136 nodes)
+- `product-summary/34-edge-auto-approve-fix.md` — Documentation
+
 ## Session Anchored Summary (Jul 4, 2026 — Part 16: Pattern Learning & Auto-Decision Feedback Fixes)
 
 ### Progress Done This Session
