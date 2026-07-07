@@ -14,6 +14,49 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
+## Root Cause Investigation Procedure (Non-Negotiable)
+
+Before applying any fix, follow this procedure step by step. Do NOT skip steps. Each step ensures the fix targets the root cause, not a symptom or a wrong assumption.
+
+### Step 1: Read the error traceback exactly
+- Note the exact error message, error code, file path, line number, and column.
+- Note which function/module the error propagates through.
+- Do NOT assume you know the error from the message alone — read the full traceback.
+
+### Step 2: Read the failing code
+- Open every file in the traceback. Understand what each line does.
+- For SQL errors embedded in Python (RPC calls, raw queries), also fetch the actual SQL from the database (`pg_proc.prosrc` for functions, or run the query directly).
+
+### Step 3: Verify the schema
+- For database errors (type mismatches, constraint violations, etc.), query `information_schema.columns` for EVERY table and column involved. Do NOT assume column types from name conventions — verify them.
+- Sample actual data from the columns in question to confirm your type assumptions.
+
+### Step 4: Trace every column pair in a UNION
+- When the error involves UNION/UNION ALL, list every column position in both sides of the UNION.
+- For each position, verify: source table column type vs anchor expression type.
+- The mismatch is ALWAYS at one specific position. Find it.
+
+### Step 5: Reproduce the error directly
+- Call the failing SQL function or query from `supabase_execute_sql` with real parameters.
+- Confirm the error matches the original traceback. This is the only way to be certain you've identified the right root cause.
+
+### Step 6: Check git history
+- Search for when and why the code was introduced (`git log -p`, `git log -S`).
+- Read the commit message to understand original intent. The fix must preserve that intent.
+- If the code was created outside version control (SQL editor, etc.), trace when the linked Python/JS code was committed.
+
+### Step 7: Check for sibling callers
+- Before modifying shared code (RPCs, utility functions), grep every caller. Patching only the path the error reports may leave sibling callers broken.
+- Verify that none of the sibling callers depend on the buggy behavior.
+
+### Step 8: Verify no other UNIONs or type mismatches exist in the same query
+- Check the entire query for other potential type mismatches or structural issues.
+- For RPCs with overloaded functions, verify which overload is actually called by the application.
+
+### Step 9: Propose the fix
+- Only after all 8 preceding steps confirm the root cause.
+- The fix must be the smallest change that addresses the root cause — NOT a workaround or symptom patch.
+
 ## Session Anchored Summary (Jul 6, 2026 — Part 18: WhatsApp Conversation Batching)
 
 ### Progress Done This Session
@@ -27,6 +70,20 @@ For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the p
 - `db/21_whatsapp_batch_rpc.sql` — NEW: `batch_whatsapp_message()` RPC with advisory lock
 - `core/skills/whatsapp_ingest.py` — Refactored: replaced 3 insert paths with single RPC call
 - `product-summary/35-whatsapp-batch-ingest.md` — Documentation
+
+## Session Anchored Summary (Jul 7, 2026 — Part 19: Context Salience RPC UNION Type Fix)
+
+### Progress Done This Session
+- **`get_context_for()` RPC UNION type mismatch fixed**: `core/pulse/context_salience.py` calls `get_context_for()` RPC which has a recursive CTE (`UNION ALL`). Column 7 (`source_ref`) had `NULL::uuid` in the anchor but `ge.source_ref` is `text` — PostgreSQL refuses to UNION different types. Error code 42804. Fixed by changing `NULL::uuid` to `NULL::text` and updating RPC return type accordingly.
+- **Dropped the second overload** (no `STABLE`, missing `archived=false` filter) — it was never called by the Python code. The Python call (3 named params) resolves to the `STABLE` overload.
+- **Root Cause Investigation Procedure** added to AGENTS.md (9-step checklist preventing symptom-patching).
+
+### Key Decisions This Session
+- **`source_ref` in `graph_edges` was always `text`**: 322 non-null values checked — zero UUID-like. The `NULL::uuid` was a wrong type guess during RPC creation.
+- **Verify types, don't assume from names**: A column named `source_ref` sounds UUID-like, but `information_schema.columns` + sampling actual data proved it's text.
+
+### Key Files (Phase 19)
+- `AGENTS.md` — Root Cause Investigation Procedure (Step 1-9)
 
 ## Session Anchored Summary (Jul 6, 2026 — Part 17: Edge Auto-Approve Fix + Decision Backfill)
 
