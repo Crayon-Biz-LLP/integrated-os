@@ -29,8 +29,15 @@ jobs:
         run: flutter analyze
         working-directory: rhodey_app
 
-      - name: Build APK (debug — no signing key needed for Firebase testing)
-        run: flutter build apk --debug
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > rhodey_app/android/app/upload-keystore.jks
+
+      - name: Build APK (release — signed for consistent updates)
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: flutter build apk --release
         working-directory: rhodey_app
 
       - name: Distribute to Firebase App Distribution
@@ -39,4 +46,4 @@ jobs:
           appId: 1:40716548335:android:a1138ac8dcc9639458431a
           serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           groups: testers
-          file: rhodey_app/build/app/outputs/flutter-apk/app-debug.apk
+          file: rhodey_app/build/app/outputs/flutter-apk/app-release.apk

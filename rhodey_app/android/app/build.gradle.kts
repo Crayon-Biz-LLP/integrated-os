@@ -29,11 +29,28 @@ android {
         missingDimensionStrategy("default", "production")
     }
 
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("KEYSTORE_PATH") ?: "upload-keystore.jks"
+            val keystorePassword = System.getenv("KEYSTORE_PASSWORD") ?: "RhodeyApp2026"
+            val keyPassword = System.getenv("KEY_PASSWORD") ?: "RhodeyApp2026"
+            val keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
+
+            storeFile = file(keystorePath)
+            storePassword = keystorePassword
+            keyAlias = keyAlias
+            keyPassword = keyPassword
+        }
+    }
+
     buildTypes {
-        release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+        debug {
             signingConfig = signingConfigs.getByName("debug")
+        }
+        release {
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
