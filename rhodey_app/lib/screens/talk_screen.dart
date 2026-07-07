@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:flutter_tts/flutter_tts.dart';
 import '../models/message.dart';
 import 'history_screen.dart';
 import '../services/api_service.dart';
@@ -48,8 +49,10 @@ class TalkScreenState extends State<TalkScreen> {
   // ── Voice state ──
   VoiceState _voiceState = VoiceState.idle;
   String? _transcribedText;
+  String? _voiceError;
   final stt.SpeechToText _speech = stt.SpeechToText();
   bool _speechAvailable = false;
+  final FlutterTts _tts = FlutterTts();
 
   @override
   void initState() {
@@ -68,9 +71,30 @@ class TalkScreenState extends State<TalkScreen> {
 
   /// Initialize speech recognition on app start.
   Future<void> _initSpeech() async {
-    _speechAvailable = await _speech.initialize();
+    _speechAvailable = await _speech.initialize(
+      onError: (error) {
+        if (!mounted) return;
+        debugPrint('[Voice] Error: ${error.errorMsg}');
+        setState(() {
+          _voiceState = VoiceState.error;
+          _voiceError = error.errorMsg;
+        });
+      },
+      onStatus: (status) {
+        debugPrint('[Voice] Status: $status');
+        if (status == 'notListening' && _voiceState == VoiceState.listening && mounted) {
+          setState(() {
+            _voiceState = VoiceState.error;
+            _voiceError = 'Speech recognition stopped unexpectedly';
+          });
+        }
+      },
+    );
     if (!_speechAvailable && mounted) {
-      debugPrint('[Voice] Speech recognition not available on this device');
+      setState(() {
+        _voiceState = VoiceState.error;
+        _voiceError = 'Speech recognition not available on this device';
+      });
     }
   }
 
@@ -251,6 +275,7 @@ class TalkScreenState extends State<TalkScreen> {
       ));
     });
     _scrollToBottom();
+    _tts.speak(text);
   }
 
   // ── Real Voice Pipeline (speech_to_text) ─────────────────────
@@ -264,18 +289,20 @@ class TalkScreenState extends State<TalkScreen> {
       setState(() {
         _voiceState = VoiceState.idle;
         _transcribedText = null;
+        _voiceError = null;
       });
     }
   }
 
   Future<void> _startListening() async {
+    _voiceError = null;
     if (!_speechAvailable) {
       _speechAvailable = await _speech.initialize();
       if (!_speechAvailable) {
         if (mounted) {
           setState(() {
             _voiceState = VoiceState.error;
-            _transcribedText = 'Speech recognition not available on this device.';
+            _voiceError = 'Speech recognition not available on this device';
           });
         }
         return;
@@ -300,11 +327,10 @@ class TalkScreenState extends State<TalkScreen> {
         }
       },
       listenOptions: stt.SpeechListenOptions(
-        listenFor: const Duration(seconds: 30),
-        pauseFor: const Duration(seconds: 2),
+        listenFor: Duration(seconds: 30),
+        pauseFor: Duration(seconds: 2),
         partialResults: true,
-        cancelOnError: true,
-        localeId: 'en_IN',
+        cancelOnError: false,
       ),
     );
   }
@@ -422,6 +448,7 @@ class TalkScreenState extends State<TalkScreen> {
             VoiceStateMachine(
               state: _voiceState,
               transcribedText: _transcribedText,
+              errorMessage: _voiceError,
               onCancel: _toggleVoice,
               onTaskConfirm: () => _confirmVoice('task'),
               onNoteConfirm: () => _confirmVoice('note'),
@@ -666,16 +693,16 @@ class _InputBar extends StatelessWidget {
             const SizedBox(width: 8),
             Material(
               color: isListening ? AppTheme.red : AppTheme.accent,
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(18),
               child: InkWell(
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(18),
                 onTap: onMicTap,
                 child: Container(
-                  width: 44, height: 44,
+                  width: 64, height: 64,
                   alignment: Alignment.center,
                   child: Icon(
                     isListening ? Icons.stop : Icons.mic,
-                    color: Colors.white, size: 20,
+                    color: Colors.white, size: 28,
                   ),
                 ),
               ),
