@@ -131,7 +131,7 @@ class ApiService {
 
   /// POST with idempotency key and retry.
   Future<ApiResult<dynamic>> _post(String path,
-      {Map<String, dynamic>? body}) async {
+      {Map<String, dynamic>? body, Duration timeout = const Duration(seconds: 15)}) async {
     for (var attempt = 0; attempt < 3; attempt++) {
       try {
         final resp = await _client
@@ -140,7 +140,7 @@ class ApiService {
               headers: _headers(idempotent: true),
               body: body != null ? jsonEncode(body) : null,
             )
-            .timeout(const Duration(seconds: 15));
+            .timeout(timeout);
         if (resp.statusCode == 200 || resp.statusCode == 201) {
           return ApiResult.ok(jsonDecode(resp.body));
         }
@@ -166,9 +166,11 @@ class ApiService {
 
   /// Sends a message to Rhodey via /api/send-message.
   /// On success, returns the raw body (which may contain Rhodey's response).
+  /// Uses a longer timeout (30s) because process_webhook on Vercel includes LLM calls.
   Future<ApiResult<dynamic>> sendMessage(String text) async {
     debugPrint('[API] sendMessage: "${text.length > 60 ? text.substring(0, 60) : text}"');
-    return _post('/api/send-message', body: {'message': text});
+    return _post('/api/send-message', body: {'message': text},
+        timeout: const Duration(seconds: 30));
   }
 
   // ── Messages (history) ────────────────────────────────────────
