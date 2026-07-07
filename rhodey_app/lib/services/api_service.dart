@@ -241,19 +241,21 @@ class ApiService {
     try {
       final s = DateTime.parse(startDt).toLocal();
       final e = DateTime.parse(endDt).toLocal();
-      final fmt = (DateTime dt) =>
-          '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
       final sStr = '${s.hour.toString().padLeft(2, '0')}:${s.minute.toString().padLeft(2, '0')}';
       final eStr = '${e.hour.toString().padLeft(2, '0')}:${e.minute.toString().padLeft(2, '0')}';
       // Strip date if same day
       if (s.year == e.year && s.month == e.month && s.day == e.day) {
         return '$sStr–$eStr';
       }
-      return '${fmt(s)}–${fmt(e)}';
+      return '${_fmtTime(s)}–${_fmtTime(e)}';
     } catch (_) {
       return startDt.isNotEmpty ? startDt : 'All day';
     }
   }
+
+  String _fmtTime(DateTime dt) =>
+      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+
 
   // ── Tasks (Today tab) ────────────────────────────────────────
 
@@ -305,7 +307,7 @@ class ApiService {
     return post('/api/graph-node-action', body: {
       'id': pendingId,
       'action': 'approve',
-      if (label != null) 'label': label,
+      'label': ?label,
     });
   }
 

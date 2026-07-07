@@ -299,11 +299,13 @@ class TalkScreenState extends State<TalkScreen> {
           });
         }
       },
-      listenFor: const Duration(seconds: 30),
-      pauseFor: const Duration(seconds: 2),
-      partialResults: true,
-      cancelOnError: true,
-      localeId: 'en_IN',
+      listenOptions: stt.SpeechListenOptions(
+        listenFor: const Duration(seconds: 30),
+        pauseFor: const Duration(seconds: 2),
+        partialResults: true,
+        cancelOnError: true,
+        localeId: 'en_IN',
+      ),
     );
   }
 

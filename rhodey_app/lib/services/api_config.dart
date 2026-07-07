@@ -29,7 +29,7 @@ class ApiConfig {
       final prefs = await SharedPreferences.getInstance();
       _baseUrl = prefs.getString(_keyBaseUrl) ?? defaultBaseUrl;
       _apiKey = prefs.getString(_keyApiKey) ?? '';
-      debugPrint('[ApiConfig] loaded: baseUrl=$_baseUrl configured=${isConfigured}');
+      debugPrint('[ApiConfig] loaded: baseUrl=$_baseUrl configured=$isConfigured');
     } catch (e) {
       debugPrint('[ApiConfig] load error: $e (using defaults)');
     }
