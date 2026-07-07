@@ -47,3 +47,19 @@ jobs:
           serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           groups: testers
           file: rhodey_app/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload APK to GitHub Releases (for in-app updates)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION_NAME=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
+          VERSION_CODE=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/.*+//')
+          TAG="app-v${VERSION_NAME}+${VERSION_CODE}"
+          NOTES="Automated build from main branch (${GITHUB_SHA::7})"
+          gh release delete app-latest --yes 2>/dev/null || true
+          git tag -d app-latest 2>/dev/null || true
+          git push origin :refs/tags/app-latest 2>/dev/null || true
+          gh release create app-latest \
+            --title "Rhodey App v${VERSION_NAME} (build ${VERSION_CODE})" \
+            --notes "$NOTES" \
+            rhodey_app/build/app/outputs/flutter-apk/app-release.apk

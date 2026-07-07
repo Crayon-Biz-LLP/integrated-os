@@ -1342,6 +1342,72 @@ async def whatsapp_ingest_route(request: Request):
         clear_action_context()
 
 
+# --- APP VERSION CHECK (for in-app updates) ---
+@app.get("/api/app-version")
+async def app_version_route(request: Request):
+    """Return the latest app version info from the GitHub release.
+
+    The CI workflow uploads each APK build as a GitHub Release with
+    tag "app-latest". This endpoint reads that release and returns
+    the version details so the Flutter app can prompt in-app updates.
+    """
+    try:
+        owner = os.getenv("GITHUB_OWNER", "Crayon-Biz-LLP")
+        repo = os.getenv("GITHUB_REPO", "integrated-os")
+
+        headers = {"Accept": "application/vnd.github+json"}
+        github_token = os.getenv("GITHUB_TOKEN")
+        if github_token:
+            headers["Authorization"] = f"Bearer {github_token}"
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/releases/tags/app-latest",
+                headers=headers,
+                timeout=10
+            )
+
+        if resp.status_code != 200:
+            return {
+                "version_code": 0,
+                "version_name": "",
+                "download_url": None,
+                "release_notes": "",
+                "found": False
+            }
+
+        release = resp.json()
+        tag = release.get("tag_name", "")
+        # Tag format: app-v{version_name}+{version_code}  e.g. app-v1.0.0+2
+        version_code = 0
+        version_name = ""
+        if "+" in tag:
+            parts = tag.split("+")
+            version_code = int(parts[-1]) if parts[-1].isdigit() else 0
+            version_name = parts[0].replace("app-v", "") if parts[0].startswith("app-v") else tag
+
+        assets = release.get("assets", [])
+        apk_asset = next((a for a in assets if a["name"].endswith(".apk")), None)
+        download_url = apk_asset["browser_download_url"] if apk_asset else None
+
+        return {
+            "version_code": version_code,
+            "version_name": version_name or release.get("tag_name", ""),
+            "download_url": download_url,
+            "release_notes": release.get("body", ""),
+            "found": True
+        }
+    except Exception as e:
+        print(f"App version check error: {e}")
+        return {
+            "version_code": 0,
+            "version_name": "",
+            "download_url": None,
+            "release_notes": "",
+            "found": False
+        }
+
+
 # --- REGISTER DEVICE TOKEN (for push notifications) ---
 @app.post("/api/register-device")
 async def register_device_route(request: Request):

@@ -8,6 +8,7 @@ import 'screens/today_screen.dart';
 import 'screens/inbox_screen.dart';
 import 'services/api_service.dart';
 import 'services/notification_service.dart';
+import 'services/update_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -66,6 +67,15 @@ class _MainShellState extends State<MainShell> {
     TodayScreen(),
     InboxScreen(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    // Check for app updates after the first frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      UpdateService().check(context);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
