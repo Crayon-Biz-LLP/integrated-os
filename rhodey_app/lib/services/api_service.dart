@@ -130,7 +130,8 @@ class ApiService {
   }
 
   /// POST with idempotency key and retry.
-  Future<ApiResult<dynamic>> _post(String path,
+  /// Public so other services (e.g., NotificationService) can call it.
+  Future<ApiResult<dynamic>> post(String path,
       {Map<String, dynamic>? body, Duration timeout = const Duration(seconds: 15)}) async {
     for (var attempt = 0; attempt < 3; attempt++) {
       try {
@@ -169,7 +170,7 @@ class ApiService {
   /// Uses a longer timeout (30s) because process_webhook on Vercel includes LLM calls.
   Future<ApiResult<dynamic>> sendMessage(String text) async {
     debugPrint('[API] sendMessage: "${text.length > 60 ? text.substring(0, 60) : text}"');
-    return _post('/api/send-message', body: {'message': text},
+    return post('/api/send-message', body: {'message': text},
         timeout: const Duration(seconds: 30));
   }
 
@@ -293,7 +294,7 @@ class ApiService {
   /// Marks a task as done/cancelled via /api/tasks/{id}/status.
   Future<ApiResult<dynamic>> updateTaskStatus(
       int taskId, String status) async {
-    return _post('/api/tasks/$taskId/status', body: {'status': status});
+    return post('/api/tasks/$taskId/status', body: {'status': status});
   }
 
   // ── Decision actions ──────────────────────────────────────────
@@ -301,7 +302,7 @@ class ApiService {
   /// Approve a pending graph node via /api/graph-node-action.
   Future<ApiResult<dynamic>> approveGraphNode(int pendingId,
       {String? label}) async {
-    return _post('/api/graph-node-action', body: {
+    return post('/api/graph-node-action', body: {
       'id': pendingId,
       'action': 'approve',
       if (label != null) 'label': label,
@@ -310,7 +311,7 @@ class ApiService {
 
   /// Reject a pending graph node.
   Future<ApiResult<dynamic>> rejectGraphNode(int pendingId) async {
-    return _post('/api/graph-node-action', body: {
+    return post('/api/graph-node-action', body: {
       'id': pendingId,
       'action': 'reject',
     });
@@ -318,14 +319,14 @@ class ApiService {
 
   /// Approve/reject a pending graph edge via /api/graph-edge-action.
   Future<ApiResult<dynamic>> approveGraphEdge(int pendingId) async {
-    return _post('/api/graph-edge-action', body: {
+    return post('/api/graph-edge-action', body: {
       'id': pendingId,
       'action': 'approve',
     });
   }
 
   Future<ApiResult<dynamic>> rejectGraphEdge(int pendingId) async {
-    return _post('/api/graph-edge-action', body: {
+    return post('/api/graph-edge-action', body: {
       'id': pendingId,
       'action': 'reject',
     });
@@ -333,14 +334,14 @@ class ApiService {
 
   /// Approve/reject email pending item via /api/email-action.
   Future<ApiResult<dynamic>> approveEmail(int pendingId) async {
-    return _post('/api/email-action', body: {
+    return post('/api/email-action', body: {
       'id': pendingId,
       'action': 'approve',
     });
   }
 
   Future<ApiResult<dynamic>> rejectEmail(int pendingId) async {
-    return _post('/api/email-action', body: {
+    return post('/api/email-action', body: {
       'id': pendingId,
       'action': 'reject',
     });
@@ -348,14 +349,14 @@ class ApiService {
 
   /// Approve/reject WhatsApp pending item via /api/whatsapp-action.
   Future<ApiResult<dynamic>> approveWhatsApp(int pendingId) async {
-    return _post('/api/whatsapp-action', body: {
+    return post('/api/whatsapp-action', body: {
       'id': pendingId,
       'action': 'approve',
     });
   }
 
   Future<ApiResult<dynamic>> rejectWhatsApp(int pendingId) async {
-    return _post('/api/whatsapp-action', body: {
+    return post('/api/whatsapp-action', body: {
       'id': pendingId,
       'action': 'reject',
     });
@@ -363,14 +364,14 @@ class ApiService {
 
   /// Approve/reject call pending item via /api/call-action.
   Future<ApiResult<dynamic>> approveCall(int pendingId) async {
-    return _post('/api/call-action', body: {
+    return post('/api/call-action', body: {
       'id': pendingId,
       'action': 'approve',
     });
   }
 
   Future<ApiResult<dynamic>> rejectCall(int pendingId) async {
-    return _post('/api/call-action', body: {
+    return post('/api/call-action', body: {
       'id': pendingId,
       'action': 'reject',
     });
@@ -379,7 +380,7 @@ class ApiService {
   /// Submit a clarification answer via /api/clarification.
   Future<ApiResult<dynamic>> submitClarification(
       String shortcode, String answer) async {
-    return _post('/api/clarification', body: {
+    return post('/api/clarification', body: {
       'shortcode': shortcode,
       'answer': answer,
     });

@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../models/message.dart';
+import 'history_screen.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/chat_bubble.dart';
@@ -29,6 +32,12 @@ class TalkScreenState extends State<TalkScreen> {
   /// How many messages were loaded from the API history.
   int _historyCount = 0;
 
+  /// Timer for polling new messages after sending.
+  Timer? _pollTimer;
+
+  /// Ids of messages we've already seen from the API (for poll dedup).
+  final Set<String> _seenMessageIds = {};
+
   // ── Send pipeline ──
   //   pending → sending → sent → resolved
   //         ↘ failed → sending (retry)
@@ -39,11 +48,30 @@ class TalkScreenState extends State<TalkScreen> {
   // ── Voice state ──
   VoiceState _voiceState = VoiceState.idle;
   String? _transcribedText;
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  bool _speechAvailable = false;
 
   @override
   void initState() {
     super.initState();
+    _initSpeech();
     _loadHistory();
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    _controller.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  /// Initialize speech recognition on app start.
+  Future<void> _initSpeech() async {
+    _speechAvailable = await _speech.initialize();
+    if (!_speechAvailable && mounted) {
+      debugPrint('[Voice] Speech recognition not available on this device');
+    }
   }
 
   /// Fetch real message history on app start and on pull-to-refresh.
@@ -79,11 +107,43 @@ class TalkScreenState extends State<TalkScreen> {
     }
   }
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    _scrollController.dispose();
-    super.dispose();
+  /// Poll for new messages after sending (live updates).
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _pollForUpdates());
+  }
+
+  void _stopPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+  }
+
+  Future<void> _pollForUpdates() async {
+    final result = await _api.getMessages(limit: 5);
+    if (!mounted || !result.success) return;
+    for (final m in result.data!) {
+      final id = m['id'].toString();
+      if (_seenMessageIds.contains(id)) continue;
+      _seenMessageIds.add(id);
+      final content = m['content'] as String? ?? '';
+      if (content.isEmpty) continue;
+      final direction = m['direction'] as String? ?? '';
+      final role = direction == 'inbound' ? MessageRole.user : MessageRole.rhodey;
+      final createdAt = m['created_at'] as String? ?? '';
+      final ts = createdAt.isNotEmpty
+          ? (DateTime.tryParse(createdAt) ?? DateTime.now())
+          : DateTime.now();
+      final msg = ChatMessage(
+        id: 'p${_msgCounter++}', role: role, text: content,
+        timestamp: ts,
+        sendStatus: role == MessageRole.user ? SendStatus.sent : null,
+      );
+      setState(() {
+        _messages.add(msg);
+        _hasSentMessage = true;
+      });
+      _scrollToBottom();
+    }
   }
 
   // ── Send pipeline ─────────────────────────────────────────────
@@ -102,6 +162,7 @@ class TalkScreenState extends State<TalkScreen> {
     });
     _controller.clear();
     _scrollToBottom();
+    _startPolling();
 
     _updateMessage(id, sendStatus: SendStatus.sending);
 
@@ -132,6 +193,7 @@ class TalkScreenState extends State<TalkScreen> {
   }
 
   void _retryMessage(String id) {
+    _startPolling();
     final idx = _messages.indexWhere((m) => m.id == id);
     if (idx == -1) return;
     final text = _messages[idx].text;
@@ -180,6 +242,7 @@ class TalkScreenState extends State<TalkScreen> {
   }
 
   void _addRhodeyResponse(String text) {
+    _stopPolling();
     final id = 'r${++_msgCounter}';
     setState(() {
       _messages.add(ChatMessage(
@@ -190,21 +253,68 @@ class TalkScreenState extends State<TalkScreen> {
     _scrollToBottom();
   }
 
-  // ── Voice pipeline ────────────────────────────────────────────
+  // ── Real Voice Pipeline (speech_to_text) ─────────────────────
 
   void _toggleVoice() {
     if (_voiceState == VoiceState.idle) {
-      setState(() => _voiceState = VoiceState.listening);
-      Future.delayed(const Duration(seconds: 2), () {
+      _startListening();
+    } else if (_voiceState == VoiceState.listening) {
+      _stopListening();
+    } else {
+      setState(() {
+        _voiceState = VoiceState.idle;
+        _transcribedText = null;
+      });
+    }
+  }
+
+  Future<void> _startListening() async {
+    if (!_speechAvailable) {
+      _speechAvailable = await _speech.initialize();
+      if (!_speechAvailable) {
+        if (mounted) {
+          setState(() {
+            _voiceState = VoiceState.error;
+            _transcribedText = 'Speech recognition not available on this device.';
+          });
+        }
+        return;
+      }
+    }
+
+    setState(() => _voiceState = VoiceState.listening);
+
+    await _speech.listen(
+      onResult: (result) {
         if (!mounted) return;
-        setState(() {
-          _voiceState = VoiceState.transcribing;
-          _transcribedText = 'Equisoft wants phase 2 at 2.4L. Follow up with Marcus.';
-        });
-        Future.delayed(const Duration(seconds: 1), () {
-          if (!mounted) return;
-          setState(() => _voiceState = VoiceState.confirm);
-        });
+        final text = result.recognizedWords;
+        if (text.isNotEmpty) {
+          _transcribedText = text;
+        }
+        if (result.finalResult) {
+          setState(() => _voiceState = VoiceState.transcribing);
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (!mounted) return;
+            setState(() => _voiceState = VoiceState.confirm);
+          });
+        }
+      },
+      listenFor: const Duration(seconds: 30),
+      pauseFor: const Duration(seconds: 2),
+      partialResults: true,
+      cancelOnError: true,
+      localeId: 'en_IN',
+    );
+  }
+
+  Future<void> _stopListening() async {
+    await _speech.stop();
+    if (!mounted) return;
+    if (_transcribedText != null && _transcribedText!.isNotEmpty) {
+      setState(() => _voiceState = VoiceState.transcribing);
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (!mounted) return;
+        setState(() => _voiceState = VoiceState.confirm);
       });
     } else {
       setState(() {
@@ -215,7 +325,7 @@ class TalkScreenState extends State<TalkScreen> {
   }
 
   void _confirmVoice(String type) {
-    if (_transcribedText != null) {
+    if (_transcribedText != null && _transcribedText!.isNotEmpty) {
       _sendMessage(_transcribedText!);
     }
     setState(() => _voiceState = VoiceState.done);
@@ -225,6 +335,17 @@ class TalkScreenState extends State<TalkScreen> {
         _voiceState = VoiceState.idle;
         _transcribedText = null;
       });
+    });
+  }
+
+  void _retryVoice() {
+    setState(() {
+      _voiceState = VoiceState.idle;
+      _transcribedText = null;
+    });
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      _startListening();
     });
   }
 
@@ -302,7 +423,7 @@ class TalkScreenState extends State<TalkScreen> {
               onCancel: _toggleVoice,
               onTaskConfirm: () => _confirmVoice('task'),
               onNoteConfirm: () => _confirmVoice('note'),
-              onRetry: () => _toggleVoice(),
+              onRetry: () => _retryVoice(),
             ),
           _InputBar(
             controller: _controller,
@@ -453,9 +574,21 @@ class TalkScreenState extends State<TalkScreen> {
               ),
               const SizedBox(height: 20),
               _MenuTile(icon: Icons.history, label: 'History',
-                  onTap: () => Navigator.pop(context)),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const HistoryScreen()));
+                  }),
               _MenuTile(icon: Icons.memory_outlined, label: 'Memories',
-                  onTap: () => Navigator.pop(context)),
+                  onTap: () {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Memories coming soon — browse knowledge graph', style: TextStyle(fontSize: 12)),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }),
               _MenuTile(icon: Icons.settings_outlined, label: 'API Settings',
                   onTap: () {
                     Navigator.pop(context);

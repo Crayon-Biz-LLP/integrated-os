@@ -119,7 +119,7 @@ class _DumpScreenState extends State<DumpScreen> {
       appBar: AppBar(
         title: Row(
           children: [
-            const Text('Dump'),
+            const Text('Captures'),
             const Spacer(),
             if (_api.config.isConfigured && !_loading)
               Container(

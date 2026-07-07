@@ -7,6 +7,7 @@ import 'screens/dump_screen.dart';
 import 'screens/today_screen.dart';
 import 'screens/inbox_screen.dart';
 import 'services/api_service.dart';
+import 'services/notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,6 +24,13 @@ void main() async {
 
   // Load persisted API config before anything renders.
   await ApiService().init();
+
+  // Initialize push notifications via FCM.
+  try {
+    await NotificationService().init();
+  } catch (e) {
+    debugPrint('[FCM] Init failed (non-fatal): $e');
+  }
 
   runApp(const RhodeyApp());
 }
@@ -74,7 +82,7 @@ class _MainShellState extends State<MainShell> {
         height: 64,
         destinations: const [
           NavigationDestination(icon: Icon(Icons.chat_bubble_outline), label: 'Talk'),
-          NavigationDestination(icon: Icon(Icons.inbox_outlined), label: 'Dump'),
+          NavigationDestination(icon: Icon(Icons.inbox_outlined), label: 'Captures'),
           NavigationDestination(icon: Icon(Icons.today_outlined), label: 'Today'),
           NavigationDestination(icon: Icon(Icons.checklist_outlined), label: 'Inbox'),
         ],
