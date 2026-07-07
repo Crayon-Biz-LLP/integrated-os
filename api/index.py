@@ -1,4 +1,5 @@
 import os
+import re
 import hmac
 import hashlib
 import time
@@ -1377,14 +1378,14 @@ async def app_version_route(request: Request):
             }
 
         release = resp.json()
-        tag = release.get("tag_name", "")
-        # Tag format: app-v{version_name}+{version_code}  e.g. app-v1.0.0+2
+        name = release.get("name", "")
+        # Title format: "Rhodey App v{version_name} (build {version_code})"
         version_code = 0
         version_name = ""
-        if "+" in tag:
-            parts = tag.split("+")
-            version_code = int(parts[-1]) if parts[-1].isdigit() else 0
-            version_name = parts[0].replace("app-v", "") if parts[0].startswith("app-v") else tag
+        m = re.search(r"v([\d.]+)\s*\(build\s*(\d+)\)", name)
+        if m:
+            version_name = m.group(1)
+            version_code = int(m.group(2))
 
         assets = release.get("assets", [])
         apk_asset = next((a for a in assets if a["name"].endswith(".apk")), None)
@@ -1392,7 +1393,7 @@ async def app_version_route(request: Request):
 
         return {
             "version_code": version_code,
-            "version_name": version_name or release.get("tag_name", ""),
+            "version_name": version_name,
             "download_url": download_url,
             "release_notes": release.get("body", ""),
             "found": True
