@@ -1,5 +1,6 @@
 import os
 import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from supabase import create_client
 from dotenv import load_dotenv
 from core.services.db import maybe_single_safe

@@ -165,6 +165,46 @@ async def maintenance_route(request: Request):
     return result
 
 
+# --- GET TASKS (for Today tab — active + overdue) ---
+@app.get("/api/tasks")
+async def get_tasks_route(request: Request, status: str = None, limit: int = 50, offset: int = 0):
+    """List tasks filtered by status. Default: active (todo) tasks."""
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+        query = supabase.table('tasks')\
+            .select('id, title, status, priority, deadline, created_at, project_id, direction, committed_to, recurrence')\
+            .eq('is_current', True)
+        
+        if status:
+            query = query.eq('status', status)
+        else:
+            query = query.in_('status', ['todo'])
+        
+        result = query.order('created_at', desc=True).limit(limit).offset(offset).execute()
+        return {"tasks": result.data or []}
+    except Exception as e:
+        print(f"Get tasks error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+# --- GET CAPTURES (for Dump tab — recent raw dumps) ---
+@app.get("/api/captures")
+async def get_captures_route(request: Request, limit: int = 50, offset: int = 0):
+    """List recent raw_dumps — the unfiltered capture stream."""
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+        result = supabase.table('raw_dumps')\
+            .select('id, content, created_at, direction, sender, message_type, status, source')\
+            .order('created_at', desc=True)\
+            .limit(limit)\
+            .offset(offset)\
+            .execute()
+        return {"captures": result.data or []}
+    except Exception as e:
+        print(f"Get captures error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 # --- EVENING ROUNDUP ---
 @app.api_route("/api/roundup", methods=["GET", "POST"])
 async def roundup_route(request: Request):
@@ -1343,6 +1383,41 @@ async def drive_webhook(request: Request):
             print(f"Drive webhook dispatch error: {e}")
 
     return {"success": True}
+# --- PENDING GRAPH NODES (listing for Inbox tab) ---
+@app.get("/api/pending-graph-nodes")
+async def pending_graph_nodes_route(request: Request):
+    """List all pending graph nodes awaiting approval."""
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+        res = supabase.table('pending_graph_nodes') \
+            .select('id, label, type, status, source_text, created_at, eval_context')
+        # Pull pending + flagged items (skip approved/rejected/merged)
+        res = res.in_('status', ['pending', 'flagged', 'merge_proposed'])
+        res = res.order('created_at', desc=True).limit(100).execute()
+        return {"data": res.data or []}
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+# --- PENDING GRAPH EDGES (listing for Inbox tab) ---
+@app.get("/api/pending-graph-edges")
+async def pending_graph_edges_route(request: Request):
+    """List all pending graph edges awaiting approval."""
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+        res = supabase.table('pending_graph_edges') \
+            .select('id, source_label, target_label, relationship, status, context, confidence, created_at')
+        res = res.in_('status', ['pending', 'flagged'])
+        res = res.order('created_at', desc=True).limit(100).execute()
+        return {"data": res.data or []}
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 @app.get("/api/graph-nodes/live")
 async def graph_nodes_live_route(request: Request):
     require_api_auth(request)
