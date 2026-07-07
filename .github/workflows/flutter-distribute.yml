@@ -33,6 +33,9 @@ jobs:
         run: |
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > rhodey_app/android/app/upload-keystore.jks
 
+      - name: Write Firebase config
+        run: echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > rhodey_app/android/app/google-services.json
+
       - name: Build APK (release — signed for consistent updates)
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}

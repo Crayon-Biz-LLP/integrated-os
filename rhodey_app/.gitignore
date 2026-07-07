@@ -46,3 +46,8 @@ app.*.map.json
 
 # Release signing keystore (never commit — use GitHub secret for CI)
 /android/app/upload-keystore.jks
+
+# FlutterFire auto-generated config (contains Firebase client API keys)
+# Android reads google-services.json directly at build time (generated from secret in CI).
+/lib/firebase_options.dart
+/android/app/google-services.json

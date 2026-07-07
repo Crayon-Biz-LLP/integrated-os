@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart';
 import 'theme/app_theme.dart';
 import 'screens/talk_screen.dart';
 import 'screens/dump_screen.dart';
@@ -16,9 +15,7 @@ void main() async {
   // Initialize Firebase (needed for App Distribution OTA updates).
   // Wrapped in try/catch so the app starts even if Google Play Services is missing.
   try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
+    await Firebase.initializeApp();
   } catch (e) {
     debugPrint('[Firebase] Init failed: $e');
   }
