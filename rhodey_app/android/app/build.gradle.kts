@@ -32,14 +32,14 @@ android {
     signingConfigs {
         create("release") {
             val keystorePath = System.getenv("KEYSTORE_PATH") ?: "upload-keystore.jks"
-            val keystorePassword = System.getenv("KEYSTORE_PASSWORD") ?: "RhodeyApp2026"
-            val keyPassword = System.getenv("KEY_PASSWORD") ?: "RhodeyApp2026"
-            val keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
+            val storePass = System.getenv("KEYSTORE_PASSWORD") ?: "RhodeyApp2026"
+            val keyPass = System.getenv("KEY_PASSWORD") ?: "RhodeyApp2026"
+            val keyAliasName = System.getenv("KEY_ALIAS") ?: "upload"
 
             storeFile = file(keystorePath)
-            storePassword = keystorePassword
-            keyAlias = keyAlias
-            keyPassword = keyPassword
+            storePassword = storePass
+            keyAlias = keyAliasName
+            keyPassword = keyPass
         }
     }
 
