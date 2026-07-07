@@ -16,43 +16,25 @@ class TalkScreenState extends State<TalkScreen> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
   final _api = ApiService();
-  int _msgCounter = 5;
+  int _msgCounter = 0;
   bool _loading = true;
+
+  /// Whether the user has tapped the history pill to see past messages.
+  bool _historyExpanded = false;
+
+  /// Whether the user has sent a message this session.
+  /// Resets to false on app restart (not persisted).
+  bool _hasSentMessage = false;
+
+  /// How many messages were loaded from the API history.
+  int _historyCount = 0;
 
   // ── Send pipeline ──
   //   pending → sending → sent → resolved
   //         ↘ failed → sending (retry)
   // All state is local + optimistic. The API only reports outcome.
 
-  final _messages = <ChatMessage>[
-    ChatMessage(
-      id: '1', role: MessageRole.rhodey,
-      text: 'Good morning. You have a busy day ahead — Equisoft at 10, Qhord pricing review at 2. I\'d start with the deck.',
-      timestamp: DateTime.now().subtract(const Duration(hours: 3)),
-    ),
-    ChatMessage(
-      id: '2', role: MessageRole.user,
-      text: "What's the status on Qhord?",
-      timestamp: DateTime.now().subtract(const Duration(hours: 2, minutes: 45)),
-      sendStatus: SendStatus.sent,
-    ),
-    ChatMessage(
-      id: '3', role: MessageRole.rhodey,
-      text: 'Qhord pricing is at ₹2.4L. Marcus approved the quote. Blocked on Anil\'s signature.',
-      timestamp: DateTime.now().subtract(const Duration(hours: 2, minutes: 43)),
-    ),
-    ChatMessage(
-      id: '4', role: MessageRole.user,
-      text: 'Need to email Marcus about the Qhord pricing update',
-      timestamp: DateTime.now().subtract(const Duration(hours: 1)),
-      sendStatus: SendStatus.sent,
-    ),
-    ChatMessage(
-      id: '5', role: MessageRole.rhodey, type: MessageType.taskResult,
-      text: '✅ Logged. Task created: Follow up with Marcus re: Equisoft contract.',
-      timestamp: DateTime.now().subtract(const Duration(hours: 1)),
-    ),
-  ];
+  final _messages = <ChatMessage>[];
 
   // ── Voice state ──
   VoiceState _voiceState = VoiceState.idle;
@@ -65,10 +47,8 @@ class TalkScreenState extends State<TalkScreen> {
   }
 
   /// Fetch real message history on app start and on pull-to-refresh.
-  /// Strips previously loaded API messages, then re-fetches fresh.
   Future<void> _loadHistory() async {
-    // Remove previously loaded API messages (ids starting with 'h')
-    _messages.removeWhere((m) => m.id.startsWith('h'));
+    _messages.clear();
 
     final result = await _api.getMessages(limit: 30);
     if (!mounted) return;
@@ -93,6 +73,7 @@ class TalkScreenState extends State<TalkScreen> {
         ));
       }
     }
+    _historyCount = _messages.length;
     if (mounted) {
       setState(() => _loading = false);
     }
@@ -115,7 +96,10 @@ class TalkScreenState extends State<TalkScreen> {
       timestamp: DateTime.now(), sendStatus: SendStatus.pending,
     );
 
-    setState(() => _messages.add(msg));
+    setState(() {
+      _messages.add(msg);
+      _hasSentMessage = true;
+    });
     _controller.clear();
     _scrollToBottom();
 
@@ -125,7 +109,6 @@ class TalkScreenState extends State<TalkScreen> {
       if (!mounted) return;
       if (result.success) {
         _updateMessage(id, sendStatus: SendStatus.sent);
-        // Try to extract Rhodey's response from the API body
         String responseText = 'Got it. Processing...';
         if (result.data is Map) {
           final msg = (result.data as Map)['message'] as String?;
@@ -257,6 +240,20 @@ class TalkScreenState extends State<TalkScreen> {
     });
   }
 
+  /// Called when the user taps the "Show N previous" pill.
+  void _expandHistory() {
+    setState(() => _historyExpanded = true);
+    _scrollToBottom();
+  }
+
+  /// Builds the main content area based on current state.
+  ///
+  /// - Clean default: nothing shown (just input bar at bottom)
+  /// - After sending: current conversation visible
+  /// - History pill: shown when past messages exist but not expanded
+  /// - Full history: shown when expanded or when there's a current conversation
+  bool get _showConversation => _historyExpanded || _hasSentMessage;
+
   // ── Build ─────────────────────────────────────────────────────
 
   @override
@@ -296,27 +293,7 @@ class TalkScreenState extends State<TalkScreen> {
               ),
             ),
           Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : RefreshIndicator(
-                    onRefresh: _loadHistory,
-                    color: AppTheme.accent,
-                    child: ListView.builder(
-                      controller: _scrollController,
-                      padding: const EdgeInsets.only(top: 8, bottom: 8),
-                      itemCount: _messages.length,
-                      itemBuilder: (context, index) {
-                        final msg = _messages[index];
-                        final isGroupStart = index == 0 ||
-                            _messages[index - 1].role != msg.role;
-                        return ChatBubble(
-                          message: msg,
-                          isGroupStart: isGroupStart,
-                          onRetry: msg.isFailed ? () => _retryMessage(msg.id) : null,
-                        );
-                      },
-                    ),
-                  ),
+            child: _buildMainArea(),
           ),
           if (_voiceState != VoiceState.idle)
             VoiceStateMachine(
@@ -332,6 +309,122 @@ class TalkScreenState extends State<TalkScreen> {
             onSend: _sendMessage,
             onMicTap: _toggleVoice,
             isListening: _voiceState == VoiceState.listening,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMainArea() {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (!_showConversation) {
+      // ── Clean default: no conversation visible ──
+      return Column(
+        children: [
+          const Spacer(),
+          // Subtle prompt text
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Text(
+              'Capture a thought, task, or idea',
+              style: AppTheme.body.copyWith(
+                color: AppTheme.textTertiary,
+                fontSize: 14,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(height: 8),
+          // History pill (if previous messages exist)
+          if (_historyCount > 0)
+            GestureDetector(
+              onTap: _expandHistory,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppTheme.surfaceAlt,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppTheme.border, width: 1),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.history, size: 14, color: AppTheme.textTertiary),
+                    const SizedBox(width: 6),
+                    Text(
+                      '$_historyCount previous messages ▴',
+                      style: AppTheme.caption.copyWith(
+                        color: AppTheme.textTertiary,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          const Spacer(),
+        ],
+      );
+    }
+
+    // ── Conversation visible ──
+    // Determine which messages to show:
+    // If history is expanded OR this is the first send (no history yet), show all.
+    // If not expanded but hasSentMessage, show only the current-session messages.
+    final displayMessages = _historyExpanded
+        ? _messages
+        : _messages.skip(_historyCount).toList();
+
+    return RefreshIndicator(
+      onRefresh: _loadHistory,
+      color: AppTheme.accent,
+      child: Column(
+        children: [
+          // History pill (collapsible banner at top when not expanded)
+          if (!_historyExpanded && _historyCount > 0)
+            GestureDetector(
+              onTap: _expandHistory,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                color: AppTheme.surfaceAlt.withValues(alpha: 0.5),
+                child: Center(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.history, size: 14, color: AppTheme.textTertiary),
+                      const SizedBox(width: 6),
+                      Text(
+                        '$_historyCount previous messages ▴',
+                        style: AppTheme.caption.copyWith(
+                          color: AppTheme.textTertiary,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          Expanded(
+            child: ListView.builder(
+              controller: _scrollController,
+              padding: const EdgeInsets.only(top: 8, bottom: 8),
+              itemCount: displayMessages.length,
+              itemBuilder: (context, index) {
+                final msg = displayMessages[index];
+                final isGroupStart = index == 0 ||
+                    displayMessages[index - 1].role != msg.role;
+                return ChatBubble(
+                  message: msg,
+                  isGroupStart: isGroupStart,
+                  onRetry: msg.isFailed ? () => _retryMessage(msg.id) : null,
+                );
+              },
+            ),
           ),
         ],
       ),
@@ -370,7 +463,15 @@ class TalkScreenState extends State<TalkScreen> {
                       MaterialPageRoute(builder: (_) => const _SettingsScreen()));
                   }),
               _MenuTile(icon: Icons.person_outline, label: 'Profile',
-                  onTap: () => Navigator.pop(context)),
+                  onTap: () {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Coming soon — contact management', style: TextStyle(fontSize: 12)),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }),
             ],
           ),
         ),
@@ -530,7 +631,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Status indicator
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -560,7 +660,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             ),
           ),
           const SizedBox(height: 24),
-
           const Text('Base URL', style: AppTheme.label),
           const SizedBox(height: 8),
           Container(
@@ -581,7 +680,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             ),
           ),
           const SizedBox(height: 16),
-
           const Text('API Key (X-API-Key)', style: AppTheme.label),
           const SizedBox(height: 8),
           Container(
@@ -603,7 +701,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             ),
           ),
           const SizedBox(height: 24),
-
           SizedBox(
             width: double.infinity,
             height: 48,
@@ -625,7 +722,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             ),
           ),
           const SizedBox(height: 12),
-
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(

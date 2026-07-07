@@ -18,12 +18,6 @@ class _TodayScreenState extends State<TodayScreen> {
   bool _loading = true;
   String _eventError = '';
 
-  static final _focus = FocusItem(
-    title: 'Equisoft Sync Call',
-    subtitle: '10:00 AM — Deck ready in Drive',
-    action: 'Prepare',
-  );
-
   @override
   void initState() {
     super.initState();
@@ -65,7 +59,7 @@ class _TodayScreenState extends State<TodayScreen> {
           Padding(
             padding: const EdgeInsets.only(right: 12),
             child: Text(
-              'Jul 7',
+              _formatDate(),
               style: AppTheme.caption.copyWith(color: AppTheme.textTertiary),
             ),
           ),
@@ -78,8 +72,18 @@ class _TodayScreenState extends State<TodayScreen> {
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(0, 8, 0, 80),
                 children: [
-                  _FocusCard(item: _focus),
-                  const SizedBox(height: 20),
+                  if (_events.isNotEmpty) ...[
+                    _FocusCard(
+                      item: FocusItem(
+                        title: _events.first.title,
+                        subtitle: _events.first.timeRange.isNotEmpty
+                            ? _events.first.timeRange
+                            : null,
+                        action: null,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
 
                   // Calendar
                   _SectionHeader(
@@ -154,9 +158,16 @@ class _TodayScreenState extends State<TodayScreen> {
     );
   }
 
+  String _formatDate() {
+    final now = DateTime.now();
+    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return '${months[now.month - 1]} ${now.day}';
+  }
+
   String _formatDeadline(String dt) {
     try {
-      final parsed = DateTime.parse(dt);
+      final parsed = DateTime.parse(dt).toLocal();
       final diff = parsed.difference(DateTime.now());
       if (diff.inDays < 0) return '${diff.inDays.abs()}d overdue';
       if (diff.inDays == 0) return 'Today';
@@ -168,7 +179,7 @@ class _TodayScreenState extends State<TodayScreen> {
 
   bool _isOverdue(String dt) {
     try {
-      return DateTime.parse(dt).isBefore(DateTime.now());
+      return DateTime.parse(dt).toLocal().isBefore(DateTime.now());
     } catch (_) {
       return false;
     }
@@ -176,7 +187,7 @@ class _TodayScreenState extends State<TodayScreen> {
 
   String _formatTimestamp(String ts) {
     try {
-      final dt = DateTime.parse(ts);
+      final dt = DateTime.parse(ts).toLocal();
       final now = DateTime.now();
       if (dt.day == now.day && dt.month == now.month && dt.year == now.year) {
         return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';

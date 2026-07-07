@@ -226,7 +226,8 @@ class ApiService {
   bool _isNextEvent(String startDt) {
     if (startDt.isEmpty) return false;
     try {
-      final dt = DateTime.parse(startDt);
+      // Parse in UTC, then convert to local for comparison.
+      final dt = DateTime.parse(startDt).toLocal();
       final now = DateTime.now();
       return dt.isAfter(now.subtract(const Duration(hours: 1))) &&
           dt.isBefore(now.add(const Duration(hours: 2)));
@@ -237,8 +238,8 @@ class ApiService {
 
   String _formatTimeRange(String startDt, String endDt) {
     try {
-      final s = DateTime.parse(startDt);
-      final e = DateTime.parse(endDt);
+      final s = DateTime.parse(startDt).toLocal();
+      final e = DateTime.parse(endDt).toLocal();
       final fmt = (DateTime dt) =>
           '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
       final sStr = '${s.hour.toString().padLeft(2, '0')}:${s.minute.toString().padLeft(2, '0')}';
