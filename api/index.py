@@ -1342,6 +1342,33 @@ async def whatsapp_ingest_route(request: Request):
         clear_action_context()
 
 
+# --- REGISTER DEVICE TOKEN (for push notifications) ---
+@app.post("/api/register-device")
+async def register_device_route(request: Request):
+    """Register a device FCM token for push notifications."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        token = body.get("token")
+        platform = body.get("platform", "android")
+        
+        if not token:
+            raise HTTPException(status_code=400, detail="token required")
+        
+        supabase = get_supabase()
+        # Upsert: update existing token or insert new one
+        supabase.table('device_tokens').upsert({
+            'token': token,
+            'platform': platform,
+            'updated_at': datetime.utcnow().isoformat(),
+        }, on_conflict='token').execute()
+        
+        return {"success": True}
+    except Exception as e:
+        print(f"Register device error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # --- DRIVE WEBHOOK (Receives Google Drive push notifications) ---
 @app.post("/api/drive-webhook")
 async def drive_webhook(request: Request):
