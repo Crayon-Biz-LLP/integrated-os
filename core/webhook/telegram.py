@@ -55,6 +55,13 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
             if receipts_text.strip() not in message_text:
                 message_text = f"{message_text}\n\n{receipts_text}"
 
+        # Capture the final message text so the send-message endpoint can return it to the app
+        try:
+            from core.actions import capture_response
+            capture_response(message_text)
+        except Exception:
+            pass
+
         chunks = _chunk_message(message_text)
         total = len(chunks)
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")

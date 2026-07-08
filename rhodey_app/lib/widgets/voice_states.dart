@@ -1,33 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-/// Voice interaction states.
-///
-/// REAL ANDROID FLOW:
-///   idle → listening → transcribing → understanding → confirm → done → idle
-///                                                      ↘ done (auto if high conf)
-///   idle → listening → transcribing → error → idle
-///
-/// Permission model (Android):
-///   RECORD_AUDIO — must be granted before entering [listening].
-///   On first tap, request permission. If denied, show rationale, then
-///   skip to [error] with "Microphone permission required."
-///
-/// Foreground service:
-///   While in [listening] or [transcribing], a foreground notification
-///   is required (Android 14+). The notification shows "Rhodey is listening"
-///   and allows tap-to-stop.
-///
-/// Transitions:
-///   [listening] → [transcribing]: triggered by silence timeout (1.5s) or
-///     manual stop. On-device SpeechRecognizer processes the audio.
-///   [transcribing] → [understanding]: transcription result ready.
-///     If confidence > threshold (0.85), skip [confirm] → [done] directly.
-///   [understanding] → [confirm]: confidence below threshold, ask user.
-///   [confirm] → [done]: user picks Task or Note, text sent to backend.
-///   [done] → [idle]: auto-dismiss after 3s, or manual dismiss.
-///   any → [error]: permission denied, speech timeout, network failure.
-///   [error] → [idle]: user taps dismiss.
 enum VoiceState {
   idle,
   listening,
@@ -43,8 +16,6 @@ class VoiceStateMachine extends StatelessWidget {
   final String? transcribedText;
   final String? errorMessage;
   final VoidCallback? onCancel;
-  final VoidCallback? onTaskConfirm;
-  final VoidCallback? onNoteConfirm;
   final VoidCallback? onRetry;
 
   const VoiceStateMachine({
@@ -53,8 +24,6 @@ class VoiceStateMachine extends StatelessWidget {
     this.transcribedText,
     this.errorMessage,
     this.onCancel,
-    this.onTaskConfirm,
-    this.onNoteConfirm,
     this.onRetry,
   });
 
@@ -122,68 +91,6 @@ class VoiceStateMachine extends StatelessWidget {
             ),
           ],
         );
-      case VoiceState.transcribing:
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: AppTheme.amber,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Text(
-              'Transcribing...',
-              style: AppTheme.title.copyWith(color: AppTheme.amber),
-            ),
-          ],
-        );
-      case VoiceState.understanding:
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: AppTheme.accent,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Text(
-              'Rhodey is thinking...',
-              style: AppTheme.title.copyWith(color: AppTheme.accent),
-            ),
-          ],
-        );
-      case VoiceState.confirm:
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Text('🤔', style: TextStyle(fontSize: 18)),
-            const SizedBox(width: 10),
-            Text(
-              'Is this a task or a note?',
-              style: AppTheme.title,
-            ),
-          ],
-        );
-      case VoiceState.done:
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.check_circle, color: AppTheme.green, size: 18),
-            const SizedBox(width: 10),
-            Text(
-              'Captured',
-              style: AppTheme.title.copyWith(color: AppTheme.green),
-            ),
-          ],
-        );
       case VoiceState.error:
         return Row(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -211,46 +118,6 @@ class VoiceStateMachine extends StatelessWidget {
               label: 'Stop',
               icon: Icons.stop,
               color: AppTheme.red,
-              onTap: onCancel,
-            ),
-          ],
-        );
-      case VoiceState.transcribing:
-      case VoiceState.understanding:
-        return const SizedBox.shrink();
-      case VoiceState.confirm:
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _ActionChip(
-              label: 'Task',
-              icon: Icons.checklist,
-              color: AppTheme.accent,
-              onTap: onTaskConfirm,
-            ),
-            const SizedBox(width: 8),
-            _ActionChip(
-              label: 'Note',
-              icon: Icons.note_outlined,
-              color: AppTheme.amber,
-              onTap: onNoteConfirm,
-            ),
-            const SizedBox(width: 8),
-            _ActionChip(
-              label: 'Cancel',
-              icon: Icons.close,
-              color: AppTheme.textTertiary,
-              onTap: onCancel,
-            ),
-          ],
-        );
-      case VoiceState.done:
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _ActionChip(
-              label: 'Dismiss',
-              color: AppTheme.textTertiary,
               onTap: onCancel,
             ),
           ],

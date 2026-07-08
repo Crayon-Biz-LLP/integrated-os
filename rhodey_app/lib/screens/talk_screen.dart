@@ -59,6 +59,8 @@ class TalkScreenState extends State<TalkScreen> {
     super.initState();
     _initSpeech();
     _loadHistory();
+    _tts.setLanguage("en-US");
+    _tts.setSpeechRate(0.5);
   }
 
   @override
@@ -75,6 +77,13 @@ class TalkScreenState extends State<TalkScreen> {
       onError: (error) {
         if (!mounted) return;
         debugPrint('[Voice] Error: ${error.errorMsg}');
+        if (error.errorMsg == 'error_speech_timeout') {
+          setState(() {
+            _voiceState = VoiceState.idle;
+            _voiceError = null;
+          });
+          return;
+        }
         setState(() {
           _voiceState = VoiceState.error;
           _voiceError = error.errorMsg;
@@ -82,12 +91,6 @@ class TalkScreenState extends State<TalkScreen> {
       },
       onStatus: (status) {
         debugPrint('[Voice] Status: $status');
-        if (status == 'notListening' && _voiceState == VoiceState.listening && mounted) {
-          setState(() {
-            _voiceState = VoiceState.error;
-            _voiceError = 'Speech recognition stopped unexpectedly';
-          });
-        }
       },
     );
     if (!_speechAvailable && mounted) {
@@ -194,15 +197,13 @@ class TalkScreenState extends State<TalkScreen> {
       if (!mounted) return;
       if (result.success) {
         _updateMessage(id, sendStatus: SendStatus.sent);
-        String responseText = 'Got it. Processing...';
+        String responseText;
         if (result.data is Map) {
-          final msg = (result.data as Map)['message'] as String?;
-          final briefing = (result.data as Map)['briefing'] as String?;
-          if (msg != null && msg != 'Message processed') {
-            responseText = msg;
-          } else if (briefing != null) {
-            responseText = briefing;
-          }
+          // Use the 'response' field returned by the send-message endpoint
+          final serverResponse = (result.data as Map)['response'] as String?;
+          responseText = serverResponse ?? 'Got it. Processing...';
+        } else {
+          responseText = 'Got it. Processing...';
         }
 
         Future.delayed(const Duration(milliseconds: 400), () {
@@ -228,15 +229,12 @@ class TalkScreenState extends State<TalkScreen> {
       if (!mounted) return;
       if (result.success) {
         _updateMessage(id, sendStatus: SendStatus.sent);
-        String responseText = 'Got it. Processing...';
+        String responseText;
         if (result.data is Map) {
-          final msg = (result.data as Map)['message'] as String?;
-          final briefing = (result.data as Map)['briefing'] as String?;
-          if (msg != null && msg != 'Message processed') {
-            responseText = msg;
-          } else if (briefing != null) {
-            responseText = briefing;
-          }
+          final serverResponse = (result.data as Map)['response'] as String?;
+          responseText = serverResponse ?? 'Got it. Processing...';
+        } else {
+          responseText = 'Got it. Processing...';
         }
         Future.delayed(const Duration(milliseconds: 400), () {
           if (!mounted) return;
@@ -319,16 +317,17 @@ class TalkScreenState extends State<TalkScreen> {
           _transcribedText = text;
         }
         if (result.finalResult) {
-          setState(() => _voiceState = VoiceState.transcribing);
-          Future.delayed(const Duration(milliseconds: 300), () {
-            if (!mounted) return;
-            setState(() => _voiceState = VoiceState.confirm);
-          });
+          final words = result.recognizedWords;
+          if (words.isNotEmpty) {
+            _sendMessage(words);
+          }
+          setState(() => _voiceState = VoiceState.idle);
+          _transcribedText = null;
         }
       },
       listenOptions: stt.SpeechListenOptions(
         listenFor: Duration(seconds: 30),
-        pauseFor: Duration(seconds: 2),
+        pauseFor: Duration(seconds: 5),
         partialResults: true,
         cancelOnError: false,
       ),
@@ -339,34 +338,18 @@ class TalkScreenState extends State<TalkScreen> {
     await _speech.stop();
     if (!mounted) return;
     if (_transcribedText != null && _transcribedText!.isNotEmpty) {
-      setState(() => _voiceState = VoiceState.transcribing);
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (!mounted) return;
-        setState(() => _voiceState = VoiceState.confirm);
-      });
-    } else {
-      setState(() {
-        _voiceState = VoiceState.idle;
-        _transcribedText = null;
-      });
-    }
-  }
-
-  void _confirmVoice(String type) {
-    if (_transcribedText != null && _transcribedText!.isNotEmpty) {
       _sendMessage(_transcribedText!);
+      setState(() => _voiceState = VoiceState.idle);
+      _transcribedText = null;
+      return;
     }
-    setState(() => _voiceState = VoiceState.done);
-    Future.delayed(const Duration(seconds: 2), () {
-      if (!mounted) return;
-      setState(() {
-        _voiceState = VoiceState.idle;
-        _transcribedText = null;
-      });
+    setState(() {
+      _voiceState = VoiceState.idle;
+      _transcribedText = null;
     });
   }
 
-  void _retryVoice() {
+    void _retryVoice() {
     setState(() {
       _voiceState = VoiceState.idle;
       _transcribedText = null;
@@ -444,14 +427,12 @@ class TalkScreenState extends State<TalkScreen> {
           Expanded(
             child: _buildMainArea(),
           ),
-          if (_voiceState != VoiceState.idle)
+          if (_voiceState == VoiceState.listening || _voiceState == VoiceState.error)
             VoiceStateMachine(
               state: _voiceState,
               transcribedText: _transcribedText,
               errorMessage: _voiceError,
               onCancel: _toggleVoice,
-              onTaskConfirm: () => _confirmVoice('task'),
-              onNoteConfirm: () => _confirmVoice('note'),
               onRetry: () => _retryVoice(),
             ),
           _InputBar(

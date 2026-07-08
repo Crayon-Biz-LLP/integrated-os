@@ -268,6 +268,7 @@ async def send_draft_route(request: Request):
 @app.post("/api/send-message")
 async def send_message_route(request: Request):
     require_api_auth(request)
+    begin_action_context()
     try:
         body = await request.json()
         message_text = body.get("message")
@@ -294,14 +295,38 @@ async def send_message_route(request: Request):
         
         # Process exactly like Telegram webhook
         print(f"🧪 Processing web message as Telegram update: {fake_update}")
-        result = await process_webhook(fake_update)
-        print(f"🧪 Webhook result: {result}")
+        await process_webhook(fake_update)
         
-        return {"success": True, "message": "Message processed"}
+        # Read the captured bot response (set by send_telegram via capture_response)
+        from core.actions import get_captured_response
+        response_text = get_captured_response()
+        
+        # Also persist to raw_dumps for history on next app load
+        if response_text:
+            try:
+                supabase = get_supabase()
+                supabase.table('raw_dumps').insert({
+                    'content': response_text,
+                    'status': 'completed',
+                    'is_processed': True,
+                    'direction': 'outgoing',
+                    'sender': 'system',
+                    'message_type': 'response',
+                    'source': 'telegram_bot',
+                    'metadata': {'type': 'bot_response'}
+                }).execute()
+            except Exception as raw_err:
+                print(f"Failed to log response to raw_dumps: {raw_err}")
+        
+        return {"success": True, "message": "Message processed", "response": response_text}
     
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Send message error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        clear_action_context()
 
 # --- GET MESSAGE HISTORY ---
 @app.get("/api/messages")

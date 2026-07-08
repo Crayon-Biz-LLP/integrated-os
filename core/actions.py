@@ -16,12 +16,23 @@ class ActionResult:
     evidence: dict = field(default_factory=dict)
 
 _action_results: contextvars.ContextVar[list[ActionResult]] = contextvars.ContextVar('action_results', default=[])
+_captured_response: contextvars.ContextVar[str | None] = contextvars.ContextVar('captured_response', default=None)
 
 def begin_action_context():
     _action_results.set([])
+    _captured_response.set(None)
 
 def clear_action_context():
     _action_results.set([])
+    _captured_response.set(None)
+
+def capture_response(text: str):
+    """Capture the final outgoing message text during webhook processing."""
+    _captured_response.set(text)
+
+def get_captured_response() -> str | None:
+    """Retrieve the last captured response after webhook processing."""
+    return _captured_response.get()
 
 def accumulate_action(result: ActionResult):
     lst = _action_results.get()

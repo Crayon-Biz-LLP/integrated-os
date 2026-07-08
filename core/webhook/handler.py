@@ -8,7 +8,7 @@ from core.lib.telemetry import emit_observation
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
 from core.lib.conversation import get_or_create_session, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
-from core.webhook.classify import classify_intent, detect_opportunity_language, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
+from core.webhook.classify import classify_intent, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
 from core.services.db import maybe_single_safe
 from core.webhook.email import process_email_pending_decision, handle_ed_command
@@ -19,7 +19,7 @@ from core.webhook.utils import process_channel_pending_decision
 
 from core.pulse.graph import process_graph_pending_decision
 from core.webhook.graph import interpret_graph_corrections, apply_graph_actions, active_sessions, get_active_session, clear_session
-from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, ask_task_or_note_confirmation, resolve_task_note_confirmation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
+from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
 from core.webhook.commands import handle_command, handle_undo_command
 from core.webhook.multimodal import process_multimodal_content
 
@@ -1080,9 +1080,6 @@ async def process_webhook(update: dict):
                         if meta.get('confirmation') == 'task_update':
                             if await resolve_task_update_confirmation(text, chat_id, session_id, meta):
                                 return {"success": True}
-                        elif meta.get('confirmation') == 'task_or_note':
-                            if await resolve_task_note_confirmation(text, chat_id, session_id, meta):
-                                return {"success": True}
                         elif meta.get('confirmation') == 'completion_disambiguation':
                             from core.webhook.completion_handler import resolve_completion_disambiguation
                             if await resolve_completion_disambiguation(text, chat_id, session_id, meta):
@@ -1303,11 +1300,6 @@ async def process_webhook(update: dict):
         CONFIDENCE_HIGH = thresholds[0]
         CONFIDENCE_LOW = thresholds[1]
         possible_intents = classification.get('possible_intents', [])
-
-        if intent == 'TASK' and confidence >= CONFIDENCE_HIGH and detect_opportunity_language(text):
-            audit_log_sync("webhook", "INFO", f"Opportunity language detected — asking confirmation for: {text[:50]}...")
-            await ask_task_or_note_confirmation(text, classification, chat_id, session_id)
-            return {"success": True}
 
         if intent == 'TASK' and confidence >= CONFIDENCE_HIGH:
             first_word = text.strip().lower().split()[0] if text.strip() else ''

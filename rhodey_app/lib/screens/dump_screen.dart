@@ -237,37 +237,11 @@ class _DumpScreenState extends State<DumpScreen> {
           ),
 
           // Voice state
-          if (_voiceState != VoiceState.idle)
+          if (_voiceState == VoiceState.listening || _voiceState == VoiceState.error)
             VoiceStateMachine(
               state: _voiceState,
               transcribedText: _transcribedText,
               onCancel: _toggleVoice,
-              onTaskConfirm: () {
-                if (_transcribedText != null) _capture(_transcribedText!);
-                setState(() {
-                  _voiceState = VoiceState.done;
-                });
-                Future.delayed(const Duration(seconds: 2), () {
-                  if (!mounted) return;
-                  setState(() {
-                    _voiceState = VoiceState.idle;
-                    _transcribedText = null;
-                  });
-                });
-              },
-              onNoteConfirm: () {
-                if (_transcribedText != null) _capture(_transcribedText!);
-                setState(() {
-                  _voiceState = VoiceState.done;
-                });
-                Future.delayed(const Duration(seconds: 2), () {
-                  if (!mounted) return;
-                  setState(() {
-                    _voiceState = VoiceState.idle;
-                    _transcribedText = null;
-                  });
-                });
-              },
               onRetry: () => _toggleVoice(),
             ),
 

@@ -18,14 +18,11 @@ class ChatBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final isUser = message.isUser;
 
-    return Padding(
-      padding: EdgeInsets.only(
-        top: isGroupStart ? 12 : 4,
-        bottom: 4,
-        left: isUser ? 64 : 0,
-        right: isUser ? 0 : 64,
-      ),
+    final screenWidth = MediaQuery.of(context).size.width;
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         children: [
           if (isGroupStart && !isUser)
@@ -41,7 +38,7 @@ class ChatBubble extends StatelessWidget {
             ),
 
           // Failed state — show message + retry button inline
-          if (message.isFailed) _buildFailedBubble(isUser) else _buildNormalBubble(isUser),
+          if (message.isFailed) _buildFailedBubble(isUser, screenWidth) else _buildNormalBubble(isUser, screenWidth),
 
           // Quick-reply chips
           if (message.quickReplies != null && message.quickReplies!.isNotEmpty)
@@ -74,8 +71,9 @@ class ChatBubble extends StatelessWidget {
     );
   }
 
-  Widget _buildNormalBubble(bool isUser) {
+  Widget _buildNormalBubble(bool isUser, double screenWidth) {
     return Container(
+      constraints: BoxConstraints(maxWidth: screenWidth * 0.72),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         color: isUser ? AppTheme.userBubble : AppTheme.botBubble,
@@ -110,8 +108,9 @@ class ChatBubble extends StatelessWidget {
     );
   }
 
-  Widget _buildFailedBubble(bool isUser) {
+  Widget _buildFailedBubble(bool isUser, double screenWidth) {
     return Container(
+      constraints: BoxConstraints(maxWidth: screenWidth * 0.72),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         color: AppTheme.redBg,
