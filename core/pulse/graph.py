@@ -661,19 +661,25 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                 .execute()
 
             if proj_node and proj_node.data:
-                try:
-                    supabase.table("pending_graph_edges").insert({
-                        "source_label": task_title,
-                        "target_label": proj_node.data.get('label', str(project_id)),
-                        "relationship": "WORKS_ON",
-                        "source_text": f"tasks:{task_id}",
-                        "source_table": "task_engine",
-                        "status": "pending",
-                        "source_type": "task",
-                        "target_type": "project"
-                    }).execute()
-                except Exception as e:
-                    audit_log_sync("pulse", "WARNING", f"Failed to insert WORKS_ON pending edge: {e}")
+                existing = supabase.table("pending_graph_edges").select("id") \
+                    .eq("source_label", task_title) \
+                    .eq("target_label", proj_node.data.get('label', str(project_id))) \
+                    .eq("relationship", "WORKS_ON") \
+                    .limit(1).execute()
+                if not existing.data:
+                    try:
+                        supabase.table("pending_graph_edges").insert({
+                            "source_label": task_title,
+                            "target_label": proj_node.data.get('label', str(project_id)),
+                            "relationship": "WORKS_ON",
+                            "source_text": f"tasks:{task_id}",
+                            "source_table": "task_engine",
+                            "status": "pending",
+                            "source_type": "task",
+                            "target_type": "project"
+                        }).execute()
+                    except Exception as e:
+                        audit_log_sync("pulse", "WARNING", f"Failed to insert WORKS_ON pending edge: {e}")
 
         search_text = f"{task_title} {task_description or ''}".lower()
 
@@ -693,19 +699,25 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                     .execute()
 
                 if person_node and person_node.data:
-                    try:
-                        supabase.table("pending_graph_edges").insert({
-                            "source_label": task_title,
-                            "target_label": person['name'],
-                            "relationship": "INVOLVES",
-                            "source_text": f"tasks:{task_id}",
-                            "source_table": "task_engine",
-                            "status": "pending",
-                            "source_type": "task",
-                            "target_type": "person"
-                        }).execute()
-                    except Exception as e:
-                        audit_log_sync("pulse", "WARNING", f"Failed to insert INVOLVES pending edge: {e}")
+                    existing = supabase.table("pending_graph_edges").select("id") \
+                        .eq("source_label", task_title) \
+                        .eq("target_label", person['name']) \
+                        .eq("relationship", "INVOLVES") \
+                        .limit(1).execute()
+                    if not existing.data:
+                        try:
+                            supabase.table("pending_graph_edges").insert({
+                                "source_label": task_title,
+                                "target_label": person['name'],
+                                "relationship": "INVOLVES",
+                                "source_text": f"tasks:{task_id}",
+                                "source_table": "task_engine",
+                                "status": "pending",
+                                "source_type": "task",
+                                "target_type": "person"
+                            }).execute()
+                        except Exception as e:
+                            audit_log_sync("pulse", "WARNING", f"Failed to insert INVOLVES pending edge: {e}")
 
         print(f"🕸️ Graph edges written for task {task_id}: '{task_title}'")
 
@@ -1293,7 +1305,7 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                             "relationship": "MENTIONS",
                             "status": "approved",
                             "source_text": "insert_extracted_entities"
-                        }, on_conflict="source_label,relationship,target_label", ignore_duplicates=True).execute()
+                        }, on_conflict="source_label,target_label,relationship", ignore_duplicates=True).execute()
             except Exception:
                 pass
 

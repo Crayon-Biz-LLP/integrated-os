@@ -847,11 +847,12 @@ def run_backfill():
         # Ensure every processed memory gets a sentinel record in case all edges were auto-rejected
         guaranteed_sentinels = []
         for data in extracted_data:
+            source_text_val = f"{data['source_table']}:{data['memory_id']}"
             guaranteed_sentinels.append({
-                "source_label": "",
+                "source_label": f"__SENTINEL__:{source_text_val}",
                 "target_label": "",
                 "relationship": "SENTINEL",
-                "source_text": f"{data['source_table']}:{data['memory_id']}",
+                "source_text": source_text_val,
                 "source_table": data['source_table'],
                 "status": "skipped"
             })
@@ -1248,6 +1249,14 @@ def backfill_orphaned_node_edges():
         if e["target_node_id"] in node_edges:
             node_edges[e["target_node_id"]].append(e)
 
+    # Check pending_graph_edges to avoid re-creating edges for nodes
+    # that already have a Danny connection waiting (approved/rejected/pending)
+    pending_all = fetch_all_paginated("pending_graph_edges", "id, source_label, target_label")
+    pending_danny_labels = set()
+    for pde in (pending_all or []):
+        if pde.get("source_label") == "Danny":
+            pending_danny_labels.add(pde["target_label"].lower().strip())
+
     fixed_count = 0
     
     type_to_rel = {
@@ -1261,13 +1270,38 @@ def backfill_orphaned_node_edges():
         "cluster": "OWNS"
     }
 
+    # Pre-fetch known person labels from people table for misclassification correction
+    known_people = set()
+    try:
+        pp = supabase.table("people").select("name").execute()
+        for r in (pp.data or []):
+            known_people.add(r["name"].lower().strip())
+    except Exception:
+        pass
+
     edges_to_insert = []
     edges_to_delete = []
 
     for node in (all_nodes or []):
         if node["id"] == danny_id or node["type"] in ("task", "memory"):
             continue
-            
+
+        # Skip if already has a pending/approved/rejected Danny edge
+        if node["label"].lower().strip() in pending_danny_labels:
+            continue
+
+        # Quality gate: skip node types with zero historical approvals
+        ntype = node.get("type") or ""
+        if ntype in ("place", "event", "animal"):
+            continue
+        if ntype == "concept":
+            label = node.get("label", "").strip()
+            words = label.split()
+            if len(words) == 1 and label[0].islower():
+                continue
+            if len(label) < 3:
+                continue
+
         edges = node_edges.get(node["id"], [])
         
         # Find edges that connect directly to Danny
@@ -1291,6 +1325,8 @@ def backfill_orphaned_node_edges():
 
         if needs_fix:
             rel = type_to_rel.get(node["type"], "RELATES_TO")
+            if node.get("type") == "concept" and node.get("label", "").lower().strip() in known_people:
+                rel = "KNOWS"
             edges_to_insert.append({
                 "source_label": "Danny",
                 "target_label": node["label"],
