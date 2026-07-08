@@ -6,12 +6,14 @@ class ChatBubble extends StatelessWidget {
   final ChatMessage message;
   final bool isGroupStart;
   final VoidCallback? onRetry;
+  final VoidCallback? onTap;
 
   const ChatBubble({
     super.key,
     required this.message,
     this.isGroupStart = true,
     this.onRetry,
+    this.onTap,
   });
 
   @override
@@ -38,7 +40,31 @@ class ChatBubble extends StatelessWidget {
             ),
 
           // Failed state — show message + retry button inline
-          if (message.isFailed) _buildFailedBubble(isUser, screenWidth) else _buildNormalBubble(isUser, screenWidth),
+          if (message.isFailed)
+            _buildFailedBubble(isUser, screenWidth)
+          else
+            // Wrap normal Rhodey bubbles in a GestureDetector for TTS on tap
+            // with a subtle speaker icon hint for discoverability
+            (isUser || onTap == null)
+                ? _buildNormalBubble(isUser, screenWidth)
+                : GestureDetector(
+                    onTap: onTap,
+                    child: Stack(
+                      children: [
+                        _buildNormalBubble(isUser, screenWidth),
+                        // Speaker icon hint — bottom-right of the bubble
+                        Positioned(
+                          right: 6,
+                          bottom: 6,
+                          child: Icon(
+                            Icons.volume_up_outlined,
+                            size: 10,
+                            color: AppTheme.textTertiary.withValues(alpha: 0.4),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
 
           // Quick-reply chips
           if (message.quickReplies != null && message.quickReplies!.isNotEmpty)

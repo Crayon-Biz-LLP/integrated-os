@@ -5,6 +5,7 @@ import 'screens/talk_screen.dart';
 import 'screens/dump_screen.dart';
 import 'screens/today_screen.dart';
 import 'screens/inbox_screen.dart';
+import 'screens/adaptive_home_screen.dart';
 import 'services/api_service.dart';
 import 'services/notification_service.dart';
 import 'services/update_service.dart';
@@ -47,6 +48,11 @@ class RhodeyApp extends StatelessWidget {
   }
 }
 
+/// Feature flag: set to false at compile time to restore the old 4-tab shell.
+///   flutter run --dart-define=USE_NEW_HOME=false
+///   flutter build apk --dart-define=USE_NEW_HOME=false
+const bool useNewHome = bool.fromEnvironment('USE_NEW_HOME', defaultValue: true);
+
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
 
@@ -55,24 +61,41 @@ class MainShell extends StatefulWidget {
 }
 
 class _MainShellState extends State<MainShell> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      UpdateService().check(context);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Feature flag: new adaptive home or old 4-tab shell
+    if (useNewHome) {
+      return const AdaptiveHomeScreen();
+    }
+
+    // ── Legacy 4-tab shell (fully preserved for rollback) ──
+    return _LegacyTabShell();
+  }
+}
+
+/// The original 4-tab shell — kept intact for safe rollback.
+class _LegacyTabShell extends StatefulWidget {
+  @override
+  State<_LegacyTabShell> createState() => _LegacyTabShellState();
+}
+
+class _LegacyTabShellState extends State<_LegacyTabShell> {
   int _selectedIndex = 0;
 
-  // All 4 screens are mounted once and preserved via IndexedStack.
   final _screens = const [
     TalkScreen(),
     DumpScreen(),
     TodayScreen(),
     InboxScreen(),
   ];
-
-  @override
-  void initState() {
-    super.initState();
-    // Check for app updates after the first frame
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      UpdateService().check(context);
-    });
-  }
 
   @override
   Widget build(BuildContext context) {

@@ -13,6 +13,7 @@ from core.webhook.telegram import send_telegram
 from core.pulse.calendar import MemoryCache
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
+from core.services.push_notification import send_push_notification
 
 
 def hash_features_simple(features: dict, subsystem: str) -> str:
@@ -208,6 +209,16 @@ Context:
                     audit_log_sync("sentinel", "INFO", f"{search_str} - Nudged for {title}")
                     alerted_count += 1
                     print(f"✅ Nudged for: {title}")
+                    # P4: Push notification for meeting nudge (only when within 15 mins)
+                    if mins_until <= 15:
+                        try:
+                            await send_push_notification(
+                                title=f"Meeting in {mins_until} min",
+                                body=title,
+                                data={"type": "nudge", "event_title": title},
+                            )
+                        except Exception as push_err:
+                            audit_log_sync("sentinel", "WARNING", f"Push nudge failed (non-critical): {push_err}")
                 else:
                     audit_log_sync("sentinel", "ERROR", f"Failed to send Telegram nudge for {title}")
             except Exception as event_err:
@@ -412,6 +423,16 @@ Context:
                     success = await send_telegram(int(telegram_chat_id), del_msg)
                     if success:
                         audit_log_sync("sentinel", "INFO", f"delegation alert: {len(stale_delegations)} stale delegation(s) flagged")
+                        # P4: Push notification for stale delegations
+                        try:
+                            top_person = stale_delegations[0]["person"] if stale_delegations else "someone"
+                            await send_push_notification(
+                                title=f"⏳ {len(stale_delegations)} stale delegation(s)",
+                                body=f"Waiting on {top_person} and {len(stale_delegations)-1} other(s)" if len(stale_delegations) > 1 else f"Waiting on {top_person}",
+                                data={"type": "delegation"},
+                            )
+                        except Exception as push_err:
+                            audit_log_sync("sentinel", "WARNING", f"Push delegation alert failed (non-critical): {push_err}")
         except Exception as del_err:
             audit_log_sync("sentinel", "WARNING", f"Delegation alert error (non-critical): {del_err}")
 

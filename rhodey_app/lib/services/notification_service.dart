@@ -12,6 +12,15 @@ class NotificationService {
   factory NotificationService() => _instance;
   NotificationService._();
 
+  /// Callback invoked when the user taps a push notification.
+  /// The [data] map contains the ``type`` key (briefing|decision|nudge|delegation)
+  /// plus any additional payload. Screens register this callback on mount.
+  static void Function(Map<String, dynamic> data)? onNotificationOpened;
+
+  /// Holds notification data from cold-start (app launched via notification tap
+  /// before any screen is mounted). The screen reads this in initState.
+  static Map<String, dynamic>? pendingOpenData;
+
   final _localNotifications = FlutterLocalNotificationsPlugin();
   final _api = ApiService();
   String? _deviceToken;
@@ -116,8 +125,17 @@ class NotificationService {
 
   /// Handle user tapping on a notification.
   void _handleNotificationTap(RemoteMessage message) {
-    // For now, just log. In the future, navigate to specific screens
-    // based on message.data payload.
-    debugPrint('[Notification] Tapped: ${message.messageId}');
+    final data = message.data;
+    debugPrint('[Notification] Tapped: ${message.messageId} data=$data');
+
+    if (data.isEmpty) return;
+
+    if (onNotificationOpened != null) {
+      // Screen is already mounted — navigate directly
+      onNotificationOpened!(data);
+    } else {
+      // Screen not yet mounted (cold-start) — store for pickup
+      pendingOpenData = data;
+    }
   }
 }

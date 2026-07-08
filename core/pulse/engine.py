@@ -45,6 +45,7 @@ from core.pulse.practices import (
 )
 from core.pulse.resources import batch_enrich_resources
 from core.retrieval.pipeline import schedule_index_memory
+from core.services.push_notification import send_push_notification
 
 
 # ──────────────────────────────────────────
@@ -450,6 +451,60 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
         if total == 0:
             await complete_pulse_run(supabase, run_id, status="completed", metadata={"reason": "no_pending"})
             return {"success": True, "message": "No pending decisions."}
+
+        # --- P4: Push notification for pending decisions (rate-limited) ---
+        try:
+            # Compute a fingerprint of current items — only push when changed
+            push_fingerprint_items = []
+            for row in email_items:
+                push_fingerprint_items.append(("email", row['id']))
+            for row in call_items:
+                push_fingerprint_items.append(("call", row['id']))
+            for row in whatsapp_items:
+                push_fingerprint_items.append(("whatsapp", row['id']))
+            for row in teams_items:
+                push_fingerprint_items.append(("teams", row['id']))
+            for row in graph_items:
+                push_fingerprint_items.append(("graph_node", row['id']))
+            for row in pending_edges:
+                push_fingerprint_items.append(("graph_edge", row['id']))
+            push_fingerprint_items.sort()
+            current_fp = json.dumps(push_fingerprint_items)
+
+            # Check last pushed fingerprint
+            last_fp_row = supabase.table('core_config').select('content').eq('key', 'last_decision_push_fp').execute()
+            last_fp = (last_fp_row.data[0]['content'] if last_fp_row.data else None)
+
+            if current_fp != last_fp:
+                channels = []
+                if email_items:
+                    channels.append(f"{len(email_items)} email")
+                if call_items:
+                    channels.append(f"{len(call_items)} call")
+                if whatsapp_items:
+                    channels.append(f"{len(whatsapp_items)} WhatsApp")
+                if teams_items:
+                    channels.append(f"{len(teams_items)} Teams")
+                if graph_items:
+                    channels.append(f"{len(graph_items)} graph node")
+                if pending_edges:
+                    channels.append(f"{len(pending_edges)} graph edge")
+                push_title = f"{total} pending decisions"
+                push_body = f"From: {", ".join(channels)}"
+                await send_push_notification(
+                    title=push_title,
+                    body=push_body,
+                    data={"type": "decision"},
+                )
+                # Store the fingerprint so we don't re-push same items
+                supabase.table('core_config').upsert({
+                    'key': 'last_decision_push_fp',
+                    'content': current_fp
+                }, on_conflict='key').execute()
+            else:
+                audit_log_sync("decision_pulse", "INFO", "Rate-limited decision push — no changes since last push")
+        except Exception as push_err:
+            audit_log_sync("decision_pulse", "WARNING", f"Push notification failed (non-critical): {push_err}")
 
         # ── Build auto-processed digest with inline undo buttons ──
         auto_total = len(auto_approved_ids) + len(auto_approved_graph_ids) + len(auto_approved_edge_ids)
@@ -1690,6 +1745,20 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # B4: Store briefing history for future context
         if send_success and briefing_text:
             _store_briefing_to_history(briefing_text)
+
+        # --- P4: Push notification for briefing ---
+        if briefing_text:
+            try:
+                push_title = "Rhodey Briefing"
+                # Truncate body to ~120 chars for lock-screen preview
+                push_body = briefing_text.strip().replace('*', '').replace('_', '').replace('\n', ' ')[:120].strip()
+                await send_push_notification(
+                    title=push_title,
+                    body=push_body,
+                    data={"type": "briefing"},
+                )
+            except Exception as push_err:
+                audit_log_sync("pulse", "WARNING", f"Push notification failed (non-critical): {push_err}")
 
         # Log Pulse briefing to raw_dumps so it appears in web UI
         if send_success and briefing_text:
