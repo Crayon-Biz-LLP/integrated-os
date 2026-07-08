@@ -17,7 +17,7 @@ from core.webhook.utils import process_channel_pending_decision
 
 
 
-from core.pulse.graph import process_graph_pending_decision
+from core.pulse.graph import process_graph_pending_decision, process_pending_edge_decision
 from core.webhook.graph import interpret_graph_corrections, apply_graph_actions, active_sessions, get_active_session, clear_session
 from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
 from core.webhook.commands import handle_command, handle_undo_command
@@ -277,6 +277,51 @@ async def process_callback_query(callback_query: dict):
             await send_telegram(chat_id, f"✅ Merged '{pr['label']}' → {target_canonical[:8]}... Edges reassigned.")
             return {"success": True}
 
+        # Batch approve/reject all items of a type
+        batch_match = re.match(r'^(approve|reject)_all_(emails|calls|whatsapp|teams|nodes|edges)$', data)
+        if batch_match:
+            action = batch_match.group(1)
+            target = batch_match.group(2)
+            is_approve = (action == 'approve')
+            results = {"success": 0, "failure": 0}
+
+            if target in ('emails', 'calls', 'whatsapp', 'teams'):
+                channel_map = {'emails': 'email', 'calls': 'call', 'whatsapp': 'whatsapp', 'teams': 'teams'}
+                channel = channel_map[target]
+                items_res = supabase.table('messages').select('id').eq('channel', channel).is_('danny_decision', 'null').eq('classification', 'actionable').execute()
+                for item in (items_res.data or []):
+                    if target == 'emails':
+                        result = await process_email_pending_decision(item['id'], 'approve' if is_approve else 'reject')
+                    else:
+                        result = await process_channel_pending_decision(channel, item['id'], 'approve' if is_approve else 'reject')
+                    if result.get('success'):
+                        results["success"] += 1
+                    else:
+                        results["failure"] += 1
+            elif target == 'nodes':
+                items_res = supabase.table('pending_graph_nodes').select('id').eq('status', 'pending').execute()
+                for item in (items_res.data or []):
+                    result = await process_graph_pending_decision(item['id'], 'approve' if is_approve else 'reject')
+                    if result.get('success'):
+                        results["success"] += 1
+                    else:
+                        results["failure"] += 1
+            elif target == 'edges':
+                items_res = supabase.table('pending_graph_edges').select('id').eq('status', 'pending').execute()
+                for item in (items_res.data or []):
+                    result = await process_pending_edge_decision(item['id'], 'approve' if is_approve else 'reject')
+                    if result.get('success'):
+                        results["success"] += 1
+                    else:
+                        results["failure"] += 1
+
+            verb = "Approved" if is_approve else "Rejected"
+            msg = f"{verb} {results['success']} {target}"
+            if results['failure']:
+                msg += f", {results['failure']} failed"
+            await send_telegram(chat_id, f"✅ {msg}.")
+            return {"success": True}
+
         # Example data: "approve_e123" or "reject_w45" or "edit_pe12"
         match = re.match(r'^(approve|reject|edit)_([ecwgpECWGP]+)?(\d+)$', data)
         if match:
@@ -308,7 +353,6 @@ async def process_callback_query(callback_query: dict):
                     await send_telegram(chat_id, f"Editing edge: {pe['source_label']} → {pe['relationship']} → {pe['target_label']}\nReply with the corrected edge, e.g. `pe{sc_int} Danny KNOWS Alice` or `pe{sc_int} KNOWS`")
                     return {"success": True}
                 else:
-                    from core.pulse.graph import process_pending_edge_decision
                     result = await process_pending_edge_decision(sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'g':
                 if not is_approve:
@@ -571,7 +615,6 @@ async def process_webhook(update: dict):
                     else:
                         new_source, new_rel, new_target = parts[0], parts[1] if len(parts) > 1 else None, None
                         
-                    from core.pulse.graph import process_pending_edge_decision
                     result = await process_pending_edge_decision(
                         pending_id=_sc, decision='approve',
                         new_source=new_source, new_target=new_target, new_rel=new_rel
@@ -721,7 +764,6 @@ async def process_webhook(update: dict):
             try:
                 _sc = (_pe_approve_match or _pe_reject_match).group(1)
                 _is_approve = bool(_pe_approve_match)
-                from core.pulse.graph import process_pending_edge_decision
                 result = await process_pending_edge_decision(
                     pending_id=int(_sc),
                     decision='approve' if _is_approve else 'reject'
@@ -766,7 +808,6 @@ async def process_webhook(update: dict):
                 else:
                     new_source, new_rel, new_target = parts[0], parts[1], None
                     
-                from core.pulse.graph import process_pending_edge_decision
                 result = await process_pending_edge_decision(
                     pending_id=_sc, decision='approve',
                     new_source=new_source, new_target=new_target, new_rel=new_rel

@@ -419,10 +419,15 @@ Return ONLY valid JSON:
                     new_practice_nodes[canonical_name] = new_shortcode
                     print(f"📍 detect_practices: Queued practice '{canonical_name}' for approval")
 
-                    # We skip edge creation since the node is pending.
-                    # In a real impl, we might want to also queue the edges to pending_graph_edges.
                     for entity_text in distinct_entities:
                         if not entity_text:
+                            continue
+                        existing = supabase.table('pending_graph_edges').select('id') \
+                            .eq('source_label', canonical_name) \
+                            .eq('target_label', entity_text) \
+                            .eq('relationship', 'ASSOCIATED_WITH') \
+                            .limit(1).execute()
+                        if existing.data:
                             continue
                         supabase.table('pending_graph_edges').insert({
                             "source_label": canonical_name,
@@ -613,14 +618,22 @@ async def build_practice_edges():
                     "metadata": meta_json
                 }).execute()
 
-                supabase.table('pending_graph_edges').insert({
-                    "source_label": b['label'],
-                    "target_label": a['label'],
-                    "relationship": "FOLLOWED_BY",
-                    "status": "pending",
-                    "source_text": "practice_detection",
-                    "metadata": meta_json
-                }).execute()
+                existing_followed = supabase.table('pending_graph_edges') \
+                    .select('id') \
+                    .eq('source_label', b['label']) \
+                    .eq('target_label', a['label']) \
+                    .eq('relationship', 'FOLLOWED_BY') \
+                    .in_('status', ['pending', 'approved']) \
+                    .limit(1).execute()
+                if not existing_followed.data:
+                    supabase.table('pending_graph_edges').insert({
+                        "source_label": b['label'],
+                        "target_label": a['label'],
+                        "relationship": "FOLLOWED_BY",
+                        "status": "pending",
+                        "source_text": "practice_detection",
+                        "metadata": meta_json
+                    }).execute()
 
                 edges_created += 2
                 print(f"📍 practice_edges: {a['label']} → {b['label']} "

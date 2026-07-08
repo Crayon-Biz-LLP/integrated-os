@@ -130,13 +130,13 @@ Each item gets an inline keyboard row with ✅ approve / ❌ reject buttons. Cal
 
 ## Sentinel Watcher (High-Frequency JIT Briefs)
 
-Running parallel to the scheduled Pulses is the **Sentinel Watcher** (`core/pulse/sentinel.py`), which executes every 5 minutes via `.github/workflows/sentinel.yml`.
+Running parallel to the scheduled Pulses is the **Sentinel Watcher** (`core/pulse/sentinel.py`), which executes every 5 minutes via cron-job.org → `POST /api/sentinel`.
 
-- **Function**: Scans Google Calendar for events starting exactly 1-20 minutes from `now`.
-- **Pre-Flight Briefing**: Fetches relevant active tasks matching the meeting title from Supabase, then queries Gemini to generate a fast, 2-bullet context summary (e.g. *"Meeting with John. Context: Last action was X"*).
-- **Delivery**: Sends a high-priority Telegram message (acting as a secondary, smarter alarm).
-- **Deduplication**: Logs the `event_id` to `audit_logs` so a single meeting never triggers duplicate alerts across the 5-minute polling windows.
-- **Calendar Enforcer**: Works alongside a modification to `sync_to_calendar` that overrides Google Calendar defaults to enforce strict 1-hour and 15-minute native popup reminders.
+- **Function**: Scans Google Calendar for events starting within 0–45 minutes from `now`.
+- **Pre-Flight Briefing**: Runs `execute_context_strategy(query=event_title, strategy=PRE_FLIGHT_CONFIG)` — entity-anchored context retrieval against tasks, people, emails, and meeting minutes. Queries Gemini (SYNTHESIS_MODEL, temperature=0.2) to summarize the verified context with explicit date/inference awareness. No longer restricted to "restate only" — the AI can flag past-due action items and draw connections present in the data.
+- **Delivery**: Sends a high-priority Telegram message (acting as a secondary, smarter alarm). Falls back to raw context string if AI generation fails. Push notification sent when meeting is ≤15 min away.
+- **Deduplication**: Logs `Sentinel_Sent:{event_id}` to `audit_logs` so a single meeting never triggers duplicate alerts across the 5-minute polling windows.
+- **Piggyback jobs**: Post-meeting capture prompts (5–30 min after event ends), weekly stale-task sweep (Sunday), unanswered clarification dispatch, delegation alerts (waiting_on >3d), orphan recurring calendar cleanup, graph integrity sweep.
 
 ## Key Design Principles
 

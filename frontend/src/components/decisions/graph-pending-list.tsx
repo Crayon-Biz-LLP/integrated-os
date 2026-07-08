@@ -8,7 +8,7 @@ import { checkSimilarGraphEdges, decideGraphEdge, submitClarification } from '@/
 import type { GraphPendingEdge } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
-import { Check, X, Network, Pencil, Save, XCircle } from 'lucide-react';
+import { Check, X, Network, Pencil, Save, XCircle, Loader2 } from 'lucide-react';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const RELATIONSHIP_OPTIONS = [
@@ -141,6 +141,30 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
     });
   };
 
+  const [batchProcessing, setBatchProcessing] = useState(false);
+
+  const handleBatch = async (decision: 'approve' | 'reject') => {
+    setBatchProcessing(true);
+    let success = 0, fail = 0, skipped = 0;
+    const itemsCopy = [...items];
+    for (const item of itemsCopy) {
+      if (item.clarification) { skipped++; continue; }
+      try {
+        await decideGraphEdge(item.id, decision);
+        setItems((prev) => prev.filter((i) => i.id !== item.id));
+        success++;
+      } catch {
+        fail++;
+      }
+    }
+    setBatchProcessing(false);
+    if (fail > 0) {
+      toast.error(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${success}, ${fail} failed${skipped ? `, ${skipped} skipped` : ''}`);
+    } else {
+      toast.success(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${success} items${skipped ? `, ${skipped} skipped` : ''}`);
+    }
+  };
+
   if (items.length === 0) {
     return (
       <div className="rounded-md border p-8 text-center text-muted-foreground">
@@ -152,6 +176,19 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">{items.length} pending</p>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" className="text-green-600 border-green-600/30 hover:bg-green-50" onClick={() => handleBatch('approve')} disabled={batchProcessing}>
+            {batchProcessing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Check className="h-4 w-4 mr-1" />}
+            Approve All
+          </Button>
+          <Button size="sm" variant="outline" className="text-red-500 border-red-500/30 hover:bg-red-50" onClick={() => handleBatch('reject')} disabled={batchProcessing}>
+            {batchProcessing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <X className="h-4 w-4 mr-1" />}
+            Reject All
+          </Button>
+        </div>
+      </div>
       {items.map((item) => (
         <Card key={item.id}>
           <CardHeader className="pb-2">

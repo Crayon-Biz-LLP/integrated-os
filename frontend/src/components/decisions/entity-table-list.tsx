@@ -195,6 +195,32 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
     }
   };
 
+  const [batchProcessing, setBatchProcessing] = useState(false);
+
+  const handleBatch = async (decision: 'approve' | 'reject') => {
+    setBatchProcessing(true);
+    let success = 0, fail = 0;
+    const itemsCopy = [...items];
+    for (const item of itemsCopy) {
+      if (item.clarification) continue;
+      try {
+        const result = await decideGraphNode(item.id as number, decision);
+        if (result.action !== 'merge_proposed') {
+          setItems((prev) => prev.filter((i) => i.id !== item.id));
+          success++;
+        }
+      } catch {
+        fail++;
+      }
+    }
+    setBatchProcessing(false);
+    if (fail > 0) {
+      toast.error(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${success}, ${fail} failed`);
+    } else {
+      toast.success(`${decision === 'approve' ? 'Approved' : 'Rejected'} all ${success} items`);
+    }
+  };
+
   const filteredItems = items
     .filter(item => {
       if (filterType === 'all') return true;
@@ -243,6 +269,22 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
           </button>
         </div>
       </div>
+
+      {scope === 'pending' && filteredItems.length > 0 && (
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">{filteredItems.length} pending</p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" className="text-green-600 border-green-600/30 hover:bg-green-50" onClick={() => handleBatch('approve')} disabled={batchProcessing}>
+              {batchProcessing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Check className="h-4 w-4 mr-1" />}
+              Approve All
+            </Button>
+            <Button size="sm" variant="outline" className="text-red-500 border-red-500/30 hover:bg-red-50" onClick={() => handleBatch('reject')} disabled={batchProcessing}>
+              {batchProcessing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <X className="h-4 w-4 mr-1" />}
+              Reject All
+            </Button>
+          </div>
+        </div>
+      )}
       
       {loading ? (
         <div className="p-8 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" /></div>

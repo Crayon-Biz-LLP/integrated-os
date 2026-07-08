@@ -172,7 +172,7 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
                 
                 msg = f"🚨 **ALARM: Meeting in {mins_until} mins!**\n📅 {title}"
                 if context:
-                    prompt = f"""Below is verified context for a meeting called '{title}'. Restate only what is shown in 1-2 sentences. Do not guess connections between the context and the meeting. If context is empty, say 'No relevant context found.'
+                    prompt = f"""Below is verified context for a meeting called '{title}'. Summarize the relevant context for this meeting. You may draw explicit inferences from dates and action items shown (e.g., if a due date is in the past, note it as overdue). Do not fabricate facts not present in the retrieved context. If context is empty, say 'No relevant context found.'
 
 Return ONLY valid JSON:
 {{

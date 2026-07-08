@@ -38,7 +38,7 @@ Pre-retrieval entity-grounding layer. Controls what context is fetched for each 
 ### Strategies
 | Strategy | Config Name | Gate | Semantic | Key Behavior |
 |---|---|---|---|---|
-| Pre-Flight Briefing | `PRE_FLIGHT_CONFIG` | hard | requires_anchor | Returns empty context unless entities are resolved from query |
+| Pre-Flight Briefing | `PRE_FLIGHT_CONFIG` | hard | requires_anchor | threshold=0.45, top_k=12, fact_sources include meeting_minutes keyword pass for entity-ILIKEd memories |
 | Daily Briefing | `BRIEFING_CONFIG` | soft | enabled | Scoped to known entities |
 | Hindsight Retrieval | `HINDSIGHT_CONFIG` | soft | enabled | Past memories for current tasks |
 | Hydrate Tasks | `HYDRATE_TASKS_CONFIG` | none | disabled | Tasks by text_search only |
@@ -87,10 +87,10 @@ Since `associative_enabled=true` in production, `search_memories_compat` called 
 ### Fix A — Legacy Vector Path for Pre-Flight
 `pipeline.py` passes `use_associative=False` to `search_memories_compat` for `PRE_FLIGHT_CONFIG` only. This uses the `match_memories_hybrid` RPC (pgvector on `memories.embedding` column) instead of associative retrieval. New memories populate `embedding` at creation time (`dispatch.py`) and are findable immediately — no indexing dependency.
 
-### Fix B — Config Tuning
+### Fix B — Config Tuning (Phase 9)
 - `top_k`: 3 → 12 (wider net for pre-flight context)
-- `threshold`: 0.7 → 0.55 (lower barrier for marginal matches)
-- Removed `"emails"` from `fact_sources` (dead source — never wired)
+- `threshold`: 0.7 → 0.55 (lower barrier for marginal matches, further lowered to 0.45 in Phase 10)
+- Removed `"emails"` from `fact_sources` (dead source — never wired; re-added in Phase 10 with working implementation)
 - `Literal` type annotation on `fact_sources`: cleaned to `"tasks" | "people"`
 
 ### Fix C — Index Queue
@@ -111,6 +111,48 @@ Entity extraction from memory content now matches against `known_labels_lower` d
 
 ### Backfill
 4 pending index jobs queued at `priority=1` for unindexed memories: IDs 1092, 1093, 1110, 1115. Next sentinel run will process them.
+
+---
+
+## Phase 10 — Sentinel Pre-Flight Quality Fix (Jul 8, 2026)
+
+### The Gap
+The sentinel's pre-flight briefing was producing generic context like *"Several meetings with Equisoft have been completed, including a recurring meeting, a kickoff call, and weekly catch-up calls"* — a calendar reminder dressed as intelligence. Rich context existed in the DB (IAM meeting minutes with specific decisions, action items, and past-due dates; kickoff notes about red tape; today's briefings mentioning "Equisoft sync tonight") but was not surfacing due to three interacting problems.
+
+### Fix 1 — Sentinel Prompt: Restate → Summarize
+**File:** `core/pulse/sentinel.py:175`
+
+Changed the sentinel AI prompt from:
+```
+Restate only what is shown… Do not guess connections between the context and the meeting.
+```
+To:
+```
+Summarize the relevant context for this meeting. You may draw explicit inferences from dates and action items shown (e.g., if a due date is in the past, note it as overdue). Do not fabricate facts not present in the retrieved context.
+```
+
+**Why safe:** Pre-flight is a meeting prep use case — the user reviews it before walking in. The Phase 8 truth boundary constraint (designed to prevent hallucination in email drafting and briefings) overshot here. The "not present" guardrail prevents fabrication while allowing "action items are 3 weeks overdue" from visible due dates.
+
+### Fix 2 — `meeting_minutes` Keyword Fact Source
+**Files:** `core/context/config.py`, `core/context/pipeline.py`
+
+Added `"meeting_minutes"` to `PRE_FLIGHT_CONFIG.fact_sources`. In `execute_context_strategy()`, a new block runs after the fact sources loop: for each extracted entity name (`query_entities[:3]`), query `memories.content` via `ILIKE '%entity%'`, deduped against the semantic pass via `seen_memory_ids` set. Items tagged with the matched entity so the hard grounding gate keeps them (anchor overlap guaranteed at score 0.9).
+
+**Impact:** 4 weeks of Equisoft IAM meeting minutes (memory 627), kickoff red-tape note (226), and today's "Equisoft sync tonight" briefings now surface regardless of whether the meeting title embedding scores above threshold against the minutes' architecture-focused text.
+
+`RetrievalItem.source` type expanded to include `"meeting_minutes"`. `StrategyConfig.fact_sources` Literal expanded to include `"meeting_minutes"`.
+
+### Fix 3 — Threshold Lowered (Option A Interim)
+**File:** `core/context/config.py:37`
+
+`threshold: 0.55 → 0.45` — lower barrier for semantically-similar but phrase-mismatched memories. The `meeting_minutes` keyword pass (Fix 2) serves as the Option B hybrid, so named-entity meetings no longer depend on embedding similarity as the sole retrieval path.
+
+### Effect on Tonight's Equisoft Meeting
+Pre-flight for "Recurring meeting with Equisoft" now surfaces:
+- IAM meeting minutes (Option 1 connector framework, overdue action items to Keyvan/Cesar/Charles due June 12-15)
+- Kickoff context ("lots of red tape at Equisoft, monthly invoicing, 30-day payment terms")
+- Today's briefings mentioning "Equisoft sync tonight"
+- AI can flag past-due dates rather than emitting generic prose
 
 ---
 

@@ -19,6 +19,7 @@ async def execute_context_strategy(
     query_entities = list(extracted_entities or [])
 
     matched_items: List[RetrievalItem] = []
+    seen_memory_ids: set = set()  # dedupe between semantic + keyword passes
     query_terms = set(re.findall(r'\b\w{3,}\b', query.lower()))
 
     # 0. Resolve Anchors (Graph Nodes)
@@ -134,6 +135,34 @@ async def execute_context_strategy(
         except Exception:
             pass
 
+    # Meeting minutes / notes: keyword pass on extracted entity names.
+    # Hybrid alongside semantic search — surfaces context the embedding threshold
+    # might miss (e.g. IAM meeting minutes whose text is about architecture, not
+    # about the literal meeting-title wording). Items are tagged with the matched
+    # entity so the hard grounding gate keeps them (anchor overlap guaranteed).
+    if "meeting_minutes" in strategy.fact_sources and query_entities:
+        try:
+            for ent in query_entities[:3]:
+                mm_res = supabase.table('memories')\
+                    .select('id, content, memory_type, created_at')\
+                    .ilike('content', f'%{ent}%')\
+                    .order('created_at', desc=True)\
+                    .limit(4)\
+                    .execute()
+                for m in (mm_res.data or []):
+                    if m['id'] in seen_memory_ids:
+                        continue
+                    seen_memory_ids.add(m['id'])
+                    matched_items.append(RetrievalItem(
+                        item_id=f"minutes_{m['id']}",
+                        content=m.get('content', ''),
+                        metadata={**m, 'entities': [ent]},
+                        score=0.9,
+                        source="meeting_minutes"
+                    ))
+        except Exception:
+            pass
+
     semantic_skipped_no_anchor = False
 
     # 2. Semantic Search
@@ -177,6 +206,7 @@ async def execute_context_strategy(
                     if lbl_lower in content_lower
                 ]
                 m['entities'] = list(set(ents))
+                seen_memory_ids.add(m['id'])
 
                 matched_items.append(RetrievalItem(
                     item_id=f"memory_{m['id']}",

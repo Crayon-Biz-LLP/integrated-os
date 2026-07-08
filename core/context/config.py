@@ -22,7 +22,7 @@ class StrategyConfig:
     gate_mode: Literal["hard", "soft", "none"]
     semantic_enabled: bool
     semantic_requires_anchor: bool  # If True, semantic search only runs if named anchors exist
-    fact_sources: List[Literal["tasks", "people", "emails"]]
+    fact_sources: List[Literal["tasks", "people", "emails", "meeting_minutes"]]
     
 # Pre-Flight: fetch recent, semantically-similar context for upcoming meetings.
 # Uses legacy vector path (pipeline.py forces use_associative=False) so all
@@ -30,17 +30,18 @@ class StrategyConfig:
 # are findable via the memories.embedding column.
 # top_k=12 gives headroom: fact sources (tasks, people) consume some slots, and
 # we need enough remaining slots for memories about the meeting topic.
-# threshold=0.55 matches RECOGNITION_THRESHOLD in retrieval/config.py and catches
-# loosely-similar but contextually relevant content (long notes about a short query).
+# threshold=0.45 (interim, lowered from 0.55) — the meeting_minutes keyword pass
+# (Fix 2) covers named-entity meetings; the lower semantic threshold catches
+# loosely-similar but contextually relevant content as a safety net.
 PRE_FLIGHT_CONFIG = StrategyConfig(
     name="PRE_FLIGHT",
-    threshold=0.55,
+    threshold=0.45,
     top_k=12,
     weights=DEFAULT_WEIGHTS,
     gate_mode="hard",
     semantic_enabled=True,
     semantic_requires_anchor=True,
-    fact_sources=["tasks", "people", "emails"]
+    fact_sources=["tasks", "people", "emails", "meeting_minutes"]
 )
 
 # Briefing: blended, grounded

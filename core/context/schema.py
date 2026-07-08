@@ -7,7 +7,7 @@ class RetrievalItem:
     content: str
     metadata: Dict[str, Any]
     score: float
-    source: str  # "tasks", "people", "emails", "memories"
+    source: str  # "tasks", "people", "emails", "memories", "meeting_minutes"
     
 @dataclass
 class GateDecision:

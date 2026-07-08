@@ -490,7 +490,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                 if pending_edges:
                     channels.append(f"{len(pending_edges)} graph edge")
                 push_title = f"{total} pending decisions"
-                push_body = f"From: {", ".join(channels)}"
+                push_body = f"From: {', '.join(channels)}"
                 await send_push_notification(
                     title=push_title,
                     body=push_body,
@@ -598,11 +598,21 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                     {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
                     {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
                 ])
+            if email_items:
+                keyboard.append([
+                    {"text": "✅ Approve All Emails", "callback_data": "approve_all_emails"},
+                    {"text": "❌ Reject All Emails", "callback_data": "reject_all_emails"}
+                ])
             for row in call_items:
                 sc = f"c{row['id']}"
                 keyboard.append([
                     {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
                     {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
+                ])
+            if call_items:
+                keyboard.append([
+                    {"text": "✅ Approve All Calls", "callback_data": "approve_all_calls"},
+                    {"text": "❌ Reject All Calls", "callback_data": "reject_all_calls"}
                 ])
             for row in whatsapp_items:
                 sc = f"w{row['id']}"
@@ -610,11 +620,21 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                     {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
                     {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
                 ])
+            if whatsapp_items:
+                keyboard.append([
+                    {"text": "✅ Approve All WhatsApp", "callback_data": "approve_all_whatsapp"},
+                    {"text": "❌ Reject All WhatsApp", "callback_data": "reject_all_whatsapp"}
+                ])
             for row in teams_items:
                 sc = f"t{row['id']}"
                 keyboard.append([
                     {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
                     {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
+                ])
+            if teams_items:
+                keyboard.append([
+                    {"text": "✅ Approve All Teams", "callback_data": "approve_all_teams"},
+                    {"text": "❌ Reject All Teams", "callback_data": "reject_all_teams"}
                 ])
             for row in graph_items:
                 sc = f"g{row['id']}"
@@ -622,12 +642,22 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                     {"text": f"✅ {sc}", "callback_data": f"approve_{sc}"},
                     {"text": f"❌ {sc}", "callback_data": f"reject_{sc}"}
                 ])
+            if graph_items:
+                keyboard.append([
+                    {"text": "✅ Approve All Nodes", "callback_data": "approve_all_nodes"},
+                    {"text": "❌ Reject All Nodes", "callback_data": "reject_all_nodes"}
+                ])
             for row in pending_edges:
                 sc = f"pe{row['id']}"
                 keyboard.append([
                     {"text": f"✅ {row['relationship']}", "callback_data": f"approve_{sc}"},
                     {"text": "✏️ Edit", "callback_data": f"edit_{sc}"},
                     {"text": "❌", "callback_data": f"reject_{sc}"}
+                ])
+            if pending_edges:
+                keyboard.append([
+                    {"text": "✅ Approve All Edges", "callback_data": "approve_all_edges"},
+                    {"text": "❌ Reject All Edges", "callback_data": "reject_all_edges"}
                 ])
             # Add undo buttons for auto-processed items at the bottom of keyboard
             if auto_total > 0:
