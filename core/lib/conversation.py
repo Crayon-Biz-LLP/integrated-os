@@ -1,7 +1,6 @@
 from core.services.db import get_supabase, maybe_single_safe
 import uuid
 import re
-import json
 from datetime import datetime, timezone
 
 from core.llm.compat import call_llm_with_fallback_sync
@@ -23,31 +22,51 @@ def _touch_thread(thread_id: str):
 def _check_topic_overlap(text: str, payload: dict) -> bool:
     """Deterministic topical relevance check between message and workflow payload.
 
+    Uses n-gram entity resolver for orgs/projects + substring match for people.
     Returns True if:
-    - Message has no capitalized entity names (filler like 'yes'/'ok')
-    - Any message entity overlaps with payload content
+    - Message has no known entities (filler like 'yes'/'ok')
+    - Any detected entity name overlaps with payload content
 
-    Returns False if message has entities that don't appear in payload.
+    Returns False if message references known entities absent from payload.
     """
     if not text or not payload:
         return True
 
-    message_entities = set()
-    for m in re.finditer(r'\b([A-Z][a-z]{3,}(?:\s+[A-Z][a-z]{3,})*)\b', text):
-        message_entities.add(m.group(1).lower())
+    supabase = get_supabase()
+    entity_names = set()
 
-    if not message_entities:
+    try:
+        from core.pulse.entity_resolver import resolve_entities_from_text
+        org_id, proj_id, _ = resolve_entities_from_text(text)
+        if org_id:
+            r = supabase.table('organizations').select('name').eq('id', org_id).execute()
+            if r.data:
+                entity_names.add(r.data[0]['name'].lower())
+        if proj_id:
+            r = supabase.table('projects').select('name').eq('id', proj_id).execute()
+            if r.data:
+                entity_names.add(r.data[0]['name'].lower())
+    except Exception:
+        pass
+
+    try:
+        people = supabase.table('people').select('name').execute()
+        text_lower = text.lower()
+        for p in (people.data or []):
+            name = p['name'].strip().lower()
+            if name and len(name) >= 3 and name in text_lower:
+                entity_names.add(name)
+    except Exception:
+        pass
+
+    if not entity_names:
         return True
 
-    payload_parts = []
-    for v in payload.values():
-        if isinstance(v, str):
-            payload_parts.append(v)
-        elif isinstance(v, (list, dict)):
-            payload_parts.append(json.dumps(v))
-    payload_text = ' '.join(payload_parts).lower()
+    payload_text = ' '.join(
+        str(v) for v in payload.values()
+    ).lower()
 
-    for entity in message_entities:
+    for entity in entity_names:
         if entity in payload_text:
             return True
     return False

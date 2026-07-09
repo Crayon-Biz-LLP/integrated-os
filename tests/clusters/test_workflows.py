@@ -191,3 +191,88 @@ async def test_check_resume_skips_llm_on_topic_mismatch(mock_llm):
     finally:
         supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
         supabase.table('conversation_threads').delete().eq('id', thread_id).execute()
+
+
+@patch('core.webhook.workflows.generate_content_with_fallback')
+@pytest.mark.asyncio
+async def test_check_resume_lowercase_entity_no_overlap(mock_llm):
+    """Lowercase 'equisoft' text still resolves as known entity and correctly bypasses Amico workflow."""
+    supabase = get_supabase()
+    chat_id = 9999993
+    thread_id = str(uuid.uuid4())
+
+    supabase.table('conversation_threads').insert({
+        'id': thread_id, 'chat_id': chat_id, 'thread_type': 'general'
+    }).execute()
+
+    w_res = supabase.table('conversation_workflows').insert({
+        'chat_id': chat_id, 'thread_id': thread_id,
+        'workflow_type': 'task_creation', 'status': 'active',
+        'awaiting_user_input': True,
+        'payload': {'title': 'Amico contract review'}
+    }).execute()
+    w_id = w_res.data[0]['id']
+
+    try:
+        handled = await check_and_resume_workflow(chat_id, "equisoft gave approval", thread_id)
+        assert not handled, "Should bypass workflow — text references Equisoft, not Amico"
+        mock_llm.assert_not_called()
+    finally:
+        supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
+        supabase.table('conversation_threads').delete().eq('id', thread_id).execute()
+
+
+@patch('core.webhook.workflows.generate_content_with_fallback')
+@pytest.mark.asyncio
+async def test_check_resume_short_entity_no_overlap(mock_llm):
+    """Short acronym entity 'LPG' correctly bypasses unrelated Amico workflow."""
+    supabase = get_supabase()
+    chat_id = 9999992
+    thread_id = str(uuid.uuid4())
+
+    supabase.table('conversation_threads').insert({
+        'id': thread_id, 'chat_id': chat_id, 'thread_type': 'general'
+    }).execute()
+
+    w_res = supabase.table('conversation_workflows').insert({
+        'chat_id': chat_id, 'thread_id': thread_id,
+        'workflow_type': 'task_creation', 'status': 'active',
+        'awaiting_user_input': True,
+        'payload': {'title': 'Amico contract review'}
+    }).execute()
+    w_id = w_res.data[0]['id']
+
+    try:
+        handled = await check_and_resume_workflow(chat_id, "LPG project status", thread_id)
+        assert not handled, "Should bypass workflow — text references LPG, not Amico"
+        mock_llm.assert_not_called()
+    finally:
+        supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
+        supabase.table('conversation_threads').delete().eq('id', thread_id).execute()
+
+
+def test_resolve_thread_sentence_start_non_entity_passes():
+    """Sentence-start capitalized common word ('The') does not trigger false overlap."""
+    supabase = get_supabase()
+    chat_id = 9999991
+    thread_id = str(uuid.uuid4())
+
+    supabase.table('conversation_threads').insert({
+        'id': thread_id, 'chat_id': chat_id, 'thread_type': 'general'
+    }).execute()
+
+    w_res = supabase.table('conversation_workflows').insert({
+        'chat_id': chat_id, 'thread_id': thread_id,
+        'workflow_type': 'task_creation', 'status': 'active',
+        'awaiting_user_input': True,
+        'payload': {'title': 'Amico contract review'}
+    }).execute()
+    w_id = w_res.data[0]['id']
+
+    try:
+        routed_id, _ = resolve_thread(chat_id, "The project is done now")
+        assert routed_id == thread_id, \
+            f"Expected workflow thread {thread_id}, got {routed_id} — sentence-start 'The' should not bypass"
+    finally:
+        supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
+        supabase.table('conversation_threads').delete().eq('id', thread_id).execute()
