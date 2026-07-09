@@ -2,6 +2,7 @@ from core.services.db import get_supabase, maybe_single_safe
 import difflib
 import re
 from dotenv import load_dotenv
+from core.lib.audit_logger import audit_log_sync
 
 load_dotenv()
 
@@ -525,3 +526,202 @@ def make_memory_preview(content: str, max_words: int = 4) -> str | None:
     words = re.findall(r'[A-Za-z]\w+', content)
     meaningful = [w for w in words if len(w) > 2][:max_words]
     return ' '.join(meaningful) if meaningful else None
+
+def validate_label(label: str, hints: dict = None) -> dict:
+    """
+    Pure lexical and domain-assisted validation. No DB calls.
+    Returns: {"verdict": "pass" | "flag" | "reject", "reason": str}
+    """
+    if not label or not isinstance(label, str):
+        return {"verdict": "reject", "reason": "empty or invalid type"}
+    
+    hints = hints or {}
+    lower_label = label.lower().strip()
+    
+    # Lexical rules (Hard rejects)
+    if ',' in label:
+        return {"verdict": "reject", "reason": "contains comma"}
+        
+    rel_pattern = r'\b(my|our|his|her|their|wife|husband|father|mother|brother|sister|son|daughter|friend|colleague|boss|the)\b'
+    if re.search(rel_pattern, lower_label):
+        # Allow if it's a known exact match despite the pattern
+        if lower_label not in hints.get("exact_matches", set()):
+            return {"verdict": "reject", "reason": "contains relationship/possessive/article word"}
+            
+    if "'" in label or "’" in label:
+        if lower_label not in hints.get("exact_matches", set()):
+            return {"verdict": "reject", "reason": "contains possessive"}
+            
+    if len(label) > 60:
+        return {"verdict": "reject", "reason": "extreme length"}
+        
+    # Domain-assisted suspicion (Flag)
+    words = lower_label.split()
+    if len(words) > 3:
+        if lower_label not in hints.get("exact_matches", set()):
+            return {"verdict": "flag", "reason": ">3 words without domain hint support"}
+            
+    # Check for fused labels (person + org) if hints provided
+    known_people = hints.get("people", set())
+    known_orgs = hints.get("orgs", set())
+    
+    if known_people and known_orgs and len(words) >= 2:
+        person_found = False
+        org_found = False
+        for p in known_people:
+            if len(p) > 3 and p in lower_label:
+                person_found = True
+                break
+        for o in known_orgs:
+            if len(o) > 3 and o in lower_label:
+                org_found = True
+                break
+        
+        if person_found and org_found:
+            return {"verdict": "flag", "reason": "fused: matches person and org components"}
+
+    return {"verdict": "pass", "reason": ""}
+
+def resolve_candidate(label: str, normalized: str = None) -> dict:
+    """DB-backed resolution against known entities."""
+    return resolve_canonical_label(label)
+
+def route_label(resolution: dict, validation: dict) -> str:
+    """Pure routing policy based on resolution and validation."""
+    if validation.get("verdict") == "reject":
+        return "discard"
+        
+    if resolution.get("confidence", 0.0) >= 0.75:
+        return "direct"
+        
+    if validation.get("verdict") == "flag":
+        return "pending"
+        
+    return "pending"
+
+def persist_label(route: str, resolution: dict, source_info: dict) -> str:
+    """Executes the DB write for the candidate node based on the route."""
+    if route == "discard":
+        return None
+        
+    label = resolution.get("label")
+    typ = resolution.get("node_type") or "concept"
+    
+    if route == "direct":
+        if resolution.get("node_id"):
+            return resolution["node_id"]
+        
+        try:
+            res = supabase.table("graph_nodes").insert({
+                "label": label,
+                "type": typ,
+                "metadata": source_info
+            }).execute()
+            if res.data:
+                return res.data[0]["id"]
+        except Exception as e:
+            if hasattr(e, "code") and e.code == "23505":
+                existing = maybe_single_safe(supabase.table("graph_nodes").select("id").ilike("label", label))
+                if existing and existing.data:
+                    return existing.data["id"]
+            audit_log_sync("graph_pipeline", "ERROR", f"Failed to persist_label direct: {e}")
+            return None
+            
+    if route == "pending":
+        existing_p = maybe_single_safe(supabase.table("pending_graph_nodes").select("id").ilike("label", label))
+        if existing_p and existing_p.data:
+            return str(existing_p.data["id"])
+            
+        status = "flagged"
+        meta = {"source": source_info} if source_info else {}
+        if source_info and source_info.get("flag_reason"):
+            meta["flag_reason"] = source_info["flag_reason"]
+            
+        try:
+            res = supabase.table("pending_graph_nodes").insert({
+                "label": label,
+                "type": typ,
+                "source_text": source_info.get("source_text", "") if source_info else "",
+                "status": status,
+                "metadata": meta
+            }).execute()
+            if res.data:
+                return str(res.data[0]["id"])
+        except Exception as e:
+            if hasattr(e, "code") and e.code == "23505":
+                existing = maybe_single_safe(supabase.table("pending_graph_nodes").select("id").ilike("label", label))
+                if existing and existing.data:
+                    return str(existing.data["id"])
+            audit_log_sync("graph_pipeline", "ERROR", f"Failed to persist_label pending: {e}")
+            return None
+            
+    return None
+
+def insert_pending_edge(source_label: str, target_label: str, relationship: str, source_info: dict) -> dict:
+    """Shared edge insertion function with case-insensitive dedup and validation."""
+    s_type = source_info.get("source_type", "concept")
+    t_type = source_info.get("target_type", "concept")
+    rel = canonicalize_relationship(relationship, s_type, t_type)
+    
+    # Validation
+    s_type = source_info.get("source_type", "concept")
+    t_type = source_info.get("target_type", "concept")
+    vr = validate_edge(s_type, rel, t_type)
+    if vr["action"] == "auto_reject":
+        audit_log_sync("graph_pipeline", "INFO", f"Auto-rejected {source_label} --[{rel}]--> {target_label}: {vr['reason']}")
+        return {"status": "rejected", "reason": vr['reason']}
+    elif vr["action"] == "auto_correct":
+        rel = vr["reason"]
+        
+    s_lower = source_label.lower().strip()
+    t_lower = target_label.lower().strip()
+    r_lower = rel.lower().strip()
+    
+    try:
+        existing = supabase.table("pending_graph_edges").select("id, source_text").ilike("source_label", s_lower).ilike("target_label", t_lower).ilike("relationship", r_lower).execute()
+        if existing.data:
+            row = existing.data[0]
+            current_sources = [s.strip() for s in (row.get('source_text') or '').split(',') if s.strip()]
+            new_source = source_info.get('source_text', '')
+            if new_source and new_source not in current_sources:
+                current_sources.append(new_source)
+                updated_source_text = ", ".join(current_sources)
+                supabase.table("pending_graph_edges").update({"source_text": updated_source_text}).eq("id", row['id']).execute()
+            return {"status": "deduped", "id": row['id']}
+    except Exception as e:
+        audit_log_sync("graph_pipeline", "WARNING", f"Dedup check failed: {e}")
+    
+    try:
+        res = supabase.table("pending_graph_edges").insert({
+            "source_label": source_label,
+            "target_label": target_label,
+            "relationship": rel,
+            "status": "pending",
+            "source_text": source_info.get("source_text", ""),
+            "source_table": source_info.get("source_table", ""),
+            "source_type": s_type,
+            "target_type": t_type
+        }).execute()
+        if res.data:
+            return {"status": "inserted", "id": res.data[0]['id']}
+    except Exception as e:
+        if hasattr(e, "code") and e.code == "23505":
+            return {"status": "deduped"}
+        audit_log_sync("graph_pipeline", "ERROR", f"Insert edge failed: {e}")
+        return {"status": "error", "reason": str(e)}
+        
+    return {"status": "unknown"}
+
+TYPE_TO_DANNY_EDGE = {
+    "project": "OWNS",
+    "person": "KNOWS",
+    "concept": "INTERESTED_IN",
+    "organization": "WORKS_WITH",
+    "place": "VISITED",
+    "event": "ATTENDED",
+    "animal": "OWNS",
+    "emotional_state": "FEELS",
+    "resource": "USES",
+    "cluster": "OWNS",
+    "task": "RELATES_TO"
+}

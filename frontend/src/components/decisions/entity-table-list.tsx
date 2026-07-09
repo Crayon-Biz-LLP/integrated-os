@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { checkSimilarGraphNodes, renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes, decideGraphNode, changePendingGraphNodeType, submitClarification } from '@/lib/decisions/api';
+import { checkSimilarGraphNodes, renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes, decideGraphNode, batchDecideGraphNodes, changePendingGraphNodeType, submitClarification } from '@/lib/decisions/api';
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -199,26 +199,25 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
 
   const handleBatch = async (decision: 'approve' | 'reject') => {
     setBatchProcessing(true);
-    let success = 0, fail = 0;
-    const itemsCopy = [...items];
-    for (const item of itemsCopy) {
-      if (item.clarification) continue;
-      try {
-        const result = await decideGraphNode(item.id as number, decision);
-        if (result.action !== 'merge_proposed') {
-          setItems((prev) => prev.filter((i) => i.id !== item.id));
-          success++;
-        }
-      } catch {
-        fail++;
+    try {
+      const batchIds = items.filter(i => !i.clarification).map(i => i.id as number);
+      const skipped = items.length - batchIds.length;
+      if (batchIds.length === 0) {
+        toast.info('All items are in clarification — no batch action taken.');
+        setBatchProcessing(false);
+        return;
       }
+      const result = await batchDecideGraphNodes(batchIds, decision);
+      setItems([]);
+      if (result.failed > 0) {
+        toast.error(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${result.processed}, ${result.failed} failed${skipped ? `, ${skipped} skipped` : ''}`);
+      } else {
+        toast.success(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${result.processed} items${skipped ? `, ${skipped} skipped` : ''}`);
+      }
+    } catch {
+      toast.error('Batch operation failed. Refetch the list and try again.');
     }
     setBatchProcessing(false);
-    if (fail > 0) {
-      toast.error(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${success}, ${fail} failed`);
-    } else {
-      toast.success(`${decision === 'approve' ? 'Approved' : 'Rejected'} all ${success} items`);
-    }
   };
 
   const filteredItems = items

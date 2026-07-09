@@ -3,6 +3,8 @@ from core.pulse.graph import create_graph_node_with_db_record
 from core.lib.graph_rules import resolve_canonical_label
 from core.lib.audit_logger import audit_log_sync
 from core.decisions import record_decision
+from core.pulse.graph import process_pending_edge_decision
+
 
 async def auto_approve_concepts_and_evokes(label: str):
     """
@@ -15,8 +17,6 @@ async def auto_approve_concepts_and_evokes(label: str):
     entity_res = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', label))
     if not entity_res or not entity_res.data:
         return
-    entity_uuid = entity_res.data['id']
-    
     # 2. Find pending EVOKES edges referencing this label
     edges_res = supabase.table('pending_graph_edges').select('*')\
         .eq('relationship', 'EVOKES')\
@@ -114,45 +114,11 @@ async def auto_approve_concepts_and_evokes(label: str):
             except Exception as e:
                 audit_log_sync("pulse", "WARNING", f"Failed to store raw linked_entity fallback: {e}")
             
-        # 5. Create the edge in graph_edges
-        source_uuid = entity_uuid if is_source else concept_uuid
-        target_uuid = concept_uuid if is_source else entity_uuid
-        
-        # Check if edge already exists
-        exist_edge = supabase.table('graph_edges').select('id')\
-            .eq('source_node_id', source_uuid)\
-            .eq('target_node_id', target_uuid)\
-            .eq('relationship', relationship_verb)\
-            .execute()
-            
-        if not exist_edge.data:
-            supabase.table('graph_edges').insert({
-                'source_node_id': source_uuid,
-                'target_node_id': target_uuid,
-                'relationship': relationship_verb,
-                'weight': 1.0,
-                'source_ref': edge.get('source_text') or f"pending_edge:{edge['id']}",
-                'metadata': {"source": "auto_approve_cascade"}
-            }).execute()
-            
-            # Record decision for auto-created edge
-            try:
-                record_decision(
-                    decision_type="edge_auto_creation",
-                    title=f"Auto-created edge: {label} --{relationship_verb}--> {concept_label}",
-                    context=f"Cascade from auto-approve of '{label}' — EVOKES relationship",
-                    entity_type="graph_edge",
-                    entity_id=f"{source_uuid}->{target_uuid}",
-                    confidence=1.0,
-                    source="auto_approve_cascade",
-                    auto_decided=True,
-                )
-            except Exception as dec_err:
-                audit_log_sync("pulse", "WARNING", f"Failed to record edge creation decision: {dec_err}")
-            
-        # 6. Mark pending edge as approved
-        supabase.table('pending_graph_edges').update({
-            'status': 'approved',
-            'approval_source': 'auto_approve'
-        }).eq('id', edge['id']).execute()
+        # 5 & 6. Create edge and mark approved via canonical promotion path
+        await process_pending_edge_decision(
+            pending_id=edge['id'],
+            decision='approve',
+            new_rel=relationship_verb if relationship_verb != 'EVOKES' else None,
+            auto_decided=True
+        )
 

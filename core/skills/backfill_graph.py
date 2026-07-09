@@ -6,11 +6,10 @@ import sys
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
-import uuid
 
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
-from core.lib.graph_rules import validate_edge, resolve_alias, has_structural_anchor
+from core.lib.graph_rules import resolve_alias
 from core.services.db import get_supabase, maybe_single_safe
 
 
@@ -411,45 +410,39 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
         created_nodes[label] = node_id
         return node_id
     
-    # Node doesn't exist - create it
-    if node_type in ['person', 'project', 'organization']:
-        if label not in pending_entities_cache and not _check_pending_label_exists(label):
-            try:
-                status = "pending" if has_structural_anchor(label, node_type) else "flagged"
-                supabase.table("pending_graph_nodes").insert({
-                    "label": label,
-                    "type": node_type,
-                    "source_text": memory_id,
-                    "status": status
-                }).execute()
-                pending_entities_cache.add(label)
-                audit_log_sync("backfill_graph", "INFO", f"Queued new entity for approval ({status}): {label} ({node_type})")
-            except Exception as e:
-                audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
-        elif label not in pending_entities_cache:
-            pending_entities_cache.add(label)
-        return None
-
-    try:
-        result = supabase.table("graph_nodes").upsert(
-            {"label": label, "type": node_type, "metadata": {"source": "backfill_graph", "memory_id": memory_id}},
-            on_conflict="label"
-        ).execute()
-        
-        if result.data:
-            node_id = result.data[0]["id"]
-        else:
-            # Fetch the created/updated node
-            res = supabase.table("graph_nodes") \
-                .select("id") \
-                .eq("label", label) \
-                .single() \
-                .execute()
-            node_id = res.data["id"] if res.data else None
-    except Exception as e:
-        audit_log_sync("backfill_graph", "WARNING", f"Node upsert failed for '{label}': {e}")
-        return None
+    # Node doesn't exist - route through unified pipeline
+    from core.lib.graph_rules import validate_label, resolve_candidate, route_label, persist_label
     
+    val = validate_label(label, hints={})
+    res = resolve_candidate(label)
+    if not res.get("node_type"):
+        res["node_type"] = node_type
+        
+    route = route_label(res, val)
+    
+    audit_log_sync(
+        "graph_pipeline",
+        "INFO",
+        "Routing entity candidate",
+        metadata={
+            "event": "entity_routing",
+            "source_path": f"backfill_graph:{memory_id}",
+            "route": route,
+            "verdict": val.get("verdict"),
+            "reason": val.get("reason"),
+            "label": label
+        }
+    )
+    
+    source_info = {"source": "backfill_graph", "memory_id": memory_id, "source_text": memory_id, "flag_reason": val.get("reason", "")}
+    node_id = persist_label(route, res, source_info)
+    
+    if route == "pending":
+        if label not in pending_entities_cache:
+            pending_entities_cache.add(label)
+            audit_log_sync("backfill_graph", "INFO", f"Queued new entity for approval (route={route}): {label} ({node_type})")
+        return None
+        
     if node_id:
         created_nodes[label] = node_id
         graph_entities[label] = {"id": node_id, "type": node_type}
@@ -489,42 +482,38 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
                 record["type"] = node_type
             node_records.append(record)
         else:
-            if node_type == 'project' and not is_real_project(label):
-                audit_log_sync("backfill_graph", "WARNING", f"Skipped ungrounded project node: {label}")
-                continue
-
-            if node_type in ['person', 'project', 'organization']:
-                # Gated high-risk entity - send to pending
-                if label not in pending_entities_cache and not _check_pending_label_exists(label):
-                    try:
-                        status = "pending" if has_structural_anchor(label, node_type) else "flagged"
-                        supabase.table("pending_graph_nodes").insert({
-                            "label": label,
-                            "type": node_type,
-                            "source_text": memory_id,
-                            "status": status
-                        }).execute()
-                        pending_entities_cache.add(label)
-                        audit_log_sync("backfill_graph", "INFO", f"Queued new high-risk entity for approval ({status}): {label} ({node_type})")
-                    except Exception as e:
-                        audit_log_sync("backfill_graph", "ERROR", f"Pending node insert error: {e}")
-                elif label not in pending_entities_cache:
+            from core.lib.graph_rules import validate_label, resolve_candidate, route_label, persist_label
+            
+            val = validate_label(label, hints={})
+            res = resolve_candidate(label)
+            if not res.get("node_type"):
+                res["node_type"] = node_type
+                
+            route = route_label(res, val)
+            
+            audit_log_sync(
+                "graph_pipeline",
+                "INFO",
+                "Routing entity candidate",
+                metadata={
+                    "event": "entity_routing",
+                    "source_path": f"backfill_graph:{memory_id}",
+                    "route": route,
+                    "verdict": val.get("verdict"),
+                    "reason": val.get("reason"),
+                    "label": label
+                }
+            )
+            
+            source_info = {"source": "backfill_graph", "memory_id": memory_id, "source_text": memory_id, "flag_reason": val.get("reason", "")}
+            node_id = persist_label(route, res, source_info)
+            
+            if route == "pending":
+                if label not in pending_entities_cache:
                     pending_entities_cache.add(label)
-            else:
-                record["id"] = str(uuid.uuid4())
-                node_records.append(record)
-    
-    if node_records:
-        try:
-            supabase.table("graph_nodes").upsert(
-                node_records,
-                on_conflict="label"
-            ).execute()
-            # Update local cache
-            for node in node_records:
-                graph_entities[node["label"]] = {"id": node["id"], "type": node["type"]}
-        except Exception as e:
-            audit_log_sync("backfill_graph", "ERROR", f"Node upsert error: {e}")
+                    audit_log_sync("backfill_graph", "INFO", f"Queued new entity for approval (route={route}): {label} ({node_type})")
+            elif node_id and route == "direct":
+                graph_entities[label] = {"id": node_id, "type": node_type}
 
 
 def _build_label_type_cache() -> dict:
@@ -536,99 +525,45 @@ def _build_label_type_cache() -> dict:
 
 
 def insert_pending_edges_batch(edges: list):
-    """Insert edges into pending_graph_edges in batches, ignoring duplicates.
-    Runs Phase 3 validation: auto-rejects banned relationships, auto-corrects INVALID_COMBOS."""
+    """Insert edges into pending_graph_edges. Replaces old dedup with unified insert_pending_edge."""
     if not edges:
         return
-    try:
-        label_type_cache = _build_label_type_cache()
+    from core.lib.graph_rules import insert_pending_edge
+    
+    for edge in edges:
+        s_label = edge.get("source_label", "")
+        t_label = edge.get("target_label", "")
+        rel = edge.get("relationship", "").upper()
         
-        source_labels = list(set([e.get('source_label', '') for e in edges if e.get('source_label')]))
-        existing_map = {}
-        for i in range(0, len(source_labels), 20):
-            batch_labels = source_labels[i:i+20]
-            res = supabase.table("pending_graph_edges").select("id, source_label, target_label, relationship, source_text").in_("source_label", batch_labels).execute()
-            for r in (res.data or []):
-                key = f"{r['source_label']}|{r['target_label']}|{r['relationship']}"
-                existing_map[key] = r
-
-        to_insert = []
-        for edge in edges:
-            s_label = edge.get("source_label", "")
-            t_label = edge.get("target_label", "")
-            rel = edge.get("relationship", "").upper()
-            s_type = label_type_cache.get(s_label.lower().strip())
-            t_type = label_type_cache.get(t_label.lower().strip())
-            if s_type and t_type:
-                vr = validate_edge(s_type, rel, t_type)
-                if vr["action"] == "auto_reject":
-                    audit_log_sync("backfill_graph", "INFO", f"Auto-rejected {s_label} --[{rel}]--> {t_label}: {vr['reason']}")
-                    continue
-                elif vr["action"] == "auto_correct":
-                    edge["relationship"] = vr["reason"]
-                    rel = vr["reason"]
-                    audit_log_sync("backfill_graph", "INFO", f"Auto-corrected {s_label} --[{rel}]--> {t_label}")
-            key = f"{s_label}|{t_label}|{rel}"
-            if key in existing_map:
-                existing = existing_map[key]
-                if 'id' in existing:
-                    current_sources = [s.strip() for s in (existing.get('source_text') or '').split(',') if s.strip()]
-                    new_source = edge.get('source_text', '')
-                    if new_source and new_source not in current_sources:
-                        current_sources.append(new_source)
-                        updated_source_text = ", ".join(current_sources)
-                        supabase.table("pending_graph_edges").update({"source_text": updated_source_text}).eq("id", existing['id']).execute()
-                        existing['source_text'] = updated_source_text
-            else:
-                to_insert.append(edge)
-                existing_map[key] = edge
-
-        if not to_insert:
-            if edges:
-                audit_log_sync("backfill_graph", "INFO", f"All {len(edges)} pending edges in batch were filtered or auto-rejected (to_insert is empty).")
-            return
-
-        for i in range(0, len(to_insert), 100):
-            batch = to_insert[i:i+100]
-            supabase.table("pending_graph_edges").insert(batch).execute()
-    except Exception as e:
-        audit_log_sync("backfill_graph", "ERROR", f"Pending edge insert failed: {e}")
+        insert_pending_edge(
+            s_label, 
+            t_label, 
+            rel, 
+            {
+                "source_text": edge.get("source_text", ""),
+                "source_table": edge.get("source_table", ""),
+                "source_type": edge.get("source_type", "concept"),
+                "target_type": edge.get("target_type", "concept")
+            }
+        )
 
 def _ensure_edge_label_has_node(lbl: str, memory_id: str, source_table: str, seen: set):
-    """Create a pending node for an edge-only label that doesn't exist yet."""
+    """Create a pending node for an edge-only label that doesn't exist yet using unified pipeline."""
     if lbl in seen:
         return
     seen.add(lbl)
 
-    # Check existing nodes
-    existing = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", lbl))
-    if existing and existing.data:
-        return
-    existing_p = maybe_single_safe(supabase.table("pending_graph_nodes").select("id").eq("label", lbl))
-    if existing_p and existing_p.data:
-        return
-
-    # Check people/projects tables for type hints
-    typ = "concept"
-    people_res = maybe_single_safe(supabase.table("people").select("id").ilike("name", lbl))
-    if people_res and people_res.data:
-        typ = "person"
-    else:
-        proj_res = maybe_single_safe(supabase.table("projects").select("id").ilike("name", lbl.strip()))
-        if proj_res and proj_res.data:
-            typ = "project"
-
-    supabase.table("pending_graph_nodes").insert({
-        "label": lbl,
-        "type": typ,
-        "source_text": f"{source_table}:{memory_id}",
-        "status": "pending"
-    }).execute()
-
+    from core.lib.graph_rules import validate_label, resolve_candidate, route_label, persist_label
+    
+    val = validate_label(lbl)
+    res = resolve_candidate(lbl)
+    route = route_label(res, val)
+    
+    if route != "discard":
+        persist_label(route, res, {"source_text": f"{source_table}:{memory_id}", "flag_reason": val.get("reason", "")})
 
 def insert_edges(edges: list, node_label_to_id: dict, memory_id: str, source_table: str = "memories"):
-    """Queue extracted edges for human approval in pending_graph_edges.
-    Auto-creates pending nodes for edge-only labels not yet in the graph."""
+    """Queue extracted edges for human approval in pending_graph_edges."""
     pending_batch = []
     node_guard = set()
     for edge in edges:

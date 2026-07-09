@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { checkSimilarGraphEdges, decideGraphEdge, submitClarification } from '@/lib/decisions/api';
+import { checkSimilarGraphEdges, decideGraphEdge, batchDecideGraphEdges, submitClarification } from '@/lib/decisions/api';
 import type { GraphPendingEdge } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -145,24 +145,25 @@ export function GraphPendingList({ items: initialItems }: { items: GraphPendingE
 
   const handleBatch = async (decision: 'approve' | 'reject') => {
     setBatchProcessing(true);
-    let success = 0, fail = 0, skipped = 0;
-    const itemsCopy = [...items];
-    for (const item of itemsCopy) {
-      if (item.clarification) { skipped++; continue; }
-      try {
-        await decideGraphEdge(item.id, decision);
-        setItems((prev) => prev.filter((i) => i.id !== item.id));
-        success++;
-      } catch {
-        fail++;
+    try {
+      const batchIds = items.filter(i => !i.clarification).map(i => i.id);
+      const skipped = items.length - batchIds.length;
+      if (batchIds.length === 0) {
+        toast.info('All items are in clarification — no batch action taken.');
+        setBatchProcessing(false);
+        return;
       }
+      const result = await batchDecideGraphEdges(batchIds, decision);
+      setItems([]);
+      if (result.failed > 0) {
+        toast.error(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${result.processed}, ${result.failed} failed${skipped ? `, ${skipped} skipped` : ''}`);
+      } else {
+        toast.success(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${result.processed} items${skipped ? `, ${skipped} skipped` : ''}`);
+      }
+    } catch {
+      toast.error('Batch operation failed. Refetch the list and try again.');
     }
     setBatchProcessing(false);
-    if (fail > 0) {
-      toast.error(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${success}, ${fail} failed${skipped ? `, ${skipped} skipped` : ''}`);
-    } else {
-      toast.success(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${success} items${skipped ? `, ${skipped} skipped` : ''}`);
-    }
   };
 
   if (items.length === 0) {

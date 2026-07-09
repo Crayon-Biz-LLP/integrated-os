@@ -188,26 +188,21 @@ def run_batch_sweep():
                             print(f"    Failed to queue concept {label}: {e}")
                         
             # Insert edges
+            from core.lib.graph_rules import insert_pending_edge
             for edge in edges:
                 rel = edge.get("relationship", "EVOKES")
-                if rel not in ["EVOKES", "RELATES_TO", "ASSOCIATED_WITH"]:
-                    continue
-                    
-                try:
-                    supabase.table("pending_graph_edges").insert({
-                        "source_label": edge.get("source"),
-                        "target_label": edge.get("target"),
-                        "relationship": rel,
-                        "status": "pending",
+                res = insert_pending_edge(
+                    edge.get("source"),
+                    edge.get("target"),
+                    rel,
+                    {
                         "source_text": f"memories:{mem_id}",
-                        "epistemic_status": edge.get("epistemic", "inferred"),
-                        "eval_context": {"justification": edge.get("justification", "")}
-                    }).execute()
-                except Exception as e:
-                    if hasattr(e, "code") and e.code == "23505":
-                        print(f"    Edge already exists: {edge.get('source')} -> {rel} -> {edge.get('target')}")
-                    else:
-                        print(f"    Failed to insert edge: {e}")
+                        "source_type": "concept",
+                        "target_type": "concept"
+                    }
+                )
+                if res.get("status") == "error":
+                    print(f"    Failed to insert edge: {res.get('reason')}")
 
             # Backfill linked_entity for concept nodes by querying the edges just inserted
             for node in nodes:

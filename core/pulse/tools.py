@@ -310,15 +310,13 @@ def create_person(name: str, context: str):
         }).execute()
         if res.data:
             pending_id = res.data[0]['id']
-            existing_knows = maybe_single_safe(supabase.table('pending_graph_edges').select('id').eq('source_label', 'Danny').eq('target_label', name).eq('relationship', 'KNOWS').in_('status', ['pending', 'approved']))
-            if not (existing_knows and existing_knows.data):
-                supabase.table('pending_graph_edges').insert({
-                    "source_label": "Danny",
-                    "target_label": name,
-                    "relationship": "KNOWS",
-                    "status": "pending",
-                    "source_text": "pulse_tools_create_person"
-                }).execute()
+            from core.lib.graph_rules import insert_pending_edge
+            insert_pending_edge(
+                "Danny",
+                name,
+                "KNOWS",
+                {"source_text": "pulse_tools_create_person", "source_type": "person", "target_type": "person"}
+            )
             return f"Person '{name}' queued for approval (pending ID: {pending_id})."
     except Exception as e:
         return f"Error: {e}"

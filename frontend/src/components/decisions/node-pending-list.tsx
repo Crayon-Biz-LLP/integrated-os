@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { checkSimilarGraphNodes, decideGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, changePendingGraphNodeType } from '@/lib/decisions/api';
+import { checkSimilarGraphNodes, decideGraphNode, batchDecideGraphNodes, mergeGraphNodeIntoExisting, searchGraphNodes, changePendingGraphNodeType } from '@/lib/decisions/api';
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -125,27 +125,18 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
 
   const handleBatch = async (decision: 'approve' | 'reject') => {
     setBatchProcessing(true);
-    let success = 0, fail = 0, skipped = 0;
-    const itemsCopy = [...items];
-    for (const item of itemsCopy) {
-      try {
-        const result = await decideGraphNode(item.id, decision);
-        if (result.action === 'merge_proposed') {
-          skipped++;
-        } else {
-          setItems((prev) => prev.filter((i) => i.id !== item.id));
-          success++;
-        }
-      } catch {
-        fail++;
+    try {
+      const result = await batchDecideGraphNodes(items.map(i => i.id), decision);
+      setItems([]);
+      if (result.failed > 0) {
+        toast.error(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${result.processed}, ${result.failed} failed`);
+      } else {
+        toast.success(`${decision === 'approve' ? 'Approved' : 'Rejected'} all ${result.processed} items`);
       }
+    } catch {
+      toast.error('Batch operation failed. Refetch the list and try again.');
     }
     setBatchProcessing(false);
-    if (fail > 0) {
-      toast.error(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${success}, ${fail} failed${skipped ? `, ${skipped} skipped` : ''}`);
-    } else {
-      toast.success(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${success} items${skipped ? `, ${skipped} skipped (merge proposed)` : ''}`);
-    }
   };
 
   const handleMerge = async (id: number, targetId: string) => {

@@ -72,6 +72,46 @@ export async function decideGraphNode(id: number, decision: 'approve' | 'reject'
   return res.json();
 }
 
+export async function batchDecideCallItems(ids: number[], decision: 'approve' | 'reject'): Promise<{ processed: number; failed: number }> {
+  const res = await fetch('/api/call-action/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, action: decision }),
+  });
+  if (!res.ok) throw new Error('Batch call action failed');
+  return res.json();
+}
+
+export async function batchDecideWhatsAppMessages(ids: number[], decision: 'approve' | 'reject'): Promise<{ processed: number; failed: number }> {
+  const res = await fetch('/api/whatsapp-action/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, action: decision }),
+  });
+  if (!res.ok) throw new Error('Batch WhatsApp action failed');
+  return res.json();
+}
+
+export async function batchDecideGraphEdges(ids: number[], decision: 'approve' | 'reject'): Promise<{ processed: number; failed: number }> {
+  const res = await fetch('/api/graph-edge-action/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, action: decision }),
+  });
+  if (!res.ok) throw new Error('Batch graph edge action failed');
+  return res.json();
+}
+
+export async function batchDecideGraphNodes(ids: number[], decision: 'approve' | 'reject'): Promise<{ processed: number; failed: number }> {
+  const res = await fetch('/api/graph-node-action/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, action: decision }),
+  });
+  if (!res.ok) throw new Error('Batch graph node action failed');
+  return res.json();
+}
+
 export async function mergeGraphNodeIntoExisting(pendingId: number | string, targetId: string, scope: 'pending' | 'live' | 'rejected' = 'pending'): Promise<void> {
   const res = await fetch('/api/graph-node-merge', {
     method: 'POST',

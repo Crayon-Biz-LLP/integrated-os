@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { decideWhatsAppMessage } from '@/lib/decisions/api';
+import { decideWhatsAppMessage, batchDecideWhatsAppMessages } from '@/lib/decisions/api';
 import type { WhatsAppPendingMessage } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
@@ -33,23 +33,18 @@ export function WhatsAppPendingList({ items: initialItems }: { items: WhatsAppPe
 
   const handleBatch = async (decision: 'approve' | 'reject') => {
     setBatchProcessing(true);
-    let success = 0, fail = 0;
-    const itemsCopy = [...items];
-    for (const item of itemsCopy) {
-      try {
-        await decideWhatsAppMessage(item.id, decision);
-        setItems((prev) => prev.filter((i) => i.id !== item.id));
-        success++;
-      } catch {
-        fail++;
+    try {
+      const result = await batchDecideWhatsAppMessages(items.map(i => i.id), decision);
+      setItems([]);
+      if (result.failed > 0) {
+        toast.error(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${result.processed}, ${result.failed} failed`);
+      } else {
+        toast.success(`${decision === 'approve' ? 'Approved' : 'Rejected'} all ${result.processed} items`);
       }
+    } catch {
+      toast.error('Batch operation failed. Refetch the list and try again.');
     }
     setBatchProcessing(false);
-    if (fail > 0) {
-      toast.error(`${decision === 'approve' ? 'Approved' : 'Rejected'} ${success}, ${fail} failed`);
-    } else {
-      toast.success(`${decision === 'approve' ? 'Approved' : 'Rejected'} all ${success} items`);
-    }
   };
 
   if (items.length === 0) {

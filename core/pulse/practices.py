@@ -419,23 +419,16 @@ Return ONLY valid JSON:
                     new_practice_nodes[canonical_name] = new_shortcode
                     print(f"📍 detect_practices: Queued practice '{canonical_name}' for approval")
 
+                    from core.lib.graph_rules import insert_pending_edge
                     for entity_text in distinct_entities:
                         if not entity_text:
                             continue
-                        existing = supabase.table('pending_graph_edges').select('id') \
-                            .eq('source_label', canonical_name) \
-                            .eq('target_label', entity_text) \
-                            .eq('relationship', 'ASSOCIATED_WITH') \
-                            .limit(1).execute()
-                        if existing.data:
-                            continue
-                        supabase.table('pending_graph_edges').insert({
-                            "source_label": canonical_name,
-                            "target_label": entity_text,
-                            "relationship": "ASSOCIATED_WITH",
-                            "source_text": "practice_detection",
-                            "status": "pending"
-                        }).execute()
+                        insert_pending_edge(
+                            canonical_name,
+                            entity_text,
+                            "ASSOCIATED_WITH",
+                            {"source_text": "practice_detection", "source_type": "practice", "target_type": "concept"}
+                        )
 
             except Exception as e:
                 if hasattr(e, "code") and e.code == "23505":

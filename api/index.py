@@ -568,6 +568,32 @@ async def call_action_route(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/api/call-action/batch")
+async def call_action_batch_route(request: Request):
+    """Batch approve/reject call items. One call, server processes all."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        ids = body.get('ids', [])
+        action = body.get('action', '')
+        if not ids or action not in ('approve', 'reject'):
+            raise HTTPException(status_code=400, detail="ids and action required")
+        processed, failed = 0, 0
+        for i in range(0, len(ids), 100):
+            for pending_id in ids[i:i+100]:
+                try:
+                    await process_channel_pending_decision('call', int(pending_id), action)
+                    processed += 1
+                except Exception:
+                    failed += 1
+        return {"success": True, "processed": processed, "failed": failed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Call batch action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # --- WHATSAPP PENDING DECISIONS (approve/reject from frontend) ---
 @app.post("/api/whatsapp-action")
 async def whatsapp_action_route(request: Request):
@@ -595,6 +621,32 @@ async def whatsapp_action_route(request: Request):
 
     except Exception as e:
         print(f"WhatsApp action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/whatsapp-action/batch")
+async def whatsapp_action_batch_route(request: Request):
+    """Batch approve/reject WhatsApp items. One call, server processes all."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        ids = body.get('ids', [])
+        action = body.get('action', '')
+        if not ids or action not in ('approve', 'reject'):
+            raise HTTPException(status_code=400, detail="ids and action required")
+        processed, failed = 0, 0
+        for i in range(0, len(ids), 100):
+            for pending_id in ids[i:i+100]:
+                try:
+                    await process_channel_pending_decision('whatsapp', int(pending_id), action)
+                    processed += 1
+                except Exception:
+                    failed += 1
+        return {"success": True, "processed": processed, "failed": failed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"WhatsApp batch action error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -635,6 +687,34 @@ async def graph_edge_action_route(request: Request):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/graph-edge-action/batch")
+async def graph_edge_action_batch_route(request: Request):
+    """Batch approve/reject graph edges. One call, server processes all."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        ids = body.get('ids', [])
+        action = body.get('action', '')
+        if not ids or action not in ('approve', 'reject'):
+            raise HTTPException(status_code=400, detail="ids and action required")
+        processed, failed = 0, 0
+        for i in range(0, len(ids), 100):
+            for pending_id in ids[i:i+100]:
+                try:
+                    await process_pending_edge_decision(pending_id=int(pending_id), decision=action)
+                    processed += 1
+                except Exception:
+                    failed += 1
+        return {"success": True, "processed": processed, "failed": failed}
+    except HTTPException:
+        raise
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @app.post("/api/clarification")
 async def clarification_action_route(request: Request):
@@ -759,6 +839,34 @@ async def graph_node_action_route(request: Request):
             raise HTTPException(status_code=400, detail=result.get("message", "Failed to process node decision"))
             
         return result
+    except HTTPException:
+        raise
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/graph-node-action/batch")
+async def graph_node_action_batch_route(request: Request):
+    """Batch approve/reject graph nodes. One call, server processes all."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        ids = body.get('ids', [])
+        action = body.get('action', '')
+        if not ids or action not in ('approve', 'reject'):
+            raise HTTPException(status_code=400, detail="ids and action required")
+        from core.pulse.graph import process_graph_pending_decision
+        processed, failed = 0, 0
+        for i in range(0, len(ids), 100):
+            for pending_id in ids[i:i+100]:
+                try:
+                    await process_graph_pending_decision(int(pending_id), action)
+                    processed += 1
+                except Exception:
+                    failed += 1
+        return {"success": True, "processed": processed, "failed": failed}
     except HTTPException:
         raise
     except Exception:
