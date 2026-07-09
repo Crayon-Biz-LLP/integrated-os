@@ -286,7 +286,7 @@ def extract_graph_elements(text: str, memory_id: str, known_entities: set = None
     prompt = f"""Extract knowledge graph elements from this text.
     
 Return a JSON object with:
-- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"place"|"animal"|"concept"|"event"|"emotional_state"|"task", "epistemic": "asserted"|"inferred"|"hypothetical", "justification": string}}
+- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"place"|"animal"|"event"|"emotional_state"|"task", "epistemic": "asserted"|"inferred"|"hypothetical", "justification": string}}
 - "edges": array of objects with {{"source": string, "target": string, "relationship": string, "epistemic": "asserted"|"inferred"|"hypothetical", "justification": string}}
     
 Text: {cleaned_text}
@@ -306,16 +306,6 @@ Rules:
   ✓ QHORD, Ashraya, Solvstrat, Rhodey OS
   ✗ "Church cash rotation incident" (event), "New Habit" (intention), "Journaling tool" (concept), "Call Marcus" (task)
   If it doesn't have a formal name someone would use to refer to an ongoing initiative — skip it.
-- CONCEPTUAL ASSOCIATIONS (extract sparingly — at most 2 per memory):
-  Extract abstract concepts this memory evokes. Concepts are intangible themes,
-  not people, places, or projects.
-  Good: "cash flow urgency", "execution risk", "trust repair", "delivery pressure"
-  Bad:  "meeting", "project update" (too generic), "Qhord" (that's a project node)
-  For each concept:
-  - Node: {{"label": "<concept>", "type": "concept", "epistemic": "inferred"}}
-  - Edge from relevant project/person/event to concept:
-    {{"source": "<entity>", "target": "<concept>", "relationship": "EVOKES"|"ASSOCIATED_WITH"|"RELATES_TO", "epistemic": "inferred"}}
-  If nothing strong surfaces, extract zero concepts. Silence is correct.
 - CRITICAL RULE: EVERY node you extract MUST have at least one connecting edge. Do not output isolated nodes.
 - CRITICAL RULE: Only extract entities that are explicitly, verbatim stated in the text. Do NOT infer, guess, or add external knowledge.
 - Standardize labels to Title Case.

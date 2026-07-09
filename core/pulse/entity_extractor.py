@@ -21,7 +21,7 @@ async def extract_and_link_entities(text: str, source_id: str, source_type: str 
 
     # Fetch known entities for prompt injection
     try:
-        kn_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'organization', 'project', 'place', 'event', 'animal', 'emotional_state', 'concept']).neq('epistemic_status', 'hypothetical').execute()
+        kn_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'organization', 'project', 'place', 'event', 'animal', 'emotional_state']).neq('epistemic_status', 'hypothetical').execute()
         known_labels = [r['label'] for r in kn_res.data] if kn_res and kn_res.data else []
         known_str = ", ".join(known_labels[:50]) # limit to avoid huge prompts
     except Exception:
@@ -30,7 +30,7 @@ async def extract_and_link_entities(text: str, source_id: str, source_type: str 
     prompt = f"""Extract knowledge graph elements from this text.
     
 Return a JSON object with:
-- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"place"|"event"|"animal"|"emotional_state"|"concept"}}
+- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"place"|"event"|"animal"|"emotional_state"}}
 - "edges": array of objects with {{"source": string, "target": string, "relationship": string}}
     
 RULES:

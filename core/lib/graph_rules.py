@@ -31,13 +31,7 @@ VALID_EDGE_MATRIX = {
     ('memory',       'organization'): ['MENTIONS'],
     ('memory',       'event'):        ['MENTIONS'],
     
-    # Conceptual fluidity
-    ('project',      'concept'):      ['EVOKES', 'RELATES_TO'],
-    ('memory',       'concept'):      ['EVOKES'],
-    ('event',        'concept'):      ['EVOKES'],
-    ('person',       'concept'):      ['ASSOCIATED_WITH'],
-    ('task',         'concept'):      ['RELATES_TO'],
-    ('organization', 'concept'):      ['ASSOCIATED_WITH'],
+    # Conceptual fluidity (removed concept rows)
     
     # New types — place, animal, emotional_state, practice
     ('place',          'person'):      ['RELATES_TO'],
@@ -715,7 +709,6 @@ def insert_pending_edge(source_label: str, target_label: str, relationship: str,
 TYPE_TO_DANNY_EDGE = {
     "project": "OWNS",
     "person": "KNOWS",
-    "concept": "INTERESTED_IN",
     "organization": "WORKS_WITH",
     "place": "VISITED",
     "event": "ATTENDED",

@@ -16,10 +16,9 @@ TYPE_TO_DANNY_EDGE = {
     'project': 'OWNS',
     'person': 'KNOWS',
     'organization': 'MEMBER_OF',
-    'concept': 'EVOKES',
     'place': 'RELATES_TO',
     'event': 'ATTENDED',
-    'emotional_state': 'RELATES_TO',
+    'emotional_state': 'FEELS',
 }
 
 
@@ -444,9 +443,6 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                         )
                     except Exception as dec_err:
                         audit_log_sync("pulse", "WARNING", f"Failed to record graph node decision: {dec_err}")
-                    # Cascade auto-approve related concepts and EVOKES edges
-                    from core.pulse.auto_approve import auto_approve_concepts_and_evokes
-                    asyncio.create_task(auto_approve_concepts_and_evokes(label))
 
             await emit_observation(
                 subsystem='entity_extraction',
@@ -1069,8 +1065,6 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"⚠️ Graph task context fetch failed (non-critical): {e}")
         return ""
-
-BYPASS_APPROVAL_TYPES = {'concept'}
 
 def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_type: str, source_content: str = ""):
     """

@@ -22,7 +22,6 @@
  */
 
 import { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
-import * as d3 from 'd3';
 import { Application, Graphics, Text, TextStyle, Container, BlurFilter } from 'pixi.js';
 import type { GraphNode, GraphEdge } from '@/lib/memories/types';
 import type { ViewMode } from '@/lib/memories/useFocusContext';
@@ -44,12 +43,6 @@ interface NeuralDiscProps {
   onContextRestored?: () => void;
   enableEffects?: boolean;
   loading?: boolean;
-}
-
-interface SimNode extends d3.SimulationNodeDatum {
-  id: string;
-  label: string;
-  type: string;
 }
 
 interface LayoutNode {
@@ -83,7 +76,6 @@ const COLOR_MAP: Record<string, number> = {
   project:         0x8b5cf6,
   cluster:         0xa855f7,
   task:            0xf59e0b,
-  concept:         0x71717a,
   emotional_state: 0xf43f5e,
 };
 
@@ -119,95 +111,140 @@ function computeLayout(
     degreeMap.set(e.target_node_id, (degreeMap.get(e.target_node_id) ?? 0) + 1);
   });
 
-  const simNodes: SimNode[] = nodes.map(n => ({
-    id: n.id,
-    label: n.label,
-    type: n.type,
-  }));
+  const n = nodes.length;
+  const sphereRadius = 250;
+  const pos: { x: number; y: number; z: number }[] = [];
+  const vel: { x: number; y: number; z: number }[] = [];
+  let centerIdx = -1;
 
-  const simEdges = edges
-    .filter(
-      e =>
-        nodes.some(n => n.id === e.source_node_id) &&
-        nodes.some(n => n.id === e.target_node_id),
-    )
+  // Map node IDs to indices
+  const idToIdx = new Map<string, number>();
+  nodes.forEach((node, i) => idToIdx.set(node.id, i));
+
+  // Initialize positions — Fibonacci sphere for uniform distribution
+  const goldenRatio = (1 + Math.sqrt(5)) / 2;
+  nodes.forEach((node, i) => {
+    if (node.id === centerId) {
+      centerIdx = i;
+      pos.push({ x: 0, y: 0, z: 0 });
+    } else {
+      const theta = 2 * Math.PI * i / goldenRatio;
+      const phi = Math.acos(1 - 2 * (i + 0.5) / n);
+      pos.push({
+        x: sphereRadius * Math.sin(phi) * Math.cos(theta),
+        y: sphereRadius * Math.sin(phi) * Math.sin(theta),
+        z: sphereRadius * Math.cos(phi),
+      });
+    }
+    vel.push({ x: 0, y: 0, z: 0 });
+  });
+
+  // Filter edges to valid source/target pairs
+  const validEdges = edges
+    .filter(e => idToIdx.has(e.source_node_id) && idToIdx.has(e.target_node_id))
     .map(e => ({
-      id: e.id,
-      relationship: e.relationship,
-      source: simNodes.find(n => n.id === e.source_node_id)!,
-      target: simNodes.find(n => n.id === e.target_node_id)!,
+      sourceIdx: idToIdx.get(e.source_node_id)!,
+      targetIdx: idToIdx.get(e.target_node_id)!,
     }));
 
-  if (centerId !== null) {
-    const centre = simNodes.find(n => n.id === centerId);
-    if (centre) {
-      centre.x  = 0;
-      centre.y  = 0;
-      centre.fx = 0;
-      centre.fy = 0;
+  // 3D force simulation parameters
+  const LINK_DIST = 80;
+  const LINK_STRENGTH = 0.02;
+  const REPULSION = 5000;
+  const SURFACE_STRENGTH = 0.05;
+  const DAMPING = 0.5;
+  const ITERATIONS = 300;
+
+  for (let iter = 0; iter < ITERATIONS; iter++) {
+    const damping = DAMPING * (1 - iter / ITERATIONS);
+
+    // Reset velocities
+    for (let i = 0; i < n; i++) {
+      vel[i].x = 0; vel[i].y = 0; vel[i].z = 0;
+    }
+
+    // Link forces — attractive spring between connected nodes
+    for (const { sourceIdx: si, targetIdx: ti } of validEdges) {
+      if (si === centerIdx && ti === centerIdx) continue;
+      const dx = pos[ti].x - pos[si].x;
+      const dy = pos[ti].y - pos[si].y;
+      const dz = pos[ti].z - pos[si].z;
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+      const strength = (dist - LINK_DIST) * LINK_STRENGTH;
+      const fx = (dx / dist) * strength;
+      const fy = (dy / dist) * strength;
+      const fz = (dz / dist) * strength;
+      if (si !== centerIdx) { vel[si].x += fx; vel[si].y += fy; vel[si].z += fz; }
+      if (ti !== centerIdx) { vel[ti].x -= fx; vel[ti].y -= fy; vel[ti].z -= fz; }
+    }
+
+    // Repulsion — all nodes push apart (omits center)
+    for (let i = 0; i < n; i++) {
+      if (i === centerIdx) continue;
+      for (let j = i + 1; j < n; j++) {
+        if (j === centerIdx) continue;
+        const dx = pos[j].x - pos[i].x;
+        const dy = pos[j].y - pos[i].y;
+        const dz = pos[j].z - pos[i].z;
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+        const force = REPULSION / (dist * dist);
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        const fz = (dz / dist) * force;
+        vel[i].x -= fx; vel[i].y -= fy; vel[i].z -= fz;
+        vel[j].x += fx; vel[j].y += fy; vel[j].z += fz;
+      }
+    }
+
+    // Apply velocity with damping
+    for (let i = 0; i < n; i++) {
+      if (i === centerIdx) continue;
+      pos[i].x += vel[i].x * damping;
+      pos[i].y += vel[i].y * damping;
+      pos[i].z += vel[i].z * damping;
+    }
+
+    // Surface constraint — keep nodes near the sphere
+    for (let i = 0; i < n; i++) {
+      if (i === centerIdx) continue;
+      const dist = Math.sqrt(pos[i].x**2 + pos[i].y**2 + pos[i].z**2) || 1;
+      const diff = dist - sphereRadius;
+      pos[i].x -= (pos[i].x / dist) * diff * SURFACE_STRENGTH;
+      pos[i].y -= (pos[i].y / dist) * diff * SURFACE_STRENGTH;
+      pos[i].z -= (pos[i].z / dist) * diff * SURFACE_STRENGTH;
     }
   }
 
-  const sim = d3
-    .forceSimulation(simNodes)
-    .force(
-      'link',
-      d3.forceLink<SimNode, typeof simEdges[0]>(simEdges)
-        .id(d => d.id)
-        .distance(50)
-        .strength(0.4),
-    )
-    .force('charge', d3.forceManyBody().strength(-120))
-    .force('centre', d3.forceCenter(0, 0))
-    .force('collide', d3.forceCollide(20));
-
-  sim.tick(500);
-  sim.stop();
-
-  // Find max radius to bound the sphere
+  // Compute max 3D radius for radialNorm
   let maxR = 1;
-  simNodes.forEach(n => {
-    const r = Math.sqrt((n.x ?? 0)**2 + (n.y ?? 0)**2);
+  for (let i = 0; i < n; i++) {
+    const r = Math.sqrt(pos[i].x**2 + pos[i].y**2 + pos[i].z**2);
     if (r > maxR) maxR = r;
-  });
+  }
 
-  const layoutNodes: LayoutNode[] = simNodes.map((n, i) => {
-    const nx = n.x ?? 0;
-    const ny = n.y ?? 0;
-    const r = Math.sqrt(nx*nx + ny*ny);
-    
-    // Inflate flat layout into a sphere. 
-    // Outer nodes curve backwards or forwards.
-    // Pseudo-random hemisphere assignment based on index to distribute evenly.
-    const hemisphere = (i % 2 === 0) ? 1 : -1;
-    // z = sqrt(R^2 - r^2) * hemisphere
-    // We scale Z slightly down to make it an oblate spheroid (disc-like) for better reading
-    let nz = Math.sqrt(Math.max(0, maxR*maxR - r*r)) * hemisphere * 0.7;
-    
-    // Core node stays exactly at 0,0,0
-    if (n.id === centerId) nz = 0;
-
+  const layoutNodes: LayoutNode[] = nodes.map((node, i) => {
+    const r = Math.sqrt(pos[i].x**2 + pos[i].y**2 + pos[i].z**2);
     return {
-      id: n.id,
-      label: n.label,
-      type: n.type,
-      x: nx,
-      y: ny,
-      z: nz,
+      id: node.id,
+      label: node.label,
+      type: node.type,
+      x: pos[i].x,
+      y: pos[i].y,
+      z: pos[i].z,
       radialNorm: maxR > 0 ? (r / maxR) : 0,
-      degree: degreeMap.get(n.id) ?? 0,
-      projX: 0, projY: 0, projScale: 1
+      degree: degreeMap.get(node.id) ?? 0,
+      projX: 0, projY: 0, projScale: 1,
     };
   });
 
   const nodeMap = new Map<string, LayoutNode>(layoutNodes.map(n => [n.id, n]));
-  const layoutEdges: LayoutEdge[] = simEdges
-    .filter(e => nodeMap.has(e.source.id) && nodeMap.has(e.target.id))
+  const layoutEdges: LayoutEdge[] = edges
+    .filter(e => nodeMap.has(e.source_node_id) && nodeMap.has(e.target_node_id))
     .map(e => ({
       id: e.id,
       relationship: e.relationship,
-      source: nodeMap.get(e.source.id)!,
-      target: nodeMap.get(e.target.id)!,
+      source: nodeMap.get(e.source_node_id)!,
+      target: nodeMap.get(e.target_node_id)!,
     }));
 
   return { layoutNodes, layoutEdges };
