@@ -9,7 +9,7 @@ import time
 
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
-from core.lib.graph_rules import resolve_alias
+from core.lib.graph_rules import resolve_alias, normalize_label
 from core.services.db import get_supabase, maybe_single_safe
 
 
@@ -711,8 +711,9 @@ def run_backfill():
                     supabase.table('graph_nodes').upsert({
                         "label": memory_label,
                         "type": "memory",
+                        "normalized_label": normalize_label(memory_label),
                         "metadata": meta
-                    }, on_conflict="label").execute()
+                    }, on_conflict="normalized_label").execute()
                     processed += 1
                 except Exception as e:
                     audit_log_sync("backfill_graph", "WARNING", f"Failed to create memory node for {mem['id']}: {e}")
@@ -956,8 +957,9 @@ def backfill_orphaned_tasks():
             supabase.table("graph_nodes").upsert({
                 "label": task_title,
                 "type": "task",
+                "normalized_label": normalize_label(task_title),
                 "metadata": {"source": "tasks_table", "task_id": task_id, **meta}
-            }, on_conflict="label").execute()
+            }, on_conflict="normalized_label").execute()
             node_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", task_title))
             if not node_res or not node_res.data:
                 audit_log_sync("backfill_graph", "WARNING", f"⚠️ Failed to get node for task {task_id}")
@@ -1452,12 +1454,13 @@ def sync_people_to_graph_nodes():
                 "label": name,
                 "type": "person",
                 "epistemic_status": "inferred",
+                "normalized_label": normalize_label(name),
                 "db_record_id": pid,
                 "metadata": {
                     "source": "people_reverse_sync",
                     "people_id": pid
                 }
-            }, on_conflict="label").execute()
+            }, on_conflict="normalized_label").execute()
             existing_labels.add(name.lower())
             existing_db_ids.add(pid)
             created += 1
@@ -1537,12 +1540,13 @@ def sync_organizations_to_graph_nodes():
                 "label": name,
                 "type": "organization",
                 "epistemic_status": "inferred",
+                "normalized_label": normalize_label(name),
                 "db_record_id": oid,
                 "metadata": {
                     "source": "organizations_sync",
                     "organization_id": oid
                 }
-            }, on_conflict="label").execute()
+            }, on_conflict="normalized_label").execute()
             existing_db_ids.add(oid)
             created += 1
         except Exception as e:
@@ -1619,12 +1623,13 @@ def sync_projects_to_graph_nodes():
                 "label": name,
                 "type": "project",
                 "epistemic_status": "inferred",
+                "normalized_label": normalize_label(name),
                 "db_record_id": pid,
                 "metadata": {
                     "source": "projects_sync",
                     "project_id": pid
                 }
-            }, on_conflict="label").execute()
+            }, on_conflict="normalized_label").execute()
             existing_db_ids.add(pid)
             created += 1
         except Exception as e:

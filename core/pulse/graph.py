@@ -7,7 +7,7 @@ import asyncio
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
 from core.lib.people_utils import normalize_person_name
-from core.lib.graph_rules import find_similar_node, resolve_alias, canonicalize_relationship, normalize_label_display, get_canonical_id
+from core.lib.graph_rules import find_similar_node, resolve_alias, canonicalize_relationship, normalize_label_display, get_canonical_id, normalize_label
 from core.decisions import record_decision
 
 supabase = get_supabase()
@@ -70,19 +70,21 @@ async def create_graph_node_with_db_record(
                     raise Exception("Supabase insert returned no data for projects")
                 project_id = result.data[0]['id']
 
+            node_data = {
+                "label": label,
+                "type": "project",
+                "epistemic_status": "asserted",
+                "normalized_label": normalize_label(label),
+                "db_record_id": str(project_id),
+                "metadata": {
+                    "source": source_tag,
+                    "project_id": str(project_id),
+                    "memory_id": source_text,
+                }
+            }
             supabase.table("graph_nodes").upsert(
-                {
-                    "label": label,
-                    "type": "project",
-                    "epistemic_status": "asserted",
-                    "db_record_id": str(project_id),
-                    "metadata": {
-                        "source": source_tag,
-                        "project_id": str(project_id),
-                        "memory_id": source_text,
-                    }
-                },
-                on_conflict="label"
+                node_data,
+                on_conflict="normalized_label"
             ).execute()
 
             await _ensure_danny_edge(label, node_type)
@@ -124,6 +126,7 @@ async def create_graph_node_with_db_record(
                     "label": label,
                     "type": "person",
                     "epistemic_status": "asserted",
+                    "normalized_label": normalize_label(label),
                     "db_record_id": str(people_id),
                     "metadata": {
                         "source": source_tag,
@@ -131,7 +134,7 @@ async def create_graph_node_with_db_record(
                         "memory_id": source_text,
                     }
                 },
-                on_conflict="label"
+                on_conflict="normalized_label"
             ).execute()
 
             await _ensure_danny_edge(label, node_type)
@@ -175,9 +178,10 @@ async def create_graph_node_with_db_record(
                     "label": label,
                     "type": node_type,
                     "epistemic_status": "asserted",
+                    "normalized_label": normalize_label(label),
                     "metadata": node_meta,
                 },
-                on_conflict="label"
+                on_conflict="normalized_label"
             ).execute()
 
             # Back-link: store graph_node_id on the organizations row
@@ -618,12 +622,13 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
         supabase.table('graph_nodes').upsert({
             "label": task_title,
             "type": "task",
+            "normalized_label": normalize_label(task_title),
             "metadata": {
                 "source": "tasks_table",
                 "task_id": task_id,
                 "project_id": project_id
             }
-        }, on_conflict="label").execute()
+        }, on_conflict="normalized_label").execute()
 
         if project_id:
             proj_node = supabase.table('graph_nodes') \
@@ -1094,6 +1099,7 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
             new_node = supabase.table('graph_nodes').insert({
                 "label": source_label,
                 "type": source_type,
+                "normalized_label": normalize_label(source_label),
                 "metadata": meta
             }).execute()
             root_node_id = new_node.data[0]['id']

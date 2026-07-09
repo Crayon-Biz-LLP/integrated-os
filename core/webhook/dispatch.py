@@ -22,6 +22,7 @@ from core.agents.quick_process import process_single_dump, get_tasks_service
 from core.retrieval.pipeline import schedule_index_memory
 from core.lib.decision_audit import log_decision, DecisionStage, set_decision_chain_id, get_decision_chain_id
 from core.pulse.entity_extractor import extract_and_link_entities
+from core.lib.graph_rules import normalize_label
 from core.pulse.entity_resolver import resolve_entities_from_text
 from core.services.db import version_memory_for_update, maybe_single_safe
 
@@ -1630,6 +1631,7 @@ async def handle_declare_practice(text: str, chat_id: int, classification: dict)
         node_res = supabase.table('graph_nodes').insert({
             "label": practice_name,
             "type": "practice",
+            "normalized_label": normalize_label(practice_name),
             "metadata": metadata
         }).execute()
 

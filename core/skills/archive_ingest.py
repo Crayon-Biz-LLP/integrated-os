@@ -10,6 +10,7 @@ from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import get_supabase
 from core.services.google_service import get_google_creds
 from core.llm.retry import get_jittered_backoff
+from core.lib.graph_rules import normalize_label
 
 supabase = get_supabase()
 
@@ -170,6 +171,7 @@ def ensure_node(label: str) -> str:
             lambda: supabase.table("graph_nodes").insert({
                 "label": label,
                 "type": node_type,
+                "normalized_label": normalize_label(label),
                 "metadata": {"source": "archive_ingest"}
             }).execute(),
             label="Node insert"

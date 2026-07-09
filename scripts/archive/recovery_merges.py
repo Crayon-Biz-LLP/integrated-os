@@ -31,6 +31,7 @@ def merge_nodes(loser_label, winner_label, node_type, create_if_missing=False):
             supabase.table('graph_nodes').insert({
                 'label': loser_label,
                 'type': node_type,
+                'normalized_label': loser_label.strip().lower(),
                 'canonical_id': winner_id,
                 'metadata': {'source': 'recovery_script'}
             }).execute()

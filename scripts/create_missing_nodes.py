@@ -6,6 +6,7 @@ load_dotenv(".env.local")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.services.db import get_supabase  # noqa: E402
+from core.lib.graph_rules import normalize_label  # noqa: E402
 
 def main():
     supabase = get_supabase()
@@ -39,7 +40,8 @@ def main():
             # We'll just create the graph_node for now.
             insert_res = supabase.table("graph_nodes").insert({
                 "label": label,
-                "type": node_type
+                "type": node_type,
+                "normalized_label": normalize_label(label),
             }).execute()
             node_id = insert_res.data[0]['id']
             print(f"  Created id={node_id}")

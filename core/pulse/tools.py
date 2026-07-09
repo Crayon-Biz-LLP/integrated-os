@@ -8,6 +8,7 @@ from core.services.db import get_supabase, maybe_single_safe
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
 from core.actions import ActionResult, accumulate_action
+from core.lib.graph_rules import normalize_label
 
 supabase = get_supabase()
 
@@ -135,6 +136,7 @@ def create_project(name: str, description: str = "", keywords: List[str] = None,
             supabase.table('graph_nodes').insert({
                 "label": name,
                 "type": "project",
+                "normalized_label": normalize_label(name),
                 "metadata": {"source": "pulse_tools", "project_id": str(proj_id)}
             }).execute()
             return f"Project created with ID {proj_id}"

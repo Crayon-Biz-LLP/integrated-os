@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
+from core.lib.graph_rules import normalize_label
 
 supabase = get_supabase()
 CUTOFF = "2026-07-04"
@@ -151,10 +152,11 @@ def main():
                 "label": label,
                 "type": ntype,
                 "epistemic_status": "asserted",
+                "normalized_label": normalize_label(label),
                 "metadata": {"source": src}
             })
         try:
-            res = supabase.table('graph_nodes').upsert(rows, on_conflict="label").execute()
+            res = supabase.table('graph_nodes').upsert(rows, on_conflict="normalized_label").execute()
             if res.data:
                 for n in res.data:
                     gn_map[n['label'].lower()] = n['id']

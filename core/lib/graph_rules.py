@@ -131,6 +131,10 @@ def normalize_label_comparison(label: str) -> str:
     label = re.sub(r'[.,;:!?()\[\]{}]', '', label)
     return label.strip()
 
+def normalize_label(label: str) -> str:
+    """Normalize a label for identity/conflict matching — lowercase + trimmed."""
+    return label.strip().lower()
+
 def normalize_label_display(label: str) -> str:
     """Canonical display form for storage.
     
@@ -146,11 +150,6 @@ def normalize_label_display(label: str) -> str:
     label = label.strip()
     label = re.sub(r'\s+', ' ', label)
     return label
-
-def normalize_label(label: str) -> str:
-    """Normalize a label for consistent comparison — matches pending_graph_nodes unique index."""
-    return label.strip().lower() if label else ""
-
 
 def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
     """Returns the closest canonical match for a raw label.
@@ -609,6 +608,7 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
             res = supabase.table("graph_nodes").insert({
                 "label": label,
                 "type": typ,
+                "normalized_label": normalize_label(label),
                 "metadata": source_info
             }).execute()
             if res.data:

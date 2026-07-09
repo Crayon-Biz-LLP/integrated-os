@@ -10,6 +10,7 @@ from core.llm.constants import CLASSIFICATION_MODEL  # noqa: E402
 from core.llm.compat import call_llm_with_fallback_sync  # noqa: E402
 from core.skills.backfill_graph import synthesize_content  # noqa: E402
 from core.clarifier import evaluate_node  # noqa: E402
+from core.lib.graph_rules import normalize_label  # noqa: E402
 
 supabase = get_supabase()
 
@@ -104,6 +105,7 @@ def ensure_memory_node_exists(memory_id: str, content: str) -> str:
         supabase.table("graph_nodes").insert({
             "label": memory_label,
             "type": "memory",
+            "normalized_label": normalize_label(memory_label),
             "db_record_id": str(memory_id),
             "epistemic_status": "asserted",
             "metadata": meta

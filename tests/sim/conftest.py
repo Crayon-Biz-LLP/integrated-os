@@ -4,6 +4,7 @@ from core.lib.audit_logger import set_trace_id
 from core.services.db import get_supabase
 from core.llm.compat import get_embedding_sync
 from core.llm.constants import EMBEDDING_DIMENSION
+from core.lib.graph_rules import normalize_label
 
 
 # ── Per-table cleanup predicates ──────────────────────────────────────────
@@ -103,9 +104,9 @@ def seed_test_data():
 
     # 1. Graph nodes
     nodes = [
-        {'label': '[SIM_TEST] Shifrah', 'type': 'person'},
-        {'label': '[SIM_TEST] Vasanth', 'type': 'person'},
-        {'label': '[SIM_TEST] Alpha', 'type': 'project'},
+        {'label': '[SIM_TEST] Shifrah', 'type': 'person', 'normalized_label': normalize_label('[SIM_TEST] Shifrah')},
+        {'label': '[SIM_TEST] Vasanth', 'type': 'person', 'normalized_label': normalize_label('[SIM_TEST] Vasanth')},
+        {'label': '[SIM_TEST] Alpha', 'type': 'project', 'normalized_label': normalize_label('[SIM_TEST] Alpha')},
     ]
     for n in nodes:
         res = supabase.table('graph_nodes').insert(n).execute()
