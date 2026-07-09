@@ -6,7 +6,7 @@ from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.webhook.telegram import send_telegram
-from core.lib.conversation import log_exchange
+from core.lib.conversation import log_exchange, _check_topic_overlap
 from core.actions import ActionResult, accumulate_action
 
 CONFIRM_PHRASES = {'yes', 'y', 'yep', 'do it', 'go ahead', 'sure', 'ok', 'okay', 'yeah', 'please', 'absolutely'}
@@ -84,6 +84,12 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     w_type = workflow['workflow_type']
     payload = workflow.get('payload') or {}
     
+    # 0. Deterministic topical relevance guard (before any LLM call)
+    if text and not _check_topic_overlap(text, payload):
+        audit_log_sync("workflow", "INFO",
+            f"Workflow {w_id} bypassed: message entities don't match workflow payload — falling through")
+        return False
+
     # 1. Deterministic phrase matching (fast path)
     decision = get_deterministic_decision(text)
     

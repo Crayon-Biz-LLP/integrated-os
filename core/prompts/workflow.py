@@ -9,6 +9,8 @@ Proposed Details: {json.dumps(payload)}
 
 User's Reply: "{text}"
 
+CRITICAL: Only return "confirm" or "decline" if the user's reply is about the SAME project, task, person, or subject as the proposed action above. If the user mentions a different entity or an unrelated topic, return "unrelated". Ambiguous acknowledgments with no topical evidence (e.g. "ok", "sure") may still be treated as confirm/decline based on conversational context.
+
 Did the user explicitly confirm/agree to proceed with the action?
 Did the user explicitly decline/cancel it?
 Or is this an entirely unrelated message that ignores the proposal?

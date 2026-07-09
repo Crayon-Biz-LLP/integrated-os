@@ -1,5 +1,7 @@
 import pytest
+from unittest.mock import patch
 from core.webhook.workflows import check_and_resume_workflow
+from core.lib.conversation import resolve_thread
 from core.services.db import get_supabase
 import uuid
 
@@ -103,3 +105,89 @@ async def test_multiple_workflows_fall_open():
     finally:
         supabase.table('conversation_workflows').delete().in_('id', [w['id'] for w in w_res.data]).execute()
         supabase.table('conversation_threads').delete().in_('id', [thread_id_1, thread_id_2]).execute()
+
+
+def test_resolve_thread_unrelated_entity_falls_through():
+    """Active workflow + unrelated named entity → fallback thread, not workflow thread."""
+    supabase = get_supabase()
+    chat_id = 9999996
+    thread_id = str(uuid.uuid4())
+    
+    supabase.table('conversation_threads').insert({
+        'id': thread_id, 'chat_id': chat_id, 'thread_type': 'general'
+    }).execute()
+    
+    w_res = supabase.table('conversation_workflows').insert({
+        'chat_id': chat_id, 'thread_id': thread_id,
+        'workflow_type': 'task_creation', 'status': 'active',
+        'awaiting_user_input': True,
+        'payload': {'title': 'Amico contract review'}
+    }).execute()
+    w_id = w_res.data[0]['id']
+    
+    try:
+        routed_id, _ = resolve_thread(chat_id, "Equisoft gave the go ahead")
+        assert routed_id != thread_id, \
+            f"Expected different thread, got workflow thread {routed_id}"
+    finally:
+        supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
+        supabase.table('conversation_threads').delete().eq('id', thread_id).execute()
+
+
+def test_resolve_thread_filler_yes_resumes_workflow():
+    """Active workflow + filler 'yes' → workflow thread."""
+    supabase = get_supabase()
+    chat_id = 9999995
+    thread_id = str(uuid.uuid4())
+    
+    supabase.table('conversation_threads').insert({
+        'id': thread_id, 'chat_id': chat_id, 'thread_type': 'general'
+    }).execute()
+    
+    w_res = supabase.table('conversation_workflows').insert({
+        'chat_id': chat_id, 'thread_id': thread_id,
+        'workflow_type': 'task_creation', 'status': 'active',
+        'awaiting_user_input': True,
+        'payload': {'title': 'Amico contract review'}
+    }).execute()
+    w_id = w_res.data[0]['id']
+    
+    try:
+        routed_id, _ = resolve_thread(chat_id, "yes")
+        assert routed_id == thread_id, \
+            f"Expected workflow thread {thread_id}, got {routed_id}"
+    finally:
+        supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
+        supabase.table('conversation_threads').delete().eq('id', thread_id).execute()
+
+
+@patch('core.webhook.workflows.generate_content_with_fallback')
+@pytest.mark.asyncio
+async def test_check_resume_skips_llm_on_topic_mismatch(mock_llm):
+    """check_and_resume_workflow with unrelated entity skips LLM, returns False."""
+    supabase = get_supabase()
+    chat_id = 9999994
+    thread_id = str(uuid.uuid4())
+    
+    supabase.table('conversation_threads').insert({
+        'id': thread_id, 'chat_id': chat_id, 'thread_type': 'general'
+    }).execute()
+    
+    w_res = supabase.table('conversation_workflows').insert({
+        'chat_id': chat_id, 'thread_id': thread_id,
+        'workflow_type': 'task_creation', 'status': 'active',
+        'awaiting_user_input': True,
+        'payload': {'title': 'Amico contract review'}
+    }).execute()
+    w_id = w_res.data[0]['id']
+    
+    try:
+        handled = await check_and_resume_workflow(chat_id, "Equisoft team approved", thread_id)
+        assert not handled, "Should return False (not handled) for unrelated entity"
+        mock_llm.assert_not_called(), "LLM should not be called for topic mismatch"
+        
+        check = supabase.table('conversation_workflows').select('status').eq('id', w_id).execute()
+        assert check.data[0]['status'] == 'active', "Workflow should remain active"
+    finally:
+        supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
+        supabase.table('conversation_threads').delete().eq('id', thread_id).execute()

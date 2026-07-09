@@ -1,6 +1,7 @@
 from core.services.db import get_supabase, maybe_single_safe
 import uuid
 import re
+import json
 from datetime import datetime, timezone
 
 from core.llm.compat import call_llm_with_fallback_sync
@@ -18,6 +19,39 @@ def _touch_thread(thread_id: str):
     except Exception as e:
         from core.lib.audit_logger import audit_log_sync
         audit_log_sync("conversation", "WARNING", f"Failed to touch thread {thread_id}: {e}")
+
+def _check_topic_overlap(text: str, payload: dict) -> bool:
+    """Deterministic topical relevance check between message and workflow payload.
+
+    Returns True if:
+    - Message has no capitalized entity names (filler like 'yes'/'ok')
+    - Any message entity overlaps with payload content
+
+    Returns False if message has entities that don't appear in payload.
+    """
+    if not text or not payload:
+        return True
+
+    message_entities = set()
+    for m in re.finditer(r'\b([A-Z][a-z]{3,}(?:\s+[A-Z][a-z]{3,})*)\b', text):
+        message_entities.add(m.group(1).lower())
+
+    if not message_entities:
+        return True
+
+    payload_parts = []
+    for v in payload.values():
+        if isinstance(v, str):
+            payload_parts.append(v)
+        elif isinstance(v, (list, dict)):
+            payload_parts.append(json.dumps(v))
+    payload_text = ' '.join(payload_parts).lower()
+
+    for entity in message_entities:
+        if entity in payload_text:
+            return True
+    return False
+
 
 def _entity_is_primary_topic(text: str, entity_name: str) -> bool:
     """K2: Check if entity_name is the primary subject of text, not a side mention.
@@ -302,15 +336,29 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
         supabase = get_supabase()
         
         # 1. Open workflow bound to chat_id
-        workflows = supabase.table('conversation_workflows').select('thread_id').eq('chat_id', chat_id).eq('status', 'active').execute()
+        workflows = supabase.table('conversation_workflows').select('thread_id, payload').eq('chat_id', chat_id).eq('status', 'active').execute()
         if workflows.data and len(workflows.data) == 1:
             thread_id = workflows.data[0]['thread_id']
-            _touch_thread(thread_id)
-            t_res = supabase.table('conversation_threads').select('active_anchor').eq('id', thread_id).execute()
-            anchor = t_res.data[0].get('active_anchor') if t_res.data else None
-            from core.lib.audit_logger import audit_log_sync
-            audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via workflow_resume")
-            return thread_id, anchor
+            if text:
+                payload = workflows.data[0].get('payload') or {}
+                if not _check_topic_overlap(text, payload):
+                    from core.lib.audit_logger import audit_log_sync
+                    audit_log_sync("routing", "INFO",
+                        "Message topic differs from active workflow — falling through to normal routing")
+                else:
+                    _touch_thread(thread_id)
+                    t_res = supabase.table('conversation_threads').select('active_anchor').eq('id', thread_id).execute()
+                    anchor = t_res.data[0].get('active_anchor') if t_res.data else None
+                    from core.lib.audit_logger import audit_log_sync
+                    audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via workflow_resume")
+                    return thread_id, anchor
+            else:
+                _touch_thread(thread_id)
+                t_res = supabase.table('conversation_threads').select('active_anchor').eq('id', thread_id).execute()
+                anchor = t_res.data[0].get('active_anchor') if t_res.data else None
+                from core.lib.audit_logger import audit_log_sync
+                audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via workflow_resume")
+                return thread_id, anchor
 
         # 2. Entity match with disambiguation (K2)
         if text:
