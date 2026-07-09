@@ -158,8 +158,8 @@ async def process_callback_query(callback_query: dict):
                             # Revert message back to pending for re-review
                             supabase.table('messages').update({'danny_decision': None}).eq('id', int(entity_id)).execute()
                             undone_count += 1
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            audit_log_sync("webhook", "ERROR", f"Undo channels failed: {e}", exc_info=True)
                     elif undo_target == "graph" and entity_id:
                         try:
                             # Look up the pending_graph_nodes row by id
@@ -183,16 +183,16 @@ async def process_callback_query(callback_query: dict):
                                         .eq('id', n['id'])\
                                         .execute()
                                     undone_count += 1
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            audit_log_sync("webhook", "ERROR", f"Undo graph failed: {e}", exc_info=True)
                     elif undo_target == "edge" and entity_id:
                         try:
                             supabase.table('pending_graph_edges').update({'status': 'pending'})\
                                 .eq('id', int(entity_id))\
                                 .execute()
                             undone_count += 1
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            audit_log_sync("webhook", "ERROR", f"Undo edge failed: {e}", exc_info=True)
                 
                 if undone_count > 0:
                     await send_telegram(chat_id, f"↩️ Undone {undone_count} auto-processed {undo_target} items. They will reappear in the next Decision Pulse for re-review.")

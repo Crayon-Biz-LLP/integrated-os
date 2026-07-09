@@ -165,8 +165,11 @@ def run_batch_sweep():
                             "eval_context": eval_ctx
                         }).execute()
                         print(f"    Flagged concept: {label} (Similarity alert)")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        if hasattr(e, "code") and e.code == "23505":
+                            print(f"    Concept already flagged: {label}")
+                        else:
+                            print(f"    Failed to flag concept {label}: {e}")
                 else:
                     try:
                         supabase.table("pending_graph_nodes").insert({
@@ -178,8 +181,11 @@ def run_batch_sweep():
                             "eval_context": eval_ctx
                         }).execute()
                         print(f"    Queued concept: {label}")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        if hasattr(e, "code") and e.code == "23505":
+                            print(f"    Concept already queued: {label}")
+                        else:
+                            print(f"    Failed to queue concept {label}: {e}")
                         
             # Insert edges
             for edge in edges:
@@ -197,8 +203,11 @@ def run_batch_sweep():
                         "epistemic_status": edge.get("epistemic", "inferred"),
                         "eval_context": {"justification": edge.get("justification", "")}
                     }).execute()
-                except Exception:
-                    pass
+                except Exception as e:
+                    if hasattr(e, "code") and e.code == "23505":
+                        print(f"    Edge already exists: {edge.get('source')} -> {rel} -> {edge.get('target')}")
+                    else:
+                        print(f"    Failed to insert edge: {e}")
 
             # Backfill linked_entity for concept nodes by querying the edges just inserted
             for node in nodes:

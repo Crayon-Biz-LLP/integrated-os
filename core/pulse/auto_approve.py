@@ -151,5 +151,8 @@ async def auto_approve_concepts_and_evokes(label: str):
                 audit_log_sync("pulse", "WARNING", f"Failed to record edge creation decision: {dec_err}")
             
         # 6. Mark pending edge as approved
-        supabase.table('pending_graph_edges').update({'status': 'approved'}).eq('id', edge['id']).execute()
+        supabase.table('pending_graph_edges').update({
+            'status': 'approved',
+            'approval_source': 'auto_approve'
+        }).eq('id', edge['id']).execute()
 

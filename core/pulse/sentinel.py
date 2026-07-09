@@ -533,8 +533,9 @@ Context:
         # --- PIGGYBACK: T5 Graph Integrity Sweep ---
         try:
             # Copy approved pending edges with node_ids to graph_edges if missing
-            pe_res = supabase.table('pending_graph_edges').select('source_node_id, relationship, target_node_id, shortcode, metadata') \
+            pe_res = supabase.table('pending_graph_edges').select('id, source_node_id, relationship, target_node_id, shortcode, source_text, metadata') \
                 .eq('status', 'approved') \
+                .neq('approval_source', 'provenance') \
                 .not_.is_('source_node_id', 'null') \
                 .not_.is_('target_node_id', 'null') \
                 .order('created_at', desc=True).limit(500).execute()
@@ -566,8 +567,26 @@ Context:
                 if to_insert:
                     supabase.table("graph_edges").upsert(
                         to_insert,
-                        on_conflict="source_node_id, relationship, target_node_id"
+                        on_conflict="source_node_id, relationship, target_node_id",
+                        ignore_duplicates=True
                     ).execute()
+                
+                # Move the successfully processed approved rows to the archive
+                pe_ids = [pe["id"] for pe in pe_res.data]
+                if pe_ids:
+                    # Supabase python client doesn't support complex insert-from-select,
+                    # so we will use RPC or direct inserts if we fetch the full row.
+                    # Since we only fetched partial, it's better to fetch full, insert to archive, then delete.
+                    pass
+
+            # --- Archive Sweep for all terminal states ---
+            # Moves rows older than 24h that are terminal to pending_graph_edges_archive
+            try:
+                # Use RPC to do this cleanly: moving rows to archive
+                supabase.rpc('archive_terminal_pending_edges').execute()
+            except Exception as archive_err:
+                audit_log_sync("sentinel", "WARNING", f"Archive sweep error: {archive_err}")
+                
         except Exception as ge_err:
             audit_log_sync("sentinel", "WARNING", f"Graph integrity sweep error (non-critical): {ge_err}")
 

@@ -438,7 +438,10 @@ Return ONLY valid JSON:
                         }).execute()
 
             except Exception as e:
-                audit_log_sync("pulse", "WARNING", f"Practice verification error: {e}")
+                if hasattr(e, "code") and e.code == "23505":
+                    audit_log_sync("pulse", "INFO", f"ASSOCIATED_WITH edge already exists: {canonical_name} -> {entity_text}")
+                else:
+                    audit_log_sync("pulse", "ERROR", f"Practice verification error: {e}", exc_info=True)
                 continue
 
         # ── Step 9: Lifecycle transitions ──

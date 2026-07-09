@@ -201,9 +201,18 @@ def main():
         })
         approved_ids.append(e['id'])
 
+    # Deduplicate batch to prevent 'ON CONFLICT DO UPDATE command cannot affect row a second time'
+    seen_edges = set()
+    unique_approved_batch = []
+    for item in approved_batch:
+        key = (item["source_node_id"], item["relationship"], item["target_node_id"])
+        if key not in seen_edges:
+            seen_edges.add(key)
+            unique_approved_batch.append(item)
+
     # Batch upsert into graph_edges
     ge_count = 0
-    for chunk in batch(approved_batch, 50):
+    for chunk in batch(unique_approved_batch, 50):
         try:
             supabase.table('graph_edges').upsert(chunk,
                 on_conflict="source_node_id,relationship,target_node_id",
@@ -215,9 +224,10 @@ def main():
     # Mark edges as approved in pending_graph_edges
     for chunk in batch(approved_ids, 200):
         try:
-            supabase.table('pending_graph_edges').update({'status': 'approved'}) \
-                .in_('id', chunk) \
-                .execute()
+            supabase.table('pending_graph_edges').update({
+                'status': 'approved',
+                'approval_source': 'auto_approve'
+            }).in_('id', chunk).execute()
         except Exception as e:
             stats['errors'].append(f"mark approved: {e}")
 

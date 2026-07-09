@@ -497,7 +497,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
         audit_log_sync("pulse", "ERROR", f"Error processing graph decision: {e}")
         return {"success": False, "action": "error", "message": str(e)}
 
-async def process_pending_edge_decision(pending_id: int, decision: str, new_source: str = None, new_target: str = None, new_rel: str = None, context: str | None = None) -> dict:
+async def process_pending_edge_decision(pending_id: int, decision: str, new_source: str = None, new_target: str = None, new_rel: str = None, context: str | None = None, auto_decided: bool = False) -> dict:
     try:
         pe_res = maybe_single_safe(supabase.table('pending_graph_edges').select('*').eq('id', pending_id))
         if not pe_res or not pe_res.data:
@@ -508,7 +508,10 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             return {"success": False, "action": "already_processed", "message": "Already processed."}
             
         if decision == 'reject':
-            supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('id', pending_id).execute()
+            supabase.table('pending_graph_edges').update({
+                'status': 'rejected',
+                'approval_source': 'auto_approve' if auto_decided else 'hitl'
+            }).eq('id', pending_id).execute()
             # Record rejection decision
             try:
                 record_decision(
@@ -562,7 +565,10 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
 
             if not s_data or not t_data:
                 missing = s_label if not s_data else t_label
-                supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('id', pending_id).execute()
+                supabase.table('pending_graph_edges').update({
+                    'status': 'rejected',
+                    'approval_source': 'auto_approve' # validation failed
+                }).eq('id', pending_id).execute()
                 return {"success": False, "action": "missing_node", "message": f"Node '{missing}' doesn't exist."}
 
             s_id = s_data['id']
@@ -574,7 +580,10 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                 rel = canonicalize_relationship(rel, s_type, t_type)
                 vr = validate_edge(s_type, rel, t_type)
                 if vr["action"] == "auto_reject":
-                    supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('id', pending_id).execute()
+                    supabase.table('pending_graph_edges').update({
+                        'status': 'rejected',
+                        'approval_source': 'auto_approve'
+                    }).eq('id', pending_id).execute()
                     return {"success": False, "action": "rejected", "message": f"Auto-rejected: {vr['reason']}"}
                 elif vr["action"] == "auto_correct":
                     rel = vr["reason"]
@@ -600,6 +609,7 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             
             supabase.table('pending_graph_edges').update({
                 'status': 'approved',
+                'approval_source': 'auto_approve' if auto_decided else 'hitl',
                 'source_label': s_label,
                 'target_label': t_label,
                 'relationship': rel,
@@ -679,7 +689,10 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                             "target_type": "project"
                         }).execute()
                     except Exception as e:
-                        audit_log_sync("pulse", "WARNING", f"Failed to insert WORKS_ON pending edge: {e}")
+                        if hasattr(e, "code") and e.code == "23505":
+                            audit_log_sync("pulse", "INFO", f"WORKS_ON edge already exists (dedup): {task_title}")
+                        else:
+                            audit_log_sync("pulse", "ERROR", f"Failed to insert WORKS_ON pending edge: {e}", exc_info=True)
 
         search_text = f"{task_title} {task_description or ''}".lower()
 
@@ -717,7 +730,10 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                                 "target_type": "person"
                             }).execute()
                         except Exception as e:
-                            audit_log_sync("pulse", "WARNING", f"Failed to insert INVOLVES pending edge: {e}")
+                            if hasattr(e, "code") and e.code == "23505":
+                                audit_log_sync("pulse", "INFO", f"INVOLVES edge already exists (dedup): {task_title}")
+                            else:
+                                audit_log_sync("pulse", "ERROR", f"Failed to insert INVOLVES pending edge: {e}", exc_info=True)
 
         print(f"🕸️ Graph edges written for task {task_id}: '{task_title}'")
 
@@ -1205,8 +1221,11 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                     }).execute()
                     if ins_res.data:
                         node_id_map[c_lbl] = ins_res.data[0]["id"]
-                except Exception:
-                    pass
+                except Exception as e:
+                    if hasattr(e, "code") and e.code == "23505":
+                        audit_log_sync("entity_extraction", "INFO", f"Concept node already exists: {c_lbl}")
+                    else:
+                        audit_log_sync("entity_extraction", "ERROR", f"Failed to insert concept node {c_lbl}: {e}", exc_info=True)
             else:
                 # To pending
                 status = "pending" if typ in ['person', 'project', 'organization'] else "flagged"
@@ -1259,8 +1278,11 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                                 if new_source not in current_sources:
                                     current_sources.append(new_source)
                                     supabase.table("pending_graph_edges").update({"source_text": ", ".join(current_sources)}).eq("id", existing['id']).execute()
-                except Exception:
-                    pass
+                except Exception as e:
+                    if hasattr(e, "code") and e.code == "23505":
+                        audit_log_sync("entity_extraction", "INFO", f"KNOWS edge already exists (dedup): {s_lbl} -> {r['target']}")
+                    else:
+                        audit_log_sync("entity_extraction", "ERROR", f"Failed to insert KNOWS edge: {e}", exc_info=True)
         elif r["node_id"]:
             # Known node, store ID for MENTIONS link
             # Only if it's a UUID (live graph node)
@@ -1286,10 +1308,20 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                     "metadata": {"source": "insert_extracted_entities"}
                 })
         if mentions_to_insert:
+            # Dedup MENTIONS before insert to prevent whole-batch constraint failures
+            seen_mentions = set()
+            unique_mentions = []
+            for m in mentions_to_insert:
+                key = (m["source_node_id"], m["relationship"], m["target_node_id"])
+                if key not in seen_mentions:
+                    seen_mentions.add(key)
+                    unique_mentions.append(m)
+
             try:
-                for i in range(0, len(mentions_to_insert), 50):
-                    batch = mentions_to_insert[i:i+50]
-                    supabase.table('graph_edges').insert(batch).execute()
+                for i in range(0, len(unique_mentions), 50):
+                    batch = unique_mentions[i:i+50]
+                    # Use upsert to handle cross-batch duplicates gracefully
+                    supabase.table('graph_edges').upsert(batch, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
                     # Also log in pending_graph_edges for audit trail
                     # MENTIONS are structural meta-edges (provenance), exempt from HITL
                     s_ids = list(set(m["source_node_id"] for m in batch))
@@ -1304,10 +1336,14 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                             "target_label": t_labels.get(m["target_node_id"], ""),
                             "relationship": "MENTIONS",
                             "status": "approved",
+                            "approval_source": "provenance",
                             "source_text": "insert_extracted_entities"
                         }, on_conflict="source_label,target_label,relationship", ignore_duplicates=True).execute()
-            except Exception:
-                pass
+            except Exception as e:
+                if hasattr(e, "code") and e.code == "23505":
+                    audit_log_sync("entity_extraction", "INFO", "MENTIONS edge already exists")
+                else:
+                    audit_log_sync("entity_extraction", "ERROR", f"Failed to insert MENTIONS edge: {e}", exc_info=True)
 
     # 6. Create pending edges
     for e in edges:
