@@ -78,6 +78,11 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 |------|---------------|
 | [33-pattern-learning-undo-fixes.md](33-pattern-learning-undo-fixes.md) | Pattern learning fixes: Telegram undo buttons, configurable cross-subsystem blend, entity type-weighted overlap bonus, missing import fixes |
 
+### Postgres / Schema Fixes
+| File | What It Covers |
+|------|---------------|
+| [36-normalized-label-fix.md](36-normalized-label-fix.md) | normalized_label column for PostgREST-compatible case-insensitive graph node dedup |
+
 ### Frontend Features
 | File | What It Covers |
 |------|---------------|

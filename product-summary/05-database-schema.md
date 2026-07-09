@@ -72,11 +72,12 @@ Added: `sentiment_score`, `sentiment`, `entities_mentioned` — extracted at ing
 |--------|------|-------|
 | id | BIGINT (PK) | |
 | label | TEXT | Canonical name |
-| type | TEXT | `person`, `organization`, `project`, `place`, `animal` (5 types only) |
+| type | TEXT | `person`, `organization`, `project`, `place`, `animal` |
+| normalized_label | TEXT | `LOWER(TRIM(label))` — unique, used for PostgREST upsert conflict target |
 | metadata | JSONB | |
 | created_at | TIMESTAMPTZ | |
 
-Removed types: `concept`, `emotional_state`, `resource`, `task`, `practice`, `cluster`. With `place` and `animal` added as valid extraction-only types.
+Types: `person`, `organization`, `project`, `place`, `animal`. Types removed: `concept`, `emotional_state`, `resource`, `task`, `practice`, `cluster`.
 
 ### `graph_edges`
 
@@ -258,5 +259,6 @@ RLS enabled.
 | `memories` | `people` | GIN |
 | `tasks` | `project_id` | B-tree |
 | `tasks` | `created_at` | B-tree |
-| `graph_nodes` | `label` | Unique B-tree |
+| `graph_nodes` | `normalized_label` | Unique B-tree |
+| `graph_nodes` | `label` | B-tree (non-unique, after functional index migration) |
 | `graph_edges` | `source_id, target_id` | Composite B-tree |

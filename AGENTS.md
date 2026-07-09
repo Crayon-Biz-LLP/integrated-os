@@ -71,19 +71,23 @@ Before applying any fix, follow this procedure step by step. Do NOT skip steps. 
 - `core/skills/whatsapp_ingest.py` — Refactored: replaced 3 insert paths with single RPC call
 - `product-summary/35-whatsapp-batch-ingest.md` — Documentation
 
-## Session Anchored Summary (Jul 7, 2026 — Part 19: Context Salience RPC UNION Type Fix)
+## Session Anchored Summary (Jul 9, 2026 — Part 20: Topic Overlap Guard + Graph Write Consolidation + normalized_label Fix)
 
 ### Progress Done This Session
-- **`get_context_for()` RPC UNION type mismatch fixed**: `core/pulse/context_salience.py` calls `get_context_for()` RPC which has a recursive CTE (`UNION ALL`). Column 7 (`source_ref`) had `NULL::uuid` in the anchor but `ge.source_ref` is `text` — PostgreSQL refuses to UNION different types. Error code 42804. Fixed by changing `NULL::uuid` to `NULL::text` and updating RPC return type accordingly.
-- **Dropped the second overload** (no `STABLE`, missing `archived=false` filter) — it was never called by the Python code. The Python call (3 named params) resolves to the `STABLE` overload.
-- **Root Cause Investigation Procedure** added to AGENTS.md (9-step checklist preventing symptom-patching).
+- **Topic Overlap Guard (3 commits)**: Added `_check_topic_overlap()` to prevent active workflows from hijacking messages about different entities. Replaced regex heuristic with real entity resolver (n-gram matching against orgs/projects, substring against people). Enriched payload_text with resolved entity names. Structured audit logging per overlap decision. 3 regression tests. Fixes: workflow misrouting across unrelated topics, lowercase/acronym/sentence-start edge cases.
+- **Concept Node Removal**: Removed entire concept node system from extraction prompts, edge matrix, auto-approve bypass, cascade logic. Deleted `auto_approve.py`. Purged 997 concept nodes + 678 pending EVOKES edges from DB. Replaced NeuralDisc 2D d3-force with true 3D force simulation.
+- **Graph Write Path Consolidation**: Created shared pipeline in `graph_rules.py` (`validate_label`, `normalize_label`, `resolve_candidate`, `route_label`, `persist_label`, `insert_pending_edge`). Migrated all 11 edge insertion sites and 5 node creation paths. Added 4 batch API endpoints for Decision Pulse lists.
+- **Edge Error Hardening**: Eliminated silent `except: pass` swallows on edge writes. Added `approval_source` column to `pending_graph_edges` (hitl/auto_approve/provenance/pending). Batch deduplication to prevent `ON CONFLICT DO UPDATE cannot affect row a second time`. Created `pending_graph_edges_archive` table + auto-archive via sentinel.
+- **`normalized_label` Column Fix**: Migration 21 broke all graph_nodes upserts (dropped `UNIQUE(label)` for functional index that PostgREST can't target). Added `normalized_label TEXT UNIQUE` column, backfilled existing rows, migrated all 19 write sites (10 upsert + 9 insert) across 12 files to use `on_conflict="normalized_label"`. Added CI guard script `scripts/check_graph_nodes_normalized_label.py`.
 
-### Key Decisions This Session
-- **`source_ref` in `graph_edges` was always `text`**: 322 non-null values checked — zero UUID-like. The `NULL::uuid` was a wrong type guess during RPC creation.
-- **Verify types, don't assume from names**: A column named `source_ref` sounds UUID-like, but `information_schema.columns` + sampling actual data proved it's text.
-
-### Key Files (Phase 19)
-- `AGENTS.md` — Root Cause Investigation Procedure (Step 1-9)
+### Key Files (Phase 20)
+- `core/webhook/dispatch.py` — Topic overlap guard + entity enrichment
+- `core/pulse/workflows.py` — `check_and_resume_workflow()` gated on topic match
+- `core/lib/conversation.py` — `resolve_thread()` gated on topic match
+- `core/lib/graph_rules.py` — Shared graph write pipeline functions
+- `api/index.py` — 4 batch API endpoints for Decision Pulse
+- `db/22_normalized_label.sql` — NEW: normalized_label column migration
+- `scripts/check_graph_nodes_normalized_label.py` — NEW: CI guard
 
 ## Session Anchored Summary (Jul 6, 2026 — Part 17: Edge Auto-Approve Fix + Decision Backfill)
 
