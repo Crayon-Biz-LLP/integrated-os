@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from core.webhook.workflows import check_and_resume_workflow
 from core.lib.conversation import resolve_thread
 from core.services.db import get_supabase
@@ -273,6 +273,38 @@ def test_resolve_thread_sentence_start_non_entity_passes():
         routed_id, _ = resolve_thread(chat_id, "The project is done now")
         assert routed_id == thread_id, \
             f"Expected workflow thread {thread_id}, got {routed_id} — sentence-start 'The' should not bypass"
+    finally:
+        supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
+        supabase.table('conversation_threads').delete().eq('id', thread_id).execute()
+
+
+@patch('core.webhook.workflows.generate_content_with_fallback')
+@pytest.mark.asyncio
+async def test_check_resume_mixed_topic_with_workflow_entity(mock_llm):
+    """Mixed-topic text mentioning both workflow entity (Amico) and unrelated entity (Equisoft) still routes to workflow via LLM."""
+    mock_resp = MagicMock()
+    mock_resp.parse_json.return_value = {"decision": "confirm"}
+    mock_llm.return_value = mock_resp
+    supabase = get_supabase()
+    chat_id = 9999990
+    thread_id = str(uuid.uuid4())
+
+    supabase.table('conversation_threads').insert({
+        'id': thread_id, 'chat_id': chat_id, 'thread_type': 'general'
+    }).execute()
+
+    w_res = supabase.table('conversation_workflows').insert({
+        'chat_id': chat_id, 'thread_id': thread_id,
+        'workflow_type': 'task_creation', 'status': 'active',
+        'awaiting_user_input': True,
+        'payload': {'title': 'Amico contract review'}
+    }).execute()
+    w_id = w_res.data[0]['id']
+
+    try:
+        handled = await check_and_resume_workflow(chat_id, "Yes, go ahead on Amico — also Equisoft is approved", thread_id)
+        assert handled, "Should handle workflow — Amico is explicitly mentioned"
+        mock_llm.assert_called_once()
     finally:
         supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
         supabase.table('conversation_threads').delete().eq('id', thread_id).execute()

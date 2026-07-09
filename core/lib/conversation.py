@@ -23,6 +23,9 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
     """Deterministic topical relevance check between message and workflow payload.
 
     Uses n-gram entity resolver for orgs/projects + substring match for people.
+    Payload text enriched with canonical names from entity ID fields.
+    Logs structured metadata for routing auditability.
+
     Returns True if:
     - Message has no known entities (filler like 'yes'/'ok')
     - Any detected entity name overlaps with payload content
@@ -32,12 +35,14 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
     if not text or not payload:
         return True
 
+    from core.lib.audit_logger import audit_log_sync
     supabase = get_supabase()
     entity_names = set()
+    resolver_reason = ""
 
     try:
         from core.pulse.entity_resolver import resolve_entities_from_text
-        org_id, proj_id, _ = resolve_entities_from_text(text)
+        org_id, proj_id, resolver_reason = resolve_entities_from_text(text)
         if org_id:
             r = supabase.table('organizations').select('name').eq('id', org_id).execute()
             if r.data:
@@ -47,7 +52,7 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
             if r.data:
                 entity_names.add(r.data[0]['name'].lower())
     except Exception:
-        pass
+        resolver_reason = "resolver_error"
 
     try:
         people = supabase.table('people').select('name').execute()
@@ -59,17 +64,34 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
     except Exception:
         pass
 
+    # Build enriched payload text: raw values + canonical names from ID fields
+    payload_text_parts = [str(v) for v in payload.values()]
+    for id_field, table in [('project_id', 'projects'), ('organization_id', 'organizations')]:
+        val = payload.get(id_field)
+        if val and isinstance(val, str) and len(val) == 36:
+            try:
+                r = supabase.table(table).select('name').eq('id', val).execute()
+                if r.data:
+                    payload_text_parts.append(r.data[0]['name'])
+            except Exception:
+                pass
+    payload_text = ' '.join(payload_text_parts).lower()
+
     if not entity_names:
+        audit_log_sync("routing", "INFO",
+            "topic_overlap: verdict=pass reason=no_entities_in_text"
+            f" payload_keys={list(payload.keys())}")
         return True
 
-    payload_text = ' '.join(
-        str(v) for v in payload.values()
-    ).lower()
+    verdict = any(entity in payload_text for entity in entity_names)
 
-    for entity in entity_names:
-        if entity in payload_text:
-            return True
-    return False
+    audit_log_sync("routing", "INFO",
+        f"topic_overlap: verdict={'pass' if verdict else 'bypass'}"
+        f" entities={sorted(entity_names)}"
+        f" resolver={resolver_reason}"
+        f" payload_keys={list(payload.keys())}")
+
+    return verdict
 
 
 def _entity_is_primary_topic(text: str, entity_name: str) -> bool:
