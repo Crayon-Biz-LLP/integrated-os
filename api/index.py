@@ -1,5 +1,4 @@
 import os
-import re
 import hmac
 import hashlib
 import time
@@ -1479,29 +1478,17 @@ async def whatsapp_ingest_route(request: Request):
 # --- APP VERSION CHECK (for in-app updates) ---
 @app.get("/api/app-version")
 async def app_version_route(request: Request):
-    """Return the latest app version info from the GitHub release.
+    """Return the latest app version info from core_config.
 
-    The CI workflow uploads each APK build as a GitHub Release with
-    tag "app-latest". This endpoint reads that release and returns
-    the version details so the Flutter app can prompt in-app updates.
+    The CI workflow records version info to the `core_config` table
+    after each successful build. This endpoint reads from there,
+    removing the dependency on GitHub API tokens.
     """
     try:
-        owner = os.getenv("GITHUB_OWNER", "Crayon-Biz-LLP")
-        repo = os.getenv("GITHUB_REPO", "integrated-os")
+        supabase = get_supabase()
+        res = supabase.table('core_config').select('content').eq('key', 'app_version').limit(1).execute()
 
-        headers = {"Accept": "application/vnd.github+json"}
-        github_token = os.getenv("GITHUB_TOKEN")
-        if github_token:
-            headers["Authorization"] = f"Bearer {github_token}"
-
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}/releases/tags/app-latest",
-                headers=headers,
-                timeout=10
-            )
-
-        if resp.status_code != 200:
+        if not res.data or not res.data[0].get('content'):
             return {
                 "version_code": 0,
                 "version_name": "",
@@ -1510,25 +1497,12 @@ async def app_version_route(request: Request):
                 "found": False
             }
 
-        release = resp.json()
-        name = release.get("name", "")
-        # Title format: "Rhodey App v{version_name} (build {version_code})"
-        version_code = 0
-        version_name = ""
-        m = re.search(r"v([\d.]+)\s*\(build\s*(\d+)\)", name)
-        if m:
-            version_name = m.group(1)
-            version_code = int(m.group(2))
-
-        assets = release.get("assets", [])
-        apk_asset = next((a for a in assets if a["name"].endswith(".apk")), None)
-        download_url = apk_asset["browser_download_url"] if apk_asset else None
-
+        content = json.loads(res.data[0]['content'])
         return {
-            "version_code": version_code,
-            "version_name": version_name,
-            "download_url": download_url,
-            "release_notes": release.get("body", ""),
+            "version_code": content.get('version_code', 0),
+            "version_name": content.get('version_name', ''),
+            "download_url": content.get('download_url'),
+            "release_notes": content.get('release_notes', ''),
             "found": True
         }
     except Exception as e:

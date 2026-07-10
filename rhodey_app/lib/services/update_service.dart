@@ -45,13 +45,19 @@ class UpdateService {
 
   /// Check for updates and show a dialog if one is available.
   /// Must be called after ApiService.init() so the base URL is loaded.
-  Future<void> check(BuildContext context) async {
+  ///
+  /// [showFeedback] controls whether to surface non-update outcomes
+  /// (errors, up-to-date) via snackbar. Set false for silent cold-start checks.
+  Future<void> check(BuildContext context, {bool showFeedback = false}) async {
     // 1. Read current app version
     PackageInfo info;
     try {
       info = await PackageInfo.fromPlatform();
     } catch (e) {
       debugPrint('[Update] Could not read package info: $e');
+      if (showFeedback && context.mounted) {
+        _showSnack(context, 'Could not check app version', isError: true);
+      }
       return;
     }
     final currentCode = int.tryParse(info.buildNumber) ?? 0;
@@ -72,22 +78,34 @@ class UpdateService {
           .timeout(const Duration(seconds: 10));
       if (resp.statusCode != 200) {
         debugPrint('[Update] Server returned ${resp.statusCode}');
+        if (showFeedback && context.mounted) {
+          _showSnack(context, 'Update check failed (server ${resp.statusCode})', isError: true);
+        }
         return;
       }
       remote = _AppVersionResponse.fromJson(
           Map<String, dynamic>.from(jsonDecode(resp.body) as Map));
     } catch (e) {
       debugPrint('[Update] Failed to check for updates: $e');
+      if (showFeedback && context.mounted) {
+        _showSnack(context, 'Could not reach update server', isError: true);
+      }
       return;
     }
 
     if (!remote.found || remote.downloadUrl == null) {
       debugPrint('[Update] No update found on server');
+      if (showFeedback && context.mounted) {
+        _showSnack(context, 'No update info available yet — push a build first');
+      }
       return;
     }
 
     if (remote.versionCode <= currentCode) {
       debugPrint('[Update] Up to date ($currentCode >= ${remote.versionCode})');
+      if (showFeedback && context.mounted) {
+        _showSnack(context, '✓ Rhodey is up to date');
+      }
       return;
     }
 
@@ -106,6 +124,20 @@ class UpdateService {
         _downloadAndInstall(context, remote.downloadUrl!);
       }
     });
+  }
+
+  /// Check for updates showing full feedback (for manual "Check for updates" button).
+  Future<void> checkNow(BuildContext context) => check(context, showFeedback: true);
+
+  void _showSnack(BuildContext context, String message, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message, style: const TextStyle(fontSize: 13)),
+        backgroundColor: isError ? const Color(0xFFEF5350) : const Color(0xFF34C759),
+        duration: const Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   Future<void> _downloadAndInstall(BuildContext context, String downloadUrl) async {
