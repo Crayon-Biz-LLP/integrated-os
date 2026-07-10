@@ -55,7 +55,8 @@ def main():
         }),
     }).encode()
 
-    url = f"{supabase_url}/rest/v1/core_config"
+    # Use on_conflict=key to trigger upsert via the unique constraint on core_config.key
+    url = f"{supabase_url}/rest/v1/core_config?on_conflict=key"
     headers = {
         "apikey": service_role_key,
         "Authorization": f"Bearer {service_role_key}",
