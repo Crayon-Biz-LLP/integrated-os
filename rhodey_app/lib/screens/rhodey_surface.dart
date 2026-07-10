@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
 import '../services/api_service.dart';
 import '../services/notification_service.dart';
 import '../models/briefing.dart';
@@ -46,6 +49,11 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   bool _hasError = false;
   bool _showTraces = false; // false = Horizon, true = Traces
 
+  // ── Conversation feed ──
+  final List<Map<String, String>> _conversation = [];
+  final _conversationScroll = ScrollController();
+  bool _conversationLoaded = false;
+
   // ── Response moment ──
   String? _momentText;
   bool _showMoment = false;
@@ -53,6 +61,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   // ── State ──
   bool _isListening = false;
   bool _isTyping = false;
+  String? _sessionId; // For thread continuity across messages
 
   // ── Services ──
   final _api = ApiService();
@@ -141,6 +150,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     _voiceTimeout?.cancel();
     _textController.dispose();
     _typeFocus.dispose();
+    _conversationScroll.dispose();
     if (NotificationService.onNotificationOpened == _handlePushNotificationTap) {
       NotificationService.onNotificationOpened = null;
     }
@@ -155,10 +165,34 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   Future<void> _fetchBriefing() async {
     final briefing = await _api.getBriefing();
     if (!mounted) return;
+    final wasInitialLoad = _loading;
     setState(() {
       _briefing = briefing;
       _loading = false;
       _hasError = briefing.sections.isEmpty && briefing.traces.isEmpty;
+    });
+    // On initial load only, populate conversation from API history
+    if (wasInitialLoad && !_conversationLoaded) {
+      _loadFromTraces(briefing.traces);
+    }
+  }
+
+  /// Populate conversation feed from API traces (persisted chat history).
+  void _loadFromTraces(List<TraceItem> traces) {
+    if (traces.isEmpty) return;
+    final entries = <Map<String, String>>[];
+    // Traces are sorted most-recent-first; reverse to show oldest first
+    for (final trace in traces.reversed) {
+      // Skip auto-completions without user input
+      if (trace.input != '(auto)') {
+        entries.add({'role': 'user', 'text': trace.input});
+      }
+      entries.add({'role': 'assistant', 'text': trace.resolution});
+    }
+    if (!mounted) return;
+    setState(() {
+      _conversation.addAll(entries.take(50));
+      _conversationLoaded = true;
     });
   }
 
@@ -191,10 +225,16 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     _textController.clear();
     _stopPolling();
 
-    // Show brief response moment
+    // Add user message to conversation feed immediately
+    setState(() {
+      _conversation.add({'role': 'user', 'text': text.trim()});
+    });
+    _scrollToBottom();
+
+    // Show brief 'Processing...' feedback
     _showResponseMoment('Processing...');
 
-    _api.sendMessage(text.trim()).then((result) {
+    _api.sendMessage(text.trim(), sessionId: _sessionId).then((result) {
       if (!mounted) return;
 
       String responseText;
@@ -203,6 +243,11 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       if (result.success && result.data is Map) {
         final data = result.data as Map<String, dynamic>;
         responseText = data['response'] as String? ?? 'Got it.';
+        // Preserve session_id for thread continuity
+        final newSessionId = data['session_id'] as String?;
+        if (newSessionId != null && newSessionId.isNotEmpty) {
+          _sessionId = newSessionId;
+        }
         briefingUpdate = data['briefing_update'] != null
             ? BriefingResponse.fromJson(
                 data['briefing_update'] as Map<String, dynamic>)
@@ -220,19 +265,44 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         _fetchBriefing();
       }
 
-      // Speak the response aloud
-      _tts.stop();
-      _tts.speak(responseText);
+      // Add Rhodey's response to conversation feed (permanent)
+      final isSuccess = result.success;
+      setState(() {
+        _conversation.add({
+          'role': 'assistant',
+          'text': responseText,
+          'status': isSuccess ? '' : 'error',
+        });
+      });
+      _scrollToBottom();
 
-      // Show response moment
-      _showResponseMoment(responseText);
+      // Show brief response moment — error text visible in overlay, not spoken
+      _showResponseMoment(isSuccess ? '✅' : responseText);
 
-      // Fade moment after min ~2s
-      Future.delayed(const Duration(seconds: 2), () {
+      // Speak only successful responses
+      if (isSuccess) {
+        _tts.stop();
+        _tts.speak(responseText);
+      }
+
+      // Fade feedback moment after ~1.5s
+      Future.delayed(const Duration(seconds: 1), () {
         if (!mounted) return;
         _hideResponseMoment();
         _startPolling();
       });
+    });
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_conversationScroll.hasClients) {
+        _conversationScroll.animateTo(
+          _conversationScroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
     });
   }
 
@@ -440,6 +510,136 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       default:
         break;
     }
+  }
+
+  // ── Attachment picker ──────────────────────────────────────────────────────
+
+  void _showAttachmentSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: _surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36, height: 4,
+                decoration: BoxDecoration(
+                  color: _border.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Add attachment',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: _primaryText,
+                ),
+              ),
+              const SizedBox(height: 16),
+              _attachmentTile(Icons.camera_alt_outlined, 'Camera', () {
+                Navigator.pop(ctx);
+                _pickFromCamera();
+              }),
+              _attachmentTile(Icons.photo_outlined, 'Gallery', () {
+                Navigator.pop(ctx);
+                _pickFromGallery();
+              }),
+              _attachmentTile(Icons.description_outlined, 'Document', () {
+                Navigator.pop(ctx);
+                _pickDocument();
+              }),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _attachmentTile(IconData icon, String label, VoidCallback onTap) {
+    return ListTile(
+      leading: Icon(icon, color: _mutedText, size: 22),
+      title: Text(
+        label,
+        style: GoogleFonts.plusJakartaSans(
+          color: _primaryText,
+          fontSize: 14,
+        ),
+      ),
+      onTap: onTap,
+    );
+  }
+
+  Future<void> _pickFromCamera() async {
+    final picker = ImagePicker();
+    final file = await picker.pickImage(source: ImageSource.camera);
+    if (file != null) {
+      await _uploadFile(file.path);
+    }
+  }
+
+  Future<void> _pickFromGallery() async {
+    final picker = ImagePicker();
+    final file = await picker.pickImage(source: ImageSource.gallery);
+    if (file != null) {
+      await _uploadFile(file.path);
+    }
+  }
+
+  Future<void> _pickDocument() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf', 'docx', 'txt', 'jpg', 'jpeg', 'png', 'mp3', 'ogg', 'wav', 'mp4'],
+    );
+    if (result != null && result.files.single.path != null) {
+      await _uploadFile(result.files.single.path!);
+    }
+  }
+
+  Future<void> _uploadFile(String filePath) async {
+    if (!File(filePath).existsSync()) return;
+
+    _stopPolling();
+    _showResponseMoment('Uploading...');
+
+    // Add to conversation feed
+    _addConversationEntry('user', '📎 File attached');
+
+    final result = await _api.sendMultimodal(filePath);
+    if (!mounted) return;
+
+    if (result.success && result.data is Map) {
+      final data = result.data as Map<String, dynamic>;
+      final responseText = data['response'] as String? ?? 'Got it.';
+      final briefingMap = data['briefing_update'] as Map<String, dynamic>?;
+      if (briefingMap != null) {
+        setState(() {
+          _briefing = BriefingResponse.fromJson(briefingMap);
+        });
+      } else {
+        _fetchBriefing();
+      }
+      // Add response to conversation feed
+      _addConversationEntry('assistant', responseText);
+      // Speak response aloud
+      _tts.stop();
+      _tts.speak(responseText);
+      _showResponseMoment('✅');
+    } else {
+      final errorText = result.error ?? 'Upload failed';
+      _addConversationEntry('assistant', errorText, isError: true);
+      _showResponseMoment('⚠️');
+    }
+
+    _dismissMomentAfterDelay();
+    _startPolling();
   }
 
   // ── Menu ──────────────────────────────────────────────────────────────────
@@ -661,6 +861,12 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     return ListView(
       padding: const EdgeInsets.only(top: 8, bottom: 16),
       children: [
+        // Conversation feed (permanent message log)
+        if (_conversation.isNotEmpty) ...[
+          _buildConversationFeed(),
+          const SizedBox(height: 20),
+        ],
+
         // Editorial greeting
         _buildEditorialGreeting(),
         const SizedBox(height: 16),
@@ -676,6 +882,216 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           _buildHorizonView(),
       ],
     );
+  }
+
+  // ── Conversation feed ────────────────────────────────────────────────────
+
+  Widget _buildConversationFeed() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
+          child: Row(
+            children: [
+              Text(
+                'CONVERSATION',
+                style: GoogleFonts.jetBrainsMono(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w400,
+                  color: _tertiaryText,
+                  letterSpacing: 2.0,
+                  height: 1.3,
+                ),
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: () => _confirmClearConversation(),
+                child: Text(
+                  'Clear',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w400,
+                    color: _mutedText,
+                    decoration: TextDecoration.underline,
+                    decorationColor: _mutedText.withValues(alpha: 0.4),
+                    height: 1.3,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.35,
+          ),
+          child: ListView.builder(
+            controller: _conversationScroll,
+            physics: const ClampingScrollPhysics(),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: _conversation.length,
+            itemBuilder: (ctx, i) {
+              final entry = _conversation[i];
+              final role = entry['role'] ?? '';
+              final text = entry['text'] ?? '';
+              final isError = entry['status'] == 'error';
+              final isUser = role == 'user';
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: isUser
+                        ? _cardBg
+                        : _surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: isError
+                          ? _red.withValues(alpha: 0.3)
+                          : isUser
+                              ? _border.withValues(alpha: 0.4)
+                              : _green.withValues(alpha: 0.12),
+                    ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 3,
+                        height: 28,
+                        margin: const EdgeInsets.only(right: 10),
+                        decoration: BoxDecoration(
+                          color: isUser
+                              ? _mutedText
+                              : isError
+                                  ? _red
+                                  : _green,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  isUser ? 'YOU' : 'RHODEY',
+                                  style: GoogleFonts.jetBrainsMono(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w400,
+                                    color: isUser
+                                        ? _tertiaryText
+                                        : isError
+                                            ? _red
+                                            : _green,
+                                    letterSpacing: 1.5,
+                                    height: 1.2,
+                                  ),
+                                ),
+                                if (isError) ...[
+                                  const SizedBox(width: 6),
+                                  Icon(Icons.warning_amber_rounded,
+                                      size: 10, color: _red),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 5),
+                            Text(
+                              text,
+                              style: GoogleFonts.plusJakartaSans(
+                                color: isError ? _red : _primaryText,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w300,
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Add an entry to the conversation feed, capping at 50 to prevent unbounded growth.
+  void _addConversationEntry(String role, String text, {bool isError = false}) {
+    setState(() {
+      _conversation.add({
+        'role': role,
+        'text': text,
+        if (isError) 'status': 'error',
+      });
+      // Keep last 50 entries to prevent unbounded memory growth
+      if (_conversation.length > 50) {
+        _conversation.removeRange(0, _conversation.length - 50);
+      }
+    });
+    _scrollToBottom();
+  }
+
+  /// Show confirmation dialog before clearing the conversation.
+  Future<void> _confirmClearConversation() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(color: _border),
+        ),
+        title: Text(
+          'Clear conversation?',
+          style: GoogleFonts.plusJakartaSans(
+            color: _primaryText,
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        content: Text(
+          'This clears the conversation log shown here. The full history is still available in the app on next restart.',
+          style: GoogleFonts.plusJakartaSans(
+            color: _mutedText,
+            fontSize: 13,
+            height: 1.4,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.plusJakartaSans(
+                color: _mutedText,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(
+              'Clear',
+              style: GoogleFonts.plusJakartaSans(
+                color: _red,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      setState(() => _conversation.clear());
+    }
   }
 
   // ── Editorial greeting ────────────────────────────────────────────────────
@@ -854,6 +1270,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   // ── Latest response card ──────────────────────────────────────────────────
 
   Widget _buildLatestResponse() {
+    // Skip the latest response card when the conversation feed shows the same
+    if (_conversation.isNotEmpty) return const SizedBox.shrink();
     final text = _briefing.latestResponse;
     if (text == null || text.isEmpty) return const SizedBox.shrink();
 
@@ -1361,6 +1779,19 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             ),
           ),
 
+          // + Attachment (left-center)
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: _showAttachmentSheet,
+              child: Container(
+                padding: const EdgeInsets.all(10),
+                child: Icon(Icons.add, color: _mutedText, size: 20),
+              ),
+            ),
+          ),
+
           const Spacer(),
 
           // Primary: Tap to speak
@@ -1433,73 +1864,141 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       ),
       child: SafeArea(
         top: false,
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: _bg,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: _border),
+            // Command suggestion chips
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _suggestionChip('📅  Today', () {
+                      _sendMessage('/today');
+                      setState(() => _isTyping = false);
+                    }),
+                    const SizedBox(width: 6),
+                    _suggestionChip('🧠  Ask', () {
+                      setState(() => _isTyping = false);
+                      // Open text field with ? prefix hint
+                      _textController.text = '?';
+                      _typeFocus.requestFocus();
+                    }),
+                    const SizedBox(width: 6),
+                    _suggestionChip('📝  Note', () {
+                      _sendMessage('/note');
+                      setState(() => _isTyping = false);
+                    }),
+                    const SizedBox(width: 6),
+                    _suggestionChip('❓  Why', () {
+                      _sendMessage('/why');
+                      setState(() => _isTyping = false);
+                    }),
+                    const SizedBox(width: 6),
+                    _suggestionChip('⚡  Quick', () {
+                      _sendMessage('Quick note: ');
+                      setState(() => _isTyping = false);
+                    }),
+                  ],
                 ),
-                child: TextField(
-                  controller: _textController,
-                  focusNode: _typeFocus,
-                  autofocus: true,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: (value) {
-                    if (value.trim().isEmpty) return;
-                    _sendMessage(value.trim());
-                    setState(() => _isTyping = false);
-                  },
-                  decoration: const InputDecoration(
-                    hintText: 'Type a message...',
-                    border: InputBorder.none,
-                    contentPadding:
-                        EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    isDense: true,
+              ),
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: _bg,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: _border),
+                    ),
+                    child: TextField(
+                      controller: _textController,
+                      focusNode: _typeFocus,
+                      autofocus: true,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (value) {
+                        if (value.trim().isEmpty) return;
+                        _sendMessage(value.trim());
+                        setState(() => _isTyping = false);
+                      },
+                      decoration: const InputDecoration(
+                        hintText: 'Type a message...',
+                        border: InputBorder.none,
+                        contentPadding:
+                            EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        isDense: true,
+                      ),
+                      style: GoogleFonts.plusJakartaSans(
+                          color: _primaryText, fontSize: 14),
+                    ),
                   ),
-                  style: GoogleFonts.plusJakartaSans(
-                      color: _primaryText, fontSize: 14),
                 ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            Material(
-              color: _surface,
-              borderRadius: BorderRadius.circular(10),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(10),
-                onTap: () {
-                  final value = _textController.text.trim();
-                  if (value.isEmpty) return;
-                  _sendMessage(value);
-                  setState(() => _isTyping = false);
-                },
-                child: Container(
-                  width: 36,
-                  height: 36,
-                  alignment: Alignment.center,
-                  child: Icon(Icons.arrow_upward,
-                      color: _champagne, size: 18),
+                const SizedBox(width: 6),
+                Material(
+                  color: _surface,
+                  borderRadius: BorderRadius.circular(10),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: () {
+                      final value = _textController.text.trim();
+                      if (value.isEmpty) return;
+                      _sendMessage(value);
+                      setState(() => _isTyping = false);
+                    },
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      alignment: Alignment.center,
+                      child: Icon(Icons.arrow_upward,
+                          color: _champagne, size: 18),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-            const SizedBox(width: 4),
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                borderRadius: BorderRadius.circular(8),
-                onTap: () {
-                  setState(() => _isTyping = false);
-                },
-                child: Container(
-                  padding: const EdgeInsets.all(8),
-                  child: Icon(Icons.close, color: _mutedText, size: 18),
+                const SizedBox(width: 4),
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () {
+                      setState(() => _isTyping = false);
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(Icons.close, color: _mutedText, size: 18),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _suggestionChip(String label, VoidCallback onTap) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: _border),
+            color: _cardBg,
+          ),
+          child: Text(
+            label,
+            style: GoogleFonts.plusJakartaSans(
+              color: _mutedText,
+              fontSize: 12,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
         ),
       ),
     );

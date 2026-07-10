@@ -167,12 +167,52 @@ class ApiService {
   // ── Send message ─────────────────────────────────────────────
 
   /// Sends a message to Rhodey via /api/send-message.
-  /// On success, returns the raw body (which may contain Rhodey's response).
+  /// On success, returns the raw body (which may contain Rhodey's response and session_id).
+  /// Pass [sessionId] for thread continuity across messages.
   /// Uses a longer timeout (30s) because process_webhook on Vercel includes LLM calls.
-  Future<ApiResult<dynamic>> sendMessage(String text) async {
+  Future<ApiResult<dynamic>> sendMessage(String text, {String? sessionId}) async {
+    final body = <String, dynamic>{'message': text};
+    if (sessionId != null && sessionId.isNotEmpty) {
+      body['session_id'] = sessionId;
+    }
     debugPrint('[API] sendMessage: "${text.length > 60 ? text.substring(0, 60) : text}"');
-    return post('/api/send-message', body: {'message': text},
+    return post('/api/send-message', body: body,
         timeout: const Duration(seconds: 30));
+  }
+
+  /// Uploads a file (image, audio, document) via /api/multimodal-input.
+  /// Returns the response text and updated briefing.
+  Future<ApiResult<dynamic>> sendMultimodal(
+    String filePath, {
+    String? fieldName,
+  }) async {
+    debugPrint('[API] sendMultimodal: $filePath');
+    try {
+      final uri = _uri('/api/multimodal-input');
+      final request = http.MultipartRequest('POST', uri);
+      
+      // Add API key header
+      if (_config.apiKey.isNotEmpty) {
+        request.headers['X-API-Key'] = _config.apiKey;
+      }
+      
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          fieldName ?? 'file',
+          filePath,
+        ),
+      );
+      
+      final streamedResp = await request.send().timeout(const Duration(seconds: 60));
+      final resp = await http.Response.fromStream(streamedResp);
+      
+      if (resp.statusCode == 200) {
+        return ApiResult.ok(jsonDecode(resp.body));
+      }
+      return ApiResult.fail('${resp.statusCode}: ${resp.body}');
+    } catch (e) {
+      return ApiResult.fail('$e');
+    }
   }
 
   // ── Messages (history) ────────────────────────────────────────

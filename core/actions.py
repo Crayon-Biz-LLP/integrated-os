@@ -17,14 +17,25 @@ class ActionResult:
 
 _action_results: contextvars.ContextVar[list[ActionResult]] = contextvars.ContextVar('action_results', default=[])
 _captured_response: contextvars.ContextVar[str | None] = contextvars.ContextVar('captured_response', default=None)
+_captured_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar('captured_session_id', default=None)
 
 def begin_action_context():
     _action_results.set([])
     _captured_response.set(None)
+    _captured_session_id.set(None)
 
 def clear_action_context():
     _action_results.set([])
     _captured_response.set(None)
+    _captured_session_id.set(None)
+
+def capture_session_id(session_id: str):
+    """Capture the current conversation session_id during webhook processing."""
+    _captured_session_id.set(session_id)
+
+def get_captured_session_id() -> str | None:
+    """Retrieve the last captured session_id after webhook processing."""
+    return _captured_session_id.get()
 
 def capture_response(text: str):
     """Capture the final outgoing message text during webhook processing."""

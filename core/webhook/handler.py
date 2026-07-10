@@ -6,7 +6,8 @@ from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.telemetry import emit_observation
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
-from core.lib.conversation import get_or_create_session, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
+from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
+from core.actions import capture_session_id
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
 from core.webhook.classify import classify_intent, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
@@ -1066,7 +1067,24 @@ async def process_webhook(update: dict):
             await handle_ed_command(text, chat_id)
             return {"success": True}
 
-        session_id, history, active_anchor = get_or_create_session(chat_id, message_text=text)
+        # Support explicit session_id from metadata (app thread continuity)
+        metadata = update.get('metadata') or {}
+        explicit_session_id = metadata.get('session_id') if metadata else None
+
+        if explicit_session_id and isinstance(explicit_session_id, str) and len(explicit_session_id) > 8:
+            # Resume existing thread directly
+            session_id = explicit_session_id
+            history = get_history(session_id)
+            active_anchor = None
+            try:
+                t_res = supabase.table('conversation_threads').select('active_anchor').eq('id', session_id).execute()
+                if t_res.data:
+                    active_anchor = t_res.data[0].get('active_anchor')
+            except Exception:
+                pass
+        else:
+            session_id, history, active_anchor = get_or_create_session(chat_id, message_text=text)
+        capture_session_id(session_id)
 
         # ── CONSUMER PRECEDENCE: Check active workflow before normal routing ──
         try:

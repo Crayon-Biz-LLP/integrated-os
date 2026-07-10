@@ -489,6 +489,7 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                     entity_id=str(pending_id),
                     confidence=1.0,
                     source="decision_pulse",
+                    auto_decided=auto_decided,
                 )
             except Exception as dec_err:
                 audit_log_sync("pulse", "WARNING", f"Failed to record graph edge rejection: {dec_err}")
@@ -594,6 +595,7 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                     entity_id=str(pending_id),
                     confidence=1.0,
                     source="decision_pulse",
+                    auto_decided=auto_decided,
                 )
             except Exception as dec_err:
                 audit_log_sync("pulse", "WARNING", f"Failed to record graph edge decision: {dec_err}")

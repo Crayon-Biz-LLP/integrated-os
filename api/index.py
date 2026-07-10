@@ -308,22 +308,31 @@ async def send_message_route(request: Request):
         
         # Create a fake Telegram update object (mirrors what Telegram sends)
         # Prefix update_id with "web_" to identify web UI messages
+        # Pass optional session_id for thread continuity
+        session_id = body.get("session_id")
+        metadata = {}
+        if session_id:
+            metadata["session_id"] = session_id
+        
         fake_update = {
             "update_id": f"web_{int(time.time() * 1000)}",
             "message": {
                 "chat": {"id": int(telegram_chat_id)},
                 "text": message_text,
                 "date": int(time.time())
-            }
+            },
+            "metadata": metadata
         }
         
         # Process exactly like Telegram webhook
-        print(f"🧪 Processing web message as Telegram update: {fake_update}")
+        print("🧪 Processing web message as Telegram update")
+
         await process_webhook(fake_update)
         
         # Read the captured bot response (set by send_telegram via capture_response)
-        from core.actions import get_captured_response
+        from core.actions import get_captured_response, get_captured_session_id
         response_text = get_captured_response()
+        resulting_session_id = get_captured_session_id() or session_id
 
         # Build updated briefing so the frontend gets the new state in one round-trip
         try:
@@ -337,6 +346,7 @@ async def send_message_route(request: Request):
             "success": True,
             "message": "Message processed",
             "response": response_text,
+            "session_id": resulting_session_id,
             "briefing_update": briefing_update,
         }
     
@@ -1535,6 +1545,58 @@ async def app_version_route(request: Request):
             "release_notes": "",
             "found": False
         }
+
+
+# --- MULTIMODAL INPUT (Receives file uploads from Flutter app) ---
+@app.post("/api/multimodal-input")
+async def multimodal_input_route(request: Request):
+    """Accept file uploads (images, audio, documents) from the Flutter app.
+
+    Sends the file through the multimodal processing pipeline (same as Telegram).
+    Returns the captured response text and updated briefing.
+    """
+    require_api_auth(request)
+    try:
+        form = await request.form()
+        file = form.get("file")
+        if not file:
+            raise HTTPException(status_code=400, detail="file required")
+
+        file_bytes = await file.read()
+        mime_type = file.content_type or "application/octet-stream"
+
+        from core.webhook.multimodal import process_multimodal_content
+        from core.actions import get_captured_response
+        from datetime import timezone, timedelta
+
+        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist_offset)
+
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not telegram_chat_id:
+            raise HTTPException(status_code=500, detail="TELEGRAM_CHAT_ID missing")
+
+        await process_multimodal_content(
+            file_bytes, mime_type, int(telegram_chat_id),
+            ist_hour=now.hour
+        )
+
+        response_text = get_captured_response()
+
+        try:
+            from api.briefing import build_briefing
+            briefing_update = await build_briefing(get_supabase())
+        except Exception:
+            briefing_update = None
+
+        return {
+            "success": True,
+            "response": response_text,
+            "briefing_update": briefing_update,
+        }
+    except Exception as e:
+        print(f"Multimodal input error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # --- REGISTER DEVICE TOKEN (for push notifications) ---
