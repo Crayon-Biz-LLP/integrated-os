@@ -17,6 +17,11 @@ class NotificationService {
   /// plus any additional payload. Screens register this callback on mount.
   static void Function(Map<String, dynamic> data)? onNotificationOpened;
 
+  /// Callback invoked when ANY push notification is received while the app
+  /// is in the foreground. Screens can use this to trigger an immediate
+  /// briefing fetch instead of waiting for the poll cycle.
+  static void Function()? onPushReceived;
+
   /// Holds notification data from cold-start (app launched via notification tap
   /// before any screen is mounted). The screen reads this in initState.
   static Map<String, dynamic>? pendingOpenData;
@@ -102,6 +107,8 @@ class NotificationService {
   }
 
   /// Show a local notification when a message arrives in the foreground.
+  /// Also triggers the onPushReceived callback so the screen can fetch fresh
+  /// briefing instantly instead of waiting for the poll cycle.
   void _showForegroundNotification(RemoteMessage message) {
     final notification = message.notification;
     if (notification == null) return;
@@ -121,6 +128,11 @@ class NotificationService {
       body: notification.body ?? '',
       notificationDetails: NotificationDetails(android: androidDetails),
     );
+
+    // Trigger immediate briefing fetch if any screen registered a handler
+    if (onPushReceived != null) {
+      onPushReceived!();
+    }
   }
 
   /// Handle user tapping on a notification.

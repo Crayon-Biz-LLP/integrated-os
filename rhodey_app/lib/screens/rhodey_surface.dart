@@ -118,8 +118,9 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     // Start polling for updates
     _startPolling();
 
-    // Register push notification tap handler
+    // Register push notification handlers
     NotificationService.onNotificationOpened = _handlePushNotificationTap;
+    NotificationService.onPushReceived = _onPushReceived;
 
     // Cold-start: check if app was launched via notification tap
     final pendingData = NotificationService.pendingOpenData;
@@ -142,6 +143,9 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     _typeFocus.dispose();
     if (NotificationService.onNotificationOpened == _handlePushNotificationTap) {
       NotificationService.onNotificationOpened = null;
+    }
+    if (NotificationService.onPushReceived == _onPushReceived) {
+      NotificationService.onPushReceived = null;
     }
     super.dispose();
   }
@@ -404,6 +408,15 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   }
 
   // ── Notification handling ─────────────────────────────────────────────────
+
+  /// Instant briefing fetch when a push notification is received in foreground.
+  void _onPushReceived() {
+    debugPrint('[Surface] Push received — fetching fresh briefing');
+    _stopPolling();
+    _fetchBriefing().then((_) {
+      if (mounted) _startPolling();
+    });
+  }
 
   void _handlePushNotificationTap(Map<String, dynamic> data) {
     final type = data['type'];
@@ -821,6 +834,10 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Latest response card (conditional — shown when Rhodey last said something)
+        _buildLatestResponse(),
+        const SizedBox(height: 4),
+
         // Proactive card (conditional)
         _buildProactiveCard(),
         const SizedBox(height: 8),
@@ -834,7 +851,74 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     );
   }
 
-  // ── Proactive card ────────────────────────────────────────────────────────
+  // ── Latest response card ──────────────────────────────────────────────────
+
+  Widget _buildLatestResponse() {
+    final text = _briefing.latestResponse;
+    if (text == null || text.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: _surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: _green.withValues(alpha: 0.15),
+          ),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 3,
+              height: 32,
+              decoration: BoxDecoration(
+                color: _green,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.check_circle_outline,
+                          size: 10, color: _green),
+                      const SizedBox(width: 4),
+                      Text(
+                        'RHODEY',
+                        style: GoogleFonts.jetBrainsMono(
+                          fontSize: 8,
+                          fontWeight: FontWeight.w400,
+                          color: _green,
+                          letterSpacing: 1.5,
+                          height: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    text,
+                    style: GoogleFonts.plusJakartaSans(
+                      color: _primaryText,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w300,
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildProactiveCard() {
     // Show when there's a next event AND the event has an urgent item

@@ -324,24 +324,7 @@ async def send_message_route(request: Request):
         # Read the captured bot response (set by send_telegram via capture_response)
         from core.actions import get_captured_response
         response_text = get_captured_response()
-        
-        # Also persist to raw_dumps for history on next app load
-        if response_text:
-            try:
-                supabase = get_supabase()
-                supabase.table('raw_dumps').insert({
-                    'content': response_text,
-                    'status': 'completed',
-                    'is_processed': True,
-                    'direction': 'outgoing',
-                    'sender': 'system',
-                    'message_type': 'response',
-                    'source': 'telegram_bot',
-                    'metadata': {'type': 'bot_response'}
-                }).execute()
-            except Exception as raw_err:
-                print(f"Failed to log response to raw_dumps: {raw_err}")
-        
+
         # Build updated briefing so the frontend gets the new state in one round-trip
         try:
             from api.briefing import build_briefing

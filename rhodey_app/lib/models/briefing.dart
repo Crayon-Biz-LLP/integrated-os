@@ -92,6 +92,7 @@ class BriefingResponse {
   final List<BriefingSection> sections;
   final int pendingCount;
   final List<TraceItem> traces;
+  final String? latestResponse; // Most recent bot response text
 
   const BriefingResponse({
     required this.greeting,
@@ -99,6 +100,7 @@ class BriefingResponse {
     required this.sections,
     this.pendingCount = 0,
     this.traces = const [],
+    this.latestResponse,
   });
 
   factory BriefingResponse.fromJson(Map<String, dynamic> json) {
@@ -114,6 +116,7 @@ class BriefingResponse {
       traces: rawTraces
           .map((e) => TraceItem.fromJson(e as Map<String, dynamic>))
           .toList(),
+      latestResponse: json['latest_response'] as String?,
     );
   }
 

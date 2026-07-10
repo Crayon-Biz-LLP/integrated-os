@@ -42,6 +42,7 @@ class BriefingResponse(TypedDict):
     sections: list[BriefingSection]
     pending_count: int
     traces: list[TraceItem]  # For the Traces view
+    latest_response: str | None  # Most recent bot response text
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -612,7 +613,28 @@ async def build_briefing(supabase) -> BriefingResponse:
     if next_event:
         greeting_line += f" {next_event}."
 
-    # 4. Traces block (for Traces view — pairs inputs with outcomes)
+    # 4. Latest response text (from raw_dumps outgoing)
+    latest_response = None
+    try:
+        lr_res = supabase.table("raw_dumps")\
+            .select("content, created_at")\
+            .eq("direction", "outgoing")\
+            .eq("source", "telegram_bot")\
+            .eq("status", "completed")\
+            .order("created_at", desc=True)\
+            .limit(1)\
+            .execute()
+        if lr_res.data:
+            content = lr_res.data[0].get("content", "")
+            created_raw = lr_res.data[0].get("created_at", "")
+            if content and created_raw:
+                created_dt = _parse_dt(created_raw)
+                if created_dt and (now - created_dt).total_seconds() < 3600:
+                    latest_response = content[:300] + ("\u2026" if len(content) > 300 else "")
+    except Exception as e:
+        print(f"[Briefing] Latest response error: {e}")
+
+    # 5. Traces block (for Traces view — pairs inputs with outcomes)
     traces = _build_traces(traces_msgs, traces_tasks)
 
     return BriefingResponse(
@@ -621,4 +643,5 @@ async def build_briefing(supabase) -> BriefingResponse:
         sections=sections,
         pending_count=pending_count,
         traces=traces,
+        latest_response=latest_response,
     )

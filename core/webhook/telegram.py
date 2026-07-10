@@ -62,6 +62,22 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
         except Exception:
             pass
 
+        # Persist response to raw_dumps so the app can see it regardless of input channel
+        try:
+            from core.services.db import get_supabase
+            supabase = get_supabase()
+            supabase.table('raw_dumps').insert({
+                'content': message_text[:3000],  # Cap at 3000 chars for DB
+                'status': 'completed',
+                'direction': 'outgoing',
+                'sender': 'system',
+                'message_type': 'response',
+                'source': 'telegram_bot',
+                'metadata': {'type': 'bot_response'},
+            }).execute()
+        except Exception:
+            pass
+
         chunks = _chunk_message(message_text)
         total = len(chunks)
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -128,6 +144,18 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
                     await client.post(url, json={"chat_id": chat_id, "text": note, "parse_mode": "Markdown"})
             except Exception:
                 pass
+        # Fire a push notification so the app gets the response instantly
+        # (fire-and-forget — don't block the Telegram send on this)
+        try:
+            from core.services.push_notification import send_push_notification
+            asyncio.create_task(send_push_notification(
+                title="Rhodey",
+                body=message_text[:120] + ("\u2026" if len(message_text) > 120 else ""),
+                data={"type": "briefing"},
+            ))
+        except Exception:
+            pass
+
         return success
     finally:
         drain_action_context()
