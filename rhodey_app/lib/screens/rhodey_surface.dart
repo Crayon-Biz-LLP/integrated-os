@@ -4,74 +4,26 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
 import '../services/api_service.dart';
 import '../services/notification_service.dart';
+import '../models/briefing.dart';
 import 'menu_sheet.dart';
 import 'today_screen.dart';
 import 'inbox_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Rhodey Surface — Card Feed
+//  Rhodey Surface — Briefing Edition
 //  ─────────────────────────────────────────────────────────────────────────────
-//  Metaphor: Teams channel cards, not a chat transcript.
-//
-//  Three card types:
-//    Rhodey card → Header: "Rhodey · 9:32 AM"  Body: answer / briefing / note
-//    You card    → Header: "You · 8:47 AM"     Body: capture / question / instruction
-//    System card → Header: "Decision · 8:45 AM" Body: action request + chips
-//
-//  Relation hints (lightweight, no thread framing):
-//    "In response to: \"What's new with Equisoft?\""
-//    Shown at top of Rhodey card when it directly follows your message.
+//  Not a chat log. Not a dashboard. A living briefing surface.
 //
 //  Layout:
-//    Fixed presence strip (top) → ● Rhodey
-//    Card feed (middle) → scrollable, chronological
-//    Fixed bottom dock (bottom) → [≡]  [🎤 Tap to speak]  [⌨︎]
+//    Presence strip (top)
+//    Briefing view (scrollable):
+//      ─ Greeting + next event
+//      ─ Section "Your morning/afternoon/evening" (tasks + calendar)
+//      ─ Section "Decisions" (conditional — hidden when empty)
+//      ─ Section "Recent" (max 3 items — outcomes + activity)
+//    Response moment (transient overlay)
+//    Bottom dock (menu, mic, keyboard)
 // ─────────────────────────────────────────────────────────────────────────────
-
-// ── Item types that can appear on the surface ────────────────────────────────
-
-enum SurfaceItemType {
-  greeting,
-  userCapture,
-  rhodeyResponse,
-  structuredDecision,
-  chronology,
-  historyHint,
-  starterChips,
-}
-
-// ── Internal surface item model ─────────────────────────────────────────────
-
-class _SurfaceItem {
-  final String id;
-  SurfaceItemType type;
-  String text;
-  String? icon;
-  String? subtitle;
-  List<String>? chips;
-  bool isUrgent;
-  DateTime timestamp;
-  PendingDecision? decision;
-
-  /// Lightweight relation: text of the user message this item responds to.
-  /// Rendered as "In response to: ..." on Rhodey cards.
-  String? contextRef;
-
-  _SurfaceItem({
-    required this.id,
-    required this.type,
-    required this.text,
-    this.icon,
-    this.subtitle,
-    this.chips,
-    this.isUrgent = false,
-    required this.timestamp,
-    this.decision,
-    this.contextRef,
-  });
-}
-
-// ── Main widget ─────────────────────────────────────────────────────────────
 
 class RhodeySurface extends StatefulWidget {
   const RhodeySurface({super.key});
@@ -83,25 +35,24 @@ class RhodeySurface extends StatefulWidget {
 class _RhodeySurfaceState extends State<RhodeySurface>
     with TickerProviderStateMixin {
   // ── Data ──
-  final List<_SurfaceItem> _items = [];
-  final _scrollController = ScrollController();
-  int _idSeq = 0;
+  BriefingResponse _briefing = BriefingResponse.empty();
+  bool _loading = true;
+  bool _hasError = false;
+
+  // ── Response moment ──
+  String? _momentText;
+  bool _showMoment = false;
 
   // ── State ──
-  bool _loading = true;
-  bool _hasScrolledOnce = false;
-  bool _showHistoryHint = true;
   bool _isListening = false;
   bool _isTyping = false;
-  String? _expandedDecisionId;
-  String? _selectedDecisionChip;
 
   // ── Services ──
   final _api = ApiService();
   final _textController = TextEditingController();
   final _typeFocus = FocusNode();
   Timer? _pollTimer;
-  final _seenMessageIds = <String>{};
+  Timer? _momentTimer;
 
   // ── Speech & TTS ──
   final stt.SpeechToText _speech = stt.SpeechToText();
@@ -112,6 +63,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   // ── Animations ──
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
+  late AnimationController _momentController;
 
   // ── Visual constants ──
   static const Color _surfaceBg = Color(0xFF0E0E10);
@@ -121,8 +73,10 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   static const Color _accentGreen = Color(0xFF34C759);
   static const Color _accentAmber = Color(0xFFFFD60A);
   static const Color _accentBlue = Color(0xFF007AFF);
+  static const Color _accentRed = Color(0xFFEF5350);
   static const Color _cardBorder = Color(0xFF2C2C30);
   static const Color _dockBg = Color(0xFF161618);
+  static const Color _sectionTitleColor = Color(0xFF8E8E93);
 
   @override
   void initState() {
@@ -137,6 +91,12 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
 
+    // Moment animation
+    _momentController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 400),
+    );
+
     // Init TTS
     _tts.setLanguage('en-US');
     _tts.setSpeechRate(0.5);
@@ -144,8 +104,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     // Init speech recognition
     _initSpeech();
 
-    // Load initial data
-    _loadInitialData();
+    // Load initial briefing
+    _fetchBriefing();
 
     // Start polling for updates
     _startPolling();
@@ -166,11 +126,12 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   @override
   void dispose() {
     _pulseController.dispose();
+    _momentController.dispose();
     _pollTimer?.cancel();
+    _momentTimer?.cancel();
     _voiceTimeout?.cancel();
     _textController.dispose();
     _typeFocus.dispose();
-    _scrollController.dispose();
     if (NotificationService.onNotificationOpened == _handlePushNotificationTap) {
       NotificationService.onNotificationOpened = null;
     }
@@ -179,242 +140,14 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
-  /// Converts an ISO timestamp string to local DateTime, or returns [fallback].
-  DateTime _parseLocal(String? raw, DateTime fallback) {
-    if (raw == null || raw.isEmpty) return fallback;
-    final parsed = DateTime.tryParse(raw);
-    return parsed != null ? parsed.toLocal() : fallback;
-  }
-
-  Future<void> _loadInitialData() async {
-    // Load all data in parallel
-    final messagesFut = _api.getMessages(limit: 50);
-    final decisionsFut = _api.getPendingDecisions();
-    final eventsFut = _api.getCalendarEvents();
-    final tasksFut = _api.getTasks();
-
-    final messagesResult = await messagesFut;
-    final decisionsResult = await decisionsFut;
-    final eventsResult = await eventsFut;
-    final tasksResult = await tasksFut;
-
+  Future<void> _fetchBriefing() async {
+    final briefing = await _api.getBriefing();
     if (!mounted) return;
-
-    final now = DateTime.now();
-    final items = <_SurfaceItem>[];
-    String? lastDecisionId;
-    String? lastUserText; // Track last user message for relation hints
-
-    // ── Decisions first ─────────────────────────────────────────────────────
-    if (decisionsResult.success) {
-      for (final pd in decisionsResult.data!) {
-        final ts = _parseLocal(pd.raw['created_at'] as String?, now);
-        final itemId = 'dec_${pd.id}';
-        lastDecisionId = itemId;
-
-        items.add(_SurfaceItem(
-          id: itemId,
-          type: SurfaceItemType.structuredDecision,
-          text: pd.title,
-          subtitle: pd.description,
-          chips: _chipsForSource(pd.source),
-          isUrgent: _isUrgentDecision(pd),
-          timestamp: ts,
-          decision: pd,
-        ));
-      }
-    }
-
-    // ── Messages ────────────────────────────────────────────────────────────
-    if (messagesResult.success && messagesResult.data!.isNotEmpty) {
-      for (final m in messagesResult.data!) {
-        final id = m['id'].toString();
-        final content = m['content'] as String? ?? '';
-        if (content.isEmpty) continue;
-
-        _seenMessageIds.add(id);
-
-        final direction = m['direction'] as String? ?? '';
-        final ts = _parseLocal(m['created_at'] as String?, now);
-        final isUser = direction == 'inbound';
-
-        final item = _SurfaceItem(
-          id: 'msg_${id}_${_idSeq++}',
-          type: isUser
-              ? SurfaceItemType.userCapture
-              : SurfaceItemType.rhodeyResponse,
-          text: content,
-          icon: isUser ? '🗣️' : null,
-          timestamp: ts,
-        );
-
-        // If this is a Rhodey response, check for relation to previous user message
-        if (!isUser && lastUserText != null) {
-          item.contextRef = lastUserText;
-          lastUserText = null; // Consume the relation
-        }
-
-        // Track user messages for future relation hints
-        if (isUser) {
-          lastUserText = content;
-        }
-
-        items.add(item);
-      }
-    }
-
-    // ── Sort by timestamp (oldest first) ────────────────────────────────────
-    items.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-
-    // ── Insert chronology markers ──────────────────────────────────────────
-    final sortedItems = <_SurfaceItem>[];
-    String? lastDateLabel;
-    for (final item in items) {
-      final dateLabel = _dateLabel(item.timestamp);
-      if (dateLabel != lastDateLabel) {
-        sortedItems.add(_SurfaceItem(
-          id: 'chrono_${_idSeq++}',
-          type: SurfaceItemType.chronology,
-          text: dateLabel,
-          timestamp: item.timestamp,
-        ));
-        lastDateLabel = dateLabel;
-      }
-      sortedItems.add(item);
-    }
-
-    // ── Show history hint if we have items above the greeting ──────────────
-    if (sortedItems.isNotEmpty) {
-      _showHistoryHint = true;
-    }
-
-    _items.addAll(sortedItems);
-
-    // ── Generate greeting from context ──────────────────────────────────────
-    final greeting = await _generateGreeting(
-      decisionsResult.data ?? [],
-      eventsResult,
-      tasksResult,
-    );
-
-    if (!mounted) return;
-
-    _items.add(_SurfaceItem(
-      id: 'greeting_${_idSeq++}',
-      type: SurfaceItemType.greeting,
-      text: greeting,
-      timestamp: DateTime.now(),
-    ));
-
     setState(() {
+      _briefing = briefing;
       _loading = false;
-      if (lastDecisionId != null) {
-        _expandedDecisionId = lastDecisionId;
-      }
+      _hasError = briefing.sections.isEmpty;
     });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollToBottom();
-    });
-  }
-
-  /// Returns a date-group label for chronology markers.
-  /// Cards have individual timestamps, so chronology just groups by date.
-  String _dateLabel(DateTime dt) {
-    final now = DateTime.now();
-    if (dt.year == now.year && dt.month == now.month && dt.day == now.day) {
-      return '─ Today ──';
-    }
-    if (dt.year == now.year && dt.month == now.month && dt.day == now.day - 1) {
-      return '─ Yesterday ──';
-    }
-    final months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    return '─ ${months[dt.month - 1]} ${dt.day} ──';
-  }
-
-  Future<String> _generateGreeting(
-    List<PendingDecision> decisions,
-    ApiResult<List<CalendarEventItem>> eventsResult,
-    ApiResult<List<Map<String, dynamic>>> tasksResult,
-  ) async {
-    final now = DateTime.now();
-    final hour = now.hour;
-    String greeting;
-    if (hour < 12) {
-      greeting = 'Good morning';
-    } else if (hour < 17) {
-      greeting = 'Good afternoon';
-    } else {
-      greeting = 'Good evening';
-    }
-
-    final pendingCount = decisions.length;
-    final parts = <String>[greeting];
-
-    if (pendingCount > 0) {
-      parts.add(
-        '$pendingCount thing${pendingCount != 1 ? 's' : ''} '
-        'need${pendingCount == 1 ? 's' : ''} your attention.',
-      );
-    }
-
-    // Next calendar event
-    if (eventsResult.success && eventsResult.data!.isNotEmpty) {
-      final next = eventsResult.data!.first;
-      parts.add('Next: ${next.title} at ${next.timeRange}.');
-    }
-
-    // Urgent tasks
-    if (tasksResult.success) {
-      final urgent = tasksResult.data!
-          .where(
-            (t) =>
-                t['deadline'] != null &&
-                _isDeadlineUrgent(t['deadline'] as String),
-          )
-          .take(2)
-          .toList();
-      if (urgent.isNotEmpty) {
-        final titles = urgent.map((t) => t['title'] as String).join(', ');
-        parts.add('${urgent.length == 1 ? 'Task due' : 'Tasks due'}: $titles.');
-      }
-    }
-
-    return parts.join(' ');
-  }
-
-  bool _isDeadlineUrgent(String deadline) {
-    try {
-      return DateTime.parse(deadline)
-          .toLocal()
-          .isBefore(DateTime.now().add(const Duration(hours: 24)));
-    } catch (_) {
-      return false;
-    }
-  }
-
-  bool _isUrgentDecision(PendingDecision d) {
-    return d.source == 'graph_edge' || d.source == 'graph_node';
-  }
-
-  List<String>? _chipsForSource(String source) {
-    switch (source) {
-      case 'graph_node':
-        return ['Approve', 'Edit name', 'Dismiss'];
-      case 'graph_edge':
-        return ['Approve', 'Edit', 'Dismiss'];
-      case 'email':
-        return ['Create task', 'Dismiss'];
-      case 'whatsapp':
-        return ['Create task', 'Dismiss'];
-      case 'call':
-        return ['Create task', 'Dismiss'];
-      default:
-        return ['Approve', 'Dismiss'];
-    }
   }
 
   // ── Polling ───────────────────────────────────────────────────────────────
@@ -422,7 +155,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   void _startPolling() {
     _pollTimer?.cancel();
     _pollTimer =
-        Timer.periodic(const Duration(seconds: 8), (_) => _pollForUpdates());
+        Timer.periodic(const Duration(seconds: 10), (_) => _pollForUpdates());
   }
 
   void _stopPolling() {
@@ -431,125 +164,11 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   }
 
   Future<void> _pollForUpdates() async {
-    final messagesResult = await _api.getMessages(limit: 5);
-    final decisionsResult = await _api.getPendingDecisions();
+    final briefing = await _api.getBriefing();
     if (!mounted) return;
 
-    bool changed = false;
-
-    // Track last user text among items already on surface for relation hints
-    String? pendingUserRef;
-
-    if (messagesResult.success) {
-      for (final m in messagesResult.data!) {
-        final id = m['id'].toString();
-        if (_seenMessageIds.contains(id)) continue;
-        _seenMessageIds.add(id);
-
-        final content = m['content'] as String? ?? '';
-        if (content.isEmpty) continue;
-
-        final direction = m['direction'] as String? ?? '';
-        final ts = _parseLocal(m['created_at'] as String?, DateTime.now());
-        final isUser = direction == 'inbound';
-
-        final item = _SurfaceItem(
-          id: 'msg_${id}_${_idSeq++}',
-          type: isUser
-              ? SurfaceItemType.userCapture
-              : SurfaceItemType.rhodeyResponse,
-          text: content,
-          icon: isUser ? '🗣️' : null,
-          timestamp: ts,
-        );
-
-        // Relation hint: Rhodey responding to a user message
-        if (!isUser && pendingUserRef != null) {
-          item.contextRef = pendingUserRef;
-          pendingUserRef = null;
-        }
-
-        if (isUser) {
-          pendingUserRef = content;
-        }
-
-        setState(() {
-          _items.insert(
-            _items.length - 1, // Before greeting (always last)
-            item,
-          );
-        });
-
-        // Speak Rhodey responses aloud
-        if (!isUser && content.isNotEmpty) {
-          _tts.stop();
-          _tts.speak(content);
-        }
-
-        changed = true;
-        _insertChronologyForNewItem(ts);
-      }
-    }
-
-    // Check for new decisions
-    if (decisionsResult.success) {
-      final existingDecisionIds = _items
-          .where((i) => i.decision != null)
-          .map((i) => i.decision!.id)
-          .toSet();
-      for (final pd in decisionsResult.data!) {
-        if (existingDecisionIds.contains(pd.id)) continue;
-
-        final ts = _parseLocal(pd.raw['created_at'] as String?, DateTime.now());
-        final itemId = 'dec_${pd.id}';
-
-        setState(() {
-          _items.insert(
-            _items.length - 1,
-            _SurfaceItem(
-              id: itemId,
-              type: SurfaceItemType.structuredDecision,
-              text: pd.title,
-              subtitle: pd.description,
-              chips: _chipsForSource(pd.source),
-              isUrgent: _isUrgentDecision(pd),
-              timestamp: ts,
-              decision: pd,
-            ),
-          );
-          _expandedDecisionId = itemId;
-        });
-
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      Future.delayed(const Duration(milliseconds: 50), _scrollToBottom);
-    }
-  }
-
-  void _insertChronologyForNewItem(DateTime ts) {
-    final lastChronoIdx = _items.lastIndexWhere(
-      (i) => i.type == SurfaceItemType.chronology && i != _items.last,
-    );
-    if (lastChronoIdx >= 0) {
-      final lastChrono = _items[lastChronoIdx];
-      final diff = ts.difference(lastChrono.timestamp);
-      if (diff.inMinutes < 30) return;
-    }
-
-    final dateLabel = _dateLabel(ts);
     setState(() {
-      _items.insert(
-        _items.length - 1,
-        _SurfaceItem(
-          id: 'chrono_${_idSeq++}',
-          type: SurfaceItemType.chronology,
-          text: dateLabel,
-          timestamp: ts,
-        ),
-      );
+      _briefing = briefing;
     });
   }
 
@@ -558,160 +177,144 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   void _sendMessage(String text) {
     if (text.trim().isEmpty) return;
 
-    setState(() {
-      _items.insert(
-        _items.length - 1,
-        _SurfaceItem(
-          id: 'user_${_idSeq++}',
-          type: SurfaceItemType.userCapture,
-          text: text.trim(),
-          icon: '🗣️',
-          timestamp: DateTime.now(),
-        ),
-      );
-    });
     _textController.clear();
-    _scrollToBottom();
-    _startPolling();
+    _stopPolling();
+
+    // Show brief response moment
+    _showResponseMoment('Processing...');
 
     _api.sendMessage(text.trim()).then((result) {
       if (!mounted) return;
-      if (result.success) {
-        String responseText;
-        if (result.data is Map) {
-          responseText = (result.data as Map)['response'] as String? ??
-              'Got it, working on it.';
-        } else {
-          responseText = 'Got it, working on it.';
-        }
 
-        Future.delayed(const Duration(milliseconds: 500), () {
-          if (!mounted) return;
-          _addRhodeyResponse(responseText, contextRef: text.trim());
-        });
+      String responseText;
+      BriefingResponse? briefingUpdate;
+
+      if (result.success && result.data is Map) {
+        final data = result.data as Map<String, dynamic>;
+        responseText = data['response'] as String? ?? 'Got it.';
+        briefingUpdate = data['briefing_update'] != null
+            ? BriefingResponse.fromJson(
+                data['briefing_update'] as Map<String, dynamic>)
+            : null;
+      } else {
+        responseText = result.error ?? 'Something went wrong.';
       }
+
+      // Update briefing if we got one, otherwise re-fetch
+      if (briefingUpdate != null) {
+        setState(() {
+          _briefing = briefingUpdate!;
+        });
+      } else {
+        _fetchBriefing();
+      }
+
+      // Speak the response aloud
+      _tts.stop();
+      _tts.speak(responseText);
+
+      // Show response moment
+      _showResponseMoment(responseText);
+
+      // Fade moment as soon as briefing is updated (with min ~2s display)
+      Future.delayed(const Duration(seconds: 2), () {
+        if (!mounted) return;
+        _hideResponseMoment();
+        _startPolling();
+      });
     });
   }
 
-  void _addRhodeyResponse(String text, {String? contextRef}) {
-    _stopPolling();
-
+  void _showResponseMoment(String text) {
     setState(() {
-      _items.insert(
-        _items.length - 1,
-        _SurfaceItem(
-          id: 'rhodey_${_idSeq++}',
-          type: SurfaceItemType.rhodeyResponse,
-          text: text,
-          timestamp: DateTime.now(),
-          contextRef: contextRef,
-        ),
-      );
+      _momentText = text;
+      _showMoment = true;
     });
+    _momentController.forward(from: 0.0);
+  }
 
-    _scrollToBottom();
-
-    _tts.stop();
-    _tts.speak(text);
+  void _hideResponseMoment() {
+    _momentController.reverse().then((_) {
+      if (!mounted) return;
+      setState(() {
+        _showMoment = false;
+        _momentText = null;
+      });
+    });
   }
 
   // ── Decision actions ──────────────────────────────────────────────────────
 
-  Future<void> _handleDecisionAction(_SurfaceItem item, String action) async {
-    final decision = item.decision;
-    if (decision == null) return;
+  Future<void> _handleDecisionAction(
+      BriefingItem item, String action) async {
+    if (!item.isDecision) return;
 
-    setState(() {
-      _selectedDecisionChip = action;
-      _expandedDecisionId = null;
-    });
+    _showResponseMoment('${action == 'approve' || action == 'accept' ? '✅' : '⏳'} $action...');
 
-    final source = decision.source;
-    final pendingId = int.tryParse(decision.id);
-
+    final isApprove = action == 'approve' || action == 'accept';
+    final pendingId = int.tryParse(item.decisionId ?? '');
     if (pendingId == null) {
-      setState(() => _items.remove(item));
+      // Can't parse ID — just re-fetch
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (!mounted) return;
+      await _fetchBriefing();
+      _dismissMomentAfterDelay();
       return;
     }
 
     ApiResult<dynamic>? result;
 
-    if (action == 'Approve' || action == 'Create task') {
-      switch (source) {
-        case 'graph_node':
-          result = await _api.approveGraphNode(pendingId);
-          break;
-        case 'graph_edge':
-          result = await _api.approveGraphEdge(pendingId);
-          break;
-        case 'email':
-          result = await _api.approveEmail(pendingId);
-          break;
-        case 'whatsapp':
-          result = await _api.approveWhatsApp(pendingId);
-          break;
-        case 'call':
-          result = await _api.approveCall(pendingId);
-          break;
-      }
-    } else if (action == 'Dismiss') {
-      switch (source) {
-        case 'graph_node':
-          result = await _api.rejectGraphNode(pendingId);
-          break;
-        case 'graph_edge':
-          result = await _api.rejectGraphEdge(pendingId);
-          break;
-        case 'email':
-          result = await _api.rejectEmail(pendingId);
-          break;
-        case 'whatsapp':
-          result = await _api.rejectWhatsApp(pendingId);
-          break;
-        case 'call':
-          result = await _api.rejectCall(pendingId);
-          break;
-      }
+    switch (item.decisionType) {
+      case 'graph_node':
+        result = isApprove
+            ? await _api.approveGraphNode(pendingId)
+            : await _api.rejectGraphNode(pendingId);
+        break;
+      case 'graph_edge':
+        result = isApprove
+            ? await _api.approveGraphEdge(pendingId)
+            : await _api.rejectGraphEdge(pendingId);
+        break;
+      case 'email':
+        result = isApprove
+            ? await _api.approveEmail(pendingId)
+            : await _api.rejectEmail(pendingId);
+        break;
+      case 'whatsapp':
+        result = isApprove
+            ? await _api.approveWhatsApp(pendingId)
+            : await _api.rejectWhatsApp(pendingId);
+        break;
+      case 'call':
+        result = isApprove
+            ? await _api.approveCall(pendingId)
+            : await _api.rejectCall(pendingId);
+        break;
+      case 'merge':
+        // Merge actions need a different endpoint — re-fetch for now
+        result = null;
+        break;
+      default:
+        result = null;
     }
 
     if (!mounted) return;
 
-    Future.delayed(const Duration(milliseconds: 350), () {
-      if (!mounted) return;
+    // Re-fetch briefing regardless, so state is fresh
+    await _fetchBriefing();
 
-      if (action == 'Dismiss') {
-        setState(() {
-          _items.remove(item);
-          _selectedDecisionChip = null;
-        });
-      } else if (result != null && result.success) {
-        setState(() {
-          item.type = SurfaceItemType.rhodeyResponse;
-          item.text =
-              '✅ ${action == 'Approve' ? 'Approved' : 'Created'} — ${decision.title}';
-          item.chips = null;
-          item.isUrgent = false;
-          item.decision = null;
-          _selectedDecisionChip = null;
-        });
-      } else {
-        setState(() {
-          _expandedDecisionId = item.id;
-          _selectedDecisionChip = null;
-        });
-        if (result != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                result.error ?? 'Action failed',
-                style: const TextStyle(fontSize: 12),
-              ),
-              backgroundColor: const Color(0xFFEF5350),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-      }
+    if (result != null && !result.success) {
+      _showResponseMoment(result.error ?? 'Action failed');
+      _dismissMomentAfterDelay();
+    } else {
+      _dismissMomentAfterDelay();
+    }
+  }
+
+  void _dismissMomentAfterDelay() {
+    _momentTimer?.cancel();
+    _momentTimer = Timer(const Duration(seconds: 2), () {
+      _hideResponseMoment();
     });
   }
 
@@ -749,8 +352,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content:
-                  Text('Speech recognition not available', style: TextStyle(fontSize: 12)),
+              content: Text('Speech recognition not available',
+                  style: TextStyle(fontSize: 12)),
               duration: Duration(seconds: 2),
             ),
           );
@@ -797,11 +400,9 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
   // ── TTS on tap ────────────────────────────────────────────────────────────
 
-  void _speakMessage(String text) {
-    if (text.trim().isEmpty) return;
-    _tts.stop();
-    _tts.speak(text.trim());
-  }
+  // TTS is triggered on each send-message response. No tap-to-speak on briefing
+  // items because that would add chat-like interaction to the surface.
+  // (Keep the method for future use — e.g. tapping the greeting to hear it.)
 
   // ── Notification handling ─────────────────────────────────────────────────
 
@@ -835,20 +436,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     showMenuSheet(context);
   }
 
-  // ── Scroll ────────────────────────────────────────────────────────────────
-
-  void _scrollToBottom() {
-    Future.delayed(const Duration(milliseconds: 100), () {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
-
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
@@ -860,7 +447,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           child: Column(
             children: [
               _buildPresenceStrip(),
-              Expanded(child: _buildSurfaceList()),
+              Expanded(child: _buildBriefingView()),
               _buildTypeBar(),
             ],
           ),
@@ -871,11 +458,17 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     return Scaffold(
       backgroundColor: _surfaceBg,
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            _buildPresenceStrip(),
-            Expanded(child: _buildSurfaceList()),
-            _buildBottomDock(),
+            Column(
+              children: [
+                _buildPresenceStrip(),
+                Expanded(child: _buildBriefingView()),
+                _buildBottomDock(),
+              ],
+            ),
+            // Response moment overlay
+            if (_showMoment && _momentText != null) _buildResponseMoment(),
           ],
         ),
       ),
@@ -899,14 +492,12 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           AnimatedBuilder(
             animation: _pulseAnimation,
             builder: (_, child) {
-              final isActive = _isListening || _selectedDecisionChip != null;
               return Container(
                 width: 8,
                 height: 8,
                 decoration: BoxDecoration(
-                  color: isActive
-                      ? _accentGreen
-                      : _accentGreen.withValues(alpha: _pulseAnimation.value),
+                  color: _accentGreen
+                      .withValues(alpha: _pulseAnimation.value),
                   shape: BoxShape.circle,
                 ),
               );
@@ -931,9 +522,9 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     );
   }
 
-  // ── Surface list ──────────────────────────────────────────────────────────
+  // ── Briefing view ─────────────────────────────────────────────────────────
 
-  Widget _buildSurfaceList() {
+  Widget _buildBriefingView() {
     if (_loading) {
       return const Center(
         child: SizedBox(
@@ -947,49 +538,20 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       );
     }
 
-    if (_items.isEmpty) {
-      return _buildBlankState();
+    if (_hasError || _briefing.sections.isEmpty) {
+      return _buildErrorOrEmpty();
     }
 
-    return NotificationListener<ScrollNotification>(
-      onNotification: (notification) {
-        if (notification is ScrollUpdateNotification &&
-            !_hasScrolledOnce &&
-            notification.metrics.pixels > 20) {
-          setState(() {
-            _hasScrolledOnce = true;
-            _showHistoryHint = false;
-          });
-        }
-        return false;
-      },
-      child: ListView.builder(
-        controller: _scrollController,
-        padding: const EdgeInsets.only(top: 8, bottom: 16),
-        itemCount: _items.length + (_showHistoryHint ? 1 : 0),
-        itemBuilder: (context, index) {
-          if (_showHistoryHint && index == 0) {
-            return _buildHistoryHint();
-          }
-          final itemIndex = _showHistoryHint ? index - 1 : index;
-          if (itemIndex >= _items.length) return const SizedBox();
-          return _buildItem(_items[itemIndex]);
-        },
-      ),
-    );
+    return _buildSections();
   }
 
-  // ── Blank state ───────────────────────────────────────────────────────────
-
-  Widget _buildBlankState() {
+  Widget _buildErrorOrEmpty() {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
       children: [
         const SizedBox(height: 40),
         Text(
-          "Hey, I'm your companion.\n"
-          'I\'ll keep track of tasks, people, projects,\n'
-          'and anything you throw at me.',
+          "Hey, I'm your companion.",
           style: TextStyle(
             color: _primaryText,
             fontSize: 15,
@@ -1016,12 +578,11 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         }),
         const SizedBox(height: 8),
         _starterChip('📝  "Note down an idea"', () {
-          _sendMessage(
-              'Note down: explore AI-powered meeting summaries for Qhord');
+          _sendMessage('Note down: explore AI-powered meeting summaries for Qhord');
         }),
         const SizedBox(height: 32),
         Text(
-          '(nothing yet — your surface\n will fill as we talk)',
+          '(nothing yet — your surface\nwill fill as we talk)',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: _mutedText.withValues(alpha: 0.6),
@@ -1029,6 +590,21 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             fontStyle: FontStyle.italic,
           ),
         ),
+        if (_hasError) ...[
+          const SizedBox(height: 24),
+          Center(
+            child: TextButton(
+              onPressed: () {
+                setState(() {
+                  _loading = true;
+                  _hasError = false;
+                });
+                _fetchBriefing();
+              },
+              child: const Text('Retry', style: TextStyle(fontSize: 12)),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -1055,319 +631,241 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     );
   }
 
-  // ── History hint ──────────────────────────────────────────────────────────
+  // ── Sectioned briefing ────────────────────────────────────────────────────
 
-  Widget _buildHistoryHint() {
+  Widget _buildSections() {
+    return ListView(
+      padding: const EdgeInsets.only(top: 16, bottom: 16),
+      children: [
+        // Greeting
+        _buildGreetingHeader(),
+        const SizedBox(height: 16),
+
+        // Sections
+        for (final section in _briefing.sections) ...[
+          _buildSection(section),
+          const SizedBox(height: 16),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildGreetingHeader() {
+    final hasPending = _briefing.pendingCount > 0;
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Center(
-        child: Text(
-          'scroll up for older',
-          style: TextStyle(
-            color: _mutedText.withValues(alpha: 0.45),
-            fontSize: 11,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ── Item renderer ─────────────────────────────────────────────────────────
-
-  Widget _buildItem(_SurfaceItem item) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.0, end: 1.0),
-      duration: const Duration(milliseconds: 250),
-      curve: Curves.easeOut,
-      builder: (context, value, child) {
-        return Opacity(
-          opacity: value,
-          child: Transform.translate(
-            offset: Offset(0, 16 * (1.0 - value)),
-            child: child,
-          ),
-        );
-      },
-      child: _buildItemContent(item),
-    );
-  }
-
-  Widget _buildItemContent(_SurfaceItem item) {
-    switch (item.type) {
-      case SurfaceItemType.greeting:
-      case SurfaceItemType.rhodeyResponse:
-        return _buildRhodeyCard(item);
-      case SurfaceItemType.userCapture:
-        return _buildUserCard(item);
-      case SurfaceItemType.structuredDecision:
-        return _buildSystemCard(item);
-      case SurfaceItemType.chronology:
-        return _buildChronology(item);
-      case SurfaceItemType.historyHint:
-      case SurfaceItemType.starterChips:
-        return const SizedBox();
-    }
-  }
-
-  // ── Card helpers ──────────────────────────────────────────────────────────
-
-  /// Format a time string for card headers (24h format, e.g. "9:32" or "19:30").
-  String _formatTime(DateTime dt) {
-    final h = dt.hour.toString().padLeft(2, '0');
-    final m = dt.minute.toString().padLeft(2, '0');
-    return '$h:$m';
-  }
-
-  /// Card wrapper: rounded container with subtle border, shared by all types.
-  Widget _buildCardContainer({
-    required String headerLabel,
-    Color? accentColor,
-    Widget? relationHint,
-    required Widget body,
-    EdgeInsets padding = const EdgeInsets.all(16),
-  }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Container(
-        padding: padding,
-        decoration: BoxDecoration(
-          color: _cardBg,
-          border: Border.all(color: _cardBorder.withValues(alpha: 0.7)),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Header row
-            Row(
-              children: [
-                // Optional accent bar (for system cards)
-                if (accentColor != null)
-                  Container(
-                    width: 3,
-                    height: 14,
-                    margin: const EdgeInsets.only(right: 8),
-                    decoration: BoxDecoration(
-                      color: accentColor,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                Text(
-                  headerLabel,
-                  style: TextStyle(
-                    color: _mutedText,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    letterSpacing: 0.2,
-                  ),
-                ),
-              ],
-            ),
-            // Relation hint
-            if (relationHint != null) ...[
-              const SizedBox(height: 8),
-              relationHint,
-            ],
-            // Body
-            const SizedBox(height: 10),
-            body,
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Build a relation hint widget ("In response to: ...")
-  Widget _buildRelationHint(String text) {
-    // Truncate to first 80 chars for scanability
-    final display = text.length > 80 ? '${text.substring(0, 80)}…' : text;
-    return Text(
-      'In response to: "$display"',
-      style: TextStyle(
-        color: _mutedText.withValues(alpha: 0.7),
-        fontSize: 12,
-        fontStyle: FontStyle.italic,
-        height: 1.3,
-      ),
-    );
-  }
-
-  // ── Rhodey card ───────────────────────────────────────────────────────────
-
-  Widget _buildRhodeyCard(_SurfaceItem item) {
-    final header = 'Rhodey · ${_formatTime(item.timestamp)}';
-    final relation = item.contextRef != null
-        ? _buildRelationHint(item.contextRef!)
-        : null;
-
-    return _buildCardContainer(
-      headerLabel: header,
-      relationHint: relation,
-      body: GestureDetector(
-        onTap: () => _speakMessage(item.text),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Text(
-                item.text,
-                style: const TextStyle(
-                  color: _primaryText,
-                  fontSize: 14,
-                  height: 1.5,
-                  fontWeight: FontWeight.w400,
-                ),
-              ),
-            ),
-            const SizedBox(width: 4),
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Icon(
-                Icons.volume_up_outlined,
-                size: 10,
-                color: _mutedText.withValues(alpha: 0.35),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── User card ─────────────────────────────────────────────────────────────
-
-  Widget _buildUserCard(_SurfaceItem item) {
-    final header = 'You · ${_formatTime(item.timestamp)}';
-
-    return _buildCardContainer(
-      headerLabel: header,
-      body: Row(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            item.icon ?? '📝',
-            style: const TextStyle(fontSize: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _briefing.greeting,
+                  style: const TextStyle(
+                    color: _primaryText,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w500,
+                    height: 1.4,
+                  ),
+                ),
+              ),
+              if (hasPending)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: _accentAmber.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: _accentAmber.withValues(alpha: 0.3)),
+                  ),
+                  child: Text(
+                    '${_briefing.pendingCount} pending',
+                    style: TextStyle(
+                      color: _accentAmber,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+            ],
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              item.text,
+          if (_briefing.nextEvent != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              _briefing.nextEvent!,
               style: TextStyle(
-                color: _mutedText,
+                color: _accentBlue,
                 fontSize: 13,
-                height: 1.4,
                 fontWeight: FontWeight.w400,
-                fontStyle: FontStyle.italic,
               ),
             ),
-          ),
+          ],
         ],
       ),
     );
   }
 
-  // ── System card (decisions) ───────────────────────────────────────────────
+  Widget _buildSection(BriefingSection section) {
+    final isDecisions = section.id == 'decisions';
 
-  Widget _buildSystemCard(_SurfaceItem item) {
-    final accentColor = item.isUrgent ? _accentAmber : _accentBlue;
-    final isExpanded = _expandedDecisionId == item.id;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Section title
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+          child: Text(
+            section.title.toUpperCase(),
+            style: TextStyle(
+              color: _sectionTitleColor,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.8,
+            ),
+          ),
+        ),
 
-    // Header label based on urgency
-    final headerLabel = item.isUrgent ? 'Pending' : 'Decision';
-    final header = '$headerLabel · ${_formatTime(item.timestamp)}';
+        // Section items
+        ...section.items.map((item) => _buildBriefingItem(item, isDecisions)),
+      ],
+    );
+  }
 
-    return _buildCardContainer(
-      headerLabel: header,
-      accentColor: accentColor,
-      body: AnimatedSize(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-        alignment: Alignment.topCenter,
-        child: AnimatedOpacity(
-          duration: const Duration(milliseconds: 200),
-          opacity: isExpanded ? 1.0 : 0.0,
-          child: isExpanded
-              ? Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Icon + title
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          item.isUrgent ? '⚠️' : '🔗',
-                          style: const TextStyle(fontSize: 14),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                item.text,
-                                style: const TextStyle(
-                                  color: _primaryText,
-                                  fontSize: 13,
-                                  height: 1.4,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                              if (item.subtitle != null) ...[
-                                const SizedBox(height: 4),
-                                Text(
-                                  item.subtitle!,
-                                  style: TextStyle(
-                                    color: _mutedText,
-                                    fontSize: 12,
-                                    height: 1.3,
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                      ],
+  Widget _buildBriefingItem(BriefingItem item, bool isDecision) {
+    final textColor = item.isUrgent ? _accentRed : _primaryText;
+    final bgOpacity = item.isUrgent ? 0.05 : 0.0;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: _cardBg.withValues(alpha: 0.4 + bgOpacity),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Icon
+            Padding(
+              padding: const EdgeInsets.only(top: 1, right: 10),
+              child: Text(
+                item.icon,
+                style: const TextStyle(fontSize: 14),
+              ),
+            ),
+            // Text + actions
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.text,
+                    style: TextStyle(
+                      color: textColor,
+                      fontSize: 13,
+                      height: 1.4,
+                      fontWeight: item.isUrgent ? FontWeight.w500 : FontWeight.w400,
                     ),
-                    // Action chips
-                    if (item.chips != null) ...[
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 6,
-                        children: item.chips!.map((chip) {
-                          return _ActionChip(
-                            label: chip,
-                            accent: chip == 'Approve' || chip == 'Create task'
-                                ? _accentGreen
-                                : chip == 'Dismiss' || chip == 'Skip'
-                                    ? _mutedText
-                                    : _accentBlue,
-                            onTap: () =>
-                                _handleDecisionAction(item, chip),
-                          );
-                        }).toList(),
-                      ),
-                    ],
-                  ],
-                )
-              : const SizedBox(height: 0),
+                  ),
+                  // Decision action chips
+                  if (isDecision) ...[const SizedBox(height: 8), _buildDecisionActions(item)],
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  // ── Chronology marker ─────────────────────────────────────────────────────
+  Widget _buildDecisionActions(BriefingItem item) {
+    final decisionType = item.decisionType ?? '';
 
-  Widget _buildChronology(_SurfaceItem item) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Center(
-        child: Text(
-          item.text,
-          style: TextStyle(
-            color: _mutedText.withValues(alpha: 0.35),
-            fontSize: 10,
-            letterSpacing: 0.5,
+    String approveLabel;
+    String dismissLabel;
+
+    if (decisionType == 'merge') {
+      approveLabel = 'Accept';
+      dismissLabel = 'Reject';
+    } else if (decisionType == 'graph_node') {
+      approveLabel = 'Approve';
+      dismissLabel = 'Dismiss';
+    } else {
+      approveLabel = 'Approve';
+      dismissLabel = 'Dismiss';
+    }
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 4,
+      children: [
+        _ActionChip(
+          label: approveLabel,
+          accent: _accentGreen,
+          onTap: () => _handleDecisionAction(item, approveLabel.toLowerCase()),
+        ),
+        _ActionChip(
+          label: dismissLabel,
+          accent: _mutedText,
+          onTap: () => _handleDecisionAction(item, dismissLabel.toLowerCase()),
+        ),
+      ],
+    );
+  }
+
+  // ── Response moment (floating overlay) ────────────────────────────────────
+
+  Widget _buildResponseMoment() {
+    return Positioned(
+      left: 32,
+      right: 32,
+      bottom: 80,
+      child: FadeTransition(
+        opacity: _momentController,
+        child: Material(
+          color: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: _cardBg,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: _accentGreen.withValues(alpha: 0.3),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.4),
+                  blurRadius: 20,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 4,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: _accentGreen,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    _momentText ?? '',
+                    style: const TextStyle(
+                      color: _primaryText,
+                      fontSize: 13,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1388,7 +886,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       ),
       child: Row(
         children: [
-          // Menu
+          // Menu (with optional pending dot)
           Material(
             color: Colors.transparent,
             child: InkWell(
@@ -1396,7 +894,24 @@ class _RhodeySurfaceState extends State<RhodeySurface>
               onTap: _openMenu,
               child: Container(
                 padding: const EdgeInsets.all(10),
-                child: Icon(Icons.menu, color: _mutedText, size: 20),
+                child: Stack(
+                  children: [
+                    Icon(Icons.menu, color: _mutedText, size: 20),
+                    if (_briefing.pendingCount > 0)
+                      Positioned(
+                        right: 4,
+                        top: 4,
+                        child: Container(
+                          width: 7,
+                          height: 7,
+                          decoration: const BoxDecoration(
+                            color: _accentAmber,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),

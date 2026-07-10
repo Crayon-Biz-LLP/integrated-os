@@ -205,6 +205,31 @@ async def get_captures_route(request: Request, limit: int = 50, offset: int = 0)
         print(f"Get captures error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# --- BRIEFING ENDPOINT (for home-surface feed) ---
+@app.get("/api/briefing")
+async def get_briefing_route(request: Request):
+    """Structured briefing for the Rhodey Surface home screen.
+
+    Returns greeting + sections (briefing, decisions, recent).
+    Decisions section is omitted when empty.
+    """
+    require_api_auth(request)
+    try:
+        from api.briefing import build_briefing
+        supabase = get_supabase()
+        briefing = await build_briefing(supabase)
+        return briefing
+    except Exception as e:
+        print(f"Briefing error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "greeting": "Hey, Danny.",
+            "next_event": None,
+            "sections": [],
+            "pending_count": 0,
+        }, 200
+
 # --- EVENING ROUNDUP ---
 @app.api_route("/api/roundup", methods=["GET", "POST"])
 async def roundup_route(request: Request):
@@ -317,7 +342,20 @@ async def send_message_route(request: Request):
             except Exception as raw_err:
                 print(f"Failed to log response to raw_dumps: {raw_err}")
         
-        return {"success": True, "message": "Message processed", "response": response_text}
+        # Build updated briefing so the frontend gets the new state in one round-trip
+        try:
+            from api.briefing import build_briefing
+            briefing_update = await build_briefing(get_supabase())
+        except Exception as brief_err:
+            print(f"Send-message briefing error (non-critical): {brief_err}")
+            briefing_update = None
+        
+        return {
+            "success": True,
+            "message": "Message processed",
+            "response": response_text,
+            "briefing_update": briefing_update,
+        }
     
     except HTTPException:
         raise

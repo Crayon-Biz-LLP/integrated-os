@@ -3,6 +3,7 @@ import 'dart:math' show Random;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'api_config.dart';
+import '../models/briefing.dart';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -307,7 +308,7 @@ class ApiService {
     return post('/api/graph-node-action', body: {
       'id': pendingId,
       'action': 'approve',
-      'label': ?label,
+      'label': label,
     });
   }
 
@@ -517,9 +518,19 @@ class ApiService {
     });
 
     return ApiResult.ok(decisions);
+  }  // ── Briefing ──────────────────────────────────────────────
+
+  /// Fetches the structured briefing from /api/briefing.
+  Future<BriefingResponse> getBriefing() async {
+    final result = await _get('/api/briefing');
+    if (result.success && result.data is Map) {
+      return BriefingResponse.fromJson(result.data as Map<String, dynamic>);
+    }
+    return BriefingResponse.empty();
   }
 
   // ── Config access ────────────────────────────────────────────
 
   ApiConfig get config => _config;
 }
+
