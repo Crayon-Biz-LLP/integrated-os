@@ -74,34 +74,9 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          export VERSION_NAME=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
-          export VERSION_CODE=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/.*+//')
-          export DOWNLOAD_URL="https://github.com/Crayon-Biz-LLP/integrated-os/releases/download/app-latest/app-release.apk"
-          export RELEASE_NOTES="Automated build from main branch (${GITHUB_SHA::7})"
-
-          python3 << 'PYEOF'
-import os, json, urllib.request
-
-payload = json.dumps({
-    'key': 'app_version',
-    'content': json.dumps({
-        'version_code': int(os.environ['VERSION_CODE']),
-        'version_name': os.environ['VERSION_NAME'],
-        'download_url': os.environ['DOWNLOAD_URL'],
-        'release_notes': os.environ.get('RELEASE_NOTES', ''),
-    })
-}).encode()
-
-req = urllib.request.Request(
-    os.environ['SUPABASE_URL'] + '/rest/v1/core_config',
-    data=payload,
-    headers={
-        'apikey': os.environ['SUPABASE_SERVICE_ROLE_KEY'],
-        'Authorization': 'Bearer ' + os.environ['SUPABASE_SERVICE_ROLE_KEY'],
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates',
-    }
-)
-urllib.request.urlopen(req)
-print('✅ Recorded version in Supabase')
-PYEOF
+          VERSION_NAME=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
+          VERSION_CODE=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/.*+//')
+          DOWNLOAD_URL="https://github.com/Crayon-Biz-LLP/integrated-os/releases/download/app-latest/app-release.apk"
+          RELEASE_NOTES="Automated build from main branch (${GITHUB_SHA:0:7})"
+          export VERSION_NAME VERSION_CODE DOWNLOAD_URL RELEASE_NOTES
+          python3 scripts/record_app_version.py
