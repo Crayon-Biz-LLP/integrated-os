@@ -1,6 +1,7 @@
 // Models for the structured briefing response from GET /api/briefing.
 //
-// Sections: briefing (tasks + calendar), decisions (pending items), recent (outcomes).
+// Sections: briefing (tasks + calendar), decisions (pending items), recent (outcomes),
+// traces (paired input→outcome history for Traces view).
 // Decisions section is omitted on the API when empty.
 
 class BriefingItem {
@@ -59,21 +60,50 @@ class BriefingSection {
   }
 }
 
+/// A paired input→outcome trace for the Traces view.
+class TraceItem {
+  /// Human-readable time: "2m ago", "1h ago"
+  final String time;
+
+  /// What the user said/asked (brief)
+  final String input;
+
+  /// What happened / outcome
+  final String resolution;
+
+  const TraceItem({
+    required this.time,
+    required this.input,
+    required this.resolution,
+  });
+
+  factory TraceItem.fromJson(Map<String, dynamic> json) {
+    return TraceItem(
+      time: json['time'] as String? ?? '',
+      input: json['input'] as String? ?? '',
+      resolution: json['resolution'] as String? ?? '',
+    );
+  }
+}
+
 class BriefingResponse {
   final String greeting;
   final String? nextEvent;
   final List<BriefingSection> sections;
   final int pendingCount;
+  final List<TraceItem> traces;
 
   const BriefingResponse({
     required this.greeting,
     this.nextEvent,
     required this.sections,
     this.pendingCount = 0,
+    this.traces = const [],
   });
 
   factory BriefingResponse.fromJson(Map<String, dynamic> json) {
     final rawSections = json['sections'] as List<dynamic>? ?? [];
+    final rawTraces = json['traces'] as List<dynamic>? ?? [];
     return BriefingResponse(
       greeting: json['greeting'] as String? ?? 'Hey.',
       nextEvent: json['next_event'] as String?,
@@ -81,6 +111,9 @@ class BriefingResponse {
           .map((e) => BriefingSection.fromJson(e as Map<String, dynamic>))
           .toList(),
       pendingCount: json['pending_count'] as int? ?? 0,
+      traces: rawTraces
+          .map((e) => TraceItem.fromJson(e as Map<String, dynamic>))
+          .toList(),
     );
   }
 

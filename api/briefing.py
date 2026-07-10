@@ -9,6 +9,7 @@ Sections built:
   morning   → greeting + next event + urgent/active tasks
   decisions → pending graph nodes + edges (omitted if empty)
   recent    → last few completed outcomes (max 3 items, last 30 min)
+  traces    → paired input→outcome history (for Traces view)
 """
 
 import os
@@ -30,16 +31,26 @@ class BriefingSection(TypedDict):
     title: str
     items: list[BriefingItem]
 
+class TraceItem(TypedDict):
+    time: str               # Human-readable time: "2m ago", "1h ago"
+    input: str              # What the user said/asked (brief)
+    resolution: str         # What happened / outcome
+
 class BriefingResponse(TypedDict):
     greeting: str
     next_event: str | None
     sections: list[BriefingSection]
     pending_count: int
+    traces: list[TraceItem]  # For the Traces view
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+IST = timezone(timedelta(hours=5, minutes=30))
+ELLIPSIS = "\u2026"
 
 
 # ── Greeting ─────────────────────────────────────────────────────────────────
-
-IST = timezone(timedelta(hours=5, minutes=30))
 
 def _greeting() -> str:
     now = datetime.now(IST)
@@ -51,13 +62,38 @@ def _greeting() -> str:
     return "Good evening"
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _human_time(dt: datetime, now: datetime) -> str:
+    """Human-readable relative time string."""
+    delta = now - dt
+    if delta.total_seconds() < 60:
+        return "Just now"
+    if delta.total_seconds() < 3600:
+        mins = int(delta.total_seconds() / 60)
+        return f"{mins}m ago"
+    if delta.total_seconds() < 86400:
+        hours = int(delta.total_seconds() / 3600)
+        return f"{hours}h ago"
+    days = int(delta.total_seconds() / 86400)
+    return f"{days}d ago"
+
+
+def _parse_dt(raw: str) -> datetime | None:
+    """Parse ISO datetime string to IST, returning None on failure."""
+    try:
+        return datetime.fromisoformat(raw).astimezone(IST)
+    except (ValueError, TypeError):
+        return None
+
+
 # ── Section builders ─────────────────────────────────────────────────────────
 
 def _build_briefing_section(
     tasks: list[dict],
     events: list[dict],
 ) -> BriefingSection:
-    """Build the morning/evening section: greeting + calendar + tasks."""
+    """Build the morning/evening section: calendar + tasks."""
     items: list[BriefingItem] = []
 
     now = datetime.now(IST)
@@ -68,9 +104,8 @@ def _build_briefing_section(
         start_raw = ev.get("start", {}).get("dateTime", "")
         if not start_raw:
             continue
-        try:
-            start_dt = datetime.fromisoformat(start_raw).astimezone(IST)
-        except (ValueError, TypeError):
+        start_dt = _parse_dt(start_raw)
+        if start_dt is None:
             continue
         # Only show events within the next 6 hours
         if start_dt < now - timedelta(hours=1) or start_dt > soon:
@@ -94,8 +129,8 @@ def _build_briefing_section(
         is_active = t.get("status") in ("todo", None)
 
         if deadline_raw:
-            try:
-                dl = datetime.fromisoformat(deadline_raw).astimezone(IST)
+            dl = _parse_dt(deadline_raw)
+            if dl is not None:
                 if dl < now:
                     task_items.append(BriefingItem(
                         icon="⚠️",
@@ -116,13 +151,12 @@ def _build_briefing_section(
                         text=f"{title} — due {date_str}",
                         status="active",
                     ))
-            except (ValueError, TypeError):
-                if is_active:
-                    task_items.append(BriefingItem(
-                        icon="📝",
-                        text=title,
-                        status="active",
-                    ))
+            elif is_active:
+                task_items.append(BriefingItem(
+                    icon="📝",
+                    text=title,
+                    status="active",
+                ))
         elif is_active:
             task_items.append(BriefingItem(
                 icon="📝",
@@ -134,9 +168,18 @@ def _build_briefing_section(
     task_items.sort(key=lambda it: 0 if it["status"] == "urgent" else 1)
     items.extend(task_items)
 
+    # Determine section title by time of day
+    h = now.hour
+    if h < 12:
+        section_title = "Your morning"
+    elif h < 17:
+        section_title = "Your afternoon"
+    else:
+        section_title = "Your evening"
+
     return BriefingSection(
         id="briefing",
-        title="Your morning" if now.hour < 12 else "Your evening" if now.hour >= 17 else "Your afternoon",
+        title=section_title,
         items=items,
     )
 
@@ -163,7 +206,7 @@ def _build_decisions_section(
             target = (gn.get("eval_context") or {}).get("linked_entity", "another node")
             items.append(BriefingItem(
                 icon="🔀",
-                text=f'Merge: "{label}" → "{target}"',
+                text=f'Merge: "{label}" \u2192 "{target}"',
                 status="pending",
                 decision_id=gn_id,
                 decision_type="merge",
@@ -183,7 +226,7 @@ def _build_decisions_section(
         tgt = ge.get("target_label", "?")
         rel = ge.get("relationship", "relates_to")
         ctx = ge.get("context", "")
-        label = f"{src} → {rel} → {tgt}"
+        label = f"{src} \u2192 {rel} \u2192 {tgt}"
         if ctx:
             label += f" ({ctx})"
         items.append(BriefingItem(
@@ -202,8 +245,8 @@ def _build_decisions_section(
             continue
         source_type = source if source in ("email", "whatsapp", "call") else "channel"
         items.append(BriefingItem(
-            icon="📨",
-            text=f"{content[:80]}{'…' if len(content) > 80 else ''}",
+            icon="\uD83D\uDCE8",
+            text=f"{content[:80]}{ELLIPSIS if len(content) > 80 else ''}",
             status="pending",
             decision_id=str(ci.get("id", "")),
             decision_type=source_type,
@@ -223,7 +266,7 @@ def _build_recent_section(
     recent_messages: list[dict],
     recent_tasks: list[dict],
 ) -> BriefingSection:
-    """Build Recent section from the last ~15 min of activity. Max 3 items."""
+    """Build Recent section from the last ~30 min of activity. Max 3 items."""
     items: list[BriefingItem] = []
     now = datetime.now(IST)
     cutoff = now - timedelta(minutes=30)
@@ -236,14 +279,11 @@ def _build_recent_section(
         if not title:
             continue
         completed_raw = t.get("completed_at") or t.get("updated_at", "")
-        try:
-            completed_dt = datetime.fromisoformat(completed_raw).astimezone(IST)
-        except (ValueError, TypeError):
-            completed_dt = now
+        completed_dt = _parse_dt(completed_raw) or now
         if completed_dt < cutoff:
             continue
         items.append(BriefingItem(
-            icon="✅",
+            icon="\u2705",
             text=f"Done: {title}",
             status="done",
         ))
@@ -260,36 +300,33 @@ def _build_recent_section(
         message_type = m.get("message_type", "")
 
         created_raw = m.get("created_at", "")
-        try:
-            created_dt = datetime.fromisoformat(created_raw).astimezone(IST)
-        except (ValueError, TypeError):
-            created_dt = now
+        created_dt = _parse_dt(created_raw) or now
         if created_dt < cutoff:
             continue
 
         # Outgoing (bot) responses that are confirmations
         if direction == "outgoing" and status == "completed":
-            if any(word in content.lower() for word in ["created", "noted", "saved", "done", "✅"]):
+            if any(word in content.lower() for word in ["created", "noted", "saved", "done", "\u2705"]):
                 display = content[:100]
                 if len(content) > 100:
-                    display += "…"
+                    display += "\u2026"
                 items.append(BriefingItem(
-                    icon="✅",
+                    icon="\u2705",
                     text=display,
                     status="done",
                 ))
         # Inbound user notes
         elif direction == "inbound" and message_type == "note":
             items.append(BriefingItem(
-                icon="📝",
-                text=f'Noted: {content[:80]}{"…" if len(content) > 80 else ""}',
+                icon="\uD83D\uDCDD",
+                text=f"Noted: {content[:80]}{ELLIPSIS if len(content) > 80 else ''}",
                 status="note",
             ))
 
     # Fallback: if nothing recent, show a subtle prompt
     if not items:
         items.append(BriefingItem(
-            icon="💬",
+            icon="\uD83D\uDCAC",
             text="Speak or type to get started",
             status="note",
         ))
@@ -299,6 +336,74 @@ def _build_recent_section(
         title="Recent",
         items=items[:3],
     )
+
+
+def _build_traces(
+    recent_messages: list[dict],
+    recent_tasks: list[dict],
+) -> list[TraceItem]:
+    """Build traces from recent activity — pairs input with outcome.
+
+    For the Traces view: shows a history of what the user asked and what
+    changed as a result. Each trace has the original input (never the full
+    text, always a brief summary) and the resolution (what Rhodey did).
+    """
+    traces: list[TraceItem] = []
+    now = datetime.now(IST)
+    cutoff = now - timedelta(hours=6)
+
+    # Pair inbound messages with their responses
+    # Messages are already sorted by created_at asc from the query
+    inbound_queue: list[dict] = []
+    for m in recent_messages:
+        direction = m.get("direction", "")
+        created_raw = m.get("created_at", "")
+        created_dt = _parse_dt(created_raw)
+        if created_dt is None or created_dt < cutoff:
+            continue
+
+        content = m.get("content", "").strip()
+        if not content:
+            continue
+
+        if direction == "inbound":
+            inbound_queue.append(m)
+        elif direction == "outgoing" and inbound_queue:
+            # Pair the latest inbound with this outgoing response
+            inbound = inbound_queue.pop()
+            in_content = inbound.get("content", "").strip()
+            in_brief = in_content[:80] + ("\u2026" if len(in_content) > 80 else "")
+
+            # Shorten the resolution
+            out_brief = content[:120] + ("\u2026" if len(content) > 120 else "")
+
+            traces.append(TraceItem(
+                time=_human_time(created_dt, now),
+                input=in_brief,
+                resolution=out_brief,
+            ))
+
+    # Add completed tasks as traces (with no input — they were auto-processed)
+    for t in recent_tasks:
+        if len(traces) >= 20:
+            break
+        title = t.get("title", "").strip()
+        if not title:
+            continue
+        completed_raw = t.get("completed_at") or t.get("updated_at", "")
+        completed_dt = _parse_dt(completed_raw)
+        if completed_dt is None or completed_dt < cutoff:
+            continue
+        traces.append(TraceItem(
+            time=_human_time(completed_dt, now),
+            input="(auto)",
+            resolution=f"Completed: {title}",
+        ))
+
+    # Reverse to show most recent first (traces are built chronologically
+    # since messages are processed in created_at ascending order)
+    traces.reverse()
+    return traces[:20]
 
 
 # ── Main builder ─────────────────────────────────────────────────────────────
@@ -416,6 +521,37 @@ async def build_briefing(supabase) -> BriefingResponse:
             print(f"[Briefing] Recent done tasks error: {e}")
             return []
 
+    # Also fetch messages from the last 6 hours for traces
+    async def _get_traces_messages():
+        try:
+            traces_cutoff = (datetime.now(IST) - timedelta(hours=6)).isoformat()
+            res = supabase.table("raw_dumps")\
+                .select("id, content, direction, status, message_type, created_at")\
+                .gte("created_at", traces_cutoff)\
+                .order("created_at", asc=True)\
+                .limit(100)\
+                .execute()
+            return list(res.data or [])
+        except Exception as e:
+            print(f"[Briefing] Traces messages error: {e}")
+            return []
+
+    async def _get_traces_done_tasks():
+        try:
+            traces_cutoff = (datetime.now(IST) - timedelta(hours=6)).isoformat()
+            res = supabase.table("tasks")\
+                .select("id, title, status, completed_at, updated_at")\
+                .eq("is_current", True)\
+                .eq("status", "done")\
+                .gte("completed_at", traces_cutoff)\
+                .order("completed_at", desc=True)\
+                .limit(30)\
+                .execute()
+            return list(res.data or [])
+        except Exception as e:
+            print(f"[Briefing] Traces done tasks error: {e}")
+            return []
+
     tasks_fut = _get_tasks()
     events_fut = _get_events()
     gnodes_fut = _get_graph_nodes()
@@ -423,11 +559,14 @@ async def build_briefing(supabase) -> BriefingResponse:
     channel_fut = _get_channel_pending()
     recent_msgs_fut = _get_recent_messages()
     recent_tasks_fut = _get_recent_done_tasks()
+    traces_msgs_fut = _get_traces_messages()
+    traces_tasks_fut = _get_traces_done_tasks()
 
-    tasks, events, gnodes, gedges, channel_items, recent_msgs, recent_tasks = (
+    tasks, events, gnodes, gedges, channel_items, recent_msgs, recent_tasks, traces_msgs, traces_tasks = (
         await asyncio.gather(
             tasks_fut, events_fut, gnodes_fut, gedges_fut,
             channel_fut, recent_msgs_fut, recent_tasks_fut,
+            traces_msgs_fut, traces_tasks_fut,
         )
     )
 
@@ -442,9 +581,8 @@ async def build_briefing(supabase) -> BriefingResponse:
         start_raw = ev.get("start", {}).get("dateTime", "")
         if not start_raw:
             continue
-        try:
-            start_dt = datetime.fromisoformat(start_raw).astimezone(IST)
-        except (ValueError, TypeError):
+        start_dt = _parse_dt(start_raw)
+        if start_dt is None:
             continue
         if start_dt > now - timedelta(minutes=30):
             time_str = f"{start_dt.hour:02d}:{start_dt.minute:02d}"
@@ -474,9 +612,13 @@ async def build_briefing(supabase) -> BriefingResponse:
     if next_event:
         greeting_line += f" {next_event}."
 
+    # 4. Traces block (for Traces view — pairs inputs with outcomes)
+    traces = _build_traces(traces_msgs, traces_tasks)
+
     return BriefingResponse(
         greeting=greeting_line,
         next_event=next_event,
         sections=sections,
         pending_count=pending_count,
+        traces=traces,
     )

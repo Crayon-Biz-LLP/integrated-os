@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../services/api_service.dart';
 import '../services/notification_service.dart';
 import '../models/briefing.dart';
@@ -10,19 +11,24 @@ import 'today_screen.dart';
 import 'inbox_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Rhodey Surface — Briefing Edition
+//  Rhodey Surface — Horizon / Traces Edition
 //  ─────────────────────────────────────────────────────────────────────────────
-//  Not a chat log. Not a dashboard. A living briefing surface.
+//  Design spine: Design 3 (Horizon/Traces)
+//  Emotional tone: Design 2 (editorial serif, warm stone palette)
+//  Interaction seasoning: Design 1 (proactive card)
 //
 //  Layout:
-//    Presence strip (top)
-//    Briefing view (scrollable):
-//      ─ Greeting + next event
-//      ─ Section "Your morning/afternoon/evening" (tasks + calendar)
-//      ─ Section "Decisions" (conditional — hidden when empty)
-//      ─ Section "Recent" (max 3 items — outcomes + activity)
-//    Response moment (transient overlay)
-//    Bottom dock (menu, mic, keyboard)
+//    Presence strip (44px, fixed)
+//    Editorial greeting (serif, large, italic)
+//    Segmented control: HORIZON / TRACES
+//    Content (scrollable):
+//      HORIZON:
+//        ─ Proactive card (conditional)
+//        ─ Sections: UPCOMING, DECISIONS (conditional), RECENT (max 3)
+//      TRACES:
+//        ─ Trace cards (input → outcome pairs)
+//    Response moment (transient, floating)
+//    Bottom dock (menu, speak, type)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class RhodeySurface extends StatefulWidget {
@@ -38,6 +44,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   BriefingResponse _briefing = BriefingResponse.empty();
   bool _loading = true;
   bool _hasError = false;
+  bool _showTraces = false; // false = Horizon, true = Traces
 
   // ── Response moment ──
   String? _momentText;
@@ -65,18 +72,19 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   late Animation<double> _pulseAnimation;
   late AnimationController _momentController;
 
-  // ── Visual constants ──
-  static const Color _surfaceBg = Color(0xFF0E0E10);
-  static const Color _cardBg = Color(0xFF161618);
-  static const Color _primaryText = Color(0xFFF2F2F2);
-  static const Color _mutedText = Color(0xFF6B6B70);
-  static const Color _accentGreen = Color(0xFF34C759);
-  static const Color _accentAmber = Color(0xFFFFD60A);
-  static const Color _accentBlue = Color(0xFF007AFF);
-  static const Color _accentRed = Color(0xFFEF5350);
-  static const Color _cardBorder = Color(0xFF2C2C30);
-  static const Color _dockBg = Color(0xFF161618);
-  static const Color _sectionTitleColor = Color(0xFF8E8E93);
+  // ── Warm stone palette (self-contained, no theme dependency) ──
+  static const Color _bg = Color(0xFF0C0C0B);
+  static const Color _surface = Color(0xFF161618);
+  static const Color _cardBg = Color(0xFF1E1E1D);
+  static const Color _border = Color(0xFF2C2C30);
+  static const Color _primaryText = Color(0xFFEDE9E4);
+  static const Color _mutedText = Color(0xFF7A756E);
+  static const Color _tertiaryText = Color(0xFF6B6863);
+  static const Color _champagne = Color(0xFFDFCCA7);
+  static const Color _green = Color(0xFF34C759);
+  static const Color _amber = Color(0xFFFFD60A);
+  static const Color _red = Color(0xFFEF5350);
+  static const Color _amberLight = Color(0x1AFFD60A);
 
   @override
   void initState() {
@@ -146,7 +154,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     setState(() {
       _briefing = briefing;
       _loading = false;
-      _hasError = briefing.sections.isEmpty;
+      _hasError = briefing.sections.isEmpty && briefing.traces.isEmpty;
     });
   }
 
@@ -166,7 +174,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   Future<void> _pollForUpdates() async {
     final briefing = await _api.getBriefing();
     if (!mounted) return;
-
     setState(() {
       _briefing = briefing;
     });
@@ -216,7 +223,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       // Show response moment
       _showResponseMoment(responseText);
 
-      // Fade moment as soon as briefing is updated (with min ~2s display)
+      // Fade moment after min ~2s
       Future.delayed(const Duration(seconds: 2), () {
         if (!mounted) return;
         _hideResponseMoment();
@@ -249,12 +256,12 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       BriefingItem item, String action) async {
     if (!item.isDecision) return;
 
-    _showResponseMoment('${action == 'approve' || action == 'accept' ? '✅' : '⏳'} $action...');
+    _showResponseMoment(
+        '${action == 'approve' || action == 'accept' ? '✅' : '⏳'} $action...');
 
     final isApprove = action == 'approve' || action == 'accept';
     final pendingId = int.tryParse(item.decisionId ?? '');
     if (pendingId == null) {
-      // Can't parse ID — just re-fetch
       await Future.delayed(const Duration(milliseconds: 300));
       if (!mounted) return;
       await _fetchBriefing();
@@ -291,7 +298,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             : await _api.rejectCall(pendingId);
         break;
       case 'merge':
-        // Merge actions need a different endpoint — re-fetch for now
         result = null;
         break;
       default:
@@ -300,7 +306,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
     if (!mounted) return;
 
-    // Re-fetch briefing regardless, so state is fresh
     await _fetchBriefing();
 
     if (result != null && !result.success) {
@@ -398,12 +403,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     setState(() => _isListening = false);
   }
 
-  // ── TTS on tap ────────────────────────────────────────────────────────────
-
-  // TTS is triggered on each send-message response. No tap-to-speak on briefing
-  // items because that would add chat-like interaction to the surface.
-  // (Keep the method for future use — e.g. tapping the greeting to hear it.)
-
   // ── Notification handling ─────────────────────────────────────────────────
 
   void _handlePushNotificationTap(Map<String, dynamic> data) {
@@ -442,12 +441,12 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   Widget build(BuildContext context) {
     if (_isTyping) {
       return Scaffold(
-        backgroundColor: _surfaceBg,
+        backgroundColor: _bg,
         body: SafeArea(
           child: Column(
             children: [
               _buildPresenceStrip(),
-              Expanded(child: _buildBriefingView()),
+              Expanded(child: _buildContent()),
               _buildTypeBar(),
             ],
           ),
@@ -456,14 +455,14 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     }
 
     return Scaffold(
-      backgroundColor: _surfaceBg,
+      backgroundColor: _bg,
       body: SafeArea(
         child: Stack(
           children: [
             Column(
               children: [
                 _buildPresenceStrip(),
-                Expanded(child: _buildBriefingView()),
+                Expanded(child: _buildContent()),
                 _buildBottomDock(),
               ],
             ),
@@ -475,56 +474,9 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     );
   }
 
-  // ── Presence strip ────────────────────────────────────────────────────────
+  // ── Content (loading / error / Horizon / Traces) ──────────────────────────
 
-  Widget _buildPresenceStrip() {
-    return Container(
-      height: 44,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      alignment: Alignment.centerLeft,
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: _cardBorder.withValues(alpha: 0.5)),
-        ),
-      ),
-      child: Row(
-        children: [
-          AnimatedBuilder(
-            animation: _pulseAnimation,
-            builder: (_, child) {
-              return Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: _accentGreen
-                      .withValues(alpha: _pulseAnimation.value),
-                  shape: BoxShape.circle,
-                ),
-              );
-            },
-          ),
-          const SizedBox(width: 8),
-          Text(
-            'Rhodey',
-            style: TextStyle(
-              color: _mutedText,
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-              letterSpacing: 0.3,
-            ),
-          ),
-          if (_isListening) ...[
-            const SizedBox(width: 8),
-            const _ListeningIndicator(),
-          ],
-        ],
-      ),
-    );
-  }
-
-  // ── Briefing view ─────────────────────────────────────────────────────────
-
-  Widget _buildBriefingView() {
+  Widget _buildContent() {
     if (_loading) {
       return const Center(
         child: SizedBox(
@@ -532,18 +484,20 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           height: 20,
           child: CircularProgressIndicator(
             strokeWidth: 2,
-            color: Color(0xFF6B6B70),
+            color: Color(0xFF6B6863),
           ),
         ),
       );
     }
 
-    if (_hasError || _briefing.sections.isEmpty) {
+    if (_hasError) {
       return _buildErrorOrEmpty();
     }
 
-    return _buildSections();
+    return _buildScrollableContent();
   }
+
+  // ── Error / Empty state ───────────────────────────────────────────────────
 
   Widget _buildErrorOrEmpty() {
     return ListView(
@@ -552,19 +506,21 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         const SizedBox(height: 40),
         Text(
           "Hey, I'm your companion.",
-          style: TextStyle(
+          style: GoogleFonts.instrumentSerif(
+            fontSize: 28,
+            fontWeight: FontWeight.w300,
+            fontStyle: FontStyle.italic,
             color: _primaryText,
-            fontSize: 15,
-            height: 1.5,
-            fontWeight: FontWeight.w400,
+            height: 1.2,
           ),
         ),
         const SizedBox(height: 24),
         Text(
           "To start, just speak or type\nwhatever's on your mind.",
-          style: TextStyle(
-            color: _mutedText,
+          style: GoogleFonts.plusJakartaSans(
             fontSize: 13,
+            fontWeight: FontWeight.w300,
+            color: _mutedText,
             height: 1.4,
           ),
         ),
@@ -578,16 +534,19 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         }),
         const SizedBox(height: 8),
         _starterChip('📝  "Note down an idea"', () {
-          _sendMessage('Note down: explore AI-powered meeting summaries for Qhord');
+          _sendMessage(
+              'Note down: explore AI-powered meeting summaries for Qhord');
         }),
         const SizedBox(height: 32),
         Text(
           '(nothing yet — your surface\nwill fill as we talk)',
           textAlign: TextAlign.center,
-          style: TextStyle(
-            color: _mutedText.withValues(alpha: 0.6),
+          style: GoogleFonts.plusJakartaSans(
             fontSize: 11,
             fontStyle: FontStyle.italic,
+            fontWeight: FontWeight.w300,
+            color: _mutedText.withValues(alpha: 0.6),
+            height: 1.4,
           ),
         ),
         if (_hasError) ...[
@@ -601,7 +560,11 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                 });
                 _fetchBriefing();
               },
-              child: const Text('Retry', style: TextStyle(fontSize: 12)),
+              child: Text(
+                'Retry',
+                style: GoogleFonts.plusJakartaSans(
+                    fontSize: 12, color: _champagne),
+              ),
             ),
           ),
         ],
@@ -619,86 +582,161 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           width: double.infinity,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
-            border: Border.all(color: _cardBorder),
+            border: Border.all(color: _border),
             borderRadius: BorderRadius.circular(12),
           ),
           child: Text(
             label,
-            style: TextStyle(color: _mutedText, fontSize: 13),
+            style: GoogleFonts.plusJakartaSans(
+              color: _mutedText,
+              fontSize: 13,
+            ),
           ),
         ),
       ),
     );
   }
 
-  // ── Sectioned briefing ────────────────────────────────────────────────────
+  // ── Presence strip ────────────────────────────────────────────────────────
 
-  Widget _buildSections() {
+  Widget _buildPresenceStrip() {
+    return Container(
+      height: 44,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      alignment: Alignment.centerLeft,
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: _border.withValues(alpha: 0.5)),
+        ),
+      ),
+      child: Row(
+        children: [
+          AnimatedBuilder(
+            animation: _pulseAnimation,
+            builder: (_, child) {
+              return Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: _green.withValues(alpha: _pulseAnimation.value),
+                  shape: BoxShape.circle,
+                ),
+              );
+            },
+          ),
+          const SizedBox(width: 8),
+          Text(
+            'Rhodey',
+            style: GoogleFonts.plusJakartaSans(
+              color: _mutedText,
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          if (_isListening) ...[
+            const SizedBox(width: 8),
+            const _ListeningIndicator(),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ── Scrollable content (greeting + segment control + horizon/traces) ──────
+
+  Widget _buildScrollableContent() {
     return ListView(
-      padding: const EdgeInsets.only(top: 16, bottom: 16),
+      padding: const EdgeInsets.only(top: 8, bottom: 16),
       children: [
-        // Greeting
-        _buildGreetingHeader(),
+        // Editorial greeting
+        _buildEditorialGreeting(),
         const SizedBox(height: 16),
 
-        // Sections
-        for (final section in _briefing.sections) ...[
-          _buildSection(section),
-          const SizedBox(height: 16),
-        ],
+        // Segmented control: HORIZON | TRACES
+        _buildSegmentedControl(),
+        const SizedBox(height: 20),
+
+        // Content based on mode
+        if (_showTraces)
+          _buildTracesView()
+        else
+          _buildHorizonView(),
       ],
     );
   }
 
-  Widget _buildGreetingHeader() {
+  // ── Editorial greeting ────────────────────────────────────────────────────
+
+  Widget _buildEditorialGreeting() {
     final hasPending = _briefing.pendingCount > 0;
+    final greeting = _briefing.greeting;
+
+    // Extract the editorial greeting from the API response.
+    // If the API returns "Good evening, Danny. Qhord sync at 19:30.",
+    // we show "Good evening, Danny." as serif headline
+    // and the rest as subtext.
+    final dotIndex = greeting.indexOf('.');
+    String headline = greeting;
+    String subtext = '';
+
+    if (dotIndex > 0 && dotIndex < greeting.length - 1) {
+      headline = greeting.substring(0, dotIndex + 1);
+      subtext = greeting.substring(dotIndex + 1).trim();
+      // Remove leading period if present
+      if (subtext.startsWith('.')) subtext = subtext.substring(1).trim();
+    }
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: Text(
-                  _briefing.greeting,
-                  style: const TextStyle(
+                  headline,
+                  style: GoogleFonts.instrumentSerif(
+                    fontSize: 30,
+                    fontWeight: FontWeight.w300,
+                    fontStyle: FontStyle.italic,
                     color: _primaryText,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w500,
-                    height: 1.4,
+                    height: 1.2,
                   ),
                 ),
               ),
               if (hasPending)
                 Container(
+                  margin: const EdgeInsets.only(top: 6),
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: _accentAmber.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(10),
+                    color: _amberLight,
+                    borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                        color: _accentAmber.withValues(alpha: 0.3)),
+                        color: _amber.withValues(alpha: 0.3)),
                   ),
                   child: Text(
-                    '${_briefing.pendingCount} pending',
-                    style: TextStyle(
-                      color: _accentAmber,
+                    '${_briefing.pendingCount}',
+                    style: GoogleFonts.plusJakartaSans(
+                      color: _amber,
                       fontSize: 11,
-                      fontWeight: FontWeight.w500,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
             ],
           ),
-          if (_briefing.nextEvent != null) ...[
-            const SizedBox(height: 4),
+          if (subtext.isNotEmpty) ...[
+            const SizedBox(height: 6),
             Text(
-              _briefing.nextEvent!,
-              style: TextStyle(
-                color: _accentBlue,
+              subtext,
+              style: GoogleFonts.plusJakartaSans(
                 fontSize: 13,
-                fontWeight: FontWeight.w400,
+                fontWeight: FontWeight.w300,
+                color: _mutedText,
+                height: 1.5,
               ),
             ),
           ],
@@ -706,6 +744,205 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       ),
     );
   }
+
+  // ── Segmented control ─────────────────────────────────────────────────────
+
+  Widget _buildSegmentedControl() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Container(
+        height: 32,
+        decoration: BoxDecoration(
+          color: _cardBg,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: _border),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() => _showTraces = false),
+                child: Container(
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: _showTraces ? Colors.transparent : _surface,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(7),
+                      bottomLeft: Radius.circular(7),
+                    ),
+                  ),
+                  child: Text(
+                    'HORIZON',
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 1.5,
+                      color: _showTraces ? _tertiaryText : _champagne,
+                      height: 1.2,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() => _showTraces = true),
+                child: Container(
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: _showTraces ? _surface : Colors.transparent,
+                    borderRadius: const BorderRadius.only(
+                      topRight: Radius.circular(7),
+                      bottomRight: Radius.circular(7),
+                    ),
+                  ),
+                  child: Text(
+                    'TRACES',
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 1.5,
+                      color: _showTraces ? _champagne : _tertiaryText,
+                      height: 1.2,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Horizon view ──────────────────────────────────────────────────────────
+
+  Widget _buildHorizonView() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Proactive card (conditional)
+        _buildProactiveCard(),
+        const SizedBox(height: 8),
+
+        // Sections from briefing
+        for (final section in _briefing.sections) ...[
+          _buildSection(section),
+          const SizedBox(height: 4),
+        ],
+      ],
+    );
+  }
+
+  // ── Proactive card ────────────────────────────────────────────────────────
+
+  Widget _buildProactiveCard() {
+    // Show when there's a next event AND the event has an urgent item
+    // For v1: show a proactive suggestion card
+    final hasProactive = _briefing.nextEvent != null &&
+        _briefing.sections.isNotEmpty &&
+        _briefing.sections.first.items.any((i) => i.isUrgent);
+
+    if (!hasProactive) return const SizedBox.shrink();
+
+    // Find the urgent item
+    final urgentItem = _briefing.sections.first.items.firstWhere(
+      (i) => i.isUrgent,
+      orElse: () => _briefing.sections.first.items.first,
+    );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: _surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: _champagne.withValues(alpha: 0.15)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 3,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    color: _champagne,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  'SUGGESTION',
+                  style: GoogleFonts.jetBrainsMono(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w400,
+                    color: _champagne,
+                    letterSpacing: 1.5,
+                    height: 1.2,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '${urgentItem.icon} ${urgentItem.text}',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 12,
+                fontWeight: FontWeight.w400,
+                color: _primaryText,
+                height: 1.4,
+              ),
+            ),
+            if (urgentItem.isDecision) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  _smallChip('Dismiss', _mutedText, () {
+                    _handleDecisionAction(urgentItem, 'dismiss');
+                  }),
+                  const SizedBox(width: 8),
+                  _smallChip('Approve', _green, () {
+                    _handleDecisionAction(urgentItem, 'approve');
+                  }),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _smallChip(String label, Color color, VoidCallback onTap) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: color.withValues(alpha: 0.4)),
+            color: color.withValues(alpha: 0.08),
+          ),
+          child: Text(
+            label,
+            style: GoogleFonts.plusJakartaSans(
+              color: color,
+              fontSize: 10,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Section ───────────────────────────────────────────────────────────────
 
   Widget _buildSection(BriefingSection section) {
     final isDecisions = section.id == 'decisions';
@@ -715,63 +952,60 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       children: [
         // Section title
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 6),
           child: Text(
             section.title.toUpperCase(),
-            style: TextStyle(
-              color: _sectionTitleColor,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0.8,
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 9,
+              fontWeight: FontWeight.w400,
+              color: _tertiaryText,
+              letterSpacing: 2.0,
+              height: 1.3,
             ),
           ),
         ),
-
-        // Section items
         ...section.items.map((item) => _buildBriefingItem(item, isDecisions)),
       ],
     );
   }
 
   Widget _buildBriefingItem(BriefingItem item, bool isDecision) {
-    final textColor = item.isUrgent ? _accentRed : _primaryText;
-    final bgOpacity = item.isUrgent ? 0.05 : 0.0;
-
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
-          color: _cardBg.withValues(alpha: 0.4 + bgOpacity),
+          color: _surface.withValues(alpha: item.isUrgent ? 0.6 : 0.4),
           borderRadius: BorderRadius.circular(10),
+          border: item.isUrgent
+              ? Border.all(color: _red.withValues(alpha: 0.15))
+              : null,
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Icon
             Padding(
               padding: const EdgeInsets.only(top: 1, right: 10),
-              child: Text(
-                item.icon,
-                style: const TextStyle(fontSize: 14),
-              ),
+              child: Text(item.icon, style: const TextStyle(fontSize: 14)),
             ),
-            // Text + actions
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     item.text,
-                    style: TextStyle(
-                      color: textColor,
+                    style: GoogleFonts.plusJakartaSans(
+                      color: item.isUrgent ? _red : _primaryText,
                       fontSize: 13,
+                      fontWeight:
+                          item.isUrgent ? FontWeight.w400 : FontWeight.w300,
                       height: 1.4,
-                      fontWeight: item.isUrgent ? FontWeight.w500 : FontWeight.w400,
                     ),
                   ),
-                  // Decision action chips
-                  if (isDecision) ...[const SizedBox(height: 8), _buildDecisionActions(item)],
+                  if (isDecision) ...[
+                    const SizedBox(height: 8),
+                    _buildDecisionActions(item),
+                  ],
                 ],
               ),
             ),
@@ -804,15 +1038,142 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       children: [
         _ActionChip(
           label: approveLabel,
-          accent: _accentGreen,
-          onTap: () => _handleDecisionAction(item, approveLabel.toLowerCase()),
+          accent: _green,
+          onTap: () =>
+              _handleDecisionAction(item, approveLabel.toLowerCase()),
         ),
         _ActionChip(
           label: dismissLabel,
           accent: _mutedText,
-          onTap: () => _handleDecisionAction(item, dismissLabel.toLowerCase()),
+          onTap: () =>
+              _handleDecisionAction(item, dismissLabel.toLowerCase()),
         ),
       ],
+    );
+  }
+
+  // ── Traces view ───────────────────────────────────────────────────────────
+
+  Widget _buildTracesView() {
+    final traces = _briefing.traces;
+
+    if (traces.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 32),
+        child: Center(
+          child: Text(
+            'No activity yet.\nSpeak or type to get started.',
+            textAlign: TextAlign.center,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 11,
+              fontStyle: FontStyle.italic,
+              fontWeight: FontWeight.w300,
+              color: _tertiaryText,
+              height: 1.4,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+          child: Text(
+            'YOUR RECENT ACTIVITY',
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 9,
+              fontWeight: FontWeight.w400,
+              color: _tertiaryText,
+              letterSpacing: 2.0,
+              height: 1.3,
+            ),
+          ),
+        ),
+        ...traces.map((trace) => _buildTraceCard(trace)),
+      ],
+    );
+  }
+
+  Widget _buildTraceCard(TraceItem trace) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: _surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _border.withValues(alpha: 0.5)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Time label
+            Text(
+              trace.time,
+              style: GoogleFonts.jetBrainsMono(
+                fontSize: 9,
+                fontWeight: FontWeight.w400,
+                color: _tertiaryText,
+                letterSpacing: 1.0,
+                height: 1.2,
+              ),
+            ),
+            const SizedBox(height: 8),
+            // Input (what the user asked) — only if not auto
+            if (trace.input != '(auto)') ...[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.subdirectory_arrow_right,
+                      size: 12, color: _tertiaryText),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      trace.input,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                        fontWeight: FontWeight.w300,
+                        color: _mutedText,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+            ],
+            // Resolution (what happened)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '\u2192',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: _champagne.withValues(alpha: 0.6),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    trace.resolution,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w300,
+                      color: _primaryText,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -830,10 +1191,10 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           child: Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: _cardBg,
+              color: _surface,
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                color: _accentGreen.withValues(alpha: 0.3),
+                color: _green.withValues(alpha: 0.3),
               ),
               boxShadow: [
                 BoxShadow(
@@ -846,10 +1207,10 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             child: Row(
               children: [
                 Container(
-                  width: 4,
+                  width: 3,
                   height: 32,
                   decoration: BoxDecoration(
-                    color: _accentGreen,
+                    color: _green,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -857,7 +1218,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                 Expanded(
                   child: Text(
                     _momentText ?? '',
-                    style: const TextStyle(
+                    style: GoogleFonts.plusJakartaSans(
                       color: _primaryText,
                       fontSize: 13,
                       height: 1.4,
@@ -872,21 +1233,21 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     );
   }
 
-  // ── Bottom dock (default) ─────────────────────────────────────────────────
+  // ── Bottom dock ───────────────────────────────────────────────────────────
 
   Widget _buildBottomDock() {
     return Container(
       height: 56,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
-        color: _dockBg,
+        color: _surface,
         border: Border(
-          top: BorderSide(color: _cardBorder.withValues(alpha: 0.5)),
+          top: BorderSide(color: _border.withValues(alpha: 0.5)),
         ),
       ),
       child: Row(
         children: [
-          // Menu (with optional pending dot)
+          // Menu (left)
           Material(
             color: Colors.transparent,
             child: InkWell(
@@ -905,7 +1266,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                           width: 7,
                           height: 7,
                           decoration: const BoxDecoration(
-                            color: _accentAmber,
+                            color: _amber,
                             shape: BoxShape.circle,
                           ),
                         ),
@@ -921,7 +1282,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           // Primary: Tap to speak
           Material(
             color: _isListening
-                ? _accentGreen.withValues(alpha: 0.15)
+                ? _green.withValues(alpha: 0.15)
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(20),
             child: InkWell(
@@ -934,17 +1295,17 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
                     color: _isListening
-                        ? _accentGreen.withValues(alpha: 0.5)
-                        : _cardBorder,
+                        ? _green.withValues(alpha: 0.5)
+                        : _border,
                   ),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      _isListening ? '🎤 Listening...' : '🎤  Tap to speak',
-                      style: TextStyle(
-                        color: _isListening ? _accentGreen : _mutedText,
+                      _isListening ? '\uD83C\uDFA4 Listening...' : '\uD83C\uDFA4  Speak',
+                      style: GoogleFonts.plusJakartaSans(
+                        color: _isListening ? _green : _mutedText,
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
                       ),
@@ -957,7 +1318,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
           const Spacer(),
 
-          // Keyboard
+          // Keyboard (right)
           Material(
             color: Colors.transparent,
             child: InkWell(
@@ -975,15 +1336,15 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     );
   }
 
-  // ── Type bar (when keyboard is active) ────────────────────────────────────
+  // ── Type bar ──────────────────────────────────────────────────────────────
 
   Widget _buildTypeBar() {
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
       decoration: BoxDecoration(
-        color: _dockBg,
+        color: _surface,
         border: Border(
-          top: BorderSide(color: _cardBorder.withValues(alpha: 0.5)),
+          top: BorderSide(color: _border.withValues(alpha: 0.5)),
         ),
       ),
       child: SafeArea(
@@ -993,9 +1354,9 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
-                  color: _surfaceBg,
+                  color: _bg,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: _cardBorder),
+                  border: Border.all(color: _border),
                 ),
                 child: TextField(
                   controller: _textController,
@@ -1014,15 +1375,14 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                         EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                     isDense: true,
                   ),
-                  style: const TextStyle(
-                      color: Color(0xFFF2F2F2), fontSize: 14),
+                  style: GoogleFonts.plusJakartaSans(
+                      color: _primaryText, fontSize: 14),
                 ),
               ),
             ),
             const SizedBox(width: 6),
-            // Send
             Material(
-              color: _accentBlue,
+              color: _surface,
               borderRadius: BorderRadius.circular(10),
               child: InkWell(
                 borderRadius: BorderRadius.circular(10),
@@ -1036,13 +1396,12 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   width: 36,
                   height: 36,
                   alignment: Alignment.center,
-                  child: const Icon(Icons.arrow_upward,
-                      color: Colors.white, size: 18),
+                  child: Icon(Icons.arrow_upward,
+                      color: _champagne, size: 18),
                 ),
               ),
             ),
             const SizedBox(width: 4),
-            // Close keyboard
             Material(
               color: Colors.transparent,
               child: InkWell(
@@ -1149,7 +1508,7 @@ class _ActionChip extends StatelessWidget {
           ),
           child: Text(
             label,
-            style: TextStyle(
+            style: GoogleFonts.plusJakartaSans(
               color: accent,
               fontSize: 12,
               fontWeight: FontWeight.w500,
