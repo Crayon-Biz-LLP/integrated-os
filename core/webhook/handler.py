@@ -7,7 +7,7 @@ from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.telemetry import emit_observation
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
 from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
-from core.actions import capture_session_id
+from core.actions import capture_session_id, capture_response
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
 from core.webhook.classify import classify_intent, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
@@ -1161,7 +1161,9 @@ async def process_webhook(update: dict):
         if text.strip().lower() in ('/today', '/brief', '/day'):
             history_text = format_history_for_prompt(history)
             log_exchange(session_id, 'user', 'DAILY_BRIEF', text, chat_id, metadata={"active_anchor": active_anchor} if active_anchor else None)
-            await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
+            reply = await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
+            if reply:
+                capture_response(reply)
             return {"success": True}
 
         if text.startswith('?'):
@@ -1169,7 +1171,9 @@ async def process_webhook(update: dict):
             if query:
                 history_text = format_history_for_prompt(history)
                 log_exchange(session_id, 'user', 'QUERY', text, chat_id, metadata={"active_anchor": active_anchor} if active_anchor else None)
-                await interrogate_brain(query, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
+                reply = await interrogate_brain(query, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
+                if reply:
+                    capture_response(reply)
                 return {"success": True}
 
         if text.strip().lower() == '/note':

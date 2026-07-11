@@ -12,7 +12,7 @@ from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_BY_KEYWORD
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.actions import ActionResult, accumulate_action
+from core.actions import ActionResult, accumulate_action, capture_response
 from core.prompts.query import build_interrogate_brain_prompt, build_anaphora_resolution_prompt
 from core.prompts.briefing import build_daily_brief_prompt
 from core.prompts.workflow import build_enrichment_prompt
@@ -218,12 +218,20 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
     except Exception as log_err:
         audit_log_sync("webhook", "WARNING", f"Failed to log daily brief: {log_err}")
 
-async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram", sender: str = "user", task_update_id: int = None, history_text: str = "", session_id: str = None, extraction_method: str = None):
+    return reply
+
+async def handle_confident_task(text: str, title: str, time_context: str, chat_id: int, receipt: str = None, entity: str = None, source: str = "telegram", sender: str = "user", task_update_id: int = None, history_text: str = "", session_id: str = None, extraction_method: str = None) -> str | None:
+    """Handle a TASK intent — create or process a task.
+
+    Returns the final response text sent (or None).
+    """
+    _last_sent = None
+
     # ── Idempotency guard: skip if identical content+source inserted within 60s ──
     if is_recent_raw_dump(text, source):
-        ack = receipt or "Logged."
-        await send_telegram(chat_id, f"{ack}")
-        return
+        _last_sent = receipt or "Logged."
+        await send_telegram(chat_id, f"{_last_sent}")
+        return _last_sent
 
     meta = {
         "intent": "TASK",
@@ -260,7 +268,7 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
         except Exception as e2:
             audit_log_sync("webhook", "ERROR", f"Failed to fetch existing dump by dedup_key: {e2}")
 
-    ack = receipt or "Logged."
+    _last_sent = receipt or "Logged."
     # Removed early ack to avoid double-send (C1 & C2)
 
     # Inline: process the dump immediately (fire-and-forget)
@@ -271,8 +279,8 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             
             if result.get('action') == 'clarify':
                 question = result.get('question', "Could you provide more details?")
-                reply = f"{question}\n\n_Context: \"{text[:100]}...\"_"
-                await send_telegram(chat_id, reply)
+                _last_sent = f"{question}\n\n_Context: \"{text[:100]}...\"_"
+                await send_telegram(chat_id, _last_sent)
                 supabase.table('raw_dumps').update({
                     "status": "clarify_needed",
                     "metadata": {**meta, "clarification_question": question}
@@ -283,7 +291,8 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
                 audit_log_sync("webhook", "INFO", f"Inline processed dump {dump_id}: {result['action']}")
                 
                 # Send the ack now that processing is done
-                await send_telegram(chat_id, f"{ack}")
+                _last_sent = f"{_last_sent}"
+                await send_telegram(chat_id, _last_sent)
                 
                 # Check if there is a calendar conflict warning to send
                 conflict = result.get('conflict_warning')
@@ -292,9 +301,12 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
                     
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Inline processing failed for dump {dump_id}: {e}")
-            await send_telegram(chat_id, f"{ack}")
+            _last_sent = f"{_last_sent}"
+            await send_telegram(chat_id, _last_sent)
     else:
-        await send_telegram(chat_id, f"{ack}")
+        await send_telegram(chat_id, f"{_last_sent}")
+
+    return _last_sent
 
 
 async def _enrich_memory_entities(text: str, memory_id: int, active_anchor: dict = None):
@@ -433,12 +445,18 @@ async def _run_post_capture_enrichment(
     return followup_msg
 
 
-async def handle_project_update(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None):
+async def handle_project_update(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None) -> str | None:
+    """Handle a PROJECT_UPDATE intent — save update to memory.
+
+    Returns the final response text sent (or None).
+    """
+    _last_sent = None
+
     # ── Idempotency guard ──
     if is_recent_raw_dump(text, source):
-        ack = receipt or "Update logged."
-        await send_telegram(chat_id, f"{ack}")
-        return
+        _last_sent = receipt or "Update logged."
+        await send_telegram(chat_id, f"{_last_sent}")
+        return _last_sent
 
     # ── Step 1: Insert as staged ──
     metadata = {"intent": "PROJECT_UPDATE", "entity": entity}
@@ -481,9 +499,9 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
     if not embed_success:
         if dump_id:
             supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
-        ack = receipt or "✅ Captured. Memory indexing will retry shortly."
-        await send_telegram(chat_id, f"{ack}")
-        return
+        _last_sent = receipt or "✅ Captured. Memory indexing will retry shortly."
+        await send_telegram(chat_id, f"{_last_sent}")
+        return _last_sent
 
     # ── Step 3: Save to memories and Extract Entities ──
     memory_id = None
@@ -516,9 +534,9 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
         audit_log_sync("webhook", "ERROR", f"Failed to save update to memory: {e}")
         if dump_id:
             supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
-        ack = receipt or "✅ Captured. Memory indexing will retry shortly."
-        await send_telegram(chat_id, f"{ack}")
-        return
+        _last_sent = receipt or "✅ Captured. Memory indexing will retry shortly."
+        await send_telegram(chat_id, f"{_last_sent}")
+        return _last_sent
 
     # ── Step 4: Post-capture enrichment (shared helper) ──
     try:
@@ -529,24 +547,32 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
             active_anchor=active_anchor,
         )
         ack = receipt or "✅ Update logged and entities extracted."
-        reply_text = f"{ack}{followup_msg}"
-        await send_telegram(chat_id, reply_text)
+        _last_sent = f"{ack}{followup_msg}"
+        await send_telegram(chat_id, _last_sent)
         if session_id:
-            log_exchange(session_id, 'bot', 'PROJECT_UPDATE', reply_text, chat_id)
+            log_exchange(session_id, 'bot', 'PROJECT_UPDATE', _last_sent, chat_id)
     except Exception as e:
         audit_log_sync("webhook", "WARNING", f"Update enrichment failed: {e}")
-        ack = receipt or "✅ Update logged."
-        await send_telegram(chat_id, f"{ack}")
+        _last_sent = receipt or "✅ Update logged."
+        await send_telegram(chat_id, f"{_last_sent}")
         if session_id:
-            log_exchange(session_id, 'bot', 'PROJECT_UPDATE', f"{ack}", chat_id)
+            log_exchange(session_id, 'bot', 'PROJECT_UPDATE', f"{_last_sent}", chat_id)
+
+    return _last_sent
 
 
-async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None):
+async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None) -> str | None:
+    """Handle a NOTE intent — save note to memory.
+
+    Returns the final response text sent (or None).
+    """
+    _last_sent = None
+
     # ── Idempotency guard: skip if identical content+source inserted within 60s ──
     if is_recent_raw_dump(text, source):
-        ack = receipt or "Note vaulted."
-        await send_telegram(chat_id, f"{ack}")
-        return
+        _last_sent = receipt or "Note vaulted."
+        await send_telegram(chat_id, f"{_last_sent}")
+        return _last_sent
 
     # ── Step 1: Insert as staged (captured, pending processing) ──
     metadata = {"intent": "NOTE", "entity": entity}
@@ -600,9 +626,9 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             write_dlq('raw_dumps', str(dump_id) if dump_id else None, text, 'Embedding failed or returned null vector')
         except Exception as e:
             audit_log_sync("webhook", "ERROR", f"Failed to write to DLQ: {e}")
-        ack = receipt or "✅ Captured. Memory indexing will retry shortly."
-        await send_telegram(chat_id, f"{ack}")
-        return
+        _last_sent = receipt or "✅ Captured. Memory indexing will retry shortly."
+        await send_telegram(chat_id, f"{_last_sent}")
+        return _last_sent
 
     # ── Step 3: Save to memories (success path) ──
     chosen_org_id = None
@@ -644,9 +670,9 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             write_dlq('raw_dumps', str(dump_id) if dump_id else None, text, f"Memory insert failed: {str(e)}")
         except Exception:
             pass
-        ack = receipt or "✅ Captured. Memory indexing will retry shortly."
-        await send_telegram(chat_id, f"{ack}")
-        return
+        _last_sent = receipt or "✅ Captured. Memory indexing will retry shortly."
+        await send_telegram(chat_id, f"{_last_sent}")
+        return _last_sent
 
     # ── Step 3b: If note contains a URL, also vault as resource ──
     match = re.search(r'https?://\S+', text)
@@ -688,12 +714,15 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
 
     final_receipt = receipt or "Note vaulted."
     if followup_msg:
-        # Enrichment produced a follow-up — send that instead of the plain receipt
-        await send_telegram(chat_id, f"{final_receipt}{followup_msg}")
+        _last_sent = f"{final_receipt}{followup_msg}"
+        await send_telegram(chat_id, _last_sent)
     else:
+        _last_sent = final_receipt
         await send_telegram(chat_id, final_receipt)
     if session_id:
         log_exchange(session_id, 'bot', 'NOTE', final_receipt, chat_id)
+
+    return _last_sent
 
 async def handle_clarification(text: str, question: str, chat_id: int, session_id: str = None, receipt: str = None):
     ack = receipt or "Copy that. I need one more detail to log this."
@@ -909,11 +938,17 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         time_context = classification.get('time_context', '') if classification else ''
         task_update_id = task_update_id if task_update_id is not None else (classification.get('task_update_id') if classification else None)
         extraction_method = classification.get('extraction_method') if classification else None
-        await handle_confident_task(text, title, time_context, chat_id, receipt, entity=entity, source=source, sender=sender, task_update_id=task_update_id, history_text=history_text, session_id=session_id, extraction_method=extraction_method)
+        reply = await handle_confident_task(text, title, time_context, chat_id, receipt, entity=entity, source=source, sender=sender, task_update_id=task_update_id, history_text=history_text, session_id=session_id, extraction_method=extraction_method)
+        if reply:
+            capture_response(reply)
     elif intent == 'DAILY_BRIEF':
-        await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
+        reply = await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
+        if reply:
+            capture_response(reply)
     elif intent == 'QUERY':
-        await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
+        reply = await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
+        if reply:
+            capture_response(reply)
     elif intent == 'COMPLETION':
         from core.webhook.completion_handler import handle_confident_completion
         receipt = classification.get('receipt') if classification else None
@@ -931,12 +966,16 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None
         extraction_method = classification.get('extraction_method') if classification else None
-        await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor)
+        reply = await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor)
+        if reply:
+            capture_response(reply)
     elif intent == 'PROJECT_UPDATE':
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None
         extraction_method = classification.get('extraction_method') if classification else None
-        await handle_project_update(text, chat_id, receipt or "Update logged.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor)
+        reply = await handle_project_update(text, chat_id, receipt or "Update logged.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor)
+        if reply:
+            capture_response(reply)
     elif intent == 'DELEGATE':
         supabase.table('agent_queue').insert({"query": text, "status": "pending"}).execute()
         ack = classification.get('receipt', "The intern is on it. I'll ping you when the research is ready.") if classification else "The intern is on it. I'll ping you when the research is ready."
@@ -1064,9 +1103,13 @@ def _build_rich_anchor(graph_node_id, name):
         pass
     return anchor
 
-async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None):
-    """On-Demand Brain Interrogation - Universal Question Answering."""
+async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None) -> str | None:
+    """On-Demand Brain Interrogation - Universal Question Answering.
+
+    Returns the final reply text that was sent (or None if nothing was sent).
+    """
     search_task = None
+    _last_reply = None
     if chat_id not in _searching_locks:
         _searching_locks.add(chat_id)
         search_task = asyncio.create_task(delayed_searching_msg(chat_id))
@@ -1415,7 +1458,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             available_sources.append("active projects")
 
         if not all_context:
-            await send_telegram(chat_id, "🔍 *I don't have any relevant data to answer that.*\n\n_Try rephrasing._")
+            _last_reply = "🔍 *I don't have any relevant data to answer that.*\n\n_Try rephrasing._"
+            await send_telegram(chat_id, _last_reply)
             return
 
         context_str = "\n\n".join(all_context)
@@ -1474,6 +1518,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         if proactive_msg:
             final_reply += f"\n\n{proactive_msg}"
             
+        _last_reply = final_reply
         await send_telegram(chat_id, final_reply)
 
         # Log bot reply to conversation history
@@ -1513,11 +1558,13 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Interrogation error: {e}")
-        await send_telegram(chat_id, "⚠️ *Search failed.*\n\n_Try again._")
+        _last_reply = "⚠️ *Search failed.*\n\n_Try again._"
+        await send_telegram(chat_id, _last_reply)
     finally:
         if search_task:
             search_task.cancel()
         _searching_locks.discard(chat_id)
+        return _last_reply
 
 async def handle_noise(chat_id: int):
     await send_telegram(chat_id, "👍")
