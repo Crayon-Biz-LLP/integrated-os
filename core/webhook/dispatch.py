@@ -476,7 +476,7 @@ async def _run_post_capture_enrichment(
         return followup_msg
 
     # Stage 2: Rank
-    PRIORITY = ["calendar_event", "deadline", "task_imperative", "person_intro", "financial", "dependency"]
+    PRIORITY = ["deadline", "task_imperative", "person_intro", "financial", "dependency"]
     
     def get_priority(s):
         t = s.get("type", "")
@@ -486,7 +486,6 @@ async def _run_post_capture_enrichment(
         
     signals.sort(key=get_priority)
     
-    promoted = None
     promoted = None
     ist_tz = ZoneInfo('Asia/Kolkata')
     
@@ -507,12 +506,11 @@ async def _run_post_capture_enrichment(
         if s.get("confidence", 0) < 0.5:
             continue
             
-        if s.get("type") == "calendar_event":
+        if s.get("type") == "deadline":
             dt_iso = _resolve_calendar_datetime(s.get("raw_date_text", ""), s.get("raw_time_text", ""), capture_dt)
-            if not dt_iso:
-                audit_log_sync("enrichment", "WARNING", f"Failed to parse datetime for calendar event: {s}")
-                continue # Demote to silent, try next
-            s["datetime_iso"] = dt_iso
+            if dt_iso:
+                s["deadline_iso"] = dt_iso
+                s["reminder_at"] = dt_iso
             promoted = s
             break
         elif s.get("type") in PRIORITY[:3]:
@@ -522,23 +520,7 @@ async def _run_post_capture_enrichment(
     # Stage 3: Promote
     if promoted and enable_workflow:
         w_type = promoted["type"]
-        if w_type == "calendar_event":
-            q_title = promoted.get('proposed_title', promoted.get('title', 'Meeting'))
-            followup_msg = f"\n\n📅 I see a scheduled discussion: '{q_title}'. Want me to add it to your calendar?"
-            try:
-                supabase.table('conversation_workflows').insert({
-                    "chat_id": chat_id,
-                    "thread_id": session_id,
-                    "workflow_type": "calendar_event",
-                    "payload": promoted,
-                    "awaiting_user_input": True,
-                    "status": "active",
-                    "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
-                }).execute()
-            except Exception as e:
-                audit_log_sync("workflow", "ERROR", f"Failed to create workflow: {e}")
-                
-        elif w_type == "deadline":
+        if w_type == "deadline":
             q_title = promoted.get('task_title', 'task')
             followup_msg = f"\n\n📅 I noted a deadline for '{q_title}'. Want me to track this task?"
             try:
@@ -568,6 +550,13 @@ async def _run_post_capture_enrichment(
                         "direction": "inbound"
                     }).execute()
                     task_id = res.data[0]['id'] if res.data else None
+                    if task_id:
+                        # PONYTAIL: task_imperative doesn't have deadlines, so just sync to google tasks if possible
+                        try:
+                            from core.services.google_service import sync_to_google
+                            sync_to_google(get_tasks_service(), title=task_title, task_id=None, status='todo')
+                        except Exception:
+                            pass
                     accumulate_action(ActionResult(action_type="task_create", status="executed" if task_id else "failed", entity_id=task_id, human_label=task_title))
                 except Exception as e:
                     accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))

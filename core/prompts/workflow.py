@@ -30,21 +30,20 @@ Do NOT filter or drop signals if there are multiple — extract EVERY detectable
 Capture: "{text}"{anchor_hint}
 
 Signal Types to Extract:
-1. 'calendar_event' — specific scheduled event, meeting, call, or discussion at a specific time/date. Must have a clear relative or absolute time.
-2. 'deadline' — hard deadline for a specific deliverable ("by Monday evening", "due Friday").
-3. 'task_imperative' — explicit directive to create a task ("I need to...", "Remind me to...").
-4. 'person_intro' — a new person is introduced with their organization or role.
-5. 'financial' — a quote, budget, cost, invoice, or opportunity amount.
-6. 'dependency' — multi-step planning or blockers ("discuss with X first").
+1. 'deadline' — hard deadline for a specific deliverable, or a scheduled event/meeting at a specific time ("by Monday", "due Friday", "Monday at 11am").
+2. 'task_imperative' — explicit directive to create a task ("I need to...", "Remind me to...").
+3. 'person_intro' — a new person is introduced with their organization or role.
+4. 'financial' — a quote, budget, cost, invoice, or opportunity amount.
+5. 'dependency' — multi-step planning or blockers ("discuss with X first").
 
 Return JSON:
-{{
+{
   "signals": [
-    {{
-      "type": "calendar_event|deadline|task_imperative|person_intro|financial|dependency",
+    {
+      "type": "deadline|task_imperative|person_intro|financial|dependency",
       "title": "Short title describing the signal",
-      "raw_date_text": "extracted date phrase (e.g. 'Monday')",
-      "raw_time_text": "extracted time phrase (e.g. '11 am')",
+      "raw_date_text": "extracted date phrase (for deadline)",
+      "raw_time_text": "extracted time phrase (for deadline)",
       "duration_minutes": 30,
       "proposed_title": "Title for calendar event or task",
       "description": "Additional context",

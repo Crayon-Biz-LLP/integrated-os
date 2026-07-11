@@ -122,54 +122,6 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority
         # Raising the error to bubble up to update_task_status so it doesn't return None and null out the DB
         raise e
 
-
-
-def create_calendar_event(title, start_iso, duration_minutes=30, description="", idempotency_key=None):
-    service = get_cached_service('calendar', 'v3')
-    try:
-        # READ-BEFORE-WRITE GUARD
-        if idempotency_key:
-            events_result = service.events().list(
-                calendarId='primary',
-                privateExtendedProperty=f"idempotencyKey={idempotency_key}",
-                maxResults=1
-            ).execute()
-            items = events_result.get('items', [])
-            if items:
-                audit_log_sync("google_service", "INFO", f"Idempotency key {idempotency_key} matched event {items[0]['id']}. Returning existing.")
-                return items[0]
-
-        rfc_time = format_rfc3339(start_iso)
-        start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
-        end_dt = start_dt + timedelta(minutes=int(duration_minutes))
-
-        event_body = {
-            'summary': title,
-            'description': description or 'Rhodey created this for you.',
-            'start': {'dateTime': rfc_time, 'timeZone': 'Asia/Kolkata'},
-            'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'},
-            'reminders': {
-                'useDefault': False,
-                'overrides': [
-                    {'method': 'popup', 'minutes': 60},
-                    {'method': 'popup', 'minutes': 15}
-                ]
-            }
-        }
-        
-        if idempotency_key:
-            event_body['extendedProperties'] = {
-                'private': {
-                    'idempotencyKey': idempotency_key
-                }
-            }
-
-        res = service.events().insert(calendarId='primary', body=event_body).execute()
-        return res
-    except Exception as e:
-        audit_log_sync("google_service", "ERROR", f"Standalone calendar sync failed: {e}")
-        raise e
-
 def delete_calendar_event(event_id):
     if not event_id:
         return
@@ -276,22 +228,4 @@ def check_conflict(start_iso):
         return events[0].get('summary') if events else None
     except Exception as e:
         audit_log_sync("google_service", "WARNING", f"Conflict check failed: {e}")
-        return None
-
-
-
-def get_calendar_event_by_idempotency_key(idempotency_key):
-    service = get_cached_service('calendar', 'v3')
-    try:
-        events_result = service.events().list(
-            calendarId='primary',
-            privateExtendedProperty=f"idempotencyKey={idempotency_key}",
-            maxResults=1
-        ).execute()
-        events = events_result.get('items', [])
-        if events:
-            return events[0]
-        return None
-    except Exception as e:
-        audit_log_sync("google_service", "ERROR", f"Failed to list events by idempotency key: {e}")
         return None
