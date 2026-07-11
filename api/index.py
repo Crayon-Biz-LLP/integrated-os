@@ -205,6 +205,28 @@ async def get_captures_route(request: Request, limit: int = 50, offset: int = 0)
         print(f"Get captures error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# --- BRIEFING DEBUG (returns the actual error if any) ---
+@app.get("/api/briefing-debug")
+async def get_briefing_debug_route(request: Request):
+    """Debug endpoint that returns the step-by-step result of building a briefing."""
+    require_api_auth(request)
+    steps = {}
+    try:
+        steps['require_auth'] = 'ok'
+        from api.briefing import build_briefing
+        steps['import'] = 'ok'
+        supabase = get_supabase()
+        steps['supabase'] = 'ok'
+        brief = await build_briefing(supabase)
+        steps['build'] = 'ok'
+        return {"steps": steps, "greeting": brief.get("greeting","")[:80]}
+    except Exception as e:
+        steps['failed'] = str(e)[:500]
+        import traceback
+        steps['traceback'] = traceback.format_exc()[:2000]
+        return {"steps": steps}
+
+
 # --- BRIEFING ENDPOINT (for home-surface feed) ---
 @app.get("/api/briefing")
 async def get_briefing_route(request: Request):
