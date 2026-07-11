@@ -145,7 +145,7 @@ class UpdateService {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message, style: const TextStyle(fontSize: 13)),
-        backgroundColor: isError ? const Color(0xFFEF5350) : const Color(0xFF34C759),
+        backgroundColor: isError ? const Color(0xFFEF5350) : const Color(0xFFDFCCA7),
         duration: const Duration(seconds: 3),
         behavior: SnackBarBehavior.floating,
       ),

@@ -67,7 +67,7 @@ class _SurfacePrototypeState extends State<SurfacePrototype>
   static const Color _surfaceBg = Color(0xFF0E0E10);
   static const Color _primaryText = Color(0xFFF2F2F2);
   static const Color _mutedText = Color(0xFF6B6B70);
-  static const Color _accentGreen = Color(0xFF34C759);
+  static const Color _accentGold = Color(0xFFDFCCA7);
   static const Color _accentAmber = Color(0xFFFFD60A);
   static const Color _accentBlue = Color(0xFF007AFF);
   static const Color _cardBorder = Color(0xFF2C2C30);
@@ -403,8 +403,8 @@ class _SurfacePrototypeState extends State<SurfacePrototype>
                 height: 8,
                 decoration: BoxDecoration(
                   color: isActive
-                      ? _accentGreen
-                      : _accentGreen.withValues(alpha: _pulseAnimation.value),
+                      ? _accentGold
+                      : _accentGold.withValues(alpha: _pulseAnimation.value),
                   shape: BoxShape.circle,
                 ),
               );
@@ -763,7 +763,7 @@ class _SurfacePrototypeState extends State<SurfacePrototype>
                             return _ActionChip(
                               label: chip,
                               accent: chip == 'Approve' || chip == 'Add them'
-                                  ? _accentGreen
+                                  ? _accentGold
                                   : chip == 'Dismiss' || chip == 'Skip'
                                       ? _mutedText
                                       : _accentBlue,
@@ -830,7 +830,7 @@ class _SurfacePrototypeState extends State<SurfacePrototype>
 
           // Primary: Tap to speak
           Material(
-            color: _isListening ? _accentGreen.withValues(alpha: 0.15) : Colors.transparent,
+            color: _isListening ? _accentGold.withValues(alpha: 0.15) : Colors.transparent,
             borderRadius: BorderRadius.circular(20),
             child: InkWell(
               borderRadius: BorderRadius.circular(20),
@@ -842,7 +842,7 @@ class _SurfacePrototypeState extends State<SurfacePrototype>
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
                     color: _isListening
-                        ? _accentGreen.withValues(alpha: 0.5)
+                        ? _accentGold.withValues(alpha: 0.5)
                         : _cardBorder,
                   ),
                 ),
@@ -852,7 +852,7 @@ class _SurfacePrototypeState extends State<SurfacePrototype>
                     Text(
                       _isListening ? '🎤 Listening...' : '🎤  Tap to speak',
                       style: TextStyle(
-                        color: _isListening ? _accentGreen : _mutedText,
+                        color: _isListening ? _accentGold : _mutedText,
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
                       ),
@@ -1022,7 +1022,7 @@ class _ListeningIndicatorState extends State<_ListeningIndicator>
                 width: 3,
                 height: height,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF34C759)
+                  color: const Color(0xFFDFCCA7)
                       .withValues(alpha: 0.6 + 0.4 * (1.0 - phase)),
                   borderRadius: BorderRadius.circular(2),
                 ),

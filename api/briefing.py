@@ -335,7 +335,7 @@ def _build_traces(
         if not content:
             continue
 
-        if direction == "inbound":
+        if direction == "incoming":
             inbound_queue.append(m)
         elif direction == "outgoing" and inbound_queue:
             # Pair the latest inbound with this outgoing response

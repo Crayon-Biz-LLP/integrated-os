@@ -67,6 +67,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   bool _isListening = false;
   bool _isTyping = false;
   String? _sessionId; // For thread continuity across messages
+  String _tracesSearchQuery = ''; // Client-side search for Traces view
 
   // ── Services ──
   final _api = ApiService();
@@ -1658,9 +1659,18 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   // ── Traces view ───────────────────────────────────────────────────────────
 
   Widget _buildTracesView() {
-    final traces = _briefing.traces;
+    var traces = _briefing.traces;
 
-    if (traces.isEmpty) {
+    // Client-side search filter
+    if (_tracesSearchQuery.isNotEmpty) {
+      final q = _tracesSearchQuery.toLowerCase();
+      traces = traces.where((t) =>
+        t.input.toLowerCase().contains(q) ||
+        t.resolution.toLowerCase().contains(q)
+      ).toList();
+    }
+
+    if (_briefing.traces.isEmpty) {
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 32),
         child: Center(
@@ -1682,20 +1692,85 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Search bar
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-          child: Text(
-            'YOUR RECENT ACTIVITY',
-            style: GoogleFonts.jetBrainsMono(
-              fontSize: 9,
-              fontWeight: FontWeight.w400,
-              color: _tertiaryText,
-              letterSpacing: 2.0,
-              height: 1.3,
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Container(
+            decoration: BoxDecoration(
+              color: _cardBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: _border),
+            ),
+            child: TextField(
+              onChanged: (v) => setState(() => _tracesSearchQuery = v),
+              style: GoogleFonts.plusJakartaSans(
+                color: _primaryText,
+                fontSize: 12,
+                fontWeight: FontWeight.w300,
+              ),
+              decoration: InputDecoration(
+                hintText: 'Search conversations...',
+                hintStyle: GoogleFonts.plusJakartaSans(
+                  color: _tertiaryText,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w300,
+                ),
+                prefixIcon: Icon(Icons.search, color: _tertiaryText, size: 16),
+                suffixIcon: _tracesSearchQuery.isNotEmpty
+                    ? GestureDetector(
+                        onTap: () => setState(() => _tracesSearchQuery = ''),
+                        child: Icon(Icons.close, color: _tertiaryText, size: 14),
+                      )
+                    : null,
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                isDense: true,
+              ),
             ),
           ),
         ),
-        ...traces.map((trace) => _buildTraceCard(trace)),
+        // Results label
+        if (_tracesSearchQuery.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: Text(
+              '${traces.length} result${traces.length == 1 ? '' : 's'}',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 10,
+                color: _tertiaryText,
+                height: 1.3,
+              ),
+            ),
+          ),
+        ] else ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: Text(
+              'YOUR RECENT ACTIVITY',
+              style: GoogleFonts.jetBrainsMono(
+                fontSize: 9,
+                fontWeight: FontWeight.w400,
+                color: _tertiaryText,
+                letterSpacing: 2.0,
+                height: 1.3,
+              ),
+            ),
+          ),
+        ],
+        if (traces.isEmpty && _tracesSearchQuery.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Text(
+              'No results for "$_tracesSearchQuery"',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 11,
+                fontStyle: FontStyle.italic,
+                color: _tertiaryText,
+              ),
+            ),
+          )
+        else
+          ...traces.map((trace) => _buildTraceCard(trace)),
       ],
     );
   }

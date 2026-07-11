@@ -29,8 +29,8 @@ class AppTheme {
   static const Color champagneDark = Color(0xFFA69275);
   static const Color champagneMuted = Color(0x26DFCCA7); // 15% opacity
 
-  static const Color green = Color(0xFF34C759);
-  static const Color greenBg = Color(0x1A34C759);
+  static const Color green = Color(0xFFDFCCA7);
+  static const Color greenBg = Color(0x1ADFCCA7);
   static const Color amber = Color(0xFFFFD60A);
   static const Color amberBg = Color(0x1AFFD60A);
   static const Color red = Color(0xFFEF5350);

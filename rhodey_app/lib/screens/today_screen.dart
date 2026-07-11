@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../models/today_data.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
@@ -119,14 +120,88 @@ class _TodayScreenState extends State<TodayScreen> {
                       trailing: '${_tasks.length} items ▸',
                     ),
                     const SizedBox(height: 8),
-                    ..._tasks.take(5).map((t) => _TaskRow(
-                          title: t['title'] as String? ?? 'Untitled',
-                          subtitle: t['deadline'] != null
-                              ? _formatDeadline(t['deadline'] as String)
-                              : null,
-                          isWarning: t['deadline'] != null &&
-                              _isOverdue(t['deadline'] as String),
-                        )),
+                    ..._tasks.take(5).map((t) {
+                          final taskId = t['id'] as int? ?? 0;
+                          final title = t['title'] as String? ?? 'Untitled';
+                          final deadline = t['deadline'] as String?;
+                          final project = t['project_name'] as String?;
+                          final organization = t['organization_name'] as String?;
+                          final priority = t['priority'] as String?;
+                          final description = t['description'] as String?;
+                          return Dismissible(
+                            key: ValueKey('task_$taskId'),
+                            direction: DismissDirection.horizontal,
+                            background: Container(
+                              alignment: Alignment.centerLeft,
+                              padding: const EdgeInsets.only(left: 24),
+                              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppTheme.green.withValues(alpha: 0.2),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(Icons.check_circle_outline, color: AppTheme.green, size: 22),
+                            ),
+                            secondaryBackground: Container(
+                              alignment: Alignment.centerRight,
+                              padding: const EdgeInsets.only(right: 24),
+                              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppTheme.red.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(Icons.cancel_outlined, color: AppTheme.red, size: 22),
+                            ),
+                            confirmDismiss: (direction) async {
+                              if (direction == DismissDirection.endToStart) {
+                                final confirmed = await showDialog<bool>(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    backgroundColor: AppTheme.surface,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                      side: const BorderSide(color: AppTheme.border),
+                                    ),
+                                    title: Text('Dismiss task?',
+                                      style: const TextStyle(color: AppTheme.textPrimary, fontSize: 16)),
+                                    content: Text('$title will be cancelled.',
+                                      style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+                                    actions: [
+                                      TextButton(onPressed: () => Navigator.pop(ctx, false),
+                                        child: const Text('Cancel', style: TextStyle(color: AppTheme.textTertiary))),
+                                      TextButton(onPressed: () => Navigator.pop(ctx, true),
+                                        child: const Text('Dismiss', style: TextStyle(color: AppTheme.red))),
+                                    ],
+                                  ),
+                                );
+                                if (confirmed == true && mounted) {
+                                  await _api.updateTaskStatus(taskId, 'cancelled');
+                                  await _loadAll();
+                                }
+                                return false;
+                              }
+                              if (mounted) {
+                                await _api.updateTaskStatus(taskId, 'done');
+                                await _loadAll();
+                              }
+                              return false;
+                            },
+                            child: _TaskRow(
+                              title: title,
+                              subtitle: deadline != null
+                                  ? _formatDeadline(deadline)
+                                  : null,
+                              isWarning: deadline != null && _isOverdue(deadline),
+                              onTap: () => _showTaskDetail(
+                                title, taskId,
+                                description: description,
+                                project: project,
+                                organization: organization,
+                                deadline: deadline,
+                                priority: priority,
+                              ),
+                            ),
+                          );
+                        }),
                     const SizedBox(height: 20),
                   ],
 
@@ -196,6 +271,141 @@ class _TodayScreenState extends State<TodayScreen> {
     } catch (_) {
       return '';
     }
+  }
+
+  void _showTaskDetail(
+    String title,
+    int taskId, {
+    String? description,
+    String? project,
+    String? organization,
+    String? deadline,
+    String? priority,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36, height: 4,
+                  decoration: BoxDecoration(
+                    color: AppTheme.border.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(title,
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 18, fontWeight: FontWeight.w500,
+                  color: AppTheme.textPrimary, height: 1.3,
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (description != null && description.isNotEmpty) ...[
+                _detailRow('Description', description),
+                const SizedBox(height: 8),
+              ],
+              if (project != null) ...[
+                _detailRow('Project', project),
+                const SizedBox(height: 8),
+              ],
+              if (organization != null) ...[
+                _detailRow('Organization', organization),
+                const SizedBox(height: 8),
+              ],
+              if (deadline != null) ...[
+                _detailRow('Deadline', _formatDeadline(deadline)),
+                const SizedBox(height: 8),
+              ],
+              if (priority != null && priority.isNotEmpty && priority != 'none') ...[
+                _detailRow('Priority', priority.toUpperCase()),
+                const SizedBox(height: 8),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: Material(
+                      color: AppTheme.green.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () async {
+                          Navigator.pop(ctx);
+                          await _api.updateTaskStatus(taskId, 'done');
+                          await _loadAll();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          alignment: Alignment.center,
+                          child: const Text('Mark done',
+                            style: TextStyle(color: AppTheme.green, fontWeight: FontWeight.w500, fontSize: 13)),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Material(
+                      color: AppTheme.red.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(10),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () async {
+                          Navigator.pop(ctx);
+                          await _api.updateTaskStatus(taskId, 'cancelled');
+                          await _loadAll();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          alignment: Alignment.center,
+                          child: const Text('Dismiss',
+                            style: TextStyle(color: AppTheme.red, fontWeight: FontWeight.w500, fontSize: 13)),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 80,
+          child: Text(label,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 11, color: AppTheme.textTertiary, fontWeight: FontWeight.w400,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(value,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 12, color: AppTheme.textSecondary, height: 1.4,
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -337,37 +547,45 @@ class _TaskRow extends StatelessWidget {
   final String title;
   final String? subtitle;
   final bool isWarning;
-  const _TaskRow({required this.title, this.subtitle, this.isWarning = false});
+  final VoidCallback? onTap;
+  const _TaskRow({required this.title, this.subtitle, this.isWarning = false, this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: isWarning ? AppTheme.redBg : AppTheme.surface,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: isWarning ? AppTheme.red.withValues(alpha: 0.2) : AppTheme.border,
-          width: 1,
-        ),
-      ),
-      child: Row(
-        children: [
-          Text(isWarning ? '⚠️' : '📋', style: const TextStyle(fontSize: 12)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(title,
-              style: AppTheme.body.copyWith(fontSize: 13),
-              maxLines: 1, overflow: TextOverflow.ellipsis,
+        onTap: onTap,
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: isWarning ? AppTheme.redBg : AppTheme.surface,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isWarning ? AppTheme.red.withValues(alpha: 0.2) : AppTheme.border,
+              width: 1,
             ),
           ),
-          if (subtitle != null)
-            Text(subtitle!, style: AppTheme.caption.copyWith(
-              color: isWarning ? AppTheme.red : AppTheme.textTertiary,
-              fontSize: 12, fontWeight: FontWeight.w600,
-            )),
-        ],
+          child: Row(
+            children: [
+              Text(isWarning ? '⚠️' : '📋', style: const TextStyle(fontSize: 12)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(title,
+                  style: AppTheme.body.copyWith(fontSize: 13),
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (subtitle != null)
+                Text(subtitle!, style: AppTheme.caption.copyWith(
+                  color: isWarning ? AppTheme.red : AppTheme.textTertiary,
+                  fontSize: 12, fontWeight: FontWeight.w600,
+                )),
+            ],
+          ),
+        ),
       ),
     );
   }
