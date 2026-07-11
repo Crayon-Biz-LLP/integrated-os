@@ -469,7 +469,7 @@ async def build_briefing(supabase) -> BriefingResponse:
     async def _get_graph_edges():
         try:
             res = supabase.table("pending_graph_edges")\
-                .select("id, source_label, target_label, relationship, status, context")\
+                .select("id, source_label, target_label, relationship, status")\
                 .in_("status", ["pending", "flagged"])\
                 .limit(30)\
                 .execute()
@@ -529,7 +529,7 @@ async def build_briefing(supabase) -> BriefingResponse:
             res = supabase.table("raw_dumps")\
                 .select("id, content, direction, status, message_type, created_at")\
                 .gte("created_at", traces_cutoff)\
-                .order("created_at", asc=True)\
+                .order("created_at", desc=False)\
                 .limit(100)\
                 .execute()
             return list(res.data or [])

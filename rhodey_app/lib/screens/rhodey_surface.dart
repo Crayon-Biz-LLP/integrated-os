@@ -47,6 +47,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   BriefingResponse _briefing = BriefingResponse.empty();
   bool _loading = true;
   bool _hasError = false;
+  bool _apiConfigured = false;
   bool _showTraces = false; // false = Horizon, true = Traces
 
   // ── Conversation feed ──
@@ -124,7 +125,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     // Init speech recognition
     _initSpeech();
 
-    // Load initial briefing
+    // Check API config & load initial briefing
+    _apiConfigured = _api.config.isConfigured;
     _fetchBriefing();
 
     // Start polling for updates
@@ -173,6 +175,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     setState(() {
       _briefing = briefing;
       _loading = false;
+      _apiConfigured = _api.config.isConfigured;
       _hasError = briefing.sections.isEmpty && briefing.traces.isEmpty;
     });
     // On initial load only, populate conversation from API history
@@ -750,10 +753,54 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   // ── Error / Empty state ───────────────────────────────────────────────────
 
   Widget _buildErrorOrEmpty() {
+    final isFirstLaunch = !_apiConfigured;
+
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
       children: [
         const SizedBox(height: 40),
+        // ── API not configured banner ──
+        if (isFirstLaunch) ...[
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: _amberLight,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _amber.withValues(alpha: 0.3)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.settings, color: _amber, size: 18),
+                    const SizedBox(width: 8),
+                    Text(
+                      'ALMOST THERE',
+                      style: GoogleFonts.jetBrainsMono(
+                        fontSize: 9,
+                        fontWeight: FontWeight.w500,
+                        color: _amber,
+                        letterSpacing: 2.0,
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Tap the menu \u2630 \u2192 Settings to connect this app to your Rhodey backend.',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 13,
+                    color: _primaryText,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 32),
+        ],
         Text(
           "Hey, I'm your companion.",
           style: GoogleFonts.instrumentSerif(

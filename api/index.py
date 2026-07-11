@@ -228,7 +228,8 @@ async def get_briefing_route(request: Request):
             "next_event": None,
             "sections": [],
             "pending_count": 0,
-        }, 200
+            "_error": str(e)[:500],
+        }
 
 # --- EVENING ROUNDUP ---
 @app.api_route("/api/roundup", methods=["GET", "POST"])
