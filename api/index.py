@@ -205,28 +205,6 @@ async def get_captures_route(request: Request, limit: int = 50, offset: int = 0)
         print(f"Get captures error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-# --- BRIEFING DEBUG (returns the actual error if any) ---
-@app.get("/api/briefing-debug")
-async def get_briefing_debug_route(request: Request):
-    """Debug endpoint that returns the step-by-step result of building a briefing."""
-    require_api_auth(request)
-    steps = {}
-    try:
-        steps['require_auth'] = 'ok'
-        from api.briefing import build_briefing
-        steps['import'] = 'ok'
-        supabase = get_supabase()
-        steps['supabase'] = 'ok'
-        brief = await build_briefing(supabase)
-        steps['build'] = 'ok'
-        return {"steps": steps, "greeting": brief.get("greeting","")[:80]}
-    except Exception as e:
-        steps['failed'] = str(e)[:500]
-        import traceback
-        steps['traceback'] = traceback.format_exc()[:2000]
-        return {"steps": steps}
-
-
 # --- BRIEFING ENDPOINT (for home-surface feed) ---
 @app.get("/api/briefing")
 async def get_briefing_route(request: Request):
@@ -240,7 +218,8 @@ async def get_briefing_route(request: Request):
         from api.briefing import build_briefing
         supabase = get_supabase()
         briefing = await build_briefing(supabase)
-        return briefing
+        # Convert TypedDict to plain dict to avoid FastAPI serialization issues on Vercel
+        return dict(briefing)
     except Exception as e:
         print(f"Briefing error: {e}")
         import traceback
@@ -360,7 +339,8 @@ async def send_message_route(request: Request):
         # Build updated briefing so the frontend gets the new state in one round-trip
         try:
             from api.briefing import build_briefing
-            briefing_update = await build_briefing(get_supabase())
+            briefing = await build_briefing(get_supabase())
+            briefing_update = dict(briefing)
         except Exception as brief_err:
             print(f"Send-message briefing error (non-critical): {brief_err}")
             briefing_update = None
@@ -1608,7 +1588,8 @@ async def multimodal_input_route(request: Request):
 
         try:
             from api.briefing import build_briefing
-            briefing_update = await build_briefing(get_supabase())
+            briefing = await build_briefing(get_supabase())
+            briefing_update = dict(briefing)
         except Exception:
             briefing_update = None
 
