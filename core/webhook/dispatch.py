@@ -1,3 +1,4 @@
+from core.lib.process_input import ProcessInput
 from core.llm import get_embedding
 import json
 import re
@@ -6,7 +7,7 @@ import hashlib
 from datetime import datetime, timezone, timedelta, time
 from zoneinfo import ZoneInfo
 from core.lib.audit_logger import audit_log_sync
-from core.lib.time_utils import age_tag, resolve_expiry
+from core.lib.time_utils import age_tag
 from core.pulse.context import context_provider
 from core.lib.conversation import get_history, log_exchange, format_history_for_prompt, get_thread_summary
 from core.webhook.telegram import send_telegram
@@ -20,7 +21,6 @@ from core.prompts.workflow import build_enrichment_prompt
 from core.webhook.utils import is_recent_raw_dump, supabase
 from core.pulse.graph import hybrid_search_graph
 from core.agents.quick_process import process_single_dump, get_tasks_service
-from core.retrieval.pipeline import schedule_index_memory
 from core.lib.decision_audit import log_decision, DecisionStage, set_decision_chain_id, get_decision_chain_id
 from core.pulse.entity_extractor import extract_and_link_entities
 from core.lib.graph_rules import normalize_label
@@ -270,14 +270,24 @@ async def handle_confident_task(text: str, title: str, time_context: str, chat_i
             audit_log_sync("webhook", "ERROR", f"Failed to fetch existing dump by dedup_key: {e2}")
 
     _last_sent = receipt or "Logged."
-    # Removed early ack to avoid double-send (C1 & C2)
 
     # Inline: process the dump immediately (fire-and-forget)
     if dump_id:
         try:
             tasks_service = get_tasks_service()
-            result = await process_single_dump(text, meta, tasks_service, history_text)
-            
+            # Pre-decided path: skip LLM re-extraction for fresh tasks
+            if task_update_id:
+                result = await process_single_dump(text, meta, tasks_service, history_text)
+            else:
+                pi = ProcessInput(
+                    category="TASK",
+                    text=text,
+                    source=source,
+                    title=title,
+                    reminder_at=time_context,
+                )
+                result = await process_single_dump(text=text, metadata=meta, input=pi, tasks_service=tasks_service)
+
             if result.get('action') == 'clarify':
                 question = result.get('question', "Could you provide more details?")
                 _last_sent = f"{question}\n\n_Context: \"{text[:100]}...\"_"
@@ -537,27 +547,17 @@ async def _run_post_capture_enrichment(
                 audit_log_sync("workflow", "ERROR", f"Failed to create deadline workflow: {e}")
                 
         elif w_type == "task_imperative":
-            # Auto-create without asking
             task_title = promoted.get("task_title") or promoted.get("title")
             if task_title:
                 try:
-                    res = supabase.table('tasks').insert({
-                        "title": task_title,
-                        "status": "todo",
-                        "priority": "important",
-                        "project_id": chosen_proj_id,
-                        "organization_id": chosen_org_id,
-                        "direction": "inbound"
-                    }).execute()
-                    task_id = res.data[0]['id'] if res.data else None
-                    if task_id:
-                        # PONYTAIL: task_imperative doesn't have deadlines, so just sync to google tasks if possible
-                        try:
-                            from core.services.google_service import sync_to_google
-                            sync_to_google(get_tasks_service(), title=task_title, task_id=None, status='todo')
-                        except Exception:
-                            pass
-                    accumulate_action(ActionResult(action_type="task_create", status="executed" if task_id else "failed", entity_id=task_id, human_label=task_title))
+                    tasks_service = get_tasks_service()
+                    pi = ProcessInput(category="TASK", text=task_title, source="enrichment", title=task_title)
+                    result = await process_single_dump(text=task_title, metadata={"intent": "TASK"}, input=pi, tasks_service=tasks_service)
+                    task_id = result.get("task_id")
+                    accumulate_action(ActionResult(
+                        action_type="task_create",
+                        status="executed" if task_id else "failed",
+                        entity_id=task_id, human_label=task_title))
                 except Exception as e:
                     accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))
                     audit_log_sync("webhook", "WARNING", f"Failed to auto-create follow-up task: {e}")
@@ -623,58 +623,35 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
         except Exception as dedup_err:
             audit_log_sync("webhook", "WARNING", f"Dedup lookup failed for {dedup_key}: {dedup_err}")
 
-    # ── Step 2: Attempt embedding ──
-    try:
-        embedding = (await get_embedding(text)).vector
-        embed_success = bool(embedding and any(embedding))
-    except Exception as e:
-        audit_log_sync("webhook", "ERROR", f"Embedding failed for update: {e}")
-        embedding = None
-        embed_success = False
-        
-    embed_status = 'success' if embed_success else 'failed'
+    # ── Step 2: Shared pipeline — embedding, memory, entities, index ──
+    pi = ProcessInput(category="NOTE", text=text, source=source)
+    meta = {"intent": "PROJECT_UPDATE"}
+    if entity:
+        meta["entity"] = entity
+    if extraction_method:
+        meta["extraction_method"] = extraction_method
+    result = await process_single_dump(text=text, metadata=meta, input=pi)
 
-    if not embed_success:
+    if result.get("action") == "error":
         if dump_id:
             supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
         _last_sent = receipt or "✅ Captured. Memory indexing will retry shortly."
         await send_telegram(chat_id, f"{_last_sent}")
         return _last_sent
 
-    # ── Step 3: Save to memories and Extract Entities ──
-    memory_id = None
-    chosen_org_id = None
-    chosen_proj_id = None
-    try:
-        expires_at = resolve_expiry(text, datetime.now(timezone.utc))
-        expires_iso = expires_at.isoformat() if expires_at else None
-        result = supabase.table('memories').insert({
-            "content": text,
-            "memory_type": "note",
-            "embedding": embedding,
-            "embedding_status": embed_status,
-            "source": "webhook",
-            "metadata": {"entity": entity},
-            "expires_at": expires_iso
-        }).execute()
-        
-        if result and result.data:
-            memory_id = result.data[0]["id"]
-            schedule_index_memory(memory_id, text, "note", "webhook")
-            
+    memory_id = result.get("memory_id")
+
+    # ── Step 3: Enrich memory with org/project from conversation anchor ──
+    if memory_id:
+        accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label="Update logged"))
+        from core.lib.audit_logger import log_audit
+        try:
             chosen_org_id, chosen_proj_id = await _enrich_memory_entities(text, memory_id, active_anchor)
-            accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label="Update logged"))
-                
-        if dump_id:
-            supabase.table('raw_dumps').update({"status": "processed", "is_processed": True}).eq('id', dump_id).execute()
-            
-    except Exception as e:
-        audit_log_sync("webhook", "ERROR", f"Failed to save update to memory: {e}")
-        if dump_id:
-            supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
-        _last_sent = receipt or "✅ Captured. Memory indexing will retry shortly."
-        await send_telegram(chat_id, f"{_last_sent}")
-        return _last_sent
+        except Exception as e:
+            log_audit("handle_project_update", "error", f"Memory enrichment failed: {e}", memory_id=memory_id)
+            chosen_org_id = chosen_proj_id = None
+    else:
+        chosen_org_id = chosen_proj_id = None
 
     # ── Step 4: Post-capture enrichment (shared helper) ──
     try:
@@ -713,7 +690,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         await send_telegram(chat_id, f"{_last_sent}")
         return _last_sent
 
-    # ── Step 1: Insert as staged (captured, pending processing) ──
+    # ── Step 1: Insert as staged for audit trail + idempotency ──
     metadata = {"intent": "NOTE", "entity": entity}
     if extraction_method is not None:
         metadata["extraction_method"] = extraction_method
@@ -733,7 +710,6 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         dump_id = dump_res.data[0]['id'] if dump_res.data else None
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Failed to save note dump: {e}")
-        # dedup_key collision — fetch existing row
         try:
             existing = maybe_single_safe(supabase.table('raw_dumps').select('id').eq('dedup_key', dedup_key))
             dump_id = existing.data.get('id') if existing.data else None
@@ -741,64 +717,16 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             audit_log_sync("webhook", "ERROR", f"Failed to fetch existing dump by dedup_key: {e2}")
             dump_id = None
 
-    # ── Step 2: Attempt embedding ──
-    try:
-        embedding = (await get_embedding(text)).vector
-        embed_success = bool(embedding and any(embedding))
-    except Exception as e:
-        from core.lib.audit_logger import log_audit
-        log_audit("handle_confident_note", "error", f"Embedding failed with exception: {e}", raw_input=text)
-        embedding = None
-        embed_success = False
-        
-    embed_status = 'success' if embed_success else 'failed'
+    # ── Step 2: Shared pipeline — embedding, memory insert, entity extraction, index ──
+    pi = ProcessInput(category="NOTE", text=text, source=source)
+    meta = {"intent": "NOTE"}
+    if entity:
+        meta["entity"] = entity
+    if extraction_method:
+        meta["extraction_method"] = extraction_method
+    result = await process_single_dump(text=text, metadata=meta, input=pi)
 
-    if not embed_success:
-        # Mark as embedding_failed, write to DLQ, send retry receipt
-        if dump_id:
-            try:
-                supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
-            except Exception as e:
-                audit_log_sync("webhook", "ERROR", f"Failed to update dump {dump_id} to embedding_failed: {e}")
-        try:
-            from core.lib.audit_logger import write_dlq
-            write_dlq('raw_dumps', str(dump_id) if dump_id else None, text, 'Embedding failed or returned null vector')
-        except Exception as e:
-            audit_log_sync("webhook", "ERROR", f"Failed to write to DLQ: {e}")
-        _last_sent = receipt or "✅ Captured. Memory indexing will retry shortly."
-        await send_telegram(chat_id, f"{_last_sent}")
-        return _last_sent
-
-    # ── Step 3: Save to memories (success path) ──
-    chosen_org_id = None
-    chosen_proj_id = None
-    try:
-        expires_at = resolve_expiry(text, datetime.now(timezone.utc))
-        expires_iso = expires_at.isoformat() if expires_at else None
-        result = supabase.table('memories').insert({
-            "content": text,
-            "memory_type": "note",
-            "embedding": embedding,
-            "embedding_status": embed_status,
-            "source": "webhook",
-            "metadata": {"entity": entity},
-            "expires_at": expires_iso
-        }).execute()
-        if result and result.data:
-            memory_id = result.data[0]["id"]
-            schedule_index_memory(memory_id, text, "note", "webhook")
-            chosen_org_id, chosen_proj_id = await _enrich_memory_entities(text, memory_id, active_anchor)
-            accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label="Note vaulted"))
-        
-        # Mark dump as processed
-        if dump_id:
-            try:
-                supabase.table('raw_dumps').update({"status": "processed"}).eq('id', dump_id).execute()
-            except Exception as e:
-                audit_log_sync("webhook", "ERROR", f"Failed to mark dump {dump_id} as processed: {e}")
-                
-    except Exception as e:
-        audit_log_sync("webhook", "ERROR", f"Failed to save note to memory: {e}")
+    if result.get("action") == "error":
         if dump_id:
             try:
                 supabase.table('raw_dumps').update({"status": "embedding_failed"}).eq('id', dump_id).execute()
@@ -806,12 +734,25 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
                 pass
         try:
             from core.lib.audit_logger import write_dlq
-            write_dlq('raw_dumps', str(dump_id) if dump_id else None, text, f"Memory insert failed: {str(e)}")
+            write_dlq('raw_dumps', str(dump_id) if dump_id else None, text, f"Shared pipeline failed: {result.get('reason')}")
         except Exception:
             pass
         _last_sent = receipt or "✅ Captured. Memory indexing will retry shortly."
         await send_telegram(chat_id, f"{_last_sent}")
         return _last_sent
+
+    memory_id = result.get("memory_id")
+    # ── Step 3: Enrich memory with org/project from conversation anchor ──
+    if memory_id:
+        accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label="Note vaulted"))
+        from core.lib.audit_logger import log_audit
+        try:
+            chosen_org_id, chosen_proj_id = await _enrich_memory_entities(text, memory_id, active_anchor)
+        except Exception as e:
+            log_audit("handle_confident_note", "error", f"Memory enrichment failed: {e}", memory_id=memory_id)
+            chosen_org_id = chosen_proj_id = None
+    else:
+        chosen_org_id = chosen_proj_id = None
 
     # ── Step 3b: If note contains a URL, also vault as resource ──
     match = re.search(r'https?://\S+', text)
@@ -822,18 +763,15 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             if not existing.data:
                 supabase.table('resources').insert({"url": actual_url}).execute()
             elif existing.data[0].get('dismissed_at'):
-                # Resource was explicitly dismissed by user in UI, tell them
                 await send_telegram(chat_id, "Already seen this link and dismissed it. Skipping.")
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Resource insert failed for URL: {e}")
 
     # ── Step 4: Post-capture enrichment (selective for notes) ──
-    # Gate: only fire for substantive captures (>10 words with entities, or >25 words).
-    # Prevents nagging on trivial one-liners like "ok" or "got it".
     _note_words = text.split()
     _is_substantial = len(_note_words) > 25 or (len(_note_words) > 10 and (chosen_org_id or chosen_proj_id))
     followup_msg = ""
-    if _is_substantial:
+    if _is_substantial and memory_id:
         try:
             followup_msg = await _run_post_capture_enrichment(
                 text, chat_id, session_id,
@@ -845,7 +783,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Note enrichment failed: {e}")
 
-    # ── Step 5: Mark as processed ──
+    # ── Step 5: Mark dump as processed ──
     if dump_id:
         try:
             supabase.table('raw_dumps').update({"status": "processed", "is_processed": True}).eq('id', dump_id).execute()

@@ -1,12 +1,11 @@
-from core.llm import get_embedding
 import json
 import os
 import httpx
 import re as _re
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
-from core.lib.time_utils import compute_expires_at
-from core.retrieval.pipeline import schedule_index_memory
+from core.lib.process_input import ProcessInput
+from core.agents.quick_process import process_single_dump
 from core.retrieval.cleanup import cleanup_memory_retrieval_index
 from core.webhook.telegram import send_telegram
 from core.webhook.utils import supabase, trigger_github_pulse
@@ -295,26 +294,12 @@ async def handle_undo_command(text: str, chat_id: int):
                 "message_type": "note",
                 "status": "staged",
             }).eq('id', dump_id).execute()
-            # Process as note inline
-            embedding = (await get_embedding(content)).vector
-            if embedding and any(embedding):
-                try:
-                    result = supabase.table('memories').insert({
-                        "content": content,
-                        "memory_type": "note",
-                        "embedding": embedding,
-                        "embedding_status": "success",
-                        "source": "webhook_undo",
-                        "expires_at": compute_expires_at(content, datetime.now(timezone.utc).isoformat())
-                    }).execute()
-                    memory_id = result.data[0]['id']
-                    schedule_index_memory(memory_id, content, "note", "webhook_undo")
-                    supabase.table('raw_dumps').update({
-                        "status": "processed",
-                        "is_processed": True,
-                    }).eq('id', dump_id).execute()
-                except Exception:
-                    pass
+            pi = ProcessInput(category="NOTE", text=content, source="webhook_undo")
+            result = await process_single_dump(text=content, metadata={"intent": "NOTE"}, input=pi)
+            if result.get("memory_id"):
+                supabase.table('raw_dumps').update({
+                    "status": "processed", "is_processed": True,
+                }).eq('id', dump_id).execute()
             # Best-effort cancel any task Pulse may have created
             try:
                 supabase.table('tasks').update({"status": "cancelled"}) \

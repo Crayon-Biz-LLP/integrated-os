@@ -1,5 +1,4 @@
 from core.llm.constants import CLASSIFICATION_MODEL, SYNTHESIS_MODEL
-from core.llm import get_embedding
 import os
 import json
 import re
@@ -13,7 +12,6 @@ from typing import List, Optional
 from core.lib.audit_logger import info, warning, error, audit_log_sync
 from core.lib.temporal_lineage import detect_drift
 from core.lib.conversation import get_or_create_session, format_history_for_prompt
-from core.lib.time_utils import compute_expires_at
 from core.decisions import record_decision
 
 from core.services.google_service import get_tasks_service
@@ -44,7 +42,6 @@ from core.pulse.practices import (
     sync_practice_canonical_pages, build_rhythms_section,
 )
 from core.pulse.resources import batch_enrich_resources
-from core.retrieval.pipeline import schedule_index_memory
 from core.services.push_notification import send_push_notification
 
 
@@ -1007,43 +1004,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                     if category in ('NOTE', 'PROJECT_UPDATE'):
                         dump_content = raw_dump.get('content')
                         if dump_content:
-                            embedding = (await get_embedding(dump_content)).vector
-                            status = 'success' if embedding and any(embedding) else 'failed'
-                            try:
-                                existing = supabase.table('memories').select('id').eq('content', dump_content).execute()
-                                if existing.data:
-                                    note_dump_ids.append(dump_id)
-                                    continue
-
-                                result = supabase.table('memories').insert({
-                                    "content": dump_content,
-                                    "memory_type": "note",
-                                    "embedding": embedding,
-                                    "embedding_status": status,
-                                    "source": "pulse_note",
-                                    "expires_at": compute_expires_at(dump_content, datetime.now(timezone.utc).isoformat())
-                                }).execute()
-                                if result.data:
-                                    note_dump_ids.append(dump_id)
-                                    schedule_index_memory(
-                                        result.data[0]["id"], dump_content,
-                                        "note", "pulse_note")
-                                    audit_log_sync("pulse", "INFO", f"📝 Note filed to memory: {dump_content[:50]}...")
-                                else:
-                                    raise Exception("Insert returned no data")
-                            except Exception as e:
-                                audit_log_sync("pulse", "WARNING", f"⚠️ Note insert failed: {e}")
-                            url_match = re.search(r'https?://\S+', dump_content)
-                            if url_match:
-                                actual_url = url_match.group(0).rstrip('.,;:!?)"\'')
-                                try:
-                                    existing = supabase.table('resources').select('id, dismissed_at').eq('url', actual_url).limit(1).execute()
-                                    if not existing.data:
-                                        supabase.table('resources').insert({"url": actual_url}).execute()
-                                    elif existing.data[0].get('dismissed_at'):
-                                        audit_log_sync("pulse", "INFO", f"Skipped URL resource creation (dismissed): {actual_url}")
-                                except Exception as e:
-                                    audit_log_sync("pulse", "WARNING", f"Resource insert failed for URL in note: {e}")
+                            from core.agents.quick_process import process_single_dump
+                            from core.lib.process_input import ProcessInput
+                            pi = ProcessInput(category="NOTE", text=dump_content, source="pulse_note")
+                            result = await process_single_dump(text=dump_content, metadata={"intent": "NOTE"}, input=pi)
+                            if result.get("memory_id"):
+                                note_dump_ids.append(dump_id)
+                                audit_log_sync("pulse", "INFO", f"📝 Note filed to memory: {dump_content[:50]}...")
                     
                     elif category == 'NOISE':
                         note_dump_ids.append(dump_id)

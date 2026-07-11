@@ -59,64 +59,6 @@ def check_conflict(start_iso, exclude_event_id=None):
         audit_log_sync("pulse", "WARNING", f"⚠️ Conflict check failed: {e}")
         return None
 
-def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority='important', recurrence=None):
-    """Creates or UPDATES a block on the grid with dynamic duration and reminders."""
-    service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
-    try:
-        rfc_time = format_rfc3339(start_iso)
-        start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
-
-        # 🕒 DYNAMIC DURATION (Defaulting to 15 now)
-        end_dt = start_dt + timedelta(minutes=int(duration_mins))
-        
-        priority_lower = str(priority).lower() if priority else "important"
-        if priority_lower == "urgent":
-            prefix = "🔥 CRITICAL: "
-        elif priority_lower == "low":
-            prefix = "☕ INFO: "
-        else:
-            prefix = "⚡ ACTION: "
-            
-        clean_title = title
-        for p in ["🔥 CRITICAL: ", "⚡ ACTION: ", "☕ INFO: "]:
-            if clean_title.startswith(p):
-                clean_title = clean_title[len(p):]
-                
-        formatted_title = f"{prefix}{clean_title}"
-
-        event_body = {
-            'summary': formatted_title,
-            'description': 'Rhodey created this for you.',
-            'start': {'dateTime': rfc_time, 'timeZone': 'Asia/Kolkata'},
-            'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'},
-            'reminders': {
-                'useDefault': False,
-                'overrides': [
-                    {'method': 'popup', 'minutes': 60},
-                    {'method': 'popup', 'minutes': 15}
-                ]
-            }
-        }
-
-        if recurrence:
-            event_body['recurrence'] = [recurrence]
-
-        if event_id:
-            res = service.events().patch(calendarId='primary', eventId=event_id, body=event_body).execute()
-            print(f"🔄 SUCCESS: Calendar slot edited for {formatted_title}")
-        else:
-            res = service.events().insert(calendarId='primary', body=event_body).execute()
-            print(f"📅 SUCCESS: New calendar block secured for {formatted_title}")
-
-        return res.get('id')
-    except Exception as e:
-        # Fallback logic: If the event_id was invalid, try creating fresh
-        if event_id:
-            audit_log_sync("pulse", "WARNING", f"⚠️ Event ID {event_id} invalid. Attempting fresh creation...")
-            return sync_to_calendar(title, start_iso, duration_mins, event_id=None, priority=priority, recurrence=recurrence)
-        audit_log_sync("pulse", "ERROR", f"❌ CRITICAL: Calendar sync failed: {e}")
-        return None
-
 def sync_completed_tasks_from_google(supabase_client, tasks_service):
     """Pulls completed status from Google Tasks and updates Supabase. Returns list of (title, proj_name) for completed tasks."""
     completed = []

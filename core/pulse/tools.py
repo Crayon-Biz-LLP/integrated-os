@@ -145,78 +145,45 @@ def create_project(name: str, description: str = "", keywords: List[str] = None,
     return "Failed to create project."
 
 @rhodey_tools.register
-def create_task(title: str, project_id: int = None, organization_name: str = None, priority: str = "important", duration_mins: int = 15, reminder_at: str = None, recurrence: str = None):
+async def create_task(title: str, project_id: int = None, organization_name: str = None, priority: str = "important", duration_mins: int = 15, reminder_at: str = None, recurrence: str = None):
     """Creates a new task and optionally schedules it on the calendar."""
+    from core.lib.process_input import ProcessInput
+    from core.agents.quick_process import process_single_dump
     from core.features import is_org_routing_enabled
-    import hashlib
-    dedup_key = hashlib.md5(f"{title.lower().strip()}:{project_id or 0}".encode()).hexdigest()[:16]
-    
-    exist = supabase.table('tasks').select('id').eq('is_current', True).eq('dedup_key', dedup_key).not_.in_('status', ['done', 'cancelled']).execute()
-    if exist.data:
-        return f"Task '{title}' already exists."
-        
-    try:
-        new_reminder = format_rfc3339(reminder_at) if reminder_at else None
-        
-        org_id = None
-        org_unresolved = False
-        if is_org_routing_enabled() and organization_name:
-            orgs_res = supabase.table('organizations').select('id').ilike('name', organization_name).limit(1).execute()
-            if orgs_res.data:
-                org_id = orgs_res.data[0]['id']
-            else:
-                org_unresolved = True
 
-        data = {
-            "title": title, "project_id": project_id, "priority": priority.lower(),
-            "status": "todo", "estimated_minutes": duration_mins, "duration_mins": duration_mins,
-            "reminder_at": new_reminder, "dedup_key": dedup_key,
-            "recurrence": recurrence,
-            "organization_id": org_id
-        }
-        res = supabase.table('tasks').insert(data).execute()
-        if not res.data:
-            return "Failed to create task."
-            
-        task_id = res.data[0]['id']
-        accumulate_action(ActionResult(action_type="task_create", status="executed", entity_id=task_id, human_label=title))
-        e_id, g_id = None, None
-        
-        if new_reminder:
-            try:
-                e_id = sync_to_calendar(title, new_reminder, duration_mins, priority=priority, recurrence=recurrence)
-            except Exception as e:
-                audit_log_sync("tools", "ERROR", f"Calendar sync failed: {e}")
-            # Recurring tasks with a time (calendar event) skip Google Tasks —
-            # the calendar series handles scheduling. Day-only recurring tasks
-            # (no reminder_at) still get a google_task_id for lightweight tracking.
-            if not recurrence:
-                try:
-                    g_id = sync_to_google(get_tasks_service(), title, new_reminder)
-                except Exception as e:
-                    audit_log_sync("tools", "ERROR", f"Tasks sync failed: {e}")
-        elif recurrence:
-            # Day-only recurring task — no calendar event, but create a Google Task
-            try:
-                g_id = sync_to_google(get_tasks_service(), title)
-            except Exception as e:
-                audit_log_sync("tools", "ERROR", f"Tasks sync failed: {e}")
-                
-        if e_id or g_id:
-            update = {}
-            if e_id:
-                update['google_event_id'] = e_id
-            if g_id:
-                update['google_task_id'] = g_id
-            supabase.table('tasks').update(update).eq('id', task_id).execute()
-            
-        return f"Task created with ID {task_id}" + (
-            f" (WARNING: organization '{organization_name}' not found — task has no org routing. "
-            "Approve this org via Decisions first.)" if org_unresolved else ""
-        )
-    except Exception as e:
-        accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))
-        return f"Error creating task: {str(e)}"
+    project_name = None
+    if project_id:
+        p_res = supabase.table('projects').select('name').eq('id', project_id).limit(1).execute()
+        if p_res.data:
+            project_name = p_res.data[0]['name']
+
+    org_unresolved = False
+    if is_org_routing_enabled() and organization_name and not project_name:
+        project_name = organization_name
+        org_res = supabase.table('organizations').select('id').ilike('name', organization_name).limit(1).execute()
+        org_unresolved = not org_res.data
+
+    pi = ProcessInput(category="TASK", text=title, source="pulse_tools", title=title,
+                      priority=priority, duration_mins=duration_mins,
+                      reminder_at=reminder_at, recurrence=recurrence,
+                      project_name=project_name)
+
+    result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi,
+                                       tasks_service=get_tasks_service())
+
+    if result.get("action") == "error":
+        accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": result.get('reason')}))
+        return f"Error creating task: {result.get('reason')}"
+
+    task_id = result.get("task_id")
+    if not task_id:
+        return "Failed to create task."
+
+    accumulate_action(ActionResult(action_type="task_create", status="executed", entity_id=task_id, human_label=title))
+    return f"Task created with ID {task_id}" + (
+        f" (WARNING: organization '{organization_name}' not found — task has no org routing. "
+        "Approve this org via Decisions first.)" if org_unresolved else ""
+    )
 
 @rhodey_tools.register
 def update_task_status(task_id: int, status: str = "done", duration_mins: int = 15, reminder_at: str = None, recurrence: str = None):

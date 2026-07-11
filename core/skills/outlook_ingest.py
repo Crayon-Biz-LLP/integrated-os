@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from core.retrieval.pipeline import schedule_index_memory
+from core.pulse.entity_extractor import extract_and_link_entities
 from core.lib.constants import EmailStatus
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.time_utils import compute_expires_at
@@ -412,6 +413,7 @@ async def ingest_outlook_messages(limit=25):
                     }).execute()
                     memory_id = result.data[0]['id']
                     schedule_index_memory(memory_id, _mem_content, "relationship_note", "outlook_fyi")
+                    extract_and_link_entities(_mem_content, str(memory_id), 'memory')
                     print(f"🧠 [relationship_note] FYI memory saved for {sender_email}")
                 
                 print(f"✅ [fyi] {subject} | From: {sender_email}")

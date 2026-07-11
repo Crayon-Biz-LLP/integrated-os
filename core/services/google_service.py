@@ -44,7 +44,11 @@ def format_rfc3339(date_str):
         clean = f"{clean}T09:00:00+05:30"
     if not (clean.endswith('Z') or '+' in clean[-6:]):
         clean += "+05:30"
-    return clean
+    try:
+        datetime.fromisoformat(clean.replace('Z', '+00:00'))
+        return clean
+    except (ValueError, TypeError):
+        return None
 
 
 def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority='important', recurrence=None):

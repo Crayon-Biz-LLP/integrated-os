@@ -74,6 +74,9 @@ async def handle_confident_completion(
             memory_id = mem_res.data[0]['id'] if mem_res.data else None
             accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label="Completion logged"))
             schedule_index_memory(memory_id, text, "note", "webhook_completion")
+            if memory_id:
+                from core.pulse.entity_extractor import extract_and_link_entities
+                await extract_and_link_entities(text, str(memory_id), 'memory')
         except Exception as mem_err:
             audit_log_sync("completion", "WARNING", f"Memory write failed for dump {dump_id}: {mem_err}")
             pass

@@ -8,6 +8,8 @@ from core.webhook.classify import CLASSIFICATION_MODEL
 from core.webhook.telegram import send_telegram
 from core.lib.conversation import log_exchange, _check_topic_overlap
 from core.actions import ActionResult, accumulate_action
+from core.lib.process_input import ProcessInput
+from core.agents.quick_process import process_single_dump, get_tasks_service
 
 CONFIRM_PHRASES = {'yes', 'y', 'yep', 'do it', 'go ahead', 'sure', 'ok', 'okay', 'yeah', 'please', 'absolutely'}
 DECLINE_PHRASES = {'no', 'n', 'nope', 'cancel', 'skip', 'nevermind', 'ignore', 'stop'}
@@ -143,54 +145,26 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         reply_text = "Done."
         
         if w_type == "deadline":
-            # Just create a task for now or update an existing one if possible
-            try:
-                title = payload.get("task_title", "New Task")
-                deadline_iso = payload.get("deadline_iso")
-                reminder_at = payload.get("reminder_at") or deadline_iso
-                res = supabase.table('tasks').insert({
-                    "title": title,
-                    "status": "todo",
-                    "priority": "important",
-                    "deadline": deadline_iso,
-                    "reminder_at": reminder_at,
-                    "direction": "inbound"
-                }).execute()
-                task_id = res.data[0]['id'] if res.data else None
-                if task_id and reminder_at:
-                    try:
-                        from core.services.google_service import sync_to_calendar
-                        e_id = sync_to_calendar(title, reminder_at, duration_mins=30, priority='important')
-                        if e_id:
-                            supabase.table('tasks').update({"google_event_id": e_id}).eq('id', task_id).execute()
-                    except Exception as e:
-                        audit_log_sync("workflow", "ERROR", f"Calendar sync failed for deadline task {task_id}: {e}")
-                accumulate_action(ActionResult(action_type="task_create", status="executed" if task_id else "failed", entity_id=task_id, human_label=title))
-            except Exception as e:
-                accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))
+            title = payload.get("task_title", "New Task")
+            reminder_at = payload.get("reminder_at") or payload.get("deadline_iso")
+            pi = ProcessInput(category="TASK", text=title, source="workflow", title=title, reminder_at=reminder_at)
+            result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
+            task_id = result.get("task_id")
+            accumulate_action(ActionResult(
+                action_type="task_create",
+                status="executed" if task_id else "failed",
+                entity_id=task_id, human_label=title))
 
         elif w_type == "task_creation" or w_type == "awaiting_actionable_confirmation":
-            try:
-                title = payload.get("title", "New Item")
-                res = supabase.table('tasks').insert({
-                    "title": title,
-                    "status": "todo",
-                    "priority": "normal",
-                    "direction": "inbound"
-                }).execute()
-                task_id = res.data[0]['id'] if res.data else None
-                accumulate_action(ActionResult(
-                    action_type="task_create",
-                    status="executed" if task_id else "failed",
-                    entity_id=task_id,
-                    human_label=title
-                ))
-            except Exception as e:
-                accumulate_action(ActionResult(
-                    action_type="task_create",
-                    status="failed",
-                    evidence={"error": str(e)}
-                ))
+            title = payload.get("title", "New Item")
+            pi = ProcessInput(category="TASK", text=title, source="workflow", title=title)
+            tasks_service = get_tasks_service()
+            result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi, tasks_service=tasks_service)
+            task_id = result.get("task_id")
+            accumulate_action(ActionResult(
+                action_type="task_create",
+                status="executed" if task_id else "failed",
+                entity_id=task_id, human_label=title))
                 
         elif w_type == "awaiting_disambiguation_confirmation":
             pass # No database mutation, just acknowledging.
