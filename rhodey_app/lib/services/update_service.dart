@@ -43,12 +43,20 @@ class UpdateService {
   static final UpdateService _instance = UpdateService._();
   factory UpdateService() => _instance;
 
+  /// Tracks whether an update dialog has been shown this session.
+  /// Prevents the dialog from appearing on every app resume after "Later".
+  bool _dialogShownThisSession = false;
+
   /// Check for updates and show a dialog if one is available.
   /// Must be called after ApiService.init() so the base URL is loaded.
   ///
   /// [showFeedback] controls whether to surface non-update outcomes
   /// (errors, up-to-date) via snackbar. Set false for silent cold-start checks.
   Future<void> check(BuildContext context, {bool showFeedback = false}) async {
+    // If we've already shown (or dismissed) the dialog this session, skip
+    if (_dialogShownThisSession && !showFeedback) {
+      return;
+    }
     // 1. Read current app version
     PackageInfo info;
     try {
@@ -112,6 +120,10 @@ class UpdateService {
     debugPrint('[Update] Update available: v${remote.versionName} (code ${remote.versionCode})');
 
     if (!context.mounted) return;
+
+    // Mark dialog as shown so it won't reappear on next foreground event
+    _dialogShownThisSession = true;
+
     await showDialog<bool>(
       context: context,
       barrierDismissible: false,

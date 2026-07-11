@@ -156,7 +156,7 @@ class ApiService {
         }
         return ApiResult.fail('${resp.statusCode}: ${resp.body}');
       } catch (e) {
-        if (attempt < 2) {
+        if (attempt < maxRetries) {
           await Future.delayed(Duration(
               milliseconds: 200 * (attempt + 1) + Random().nextInt(200)));
           continue;

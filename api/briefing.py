@@ -190,71 +190,39 @@ def _build_decisions_section(
     graph_edges: list[dict],
     channel_items: list[dict],
 ) -> BriefingSection | None:
-    """Build the Decisions section. Returns None if nothing is pending."""
-    items: list[BriefingItem] = []
+    """Build the Decisions section. Returns a single summary item with count.
 
-    # Graph nodes
-    for gn in graph_nodes:
-        label = gn.get("label", "Unknown")
-        node_type = gn.get("type", "person")
-        status = gn.get("status", "pending")
-        if status not in ("pending", "flagged", "merge_proposed"):
-            continue
-
-        gn_id = str(gn.get("id", ""))
-
-        if status == "merge_proposed":
-            target = (gn.get("eval_context") or {}).get("linked_entity", "another node")
-            items.append(BriefingItem(
-                icon="🔀",
-                text=f'Merge: "{label}" \u2192 "{target}"',
-                status="pending",
-                decision_id=gn_id,
-                decision_type="merge",
-            ))
-        else:
-            items.append(BriefingItem(
-                icon="🔗",
-                text=f'Add "{label}" as {node_type}?',
-                status="pending",
-                decision_id=gn_id,
-                decision_type="graph_node",
-            ))
-
-    # Graph edges
-    for ge in graph_edges:
-        src = ge.get("source_label", "?")
-        tgt = ge.get("target_label", "?")
-        rel = ge.get("relationship", "relates_to")
-        ctx = ge.get("context", "")
-        label = f"{src} \u2192 {rel} \u2192 {tgt}"
-        if ctx:
-            label += f" ({ctx})"
-        items.append(BriefingItem(
-            icon="🔗",
-            text=label,
-            status="pending",
-            decision_id=str(ge.get("id", "")),
-            decision_type="graph_edge",
-        ))
-
-    # Channel items (email/whatsapp/call)
-    for ci in channel_items:
-        content = ci.get("content", "").strip()
-        source = ci.get("source", "channel")
-        if not content:
-            continue
-        source_type = source if source in ("email", "whatsapp", "call") else "channel"
-        items.append(BriefingItem(
-            icon="\uD83D\uDCE8",
-            text=f"{content[:80]}{ELLIPSIS if len(content) > 80 else ''}",
-            status="pending",
-            decision_id=str(ci.get("id", "")),
-            decision_type=source_type,
-        ))
-
-    if not items:
+    Instead of listing every pending item, shows a concise summary:
+      "📋 30 items awaiting your decision in Inbox"
+    with a breakdown by type (graph nodes, edges, channels).
+    """
+    total = len(graph_nodes) + len(graph_edges) + len(channel_items)
+    if total == 0:
         return None
+
+    # Build breakdown
+    parts: list[str] = []
+    if graph_nodes:
+        parts.append(f"{len(graph_nodes)} graph node{'s' if len(graph_nodes) != 1 else ''}")
+    if graph_edges:
+        parts.append(f"{len(graph_edges)} edge{'s' if len(graph_edges) != 1 else ''}")
+    if channel_items:
+        parts.append(f"{len(channel_items)} channel item{'s' if len(channel_items) != 1 else ''}")
+
+    breakdown = ", ".join(parts)
+
+    text = f"\uD83D\uDCCB {total} item{'s' if total != 1 else ''} awaiting your decision"
+    detail = f"({breakdown}) — review in Inbox"
+
+    items: list[BriefingItem] = [
+        BriefingItem(
+            icon="\uD83D\uDCCB",
+            text=f"{text}. {detail}",
+            status="pending",
+            decision_id=None,
+            decision_type=None,
+        ),
+    ]
 
     return BriefingSection(
         id="decisions",
