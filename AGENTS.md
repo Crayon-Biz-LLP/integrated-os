@@ -109,6 +109,24 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 - `db/22_normalized_label.sql` — NEW: normalized_label column migration
 - `scripts/check_graph_nodes_normalized_label.py` — NEW: CI guard
 
+## Session Anchored Summary (Jul 11, 2026 — Part 21: Smart Batch Enrichment)
+
+### Progress Done This Session
+- **Smart Batch Enrichment**: Replaced single-signal promotion with multi-signal batch collection in `_run_post_capture_enrichment()`. Enrichment now collects ALL `calendar_event`/`deadline`/`task_imperative` signals (confidence ≥ 0.5) instead of `break`ing after the first match. Creates one `batch` workflow with `{"signals": [...]}` payload. Followup message lists every item by number.
+
+- **Per-Signal LLM Decision Parsing**: `build_workflow_resume_prompt()` now handles `w_type == "batch"` — lists each signal by index, asks for per-signal `confirm`/`decline`/`skip`. LLM receives instructions for partial approval ("yes for meeting, no for deadline" → confirm 0, decline 1) and catch-all ("yes" → confirm all). Backward compat preserved for single-signal workflows.
+
+- **`calendar_event` Signal Type**: Added `calendar_event` to enrichment prompt as a new signal type (specific scheduled event/meeting/call at a resolved time). Includes `reminder_at` as ISO 8601 field. LLM gets `Current time: AAAA-MM-DD HH:MM IST` context to resolve relative dates ("Monday at 11 am" → `2026-07-13T11:00:00+05:30`).
+
+- **Title Fallback Chain**: Every signal execution path now uses `task_title → proposed_title → title → "New Task"` instead of bare `payload.get("task_title", "New Task")`. Applied in both `dispatch.py` (followup message) and `workflows.py` (task creation).
+
+- **Double Rendering Fixed**: Batch loop in `check_and_resume_workflow()` no longer calls `accumulate_action()` — `process_single_dump()` already does it internally. Inline checkmarks removed from `reply_text`. Each task renders exactly once via the action accumulation system.
+
+### Key Files (Phase 21)
+- `core/prompts/workflow.py` — Batch prompt with per-signal decisions; `calendar_event` type; `Current time:` context
+- `core/webhook/dispatch.py` — Multi-signal collection, title fallback chain in followup message
+- `core/webhook/workflows.py` — Batch handler with deterministic + LLM per-signal decision, per-signal execution loop
+
 ## Session Anchored Summary (Jul 6, 2026 — Part 17: Edge Auto-Approve Fix + Decision Backfill)
 
 ### Progress Done This Session

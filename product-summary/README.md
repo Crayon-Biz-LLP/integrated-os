@@ -83,6 +83,11 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 |------|---------------|
 | [36-normalized-label-fix.md](36-normalized-label-fix.md) | normalized_label column for PostgREST-compatible case-insensitive graph node dedup |
 
+### Enrichment & Workflows
+| File | What It Covers |
+|------|---------------|
+| [37-smart-batch-enrichment.md](37-smart-batch-enrichment.md) | Smart batch enrichment — multi-signal collection, per-signal LLM decision parsing, calendar_event signal type |
+
 ### Frontend Features
 | File | What It Covers |
 |------|---------------|

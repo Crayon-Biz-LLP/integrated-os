@@ -702,6 +702,28 @@ This enables natural-language note capture without special syntax.
 
 ---
 
+## Today's Changes (Jul 11, 2026)
+
+### [COMPLETED] T-BATCH-001: Smart Batch Enrichment — Multi-Signal Collection
+**Files**: `core/webhook/dispatch.py`, `core/prompts/workflow.py`
+**Change**: `_run_post_capture_enrichment()` now collects ALL `calendar_event`/`deadline`/`task_imperative` signals instead of `break`ing after the first match. Creates one `batch` workflow with `{"signals": [...]}` payload. Followup message lists every item by number. `calendar_event` added as signal type with `reminder_at` ISO field. Enrichment prompt includes `Current time: {IST datetime}` for relative date resolution.
+
+---
+
+### [COMPLETED] T-BATCH-002: Per-Signal LLM Decision Parsing
+**Files**: `core/prompts/workflow.py`, `core/webhook/workflows.py`
+**Change**: `build_workflow_resume_prompt()` lists signals by index and asks for per-signal `confirm`/`decline`/`skip`. LLM handles partial approval and catch-all. Deterministic fast path confirms/declines all. `check_and_resume_workflow()` iterates confirmed indices and executes per-signal. `process_single_dump()` handles task creation; no duplicate `accumulate_action()`.
+
+---
+
+### [COMPLETED] T-BATCH-003: Title Fallback Chain
+**Files**: `core/webhook/dispatch.py`, `core/webhook/workflows.py`
+**Change**: Every signal execution path uses `task_title → proposed_title → title → "New Task"` instead of bare `payload.get("task_title", "New Task")`.
+
+---
+
+
+
 ## Today's Changes (Jul 1, 2026)
 
 ### [COMPLETED] T-PHASE11-001: sync_organizations_to_graph_nodes()
