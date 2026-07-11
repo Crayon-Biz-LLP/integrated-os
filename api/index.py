@@ -205,6 +205,13 @@ async def get_captures_route(request: Request, limit: int = 50, offset: int = 0)
         print(f"Get captures error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# --- BRIEFING DIAGNOSTIC (simple ping to check route works) ---
+@app.get("/api/briefing-ping")
+async def briefing_ping_route(request: Request):
+    require_api_auth(request)
+    return {"status": "ok", "message": "briefing route works"}
+
+
 # --- BRIEFING ENDPOINT (for home-surface feed) ---
 @app.get("/api/briefing")
 async def get_briefing_route(request: Request):
