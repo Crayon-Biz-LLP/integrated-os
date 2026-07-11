@@ -501,7 +501,6 @@ async def _run_post_capture_enrichment(
                 db_dt = datetime.fromisoformat(mem_res.data[0]['created_at'].replace('Z', '+00:00'))
                 capture_dt = db_dt.astimezone(ist_tz)
         except Exception as e:
-            from core.lib.audit_logger import audit_log_sync
             audit_log_sync("enrichment", "WARNING", f"Failed to fetch created_at for memory {memory_id}, using now: {e}")
     
     for s in signals:

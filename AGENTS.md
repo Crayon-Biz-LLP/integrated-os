@@ -57,6 +57,26 @@ Before applying any fix, follow this procedure step by step. Do NOT skip steps. 
 - Only after all 8 preceding steps confirm the root cause.
 - The fix must be the smallest change that addresses the root cause — NOT a workaround or symptom patch.
 
+
+## Engineering Standards & Claims (Non-Negotiable)
+
+When proposing fixes, making architectural changes, or summarizing completed work, adhere strictly to the following standards of honesty and precision:
+
+1. **Do not overstate safety guarantees.** Distinguish clearly between:
+   - *Heavily reduced risk* (e.g., read-before-write without a lock, which leaves a TOCTOU window).
+   - *Structurally valid* (e.g., using an external API's extended properties for orphan recovery).
+   - *Absolute atomic immunity* (e.g., native DB unique constraints, strict transactional locks).
+
+2. **Differentiate recovery from atomic idempotency.** 
+   - A sentinel check combined with an external API read-before-write is a *recovery mechanism*. It is not "race-proof" unless the external API natively enforces uniqueness on the idempotency key during insertion.
+
+3. **Timezone hygiene over fixed offsets.** 
+   - "Timezone alignment addressed" requires using timezone-aware objects (e.g., `ZoneInfo("Asia/Kolkata")`) and correctly anchoring to real capture times (like `created_at`). Do not mask time logic with `datetime.now(...)` fallbacks where delayed processing would warp relative time contexts (e.g., parsing "Monday 11am" hours or days later).
+
+4. **Prove behavior, don't just lint.**
+   - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
+   - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
+
 ## Session Anchored Summary (Jul 6, 2026 — Part 18: WhatsApp Conversation Batching)
 
 ### Progress Done This Session
