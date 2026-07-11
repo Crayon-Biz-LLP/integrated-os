@@ -57,6 +57,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   // ── Response moment ──
   String? _momentText;
   bool _showMoment = false;
+  bool _isProcessing = false;
 
   // ── State ──
   bool _isListening = false;
@@ -75,12 +76,14 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   bool _speechAvailable = false;
   final FlutterTts _tts = FlutterTts();
   Timer? _voiceTimeout;
+  String _voiceText = '';        // Live partial transcript while speaking
+  int _voiceDuration = 0;        // Seconds since recording started
+  Timer? _voiceTimer;            // Ticks every second for duration
 
   // ── Animations ──
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
   late AnimationController _momentController;
-
   // ── Warm stone palette (self-contained, no theme dependency) ──
   static const Color _bg = Color(0xFF0C0C0B);
   static const Color _surface = Color(0xFF161618);
@@ -148,6 +151,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     _pollTimer?.cancel();
     _momentTimer?.cancel();
     _voiceTimeout?.cancel();
+    _voiceTimer?.cancel();
     _textController.dispose();
     _typeFocus.dispose();
     _conversationScroll.dispose();
@@ -231,8 +235,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     });
     _scrollToBottom();
 
-    // Show brief 'Processing...' feedback
-    _showResponseMoment('Processing...');
+    // Show golden wave processing animation
+    _showProcessingWave();
 
     _api.sendMessage(text.trim(), sessionId: _sessionId).then((result) {
       if (!mounted) return;
@@ -306,8 +310,18 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     });
   }
 
+  void _showProcessingWave() {
+    setState(() {
+      _isProcessing = true;
+      _momentText = null;
+      _showMoment = true;
+    });
+    _momentController.forward(from: 0.0);
+  }
+
   void _showResponseMoment(String text) {
     setState(() {
+      _isProcessing = false;
       _momentText = text;
       _showMoment = true;
     });
@@ -315,6 +329,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   }
 
   void _hideResponseMoment() {
+    setState(() => _isProcessing = false);
     _momentController.reverse().then((_) {
       if (!mounted) return;
       setState(() {
@@ -404,11 +419,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       onError: (error) {
         if (!mounted) return;
         debugPrint('[Voice] Error: ${error.errorMsg}');
-        if (error.errorMsg == 'error_speech_timeout') {
-          setState(() => _isListening = false);
-          return;
-        }
-        setState(() => _isListening = false);
+        _stopListening();
       },
       onStatus: (status) {
         debugPrint('[Voice] Status: $status');
@@ -443,18 +454,36 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
     if (!mounted) return;
     setState(() => _isListening = true);
+    _stopPolling();
+
+    // Reset live transcript and duration
+    _voiceText = '';
+    _voiceDuration = 0;
 
     _voiceTimeout?.cancel();
     _voiceTimeout = Timer(const Duration(seconds: 15), () {
       _stopListening();
     });
 
+    // Start duration timer
+    _voiceTimer?.cancel();
+    _voiceTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) {
+        setState(() => _voiceDuration++);
+      }
+    });
+
     await _speech.listen(
       onResult: (result) {
         if (!mounted) return;
+        // Show live partial transcript as user speaks
+        final words = result.recognizedWords;
+        if (words.isNotEmpty && words != _voiceText) {
+          setState(() => _voiceText = words);
+        }
         if (result.finalResult) {
-          final words = result.recognizedWords;
           if (words.isNotEmpty) {
+            _voiceTimer?.cancel();
             _voiceTimeout?.cancel();
             setState(() => _isListening = false);
             _sendMessage(words);
@@ -472,9 +501,15 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
   Future<void> _stopListening() async {
     _voiceTimeout?.cancel();
+    _voiceTimer?.cancel();
     await _speech.stop();
     if (!mounted) return;
-    setState(() => _isListening = false);
+    setState(() {
+      _isListening = false;
+      _voiceText = '';
+      _voiceDuration = 0;
+    });
+    _startPolling();
   }
 
   // ── Notification handling ─────────────────────────────────────────────────
@@ -679,6 +714,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                 _buildBottomDock(),
               ],
             ),
+            // Full-screen recording overlay
+            if (_isListening) _buildRecordingOverlay(),
             // Response moment overlay
             if (_showMoment && _momentText != null) _buildResponseMoment(),
           ],
@@ -1448,6 +1485,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
   Widget _buildSection(BriefingSection section) {
     final isDecisions = section.id == 'decisions';
+    final items = section.items;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1466,8 +1504,76 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             ),
           ),
         ),
-        ...section.items.map((item) => _buildBriefingItem(item, isDecisions)),
+        // Summarized prose for non-decision sections with 3+ items
+        if (!isDecisions && items.length >= 3)
+          _buildSummarizedSection(items)
+        else
+          ...items.map((item) => _buildBriefingItem(item, isDecisions)),
       ],
+    );
+  }
+
+  /// Render section items as a single prose paragraph instead of individual cards.
+  Widget _buildSummarizedSection(List<BriefingItem> items) {
+    // Count items by urgency
+    final urgent = items.where((i) => i.isUrgent).toList();
+    final regular = items.where((i) => !i.isUrgent).toList();
+
+    // Build a concise summary
+    final parts = <String>[];
+    if (urgent.isNotEmpty) {
+      final lines = urgent.take(2).map((i) => '${i.icon} ${i.text}').join(' • ');
+      parts.add(lines);
+      if (urgent.length > 2) {
+        parts.add('+${urgent.length - 2} more urgent');
+      }
+    }
+    if (regular.isNotEmpty) {
+      final count = regular.length;
+      if (parts.isNotEmpty) {
+        parts[parts.length - 1] += ' — and $count more items';
+      } else {
+        parts.add('$count items to review');
+      }
+    }
+
+    final summary = parts.join('\n');
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: _surface.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _border.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 3,
+              height: 28,
+              decoration: BoxDecoration(
+                color: _champagne.withValues(alpha: 0.6),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                summary,
+                style: GoogleFonts.plusJakartaSans(
+                  color: _mutedText,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w300,
+                  height: 1.5,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1696,7 +1802,9 @@ class _RhodeySurfaceState extends State<RhodeySurface>
               color: _surface,
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                color: _green.withValues(alpha: 0.3),
+                color: _isProcessing
+                    ? _champagne.withValues(alpha: 0.3)
+                    : _green.withValues(alpha: 0.3),
               ),
               boxShadow: [
                 BoxShadow(
@@ -1708,28 +1816,168 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             ),
             child: Row(
               children: [
+                // Accent bar
                 Container(
                   width: 3,
-                  height: 32,
+                  height: _isProcessing ? 28 : 32,
                   decoration: BoxDecoration(
-                    color: _green,
+                    color: _isProcessing ? _champagne : _green,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Text(
-                    _momentText ?? '',
-                    style: GoogleFonts.plusJakartaSans(
-                      color: _primaryText,
-                      fontSize: 13,
-                      height: 1.4,
-                    ),
-                  ),
+                  child: _isProcessing
+                      ? const _ProcessingWave()
+                      : Text(
+                          _momentText ?? '',
+                          style: GoogleFonts.plusJakartaSans(
+                            color: _primaryText,
+                            fontSize: 13,
+                            height: 1.4,
+                          ),
+                        ),
                 ),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  // ── Full-screen recording overlay ──────────────────────────────────────
+
+  /// Replaces the full screen when the mic is active.
+  Widget _buildRecordingOverlay() {
+    return GestureDetector(
+      onTap: _onMicTap,
+      child: Container(
+        color: _bg,
+        child: Column(
+          children: [
+            // Presence strip (with recording indicator)
+            Container(
+              height: 44,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              alignment: Alignment.centerLeft,
+              decoration: BoxDecoration(
+                border: Border(
+                  bottom: BorderSide(color: _border.withValues(alpha: 0.5)),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: _green,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Rhodey',
+                    style: GoogleFonts.plusJakartaSans(
+                      color: _mutedText,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'RECORDING',
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w400,
+                      letterSpacing: 2.0,
+                      color: _green,
+                      height: 1.2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Main recording area
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Large animated wave
+                  const _RecordingWave(),
+                  const SizedBox(height: 48),
+                  // Live transcript
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 32),
+                    child: Text(
+                      _voiceText.isNotEmpty ? _voiceText : 'I\'m listening...',
+                      textAlign: TextAlign.center,
+                      maxLines: 4,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.instrumentSerif(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w300,
+                        fontStyle: FontStyle.italic,
+                        color: _voiceText.isNotEmpty
+                            ? _primaryText
+                            : _mutedText,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  // Duration
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: _surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                          color: _border.withValues(alpha: 0.4)),
+                    ),
+                    child: Text(
+                      _formatDuration(_voiceDuration),
+                      style: GoogleFonts.jetBrainsMono(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w400,
+                        color: _tertiaryText,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 80),
+                  // Stop button
+                  Column(
+                    children: [
+                      Container(
+                        width: 64,
+                        height: 64,
+                        decoration: BoxDecoration(
+                          color: _red.withValues(alpha: 0.12),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                              color: _red.withValues(alpha: 0.4)),
+                        ),
+                        child: const Icon(Icons.stop_rounded,
+                            color: Color(0xFFEF5350), size: 32),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Tap anywhere to stop',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 12,
+                          color: _mutedText,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1794,42 +2042,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
           const Spacer(),
 
-          // Primary: Tap to speak
-          Material(
-            color: _isListening
-                ? _green.withValues(alpha: 0.15)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(20),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(20),
-              onTap: _onMicTap,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: _isListening
-                        ? _green.withValues(alpha: 0.5)
-                        : _border,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      _isListening ? '\uD83C\uDFA4 Listening...' : '\uD83C\uDFA4  Speak',
-                      style: GoogleFonts.plusJakartaSans(
-                        color: _isListening ? _green : _mutedText,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
+          // Primary: Tap to speak (or live recording bar when listening)
+          _buildSpeakButton(),
 
           const Spacer(),
 
@@ -1849,6 +2063,44 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         ],
       ),
     );
+  }
+
+  /// Speak button.
+  Widget _buildSpeakButton() {
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: _onMicTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: _border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '\uD83C\uDFA4  Speak',
+                style: GoogleFonts.plusJakartaSans(
+                  color: _mutedText,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _formatDuration(int seconds) {
+    final m = (seconds ~/ 60).toString().padLeft(2, '0');
+    final s = (seconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
   }
 
   // ── Type bar ──────────────────────────────────────────────────────────────
@@ -2007,6 +2259,69 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
 // ── Supporting widgets ──────────────────────────────────────────────────────
 
+/// Animated golden wave shown during processing (replaces "Processing...").
+class _ProcessingWave extends StatefulWidget {
+  const _ProcessingWave();
+
+  @override
+  State<_ProcessingWave> createState() => _ProcessingWaveState();
+}
+
+class _ProcessingWaveState extends State<_ProcessingWave>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (_, child) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: List.generate(5, (i) {
+            final phase = (_controller.value + i * 0.2) % 1.0;
+            // Wave shape: bars start short, peak at phase 0.5, then fall
+            final height = 4.0 + 20.0 * (1.0 - ((phase * 2 - 1).abs()).clamp(0.0, 1.0));
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2.0),
+              child: Container(
+                width: 4,
+                height: height,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [
+                      const Color(0xFFDFCCA7).withValues(alpha: 0.3 + 0.4 * (1.0 - phase)),
+                      const Color(0xFFDFCCA7).withValues(alpha: 0.7 * (1.0 - phase * 0.5)),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            );
+          }),
+        );
+      },
+    );
+  }
+}
+
 class _ListeningIndicator extends StatefulWidget {
   const _ListeningIndicator();
 
@@ -2056,6 +2371,74 @@ class _ListeningIndicatorState extends State<_ListeningIndicator>
               ),
             );
           }),
+        );
+      },
+    );
+  }
+}
+
+/// Large animated wave shown during full-screen recording.
+class _RecordingWave extends StatefulWidget {
+  const _RecordingWave();
+
+  @override
+  State<_RecordingWave> createState() => _RecordingWaveState();
+}
+
+class _RecordingWaveState extends State<_RecordingWave>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (_, child) {
+        return SizedBox(
+          height: 160,
+          child: Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(9, (i) {
+                final phase = (_controller.value + i * 0.11) % 1.0;
+                // Wave shape: bars pulse from 10px to 130px
+                final height = 10.0 +
+                    120.0 *
+                        (1.0 - ((phase * 2 - 1).abs()).clamp(0.0, 1.0));
+                return Container(
+                  width: 5,
+                  height: height,
+                  margin: const EdgeInsets.symmetric(horizontal: 3),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.bottomCenter,
+                      end: Alignment.topCenter,
+                      colors: [
+                        const Color(0xFF34C759).withValues(alpha: 0.15),
+                        const Color(0xFF34C759).withValues(alpha: 0.85),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                );
+              }),
+            ),
+          ),
         );
       },
     );

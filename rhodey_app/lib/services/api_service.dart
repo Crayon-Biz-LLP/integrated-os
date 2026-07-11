@@ -130,11 +130,14 @@ class ApiService {
     return ApiResult.fail('Max retries exceeded');
   }
 
-  /// POST with idempotency key and retry.
+  /// POST with idempotency key and optional retry.
   /// Public so other services (e.g., NotificationService) can call it.
+  /// [maxRetries] controls how many times to retry on timeout/server errors.
+  /// Set to 0 for mutation endpoints (send-message) to prevent duplicate processing.
   Future<ApiResult<dynamic>> post(String path,
-      {Map<String, dynamic>? body, Duration timeout = const Duration(seconds: 15)}) async {
-    for (var attempt = 0; attempt < 3; attempt++) {
+      {Map<String, dynamic>? body, Duration timeout = const Duration(seconds: 15), int maxRetries = 3}) async {
+    final attempts = maxRetries + 1; // +1 for the initial attempt
+    for (var attempt = 0; attempt < attempts; attempt++) {
       try {
         final resp = await _client
             .post(
@@ -170,6 +173,11 @@ class ApiService {
   /// On success, returns the raw body (which may contain Rhodey's response and session_id).
   /// Pass [sessionId] for thread continuity across messages.
   /// Uses a longer timeout (30s) because process_webhook on Vercel includes LLM calls.
+  /// Sends a message to Rhodey via /api/send-message.
+  /// On success, returns the raw body (which may contain Rhodey's response and session_id).
+  /// Pass [sessionId] for thread continuity across messages.
+  /// Uses a longer timeout (60s) because process_webhook on Vercel includes LLM calls.
+  /// **No retries** — to prevent duplicate processing on the backend.
   Future<ApiResult<dynamic>> sendMessage(String text, {String? sessionId}) async {
     final body = <String, dynamic>{'message': text};
     if (sessionId != null && sessionId.isNotEmpty) {
@@ -177,7 +185,7 @@ class ApiService {
     }
     debugPrint('[API] sendMessage: "${text.length > 60 ? text.substring(0, 60) : text}"');
     return post('/api/send-message', body: body,
-        timeout: const Duration(seconds: 30));
+        timeout: const Duration(seconds: 60), maxRetries: 0);
   }
 
   /// Uploads a file (image, audio, document) via /api/multimodal-input.
