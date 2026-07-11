@@ -7,7 +7,7 @@ Called from:
 
 Sections built:
   morning   → greeting + next event + urgent/active tasks
-  decisions → pending graph nodes + edges (omitted if empty)
+  decisions → pending graph nodes + edges (shows summary count)
   recent    → last few completed outcomes (max 3 items, last 30 min)
   traces    → paired input→outcome history (for Traces view)
 """
