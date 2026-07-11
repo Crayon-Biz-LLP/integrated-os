@@ -35,6 +35,14 @@ class BriefingItem {
   bool get isUrgent => status == 'urgent';
   bool get isPending => status == 'pending';
   bool get isDecision => decisionId != null && decisionType != null;
+
+  Map<String, dynamic> toJson() => {
+        'icon': icon,
+        'text': text,
+        'status': status,
+        'decision_id': decisionId,
+        'decision_type': decisionType,
+      };
 }
 
 class BriefingSection {
@@ -58,6 +66,12 @@ class BriefingSection {
           .toList(),
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'items': items.map((e) => e.toJson()).toList(),
+      };
 }
 
 /// A paired input→outcome trace for the Traces view.
@@ -84,6 +98,12 @@ class TraceItem {
       resolution: json['resolution'] as String? ?? '',
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'time': time,
+        'input': input,
+        'resolution': resolution,
+      };
 }
 
 class BriefingResponse {
@@ -125,4 +145,13 @@ class BriefingResponse {
         greeting: 'Hey.',
         sections: [],
       );
+
+  Map<String, dynamic> toJson() => {
+        'greeting': greeting,
+        'next_event': nextEvent,
+        'sections': sections.map((e) => e.toJson()).toList(),
+        'pending_count': pendingCount,
+        'traces': traces.map((e) => e.toJson()).toList(),
+        'latest_response': latestResponse,
+      };
 }

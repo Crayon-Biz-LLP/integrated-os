@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
 import '../services/notification_service.dart';
 import '../models/briefing.dart';
@@ -86,18 +89,18 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   late Animation<double> _pulseAnimation;
   late AnimationController _momentController;
   // ── Warm stone palette (self-contained, no theme dependency) ──
-  static const Color _bg = Color(0xFF0C0C0B);
-  static const Color _surface = Color(0xFF161618);
-  static const Color _cardBg = Color(0xFF1E1E1D);
-  static const Color _border = Color(0xFF2C2C30);
-  static const Color _primaryText = Color(0xFFEDE9E4);
-  static const Color _mutedText = Color(0xFF7A756E);
-  static const Color _tertiaryText = Color(0xFF6B6863);
+  static const Color _bg = Color(0xFF030302);
+  static const Color _surface = Color(0xFF090908);
+  static const Color _cardBg = Color(0xFF0E0E0D);
+  static const Color _border = Color(0xFF1A1A19);
+  static const Color _primaryText = Color(0xFFF5F4F0);
+  static const Color _mutedText = Color(0xFFA8A29E);
+  static const Color _tertiaryText = Color(0xFF57534E);
   static const Color _champagne = Color(0xFFDFCCA7);
-  static const Color _green = Color(0xFF34C759);
-  static const Color _amber = Color(0xFFFFD60A);
+  static const Color _accentGold = Color(0xFFDFCCA7);
+  static const Color _amber = Color(0xFFDFCCA7);
   static const Color _red = Color(0xFFEF5350);
-  static const Color _amberLight = Color(0x1AFFD60A);
+  static const Color _accentGoldLight = Color(0x1ADFCCA7);
 
   @override
   void initState() {
@@ -127,10 +130,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
     // Check API config & load initial briefing
     _apiConfigured = _api.config.isConfigured;
-    _fetchBriefing();
-
-    // Start polling for updates
-    _startPolling();
+    // Load cached briefing instantly (if available), then refresh in background
+    _loadCachedAndRefresh();
 
     // Register push notification handlers
     NotificationService.onNotificationOpened = _handlePushNotificationTap;
@@ -168,7 +169,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
-  Future<void> _fetchBriefing() async {
+  Future<void> _fetchBriefing({bool isBackground = false}) async {
     final briefing = await _api.getBriefing();
     if (!mounted) return;
     final wasInitialLoad = _loading;
@@ -182,6 +183,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     if (wasInitialLoad && !_conversationLoaded) {
       _loadFromTraces(briefing.traces);
     }
+    // Cache briefing for instant cold-start load
+    _cacheBriefing();
   }
 
   /// Populate conversation feed from API traces (persisted chat history).
@@ -203,6 +206,44 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     });
   }
 
+  // ── Caching ───────────────────────────────────────────────────────────────
+
+  Future<void> _loadCachedAndRefresh() async {
+    // Load previously cached briefing for instant display
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getString('cached_briefing');
+      if (cached != null && cached.isNotEmpty && mounted) {
+        final json = jsonDecode(cached) as Map<String, dynamic>;
+        setState(() {
+          _briefing = BriefingResponse.fromJson(json);
+          _loading = false;
+          _apiConfigured = _api.config.isConfigured;
+        });
+      }
+    } catch (_) {
+      // Silently fall through — cached data is optional
+    }
+    // Always fetch fresh data in background
+    try {
+      await _fetchBriefing(isBackground: true);
+    } catch (_) {
+      // Background refresh failures are non-fatal
+    }
+    // Resume polling after initial load regardless of fetch outcome
+    _startPolling();
+  }
+
+  /// Save current briefing to SharedPreferences for instant cold-start loads.
+  Future<void> _cacheBriefing() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_briefing', jsonEncode(_briefing.toJson()));
+    } catch (_) {
+      // Cache failures are non-critical
+    }
+  }
+
   // ── Polling ───────────────────────────────────────────────────────────────
 
   void _startPolling() {
@@ -222,6 +263,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     setState(() {
       _briefing = briefing;
     });
+    // Lightweight background cache update on poll
+    _cacheBriefing();
   }
 
   // ── Send message ──────────────────────────────────────────────────────────
@@ -344,69 +387,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
   // ── Decision actions ──────────────────────────────────────────────────────
 
-  Future<void> _handleDecisionAction(
-      BriefingItem item, String action) async {
-    if (!item.isDecision) return;
 
-    _showResponseMoment(
-        '${action == 'approve' || action == 'accept' ? '✅' : '⏳'} $action...');
-
-    final isApprove = action == 'approve' || action == 'accept';
-    final pendingId = int.tryParse(item.decisionId ?? '');
-    if (pendingId == null) {
-      await Future.delayed(const Duration(milliseconds: 300));
-      if (!mounted) return;
-      await _fetchBriefing();
-      _dismissMomentAfterDelay();
-      return;
-    }
-
-    ApiResult<dynamic>? result;
-
-    switch (item.decisionType) {
-      case 'graph_node':
-        result = isApprove
-            ? await _api.approveGraphNode(pendingId)
-            : await _api.rejectGraphNode(pendingId);
-        break;
-      case 'graph_edge':
-        result = isApprove
-            ? await _api.approveGraphEdge(pendingId)
-            : await _api.rejectGraphEdge(pendingId);
-        break;
-      case 'email':
-        result = isApprove
-            ? await _api.approveEmail(pendingId)
-            : await _api.rejectEmail(pendingId);
-        break;
-      case 'whatsapp':
-        result = isApprove
-            ? await _api.approveWhatsApp(pendingId)
-            : await _api.rejectWhatsApp(pendingId);
-        break;
-      case 'call':
-        result = isApprove
-            ? await _api.approveCall(pendingId)
-            : await _api.rejectCall(pendingId);
-        break;
-      case 'merge':
-        result = null;
-        break;
-      default:
-        result = null;
-    }
-
-    if (!mounted) return;
-
-    await _fetchBriefing();
-
-    if (result != null && !result.success) {
-      _showResponseMoment(result.error ?? 'Action failed');
-      _dismissMomentAfterDelay();
-    } else {
-      _dismissMomentAfterDelay();
-    }
-  }
 
   void _dismissMomentAfterDelay() {
     _momentTimer?.cancel();
@@ -764,7 +745,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: _amberLight,
+              color: _accentGoldLight,
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: _amber.withValues(alpha: 0.3)),
             ),
@@ -915,7 +896,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                 width: 8,
                 height: 8,
                 decoration: BoxDecoration(
-                  color: _green.withValues(alpha: _pulseAnimation.value),
+                  color: _accentGold.withValues(alpha: _pulseAnimation.value),
                   shape: BoxShape.circle,
                 ),
               );
@@ -945,15 +926,15 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     return ListView(
       padding: const EdgeInsets.only(top: 8, bottom: 16),
       children: [
-        // Conversation feed (permanent message log)
+        // Editorial greeting (always at top)
+        _buildEditorialGreeting(),
+        const SizedBox(height: 20),
+
+        // Conversation feed (right after greeting)
         if (_conversation.isNotEmpty) ...[
           _buildConversationFeed(),
           const SizedBox(height: 20),
         ],
-
-        // Editorial greeting
-        _buildEditorialGreeting(),
-        const SizedBox(height: 16),
 
         // Segmented control: HORIZON | TRACES
         _buildSegmentedControl(),
@@ -1036,7 +1017,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                           ? _red.withValues(alpha: 0.3)
                           : isUser
                               ? _border.withValues(alpha: 0.4)
-                              : _green.withValues(alpha: 0.12),
+                              : _accentGold.withValues(alpha: 0.12),
                     ),
                   ),
                   child: Row(
@@ -1051,7 +1032,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                               ? _mutedText
                               : isError
                                   ? _red
-                                  : _green,
+                                  : _accentGold,
                           borderRadius: BorderRadius.circular(2),
                         ),
                       ),
@@ -1070,7 +1051,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                                         ? _tertiaryText
                                         : isError
                                             ? _red
-                                            : _green,
+                                            : _accentGold,
                                     letterSpacing: 1.5,
                                     height: 1.2,
                                   ),
@@ -1181,13 +1162,9 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   // ── Editorial greeting ────────────────────────────────────────────────────
 
   Widget _buildEditorialGreeting() {
-    final hasPending = _briefing.pendingCount > 0;
     final greeting = _briefing.greeting;
 
     // Extract the editorial greeting from the API response.
-    // If the API returns "Good evening, Danny. Qhord sync at 19:30.",
-    // we show "Good evening, Danny." as serif headline
-    // and the rest as subtext.
     final dotIndex = greeting.indexOf('.');
     String headline = greeting;
     String subtext = '';
@@ -1195,8 +1172,23 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     if (dotIndex > 0 && dotIndex < greeting.length - 1) {
       headline = greeting.substring(0, dotIndex + 1);
       subtext = greeting.substring(dotIndex + 1).trim();
-      // Remove leading period if present
       if (subtext.startsWith('.')) subtext = subtext.substring(1).trim();
+    }
+
+    // Compute task/event counts from briefing sections (informational only)
+    int taskCount = 0;
+    int eventCount = 0;
+    for (final section in _briefing.sections) {
+      if (section.id == 'decisions') continue;
+      for (final item in section.items) {
+        if (item.icon.startsWith('\ud83d\udcc5') ||
+            item.icon.startsWith('\ud83d\udd34') ||
+            item.icon.startsWith('\u23f0')) {
+          eventCount++;
+        } else {
+          taskCount++;
+        }
+      }
     }
 
     return Padding(
@@ -1219,26 +1211,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   ),
                 ),
               ),
-              if (hasPending)
-                Container(
-                  margin: const EdgeInsets.only(top: 6),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: _amberLight,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                        color: _amber.withValues(alpha: 0.3)),
-                  ),
-                  child: Text(
-                    '${_briefing.pendingCount}',
-                    style: GoogleFonts.plusJakartaSans(
-                      color: _amber,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
             ],
           ),
           if (subtext.isNotEmpty) ...[
@@ -1250,6 +1222,58 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                 fontWeight: FontWeight.w300,
                 color: _mutedText,
                 height: 1.5,
+              ),
+            ),
+          ],
+          // Informational summary — tasks and events only, no decisions
+          if (taskCount > 0 || eventCount > 0) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: _surface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: _border.withValues(alpha: 0.5)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (eventCount > 0) ...[
+                    const Text('\u2600\ufe0f', style: TextStyle(fontSize: 13)),
+                    const SizedBox(width: 4),
+                    Text(
+                      '$eventCount event${eventCount == 1 ? '' : 's'} today',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11,
+                        color: _mutedText,
+                        fontWeight: FontWeight.w300,
+                      ),
+                    ),
+                  ],
+                  if (eventCount > 0 && taskCount > 0) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      width: 3, height: 3,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF57534E),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  if (taskCount > 0) ...[
+                    const Text('\ud83d\udccb', style: TextStyle(fontSize: 13)),
+                    const SizedBox(width: 4),
+                    Text(
+                      '$taskCount item${taskCount == 1 ? '' : 's'} to review',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11,
+                        color: _mutedText,
+                        fontWeight: FontWeight.w300,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
           ],
@@ -1367,7 +1391,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           color: _surface,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: _green.withValues(alpha: 0.15),
+            color: _accentGold.withValues(alpha: 0.15),
           ),
         ),
         child: Row(
@@ -1377,7 +1401,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
               width: 3,
               height: 32,
               decoration: BoxDecoration(
-                color: _green,
+                color: _accentGold,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -1389,14 +1413,14 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   Row(
                     children: [
                       Icon(Icons.check_circle_outline,
-                          size: 10, color: _green),
+                          size: 10, color: _accentGold),
                       const SizedBox(width: 4),
                       Text(
                         'RHODEY',
                         style: GoogleFonts.jetBrainsMono(
                           fontSize: 8,
                           fontWeight: FontWeight.w400,
-                          color: _green,
+                          color: _accentGold,
                           letterSpacing: 1.5,
                           height: 1.2,
                         ),
@@ -1482,51 +1506,14 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                 height: 1.4,
               ),
             ),
-            if (urgentItem.isDecision) ...[
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  _smallChip('Dismiss', _mutedText, () {
-                    _handleDecisionAction(urgentItem, 'dismiss');
-                  }),
-                  const SizedBox(width: 8),
-                  _smallChip('Approve', _green, () {
-                    _handleDecisionAction(urgentItem, 'approve');
-                  }),
-                ],
-              ),
-            ],
+
           ],
         ),
       ),
     );
   }
 
-  Widget _smallChip(String label, Color color, VoidCallback onTap) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(6),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: color.withValues(alpha: 0.4)),
-            color: color.withValues(alpha: 0.08),
-          ),
-          child: Text(
-            label,
-            style: GoogleFonts.plusJakartaSans(
-              color: color,
-              fontSize: 10,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+
 
   // ── Section ───────────────────────────────────────────────────────────────
 
@@ -1657,10 +1644,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                       height: 1.4,
                     ),
                   ),
-                  if (isDecision) ...[
-                    const SizedBox(height: 8),
-                    _buildDecisionActions(item),
-                  ],
                 ],
               ),
             ),
@@ -1670,42 +1653,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     );
   }
 
-  Widget _buildDecisionActions(BriefingItem item) {
-    final decisionType = item.decisionType ?? '';
 
-    String approveLabel;
-    String dismissLabel;
-
-    if (decisionType == 'merge') {
-      approveLabel = 'Accept';
-      dismissLabel = 'Reject';
-    } else if (decisionType == 'graph_node') {
-      approveLabel = 'Approve';
-      dismissLabel = 'Dismiss';
-    } else {
-      approveLabel = 'Approve';
-      dismissLabel = 'Dismiss';
-    }
-
-    return Wrap(
-      spacing: 8,
-      runSpacing: 4,
-      children: [
-        _ActionChip(
-          label: approveLabel,
-          accent: _green,
-          onTap: () =>
-              _handleDecisionAction(item, approveLabel.toLowerCase()),
-        ),
-        _ActionChip(
-          label: dismissLabel,
-          accent: _mutedText,
-          onTap: () =>
-              _handleDecisionAction(item, dismissLabel.toLowerCase()),
-        ),
-      ],
-    );
-  }
 
   // ── Traces view ───────────────────────────────────────────────────────────
 
@@ -1851,7 +1799,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
               border: Border.all(
                 color: _isProcessing
                     ? _champagne.withValues(alpha: 0.3)
-                    : _green.withValues(alpha: 0.3),
+                    : _accentGold.withValues(alpha: 0.3),
               ),
               boxShadow: [
                 BoxShadow(
@@ -1868,7 +1816,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   width: 3,
                   height: _isProcessing ? 28 : 32,
                   decoration: BoxDecoration(
-                    color: _isProcessing ? _champagne : _green,
+                    color: _isProcessing ? _champagne : _accentGold,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -1919,7 +1867,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                     width: 8,
                     height: 8,
                     decoration: BoxDecoration(
-                      color: _green,
+                      color: _accentGold,
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -1939,7 +1887,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                       fontSize: 9,
                       fontWeight: FontWeight.w400,
                       letterSpacing: 2.0,
-                      color: _green,
+                      color: _accentGold,
                       height: 1.2,
                     ),
                   ),
@@ -2411,7 +2359,7 @@ class _ListeningIndicatorState extends State<_ListeningIndicator>
                 width: 3,
                 height: height,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF34C759)
+                  color: const Color(0xFFDFCCA7)
                       .withValues(alpha: 0.6 + 0.4 * (1.0 - phase)),
                   borderRadius: BorderRadius.circular(2),
                 ),
@@ -2476,8 +2424,8 @@ class _RecordingWaveState extends State<_RecordingWave>
                       begin: Alignment.bottomCenter,
                       end: Alignment.topCenter,
                       colors: [
-                        const Color(0xFF34C759).withValues(alpha: 0.15),
-                        const Color(0xFF34C759).withValues(alpha: 0.85),
+                        const Color(0xFFDFCCA7).withValues(alpha: 0.15),
+                        const Color(0xFFDFCCA7).withValues(alpha: 0.85),
                       ],
                     ),
                     borderRadius: BorderRadius.circular(3),
@@ -2492,43 +2440,110 @@ class _RecordingWaveState extends State<_RecordingWave>
   }
 }
 
-class _ActionChip extends StatelessWidget {
-  final String label;
-  final Color accent;
-  final VoidCallback onTap;
 
-  const _ActionChip({
-    required this.label,
-    required this.accent,
-    required this.onTap,
+
+
+// ── Ambient Ember Glow ─────────────────────────────────────────────────────
+/// Floating ember particles drifting slowly upward. Subtle, meditative, warm.
+
+class _EmberData {
+  final double startTime;
+  final double speed;
+  final double baseX;
+  final double driftAmount;
+  final double phase;
+  final double radius;
+
+  const _EmberData({
+    required this.startTime,
+    required this.speed,
+    required this.baseX,
+    required this.driftAmount,
+    required this.phase,
+    required this.radius,
   });
+
+  factory _EmberData.random(Random rng, int index) {
+    return _EmberData(
+      startTime: rng.nextDouble(),
+      speed: 0.04 + rng.nextDouble() * 0.08,
+      baseX: 0.05 + rng.nextDouble() * 0.90,
+      driftAmount: 0.01 + rng.nextDouble() * 0.03,
+      phase: rng.nextDouble() * 6.28,
+      radius: 1.2 + rng.nextDouble() * 1.6,
+    );
+  }
+}
+
+class _EmberPainter extends CustomPainter {
+  final List<_EmberData> embers;
+  final double time;
+
+  _EmberPainter({required this.embers, required this.time});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..style = PaintingStyle.fill;
+
+    for (final ember in embers) {
+      final progress = (ember.startTime + time * ember.speed) % 1.0;
+      final y = size.height * (1.0 - progress);
+      final xOffset = sin(progress * pi + ember.phase) * ember.driftAmount;
+      final x = size.width * (ember.baseX + xOffset);
+      final opacity = sin(progress * pi) * 0.18;
+      if (opacity < 0.005) continue;
+
+      paint.color = const Color(0xFFDFCCA7).withValues(alpha: opacity);
+      canvas.drawCircle(Offset(x, y), ember.radius, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_EmberPainter oldDelegate) =>
+      (time - oldDelegate.time).abs() > 0.001;
+}
+
+class _AmbientEmberGlow extends StatefulWidget {
+  const _AmbientEmberGlow();
+
+  @override
+  State<_AmbientEmberGlow> createState() => _AmbientEmberGlowState();
+}
+
+class _AmbientEmberGlowState extends State<_AmbientEmberGlow>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late List<_EmberData> _embers;
+
+  @override
+  void initState() {
+    super.initState();
+    final rng = Random(42);
+    _embers = List.generate(14, (i) => _EmberData.random(rng, i));
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 18),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: accent.withValues(alpha: 0.4),
-            ),
-            color: accent.withValues(alpha: 0.08),
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (_, child) {
+        return CustomPaint(
+          painter: _EmberPainter(
+            embers: _embers,
+            time: _controller.value,
           ),
-          child: Text(
-            label,
-            style: GoogleFonts.plusJakartaSans(
-              color: accent,
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
