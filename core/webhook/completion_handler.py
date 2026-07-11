@@ -227,6 +227,8 @@ Response: {{"matched_task_ids": [...]}}"""
                     text, chat_id, None,
                     chosen_org_id, chosen_proj_id,
                     receipt=receipt, enable_workflow=False,
+                    active_anchor=None,
+                    memory_id=memory_id,
                 )
                 ack = receipt or "✅ Logged as update (no matching task found)."
                 await _send(chat_id, f"{ack}{followup_msg}")

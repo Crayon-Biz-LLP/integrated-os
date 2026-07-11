@@ -24,21 +24,38 @@ def build_enrichment_prompt(text: str, anchor_hint: str) -> str:
     guards = inject_guards("enrichment")
     return f"""{guards}
 
-You are analyzing a captured note or update.
+You are analyzing a captured note or update to extract actionable signals.
+Do NOT filter or drop signals if there are multiple — extract EVERY detectable signal into the list.
+
 Capture: "{text}"{anchor_hint}
 
-Does this capture contain an EXPLICIT imperative asking to create a task? (e.g., "Remind me to...", "Add a task to...", "I need to..."). If so, set needs_task=true.
-If not, does it leave exactly ONE critical ambiguity that requires a targeted question (e.g., "Who else should know?", "Is this pricing or scope?", "Do you want me to add a task for X?")?
-If neither, or if there are too many actions, just acknowledge.
-
-If `needs_question` is true and you're asking for permission to take an action (e.g., "Do you want me to add a task for X?"), set `proposed_workflow` to "task_creation" or "calendar_event" and include the title in `proposed_payload`. If the question is purely for disambiguation (e.g., "Who else should know?"), set `proposed_workflow` to "awaiting_disambiguation_confirmation".
+Signal Types to Extract:
+1. 'calendar_event' — specific scheduled event, meeting, call, or discussion at a specific time/date. Must have a clear relative or absolute time.
+2. 'deadline' — hard deadline for a specific deliverable ("by Monday evening", "due Friday").
+3. 'task_imperative' — explicit directive to create a task ("I need to...", "Remind me to...").
+4. 'person_intro' — a new person is introduced with their organization or role.
+5. 'financial' — a quote, budget, cost, invoice, or opportunity amount.
+6. 'dependency' — multi-step planning or blockers ("discuss with X first").
 
 Return JSON:
 {{
-  "needs_task": boolean,
-  "suggested_task_title": "string or null",
-  "needs_question": boolean,
-  "suggested_question": "string or null",
-  "proposed_workflow": "string or null",
-  "proposed_payload": {{}}
+  "signals": [
+    {{
+      "type": "calendar_event|deadline|task_imperative|person_intro|financial|dependency",
+      "title": "Short title describing the signal",
+      "raw_date_text": "extracted date phrase (e.g. 'Monday')",
+      "raw_time_text": "extracted time phrase (e.g. '11 am')",
+      "duration_minutes": 30,
+      "proposed_title": "Title for calendar event or task",
+      "description": "Additional context",
+      "name": "Person name (for person_intro)",
+      "org": "Organization (for person_intro)",
+      "role": "Role (for person_intro)",
+      "task_title": "Task title (for deadline/task_imperative)",
+      "raw_deadline_text": "extracted deadline phrase (for deadline)",
+      "amount": "numeric amount or string (for financial)",
+      "depends_on": "what it depends on (for dependency)",
+      "confidence": 0.0-1.0
+    }}
+  ]
 }}"""

@@ -142,7 +142,99 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     elif decision == "confirm":
         reply_text = "Done."
         
-        if w_type == "calendar_event" or w_type == "task_creation" or w_type == "awaiting_actionable_confirmation":
+        if w_type == "calendar_event":
+            event_id = payload.get("google_event_id")
+            sentinel = payload.get("_calendar_sentinel")
+            if event_id:
+                reply_text = "Already created."
+            elif sentinel:
+                # RECOVERY PATH: Sentinel is true, but no event_id.
+                # Could be a duplicate webhook hit, OR Google succeeded but DB failed.
+                audit_log_sync("workflow", "INFO", f"Sentinel found but no event_id for workflow {w_id}. Attempting recovery.")
+                from core.services.google_service import get_calendar_event_by_idempotency_key
+                existing_event = get_calendar_event_by_idempotency_key(f"enrichment:{w_id}")
+                if existing_event:
+                    # Heal the DB
+                    supabase.table('conversation_workflows').update({
+                        "payload": {**payload, "google_event_id": existing_event["id"]}
+                    }).eq('id', w_id).execute()
+                    reply_text = "Already created (recovered from interruption)."
+                else:
+                    # Sentinel is true but event never made it to Google. We can safely retry creation.
+                    dt_iso = payload.get("datetime_iso")
+                    if dt_iso:
+                        try:
+                            from core.services.google_service import create_calendar_event
+                            event = create_calendar_event(
+                                title=payload.get("proposed_title", payload.get("title", "Meeting")),
+                                start_iso=dt_iso,
+                                duration_minutes=payload.get("duration_minutes", 30),
+                                description=payload.get("description", ""),
+                                idempotency_key=f"enrichment:{w_id}"
+                            )
+                            supabase.table('conversation_workflows').update({
+                                "payload": {**payload, "_calendar_sentinel": True, "google_event_id": event.get("id")}
+                            }).eq('id', w_id).execute()
+                            accumulate_action(ActionResult(action_type="calendar_create", status="executed", entity_id=event.get("id"), human_label=payload.get("title")))
+                            reply_text = "Done. Calendar event created (recovered)."
+                        except Exception as e:
+                            audit_log_sync("workflow", "ERROR", f"Recovery creation failed: {e}")
+                            reply_text = "Failed to create calendar event during recovery."
+                    else:
+                        reply_text = "Failed to create calendar event: missing datetime."
+            else:
+                dt_iso = payload.get("datetime_iso")
+                if dt_iso:
+                    # PRE-COMMIT SENTINEL
+                    try:
+                        payload["_calendar_sentinel"] = True
+                        supabase.table('conversation_workflows').update({
+                            "payload": payload
+                        }).eq('id', w_id).execute()
+                    except Exception as e:
+                        audit_log_sync("workflow", "ERROR", f"Failed to write sentinel for {w_id}: {e}")
+                        return False  # Abort before Google call
+                        
+                    try:
+                        from core.services.google_service import create_calendar_event
+                        event = create_calendar_event(
+                            title=payload.get("proposed_title", payload.get("title", "Meeting")),
+                            start_iso=dt_iso,
+                            duration_minutes=payload.get("duration_minutes", 30),
+                            description=payload.get("description", ""),
+                            idempotency_key=f"enrichment:{w_id}"
+                        )
+                        # POST-COMMIT EVENT ID
+                        supabase.table('conversation_workflows').update({
+                            "payload": {**payload, "google_event_id": event.get("id")}
+                        }).eq('id', w_id).execute()
+                        accumulate_action(ActionResult(action_type="calendar_create", status="executed", entity_id=event.get("id"), human_label=payload.get("title")))
+                        reply_text = "Done. Calendar event created."
+                    except Exception as e:
+                        accumulate_action(ActionResult(action_type="calendar_create", status="failed", evidence={"error": str(e)}))
+                        audit_log_sync("workflow", "ERROR", f"Failed to create calendar event for workflow {w_id}: {e}")
+                        reply_text = "Failed to create calendar event."
+                else:
+                    reply_text = "Failed to create calendar event: missing datetime."
+                    
+        elif w_type == "deadline":
+            # Just create a task for now or update an existing one if possible
+            try:
+                title = payload.get("task_title", "New Task")
+                deadline_iso = payload.get("deadline_iso")
+                res = supabase.table('tasks').insert({
+                    "title": title,
+                    "status": "todo",
+                    "priority": "important",
+                    "deadline": deadline_iso,
+                    "direction": "inbound"
+                }).execute()
+                task_id = res.data[0]['id'] if res.data else None
+                accumulate_action(ActionResult(action_type="task_create", status="executed" if task_id else "failed", entity_id=task_id, human_label=title))
+            except Exception as e:
+                accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))
+
+        elif w_type == "task_creation" or w_type == "awaiting_actionable_confirmation":
             try:
                 title = payload.get("title", "New Item")
                 res = supabase.table('tasks').insert({
@@ -153,14 +245,14 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                 }).execute()
                 task_id = res.data[0]['id'] if res.data else None
                 accumulate_action(ActionResult(
-                    action_type="calendar_create" if w_type == "calendar_event" else "task_create",
+                    action_type="task_create",
                     status="executed" if task_id else "failed",
                     entity_id=task_id,
                     human_label=title
                 ))
             except Exception as e:
                 accumulate_action(ActionResult(
-                    action_type="calendar_create" if w_type == "calendar_event" else "task_create",
+                    action_type="task_create",
                     status="failed",
                     evidence={"error": str(e)}
                 ))

@@ -3,7 +3,8 @@ import json
 import re
 import asyncio
 import hashlib
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time
+from zoneinfo import ZoneInfo
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import age_tag, resolve_expiry
 from core.pulse.context import context_provider
@@ -374,11 +375,71 @@ async def _enrich_memory_entities(text: str, memory_id: int, active_anchor: dict
         return None, None
 
 
+
+def _resolve_calendar_datetime(raw_date: str, raw_time: str, capture_dt: datetime) -> str | None:
+    if not raw_date or not raw_time:
+        return None
+        
+    date_lower = raw_date.lower().strip()
+    time_lower = raw_time.lower().strip()
+    
+    time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?', time_lower)
+    if not time_match:
+        return None
+        
+    hour = int(time_match.group(1))
+    minute = int(time_match.group(2) or 0)
+    meridiem = time_match.group(3)
+    
+    if meridiem and meridiem.startswith('p') and hour < 12:
+        hour += 12
+    elif meridiem and meridiem.startswith('a') and hour == 12:
+        hour = 0
+    elif not meridiem and 1 <= hour <= 6:
+        # Implicit PM for small hours 1-6 if no AM/PM (heuristics for scheduling)
+        hour += 12
+        
+    target_time = time(hour, minute)
+    
+    DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    target_date = None
+    
+    if date_lower in DAY_NAMES:
+        target_day = DAY_NAMES.index(date_lower)
+        today = capture_dt.weekday()
+        days_ahead = target_day - today
+        if days_ahead < 0:
+            days_ahead += 7
+        elif days_ahead == 0:
+            if target_time < capture_dt.time():
+                days_ahead += 7
+        target_date = capture_dt.date() + timedelta(days=days_ahead)
+    elif "today" in date_lower:
+        target_date = capture_dt.date()
+    elif "tomorrow" in date_lower:
+        target_date = capture_dt.date() + timedelta(days=1)
+    else:
+        from dateutil import parser
+        try:
+            parsed = parser.parse(date_lower, fuzzy=True, default=capture_dt)
+            target_date = parsed.date()
+            if target_date < capture_dt.date():
+                 target_date = target_date.replace(year=target_date.year + 1)
+        except Exception:
+            pass
+            
+    if not target_date:
+        return None
+        
+    resolved = datetime.combine(target_date, target_time, tzinfo=ZoneInfo('Asia/Kolkata'))
+    return resolved.isoformat()
+
 async def _run_post_capture_enrichment(
     text: str, chat_id: int, session_id: str,
     chosen_org_id: int | None, chosen_proj_id: int | None,
     receipt: str = None, enable_workflow: bool = True,
     active_anchor: dict = None,
+    memory_id: int = None,
 ) -> str:
     """Post-capture enrichment: ask LLM if the capture implies a task or has a critical ambiguity.
 
@@ -401,46 +462,135 @@ async def _run_post_capture_enrichment(
     )
     analysis = analysis_res.parse_json()
 
+    signals = analysis.get("signals", [])
     followup_msg = ""
-    if analysis.get("needs_task") and analysis.get("suggested_task_title"):
-        task_title = analysis["suggested_task_title"]
-        try:
-            res = supabase.table('tasks').insert({
-                "title": task_title,
-                "status": "todo",
-                "priority": "important",
-                "project_id": chosen_proj_id,
-                "organization_id": chosen_org_id,
-                "direction": "inbound"
-            }).execute()
-            task_id = res.data[0]['id'] if res.data else None
-            accumulate_action(ActionResult(action_type="task_create", status="executed" if task_id else "failed", entity_id=task_id, human_label=task_title))
-        except Exception as e:
-            accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))
-            audit_log_sync("webhook", "WARNING", f"Failed to auto-create follow-up task: {e}")
-    elif analysis.get("needs_question") and analysis.get("suggested_question"):
-        followup_msg = f"\n\n{analysis['suggested_question']}"
+    
+    # Backward compat
+    if not signals and analysis.get("needs_task") and analysis.get("suggested_task_title"):
+        signals.append({"type": "task_imperative", "task_title": analysis["suggested_task_title"], "confidence": 1.0})
+    if not signals and analysis.get("needs_question") and analysis.get("suggested_question"):
+        # Not perfect map but ensures we don't break old behavior entirely if LLM glitches
+        pass
 
-        if enable_workflow:
-            w_type = analysis.get("proposed_workflow") or "awaiting_disambiguation_confirmation"
-            payload = analysis.get("proposed_payload") or {}
+    if not signals:
+        return followup_msg
+
+    # Stage 2: Rank
+    PRIORITY = ["calendar_event", "deadline", "task_imperative", "person_intro", "financial", "dependency"]
+    
+    def get_priority(s):
+        t = s.get("type", "")
+        rank = PRIORITY.index(t) if t in PRIORITY else 99
+        conf = s.get("confidence", 0)
+        return (rank, -conf)
+        
+    signals.sort(key=get_priority)
+    
+    promoted = None
+    promoted = None
+    ist_tz = ZoneInfo('Asia/Kolkata')
+    
+    # Anchor to real capture time to survive delayed processing
+    capture_dt = datetime.now(ist_tz)
+    if memory_id:
+        try:
+            from core.services.db import get_supabase
+            mem_res = get_supabase().table('memories').select('created_at').eq('id', memory_id).execute()
+            if mem_res.data and mem_res.data[0].get('created_at'):
+                # Ensure it is timezone aware, then convert to IST
+                db_dt = datetime.fromisoformat(mem_res.data[0]['created_at'].replace('Z', '+00:00'))
+                capture_dt = db_dt.astimezone(ist_tz)
+        except Exception as e:
+            from core.lib.audit_logger import audit_log_sync
+            audit_log_sync("enrichment", "WARNING", f"Failed to fetch created_at for memory {memory_id}, using now: {e}")
+    
+    for s in signals:
+        if s.get("confidence", 0) < 0.5:
+            continue
             
-            if not analysis.get("proposed_workflow"):
-                audit_log_sync("workflow", "WARNING", f"Enrichment asked question without proposed_workflow. Defaulting to awaiting_disambiguation_confirmation. Q: {analysis.get('suggested_question', '')[:80]}...")
-            
+        if s.get("type") == "calendar_event":
+            dt_iso = _resolve_calendar_datetime(s.get("raw_date_text", ""), s.get("raw_time_text", ""), capture_dt)
+            if not dt_iso:
+                audit_log_sync("enrichment", "WARNING", f"Failed to parse datetime for calendar event: {s}")
+                continue # Demote to silent, try next
+            s["datetime_iso"] = dt_iso
+            promoted = s
+            break
+        elif s.get("type") in PRIORITY[:3]:
+            promoted = s
+            break
+
+    # Stage 3: Promote
+    if promoted and enable_workflow:
+        w_type = promoted["type"]
+        if w_type == "calendar_event":
+            q_title = promoted.get('proposed_title', promoted.get('title', 'Meeting'))
+            followup_msg = f"\n\n📅 I see a scheduled discussion: '{q_title}'. Want me to add it to your calendar?"
             try:
                 supabase.table('conversation_workflows').insert({
                     "chat_id": chat_id,
                     "thread_id": session_id,
-                    "workflow_type": w_type,
-                    "payload": payload,
+                    "workflow_type": "calendar_event",
+                    "payload": promoted,
                     "awaiting_user_input": True,
                     "status": "active",
                     "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
                 }).execute()
-                audit_log_sync("workflow", "INFO", f"Created {w_type} workflow for thread {session_id}")
             except Exception as e:
                 audit_log_sync("workflow", "ERROR", f"Failed to create workflow: {e}")
+                
+        elif w_type == "deadline":
+            q_title = promoted.get('task_title', 'task')
+            followup_msg = f"\n\n📅 I noted a deadline for '{q_title}'. Want me to track this task?"
+            try:
+                supabase.table('conversation_workflows').insert({
+                    "chat_id": chat_id,
+                    "thread_id": session_id,
+                    "workflow_type": "deadline",
+                    "payload": promoted,
+                    "awaiting_user_input": True,
+                    "status": "active",
+                    "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+                }).execute()
+            except Exception as e:
+                audit_log_sync("workflow", "ERROR", f"Failed to create deadline workflow: {e}")
+                
+        elif w_type == "task_imperative":
+            # Auto-create without asking
+            task_title = promoted.get("task_title") or promoted.get("title")
+            if task_title:
+                try:
+                    res = supabase.table('tasks').insert({
+                        "title": task_title,
+                        "status": "todo",
+                        "priority": "important",
+                        "project_id": chosen_proj_id,
+                        "organization_id": chosen_org_id,
+                        "direction": "inbound"
+                    }).execute()
+                    task_id = res.data[0]['id'] if res.data else None
+                    accumulate_action(ActionResult(action_type="task_create", status="executed" if task_id else "failed", entity_id=task_id, human_label=task_title))
+                except Exception as e:
+                    accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))
+                    audit_log_sync("webhook", "WARNING", f"Failed to auto-create follow-up task: {e}")
+
+    # Stage 4: Store silent
+    if memory_id:
+        try:
+            res = supabase.table('memories').select('metadata').eq('id', memory_id).execute()
+            existing_meta = res.data[0].get('metadata', {}) if res.data else {}
+            new_meta = {
+                **existing_meta,
+                "signals": signals,
+                "signals_version": existing_meta.get("signals_version", 0) + 1,
+                "promoted_signal_type": promoted["type"] if promoted else None,
+                "promotion_status": "promoted" if promoted else "none"
+            }
+            supabase.table('memories').update({"metadata": new_meta}).eq('id', memory_id).execute()
+        except Exception as e:
+            audit_log_sync("enrichment", "WARNING", f"Failed to update metadata with signals for memory {memory_id}: {e}")
+            
+    audit_log_sync("enrichment", "INFO", f"Memory {memory_id}: {len(signals)} signals, promoted={promoted['type'] if promoted else 'none'}, skipped={[s['type'] for s in signals if s != promoted]}")
 
     return followup_msg
 
@@ -545,6 +695,7 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
             chosen_org_id, chosen_proj_id,
             receipt=receipt, enable_workflow=True,
             active_anchor=active_anchor,
+            memory_id=memory_id,
         )
         ack = receipt or "✅ Update logged and entities extracted."
         _last_sent = f"{ack}{followup_msg}"
@@ -701,6 +852,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
                 chosen_org_id, chosen_proj_id,
                 receipt=receipt, enable_workflow=True,
                 active_anchor=active_anchor,
+                memory_id=memory_id,
             )
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Note enrichment failed: {e}")
