@@ -4,8 +4,43 @@ from zoneinfo import ZoneInfo
 from core.prompts.guards import inject_guards
 import json
 
+def _format_signal_title(sig: dict) -> str:
+    return sig.get("task_title") or sig.get("proposed_title") or sig.get("title") or "Untitled"
+
 def build_workflow_resume_prompt(w_type: str, payload: dict, text: str) -> str:
-    # This is an internal routing prompt, no action guard needed.
+    signals_list = payload.get("signals")
+    if signals_list and isinstance(signals_list, list):
+        items = "\n".join(
+            f"  {i+1}. [{s.get('type')}] {_format_signal_title(s)}"
+            for i, s in enumerate(signals_list)
+        )
+        return f"""You are evaluating a user's reply to a set of proposed actions.
+
+Proposed Actions:
+{items}
+
+User's Reply: "{text}"
+
+For each proposed action, decide:
+- "confirm" — user agrees to proceed with this specific action
+- "decline" — user explicitly rejects this specific action
+- "skip" — user didn't mention this one, leave it as-is
+
+The user may approve some items and reject others in the same reply.
+"If the user says "yes", "sure", "go ahead", or similar general approval — confirm ALL actions.
+If the user says "no", "nope", "nothing", "cancel", or similar general rejection — decline ALL actions.
+
+CRITICAL: Per-signal decisions MUST be correct. A user saying "yes for the meeting, no for the deadline" means confirm index 0, decline index 1. Do NOT guess or assume.
+
+Return JSON:
+{{
+  "decisions": [
+    {{ "index": 0, "decision": "confirm" | "decline" | "skip" }},
+    {{ "index": 1, "decision": "confirm" | "decline" | "skip" }}
+  ]
+}}"""
+
+    # Single-signal fallback (backward compat)
     return f"""You are evaluating a user's reply to a pending proposed action.
 Proposed Action Type: "{w_type}"
 Proposed Details: {json.dumps(payload)}

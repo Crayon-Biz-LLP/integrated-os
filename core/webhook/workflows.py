@@ -92,29 +92,50 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
             f"Workflow {w_id} bypassed: message entities don't match workflow payload — falling through")
         return False
 
-    # 1. Deterministic phrase matching (fast path)
-    decision = get_deterministic_decision(text)
-    
-    # 2. LLM Evaluation (slow path)
-    if not decision:
-        from core.prompts.workflow import build_workflow_resume_prompt
-        prompt = build_workflow_resume_prompt(w_type, payload, text)
-
-        try:
-            analysis_res = await generate_content_with_fallback(
-                prompt=prompt,
-                workload=WorkloadProfile.INTERACTIVE,
-                primary_model=CLASSIFICATION_MODEL,
-                config={'response_mime_type': 'application/json'}
-            )
-            decision = analysis_res.parse_json().get("decision", "unrelated")
-        except Exception as e:
-            audit_log_sync("workflow", "ERROR", f"LLM eval failed falling open: {e}")
-            return False
+    # 1+2: Decision determination
+    if w_type == "batch":
+        signals_list = payload.get("signals", [])
+        d = get_deterministic_decision(text)
+        if d == "confirm":
+            signal_decisions = [{"index": i, "decision": "confirm"} for i in range(len(signals_list))]
+        elif d == "decline":
+            signal_decisions = [{"index": i, "decision": "decline"} for i in range(len(signals_list))]
+        else:
+            from core.prompts.workflow import build_workflow_resume_prompt
+            prompt = build_workflow_resume_prompt(w_type, payload, text)
+            try:
+                analysis_res = await generate_content_with_fallback(
+                    prompt=prompt,
+                    workload=WorkloadProfile.INTERACTIVE,
+                    primary_model=CLASSIFICATION_MODEL,
+                    config={'response_mime_type': 'application/json'}
+                )
+                raw = analysis_res.parse_json()
+                signal_decisions = raw.get("decisions", [])
+            except Exception as e:
+                audit_log_sync("workflow", "ERROR", f"Batch LLM eval failed falling open: {e}")
+                return False
+        decision = "confirm" if any(sd.get("decision") == "confirm" for sd in signal_decisions) else "decline"
+    else:
+        # Single-signal workflow
+        decision = get_deterministic_decision(text)
+        if not decision:
+            from core.prompts.workflow import build_workflow_resume_prompt
+            prompt = build_workflow_resume_prompt(w_type, payload, text)
+            try:
+                analysis_res = await generate_content_with_fallback(
+                    prompt=prompt,
+                    workload=WorkloadProfile.INTERACTIVE,
+                    primary_model=CLASSIFICATION_MODEL,
+                    config={'response_mime_type': 'application/json'}
+                )
+                decision = analysis_res.parse_json().get("decision", "unrelated")
+            except Exception as e:
+                audit_log_sync("workflow", "ERROR", f"LLM eval failed falling open: {e}")
+                return False
             
     # 3. Handle Decision
     if decision == "unrelated":
-        # AVOID CANCELLING: Let the user answer later. Just fall open.
         audit_log_sync("workflow", "INFO", f"Workflow {w_id} bypassed due to unrelated reply. Remains active.")
         return False
         
@@ -143,9 +164,43 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         
     elif decision == "confirm":
         reply_text = "Done."
-        
-        if w_type in ("deadline", "calendar_event"):
-            title = payload.get("task_title", "New Task")
+
+        if w_type == "batch":
+            signals_list = payload.get("signals", [])
+            executed_titles = []
+            for sd in signal_decisions:
+                if sd.get("decision") != "confirm":
+                    continue
+                idx = sd.get("index")
+                if idx is None or idx < 0 or idx >= len(signals_list):
+                    continue
+                sig = signals_list[idx]
+                sig_type = sig.get("type")
+                title = sig.get("task_title") or sig.get("proposed_title") or sig.get("title", "New Task")
+                reminder_at = sig.get("reminder_at")
+
+                if sig_type in ("deadline", "calendar_event"):
+                    pi = ProcessInput(category="TASK", text=title, source="workflow", title=title, reminder_at=reminder_at)
+                    result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
+                elif sig_type == "task_imperative":
+                    pi = ProcessInput(category="TASK", text=title, source="workflow", title=title)
+                    result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
+                else:
+                    continue
+
+                task_id = result.get("task_id")
+                accumulate_action(ActionResult(
+                    action_type="task_create",
+                    status="executed" if task_id else "failed",
+                    entity_id=task_id, human_label=title))
+                executed_titles.append(title)
+
+            if executed_titles:
+                items = "\n".join(f"✅ {t}" for t in executed_titles)
+                reply_text = f"Done.\n\n{items}"
+
+        elif w_type in ("deadline", "calendar_event"):
+            title = payload.get("task_title") or payload.get("proposed_title") or payload.get("title", "New Task")
             reminder_at = payload.get("reminder_at")
             pi = ProcessInput(category="TASK", text=title, source="workflow", title=title, reminder_at=reminder_at)
             result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)

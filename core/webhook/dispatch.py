@@ -496,7 +496,6 @@ async def _run_post_capture_enrichment(
         
     signals.sort(key=get_priority)
     
-    promoted = None
     ist_tz = ZoneInfo('Asia/Kolkata')
     
     # Anchor to real capture time to survive delayed processing
@@ -506,82 +505,78 @@ async def _run_post_capture_enrichment(
             from core.services.db import get_supabase
             mem_res = get_supabase().table('memories').select('created_at').eq('id', memory_id).execute()
             if mem_res.data and mem_res.data[0].get('created_at'):
-                # Ensure it is timezone aware, then convert to IST
                 db_dt = datetime.fromisoformat(mem_res.data[0]['created_at'].replace('Z', '+00:00'))
                 capture_dt = db_dt.astimezone(ist_tz)
         except Exception as e:
             audit_log_sync("enrichment", "WARNING", f"Failed to fetch created_at for memory {memory_id}, using now: {e}")
-    
+
+    # Stage 2: Collect ALL actionable signals (no break after first)
+    actionable = []
     for s in signals:
         if s.get("confidence", 0) < 0.5:
             continue
-            
         if s.get("type") in ("calendar_event", "deadline"):
             if not s.get("reminder_at"):
                 dt_iso = _resolve_calendar_datetime(s.get("raw_date_text", ""), s.get("raw_time_text", ""), capture_dt)
                 if dt_iso:
                     s["reminder_at"] = dt_iso
-            promoted = s
-            break
-        elif s.get("type") in PRIORITY[:4]:
-            promoted = s
-            break
+            actionable.append(s)
+        elif s.get("type") == "task_imperative":
+            actionable.append(s)
 
-    # Stage 3: Promote
-    if promoted and enable_workflow:
-        w_type = promoted["type"]
-        if w_type in ("calendar_event", "deadline"):
-            q_title = promoted.get('task_title', 'task')
-            if w_type == "calendar_event":
-                followup_msg = f"\n\n📅 I noted an event for '{q_title}'. Want me to add this to calendar?"
+    # Stage 3: Promote as batch
+    if actionable and enable_workflow:
+        from core.services.db import get_supabase
+        supabase = get_supabase()
+        lines = []
+        for i, sig in enumerate(actionable):
+            st = sig.get("type")
+            title = sig.get("task_title") or sig.get("proposed_title") or sig.get("title") or "Untitled"
+            if st == "calendar_event":
+                line = f"  {i+1}. 📅 Event: {title}"
+                if sig.get("reminder_at"):
+                    line += f" — {sig['reminder_at']}"
+            elif st == "deadline":
+                line = f"  {i+1}. 📅 Deadline: {title}"
             else:
-                followup_msg = f"\n\n📅 I noted a deadline for '{q_title}'. Want me to track this task?"
-            try:
-                supabase.table('conversation_workflows').insert({
-                    "chat_id": chat_id,
-                    "thread_id": session_id,
-                    "workflow_type": w_type,
-                    "payload": promoted,
-                    "awaiting_user_input": True,
-                    "status": "active",
-                    "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
-                }).execute()
-            except Exception as e:
-                audit_log_sync("workflow", "ERROR", f"Failed to create {w_type} workflow: {e}")
-                
-        elif w_type == "task_imperative":
-            task_title = promoted.get("task_title") or promoted.get("title")
-            if task_title:
-                try:
-                    tasks_service = get_tasks_service()
-                    pi = ProcessInput(category="TASK", text=task_title, source="enrichment", title=task_title)
-                    result = await process_single_dump(text=task_title, metadata={"intent": "TASK"}, input=pi, tasks_service=tasks_service)
-                    task_id = result.get("task_id")
-                    accumulate_action(ActionResult(
-                        action_type="task_create",
-                        status="executed" if task_id else "failed",
-                        entity_id=task_id, human_label=task_title))
-                except Exception as e:
-                    accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": str(e)}))
-                    audit_log_sync("webhook", "WARNING", f"Failed to auto-create follow-up task: {e}")
+                line = f"  {i+1}. 📝 Task: {title}"
+            lines.append(line)
+        signals_summary = "\n".join(lines)
+        followup_msg = f"\n\n📋 I found these items:\n{signals_summary}\n\nWant me to handle them?"
 
-    # Stage 4: Store silent
+        try:
+            supabase.table('conversation_workflows').insert({
+                "chat_id": chat_id,
+                "thread_id": session_id,
+                "workflow_type": "batch",
+                "payload": {"signals": actionable},
+                "awaiting_user_input": True,
+                "status": "active",
+                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+            }).execute()
+        except Exception as e:
+            audit_log_sync("workflow", "ERROR", f"Failed to create batch workflow: {e}")
+
+    # Stage 4: Store signals in memory metadata
     if memory_id:
         try:
+            supabase = get_supabase()
             res = supabase.table('memories').select('metadata').eq('id', memory_id).execute()
             existing_meta = (res.data[0].get('metadata') or {}) if res.data else {}
             new_meta = {
                 **existing_meta,
                 "signals": signals,
                 "signals_version": existing_meta.get("signals_version", 0) + 1,
-                "promoted_signal_type": promoted["type"] if promoted else None,
-                "promotion_status": "promoted" if promoted else "none"
+                "promoted_signal_type": "batch" if actionable else None,
+                "promotion_status": "promoted" if actionable else "none",
+                "actionable_count": len(actionable)
             }
             supabase.table('memories').update({"metadata": new_meta}).eq('id', memory_id).execute()
         except Exception as e:
             audit_log_sync("enrichment", "WARNING", f"Failed to update metadata with signals for memory {memory_id}: {e}")
-            
-    audit_log_sync("enrichment", "INFO", f"Memory {memory_id}: {len(signals)} signals, promoted={promoted['type'] if promoted else 'none'}, skipped={[s['type'] for s in signals if s != promoted]}")
+
+    audit_log_sync("enrichment", "INFO",
+        f"Memory {memory_id}: {len(signals)} signals, {len(actionable)} actionable, skipped={[s['type'] for s in signals if s not in actionable]}")
 
     return followup_msg
 
