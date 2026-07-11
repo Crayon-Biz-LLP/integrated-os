@@ -218,8 +218,9 @@ async def get_briefing_route(request: Request):
         from api.briefing import build_briefing
         supabase = get_supabase()
         briefing = await build_briefing(supabase)
-        # Convert TypedDict to plain dict to avoid FastAPI serialization issues on Vercel
-        return dict(briefing)
+        # Deep-serialize through JSON to strip ALL nested TypedDict subclasses
+        # FastAPI's jsonable_encoder chokes on TypedDict subclasses on Vercel
+        return json.loads(json.dumps(briefing, default=str))
     except Exception as e:
         print(f"Briefing error: {e}")
         import traceback
@@ -340,7 +341,7 @@ async def send_message_route(request: Request):
         try:
             from api.briefing import build_briefing
             briefing = await build_briefing(get_supabase())
-            briefing_update = dict(briefing)
+            briefing_update = json.loads(json.dumps(briefing, default=str))
         except Exception as brief_err:
             print(f"Send-message briefing error (non-critical): {brief_err}")
             briefing_update = None
@@ -1589,7 +1590,7 @@ async def multimodal_input_route(request: Request):
         try:
             from api.briefing import build_briefing
             briefing = await build_briefing(get_supabase())
-            briefing_update = dict(briefing)
+            briefing_update = json.loads(json.dumps(briefing, default=str))
         except Exception:
             briefing_update = None
 
