@@ -167,7 +167,6 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
 
         if w_type == "batch":
             signals_list = payload.get("signals", [])
-            executed_titles = []
             for sd in signal_decisions:
                 if sd.get("decision") != "confirm":
                     continue
@@ -181,23 +180,10 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
 
                 if sig_type in ("deadline", "calendar_event"):
                     pi = ProcessInput(category="TASK", text=title, source="workflow", title=title, reminder_at=reminder_at)
-                    result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
+                    await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
                 elif sig_type == "task_imperative":
                     pi = ProcessInput(category="TASK", text=title, source="workflow", title=title)
-                    result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
-                else:
-                    continue
-
-                task_id = result.get("task_id")
-                accumulate_action(ActionResult(
-                    action_type="task_create",
-                    status="executed" if task_id else "failed",
-                    entity_id=task_id, human_label=title))
-                executed_titles.append(title)
-
-            if executed_titles:
-                items = "\n".join(f"✅ {t}" for t in executed_titles)
-                reply_text = f"Done.\n\n{items}"
+                    await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
 
         elif w_type in ("deadline", "calendar_event"):
             title = payload.get("task_title") or payload.get("proposed_title") or payload.get("title", "New Task")
