@@ -37,9 +37,9 @@ Signal Types to Extract:
 5. 'dependency' — multi-step planning or blockers ("discuss with X first").
 
 Return JSON:
-{
+{{
   "signals": [
-    {
+    {{
       "type": "deadline|task_imperative|person_intro|financial|dependency",
       "title": "Short title describing the signal",
       "raw_date_text": "extracted date phrase (for deadline)",

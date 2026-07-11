@@ -632,13 +632,15 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
             meta["flag_reason"] = source_info["flag_reason"]
             
         try:
-            res = supabase.table("pending_graph_nodes").insert({
+            insert_data = {
                 "label": label,
                 "type": typ,
                 "source_text": source_info.get("source_text", "") if source_info else "",
                 "status": status,
-                "metadata": meta
-            }).execute()
+            }
+            if meta:
+                insert_data["eval_context"] = meta
+            res = supabase.table("pending_graph_nodes").insert(insert_data).execute()
             if res.data:
                 return str(res.data[0]["id"])
         except Exception as e:

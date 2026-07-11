@@ -674,6 +674,13 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
         if session_id:
             log_exchange(session_id, 'bot', 'PROJECT_UPDATE', f"{_last_sent}", chat_id)
 
+    # ── Step 5: Mark dump as processed ──
+    if dump_id:
+        try:
+            supabase.table('raw_dumps').update({"status": "processed", "is_processed": True}).eq('id', dump_id).execute()
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING", f"Failed to mark dump {dump_id} as processed: {e}")
+
     return _last_sent
 
 
