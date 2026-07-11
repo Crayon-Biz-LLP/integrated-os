@@ -144,9 +144,9 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     elif decision == "confirm":
         reply_text = "Done."
         
-        if w_type == "deadline":
+        if w_type in ("deadline", "calendar_event"):
             title = payload.get("task_title", "New Task")
-            reminder_at = payload.get("reminder_at") or payload.get("deadline_iso")
+            reminder_at = payload.get("reminder_at")
             pi = ProcessInput(category="TASK", text=title, source="workflow", title=title, reminder_at=reminder_at)
             result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
             task_id = result.get("task_id")

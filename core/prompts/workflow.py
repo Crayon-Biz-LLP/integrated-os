@@ -1,3 +1,6 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from core.prompts.guards import inject_guards
 import json
 
@@ -22,7 +25,11 @@ Return JSON:
 
 def build_enrichment_prompt(text: str, anchor_hint: str) -> str:
     guards = inject_guards("enrichment")
+    ist_tz = ZoneInfo('Asia/Kolkata')
+    now_str = datetime.now(ist_tz).strftime("%A %Y-%m-%d %I:%M %p %Z")
     return f"""{guards}
+
+Current time: {now_str}
 
 You are analyzing a captured note or update to extract actionable signals.
 Do NOT filter or drop signals if there are multiple — extract EVERY detectable signal into the list.
@@ -30,28 +37,27 @@ Do NOT filter or drop signals if there are multiple — extract EVERY detectable
 Capture: "{text}"{anchor_hint}
 
 Signal Types to Extract:
-1. 'deadline' — hard deadline for a specific deliverable, or a scheduled event/meeting at a specific time ("by Monday", "due Friday", "Monday at 11am").
-2. 'task_imperative' — explicit directive to create a task ("I need to...", "Remind me to...").
-3. 'person_intro' — a new person is introduced with their organization or role.
-4. 'financial' — a quote, budget, cost, invoice, or opportunity amount.
-5. 'dependency' — multi-step planning or blockers ("discuss with X first").
+1. 'calendar_event' — a specific scheduled event, meeting, call, or discussion at a specific time. Include the resolved time in "reminder_at" as ISO 8601 (YYYY-MM-DDTHH:MM:SS+05:30).
+2. 'deadline' — hard deadline for a specific deliverable ("by Monday evening", "due Friday"). Include the resolved time in "reminder_at" as ISO 8601.
+3. 'task_imperative' — explicit directive to create a task ("I need to...", "Remind me to...").
+4. 'person_intro' — a new person is introduced with their organization or role.
+5. 'financial' — a quote, budget, cost, invoice, or opportunity amount.
+6. 'dependency' — multi-step planning or blockers ("discuss with X first").
 
 Return JSON:
 {{
   "signals": [
     {{
-      "type": "deadline|task_imperative|person_intro|financial|dependency",
+      "type": "calendar_event|deadline|task_imperative|person_intro|financial|dependency",
       "title": "Short title describing the signal",
-      "raw_date_text": "extracted date phrase (for deadline)",
-      "raw_time_text": "extracted time phrase (for deadline)",
+      "reminder_at": "ISO 8601 datetime (for calendar_event/deadline, use Current time above to resolve relative dates)",
       "duration_minutes": 30,
       "proposed_title": "Title for calendar event or task",
       "description": "Additional context",
       "name": "Person name (for person_intro)",
       "org": "Organization (for person_intro)",
       "role": "Role (for person_intro)",
-      "task_title": "Task title (for deadline/task_imperative)",
-      "raw_deadline_text": "extracted deadline phrase (for deadline)",
+      "task_title": "Task title (for calendar_event/deadline/task_imperative)",
       "amount": "numeric amount or string (for financial)",
       "depends_on": "what it depends on (for dependency)",
       "confidence": 0.0-1.0

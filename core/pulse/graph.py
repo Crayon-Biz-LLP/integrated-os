@@ -1252,7 +1252,7 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                 if hasattr(e, "code") and e.code == "23505":
                     audit_log_sync("entity_extraction", "INFO", "MENTIONS edge already exists")
                 else:
-                    audit_log_sync("entity_extraction", "ERROR", f"Failed to insert MENTIONS edge: {e}", exc_info=True)
+                    audit_log_sync("entity_extraction", "ERROR", f"Failed to insert MENTIONS edge: {e}")
 
     # 6. Create pending edges
     for e in edges:

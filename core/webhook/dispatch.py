@@ -486,7 +486,7 @@ async def _run_post_capture_enrichment(
         return followup_msg
 
     # Stage 2: Rank
-    PRIORITY = ["deadline", "task_imperative", "person_intro", "financial", "dependency"]
+    PRIORITY = ["calendar_event", "deadline", "task_imperative", "person_intro", "financial", "dependency"]
     
     def get_priority(s):
         t = s.get("type", "")
@@ -516,35 +516,38 @@ async def _run_post_capture_enrichment(
         if s.get("confidence", 0) < 0.5:
             continue
             
-        if s.get("type") == "deadline":
-            dt_iso = _resolve_calendar_datetime(s.get("raw_date_text", ""), s.get("raw_time_text", ""), capture_dt)
-            if dt_iso:
-                s["deadline_iso"] = dt_iso
-                s["reminder_at"] = dt_iso
+        if s.get("type") in ("calendar_event", "deadline"):
+            if not s.get("reminder_at"):
+                dt_iso = _resolve_calendar_datetime(s.get("raw_date_text", ""), s.get("raw_time_text", ""), capture_dt)
+                if dt_iso:
+                    s["reminder_at"] = dt_iso
             promoted = s
             break
-        elif s.get("type") in PRIORITY[:3]:
+        elif s.get("type") in PRIORITY[:4]:
             promoted = s
             break
 
     # Stage 3: Promote
     if promoted and enable_workflow:
         w_type = promoted["type"]
-        if w_type == "deadline":
+        if w_type in ("calendar_event", "deadline"):
             q_title = promoted.get('task_title', 'task')
-            followup_msg = f"\n\n📅 I noted a deadline for '{q_title}'. Want me to track this task?"
+            if w_type == "calendar_event":
+                followup_msg = f"\n\n📅 I noted an event for '{q_title}'. Want me to add this to calendar?"
+            else:
+                followup_msg = f"\n\n📅 I noted a deadline for '{q_title}'. Want me to track this task?"
             try:
                 supabase.table('conversation_workflows').insert({
                     "chat_id": chat_id,
                     "thread_id": session_id,
-                    "workflow_type": "deadline",
+                    "workflow_type": w_type,
                     "payload": promoted,
                     "awaiting_user_input": True,
                     "status": "active",
                     "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
                 }).execute()
             except Exception as e:
-                audit_log_sync("workflow", "ERROR", f"Failed to create deadline workflow: {e}")
+                audit_log_sync("workflow", "ERROR", f"Failed to create {w_type} workflow: {e}")
                 
         elif w_type == "task_imperative":
             task_title = promoted.get("task_title") or promoted.get("title")
@@ -566,7 +569,7 @@ async def _run_post_capture_enrichment(
     if memory_id:
         try:
             res = supabase.table('memories').select('metadata').eq('id', memory_id).execute()
-            existing_meta = res.data[0].get('metadata', {}) if res.data else {}
+            existing_meta = (res.data[0].get('metadata') or {}) if res.data else {}
             new_meta = {
                 **existing_meta,
                 "signals": signals,
