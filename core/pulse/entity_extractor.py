@@ -39,6 +39,12 @@ RULES:
 - COMMON MISTAKES TO AVOID:
   - Use canonical names for known entities: "Danny" (not "I", "me", "user"), "Mother" (not "Amma", "amma").
   - Do not extract pronouns or generic terms ("he", "the project", "loops") as nodes.
+- RELATIONAL EDGES (extract these first, from explicit statements):
+  - Person → Organization: extract WORKS_AT for employer affiliations. Examples: "Marcus from Ashraya" -> WORKS_AT, "talked to Binu at Equisoft" -> WORKS_AT
+  - Person → Project: extract WORKS_ON for work relationships
+  - Project → Organization: extract BELONGS_TO when a project is described as belonging to or being for an org
+- When a project's organization_id already exists in the database, use that FK over text inference. Text fills gaps, not overrides.
+- Skip edges where you cannot confidently determine the relationship type.
 - KNOWN ENTITIES (use exact spelling if referring to these): {known_str}
 - AVOID COMBINING ENTITIES: Never combine an organization and a project into a single label. E.g. "Armour Cyber AI Gateway" must be split into "Armour Cyber" (organization) and "AI Gateway" (project).
 - TYPE GUIDANCE:

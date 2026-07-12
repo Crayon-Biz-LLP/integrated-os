@@ -87,6 +87,60 @@ async def create_graph_node_with_db_record(
                 on_conflict="normalized_label"
             ).execute()
 
+            # Post-creation hook: Conservative org link
+            if source_text and source_text.strip() not in ("", "batch"):
+                # Find all known organizations
+                orgs_res = supabase.table('organizations').select('name').execute()
+                known_orgs = [o['name'].strip() for o in (orgs_res.data or []) if o.get('name')]
+                
+                source_lower = source_text.lower()
+                matched_org = None
+                match_reason = None
+                
+                # Check exact/alias/substring matches
+                # We need to respect stopword-like tokens and minimum length
+                from core.lib.graph_rules import NOISE_LABELS
+                
+                for org in known_orgs:
+                    if org.lower() in NOISE_LABELS:
+                        continue
+                    
+                    # 1. Exact match
+                    if f" {org.lower()} " in f" {source_lower} ":
+                        matched_org = org
+                        match_reason = "exact_match"
+                        break
+                        
+                    # 2. Alias match
+                    canonical = resolve_alias(org)
+                    if canonical != org and f" {canonical.lower()} " in f" {source_lower} ":
+                        matched_org = org
+                        match_reason = "alias_match"
+                        break
+                        
+                    # 3. Substring match (conservative)
+                    if len(org) >= 6 and org.lower() in source_lower:
+                        matched_org = org
+                        match_reason = "substring_match"
+                        break
+                        
+                if matched_org:
+                    from core.lib.graph_rules import insert_pending_edge
+                    res = insert_pending_edge(
+                        label,
+                        matched_org,
+                        "BELONGS_TO",
+                        {
+                            "source_text": f"post_creation_hook:{source_text[:50]}",
+                            "source_table": "graph_nodes",
+                            "source_type": "project",
+                            "target_type": "organization"
+                        }
+                    )
+                    audit_log_sync("pulse", "INFO", f"Post-creation hook: Proposed {label} BELONGS_TO {matched_org} (reason: {match_reason}, status: {res.get('status')})")
+                else:
+                    audit_log_sync("pulse", "INFO", f"Post-creation hook: No confident org match found for project {label} in source text.")
+
             await _ensure_danny_edge(label, node_type)
 
             inferred = []
@@ -96,7 +150,8 @@ async def create_graph_node_with_db_record(
             return {
                 "success": True, "action": "approved",
                 "message": f"Approved project '{label}'",
-                "inferred_edges": inferred
+                "inferred_edges": inferred,
+                "project_id": project_id
             }
 
         elif node_type == 'person':
@@ -121,7 +176,7 @@ async def create_graph_node_with_db_record(
                     raise Exception("Supabase insert returned no data for people")
                 people_id = result.data[0]['id']
 
-            supabase.table("graph_nodes").upsert(
+            upsert_res = supabase.table("graph_nodes").upsert(
                 {
                     "label": label,
                     "type": "person",
@@ -136,6 +191,55 @@ async def create_graph_node_with_db_record(
                 },
                 on_conflict="normalized_label"
             ).execute()
+
+            # Back-link: store graph_node_id on the people row
+            if upsert_res and upsert_res.data:
+                graph_node_id = upsert_res.data[0].get('id')
+                if graph_node_id:
+                    supabase.table('people').update({'graph_node_id': graph_node_id}).eq('id', people_id).execute()
+
+            # Post-creation hook: Conservative org link for person
+            if source_text and source_text.strip() not in ("", "batch"):
+                orgs_res = supabase.table('organizations').select('name').execute()
+                known_orgs = [o['name'].strip() for o in (orgs_res.data or []) if o.get('name')]
+                
+                source_lower = source_text.lower()
+                matched_org = None
+                match_reason = None
+                
+                from core.lib.graph_rules import NOISE_LABELS
+                
+                for org in known_orgs:
+                    if org.lower() in NOISE_LABELS:
+                        continue
+                    if f" {org.lower()} " in f" {source_lower} ":
+                        matched_org = org
+                        match_reason = "exact_match"
+                        break
+                    canonical = resolve_alias(org)
+                    if canonical != org and f" {canonical.lower()} " in f" {source_lower} ":
+                        matched_org = org
+                        match_reason = "alias_match"
+                        break
+                    if len(org) >= 6 and org.lower() in source_lower:
+                        matched_org = org
+                        match_reason = "substring_match"
+                        break
+                        
+                if matched_org:
+                    from core.lib.graph_rules import insert_pending_edge
+                    res = insert_pending_edge(
+                        label,
+                        matched_org,
+                        "WORKS_AT",
+                        {
+                            "source_text": f"post_creation_hook:{source_text[:50]}",
+                            "source_table": "graph_nodes",
+                            "source_type": "person",
+                            "target_type": "organization"
+                        }
+                    )
+                    audit_log_sync("pulse", "INFO", f"Post-creation hook: Proposed {label} WORKS_AT {matched_org} (reason: {match_reason}, status: {res.get('status')})")
 
             await _ensure_danny_edge(label, node_type)
 
@@ -179,6 +283,7 @@ async def create_graph_node_with_db_record(
                     "type": node_type,
                     "epistemic_status": "asserted",
                     "normalized_label": normalize_label(label),
+                    "db_record_id": str(org_db_id) if org_db_id else None,
                     "metadata": node_meta,
                 },
                 on_conflict="normalized_label"
@@ -1325,4 +1430,32 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                 "target_type": t_res.get("node_type", "concept")
             }
         )
+
+    # 7. Layer 2: Deterministic pattern backstop for NEW persons -> orgs
+    if source_content:
+        import re
+        new_persons = [raw for raw, res in resolved_labels.items() if res.get("route") == "pending" and res.get("node_type") == "person"]
+        orgs = [raw for raw, res in resolved_labels.items() if res.get("node_type") == "organization" and res.get("route") != "discard"]
+        
+        for p_raw in new_persons:
+            for o_raw in orgs:
+                p_c = resolved_labels[p_raw]["label"]
+                o_c = resolved_labels[o_raw]["label"]
+                
+                # Linguistic pattern match (e.g. "Marcus from Ashraya", "Binu at Equisoft")
+                p_esc = re.escape(p_raw)
+                o_esc = re.escape(o_raw)
+                pattern = rf'\b{p_esc}\b.{{0,30}}?\b(?:from|at|of|works?\s+(?:for|at))\b.{{0,30}}?\b{o_esc}\b'
+                
+                if re.search(pattern, source_content, re.IGNORECASE):
+                    insert_pending_edge(
+                        p_c, o_c, "WORKS_AT",
+                        {
+                            "source_text": f"pattern_backstop:{source_type}:{source_id}",
+                            "source_table": source_type,
+                            "source_type": "person",
+                            "target_type": "organization"
+                        }
+                    )
+                    audit_log_sync("entity_extraction", "INFO", f"Pattern backstop: Proposed {p_c} WORKS_AT {o_c}")
 

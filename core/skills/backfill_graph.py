@@ -294,7 +294,13 @@ Text: {cleaned_text}
 Rules:
 - Extract People (names), Organizations, Projects, Places, and Animals as nodes
 - Create edges for relationships between nodes
-- Use UPPERCASE relationship types: "DISCUSSED_WITH", "WORKS_AT", "WORKS_ON", "CLIENT_OF", "VENDOR_TO", "MEMBER_OF", "PARENT_OF", "SPOUSE_OF", "SIBLING_OF", "FAMILY_OF", "PET_OF", "FRIEND_OF", "MET_WITH", "INTRODUCED", "MENTORS", "SERVES_AT", "EVOKES", "RELATES_TO", "ASSOCIATED_WITH"
+- Use UPPERCASE relationship types: "DISCUSSED_WITH", "WORKS_AT", "WORKS_ON", "CLIENT_OF", "VENDOR_TO", "MEMBER_OF", "PARENT_OF", "SPOUSE_OF", "SIBLING_OF", "FAMILY_OF", "PET_OF", "FRIEND_OF", "MET_WITH", "INTRODUCED", "MENTORS", "SERVES_AT", "EVOKES", "RELATES_TO", "ASSOCIATED_WITH", "BELONGS_TO"
+- RELATIONAL EDGES (extract these first, from explicit statements):
+  - Person → Organization: extract WORKS_AT for employer relationships
+  - Person → Project: extract WORKS_ON for work relationships
+  - Project → Organization: extract BELONGS_TO when a project is described as belonging to or being for an org
+- When a project's organization_id already exists in the database, use that FK over text inference. Text fills gaps, not overrides.
+- Skip edges where you cannot confidently determine the relationship type.
 - For every extracted node and edge, include:
   "epistemic": "asserted" | "inferred" | "hypothetical"
   "justification": one sentence explaining why this was extracted
@@ -1450,7 +1456,7 @@ def sync_people_to_graph_nodes():
         if norm and norm in existing_labels:
             continue
         try:
-            supabase.table("graph_nodes").upsert({
+            upsert_res = supabase.table("graph_nodes").upsert({
                 "label": name,
                 "type": "person",
                 "epistemic_status": "inferred",
@@ -1461,6 +1467,12 @@ def sync_people_to_graph_nodes():
                     "people_id": pid
                 }
             }, on_conflict="normalized_label").execute()
+            
+            if upsert_res and upsert_res.data:
+                graph_node_id = upsert_res.data[0].get('id')
+                if graph_node_id:
+                    supabase.table('people').update({'graph_node_id': graph_node_id}).eq('id', pid).execute()
+                    
             existing_labels.add(name.lower())
             existing_db_ids.add(pid)
             created += 1
@@ -1468,6 +1480,65 @@ def sync_people_to_graph_nodes():
             audit_log_sync("backfill_graph", "WARNING", f"Failed to create graph node for person '{name}': {e}")
 
     print(f"Reverse sync complete: {created} graph nodes created, {skipped} skipped.")
+
+
+def sync_person_org_edges():
+    """Reverse sync: ensure every person with an organization_name has a pending WORKS_AT edge."""
+    print("\n🔗 Reverse sync: people.organization_name → WORKS_AT edges...")
+    all_people = _fetch_paginated("people", "id, name, organization_name, graph_node_id")
+    if not all_people:
+        return
+        
+    created = 0
+    for p in all_people:
+        org_name = (p.get("organization_name") or "").strip()
+        name = p.get("name", "").strip()
+        gn_id = p.get("graph_node_id")
+        
+        if not org_name or not name or not gn_id:
+            continue
+        if org_name.lower() == name.lower():
+            continue
+            
+        # Try to find org node
+        try:
+            org_res = supabase.table("graph_nodes").select("id, label").eq("type", "organization").ilike("label", org_name).execute()
+            if not org_res or not org_res.data:
+                continue
+            org_node = org_res.data[0]
+        except Exception:
+            continue
+            
+        org_gn_id = org_node["id"]
+        org_label = org_node["label"]
+        
+        # Check if edge already exists
+        try:
+            edge_exists = supabase.table("graph_edges").select("id").eq("source_node_id", gn_id).eq("target_node_id", org_gn_id).eq("relationship", "WORKS_AT").limit(1).execute()
+            if edge_exists and edge_exists.data:
+                continue
+                
+            pending_exists = supabase.table("pending_graph_edges").select("id").eq("source_node_id", gn_id).eq("target_node_id", org_gn_id).eq("relationship", "WORKS_AT").limit(1).execute()
+            if pending_exists and pending_exists.data:
+                continue
+                
+            supabase.table("pending_graph_edges").insert({
+                "source_label": name,
+                "target_label": org_label,
+                "relationship": "WORKS_AT",
+                "source_node_id": gn_id,
+                "target_node_id": org_gn_id,
+                "source_type": "person",
+                "target_type": "organization",
+                "status": "pending",
+                "confidence": 1.0,
+                "source_text": "people.organization_name sync"
+            }).execute()
+            created += 1
+        except Exception as e:
+            audit_log_sync("backfill_graph", "WARNING", f"Failed to create WORKS_AT edge for {name} -> {org_label}: {e}")
+            
+    print(f"Sync complete: {created} pending WORKS_AT edges created.")
 
 
 def sync_organizations_to_graph_nodes():
@@ -1536,7 +1607,7 @@ def sync_organizations_to_graph_nodes():
                 continue
 
         try:
-            supabase.table("graph_nodes").upsert({
+            upsert_res = supabase.table("graph_nodes").upsert({
                 "label": name,
                 "type": "organization",
                 "epistemic_status": "inferred",
@@ -1547,6 +1618,12 @@ def sync_organizations_to_graph_nodes():
                     "organization_id": oid
                 }
             }, on_conflict="normalized_label").execute()
+            
+            if upsert_res and upsert_res.data:
+                graph_node_id = upsert_res.data[0].get('id')
+                if graph_node_id:
+                    supabase.table('organizations').update({'graph_node_id': graph_node_id}).eq('id', oid).execute()
+
             existing_db_ids.add(oid)
             created += 1
         except Exception as e:
@@ -1748,6 +1825,7 @@ if __name__ == "__main__":
     sync_people_to_graph_nodes()
     
     # Run table→graph sync (reverse direction)
+    sync_person_org_edges()
     sync_organizations_to_graph_nodes()
     sync_projects_to_graph_nodes()
     

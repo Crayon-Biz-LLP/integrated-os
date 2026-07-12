@@ -23,9 +23,11 @@ VALID_EDGE_MATRIX = {
     ('task',         'project'):      ['BELONGS_TO'],
     ('task',         'task'):         ['BLOCKS', 'DEPENDS_ON'],
     ('task',         'person'):       ['INVOLVES', 'RELATES_TO', 'ASSIGNED_TO'],
+    ('task',         'organization'): ['BELONGS_TO'],
     ('event',        'project'):      ['PART_OF'],
     ('event',        'person'):       ['INVOLVES'],
     ('project',      'project'):      ['DEPENDS_ON'],
+    ('project',      'organization'): ['BELONGS_TO'],
     ('memory',       'person'):       ['MENTIONS'],
     ('memory',       'project'):      ['MENTIONS'],
     ('memory',       'organization'): ['MENTIONS'],
@@ -60,6 +62,9 @@ RELATIONSHIP_ALIASES = {
         "ATTENDS": "ATTENDED",
     },
     ("task", "project"): {
+        "PART_OF": "BELONGS_TO",
+    },
+    ("project", "organization"): {
         "PART_OF": "BELONGS_TO",
     },
 }
@@ -662,6 +667,11 @@ def insert_pending_edge(source_label: str, target_label: str, relationship: str,
     # Validation
     s_type = source_info.get("source_type", "concept")
     t_type = source_info.get("target_type", "concept")
+    
+    if rel == 'OWNS' and source_label != 'Danny':
+        audit_log_sync("graph_pipeline", "INFO", f"Auto-rejected {source_label} --[OWNS]--> {target_label}: OWNS is query-only, use BELONGS_TO")
+        return {"status": "rejected", "reason": "OWNS is query-only, use BELONGS_TO (target -> source) instead"}
+
     vr = validate_edge(s_type, rel, t_type)
     if vr["action"] == "auto_reject":
         audit_log_sync("graph_pipeline", "INFO", f"Auto-rejected {source_label} --[{rel}]--> {target_label}: {vr['reason']}")
@@ -672,6 +682,22 @@ def insert_pending_edge(source_label: str, target_label: str, relationship: str,
     s_lower = source_label.lower().strip()
     t_lower = target_label.lower().strip()
     r_lower = rel.lower().strip()
+
+    # Dedupe against live graph
+    try:
+        s_res = resolve_candidate(source_label)
+        t_res = resolve_candidate(target_label)
+        if s_res.get("node_id") and t_res.get("node_id"):
+            existing_graph = maybe_single_safe(
+                supabase.table("graph_edges").select("id")
+                .eq("source_node_id", s_res["node_id"])
+                .eq("target_node_id", t_res["node_id"])
+                .ilike("relationship", r_lower)
+            )
+            if existing_graph and existing_graph.data:
+                return {"status": "deduped", "reason": "already_in_graph"}
+    except Exception as e:
+        audit_log_sync("graph_pipeline", "WARNING", f"Live graph dedup check failed: {e}")
     
     try:
         existing = supabase.table("pending_graph_edges").select("id, source_text").ilike("source_label", s_lower).ilike("target_label", t_lower).ilike("relationship", r_lower).execute()

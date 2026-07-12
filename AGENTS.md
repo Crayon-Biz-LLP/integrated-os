@@ -77,6 +77,25 @@ When proposing fixes, making architectural changes, or summarizing completed wor
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
 
+## Session Anchored Summary (Jul 12, 2026 — Part 22: Graph Cross-Domain Linkages & Multi-Layered Edge Extraction)
+
+### Progress Done This Session
+- **Bidirectional FK Audit & Backfill**: Mapped existing domain tables to graph nodes. 41 legacy `people` rows exact-matched to graph nodes via one-time SQL UPDATE. Identified that `projects`, `tasks`, and `memories` intentionally lack `graph_node_id` columns (using 1-way `db_record_id` instead), which is acceptable for graph visualization.
+- **Structural Edge Auto-Approval**: Auto-approved 28 pending structural edges via Python pipeline. The `insert_pending_edge` validator successfully auto-rejected 7 invalid `project→project` edges that were attempting to map to `project`-type routing tags (e.g., "Ashraya", "Solvstrat") instead of true organizations.
+- **4-Layer Edge Extraction Pipeline**: Solved the massive under-representation of `WORKS_AT` edges (only 21 existed for 200+ people) with defense in depth:
+  - **Layer 1 (Prompt)**: Added informal affiliation examples to `entity_extractor.py` ("Marcus from Ashraya" → WORKS_AT).
+  - **Layer 2 (Pattern Backstop)**: Added linguistic regex pattern matching to `insert_extracted_entities` for newly extracted person+org pairs, bypassing the LLM's probabilistic misses without generating pure co-occurrence noise.
+  - **Layer 3 (Post-Creation Scan)**: Ported the project deterministic org-scanner to the person approval branch in `create_graph_node_with_db_record`.
+  - **Layer 4 (Periodic Sync)**: Added `sync_person_org_edges` to `backfill_graph.py` to continuously sweep the curated `people.organization_name` column and push pending `WORKS_AT` edges.
+- **Schema Hardening**: Explicitly mapped `(project, organization)` and `(task, organization)` to `BELONGS_TO` in `VALID_EDGE_MATRIX`. Removed `OWNS` from the writable matrix entirely.
+
+### Key Files (Phase 22)
+- `core/lib/graph_rules.py` — `VALID_EDGE_MATRIX` schema updates
+- `core/pulse/entity_extractor.py` — Prompt hardening for implicit affiliations
+- `core/pulse/graph.py` — Layer 2 regex backstop in `insert_extracted_entities`, Layer 3 post-creation hook for persons
+- `core/skills/backfill_graph.py` — Layer 4 periodic sync `sync_person_org_edges`
+- `scripts/backfill_connect_existing_data.py` — Execution script for FK linkage and structural edge approval
+
 ## Session Anchored Summary (Jul 6, 2026 — Part 18: WhatsApp Conversation Batching)
 
 ### Progress Done This Session
