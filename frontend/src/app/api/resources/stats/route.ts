@@ -11,6 +11,7 @@ export async function GET() {
     const { data: allResources, error } = await supabase
       .from("resources")
       .select("id, cluster_id, created_at")
+      .eq("is_current", true)
       .limit(500);
 
     if (error) {

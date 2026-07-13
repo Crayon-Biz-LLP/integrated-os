@@ -159,7 +159,7 @@ def parse_timestamp(ts: str) -> str:
 def ensure_node(label: str) -> str:
     node_type = "person" if label in ["Danny", "Sunju", "Jaden", "Jeffery", "The Boys"] else "organization" if label in ["Solvstrat", "Crayon", "Church"] else "concept"
     existing = with_retry(
-        lambda: supabase.table("graph_nodes").select("id, canonical_id").ilike("label", label).execute(),
+        lambda: supabase.table("graph_nodes").select("id, canonical_id").ilike("label", label).eq('is_current', True).execute(),
         label="Node select"
     )
     if existing.data:

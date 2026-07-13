@@ -340,6 +340,7 @@ async def run_batch_sweep_v2():
             .select('id, name, organization_id') \
             .eq('is_active', True) \
             .eq('status', 'active') \
+            .eq('is_current', True) \
             .execute()
             
         orgs_res = supabase.table('organizations').select('id, name, description').eq('is_active', True).execute()

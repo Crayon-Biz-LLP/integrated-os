@@ -13,6 +13,7 @@ export async function GET(req: NextRequest) {
   const { data: people, error: peopleError } = await supabase
     .from("people")
     .select("id, name, role, strategic_weight, created_at")
+    .eq("is_current", true)
     .order("created_at", { ascending: false })
     .limit(100);
 

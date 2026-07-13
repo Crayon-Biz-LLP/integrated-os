@@ -18,6 +18,7 @@ export async function GET() {
   const { data: projects, error } = await supabase
     .from("projects")
     .select("id, status, is_active")
+    .eq("is_current", true)
     .limit(500);
 
   if (error) {

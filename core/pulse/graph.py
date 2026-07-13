@@ -55,7 +55,7 @@ async def create_graph_node_with_db_record(
                         "merge_candidate_id": top["id"]}
 
         if node_type == 'project':
-            existing = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', label))
+            existing = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', label).eq('is_current', True))
             if existing and existing.data:
                 project_id = existing.data['id']
                 audit_log_sync("pulse", "INFO", f"Reusing existing project '{label}' (ID {project_id})")
@@ -156,7 +156,7 @@ async def create_graph_node_with_db_record(
 
         elif node_type == 'person':
             norm_name = normalize_person_name(label)
-            existing_resp = supabase.table('people').select('id, name').execute()
+            existing_resp = supabase.table('people').select('id, name').eq('is_current', True).execute()
             existing_people = existing_resp.data if existing_resp else []
             matched_id = None
             for p in existing_people:
@@ -317,7 +317,7 @@ async def _ensure_danny_edge(label: str, node_type: str):
     if not rel:
         return
     try:
-        danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny"))
+        danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny").eq('is_current', True))
         if not danny_res or not danny_res.data:
             return
         danny_id = danny_res.data["id"]
@@ -325,7 +325,7 @@ async def _ensure_danny_edge(label: str, node_type: str):
         label = normalize_label_display(label)
         # Resolve through aliases table (e.g. Sunju → Sunjula Daniel)
         label = resolve_alias(label)
-        target_res = maybe_single_safe(supabase.table("graph_nodes").select("id, canonical_id").ilike("label", label))
+        target_res = maybe_single_safe(supabase.table("graph_nodes").select("id, canonical_id").ilike("label", label).eq('is_current', True))
         if not target_res or not target_res.data:
             return
         target_id = target_res.data["id"]
@@ -338,6 +338,7 @@ async def _ensure_danny_edge(label: str, node_type: str):
             .eq("source_node_id", danny_id)
             .eq("target_node_id", target_id)
             .eq("relationship", rel)
+            .eq('is_current', True)
         )
 
         if not existing or not existing.data:
@@ -362,7 +363,7 @@ def _extract_mentioned_labels(source_text: str, known_labels: list[str]) -> list
 async def _infer_additional_edges(label: str, node_type: str, source_text: str) -> list[str]:
     """Call Gemini to extract additional relationships from the source text involving the new node or mentioned entities."""
     try:
-        nodes_res = supabase.table("graph_nodes").select("label").execute()
+        nodes_res = supabase.table("graph_nodes").select("label").eq('is_current', True).execute()
         if not nodes_res or not nodes_res.data:
             return []
             
@@ -615,22 +616,22 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             rel = (new_rel or pe['relationship']).upper()
 
             from core.lib.graph_rules import validate_edge
-            s_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type, label').ilike('label', s_label))
-            t_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type, label').ilike('label', t_label))
+            s_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type, label').ilike('label', s_label).eq('is_current', True))
+            t_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type, label').ilike('label', t_label).eq('is_current', True))
 
             s_data = getattr(s_node_res, 'data', None)
             t_data = getattr(t_node_res, 'data', None)
 
             # FUZZY MATCH FALLBACK for person/org (if exact match fails)
             if not s_data and pe.get('source_type') in ('person', 'organization') and len(s_label) > 3:
-                fuzzy_res = supabase.table('graph_nodes').select('id, type, label').eq('type', pe['source_type']).ilike('label', f"{s_label} %").execute()
+                fuzzy_res = supabase.table('graph_nodes').select('id, type, label').eq('type', pe['source_type']).ilike('label', f"{s_label} %").eq('is_current', True).execute()
                 if fuzzy_res and fuzzy_res.data and len(fuzzy_res.data) == 1:
                     s_data = fuzzy_res.data[0]
                     s_label = s_data['label']
                     audit_log_sync("pulse", "INFO", f"Fuzzy matched source '{pe['source_label']}' to '{s_label}'")
                     
             if not t_data and pe.get('target_type') in ('person', 'organization') and len(t_label) > 3:
-                fuzzy_res = supabase.table('graph_nodes').select('id, type, label').eq('type', pe['target_type']).ilike('label', f"{t_label} %").execute()
+                fuzzy_res = supabase.table('graph_nodes').select('id, type, label').eq('type', pe['target_type']).ilike('label', f"{t_label} %").eq('is_current', True).execute()
                 if fuzzy_res and fuzzy_res.data and len(fuzzy_res.data) == 1:
                     t_data = fuzzy_res.data[0]
                     t_label = t_data['label']
@@ -765,7 +766,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
         if people_cache is not None:
             all_people = people_cache
         else:
-            all_people = supabase.table('people').select('id, name').execute().data or []
+            all_people = supabase.table('people').select('id, name').eq('is_current', True).execute().data or []
 
         for person in (all_people or []):
             if person['name'].lower() in search_text:
@@ -803,7 +804,7 @@ async def hybrid_search_graph(query: str, node_id: str = None) -> str:
             nodes_res = supabase.table('graph_nodes').select('id, label').eq('id', node_id).limit(1).execute()
             
         if not nodes_res or not nodes_res.data:
-            nodes_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{query}%').limit(1).execute()
+            nodes_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{query}%').eq('is_current', True).limit(1).execute()
 
         if not nodes_res.data:
             try:
@@ -824,7 +825,7 @@ async def hybrid_search_graph(query: str, node_id: str = None) -> str:
         primary_node = nodes_res.data[0]
         primary_id = primary_node['id']
 
-        edges_res = supabase.table('graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').execute()
+        edges_res = supabase.table('graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').eq('is_current', True).execute()
 
         if not edges_res.data:
             return ""
@@ -906,6 +907,7 @@ async def check_task_dependencies(active_tasks: list) -> str:
                 .select('id') \
                 .eq('type', 'task') \
                 .filter('metadata->>task_id', 'eq', str(task_id)) \
+                .eq('is_current', True) \
                 .maybe_single() \
                 .execute()
 
@@ -918,6 +920,7 @@ async def check_task_dependencies(active_tasks: list) -> str:
             dep_edges = supabase.table('graph_edges') \
                 .select('source_node_id, target_node_id, relationship, metadata') \
                 .eq('source_node_id', task_node_id) \
+                .eq('is_current', True) \
                 .execute()
 
             for edge in (dep_edges.data or []):
@@ -995,6 +998,7 @@ async def analyze_communication_patterns(people: list) -> str:
                 .select('id') \
                 .eq('type', 'person') \
                 .filter('metadata->>people_id', 'eq', str(person_id)) \
+                .eq('is_current', True) \
                 .maybe_single() \
                 .execute()
 
@@ -1008,6 +1012,7 @@ async def analyze_communication_patterns(people: list) -> str:
                 .select('source_node_id, target_node_id') \
                 .eq('relationship', 'INVOLVES') \
                 .or_(f'source_node_id.eq.{person_node_id},target_node_id.eq.{person_node_id}') \
+                .eq('is_current', True) \
                 .execute()
 
             task_count = len(involves_edges.data or [])
@@ -1088,6 +1093,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         person_nodes = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'person') \
+            .eq('is_current', True) \
             .execute()
 
         # Build node_id → person_name map
@@ -1112,6 +1118,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         task_nodes = supabase.table('graph_nodes') \
             .select('id, metadata') \
             .eq('type', 'task') \
+            .eq('is_current', True) \
             .execute()
 
         task_node_ids = []
@@ -1140,6 +1147,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         edges_res = supabase.table('graph_edges') \
             .select('source_node_id, target_node_id, relationship') \
             .in_('relationship', ['INVOLVES', 'MANAGES', 'ASSIGNED_TO']) \
+            .eq('is_current', True) \
             .execute()
 
         context_lines = []
@@ -1190,6 +1198,7 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
             .select('id') \
             .eq('type', source_type) \
             .filter(f'metadata->>{source_type}_id', 'eq', str(source_id)) \
+            .eq('is_current', True) \
             .maybe_single() \
             .execute()
             
@@ -1412,6 +1421,7 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                     .eq("source_node_id", str(s_id))\
                     .eq("target_node_id", str(t_id))\
                     .eq("relationship", crel)\
+                    .eq('is_current', True)\
                     .limit(1).execute()
                 if permanent_edge_res and permanent_edge_res.data:
                     # Silently skip creating a pending edge since we already know this permanently

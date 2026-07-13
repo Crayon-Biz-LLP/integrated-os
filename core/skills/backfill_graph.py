@@ -365,7 +365,7 @@ Rules:
 
 def is_real_project(label: str) -> bool:
     try:
-        result = supabase.table('projects').select('id').ilike('name', label.strip()).execute()
+        result = supabase.table('projects').select('id').ilike('name', label.strip()).eq('is_current', True).execute()
         return len(result.data) > 0
     except Exception:
         return False
@@ -513,7 +513,7 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
 
 
 def _build_label_type_cache() -> dict:
-    result = supabase.table("graph_nodes").select("label, type").execute()
+    result = supabase.table("graph_nodes").select("label, type").eq('is_current', True).execute()
     cache = {}
     for n in result.data or []:
         cache[n["label"].lower().strip()] = n["type"]
@@ -854,7 +854,7 @@ def backfill_emotion_edges():
         # We need to do this via Postgres function or multiple calls since Supabase REST API doesn't support complex cross-joins.
         # Alternatively, we can fetch all emotional_state nodes, fetch Danny's ID, and insert edges.
         
-        danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", "Danny").eq("type", "person"))
+        danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", "Danny").eq("type", "person").eq('is_current', True))
         if not danny_res or not danny_res.data:
             print("Danny node not found, skipping emotion edge backfill.")
             return
@@ -869,7 +869,7 @@ def backfill_emotion_edges():
         page = 0
         limit = 1000
         while True:
-            res = supabase.table("graph_edges").select("target_node_id").eq("source_node_id", danny_id).eq("relationship", "FEELS").range(page*limit, (page+1)*limit - 1).execute()
+            res = supabase.table("graph_edges").select("target_node_id").eq("source_node_id", danny_id).eq("relationship", "FEELS").eq('is_current', True).range(page*limit, (page+1)*limit - 1).execute()
             data = res.data or []
             feels_edges.extend([e["target_node_id"] for e in data])
             if len(data) < limit:
@@ -966,7 +966,7 @@ def backfill_orphaned_tasks():
                 "normalized_label": normalize_label(task_title),
                 "metadata": {"source": "tasks_table", "task_id": task_id, **meta}
             }, on_conflict="normalized_label").execute()
-            node_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", task_title))
+            node_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", task_title).eq('is_current', True))
             if not node_res or not node_res.data:
                 audit_log_sync("backfill_graph", "WARNING", f"⚠️ Failed to get node for task {task_id}")
                 continue
@@ -1158,7 +1158,7 @@ def backfill_orphaned_node_edges():
     print("\n🕸️  Node Edge Backfill: Checking for isolated/semi-isolated nodes...")
     
     # Get Danny's node ID
-    danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny"))
+    danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny").eq('is_current', True))
     if not danny_res or not danny_res.data:
         print("Could not find Danny node.")
         return
@@ -1206,7 +1206,7 @@ def backfill_orphaned_node_edges():
     # Pre-fetch known person labels from people table for misclassification correction
     known_people = set()
     try:
-        pp = supabase.table("people").select("name").execute()
+        pp = supabase.table("people").select("name").eq('is_current', True).execute()
         for r in (pp.data or []):
             known_people.add(r["name"].lower().strip())
     except Exception:
@@ -1502,7 +1502,7 @@ def sync_person_org_edges():
             
         # Try to find org node
         try:
-            org_res = supabase.table("graph_nodes").select("id, label").eq("type", "organization").ilike("label", org_name).execute()
+            org_res = supabase.table("graph_nodes").select("id, label").eq("type", "organization").ilike("label", org_name).eq('is_current', True).execute()
             if not org_res or not org_res.data:
                 continue
             org_node = org_res.data[0]
@@ -1514,7 +1514,7 @@ def sync_person_org_edges():
         
         # Check if edge already exists
         try:
-            edge_exists = supabase.table("graph_edges").select("id").eq("source_node_id", gn_id).eq("target_node_id", org_gn_id).eq("relationship", "WORKS_AT").limit(1).execute()
+            edge_exists = supabase.table("graph_edges").select("id").eq("source_node_id", gn_id).eq("target_node_id", org_gn_id).eq("relationship", "WORKS_AT").eq('is_current', True).limit(1).execute()
             if edge_exists and edge_exists.data:
                 continue
                 
@@ -1834,14 +1834,14 @@ if __name__ == "__main__":
     sync_projects_to_graph_nodes()
     
     # Verification
-    org_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "organization").not_.is_("db_record_id", "null").execute()
+    org_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "organization").not_.is_("db_record_id", "null").eq('is_current', True).execute()
     expected_orgs = supabase.table("organizations").select("*", count="exact").execute()
     actual_org_count = getattr(org_count, "count", 0) if hasattr(org_count, "count") else len(org_count.data or []) if org_count else 0
     expected_org_count = getattr(expected_orgs, "count", 0) if hasattr(expected_orgs, "count") else len(expected_orgs.data or [])
     if actual_org_count < expected_org_count:
         print(f"⚠️  Org sync mismatch: {actual_org_count}/{expected_org_count} graph nodes created — some orgs missing")
     
-    proj_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "project").not_.is_("db_record_id", "null").execute()
+    proj_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "project").not_.is_("db_record_id", "null").eq('is_current', True).execute()
     expected_projs = supabase.table("projects").select("*", count="exact").execute()
     actual_proj_count = getattr(proj_count, "count", 0) if hasattr(proj_count, "count") else len(proj_count.data or []) if proj_count else 0
     expected_proj_count = getattr(expected_projs, "count", 0) if hasattr(expected_projs, "count") else len(expected_projs.data or [])

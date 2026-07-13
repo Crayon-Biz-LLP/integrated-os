@@ -11,7 +11,7 @@ from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import compute_expires_at
 from core.webhook.utils import supabase
 from core.retrieval.pipeline import schedule_index_memory
-from core.services.db import version_memory_for_update, maybe_single_safe
+from core.services.db import maybe_single_safe
 from core.decisions import record_decision
 from datetime import datetime, timezone
 from core.actions import ActionResult, accumulate_action
@@ -182,16 +182,15 @@ Response: {{"matched_task_ids": [...]}}"""
                 }
             }).eq("id", dump_id).execute()
             
-            # 2. Update memory if it was created (with versioning)
+            # 2. Update memory if it was created
             if memory_id:
-                update_data = version_memory_for_update(memory_id, {
+                supabase.table("memories").update({
                     "metadata": {
                         "intent": "PROJECT_UPDATE",
                         "entity": entity,
                         "degraded_from_completion": True
                     }
-                })
-                supabase.table("memories").update(update_data).eq("id", memory_id).execute()
+                }).eq("id", memory_id).execute()
                 
                 # 3. Extract and link entities
                 try:
@@ -216,7 +215,6 @@ Response: {{"matched_task_ids": [...]}}"""
                             update_data['organization_id'] = chosen_org_id
                         if chosen_proj_id:
                             update_data['project_id'] = chosen_proj_id
-                        update_data = version_memory_for_update(memory_id, update_data)
                         supabase.table('memories').update(update_data).eq('id', memory_id).execute()
                 except Exception as e:
                     audit_log_sync("completion", "WARNING", f"Entity extraction failed for degraded update: {e}")

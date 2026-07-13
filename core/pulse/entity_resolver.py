@@ -35,7 +35,7 @@ def resolve_entities_from_text(text: str) -> Tuple[Optional[str], Optional[int],
     # 1. Fetch known orgs and projects
     try:
         orgs_res = supabase.table('organizations').select('id, name').execute()
-        projs_res = supabase.table('projects').select('id, name, organization_id').eq('status', 'active').execute()
+        projs_res = supabase.table('projects').select('id, name, organization_id').eq('status', 'active').eq('is_current', True).execute()
     except Exception as e:
         audit_log_sync("entity_resolver", "ERROR", f"Failed to fetch entities: {e}")
         return None, None, "db_error"

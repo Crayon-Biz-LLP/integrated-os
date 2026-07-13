@@ -134,8 +134,8 @@ def evaluate_edge(edge_data: dict, batch_mode: bool = False) -> Optional[dict]:
     if already_handled and already_handled.data:
         return None
         
-    s_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", from_lbl))
-    t_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", to_lbl))
+    s_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", from_lbl).eq('is_current', True))
+    t_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", to_lbl).eq('is_current', True))
     
     if s_node and s_node.data and t_node and t_node.data:
         existing_edges = supabase.table("graph_edges").select("relationship") \
@@ -241,7 +241,7 @@ def handle_response(shortcode: str, answer: str) -> dict:
                 target_id = similar[0]["id"]
                 # First check if the source node actually exists in graph_nodes
                 # Sometimes pending nodes are just labels and haven't been created yet.
-                gn_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pn_res.data["label"]))
+                gn_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pn_res.data["label"]).eq('is_current', True))
                 if gn_res and gn_res.data:
                     execute_graph_node_merge(gn_res.data["id"], target_id, "clarification_merge")
     
@@ -252,8 +252,8 @@ def handle_response(shortcode: str, answer: str) -> dict:
         pe_res = maybe_single_safe(supabase.table("pending_graph_edges").select("*").eq("id", source_id))
         if pe_res and pe_res.data:
             pe = pe_res.data
-            s_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pe["source_label"]))
-            t_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pe["target_label"]))
+            s_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pe["source_label"]).eq('is_current', True))
+            t_node = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", pe["target_label"]).eq('is_current', True))
             if s_node and s_node.data and t_node and t_node.data:
                 meta = {"source": "clarification_approval", "pending_id": source_id}
                 if context:

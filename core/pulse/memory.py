@@ -291,7 +291,7 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list, 
         # 2. Find the graph_node IDs for these tasks
         # Assuming metadata->>task_id is how task nodes are linked
         try:
-            nodes_res = supabase.table('graph_nodes').select('id').in_('metadata->>task_id', task_ids).execute()
+            nodes_res = supabase.table('graph_nodes').select('id').in_('metadata->>task_id', task_ids).eq('is_current', True).execute()
             start_node_ids = [n['id'] for n in nodes_res.data] if nodes_res and nodes_res.data else []
         except Exception:
             return "Graph nodes unavailable for serendipity query."
@@ -304,7 +304,7 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list, 
             try:
                 pattern_terms = [t.split(':', 1)[1].strip() for t in pattern_context.split('|') if ':' in t]
                 if pattern_terms:
-                    pattern_nodes = supabase.table('graph_nodes').select('id').in_('label', pattern_terms).execute()
+                    pattern_nodes = supabase.table('graph_nodes').select('id').in_('label', pattern_terms).eq('is_current', True).execute()
                     if pattern_nodes and pattern_nodes.data:
                         start_node_ids.extend([n['id'] for n in pattern_nodes.data])
             except Exception:
@@ -321,7 +321,7 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list, 
                 
         if entity_labels:
             try:
-                entity_nodes = supabase.table('graph_nodes').select('id').in_('label', entity_labels).execute()
+                entity_nodes = supabase.table('graph_nodes').select('id').in_('label', entity_labels).eq('is_current', True).execute()
                 if entity_nodes.data:
                     start_node_ids.extend([n['id'] for n in entity_nodes.data])
             except Exception:

@@ -48,7 +48,7 @@ async def _extract_entities_from_text(text: str) -> list[str]:
         supabase = get_supabase()
         node_res = supabase.table('graph_nodes').select('label').in_(
             'type', ['person', 'organization', 'project']
-        ).neq('epistemic_status', 'hypothetical').execute()
+        ).neq('epistemic_status', 'hypothetical').eq('is_current', True).execute()
         known_labels = [n['label'] for n in (node_res.data or [])]
     except Exception:
         known_labels = []
@@ -95,6 +95,7 @@ def _resolve_entity_type(entity_words: list[str]) -> str:
         res = supabase.table('graph_nodes').select('type, label')\
             .in_('label', labels_to_check)\
             .neq('epistemic_status', 'hypothetical')\
+            .eq('is_current', True)\
             .execute()
         # Collect all seen types
         seen_types = set()

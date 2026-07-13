@@ -80,7 +80,7 @@ class ContextProvider:
         if cached is not None:
             return cached
             
-        res = supabase.table('projects').select('*').eq('status', 'active').execute()
+        res = supabase.table('projects').select('*').eq('status', 'active').eq('is_current', True).execute()
         projects = res.data or []
         self.caches['projects'].set(projects)
         
@@ -137,7 +137,7 @@ class ContextProvider:
         if cached is not None:
             return cached
             
-        res = supabase.table('people').select('id, name, strategic_weight').execute()
+        res = supabase.table('people').select('id, name, strategic_weight').eq('is_current', True).execute()
         people = res.data or []
         self.caches['people'].set(people)
         return people
@@ -239,7 +239,7 @@ class ContextProvider:
 
     async def get_practices_context(self):
         try:
-            res = supabase.table('graph_nodes').select('label, metadata').eq('type', 'practice').execute()
+            res = supabase.table('graph_nodes').select('label, metadata').eq('type', 'practice').eq('is_current', True).execute()
             practices = [p for p in (res.data or []) if p.get('metadata', {}).get('status') in ['active', 'dormant']]
             if not practices:
                 return "None"

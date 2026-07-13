@@ -705,7 +705,7 @@ async def discover_new_clusters():
     try:
         unclustered_res = supabase.table('resources').select(
             'id, url, title, summary, strategic_note, category'
-        ).is_('cluster_id', None).limit(100).execute()
+        ).is_('cluster_id', None).eq('is_current', True).limit(100).execute()
         unclustered = unclustered_res.data or []
         if len(unclustered) < 3:
             audit_log_sync("pulse", "INFO", f"📍 Cluster discovery: only {len(unclustered)} unmapped resources, need 3+.")
@@ -1046,7 +1046,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         core = core_res.data or []
 
         # Fetch business context from graph
-        graph_projects_res = supabase.table('graph_nodes').select('id', 'label', 'metadata').eq('type', 'project').execute()
+        graph_projects_res = supabase.table('graph_nodes').select('id', 'label', 'metadata').eq('type', 'project').eq('is_current', True).execute()
         graph_projects = graph_projects_res.data or []
 
         projects = []
@@ -1366,6 +1366,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         recent_lib = supabase.table('resources')\
             .select('id, url, category, title, summary, strategic_note, created_at')\
             .gt('created_at', thirty_days_ago)\
+            .eq('is_current', True)\
             .order('created_at', desc=True)\
             .limit(50)\
             .execute()
@@ -1540,11 +1541,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             if is_discovery_pulse:
                 audit_log_sync("pulse", "INFO", "📍 Weekend pulse: Running practice detection...")
                 before_labels = set()
-                before_res = supabase.table('graph_nodes').select('label').eq('type', 'practice').execute()
+                before_res = supabase.table('graph_nodes').select('label').eq('type', 'practice').eq('is_current', True).execute()
                 for r in (before_res.data or []):
                     before_labels.add(r['label'])
                 new_practice_ids = await detect_practices() or {}
-                after_res = supabase.table('graph_nodes').select('label').eq('type', 'practice').execute()
+                after_res = supabase.table('graph_nodes').select('label').eq('type', 'practice').eq('is_current', True).execute()
                 after_labels = set(r['label'] for r in (after_res.data or []))
                 new_practice_labels = sorted(after_labels - before_labels)
                 if new_practice_labels:

@@ -30,6 +30,7 @@ async def execute_context_strategy(
         nodes_res = supabase.table('graph_nodes')\
             .select('label, type')\
             .in_('type', ['person', 'organization', 'project'])\
+            .eq('is_current', True)\
             .execute()
         for n in (nodes_res.data or []):
             label_lower = n['label'].lower()
@@ -82,6 +83,7 @@ async def execute_context_strategy(
             people_res = supabase.table('graph_nodes')\
                 .select('id, label, metadata')\
                 .eq('type', 'person')\
+                .eq('is_current', True)\
                 .execute()
             for p in (people_res.data or []):
                 p_label_lower = p['label'].lower()

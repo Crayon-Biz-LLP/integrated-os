@@ -18,6 +18,7 @@ async def handle_practices_command(chat_id: int):
         practices_res = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'practice') \
+            .eq('is_current', True) \
             .execute()
         all_practices = practices_res.data or []
 
@@ -432,7 +433,7 @@ async def handle_command(text: str, chat_id: int):
                 reply = f"❌ Error: {str(e)}"
 
     elif text in ['/library', '📚 Library']:
-        lib_res = supabase.table('resources').select('title, url, category').order('created_at', desc=True).limit(10).execute()
+        lib_res = supabase.table('resources').select('title, url, category').eq('is_current', True).order('created_at', desc=True).limit(10).execute()
         items = lib_res.data or []
         if items:
             formatted = [f"🔖 **[{i.get('title') or 'Untitled'}]({i.get('url')})**" for i in items]

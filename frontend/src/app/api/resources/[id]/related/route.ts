@@ -45,6 +45,7 @@ export async function GET(
         enriched_at,
         clusters!cluster_id(id, title, status, description)
       `)
+      .eq("is_current", true)
       .eq("cluster_id", resource.cluster_id)
       .neq("id", Number(id))
       .limit(5);

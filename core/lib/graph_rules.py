@@ -191,7 +191,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
     # ILIKE on the display label is safe and catches casing differences.
     if len(label) >= 4:
         try:
-            gn_res = maybe_single_safe(supabase.table("graph_nodes").select("id, label, type, canonical_id").ilike("label", label))
+            gn_res = maybe_single_safe(supabase.table("graph_nodes").select("id, label, type, canonical_id").ilike("label", label).eq('is_current', True))
             if gn_res and gn_res.data:
                 node_id = gn_res.data["id"]
                 canonical_id = gn_res.data.get("canonical_id")
@@ -235,7 +235,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
         # 5. DB lookup for grounded types — exact guard pattern (not order-dependent)
         # 5a: People table — skip if role marks deletion/org-change/merge
         try:
-            db_res = maybe_single_safe(supabase.table('people').select('id, name, role').ilike('name', label))
+            db_res = maybe_single_safe(supabase.table('people').select('id, name, role').ilike('name', label).eq('is_current', True))
             if db_res and db_res.data:
                 role = str(db_res.data.get('role') or '')
                 if not any(m in role for m in ["[DELETED]", "[CHANGED TO ORGANIZATION]", "[MERGED INTO"]):
@@ -259,7 +259,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
 
         # 5c: Projects table
         try:
-            db_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', label))
+            db_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', label).eq('is_current', True))
             if db_res and db_res.data:
                 result["label"] = db_res.data["name"]
                 result["node_type"] = "project"
@@ -289,7 +289,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
 
 
 def find_similar_node(label: str, node_type: str, threshold: float = 0.55) -> list[dict]:
-    result = supabase.table("graph_nodes").select("id, label, type").execute()
+    result = supabase.table("graph_nodes").select("id, label, type").eq('is_current', True).execute()
     all_nodes = result.data or []
     matches = []
     target_lower = label.lower().strip()
@@ -341,11 +341,11 @@ def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "
         return {"success": True, "message": "Node already merged"}
 
     # 1. Load edges where source or target is involved
-    src_out_res = supabase.table("graph_edges").select("*").eq("source_node_id", source_id).execute()
-    src_in_res = supabase.table("graph_edges").select("*").eq("target_node_id", source_id).execute()
+    src_out_res = supabase.table("graph_edges").select("*").eq("source_node_id", source_id).eq('is_current', True).execute()
+    src_in_res = supabase.table("graph_edges").select("*").eq("target_node_id", source_id).eq('is_current', True).execute()
     
-    tgt_out_res = supabase.table("graph_edges").select("*").eq("source_node_id", target_id).execute()
-    tgt_in_res = supabase.table("graph_edges").select("*").eq("target_node_id", target_id).execute()
+    tgt_out_res = supabase.table("graph_edges").select("*").eq("source_node_id", target_id).eq('is_current', True).execute()
+    tgt_in_res = supabase.table("graph_edges").select("*").eq("target_node_id", target_id).eq('is_current', True).execute()
     
     src_out = src_out_res.data or []
     src_in = src_in_res.data or []
@@ -620,7 +620,7 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
                 return res.data[0]["id"]
         except Exception as e:
             if hasattr(e, "code") and e.code == "23505":
-                existing = maybe_single_safe(supabase.table("graph_nodes").select("id").ilike("label", label))
+                existing = maybe_single_safe(supabase.table("graph_nodes").select("id").ilike("label", label).eq('is_current', True))
                 if existing and existing.data:
                     return existing.data["id"]
             audit_log_sync("graph_pipeline", "ERROR", f"Failed to persist_label direct: {e}")
@@ -693,6 +693,7 @@ def insert_pending_edge(source_label: str, target_label: str, relationship: str,
                 .eq("source_node_id", s_res["node_id"])
                 .eq("target_node_id", t_res["node_id"])
                 .ilike("relationship", r_lower)
+                .eq('is_current', True)
             )
             if existing_graph and existing_graph.data:
                 return {"status": "deduped", "reason": "already_in_graph"}

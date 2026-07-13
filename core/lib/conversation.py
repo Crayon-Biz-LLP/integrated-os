@@ -55,7 +55,7 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
         resolver_reason = "resolver_error"
 
     try:
-        people = supabase.table('people').select('name').execute()
+        people = supabase.table('people').select('name').eq('is_current', True).execute()
         text_lower = text.lower()
         for p in (people.data or []):
             name = p['name'].strip().lower()
@@ -251,7 +251,7 @@ def _llm_entity_disambiguation(text: str, chat_id: int) -> list:
     
     # Fetch known org and project names
     orgs = supabase.table('organizations').select('id, name').execute().data or []
-    projs = supabase.table('projects').select('id, name').eq('status', 'active').execute().data or []
+    projs = supabase.table('projects').select('id, name').eq('status', 'active').eq('is_current', True).execute().data or []
     
     if not orgs and not projs:
         return []

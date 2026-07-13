@@ -268,7 +268,7 @@ async def process_callback_query(callback_query: dict):
                 return {"success": True}
             from core.lib.graph_rules import get_canonical_id
             target_canonical = get_canonical_id(target_id)
-            source_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', pr['label']))
+            source_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', pr['label']).eq('is_current', True))
             source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
             if source_node_id:
                 supabase.table('graph_nodes').update({'canonical_id': target_canonical}).eq('id', source_node_id).execute()
@@ -1028,6 +1028,7 @@ async def process_webhook(update: dict):
                                 .select('id, label, metadata')
                                 .eq('type', 'practice')
                                 .eq('metadata->>shortcode', str(_shortcode))
+                                .eq('is_current', True)
                             )
                             if _node_res.data:
                                 _n = _node_res.data
@@ -1214,6 +1215,7 @@ async def process_webhook(update: dict):
                     .select('id, label, metadata') \
                     .eq('type', 'practice') \
                     .ilike('label', practice_name) \
+                    .eq('is_current', True) \
                     .limit(1) \
                     .execute()
                 if not node_res.data:

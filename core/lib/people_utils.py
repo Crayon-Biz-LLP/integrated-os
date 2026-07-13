@@ -39,12 +39,12 @@ def enrich_people_from_graph() -> int:
     supabase = get_supabase()
     enriched = 0
     try:
-        people_res = supabase.table('people').select('id, name').execute()
+        people_res = supabase.table('people').select('id, name').eq('is_current', True).execute()
         if not people_res.data:
             return 0
 
         # Get all person graph nodes
-        nodes_res = supabase.table('graph_nodes').select('id, label, metadata').eq('type', 'person').execute()
+        nodes_res = supabase.table('graph_nodes').select('id, label, metadata').eq('type', 'person').eq('is_current', True).execute()
         if not nodes_res.data:
             return 0
 
@@ -74,7 +74,7 @@ def enrich_people_from_graph() -> int:
         ).or_(
             f'source_node_id.in.({",".join(str(n) for n in person_node_ids)}),'
             f'target_node_id.in.({",".join(str(n) for n in person_node_ids)})'
-        ).execute()
+        ).eq('is_current', True).execute()
 
         if not edges_res.data:
             return 0

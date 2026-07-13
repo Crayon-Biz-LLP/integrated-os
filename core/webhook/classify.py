@@ -64,7 +64,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     try:
         node_data = cache_get('rhodey:entities:graph_nodes')
         if node_data is None:
-            node_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'project', 'organization']).order('updated_at', desc=True).nullslast().limit(30).execute()
+            node_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'project', 'organization']).eq('is_current', True).order('updated_at', desc=True).nullslast().limit(30).execute()
             node_data = node_res.data if node_res and node_res.data else []
             cache_set('rhodey:entities:graph_nodes', node_data, ttl=300)
         if node_data:

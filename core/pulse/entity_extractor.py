@@ -21,7 +21,7 @@ async def extract_and_link_entities(text: str, source_id: str, source_type: str 
 
     # Fetch known entities for prompt injection
     try:
-        kn_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'organization', 'project', 'place', 'event', 'animal', 'emotional_state']).neq('epistemic_status', 'hypothetical').execute()
+        kn_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'organization', 'project', 'place', 'event', 'animal', 'emotional_state']).neq('epistemic_status', 'hypothetical').eq('is_current', True).execute()
         known_labels = [r['label'] for r in kn_res.data] if kn_res and kn_res.data else []
         known_str = ", ".join(known_labels[:50]) # limit to avoid huge prompts
     except Exception:
@@ -99,7 +99,7 @@ Text: "{text}"
                     pass
             elif ntype == "project":
                 try:
-                    res = maybe_single_safe(supabase.table('projects').select('id, organization_id').ilike('name', label))
+                    res = maybe_single_safe(supabase.table('projects').select('id, organization_id').ilike('name', label).eq('is_current', True))
                     if res and res.data:
                         proj_candidates.append({
                             'id': res.data['id'],

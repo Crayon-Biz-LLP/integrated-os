@@ -259,7 +259,7 @@ def create_person(name: str, context: str):
         if existing_node and existing_node.data:
             return f"Person '{name}' already pending approval (ID: {existing_node.data['id']})."
 
-        existing_live = maybe_single_safe(supabase.table('graph_nodes').select('id, db_record_id, canonical_id').eq('label', name).eq('type', 'person'))
+        existing_live = maybe_single_safe(supabase.table('graph_nodes').select('id, db_record_id, canonical_id').eq('label', name).eq('type', 'person').eq('is_current', True))
         if existing_live and existing_live.data:
             if existing_live.data.get('canonical_id'):
                 from core.lib.graph_rules import get_canonical_id

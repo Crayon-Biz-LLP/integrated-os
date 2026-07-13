@@ -154,7 +154,7 @@ class UpdateService {
     // 4. If the installed version matches or exceeds the server version, we're up to date.
     //    Clear any persisted dismissal since this version is now installed.
     if (remote.versionCode <= currentCode) {
-      debugPrint('[Update] Up to date ($currentCode >= ${remote.versionCode})');
+      debugPrint('[Update] ✅ Up to date (phone=$currentCode, server=${remote.versionCode})');
       if (dismissedCode != 0) {
         await prefs.remove(_kDismissedVersionKey);
       }
@@ -166,10 +166,11 @@ class UpdateService {
 
     // 5. If this specific version was already dismissed via "Later", skip silently
     if (dismissedCode == remote.versionCode && !showFeedback) {
-      debugPrint('[Update] Version ${remote.versionCode} was dismissed — skipping');
+      debugPrint('[Update] ⏭️ Version ${remote.versionCode} was dismissed — skipping');
       return;
     }
 
+    debugPrint('[Update] 🔍 MISMATCH: phone=$currentCode, server=${remote.versionCode}, dismissed=$dismissedCode');
     debugPrint('[Update] Update available: v${remote.versionName} (code ${remote.versionCode})');
 
     if (!context.mounted) return;

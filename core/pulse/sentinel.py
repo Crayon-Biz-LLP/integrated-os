@@ -542,7 +542,7 @@ Context:
             
             if pe_res.data:
                 valid_node_ids = set()
-                n_res = supabase.table("graph_nodes").select("id").execute()
+                n_res = supabase.table("graph_nodes").select("id").eq('is_current', True).execute()
                 if n_res.data:
                     valid_node_ids = {n['id'] for n in n_res.data}
                 

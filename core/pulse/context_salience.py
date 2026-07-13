@@ -72,7 +72,7 @@ def _resolve_sender_to_person(sender_email: str) -> dict | None:
     supabase = get_supabase()
     # Assuming people table has email or we match by something. 
     # For now, let's just do a basic lookup in graph_nodes directly, or people table.
-    res = supabase.table('people').select('*').ilike('name', f'%{sender_email}%').execute()
+    res = supabase.table('people').select('*').ilike('name', f'%{sender_email}%').eq('is_current', True).execute()
     if res.data:
         return res.data[0]
     return None

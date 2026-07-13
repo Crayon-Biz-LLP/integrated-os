@@ -8,6 +8,7 @@ export async function GET(req: NextRequest) {
   const { data: people, error: peopleError } = await supabase
     .from("people")
     .select("id, name, strategic_weight, created_at")
+    .eq("is_current", true)
     .limit(500);
 
   if (peopleError) {

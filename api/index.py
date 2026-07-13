@@ -827,7 +827,7 @@ async def graph_merge_action_route(request: Request):
         
         from core.lib.graph_rules import get_canonical_id
         
-        source_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label').eq('label', pr['label']))
+        source_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label').eq('label', pr['label']).eq('is_current', True))
         source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
         
         target_canonical = get_canonical_id(target_id)
@@ -1060,7 +1060,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         
         # --- Handle people table change type for pending ---
         if old_type == 'person' and new_type != 'person':
-            live_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('label', label))
+            live_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('label', label).eq('is_current', True))
             if live_node and live_node.data:
                 p_id = live_node.data.get('db_record_id')
                 if p_id:
@@ -1165,7 +1165,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                     orphaned += 1
                     
         # --- Handle people table & live node cleanup ---
-        live_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type, db_record_id').eq('label', label))
+        live_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type, db_record_id').eq('label', label).eq('is_current', True))
         if live_res and live_res.data:
             l_id = live_res.data['id']
             if live_res.data.get('type') == 'person':
@@ -1313,7 +1313,7 @@ async def graph_node_manual_merge_route(request: Request):
             return {"success": False, "message": "Target node not found"}
             
         # --- FIX: Check if pending source was already approved (has live graph_nodes entry) ---
-        live_source = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', source_label))
+        live_source = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', source_label).eq('is_current', True))
         if live_source and live_source.data:
             s_live_id = live_source.data['id']
             if _is_uuid(target_id):
@@ -1392,6 +1392,8 @@ async def graph_nodes_search_route(request: Request):
         supabase = get_supabase()
         table_name = 'pending_graph_nodes' if scope == 'pending' else 'graph_nodes'
         query = supabase.table(table_name).select('id, label, type').ilike('label', f'%{q}%')
+        if scope != 'pending':
+            query = query.eq('is_current', True)
         if node_type:
             query = query.eq('type', node_type)
         res = query.limit(10).execute()
@@ -1451,8 +1453,8 @@ async def graph_edges_similar_route(request: Request):
     try:
         supabase = get_supabase()
         # Find node IDs for the labels to check live graph_edges
-        src_res = supabase.table('graph_nodes').select('id').ilike('label', source).execute()
-        tgt_res = supabase.table('graph_nodes').select('id').ilike('label', target).execute()
+        src_res = supabase.table('graph_nodes').select('id').ilike('label', source).eq('is_current', True).execute()
+        tgt_res = supabase.table('graph_nodes').select('id').ilike('label', target).eq('is_current', True).execute()
         
         matches = []
         if src_res.data and tgt_res.data:
@@ -1727,6 +1729,7 @@ async def graph_nodes_live_route(request: Request):
             .select('id, label, type, created_at') \
             .in_('type', entity_types) \
             .is_('canonical_id', 'null') \
+            .eq('is_current', True) \
             .order('created_at', desc=True) \
             .limit(5000) \
             .execute()

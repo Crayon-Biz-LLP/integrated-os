@@ -51,6 +51,7 @@ async def detect_practices():
         practices_res = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'practice') \
+            .eq('is_current', True) \
             .execute()
         existing_practices = practices_res.data or []
 
@@ -504,6 +505,7 @@ async def build_practice_edges():
         practices_res = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'practice') \
+            .eq('is_current', True) \
             .execute()
         all_practices = practices_res.data or []
         if len(all_practices) < 2:
@@ -577,6 +579,7 @@ async def build_practice_edges():
                     .eq('source_node_id', a['id']) \
                     .eq('target_node_id', b['id']) \
                     .eq('relationship', 'PRECEDES') \
+                    .eq('is_current', True) \
                     .limit(1) \
                     .execute()
                 if existing.data:
@@ -667,6 +670,7 @@ async def build_practice_correlations() -> list:
         practices_res = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'practice') \
+            .eq('is_current', True) \
             .execute()
         all_practices = practices_res.data or []
 
@@ -757,6 +761,7 @@ async def sync_practice_canonical_pages():
         practices_res = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'practice') \
+            .eq('is_current', True) \
             .execute()
         all_practices = practices_res.data or []
         if not all_practices:
@@ -787,6 +792,7 @@ async def sync_practice_canonical_pages():
                 .select('target_node_id') \
                 .eq('source_node_id', practice_id) \
                 .eq('relationship', 'ASSOCIATED_WITH') \
+                .eq('is_current', True) \
                 .execute()
             entity_ids = [e['target_node_id'] for e in (entities_res.data or [])]
             entity_labels = []
@@ -907,6 +913,7 @@ async def build_rhythms_section(new_practice_labels: list = None, new_practice_i
         practices_res = supabase.table('graph_nodes') \
             .select('label, metadata') \
             .eq('type', 'practice') \
+            .eq('is_current', True) \
             .execute()
         all_practices = practices_res.data or []
         if not all_practices:

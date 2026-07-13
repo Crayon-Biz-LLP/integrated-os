@@ -86,7 +86,7 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
         print(f"Skipping blocklisted person from email: {name_clean}")
         return None
 
-    existing = supabase.table('people').select('id, name').execute()
+    existing = supabase.table('people').select('id, name').eq('is_current', True).execute()
     existing_names = {}
     for p in (existing.data or []):
         existing_names[p['name'].lower()] = p['id']
@@ -103,7 +103,7 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
         
     if matched is not None:
         # Resolve canonical if it exists in graph
-        g_res = maybe_single_safe(supabase.table("graph_nodes").select("canonical_id, db_record_id").eq("db_record_id", str(matched)))
+        g_res = maybe_single_safe(supabase.table("graph_nodes").select("canonical_id, db_record_id").eq("db_record_id", str(matched)).eq('is_current', True))
         if g_res and g_res.data and g_res.data.get("canonical_id"):
             c_res = maybe_single_safe(supabase.table("graph_nodes").select("db_record_id").eq("id", g_res.data["canonical_id"]))
             if c_res and c_res.data and c_res.data.get("db_record_id"):
@@ -523,9 +523,9 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
             linked_project_name = classification_data.get('linked_project_name')
             if linked_project_name:
                 # Exact match first (case-insensitive), fall back to partial
-                project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', linked_project_name))
+                project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', linked_project_name).eq('is_current', True))
                 if not getattr(project_res, 'data', None):
-                    project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%'))
+                    project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').eq('is_current', True))
                 if getattr(project_res, 'data', None):
                     linked_project_id = project_res.data['id']
 

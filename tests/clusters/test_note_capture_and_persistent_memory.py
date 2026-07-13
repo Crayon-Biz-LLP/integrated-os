@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 import pytest
-from core.services.db import get_supabase, version_memory_for_update
+from core.services.db import get_supabase
 from core.retrieval.cleanup import cleanup_memory_retrieval_index, sweep_orphan_retrieval_entries
 from core.webhook.workflows import get_deterministic_decision, check_and_resume_workflow
 from core.lib.conversation import resolve_thread
@@ -547,76 +547,7 @@ class TestRawDumpLifecycle:
 class TestMemoryVersioning:
 
     @pytest.mark.asyncio
-    async def test_14_versioning_on_enrichment_update(self):
-        supabase.table('memories').delete().ilike('content', '[TEST] F14%').execute()
-
-        try:
-            res = supabase.table('memories').insert({
-                'content': '[TEST] F14 memory for versioning test',
-                'memory_type': 'note', 'source': 'test',
-                'is_current': True, 'version': 1
-            }).execute()
-            memory_id = res.data[0]['id']
-
-            update_data = {}
-            result = version_memory_for_update(memory_id, update_data)
-
-            assert result.get('version') == 2, f"Expected version=2, got {result.get('version')}"
-            assert result.get('supersedes_id') is not None, "Should have supersedes_id"
-            archived_id = result['supersedes_id']
-
-            supabase.table('memories').update(result).eq('id', memory_id).execute()
-
-            current = supabase.table('memories').select('*').eq('id', memory_id).execute()
-            assert current.data[0]['is_current']
-            assert current.data[0]['version'] == 2
-            assert current.data[0]['supersedes_id'] == archived_id
-
-            archived = supabase.table('memories').select('*').eq('id', archived_id).execute()
-            assert not archived.data[0]['is_current']
-            assert archived.data[0]['version'] == 1
-            assert archived.data[0]['content'] == '[TEST] F14 memory for versioning test'
-
-            supabase.table('memories').delete().eq('id', memory_id).execute()
-            supabase.table('memories').delete().eq('id', archived_id).execute()
-        finally:
-            supabase.table('memories').delete().ilike('content', '[TEST] F14%').execute()
-
-    @pytest.mark.asyncio
-    async def test_15_versioning_on_completion_degraded_path(self):
-        supabase.table('memories').delete().ilike('content', '[TEST] F15%').execute()
-
-        try:
-            res = supabase.table('memories').insert({
-                'content': '[TEST] F15 completion degraded memory',
-                'memory_type': 'note', 'source': 'test',
-                'is_current': True, 'version': 1,
-                'metadata': {"intent": "COMPLETION", "title": "Fix bug"}
-            }).execute()
-            memory_id = res.data[0]['id']
-
-            update1 = version_memory_for_update(memory_id, {
-                "metadata": {"intent": "PROJECT_UPDATE", "degraded_from_completion": True}
-            })
-            supabase.table('memories').update(update1).eq('id', memory_id).execute()
-            v1_archived_id = update1['supersedes_id']
-
-            update2 = version_memory_for_update(memory_id, {})
-            supabase.table('memories').update(update2).eq('id', memory_id).execute()
-            v2_archived_id = update2['supersedes_id']
-
-            current = supabase.table('memories').select('*').eq('id', memory_id).execute()
-            assert current.data[0]['version'] == 3
-            assert current.data[0]['is_current']
-
-            assert supabase.table('memories').select('version').eq('id', v1_archived_id).execute().data[0]['version'] == 1
-            assert supabase.table('memories').select('version').eq('id', v2_archived_id).execute().data[0]['version'] == 2
-
-            supabase.table('memories').delete().eq('id', memory_id).execute()
-            supabase.table('memories').delete().eq('id', v1_archived_id).execute()
-            supabase.table('memories').delete().eq('id', v2_archived_id).execute()
-        finally:
-            supabase.table('memories').delete().ilike('content', '[TEST] F15%').execute()
+    # versioning tests removed — now handled by DB trigger
 
     @pytest.mark.asyncio
     async def test_16_regression_guard_against_bypass(self):
@@ -838,10 +769,6 @@ class TestEndToEnd:
                 'is_current': True, 'version': 1
             }).execute()
             memory_id = mem_res.data[0]['id']
-
-            ud = version_memory_for_update(memory_id, {})
-            supabase.table('memories').update(ud).eq('id', memory_id).execute()
-            assert ud['version'] == 2
 
             p_res = supabase.table('retrieval_passages').insert({
                 'memory_id': memory_id, 'text': '[TEST] H19 passage for cleanup',

@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
   const context = searchParams.get("context");
   const status = searchParams.get("status");
 
-  let query = supabase.from("projects").select("*");
+  let query = supabase.from("projects").select("*").eq("is_current", true);
 
   const { data: projectsData, error: projectsError } = await query
     .order("name", { ascending: true })

@@ -424,9 +424,9 @@ async def ingest_outlook_messages(limit=25):
                 linked_person_name = classification_data.get("linked_person_name")
                 if linked_person_name:
                     # Exact match first (case-insensitive), fall back to partial
-                    person_res = maybe_single_safe(supabase.table('people').select('id, name').ilike('name', linked_person_name))
+                    person_res = maybe_single_safe(supabase.table('people').select('id, name').ilike('name', linked_person_name).eq('is_current', True))
                     if not getattr(person_res, 'data', None):
-                        person_res = maybe_single_safe(supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%'))
+                        person_res = maybe_single_safe(supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').eq('is_current', True))
                     if getattr(person_res, 'data', None):
                         linked_person_id = person_res.data['id']
                 
@@ -434,9 +434,9 @@ async def ingest_outlook_messages(limit=25):
                 linked_project_name = classification_data.get("linked_project_name")
                 if linked_project_name:
                     # Exact match first (case-insensitive), fall back to partial
-                    project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', linked_project_name))
+                    project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', linked_project_name).eq('is_current', True))
                     if not getattr(project_res, 'data', None):
-                        project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%'))
+                        project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').eq('is_current', True))
                     if getattr(project_res, 'data', None):
                         linked_project_id = project_res.data['id']
                 

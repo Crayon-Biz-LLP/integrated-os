@@ -38,6 +38,7 @@ export async function GET(req: NextRequest) {
         dismissed_at,
         clusters!cluster_id(id, title, status, description)
       `)
+      .eq("is_current", true)
       .is('dismissed_at', null);
 
     if (search) {
