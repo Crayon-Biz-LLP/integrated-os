@@ -45,7 +45,7 @@ class RhodeySurface extends StatefulWidget {
 }
 
 class _RhodeySurfaceState extends State<RhodeySurface>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   // ── Data ──
   BriefingResponse _briefing = BriefingResponse.empty();
   bool _loading = true;
@@ -73,7 +73,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   final _api = ApiService();
   final _textController = TextEditingController();
   final _typeFocus = FocusNode();
-  Timer? _pollTimer;
   Timer? _momentTimer;
 
   // ── Speech & TTS ──
@@ -106,6 +105,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
 
     // Pulse animation for the presence dot
     _pulseController = AnimationController(
@@ -150,9 +150,9 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pulseController.dispose();
     _momentController.dispose();
-    _pollTimer?.cancel();
     _momentTimer?.cancel();
     _voiceTimeout?.cancel();
     _voiceTimer?.cancel();
@@ -166,6 +166,18 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       NotificationService.onPushReceived = null;
     }
     super.dispose();
+  }
+
+  // ── Foreground refresh (FCM fallback) ─────────────────────────────────────
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Refresh briefing when app comes to foreground.
+      // This is a fallback for the rare case where FCM push was missed
+      // (e.g. app was force-closed and reopened).
+      _fetchBriefing();
+    }
   }
 
   // ── Data loading ──────────────────────────────────────────────────────────
@@ -231,8 +243,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     } catch (_) {
       // Background refresh failures are non-fatal
     }
-    // Resume polling after initial load regardless of fetch outcome
-    _startPolling();
   }
 
   /// Save current briefing to SharedPreferences for instant cold-start loads.
@@ -245,36 +255,12 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     }
   }
 
-  // ── Polling ───────────────────────────────────────────────────────────────
-
-  void _startPolling() {
-    _pollTimer?.cancel();
-    _pollTimer =
-        Timer.periodic(const Duration(seconds: 10), (_) => _pollForUpdates());
-  }
-
-  void _stopPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = null;
-  }
-
-  Future<void> _pollForUpdates() async {
-    final briefing = await _api.getBriefing();
-    if (!mounted) return;
-    setState(() {
-      _briefing = briefing;
-    });
-    // Lightweight background cache update on poll
-    _cacheBriefing();
-  }
-
   // ── Send message ──────────────────────────────────────────────────────────
 
   void _sendMessage(String text) {
     if (text.trim().isEmpty) return;
 
     _textController.clear();
-    _stopPolling();
 
     // Add user message to conversation feed immediately
     setState(() {
@@ -340,7 +326,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       Future.delayed(const Duration(seconds: 1), () {
         if (!mounted) return;
         _hideResponseMoment();
-        _startPolling();
       });
     });
   }
@@ -439,7 +424,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
     if (!mounted) return;
     setState(() => _isListening = true);
-    _stopPolling();
 
     // Reset live transcript and duration
     _voiceText = '';
@@ -494,18 +478,17 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       _voiceText = '';
       _voiceDuration = 0;
     });
-    _startPolling();
   }
 
   // ── Notification handling ─────────────────────────────────────────────────
 
-  /// Instant briefing fetch when a push notification is received in foreground.
+  /// Instant briefing fetch when a silent FCM push is received.
+  /// This replaces the old 10s HTTP polling — the backend rings FCM's
+  /// doorbell via ``send_silent_push({"type": "briefing_refresh"})`` when
+  /// new data is available, so the app only fetches when something changes.
   void _onPushReceived() {
-    debugPrint('[Surface] Push received — fetching fresh briefing');
-    _stopPolling();
-    _fetchBriefing().then((_) {
-      if (mounted) _startPolling();
-    });
+    debugPrint('[Surface] FCM push — fetching fresh briefing');
+    _fetchBriefing();
   }
 
   void _handlePushNotificationTap(Map<String, dynamic> data) {
@@ -626,7 +609,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   Future<void> _uploadFile(String filePath) async {
     if (!File(filePath).existsSync()) return;
 
-    _stopPolling();
     _showResponseMoment('Uploading...');
 
     // Add to conversation feed
@@ -659,7 +641,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     }
 
     _dismissMomentAfterDelay();
-    _startPolling();
   }
 
   // ── Menu ──────────────────────────────────────────────────────────────────

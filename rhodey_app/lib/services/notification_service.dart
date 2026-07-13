@@ -75,8 +75,9 @@ class NotificationService {
       _registerToken();
     });
 
-    // Handle foreground messages — show local notification
-    FirebaseMessaging.onMessage.listen(_showForegroundNotification);
+    // Handle foreground messages — show local notification for visible pushes,
+    // trigger silent refresh for data-only pushes (FCM-driven polling replacement).
+    FirebaseMessaging.onMessage.listen(_onForegroundMessage);
 
     // Handle notification tap (app opened from background)
     FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
@@ -106,31 +107,36 @@ class NotificationService {
     }
   }
 
-  /// Show a local notification when a message arrives in the foreground.
-  /// Also triggers the onPushReceived callback so the screen can fetch fresh
-  /// briefing instantly instead of waiting for the poll cycle.
-  void _showForegroundNotification(RemoteMessage message) {
+  /// Handle any FCM message received in the foreground.
+  /// - If it has a ``notification`` payload: show local notification + refresh.
+  /// - If it's data-only (``type: briefing_refresh``): trigger silent refresh.
+  void _onForegroundMessage(RemoteMessage message) {
     final notification = message.notification;
-    if (notification == null) return;
+    final data = message.data;
 
-    final androidDetails = AndroidNotificationDetails(
-      'rhodey_channel',
-      'Rhodey Updates',
-      channelDescription: 'Notifications from Rhodey OS',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
-    );
+    if (notification != null) {
+      // Visible push — show local notification
+      final androidDetails = AndroidNotificationDetails(
+        'rhodey_channel',
+        'Rhodey Updates',
+        channelDescription: 'Notifications from Rhodey OS',
+        importance: Importance.high,
+        priority: Priority.high,
+        icon: '@mipmap/ic_launcher',
+      );
 
-    _localNotifications.show(
-      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      title: notification.title ?? 'Rhodey',
-      body: notification.body ?? '',
-      notificationDetails: NotificationDetails(android: androidDetails),
-    );
+      _localNotifications.show(
+        id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        title: notification.title ?? 'Rhodey',
+        body: notification.body ?? '',
+        notificationDetails: NotificationDetails(android: androidDetails),
+      );
+    }
 
-    // Trigger immediate briefing fetch if any screen registered a handler
-    if (onPushReceived != null) {
+    // Trigger refresh for both visible and silent pushes
+    // This replaces the 10s HTTP polling — the backend rings FCM's doorbell,
+    // and we only fetch the briefing when there's actually new data.
+    if (onPushReceived != null && data.isNotEmpty) {
       onPushReceived!();
     }
   }
