@@ -1585,6 +1585,8 @@ def sync_organizations_to_graph_nodes():
         if existing:
             if existing["type"] == "person":
                 supabase.table("graph_nodes").update({"canonical_id": None}).eq("canonical_id", existing["id"]).execute()
+                supabase.table("people").update({"graph_node_id": None}).eq("graph_node_id", existing["id"]).execute()
+                supabase.table("organizations").update({"graph_node_id": None}).eq("graph_node_id", existing["id"]).execute()
                 supabase.table("graph_nodes").delete().eq("id", existing["id"]).execute()
                 deleted_wrong += 1
             elif existing["type"] == "organization":
@@ -1674,6 +1676,8 @@ def sync_projects_to_graph_nodes():
         if existing:
             if existing["type"] == "person":
                 supabase.table("graph_nodes").update({"canonical_id": None}).eq("canonical_id", existing["id"]).execute()
+                supabase.table("people").update({"graph_node_id": None}).eq("graph_node_id", existing["id"]).execute()
+                supabase.table("organizations").update({"graph_node_id": None}).eq("graph_node_id", existing["id"]).execute()
                 supabase.table("graph_nodes").delete().eq("id", existing["id"]).execute()
                 deleted_wrong += 1
             elif existing["type"] == "project":

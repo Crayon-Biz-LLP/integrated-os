@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'api_config.dart';
 
 /// Response from GET /api/app-version.
@@ -38,6 +39,17 @@ class _AppVersionResponse {
 /// If the remote version_code > current version_code, shows a dialog.
 /// On "Update Now", downloads the APK to internal storage and launches
 /// the system package installer via OpenFilex.
+const _kDismissedVersionKey = 'update_dismissed_version';
+
+/// In-app update checker.
+///
+/// Fetches latest version from /api/app-version on startup.
+/// If the remote version_code > current version_code, shows a dialog.
+/// On "Update Now", downloads the APK to internal storage and launches
+/// the system package installer via OpenFilex.
+///
+/// Dismissed versions persist to SharedPreferences so "Later" survives
+/// app restarts — you won't see the same version nagged again.
 class UpdateService {
   UpdateService._();
   static final UpdateService _instance = UpdateService._();
@@ -47,16 +59,42 @@ class UpdateService {
   /// Prevents the dialog from appearing on every app resume after "Later".
   bool _dialogShownThisSession = false;
 
+  /// Tracks whether a check is currently in flight to prevent concurrent calls
+  /// from the two call sites on startup (initState + didChangeAppLifecycleState).
+  bool _checkInProgress = false;
+
   /// Check for updates and show a dialog if one is available.
   /// Must be called after ApiService.init() so the base URL is loaded.
   ///
   /// [showFeedback] controls whether to surface non-update outcomes
   /// (errors, up-to-date) via snackbar. Set false for silent cold-start checks.
   Future<void> check(BuildContext context, {bool showFeedback = false}) async {
-    // If we've already shown (or dismissed) the dialog this session, skip
+    // Guard: if we've already shown the dialog this session, skip silently
     if (_dialogShownThisSession && !showFeedback) {
       return;
     }
+
+    // Guard: prevent concurrent checks from the two startup call sites
+    if (_checkInProgress && !showFeedback) {
+      debugPrint('[Update] Check already in progress — skipping duplicate');
+      return;
+    }
+    _checkInProgress = true;
+    try {
+      await _doCheck(context, showFeedback: showFeedback);
+    } finally {
+      _checkInProgress = false;
+    }
+  }
+
+  Future<void> _doCheck(BuildContext context, {bool showFeedback = false}) async {
+    // 0. If this is a manual check (showFeedback=true), clear any persisted dismissal
+    //    so the user sees the dialog again even for a previously-dismissed version.
+    if (showFeedback) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_kDismissedVersionKey);
+    }
+
     // 1. Read current app version
     PackageInfo info;
     try {
@@ -70,7 +108,11 @@ class UpdateService {
     }
     final currentCode = int.tryParse(info.buildNumber) ?? 0;
 
-    // 2. Fetch latest version from backend
+    // 2. Check persisted dismissal (survives app restarts)
+    final prefs = await SharedPreferences.getInstance();
+    final dismissedCode = prefs.getInt(_kDismissedVersionKey) ?? 0;
+
+    // 3. Fetch latest version from backend
     final apiConfig = ApiConfig();
     await apiConfig.load();
     final url = '${apiConfig.baseUrl}/api/app-version';
@@ -109,11 +151,22 @@ class UpdateService {
       return;
     }
 
+    // 4. If the installed version matches or exceeds the server version, we're up to date.
+    //    Clear any persisted dismissal since this version is now installed.
     if (remote.versionCode <= currentCode) {
       debugPrint('[Update] Up to date ($currentCode >= ${remote.versionCode})');
+      if (dismissedCode != 0) {
+        await prefs.remove(_kDismissedVersionKey);
+      }
       if (showFeedback && context.mounted) {
         _showSnack(context, '✓ Rhodey is up to date');
       }
+      return;
+    }
+
+    // 5. If this specific version was already dismissed via "Later", skip silently
+    if (dismissedCode == remote.versionCode && !showFeedback) {
+      debugPrint('[Update] Version ${remote.versionCode} was dismissed — skipping');
       return;
     }
 
@@ -121,25 +174,33 @@ class UpdateService {
 
     if (!context.mounted) return;
 
-    // Mark dialog as shown so it won't reappear on next foreground event
+    // Mark dialog as shown so it won't reappear on next foreground event this session
     _dialogShownThisSession = true;
 
-    await showDialog<bool>(
+    final upgrade = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => _UpdateDialog(
         versionName: remote.versionName,
         releaseNotes: remote.releaseNotes,
       ),
-    ).then((upgrade) {
-      if (upgrade == true && context.mounted) {
-        _downloadAndInstall(context, remote.downloadUrl!);
-      }
-    });
+    );
+
+    // Persist dismissal regardless of choice (Later OR Update Now).
+    // For "Later": skips this version on next app open.
+    // For "Update Now": fallback in case the APK install doesn't actually change
+    // the version code (e.g. download URL returned a stale APK).
+    await prefs.setInt(_kDismissedVersionKey, remote.versionCode);
+
+    if (upgrade == true && context.mounted) {
+      _downloadAndInstall(context, remote.downloadUrl!);
+    }
   }
 
   /// Check for updates showing full feedback (for manual "Check for updates" button).
-  Future<void> checkNow(BuildContext context) => check(context, showFeedback: true);
+  /// Dismissal is cleared inside _doCheck when showFeedback=true.
+  Future<void> checkNow(BuildContext context) =>
+      check(context, showFeedback: true);
 
   void _showSnack(BuildContext context, String message, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(

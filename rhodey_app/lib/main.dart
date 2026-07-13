@@ -64,11 +64,19 @@ class MainShell extends StatefulWidget {
 }
 
 class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
+  /// Set to true after the first post-frame callback fires.
+  /// Prevents didChangeAppLifecycleState(resumed) from duplicating the
+  /// startup check — the lifecycle fires on initial render, and we only
+  /// want it to trigger on genuine foreground transitions (app backgrounded
+  /// and reopened).
+  bool _hasStarted = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _hasStarted = true;
       UpdateService().check(context);
     });
   }
@@ -81,7 +89,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed && _hasStarted) {
       // Quietly check for updates every time the app comes to foreground
       UpdateService().check(context);
     }
