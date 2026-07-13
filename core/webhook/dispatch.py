@@ -25,7 +25,7 @@ from core.lib.decision_audit import log_decision, DecisionStage, set_decision_ch
 from core.pulse.entity_extractor import extract_and_link_entities
 from core.lib.graph_rules import normalize_label
 from core.pulse.entity_resolver import resolve_entities_from_text
-from core.services.db import version_memory_for_update, maybe_single_safe
+from core.services.db import maybe_single_safe
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:
@@ -374,7 +374,6 @@ async def _enrich_memory_entities(text: str, memory_id: int, active_anchor: dict
                 update_data['organization_id'] = chosen_org_id
             if chosen_proj_id:
                 update_data['project_id'] = chosen_proj_id
-            update_data = version_memory_for_update(memory_id, update_data)
             supabase.table('memories').update(update_data).eq('id', memory_id).execute()
             
         audit_log_sync("webhook", "INFO", f"Memory enrichment {memory_id} | reason={reason} | chosen_org={chosen_org_id} chosen_proj={chosen_proj_id}")
@@ -571,8 +570,8 @@ async def _run_post_capture_enrichment(
                 "promotion_status": "promoted" if actionable else "none",
                 "actionable_count": len(actionable)
             }
-            update_data = version_memory_for_update(memory_id, {"metadata": new_meta})
-            supabase.table('memories').update(update_data).eq('id', memory_id).execute()
+            upd = {"metadata": new_meta}
+            supabase.table('memories').update(upd).eq('id', memory_id).execute()
         except Exception as e:
             audit_log_sync("enrichment", "WARNING", f"Failed to update metadata with signals for memory {memory_id}: {e}")
 
@@ -765,7 +764,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
     if match:
         actual_url = match.group(0).rstrip('.,;:!?)"\'')
         try:
-            existing = supabase.table('resources').select('id, dismissed_at').eq('url', actual_url).limit(1).execute()
+            existing = supabase.table('resources').select('id, dismissed_at').eq('url', actual_url).eq('is_current', True).limit(1).execute()
             if not existing.data:
                 supabase.table('resources').insert({"url": actual_url}).execute()
             elif existing.data[0].get('dismissed_at'):
@@ -944,13 +943,13 @@ async def handle_role_update(text: str, chat_id: int, classification: dict, sour
 
     # Resolve person in people table
     try:
-        res = supabase.table('people').select('id, name, role').ilike('name', f'%{person_name}%').limit(1).execute()
+        res = supabase.table('people').select('id, name, role').ilike('name', f'%{person_name}%').eq('is_current', True).limit(1).execute()
         if res and res.data:
             person = res.data[0]
             person_id = person['id']
         else:
             # Check graph nodes for the person label
-            gn = supabase.table('graph_nodes').select('id, label').eq('type', 'person').ilike('label', f'%{person_name}%').limit(1).execute()
+            gn = supabase.table('graph_nodes').select('id, label').eq('type', 'person').ilike('label', f'%{person_name}%').eq('is_current', True).limit(1).execute()
             if gn and gn.data:
                 new_people = supabase.table('people').insert({
                     'name': gn.data[0]['label'],
@@ -1245,7 +1244,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         if resolved_entity:
             try:
                 # Fast search for exact or partial match in graph_nodes
-                node_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{resolved_entity}%').execute()
+                node_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{resolved_entity}%').eq('is_current', True).execute()
                 if node_res.data:
                     matches = node_res.data
                     # Tiebreaker 1: exact match (case-insensitive)
@@ -1255,8 +1254,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                     else:
                         # Tiebreaker 2: highest edge count
                         nids = [n['id'] for n in matches]
-                        source_edges = supabase.table('graph_edges').select('source_node_id, target_node_id').in_('source_node_id', nids).execute()
-                        target_edges = supabase.table('graph_edges').select('source_node_id, target_node_id').in_('target_node_id', nids).execute()
+                        source_edges = supabase.table('graph_edges').select('source_node_id, target_node_id').in_('source_node_id', nids).eq('is_current', True).execute()
+                        target_edges = supabase.table('graph_edges').select('source_node_id, target_node_id').in_('target_node_id', nids).eq('is_current', True).execute()
                         all_edge_data = (source_edges.data or []) + (target_edges.data or [])
                         ec = {}
                         if all_edge_data:
@@ -1716,6 +1715,7 @@ async def handle_declare_practice(text: str, chat_id: int, classification: dict)
         existing_res = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'practice') \
+            .eq('is_current', True) \
             .execute()
         
         # Filter status in Python because status is inside the metadata JSONB column

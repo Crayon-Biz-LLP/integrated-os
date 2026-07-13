@@ -1,33 +1,27 @@
 #!/bin/bash
+# Export codebase to Notebook LM via Google Docs (Drive + Docs API).
+# Called by CI workflow (.github/workflows/notebooklm-sync.yml) on push to main.
+# Can also be run locally for testing.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUTPUT_DIR="$REPO_ROOT/notebooklm"
-RCLONE="$(which rclone 2>/dev/null || echo "/opt/homebrew/bin/rclone")"
-RCLONE_DEST="rhodey-calls:Crayon/Rhodey OS/NotebookLM Sources"
 START=$(date +%s)
 
 echo "=== Notebook LM Export ==="
-echo "Repo:  $REPO_ROOT"
+echo "Repo: $REPO_ROOT"
 echo ""
 
-# Step 1: Generate markdown sources
-python3 "$REPO_ROOT/scripts/generate_notebooklm_sources.py" \
-    --output-dir "$OUTPUT_DIR" \
-    --repo-root "$REPO_ROOT"
+# Step 1: Generate .md bundles from git-tracked files
+python3 "$REPO_ROOT/scripts/generate_notebooklm_sources.py"
 
 echo ""
 
-# Step 2: Sync to Google Drive
-echo "Syncing to Google Drive ($RCLONE_DEST)..."
-"$RCLONE" sync "$OUTPUT_DIR" "$RCLONE_DEST" \
-    --progress \
-    --checksum \
-    --delete-excluded \
-    --exclude ".DS_Store"
-echo ""
+# Step 2: Sync to Google Docs (Drive API create + Docs API update)
+echo "Syncing to Google Docs..."
+python3 "$REPO_ROOT/scripts/sync_notebooklm_docs.py"
 
 ELAPSED=$(($(date +%s) - START))
+echo ""
 echo "=== Done in ${ELAPSED}s ==="
-echo "Sync complete. Add the Google Drive folder 'NotebookLM Sources'"
-echo "as a source in Notebook LM to query the codebase."
+echo "Google Docs updated in drive://NotebookLM Codebase Sources/"
+echo "Notebook LM auto-syncs these sources within minutes."
