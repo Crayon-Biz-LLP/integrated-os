@@ -346,6 +346,12 @@ async def send_message_route(request: Request):
             print(f"Send-message briefing error (non-critical): {brief_err}")
             briefing_update = None
         
+        # Fire-and-forget silent push to refresh all phone screens instantly.
+        # This is how WhatsApp works — the backend says "hey, new data" via FCM,
+        # and the phone fetches the briefing without constant 10s polling.
+        from core.services.push_notification import send_silent_push
+        asyncio.ensure_future(send_silent_push({"type": "briefing_refresh"}))
+
         return {
             "success": True,
             "message": "Message processed",

@@ -143,3 +143,85 @@ async def send_push_notification(
             audit_log_sync("push", "WARNING", f"Failed to clean invalid tokens: {e}")
 
     return success_count
+
+
+async def send_silent_push(data: dict) -> int:
+    """Send a data-only FCM push (no visible notification).
+
+    The phone receives this silently — no banner, no sound, no lock-screen
+    alert. The ``data`` payload is delivered to the app's message handler,
+    which can trigger an in-app refresh (e.g. 'new briefing available').
+
+    This is how WhatsApp and Telegram deliver instant updates without
+    constant polling — the app only makes network calls when the server
+    says there's new data.
+
+    Args:
+        data: Key-value pairs for the ``data`` payload. Must include a
+              ``type`` key that the app uses to decide what to refresh.
+              Example: ``{"type": "briefing_refresh"}``
+
+    Returns:
+        Number of devices successfully notified.
+    """
+    creds = _get_fcm_credentials()
+    if not creds:
+        return 0
+
+    try:
+        request = Request()
+        creds.refresh(request)
+        access_token = creds.token
+    except Exception as e:
+        audit_log_sync("push", "ERROR", f"Failed to get FCM access token for silent push: {e}")
+        return 0
+
+    project_id = _get_project_id(creds)
+    fcm_url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
+
+    supabase = get_supabase()
+    tokens_res = supabase.table("device_tokens").select("token,platform").execute()
+    tokens = tokens_res.data if tokens_res and tokens_res.data else []
+    if not tokens:
+        return 0
+
+    success_count = 0
+    invalid_tokens = []
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for entry in tokens:
+            token = entry.get("token", "")
+            platform = entry.get("platform", "android")
+            if not token:
+                continue
+
+            # Data-only payload — NO "notification" field, so the phone
+            # processes this silently without showing any UI.
+            payload = {"message": {"token": token, "data": {str(k): str(v) for k, v in data.items()}}}
+
+            if platform == "android":
+                payload["message"]["android"] = {"priority": "high"}
+
+            try:
+                resp = await client.post(
+                    fcm_url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                if resp.status_code == 200:
+                    success_count += 1
+                elif resp.status_code == 404:
+                    invalid_tokens.append(token)
+            except (httpx.TimeoutException, Exception):
+                pass  # Silent pushes are best-effort — never block on failure
+
+    if invalid_tokens:
+        try:
+            supabase.table("device_tokens").delete().in_("token", invalid_tokens).execute()
+        except Exception:
+            pass
+
+    return success_count

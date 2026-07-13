@@ -13,25 +13,28 @@ import 'services/update_service.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize Firebase (needed for App Distribution OTA updates).
-  // Wrapped in try/catch so the app starts even if Google Play Services is missing.
-  try {
-    await Firebase.initializeApp();
-  } catch (e) {
-    debugPrint('[Firebase] Init failed: $e');
-  }
-
   // Load persisted API config before anything renders.
   await ApiService().init();
 
-  // Initialize push notifications via FCM.
-  try {
-    await NotificationService().init();
-  } catch (e) {
-    debugPrint('[FCM] Init failed (non-fatal): $e');
-  }
-
+  // Render the app immediately so the user sees cached data / skeleton UI.
   runApp(const RhodeyApp());
+
+  // Defer Firebase + FCM to after the first frame.
+  // Previously these blocked runApp() for 1.5-5s (cold Firebase + FCM token
+  // fetch). Now the UI appears instantly with cached briefing, then Firebase
+  // and notification setup run in the background.
+  WidgetsBinding.instance.addPostFrameCallback((_) async {
+    try {
+      await Firebase.initializeApp();
+    } catch (e) {
+      debugPrint('[Firebase] Init failed: $e');
+    }
+    try {
+      await NotificationService().init();
+    } catch (e) {
+      debugPrint('[FCM] Init failed (non-fatal): $e');
+    }
+  });
 }
 
 class RhodeyApp extends StatelessWidget {

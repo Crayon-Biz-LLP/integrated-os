@@ -713,16 +713,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
   Widget _buildContent() {
     if (_loading) {
-      return const Center(
-        child: SizedBox(
-          width: 20,
-          height: 20,
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-            color: Color(0xFF6B6863),
-          ),
-        ),
-      );
+      return _buildSkeletonLoading();
     }
 
     if (_hasError) {
@@ -2325,6 +2316,81 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       ),
     );
   }
+
+  // ── Skeleton Loading ──────────────────────────────────────────────────────
+
+  /// Replaces the old CircularProgressIndicator with a full-page shimmer
+  /// skeleton that mirrors the real layout (greeting, chip, section cards).
+  Widget _buildSkeletonLoading() {
+    return _ShimmerEffect(
+      child: ListView(
+        padding: const EdgeInsets.only(top: 24, bottom: 16),
+        physics: const NeverScrollableScrollPhysics(),
+        children: [
+          // Greeting skeleton
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _skeletonLine(width: 0.55, height: 32, radius: 8),
+                const SizedBox(height: 10),
+                _skeletonLine(width: 0.4, height: 16, radius: 6),
+                const SizedBox(height: 18),
+                _skeletonLine(width: 0.3, height: 28, radius: 10),
+              ],
+            ),
+          ),
+          const SizedBox(height: 40),
+          // Section 1 header
+          _skeletonSectionHeader(),
+          // Section 1 cards (3)
+          _skeletonCard(height: 56),
+          _skeletonCard(height: 56),
+          _skeletonCard(height: 56),
+          const SizedBox(height: 16),
+          // Section 2 header
+          _skeletonSectionHeader(),
+          // Section 2 cards (3)
+          _skeletonCard(height: 44),
+          _skeletonCard(height: 44),
+          _skeletonCard(height: 44),
+        ],
+      ),
+    );
+  }
+
+  Widget _skeletonSectionHeader() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+      child: _skeletonLine(width: 0.2, height: 12, radius: 4),
+    );
+  }
+
+  Widget _skeletonCard({required double height}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
+      child: _skeletonLine(width: 1.0, height: height, radius: 10),
+    );
+  }
+
+  Widget _skeletonLine({
+    required double width,
+    required double height,
+    required double radius,
+  }) {
+    return FractionallySizedBox(
+      widthFactor: width,
+      alignment: Alignment.centerLeft,
+      child: Container(
+        height: height,
+        decoration: BoxDecoration(
+          color: const Color(0xFF0E0E0D),
+          borderRadius: BorderRadius.circular(radius),
+        ),
+      ),
+    );
+  }
 }
 
 // ── Supporting widgets ──────────────────────────────────────────────────────
@@ -2518,8 +2584,67 @@ class _RecordingWaveState extends State<_RecordingWave>
 
 
 
+/// Gold shimmer effect that sweeps left-to-right across skeleton placeholders.
+/// Acts as a visual mask — the child's shapes are revealed with a gradient
+/// that moves from dark → champagne-tinted → dark, creating a loading pulse.
+class _ShimmerEffect extends StatefulWidget {
+  final Widget child;
+  const _ShimmerEffect({required this.child});
+
+  @override
+  State<_ShimmerEffect> createState() => _ShimmerEffectState();
+}
+
+class _ShimmerEffectState extends State<_ShimmerEffect>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (_, child) {
+        return ShaderMask(
+          shaderCallback: (bounds) {
+            final progress = _controller.value;
+            return LinearGradient(
+              colors: [
+                const Color(0xFF0E0E0D),
+                const Color(0xFFDFCCA7).withValues(alpha: 0.22),
+                const Color(0xFF0E0E0D),
+              ],
+              stops: const [0.0, 0.5, 1.0],
+              begin: Alignment(-1.0 + progress * 2.0, 0.0),
+              end: Alignment(1.0 + progress * 2.0, 0.0),
+            ).createShader(bounds);
+          },
+          blendMode: BlendMode.srcIn,
+          child: child!,
+        );
+      },
+      child: widget.child,
+    );
+  }
+}
+
 // ── Ambient Ember Glow ─────────────────────────────────────────────────────
 /// Floating ember particles drifting slowly upward. Subtle, meditative, warm.
+
 
 class _EmberData {
   final double startTime;

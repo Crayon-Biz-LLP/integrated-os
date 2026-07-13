@@ -571,7 +571,8 @@ async def _run_post_capture_enrichment(
                 "promotion_status": "promoted" if actionable else "none",
                 "actionable_count": len(actionable)
             }
-            supabase.table('memories').update({"metadata": new_meta}).eq('id', memory_id).execute()
+            update_data = version_memory_for_update(memory_id, {"metadata": new_meta})
+            supabase.table('memories').update(update_data).eq('id', memory_id).execute()
         except Exception as e:
             audit_log_sync("enrichment", "WARNING", f"Failed to update metadata with signals for memory {memory_id}: {e}")
 
