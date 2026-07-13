@@ -21,6 +21,7 @@ data/
 **/.vscode/
 **/node_modules/
 **/venv/
+notebooklm/
 product-summary/*.log
 *.log
 .pytest_cache/

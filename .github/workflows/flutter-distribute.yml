@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full git history needed for accurate version code
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -38,11 +40,25 @@ jobs:
       - name: Write Firebase config
         run: echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > rhodey_app/android/app/google-services.json
 
-      - name: Build APK (release — signed for consistent updates)
+      - name: Compute auto-version from git history
+        id: version
+        run: |
+          VERSION_NAME=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/version: *//' | sed 's/+.*//')
+          VERSION_CODE=$(git rev-list --count HEAD)
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "Using version $VERSION_NAME (build $VERSION_CODE)"
+
+      - name: Build APK (release — signed, auto-versioned)
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: flutter build apk --release
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+        run: |
+          flutter build apk --release \
+            --build-name="$VERSION_NAME" \
+            --build-number="$VERSION_CODE"
         working-directory: rhodey_app
 
       - name: Distribute to Firebase App Distribution
@@ -56,9 +72,9 @@ jobs:
       - name: Upload APK to GitHub Releases (for in-app updates)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
         run: |
-          VERSION_NAME=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
-          VERSION_CODE=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/.*+//')
           TAG="app-v${VERSION_NAME}+${VERSION_CODE}"
           NOTES="Automated build from main branch (${GITHUB_SHA::7})"
           gh release delete app-latest --yes 2>/dev/null || true
@@ -73,9 +89,9 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
         run: |
-          VERSION_NAME=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
-          VERSION_CODE=$(grep '^version: ' rhodey_app/pubspec.yaml | sed 's/.*+//')
           DOWNLOAD_URL="https://github.com/Crayon-Biz-LLP/integrated-os/releases/download/app-latest/app-release.apk"
           RELEASE_NOTES="Automated build from main branch (${GITHUB_SHA:0:7})"
           export VERSION_NAME VERSION_CODE DOWNLOAD_URL RELEASE_NOTES
