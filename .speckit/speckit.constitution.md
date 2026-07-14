@@ -1,5 +1,5 @@
 # Rhodey OS — System Constitution
-> Last Updated: May 2026 | Maintained by: Danny (Yashwant Daniel), Crayon
+> Last Updated: July 2026 | Maintained by: Danny (Yashwant Daniel), Crayon
 
 ---
 
@@ -151,6 +151,24 @@ Violation examples:
 - ❌ Custom retry/fallback loop when `call_llm_with_fallback_sync()` exists
 
 See the "Canonical Import Paths" table in `AGENTS.md` for the complete list.
+
+---
+
+### P12 — Graph Nodes Require HITL
+
+Every new graph node (person, organization, project) and every extracted edge flows through pending approval before entering the live graph. No auto-creations. `normalized_label TEXT UNIQUE` column enforces case-insensitive dedup at the DB level.
+
+---
+
+### P13 — No Abstract Concepts in the Graph
+
+Concepts (emotional_state, resource, abstract ideas) are NOT tracked as graph nodes. Emotions live on `memories.sentiment_score` metadata. Abstract concepts are not represented in the ontology. The only node types are: person, organization, project, place, animal.
+
+---
+
+### P14 — App Versioning is CI-Managed
+
+Flutter APK version name/code is derived from `pubspec.yaml`. The CI pipeline (`flutter-distribute.yml`) injects it automatically. Manual version bumps should be avoided — always update `pubspec.yaml` and let CI propagate.
 
 ---
 

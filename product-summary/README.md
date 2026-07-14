@@ -27,7 +27,7 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [08b-telegram-commands.md](08b-telegram-commands.md) | All 18 Telegram commands with syntax and behavior |
 | [25-whatsapp-ingest.md](25-whatsapp-ingest.md) | WhatsApp notification ingest via MacroDroid, separate table, approval flow |
 | [26-call-recording-ingest.md](26-call-recording-ingest.md) | Call transcription pipeline, Google Drive webhooks, and AI task extraction |
-| [35-whatsapp-batch-ingest.md](35-whatsapp-batch-ingest.md) | WhatsApp conversation batching — 3-min window, advisory lock, atomic batch-or-insert RPC |
+| [25b-whatsapp-batch-ingest.md](25b-whatsapp-batch-ingest.md) | WhatsApp conversation batching — 3-min window, advisory lock, atomic batch-or-insert RPC |
 
 ### The Task System
 | File | What It Covers |
@@ -70,8 +70,14 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [27-personal-capture-pipeline.md](27-personal-capture-pipeline.md) | Personal notes, meeting notes, ideas, voice memos — capture from natural speech, /note command, and evening roundup |
 | [28-clarification-loop-guards.md](28-clarification-loop-guards.md) | Entity grounding guards, URL quarantine, clarification loop architecture, organizations table, validation window |
 | [29-conversation-threads-and-workflows.md](29-conversation-threads-and-workflows.md) | Persistent threads, workflow state engine, query carry-forward across turns |
-| [29-conversational-persistence-memory-hygiene.md](29-conversational-persistence-memory-hygiene.md) | Memory expiry, versioning, deletion cleanup, raw dump lifecycle, query carry-forward |
 | [30-context-registry-truth-boundary.md](30-context-registry-truth-boundary.md) | Context registry (entity-grounded retrieval, 6 strategies, hard/soft gates) + truth boundary (post-generation claim validation, action receipts) + prompt registry + JSON fail-closed |
+
+### Graph & Knowledge
+| File | What It Covers |
+|------|---------------|
+| [36-graph-cross-domain-linkages.md](36-graph-cross-domain-linkages.md) | Graph cross-domain linkages, multi-layered edge extraction, WORKS_AT/BELONGS_TO pipeline |
+| [44-graph-kg-hardening.md](44-graph-kg-hardening.md) | 4-layer KG hardening, concept fluidity (synaptic plasticity), Entities tab UI |
+| [45-graph-redesign-dedup.md](45-graph-redesign-dedup.md) | Three-pane graph surface, 2.5D spherical NeuralDisc, 4-layer dedup |
 
 ### Meta-Cognitive Layer
 | File | What It Covers |
@@ -81,12 +87,35 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 ### Postgres / Schema Fixes
 | File | What It Covers |
 |------|---------------|
-| [36-normalized-label-fix.md](36-normalized-label-fix.md) | normalized_label column for PostgREST-compatible case-insensitive graph node dedup |
+| [22b-normalized-label-fix.md](22b-normalized-label-fix.md) | normalized_label column for PostgREST-compatible case-insensitive graph node dedup |
 
 ### Enrichment & Workflows
 | File | What It Covers |
 |------|---------------|
 | [37-smart-batch-enrichment.md](37-smart-batch-enrichment.md) | Smart batch enrichment — multi-signal collection, per-signal LLM decision parsing, calendar_event signal type |
+| [40-process-input-refactoring.md](40-process-input-refactoring.md) | process_single_dump refactoring, calendar event simplification, new test suite |
+| [46-role-update-intent.md](46-role-update-intent.md) | ROLE_UPDATE intent — detect role attributions, update people.role, SERVES_AT edges |
+| [47-classification-context-boundary.md](47-classification-context-boundary.md) | Bounded classify context, bot receipt stripping, PERSON QUERIES rule |
+
+### Mobile App (Flutter — Rhodey)
+| File | What It Covers |
+|------|---------------|
+| [38-push-notifications.md](38-push-notifications.md) | FCM push notification service, response text to app, diagnostic endpoints |
+| [43-apk-versioning.md](43-apk-versioning.md) | Flutter APK build pipeline, in-app update system, versioning |
+| [48-flutter-app-architecture.md](48-flutter-app-architecture.md) | Full Flutter app — 12 screens, 5 models, 3 services, 4 widgets, Firebase, TTS, voice, in-app updates |
+| [49-rhodey-surface-ux.md](49-rhodey-surface-ux.md) | Rhodey Surface v1→v3 evolution, Horizon/Traces design, App Redesign v2 P1-P5 |
+
+### Notebook LM & Docs
+| File | What It Covers |
+|------|---------------|
+| [39-notebooklm-sync.md](39-notebooklm-sync.md) | Google Docs API sync for Notebook LM, CI workflow, OAuth scope update |
+
+### Infrastructure
+| File | What It Covers |
+|------|---------------|
+| [44b-llm-layer-consolidation.md](44b-llm-layer-consolidation.md) | Consolidated LLM/Supabase/Google clients, multi-key Gemini failover, unified fallback chain |
+| [42-temporal-versioning-expansion.md](42-temporal-versioning-expansion.md) | DB-trigger-based temporal lineage for memories, removal of app-level versioning |
+| [41-diagnostic-endpoints.md](41-diagnostic-endpoints.md) | /api/briefing-ping, /api/briefing-debug health and debug endpoints |
 
 ### Frontend Features
 | File | What It Covers |

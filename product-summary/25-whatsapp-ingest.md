@@ -93,7 +93,7 @@ Prefixed shortcodes (`w{id}`) route directly to `messages` via `core/webhook/wha
 | `core/pulse/engine.py` | `process_decision_pulse()` — standalone decision pulse (no AI) |
 
 ## Batch Window (Conversation Batching)
-To prevent a rapid-fire conversation from flooding the Decision Pulse, same-sender messages within a **3-minute window** are auto-batched into a single `messages` row via a Postgres RPC with advisory lock. See [35-whatsapp-batch-ingest.md](35-whatsapp-batch-ingest.md) for full details.
+To prevent a rapid-fire conversation from flooding the Decision Pulse, same-sender messages within a **3-minute window** are auto-batched into a single `messages` row via a Postgres RPC with advisory lock. See [25b-whatsapp-batch-ingest.md](25b-whatsapp-batch-ingest.md) for full details.
 
 ## Key Design Decisions
 1. **Separate table** (`messages`) rather than reusing `messages` — keeps WhatsApp independent from the email pipeline

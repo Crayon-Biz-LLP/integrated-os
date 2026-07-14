@@ -231,6 +231,13 @@ Tables to surface:
 
 ## Today's Changes (June 21, 2026)
 
+### T-403b: Notes from Telegram
+**Files**: `core/webhook/dispatch.py`, `core/webhook/handler.py`
+**Status**: Completed
+**Details**: Messages classified as NOTE are now captured and routed directly from Telegram into the existing NOTE pipeline without special syntax. Classifier tuning for NOTE intent already in place — this wires the output through to memory creation.
+
+---
+
 ### T-404: Brain Graph — Danny-Centered Ego Graph with Episode Stream
 **Status**: Completed
 **Details**: Replaced the legacy D3.js FullGraph with a split-pane Danny-centered brain view:
@@ -349,6 +356,13 @@ This enables natural-language note capture without special syntax.
 **File**: `core/webhook/handler.py`
 **Status**: Completed
 **Change**: New `/note <text>` Telegram command. Runs classifier normally (extracts entity/project/person metadata), then overrides `intent → NOTE`, `confidence → 1.0`, `receipt → 🧠`. Preserves all downstream processing. Empty `/note` sets `WAITING_FOR_NOTE` session flag with 5-minute timeout for continuation.
+
+### T-RPC-001: Fix get_context_for RPC UNION type mismatch
+**Files**: `db/20_get_context_for.sql`
+**Status**: Completed (Jul 7, 2026)
+**Details**: `get_context_for()` RPC had `NULL::uuid` vs `text` type mismatch in a UNION query — caused HTTP 415 on context retrieval. Fixed by casting `NULL::text` to match the anchor column type. This was the second occurrence of UNION type mismatch in RPC functions; previous fix was Jun 25 for a different RPC.
+
+---
 
 ### T-019: Fix pending graph node label-drift duplicates
 **File**: `core/skills/backfill_graph.py`, Supabase migration
@@ -702,6 +716,13 @@ This enables natural-language note capture without special syntax.
 
 ---
 
+### T-PROCESS-001: process_single_dump Refactoring
+**Files**: `core/lib/process_input.py` (NEW), `core/webhook/dispatch.py`, `core/webhook/workflows.py`, `core/pulse/tools.py`, `core/services/google_service.py`, +10 more (16 total)
+**Status**: Completed (Jul 11, 2026)
+**Details**: Major refactoring extracted core processing logic from `dispatch.py` into `core/lib/process_input.py`. 1,382 insertions across 16 files. Calendar event creation simplified by funneling through existing task workflow — removed 66 lines from `google_service.py`. New test suite: `tests/sim/test_full_pipeline.py`, `tests/unit/test_process_input.py`.
+
+---
+
 ## Today's Changes (Jul 11, 2026)
 
 ### [COMPLETED] T-BATCH-001: Smart Batch Enrichment — Multi-Signal Collection
@@ -805,3 +826,222 @@ This enables natural-language note capture without special syntax.
 1. **List view toggle**: New grid/list toggle in the header. List view is a flat table with Title, Hostname, Category, Cluster dropdown, Date, and Dismiss button per row.
 2. **Resource dismiss**: `dismissed_at TIMESTAMPTZ` column added to `resources` table. Dismiss buttons in both the list view rows and the split-pane detail view. Dismissed resources are hidden from the UI (`.is('dismissed_at', null)` filter on all queries). URL dedup in the backend checks `dismissed_at` — if the same URL is re-submitted, Rhodey replies "Already seen this link and dismissed it. Skipping." instead of re-storing it.
 **Deploy safe**: YES — additive migration + new API endpoint + hidden behind new UI toggle. Existing resources unaffected.
+
+---
+
+## Today's Changes (Jun 25-26, 2026)
+
+### [COMPLETED] T-GRAPH-001: Three-Pane Graph Intelligence Surface
+**Files**: `frontend/src/app/dashboard/graph/`
+**Change**: Replaced legacy single-pane graph with coordinated three-pane layout:
+- Left: structural graph context with relation labels and edge hierarchy
+- Center: focus modes with ranked labels and memory panel
+- Right: responsive collapsible/resizable panes
+**Deploy safe**: YES — frontend-only change
+
+---
+
+### [COMPLETED] T-GRAPH-002: 2.5D Spherical NeuralDisc
+**Files**: `frontend/src/app/dashboard/graph/neural-disc/`
+**Change**: Upgraded NeuralDisc from flat 2D to Fibonacci sphere 3D with wireframe sphere rendering, depth cues, orbiting labels, rich pane context on node click.
+**Deploy safe**: YES — frontend-only
+
+---
+
+### [COMPLETED] T-GRAPH-003: 4-Layer Graph Dedup + Merge
+**Files**: `scripts/backfill_graph_dedup.py`, `core/pulse/graph.py`
+**Change**: Two-track duplicate cleanup. 4-layer dedup: exact label → normalized ILIKE → fuzzy trigram → manual review queue. Executed actual node merges with edge consolidation.
+**Deploy safe**: YES — one-time script
+
+---
+
+### [COMPLETED] T-GRAPH-004: Clarification Loop Unification
+**Files**: `core/pulse/graph.py`, `api/index.py`, `frontend/src/app/api/clarification/`
+**Change**: Unified clarification feedback loops across Telegram and Decisions UI. Added missing API proxy route. Fixed recurring task bug, memory titles, graph loading with Redis.
+**Deploy safe**: YES
+
+---
+
+## Today's Changes (Jul 7, 2026)
+
+### [COMPLETED] T-FLUTTER-001: Rhodey Flutter App — Foundations
+**Files**: `rhodey_app/` (full directory)
+**Change**: Built the Rhodey Flutter app from scratch:
+- Firebase integration (FCM push, firebase_options.dart, google-services.json)
+- In-app update system with version check, download, and install
+- TTS for Rhodey responses, voice mic button on home screen
+- Digital signatures for APK builds via CI
+- RECORD_AUDIO permission for speech recognition
+- Kotlin DSL signing config
+**Deploy safe**: YES — new app, doesn't affect backend
+
+---
+
+### [COMPLETED] T-FLUTTER-002: Flutter Build Pipeline
+**Files**: `.github/workflows/flutter-distribute.yml`
+**Change**: GitHub Action for automated Flutter builds. `contents:write` permission for GitHub Releases upload. APK signing and version bump automation.
+**Deploy safe**: YES — CI only
+
+---
+
+## Today's Changes (Jul 8, 2026)
+
+### [COMPLETED] T-FLUTTER-003: App Redesign v2 (P1-P5)
+**Files**: `rhodey_app/lib/main.dart`, `rhodey_app/lib/screens/rhodey_surface.dart`, `api/index.py`
+**Change**: Five-phase redesign: P1 notification refactor, P2 conversation list, P3 individual conversation view, P4 decoration polish, P5 sound/vibration. Removed task-or-note popup — bot responses send directly to app screen.
+**Deploy safe**: YES
+
+---
+
+### [COMPLETED] T-GRAPH-005: Graph Unique Constraints Fix
+**File**: DB migration + `f33acae`
+**Change**: Fixed graph_nodes/pending_graph_edges unique constraints broken for ON CONFLICT (PostgREST functional index mismatch). approve/reject all flow fixed in backend and frontend.
+**Deploy safe**: YES
+
+---
+
+## Today's Changes (Jul 10, 2026)
+
+### [COMPLETED] T-SURFACE-001: Rhodey Surface v1-v3
+**Files**: `rhodey_app/lib/screens/rhodey_surface.dart`, `rhodey_app/lib/screens/today_screen.dart`, `rhodey_app/lib/screens/surface_prototype.dart`
+**Change**: Three iterative redesigns of Flutter home screen: v1 card-based feed, v2 briefing-based sections, v3 Horizon/Traces with editorial typography, warm stone palette, search.
+**Deploy safe**: YES
+
+---
+
+### [COMPLETED] T-PUSH-001: FCM Push Notification Wire
+**Files**: `core/services/push_notification.py` (NEW), `core/webhook/telegram.py`, `api/briefing.py`, `api/index.py`
+**Change**: Fire-and-forget FCM push on every `send_telegram()`. Response persisted to `raw_dumps`. Briefing API adds `latest_response` field. Dart model updated. onPushReceived triggers immediate briefing fetch.
+**Deploy safe**: YES — additive
+
+---
+
+### [COMPLETED] T-DIAG-001: Diagnostic Endpoints
+**Files**: `api/index.py`
+**Change**: Added `/api/briefing-ping` (health check) and `/api/briefing-debug` (full debug dump with entities, time context, dates).
+**Deploy safe**: YES
+
+---
+
+### [COMPLETED] T-DIAG-002: TypedDict Serialization Fix
+**Files**: `api/index.py`
+**Change**: Converted FastAPI `response_model` TypedDicts to plain dicts to avoid Vercel serialization crash.
+**Deploy safe**: YES
+
+---
+
+## Today's Changes (Jul 13, 2026)
+
+### [COMPLETED] T-NOTEBOOKLM-001: Notebook LM Auto-Sync
+**Files**: `scripts/sync_notebooklm_docs.py` (NEW), `scripts/update_google_oauth.py` (NEW), `.github/workflows/notebooklm-sync.yml` (NEW), `scripts/export-to-notebooklm.sh`
+**Change**: Replaced rclone `.md` sync with Google Docs API. Creates/updates Google Docs in shared Drive folder (Docs auto-sync into Notebook LM). CI workflow triggers on push to main. Removed pre-push git hook.
+**Deploy safe**: YES — independent pipeline
+
+---
+
+### [COMPLETED] T-VERSIONING-001: Temporal Versioning Expansion
+**Files**: `db/31_temporal_versioning_expansion.sql` (NEW, 255 lines), `core/services/db.py`, +41 files
+**Change**: Removed app-level `version_memory_for_update()` — memories versioning now handled entirely by DB triggers. Added `.eq('is_current', True)` guards to active project queries across frontend API routes. Misc lint fixes and stale import cleanup across 41 files.
+**Deploy safe**: YES — additive migration, removed dead code
+
+---
+
+### [COMPLETED] T-FLUTTER-004: APK Versioning Fix + Pulse Bug
+**Files**: `.github/workflows/flutter-distribute.yml`, `scripts/export-to-notebooklm.sh`, `core/skills/backfill_graph.py`, `rhodey_app/lib/services/update_service.dart`
+**Change**: Fixed flutter-distribute.yml CI pipeline for app versioning (version name/code from pubspec.yaml). Fixed pulse run bug in backfill step 2. In-app update service hardened with version comparison from release title.
+**Deploy safe**: YES
+
+---
+
+### [COMPLETED] T-MEMORY-001: Pulse Memory Versioning Fix
+**Files**: `core/pulse/engine.py`, `core/services/push_notification.py`, `rhodey_app/lib/services/notification_service.dart`
+**Change**: Fixed pulse engine to properly version memories before mutation in enrichment paths. FCM polling fix in Flutter app.
+**Deploy safe**: YES
+
+---
+
+## Early Foundational Features (May 1 – Jun 14, 2026)
+
+These features were built organically before the spec-kit task tracking system was established. They are documented here for completeness.
+
+### [COMPLETED] UI 2.0 Upgrade (May 1)
+**Files**: `frontend/src/app/dashboard/` (tasks, email, memories)
+**Details**: Major frontend redesign with shadcn/ui, Radix primitives, date-fns, sonner toasts. Upgraded dashboard, tasks, email, and memories pages. Build error fixes across 3 iterations. Defensive classification rendering.
+
+### [COMPLETED] Pulse Briefing Agents + Serendipity Engine (May 2-3)
+**Files**: `core/pulse/engine.py`, `core/pulse/context.py`, `core/skills/backfill_graph.py`
+**Details**: Integrated 5 specialized agents into Pulse briefing — Dependency Agent (task chain analysis), Social Graph Agent (relationship-aware context), Temporal Pattern Agent (recurrence/rhythm detection), Serendipity Engine (unexpected connection discovery), Adaptive Briefing Learner (briefing format optimization). Added LLM fallback chain (Gemini → Gemma → OpenRouter). Phase 1-2 pipeline hardening.
+
+### [COMPLETED] Web UI Chat (May 5)
+**Files**: `frontend/src/app/dashboard/` (messages), `api/index.py`
+**Details**: Full messaging interface to send/receive Telegram messages via browser. Sender tracking, message types, Pulse briefing logging. Mirror Telegram flow exactly. Fixes: metadata corruption, double-encoding, duplicate messages, Rhodey teal bubble styling, dedup skip for web messages.
+
+### [COMPLETED] Vercel Dual-Project Deployment (May 5-7)
+**Files**: `vercel.json`, `.vercelignore`, `.nvmrc`, `frontend/vercel.json`
+**Details**: Split into `integrated-os` (backend, Python) and `integrated-os-frontend` (frontend, Next.js) from same repo. Root `vercel.json` with `rewrites` (not `routes`). `.vercelignore` excludes frontend from backend build. Middleware simplified to cookie-check only. ~20 commits of trial/error to get both projects deploying correctly.
+
+### [COMPLETED] Task Versioning + Google Sync (May 11-12)
+**Files**: `core/pulse/tools.py`, `core/services/google_service.py`, `frontend/src/app/dashboard/habits/`, `db/02_temporal_lineage_triggers.sql`
+**Details**: Versioned history for tasks with bi-directional Google sync. Fallback LLM task creation when Google API returns partial data. Fixed `match_memories` RPC. Habit Tracker UI with weekly completion grid. Project creation bug fix. Email draft CC fix.
+
+### [COMPLETED] Conversation History Feature (May 13-15)
+**Files**: `core/lib/conversation.py`, `core/agents/quick_process.py`, `frontend/src/app/dashboard/` (calendar)
+**Details**: Full conversational persistence across phases 1-5 — thread tracking, follow-up responses, clarification flow, session unification. Calendar Tab UI with Day/Week/Agenda views. Quick Process pipeline for real-time raw dump processing. Rate limiter for Gemini Flash-Lite. Performance optimization.
+
+### [COMPLETED] Practice Detection + File Reorganization (May 16-17)
+**Files**: `core/webhook/classify.py`, `core/pulse/context.py`, `api/index.py`, `frontend/src/app/dashboard/`
+**Details**: CHURCH→ASHRAYA rename across all code. Practice detection with Gemini 3 Flash — identifies engagement type from message context. Monolithic to micro-level file reorganization. Canonical Pages rework. Email CC fix. Semantic dedup hardened.
+
+### [COMPLETED] Call Recording + WhatsApp + Decision Pulse (May 20-22)
+**Files**: `core/skills/call_ingest.py`, `core/skills/whatsapp_ingest.py`, `api/index.py`, `core/pulse/engine.py`
+**Details**: Call recording pipeline with faster-whisper transcription + Gemini extraction. WhatsApp ingest via MacroDroid with `w{id}` approval keyboard. Decision Pulse separated from AI briefings (dedicated `/api/decision-pulse`, no AI). Google Sync hardening. Calendar events in briefings.
+
+### [COMPLETED] LLM Native Control Layer + Completion Handler (May 25-28)
+**Files**: `core/llm/`, `core/webhook/completion_handler.py`, `core/agents/quick_process.py`
+**Details**: Structured JSON validation with Pydantic, targeted prompt mutations, jittered exponential backoffs. Robust completion handler with Flash Lite → 3.5 Flash fallback. Quick Process upgrade with semantic dedup, calendar conflicts, graph sync. Model version upgrades. Codebase linting + Vercel import fixes.
+
+### [COMPLETED] Sentinel + Clusters + Image Processing (Jun 1-5)
+**Files**: `core/pulse/sentinel.py`, `frontend/src/app/dashboard/clusters/`, `core/webhook/handler.py`
+**Details**: Sentinel watcher engine monitoring upcoming calendar events. Clusters UI — calls, whatsapp, and mission single-page views. Image multimodal verbatim extraction pipeline. AGENTS.md finalization with safety overrides.
+
+### [COMPLETED] Redis + Test Suite + Graph Guards (Jun 6-10)
+**Files**: `core/lib/redis_cache.py`, `core/llm/`, `core/context/`, `core/skills/backfill_graph.py`, `tests/clusters/`
+**Details**: Upstash Redis cache for retrieval pipeline. Full LLM Module Consolidation (Phases 1-7). 28 cluster integration tests. Graph integrity guards A/B/C. Tier 4 Working Memory + Context Providers. System hardening (circuit breaker, rate limiter, concurrency locks).
+
+### [COMPLETED] Teams + Tables Unification + Graph Overhaul (Jun 11-13)
+**Files**: `core/skills/teams_ingest.py`, `core/webhook/handler.py`, `core/pulse/graph.py`, `core/retrieval/`
+**Details**: Microsoft Teams ingestion pipeline. Message Table Unification (emails, calls, whatsapp → unified `messages` table). Sent email tracking. NLP graph correction flow. Graph overhaul with 5-type/16-edge ontology. Entity grounding guards (Guard 2-3). URL quarantine. Clarification loop Phase 1. Personal capture pipeline (Phase 1-4). Cron-job.org migration.
+
+---
+
+## Deferred Backlog (Updated Jul 2026)
+
+### TF-001 (P3): Decisions Table
+**Status**: No longer needed — decisions tracked via `decisions` table (auto-decision feedback loop) and decision audit `/why` system. Implicit decisions in tasks/briefings is acceptable.
+
+### TF-002 (P4): Graph Edge Expiry
+**Status**: Still deferred. `last_confirmed_at`/`valid_until` columns not added. Edges older than 90 days could be stale. Consider when graph visualization quality degrades.
+
+### TF-003 (P5): People Table Enrichment
+**Status**: Partially completed. `organization_name` is populated via ROLE_UPDATE intent and sync functions. `last_interaction_date` and `notes` columns still missing.
+
+### T-RHODE-005 (B1): Briefing prompt compression 4K→2K
+**Status**: Still pending (~1h effort)
+
+### T-RHODE-006 (B3): Briefing personalization
+**Status**: Still pending (~3h effort)
+
+### T-RHODE-007 (K3): Proactive thread resumption
+**Status**: Still pending (~2h effort)
+
+### T-RHODE-008 (K4): Workflow expiry nudge
+**Status**: Still pending (~2h effort)
+
+### T-RHODE-009 (T5): Delegation tracking dashboard
+**Status**: Still pending (~4h effort)
+
+### T-RHODE-010 (S3): Energy-aware scheduling
+**Status**: Still pending (~4h effort)
+
+### T-RHODE-011 (S5): Follow-up auto-cancel
+**Status**: Still pending (~1d effort, needs inbound entity resolution)

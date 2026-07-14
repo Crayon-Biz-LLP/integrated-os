@@ -3,7 +3,7 @@
 
 ---
 
-## Current System State (as of June 2026)
+## Current System State (as of July 2026)
 
 ### What is built and working
 - Telegram webhook intake (`core/webhook/handler.py`) — classification, task/note routing, multimodal support
@@ -21,6 +21,22 @@
 - Gmail + Outlook send via `senddraftreply()`
 - `JOURNALSYNC` signal handler — triggers GitHub Actions from Google Sheets
 - Personal capture pipeline — natural speech NOTE routing, `/note` command with entity extraction, `/api/roundup` evening check-in, voice memo→note pipeline
+- **UI 2.0 Upgrade** — Major frontend redesign with shadcn/ui, Radix primitives, date-fns, sonner toasts. Upgraded dashboard, tasks, email, and memories pages with defensive classification rendering.
+- **Web UI Chat** — Full messaging interface in browser to send/receive Telegram messages. Mirror Telegram flow exactly with sender tracking, dedup skip for web messages, Rhodey teal bubble styling.
+- **Vercel Dual-Project Deployment** — Split into `integrated-os` (backend, Python) and `integrated-os-frontend` (frontend, Next.js) from same repo. Root `vercel.json` with `rewrites` (not `routes`). `.vercelignore` excludes frontend from backend build. Middleware simplified to cookie-check only.
+- **Quick Process (Real-Time Raw Dump Processing)** — `core/agents/quick_process.py` processes raw dumps during webhook handling (not waiting for Pulse cron). Semantic dedup, calendar conflict detection, graph sync integrated inline.
+- **Practice Detection** — Gemini 3 Flash identifies engagement type (client project, internal, personal, ministry) from message context. CHURCH routing tag renamed to ASHRAYA across all Python/frontend code.
+- **Call Recording Ingestion** — `core/skills/call_ingest.py` pipeline for desktop meeting recordings (Zoom/Meet/Teams). Gemini extraction of minutes/action items from `faster-whisper` transcriptions. Outlook calendar integration for call context.
+- **WhatsApp Ingest** — MacroDroid notification → `/api/whatsapp-ingest` webhook. Phone number dedup/validation. `w{id}` approval inline keyboard. Pulse extraction of FYI memories and actionable tasks.
+- **Decision Pulse Separation** — Dedicated `/api/decision-pulse` endpoint (no AI, pending approvals only). Removed synced dumps from AI prompt to prevent relative time hallucinations. Separate inbox for approvals without briefing noise.
+- **Calendar Tab UI** — Day, Week, Agenda, and Month views for Google Calendar + Outlook calendar integration. RFC 3339 date formatting, timezone parsing fixes. Calendar events enriched in briefings.
+- **Habit Tracker** — Weekly habit grid with completion tracking, DB schema for recurrence patterns, daily briefing habit reminders.
+- **Image/Multimodal Processing** — Multimodal verbatim extraction for images attached to Telegram messages. MIME type inference for octet-stream uploads.
+- **Clusters UI** — Calls, WhatsApp, and Resources single-page bento layout replacing "Mission" label. Resource cluster list/grid toggle with dismiss feature.
+- **Message Table Unification** — Merged per-channel tables (emails, calls, whatsapp) into unified `messages` table with `channel` discriminator. Frontend queries migrated, legacy tables dropped.
+- **NLP Graph Correction Flow** — Human-confirmation loop for graph node corrections with frontend edit mode, relationship dropdown, context field, propose-merge with canonical label resolution.
+- **Sent Email Tracking** — Full conversation context via Sent Items folder fetch on cron. `direction` column on emails, `/api/email-search/sent` fallback endpoint, full body tracking in LLM queries.
+- **Cron-Job Migration** — Replaced GitHub Actions sentinel cron with external cron-job.org (free, more reliable for high-frequency schedules). Decision Pulse and Roundup also migrated. Sentinel lookahead 60 min.
 - RLS on sensitive tables (pending_graph_edges, pending_graph_nodes, messages, system_audit_logs, dead_letter_queue)
 - **LLM Layer fully consolidated**: All API clients (Supabase, Gemini, Google) created once from canonical modules. Multi-key Gemini failover (3 keys). Unified fallback chain. Single rate limiter. Shared pending decision handler for call/whatsapp/teams channels.
 - **Associative retrieval engine fully deployed**: 7-signal ranking (semantic, PPR, recency, importance, project, specificity, person_boost) replaces legacy pgvector-only `match_memories_hybrid`. 7 dedicated retrieval tables (passages, phrase_nodes, node_stats, passage_phrase_links, memory_bundle_links, alias_edges, index_runs). 855 passages (704 enriched with entity prefix), ~1500 phrase nodes, 3760 alias edges, 2344 passage-phrase links (all 704 enriched passages linked). Cold path 3.5–5.0s, warm path 1.8–3.5s. 5 per-site feature flags (incl. `RETRIEVAL_CHUNK_ENRICHMENT`) all ON in production. `build_triple_graph()` uses batch operations with dedup to prevent Postgres constraint collisions on edges and links. Forward indexing live for all new memories via `pending_retrieval_index_jobs` queue + sentinel piggyback. Redis caching (1h LLM, 24h embeddings) with multi-key failover on 429 errors.
@@ -45,20 +61,25 @@
 - **27-test verification suite**: 14 LIVE_DB simulation tests (T1–T8, T9–T14) + 6 new sim tests (C1–C4, P1–P2) + 13 unit tests covering context registry gates, pre-flight isolation, hallucination claim stripping, JSON fallback, index queue lifecycle, and session continuity. All verified against real Supabase.
 - **WhatsApp Conversation Batching**: Same-sender messages within a 3-minute window are auto-batched into one `messages` row via `batch_whatsapp_message()` RPC. Uses `pg_advisory_xact_lock(hashtext(sender_id))` for concurrency safety. Classification upgrades on batch (fyi → actionable). `received_at` preserved from first message. Migration `db/21_whatsapp_batch_rpc.sql`.
 - **Smart Batch Enrichment (Phase 21)**: Post-capture enrichment now collects ALL `calendar_event`/`deadline`/`task_imperative` signals (confidence ≥ 0.5) instead of promoting only the first match. Creates one `batch` workflow with `{"signals": [...]}` payload. Per-signal LLM decision parsing supports partial approval ("yes for meeting, no for deadline") and catch-all ("yes" = confirm all). `calendar_event` signal type added with `reminder_at` ISO 8601 field. Enrichment prompt includes `Current time: {IST datetime}` for relative date resolution. Title fallback chain: `task_title → proposed_title → title → "New Task"` everywhere. Double rendering fixed — `process_single_dump()` handles action accumulation internally.
+- **Graph Cross-Domain Linkages (Phase 22)**: 4-layer edge extraction pipeline for WORKS_AT/BELONGS_TO edges. Bidirectional FK audit between domain tables and graph nodes. 41 legacy people rows linked. 28 structural edges auto-approved. Schema hardening with VALID_EDGE_MATRIX.
+- **Graph Redesign & Dedup (Phase 23)**: Three-pane graph intelligence surface (structural context, focus modes, responsive panes). 2.5D spherical NeuralDisc (Fibonacci sphere, WebGL true 3D). 4-layer graph dedup algorithm (exact label → normalized ILIKE → fuzzy trigram → manual review). Clarification loop unification across Telegram and Decisions UI.
+- **Flutter Mobile App (Phase 25)**: Rhodey Flutter app built from scratch. Firebase integration with FCM push. In-app update system with version check/download/install. Digital signatures for APK builds. TTS for Rhodey responses. Voice mic button on home screen. Full CI/CD pipeline (`flutter-distribute.yml`).
+- **App Redesign v2 (Phase 26)**: Five-phase redesign of Flutter app — notification refactor, conversation list, individual conversation view, decoration polish, sound/vibration. Bot responses send directly to app screen (removed task-or-note popup). Graph unique constraints fixed.
+- **Rhodey Surface v1-v3 (Phase 27)**: Three iterative home screen redesigns. v3: Horizon/Traces — editorial typography, warm stone palette, search for tasks/conversations/traces. `today_screen.dart` with tab-based views. FCM push notification wire on every `send_telegram()`. Diagnostic endpoints (`/api/briefing-ping`, `/api/briefing-debug`). TypedDict serialization fix for Vercel.
+- **Push Notification Service**: `core/services/push_notification.py` — FCM fire-and-forget push on every outgoing Telegram message. Response text persisted to `raw_dumps` for app access. Briefing API includes `latest_response` field. Foreground push triggers immediate briefing fetch.
+- **Notebook LM Auto-Sync**: Google Docs API replaces rclone `.md` sync for Notebook LM integration. `scripts/sync_notebooklm_docs.py` creates/updates Google Docs in shared Drive. CI workflow triggers on push to `main`. OAuth scope updater (`scripts/update_google_oauth.py`).
+- **Temporal Versioning Expansion**: DB triggers now handle memories versioning (removed app-level `version_memory_for_update()`). Migration `db/31_temporal_versioning_expansion.sql` (255 lines). `.eq('is_current', True)` guards added across frontend API routes. 41 files linted and cleaned.
+- **process_single_dump Refactoring**: Major refactor extracting core processing logic into `core/lib/process_input.py`. 16 files changed, 1,382 insertions across refactored dispatch, workflows, tools, calendar, and commands. New test suite (`tests/sim/test_full_pipeline.py`, `tests/unit/test_process_input.py`). Calendar event creation simplified by funneling through existing task workflow — removed 66 lines from `google_service.py`.
+- **Decision Audit (`/why` Command)**: Structured audit logging for 4 decision stages (classification, routing, context_registry, retrieval). Conversational `/why` short-circuit in handler that formats a human-readable explanation of the last bot response. 8 unit tests + 6 integration tests.
+- **ROLE_UPDATE Intent**: New classification intent that detects role attribution patterns ("Marcus Durai is the Pastor of Ashraya") and updates `people.role` + creates `SERVES_AT` graph edges instead of creating tasks/notes.
+- **Classification Context Boundary**: `format_classify_context()` replaces raw conversation history in classify input with a bounded block (THREAD SUMMARY + ACTIVE ENTITY + PRECEDING TURN user-only). Bot receipts excluded from classification context to prevent misclassification of follow-ups.
+- **Resource Clusters List View + Dismiss**: Grid/list toggle on Knowledge Base page. Dismiss button sets `dismissed_at` — dismissed resources hidden from all queries and URL dedup. `PATCH /api/resources/[id]/dismiss` endpoint.
+- **Desktop Meeting Capture (Meetily)**: Open-source Meetily records mic + system audio on MacBook during Zoom/Meet/Teams calls. `rclone` + launchd watcher syncs `.mp4` files to Google Drive every 2 min. Existing `call_ingest.py` pipeline transparently picks up new files — no code changes.
 
 ### What is broken or incomplete
-- **MISSING**: No Decisions table (P3) — decisions are implicit in tasks/briefings [COMPLETED]
-- **MISSING**: No graph edge expiry (P4) — edges older than 6 months may be stale [COMPLETED]
-- **MISSING**: People table enrichment (P5) — org, last_interaction_date, notes columns not yet populated [COMPLETED]
 - **DEFERRED**: Graph UI polish — PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range [STILL DEFERRED]
-- **DEFERRED**: TF-002 Graph Edge Expiry — last_confirmed_at/valid_until — edges older than 90 days auto-expired via sentinel [COMPLETED]
-- **DEFERRED**: TF-003 People Table Enrichment — organization_name, last_interaction_date from graph edges [COMPLETED]
 - **KNOWN**: `graph_node_id` FK exists on `people` and `organizations` tables but zero rows have it populated. Domain→graph link is one-way via `graph_nodes.db_record_id` only.
-- **Resource Clusters List View + Dismiss**: Knowledge Base (`/dashboard/clusters`) has a grid/list view toggle. Resources can be dismissed (sets `dismissed_at`), hidden from UI, and reject re-storage of the same URL on future submission with "Already seen" Telegram reply.
-- **Edge Auto-Approve Subsystem Fix (Phase 17)**: Decision Pulse edge auto-approve now correctly queries `entity_extraction` subsystem (was `graph_edges` — zero patterns). Includes `source_type`/`target_type` in features for granular pattern matching. 10 edge + 4 node patterns at 100% confidence auto-approve silently. Historical decision/observation backfill covers 1,107 edges + 136 nodes.
-- **Graph Write Path Consolidation**: All 11 edge insertion sites and 5 node creation paths consolidated into shared pipeline (`core/lib/graph_rules.py`: `validate_label`, `normalize_label`, `resolve_candidate`, `route_label`, `persist_label`, `insert_pending_edge`). 4 batch API endpoints added for Decision Pulse lists.
-- **Edge Error Hardening**: Silent `except: pass` swallows eliminated on all edge writes. `approval_source` column added to `pending_graph_edges` (hitl/auto_approve/provenance/pending). Batch deduplication prevents `ON CONFLICT DO UPDATE cannot affect row a second time`. `pending_graph_edges_archive` table + auto-archive via sentinel.
-- **normalized_label Column**: Migration 21 (functional unique index on `LOWER(TRIM(label))`) broke all graph_nodes upserts — PostgREST can't use functional indexes for `ON CONFLICT`. Fixed by adding `normalized_label TEXT UNIQUE` column, migrating all 19 write sites. CI guard script (`scripts/check_graph_nodes_normalized_label.py`) prevents regression.
+- **NOT BUILDING**: `Design.md` has been removed/deleted from the repository — no current design root document exists.
 
 ### Auto-Decision Feedback Loop & Pattern Learning Fixes (Phase 16)
 
@@ -80,12 +101,13 @@
 
 | # | Item | Effort | Type | Notes |
 |---|------|--------|------|-------|
-| X1 | Increase `recent_tasks` cache TTL 60→300s | ~5m | Optimization | Already deployed in this session |
+| X1 | Increase `recent_tasks` cache TTL 60→300s | ~5m | Optimization | ✅ Completed |
 | K3 | Proactive thread resumption — "Anything update on X?" nudge for threads idle >3d | ~1h | Feature | Risk of over-nudging; sentinel piggyback |
 | K4 | Workflow expiry nudge — "Still working on this?" before 24h workflow expiry | ~1h | Feature | sentinel piggyback + audit_log gate |
 | B3 | Briefing personalization — feed user reactions into Sunday learner | ~3h | Enhancement | Needs `briefing_feedback` table |
 | B1 | Briefing prompt compression — holistic token budget allocator | ~2h | Optimization | Gemini context window easily absorbs current size |
 | S3 | Energy-aware scheduling — task complexity classification + calendar density analysis | ~4h | New capability | Privacy-adjacent; needs explicit opt-in design |
+| X3 | App versioning and FCM polling hardening | ~2h | Optimization | ✅ Completed (Phase 28) |
 
 ---
 
@@ -213,12 +235,9 @@
 - `_resolve_node()` in `graph.py` returns None instead of auto-creating `concept` nodes for missing labels
 - Both tables have RLS enabled
 
-**Concept Fluidity (Synaptic Plasticity) [ADDED]:**
-- Ontology supports `concept` nodes with `EVOKES`, `RELATES_TO`, `ASSOCIATED_WITH` edge types
-- `concept_sweep_batch.py` extracts abstract concepts from historical memories
-- All concept nodes pass through the same HITL flow: pending table → approval via `g{id}` shortcode
-- Deduped via 85%+ similarity detection with 1-click merge confirmation
-- No concept auto-creation: all go through `pending_graph_nodes` with explicit approval
+**Concept Fluidity (Synaptic Plasticity) [ADDED, THEN REMOVED]:**
+- *(Added Jun 15, 2026)* Ontology supported `concept` nodes with `EVOKES`, `RELATES_TO`, `ASSOCIATED_WITH` edge types. `concept_sweep_batch.py` extracted abstract concepts from all 416 historical memories. All passed through HITL.
+- *(Removed Jul 9, 2026 — Phase 20)* Concept system fully purged from extraction prompts, edge matrix, auto-approve bypass, and cascade logic. 997 concept nodes + 678 pending EVOKES edges deleted from DB. Emotions live on memory metadata — abstract concepts not tracked in graph.
 
 **Guard D — Label-Drift Dedup (unchanged, extended to edges):**
 - `fetch_pending_entities()` loads labels across ALL statuses
@@ -230,7 +249,7 @@
 
 ---
 
-### SPEC-009: Simulation Tests — Rhodey Autonomous Behaviours [IN PROGRESS]
+### SPEC-009: Simulation Tests — Rhodey Autonomous Behaviours [COMPLETED]
 
 **What**: 5-suite simulation test plan to validate T1, S5, M5, T4, K2, C3, X3 autonomous behaviours with quantified assertions before committing the 14-file uncommitted batch (626 insertions, 80 deletions).
 

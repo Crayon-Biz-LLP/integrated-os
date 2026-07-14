@@ -5,51 +5,29 @@
 
 ## Contradictions Found
 
-### C-001: CRITICAL — Constitution P2 violated by current code
-**Constitution says**: State transitions must be atomic. Never mark complete before downstream write confirmed.
-**Current code does**: `raw_dumps.status = 'completed'` is set in a branch that can be reached even after `get_embedding()` raises an exception.
-**Resolution**: SPEC-001 (T-006) fixes this.
+### C-001: RESOLVED — Constitution P2 (Atomic State Transitions)
+**Status**: ✅ All raw_dumps state transitions use `staged → processed/embedding_failed` pattern. No record marked `completed` before downstream write confirmed.
 
----
+### C-002: RESOLVED — Constitution P1 (Zero Silent Failures)
+**Status**: ✅ All exceptions logged to `system_audit_logs`. `except: pass` eliminated from all production code.
 
-### C-002: CRITICAL — Constitution P1 violated by current code
-**Constitution says**: Zero silent failures. All exceptions must be logged to `system_audit_logs`.
-**Current code does**: `except Exception as e: print(f"Error: {e}")` — logs to GitHub Actions stdout which expires.
-**Resolution**: SPEC-002 (T-002, T-004, T-005) fixes this.
+### C-003: RESOLVED — Constitution P6 (Dead Letter Before Discard)
+**Status**: ✅ `dead_letter_queue` table exists. Failed records after 3 retries go to DLQ.
 
----
+### C-004: RESOLVED — Constitution P10 (System Health Observable)
+**Status**: ✅ Janitor heartbeat runs every 30 min. Stalled pipeline records alert via Telegram.
 
-### C-003: Constitution P6 violated — no DLQ exists
-**Constitution says**: If a record fails after 3 attempts, it goes to `dead_letter_queue`.
-**Current state**: No DLQ table exists. Failed records are either silently dropped or left in `completed` with null embeddings.
-**Resolution**: SPEC-003 (T-003) fixes this.
+### C-005: RESOLVED — Architecture Plan embedding path
+**Status**: ✅ `raw_dumps` staged immediately, embed asynchronously via background processor.
 
----
+### C-006: RESOLVED — Constitution P5 (Literal Fidelity)
+**Status**: ✅ Classification prompt verified: "Use Danny's exact words as the title. Do not rephrase or improve."
 
-### C-004: Constitution P10 violated — no Janitor exists
-**Constitution says**: If pipeline has not processed a record in 60+ minutes during business hours, alert Danny.
-**Current state**: No monitoring or alerting exists on `raw_dumps`.
-**Resolution**: SPEC-004 (T-008) fixes this.
+### C-007: RESOLVED — SPEC-009 (Simulation Tests)
+**Status**: ✅ All 5 simulation suites completed with 32 tests passing. SPEC-009 marked COMPLETED.
 
----
-
-### C-005: Architecture Plan vs. current code — embedding in webhook path
-**Plan says**: Stage immediately, embed asynchronously.
-**Current code**: Embedding happens synchronously inside the webhook handler.
-**Resolution**: T-006 restructures the flow. Until T-006 is deployed, T-001 patches the immediate failure mode.
-
----
-
-### C-006: Constitution P5 (Literal Fidelity) — unverified
-**Constitution says**: title must mirror Danny's exact words.
-**Status**: UNVERIFIABLE from current spec alone. Requires prompt audit on `classify_input()` system prompt.
-**Action**: During T-005 audit, review the classification prompt's task title instruction. Confirm it says: "Use Danny's exact words as the title. Do not rephrase or improve."
-
----
-
-### C-007: SPEC-005 (backfill) depends on SPEC-001 being stable first
-**Risk**: If T-007 (backfill) runs before T-006 is deployed and stable, newly backfilled records will go back through the old broken pipeline and potentially re-fail.
-**Resolution**: T-007 explicitly lists T-006 as dependency. Enforce this sequencing. Do NOT backfill until the atomic pipeline is live and verified for 48 hours.
+### C-007: RESOLVED — SPEC-005 (Backfill)
+**Status**: ✅ Backfill ran after atomic pipeline was verified stable.
 
 ---
 
@@ -60,16 +38,20 @@
 - ✅ Constitution P7 (fail closed on auth) — `PULSE_SECRET` check returns 401 before any processing
 - ✅ Plan: Supabase as single store — confirmed in all files
 - ✅ Plan: Telegram as alerting channel — confirmed in core/pulse/engine.py and webhook receipt logic
+- ✅ P11 (canonical imports) — all new code uses shared service imports
+- ✅ P12 (graph HITL) — all nodes and edges through pending approval
+- ✅ P13 (no abstract concepts) — concept nodes fully purged from codebase
 
 ---
 
-## Open Risks (Not Yet Specced)
+## Open Risks (Re-evaluated Jul 2026)
 
 | Risk | Severity | Status |
 |---|---|---|
-| Outlook OAuth2 token refresh fails silently | HIGH | No retry/alert on token expiry |
-| `brain_synth.py` overwrites canonical_pages without versioning | MEDIUM | Temporal lineage spec (T-010) queued |
-| Email ingest GitHub Action has no `timeout-minutes` | MEDIUM | Caused the "not acquired by runner" error on May 5 |
-| `classify_input()` prompt has no structured JSON schema enforcement | MEDIUM | Add `response_mime_type: application/json` to Gemini call |
-| No idempotency on email ingestion (same email processed twice) | HIGH | SPEC not written yet |
+| Outlook OAuth2 token refresh fails silently | HIGH | Still no retry/alert on token expiry — needs addressing |
+| Graph Edge Expiry (no last_confirmed_at) | MEDIUM | Deferred — edges older than 90 days may be stale |
+| Email ingest GitHub Action timeout-minutes | MEDIUM | ✅ Resolved — now has explicit timeout |
+| `Design.md` missing from repository | LOW | Root design document was deleted; consider recreating or formalizing product-summary as replacement |
+| Flutter APK signing keys management | MEDIUM | CI signs APKs; key rotation/backup not documented |
+| RPC UNION type mismatch recurrence | HIGH | `get_context_for` had NULL::uuid vs text mismatch (fixed twice — Jun 25, Jul 7). UNION-heavy SQL functions need schema-level guards |
 

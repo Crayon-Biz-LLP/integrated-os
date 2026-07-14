@@ -10,9 +10,9 @@
 | **Capture / Webhook** | Python (FastAPI via GitHub Actions) | Existing, working |
 | **Database** | Supabase (Postgres + pgvector) | Existing. Vector search + relational in one place |
 | **Embedding** | Gemini `gemini-embedding-2-preview`, 768 dims | Existing. Do not change without full re-embed |
-| **Classification** | Gemini 1.5 Flash | Cost-efficient for high-frequency classification |
+| **Classification** | Gemini 3.1 Flash Lite | Cost-efficient for high-frequency classification |
 | **Email** | Gmail API + Microsoft Graph API | Existing. Both OAuth2 token-refresh flows |
-| **Briefing / Brain** | Gemini 1.5 Pro | Reserved for synthesis tasks only |
+| **Briefing / Brain** | Gemini 3.5 Flash | Reserved for synthesis tasks only |
 | **Retrieval (semantic)** | Gemini `gemini-embedding-2-preview`, 768 dims | Query embedding, passage embedding, phrase node embedding |
 | **Retrieval (lexical)** | GIN trigram indexes + `retrieval_phrase_nodes` | ~5ms phrase lookups via `pg_trgm` |
 | **Retrieval (graph)** | Personalized PageRank on subgraph | ~50ms on bounded subgraph (<2000 nodes) |
@@ -80,7 +80,35 @@
   ├── core/pulse/engine.py (daily briefing)
   ├── brain_synth.py (weekly synthesis)
   ├── email_ingest.yml (Gmail + Outlook)
-  └── janitor.py (every 30 mins health check)
+  ├── janitor.py (every 30 mins health check)
+  └── notebooklm-sync.yml (on push: Google Docs → Notebook LM)
+
+[Cron-job.org (external)]
+  ├── /api/sentinel (every 5 min — nudge, expiry, index queue)
+  ├── /api/decision-pulse (every 30 min — pending approvals)
+  └── /api/roundup (2PM/8PM IST — evening check-in)
+
+[Flutter App — rhodey_app/]
+  ├── FCM push notifications from send_telegram()
+  ├── In-app update via GitHub Releases (version from pubspec.yaml)
+  ├── Rhodey Surface v3: Horizon/Traces UI (editorial typography, warm stone palette)
+  ├── TTS for Rhodey responses
+  ├── Voice mic button for speech input
+  ├── today_screen: task/trace/conversation search
+  ├── talk_screen: voice + TTS interaction
+  ├── adaptive_home_screen, dump_screen, history_screen, inbox_screen, menu_sheet
+  ├── chat_bubble, decision_card, rich_card_content, voice_states widgets
+  └── API service, notification service, in-app update service
+
+[process_single_dump Refactoring — core/lib/process_input.py]
+  ├── Extracted core processing logic from dispatch.py into a shared module
+  ├── Calendar event creation funneled through existing task workflow
+  └── New test suite: tests/sim/test_full_pipeline.py
+
+[Notebook LM Sync — Google Docs API]
+  ├── scripts/sync_notebooklm_docs.py — creates/updates Google Docs in shared Drive
+  ├── scripts/update_google_oauth.py — one-time OAuth scope updater
+  └── .github/workflows/notebooklm-sync.yml — triggers on push to main
 ```
 
 ---
@@ -118,11 +146,10 @@
 **Rejected**: Inline LLM extraction during webhook response.
 **Why**: The webhook must respond to Telegram within a few seconds. Background processing handles LLM latency gracefully.
 
-### Decision 6: Human-in-the-loop for ALL graph entities AND edges + Concept Fluidity
-**Chosen**: Every new entity requires HITL approval — 5 core types (person, organization, project, place, animal) plus `concept` nodes guarded by 85%+ similarity dedup. All extracted edges (16 types plus 3 concept-specific: EVOKES, RELATES_TO, ASSOCIATED_WITH) flow through `pending_graph_edges` for approval.
-**Rejected**: Auto-create all extracted entities; auto-create low-risk entity types.
-**Why**: The graph is the backbone of Rhodey's intelligence — wrong nodes infect every query and brief. The "low-risk auto-create" approach created 699 junk nodes (concept, emotional_state, resource). Every edge is now staged in `pending_graph_edges` with inline editing in the Decisions UI before approval. `pending_graph_nodes` and `pending_graph_edges` both have RLS enabled for extra safety.
-**Concept Fluidity**: After initially purging concepts during the ontology overhaul (T-301), abstract `concept` nodes were re-introduced under strict HITL control via the Synaptic Plasticity upgrade (T-401). They are not auto-created — they flow through pending approval with proactive 85%+ similarity merge detection.
+### Decision 6: Human-in-the-loop for ALL graph entities AND edges
+**Chosen**: Every new entity requires HITL approval — 5 core types (person, organization, project, place, animal). All extracted edges (16 types) flow through `pending_graph_edges` for approval. No auto-create for any node type.
+**Rejected**: Auto-create all extracted entities; concept nodes (EVOKES, RELATES_TO, ASSOCIATED_WITH) — concept system fully removed in Phase 20, purged 997 nodes + 678 edges from DB.
+**Why**: The graph is the backbone of Rhodey's intelligence — wrong nodes infect every query and brief. The "low-risk auto-create" approach created 699 junk nodes. Every edge is now staged in `pending_graph_edges` with inline editing in the Decisions UI before approval. `pending_graph_nodes` and `pending_graph_edges` both have RLS enabled for extra safety. Concept nodes were fully removed — emotions live on memory metadata, abstract concepts are not tracked in the graph.
 **Tradeoff**: Latency between extraction and graph availability — but the Decisions UI Graph Edges tab makes batch approval fast.
 
 ### Decision 7: Associative Retrieval over pgvector-only
@@ -150,4 +177,6 @@
 3. The `status` enum on `raw_dumps` (requires migration)
 4. The Telegram bot token (requires update to all webhook registrations)
 5. The Supabase project URL or anon key (requires update to all env secrets in GitHub)
+6. The `normalized_label` column on `graph_nodes` (migration already applied; affects all graph node upserts)
+7. The `CONVERSATION THREAD SUMMARY:` / `PRECEDING TURN` structure in classification context (bounded classify context blocks are the sole interface for the classify prompt)
 

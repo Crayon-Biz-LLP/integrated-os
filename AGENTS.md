@@ -77,6 +77,286 @@ When proposing fixes, making architectural changes, or summarizing completed wor
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
 
+## Session Anchored Summary (Jun 11-13, 2026 — Teams + NLP Graph + Message Table Unification + Graph Overhaul + Clarification Loop)
+
+### Progress Done This Session
+- **Microsoft Teams Ingestion**: Added Teams ingestion pipeline — SharePoint attachment downloads via Graph Shares API, Gemini classification parse fix, dependabot vulnerability fixes.
+- **Sent Email Tracking**: Added `direction` column to emails table migration, Outlook Sent Items folder fetch on cron, `/api/email-search/sent` fallback endpoint, full body tracking for email context visibility in LLM queries.
+- **Message Table Unification (Phase 1-2)**: Merged per-channel tables (emails, calls, whatsapp) into unified `messages` table. Frontend queries migrated. Legacy tables dropped. Pending task filter corrected to only actionable classifications.
+- **NLP Graph Correction Flow**: Added human-confirmation loop for graph node corrections. Frontend edit mode with relationship dropdown, context field, memory resolution, and color coding for pending edges. Propose-merge with canonical label resolution, custom rename option, and swap direction. Batch dedup script.
+- **Graph Overhaul**: New 5-type/16-edge ontology with HITL for all edges. Commitments and sentiment extracted from tasks/memories. Interactive graph edge approval UI. Backend proxy routes.
+- **Entity Grounding Guards (Guard 2-3)**: Prompt grounding for project entities — URL quarantine for graph and memories (URL-bearing text skipped in extraction pipelines). Phase 1 clarification loop for disambiguation. Pending_graph_edges checked in backfill to prevent reprocessing loops.
+- **Pipeline Hardening**: Embedding failures routed to DLQ (T-001 to T-005). Stage→processed state machine fix + janitor fix (T-006, T-008). Dashboard wired to DLQ and system_audit_logs (T-012). Resources/URLs stripped before extraction (T-013).
+- **Cron-Job Migration**: Replaced GitHub Actions sentinel cron with external cron-job.org. Decision Pulse moved to `/api/decision-pulse` endpoint. Sentinel lookahead increased from 25 to 60 minutes.
+- **Personal Capture Pipeline (Phase 1-4)**: End-to-end pipeline for personal notes/quick captures with real-time processing.
+
+### Key Files (Foundation)
+- `core/pulse/tools.py` — Unified people/projects creation from graph node approvals
+- `core/webhook/handler.py` — Entity grounding guards, clarification loop
+- `core/pulse/graph.py` — URL quarantine, graph approval flow
+- `core/skills/backfill_graph.py` — Pending edge check to prevent reprocessing loops
+- `core/skills/whatsapp_ingest.py` — Message table unification
+- `core/pulse/sentinel.py` — External cron-job.org trigger
+- `core/retrieval/` — Graph overhaul (5-type/16-edge ontology)
+- `frontend/src/app/dashboard/graph/` — Edge approval UI, merge interface, NLP correction
+- `product-summary/27-personal-capture-pipeline.md`, `28-clarification-loop-guards.md`, `22-resilience-self-healing.md`
+
+## Session Anchored Summary (Jun 6-10, 2026 — Redis + Testing + Graph Integrity + Context Providers + LLM Module Consolidation)
+
+### Progress Done This Session
+- **Redis Implementation**: Upstash Redis cache for retrieval pipeline (phrase node results, embeddings). `core/lib/redis_cache.py` with `cache_get`/`cache_set` wrapped in `asyncio.to_thread()`. Fixed Redis initialization and connection handling.
+- **LLM Module Consolidation (Phases 1-7)**: Created unified `core/llm/` module — `client.py` (get_gemini_client, multi-key rotation), `constants.py` (model constants), `fallback.py` (generate_content_with_fallback), `compat.py` (sync fallbacks), `embedding.py` (multi-key failover), `retry.py` (jittered backoff). Migrated 45+ call sites. Removed 17 redundant `create_client()` calls. Recurring task support added.
+- **Full Test Suite**: 28 cluster integration tests covering merge/dedup, deletion/cancellation, lineage, metadata priority, recurrence boundary, timezone, cross-system partial sync. 6 error patterns resolved reducing audit log warnings by ~58/10d.
+- **Performance Optimization**: Pulse engine optimizations. Backfill_graph upgraded to ThreadPoolExecutor with batch inserts. Dead code removal sweep (Python + Frontend). Fix for Supabase 1000-row limit on graph edge pagination.
+- **Graph Integrity Guards**: Guard A (deletes stale project edges before new inserts), Guard B (rejects hallucinated nodes via text-anchoring), Guard C (HITL for high-risk entities). Pending graph node dedup during batch backfill. Orphan cleanup — eliminated 400+ semi-isolated nodes.
+- **Tier 4 Working Memory + Context Providers**: Strategy-based context hydration (`core/context/`). Schema, config, gates, pipeline modules. 6 named strategies (PRE_FLIGHT, BRIEFING, HINDSIGHT, TASK/MEMORY HYDRATE, BRAIN_SYNTH). Time-aware calendar events in bot prompts. Schedule query routing fix. Token cap and strict stop instruction to prevent LLM self-narration.
+- **System Hardening**: Circuit breaker, rate limiter, concurrency locks for sync operations. UUID type rot fixes. Audit logging improvements with request trace IDs. Frontend auth guard for unauthorized access.
+
+### Key Files (Foundation)
+- `core/llm/` — NEW: unified LLM module (client, fallback, compat, retry, embedding, constants)
+- `core/context/` — NEW: context registry (schema, config, gates, pipeline)
+- `core/lib/redis_cache.py` — NEW: Redis cache
+- `core/skills/backfill_graph.py` — ThreadPoolExecutor optimization
+- `tests/clusters/` — 28 integration tests
+- `product-summary/15-llm-architecture.md`, `04b-intelligence-tiers.md`, `22-resilience-self-healing.md`, `16-memory-knowledge-graph.md`
+
+## Session Anchored Summary (Jun 1-5, 2026 — Sentinel Watcher + Clusters UI + Image Processing)
+
+### Progress Done This Session
+- **Sentinel Watcher + Recurrence Extraction**: Background watcher engine (`core/pulse/sentinel.py`) monitoring upcoming calendar events with configurable lookahead. Recurrence extraction from task descriptions via Gemini. Recurrence support in inline quick_process task extraction. Graph_nodes status query bug fixed.
+- **Clusters UI**: Calls, WhatsApp, and Mission single-page views. Initial bento design for the Clusters page (replaced "Mission" label). Backfill error fixes for graph sync.
+- **Image Processing**: Multimodal verbatim extraction pipeline — images attached to Telegram messages processed for text extraction. MIME type inference for octet-stream uploads.
+- **AGENTS.md Finalization**: Strict safety overrides, clean formatting, ruff enforcement, git push guardrails baked into the doc. Speckit docs updated for sentinel, recurrence, and clarification features.
+
+### Key Files (Foundation)
+- `core/pulse/sentinel.py` — NEW: sentinel watcher engine
+- `core/skills/whatsapp_ingest.py` — Recurrence extraction
+- `frontend/src/app/dashboard/clusters/` — NEW: clusters UI
+- `product-summary/27-personal-capture-pipeline.md`, `19-practices-rhythms.md`
+
+## Session Anchored Summary (May 25-28, 2026 — LLM Module + Completion Handler + Quick Process Upgrade)
+
+### Progress Done This Session
+- **Native LLM Control Layer**: Structured JSON validation with Pydantic in `core/pulse/llm.py`. Targeted prompt mutations. Jittered exponential backoffs. Multi-hop serendipity graph engine for associative discovery.
+- **Robust Completion Handler Pipeline**: `core/webhook/completion_handler.py` — classification Flash Lite → Gemini 3.5 Flash fallback before parking as `awaiting_completion_match`. Ordinal/keyword disambiguation (digit replies, "none", "first"/"second"). Failed task IDs collected and surfaced to Telegram. Status: `partially_synced`.
+- **Quick Process Upgrade**: Semantic dedup, calendar conflict detection, and graph sync integrated into real-time raw dump processing. URL-bearing dumps quarantined to resources only. Task_id fix for serendipity engine.
+- **Model Version Upgrades**: `gemini-3.1-flash-lite-preview` → `gemini-3.1-flash-lite`. 3.1 Flash → 3.5 Flash for primary model.
+- **Codebase Hygiene**: Linting cleanup across all Python files. Restored missing `__init__.py` files for Vercel import resolution. Removed one-off migration scripts (already applied). Untracked local tooling/config directories. Product-summary removed from git tracking (kept local only, `.gitignore`d).
+
+### Key Files (Foundation)
+- `core/webhook/completion_handler.py` — NEW: robust completion pipeline
+- `core/llm/` — Native control layer foundations
+- `core/agents/quick_process.py` — Semantic dedup, calendar conflicts, graph sync
+- `core/pulse/engine.py` — Serendipity engine fixes
+- `product-summary/09-task-creation-paths.md`, `15-llm-architecture.md`, `22-resilience-self-healing.md`
+
+## Session Anchored Summary (May 20-22, 2026 — Call Recording + WhatsApp + Decision Pulse Separation)
+
+### Progress Done This Session
+- **Call Recording Ingestion**: Pipeline for desktop meeting recordings (Zoom/Meet/Teams). Gemini extraction of minutes/action items from transcripts. `call_ingest.py` with `faster-whisper` transcription. Outlook calendar integration for call context.
+- **WhatsApp Ingest**: MacroDroid webhook → `/api/whatsapp-ingest`. `w{id}` approval inline keyboard. Pulse extraction of FYI memories and actionable tasks from WhatsApp messages. Phone number dedup and validation.
+- **Decision Pulse Separation**: Separated decision-related messages from AI Pulse briefings. Created dedicated `/api/decision-pulse` endpoint (no AI, pending approvals only). Removed synced dumps from AI prompt to prevent relative time hallucinations.
+- **Google Sync Hardening**: Standardized calendar sync with dynamic priority prefixes and new description format. Fixed task update message routing to raw dumps and processing pipeline. Fixed Google Sync issues with event ID handling.
+- **Calendar Events in Briefing**: Calendar integration enriched with actionable events, synced from both Google Calendar and Outlook.
+
+### Key Files (Foundation)
+- `core/skills/call_ingest.py` — NEW: call recording pipeline
+- `core/skills/whatsapp_ingest.py` — NEW: WhatsApp ingest
+- `api/index.py` — Decision Pulse endpoint, WhatsApp webhook
+- `core/pulse/engine.py` — Decision separation, synced dump removal
+- `product-summary/25-whatsapp-ingest.md`, `26-call-recording-ingest.md`, `08-input-channels.md`
+
+## Session Anchored Summary (May 16-17, 2026 — Practice Detection + Code Reorganization + Canonical Pages)
+
+### Progress Done This Session
+- **CHURCH → ASHRAYA Rename**: Renamed `CHURCH` routing tag to `ASHRAYA` across all Python and frontend code. Practice detection upgraded to Gemini 3 Flash — identifies engagement type (client project, internal, personal, ministry) from message context.
+- **Monolithic to Micro File Structure**: Broke down monolithic files into domain-organized modules. Split `core/pulse/`, `core/webhook/`, `frontend/src/` into focused files. Cleanup of orphaned files. Security fixes applied. Frontend API proxy routes added for all backend endpoints.
+- **Canonical Pages Rework**: Brain synthesis pipeline reworked for better project→canonical page mapping. Task and calendar routing mismatch fixed. Product summary and YAML routing changes for CI.
+- **Duplicate Guard Hardening**: Semantic dedup across task creation pipelines. Email CC issue fixed (CC recipients not included in sent email tracking). Rhythm bug fix for practice detection timing.
+
+### Key Files (Foundation)
+- `core/pulse/context.py` — Canonical pages rework
+- `core/webhook/classify.py` — Practice detection with Gemini 3 Flash
+- `api/index.py` — Frontend proxy routes
+- `frontend/src/app/dashboard/` — Reorganized file structure
+- `product-summary/17-canonical-brain-synthesis.md`, `19-practices-rhythms.md`
+
+## Session Anchored Summary (May 13-15, 2026 — Conversation History + Calendar UI + Performance + Quick Process)
+
+### Progress Done This Session
+- **Conversation History Feature (Phases 1-5)**: Full conversational persistence — thread tracking, follow-up responses, clarification flow, session unification. Classification passthrough for follow-ups. Prompt guardrails and bracket normalization. Async raw dumps in clarification flow. `/undo` command for last action reversal.
+- **Calendar Tab UI**: Day, Week, and Agenda views for Google Calendar. Outlook calendar month view. Timezone parsing fixes. RFC 3339 date format for Google Calendar API. Outlook calendar read integration for briefings.
+- **Performance Optimization**: Task page rendering optimized. Full-stack performance pass — query efficiency, bundle size, Vercel edge caching. Made the entire Rhodey OS faster.
+- **Quick Process (Real-Time Raw Dump Processing)**: Added `core/agents/quick_process.py` — processes raw dumps in real-time during webhook handling, not waiting for Pulse cron. Task update logic integrated with quick_process pipeline.
+- **Rate Limiter for Gemini Flash-Lite**: Added rate limiting to Gemini API calls during classification. Sync functions for project/person graph nodes. `match_canonical_pages` RPC created. Graph nodes synced to projects/people tables.
+- **Opportunity Language Detection**: Added opportunity/intent classification to distinguish tasks from FYI notes. Task/note confirmation prompt. Backfill pipeline dedup for people entries.
+
+### Key Files (Foundation)
+- `core/lib/conversation.py` — NEW: conversation history engine
+- `core/agents/quick_process.py` — NEW: real-time raw dump processing
+- `frontend/src/app/dashboard/` — Calendar UI, performance improvements
+- `product-summary/06-telegram-intake.md`, `21-frontend-dashboard.md`, `29-conversation-threads-and-workflows.md`
+
+## Session Anchored Summary (May 11-12, 2026 — Task Versioning + Habit Tracker + Google Sync Fixes)
+
+### Progress Done This Session
+- **Task Versioning with Google Tasks/Calendar**: Versioned history for tasks with bi-directional sync. Fallback LLM task creation when Google API returns partial data. Fixed `match_memories` RPC — jsonb input, explicit vector(768) cast, NaN guard for zero vectors, removed broken resources UNION ALL.
+- **Habit Tracker**: Frontend habit tracking UI. Weekly habit grid with completion tracking. Database schema for habits with recurrence patterns. Integrated with daily briefing for habit reminders.
+- **Project Creation Bug Fix**: Fixed project creation failing when organization ID was missing. Proper fallback to unnamed org. New task addition bug fix — tasks with same name as closed tasks now allowed (dedup key includes status guard).
+- **Email Draft CC Fix**: Fixed email draft sending that skipped CC recipients. Pending task fix — versioned updates no longer re-add completed tasks to pending pool.
+
+### Key Files (Foundation)
+- `core/pulse/tools.py` — Task versioning, project creation fix
+- `core/services/google_service.py` — Google Tasks/Calendar sync
+- `frontend/src/app/dashboard/habits/` — NEW: habit tracker UI
+- `db/02_temporal_lineage_triggers.sql` — Task versioning triggers
+- `product-summary/09-task-creation-paths.md`, `19-practices-rhythms.md`, `22-resilience-self-healing.md`
+
+## Session Anchored Summary (May 7-8, 2026 — UI Fixes + Email Draft Approval Workflow)
+
+### Progress Done This Session
+- **Vercel Fixes**: Configured vercel.json with explicit Python build config, `rewrites` (not `routes`) to prevent frontend/backend interference. Removed duplicate `middleware.ts` causing invocation failures. Removed catch-all routes and proxy.ts that broke frontend routing.
+- **Task View in UI**: Fixed task view rendering, completion status, done/cancelled toggle. Versioned view of tasks (history timeline). Added Dashboard navigation button.
+- **Email View in UI**: Fixed email classification display. Draft approval workflow from Web UI — approve/send/edit/reject with inline actions.
+- **Task Closing Logic**: Fixed task closing to properly set `completed_at` and sync to Google Tasks. Prevented ghost re-openings from stale state.
+
+### Key Files (Foundation)
+- `vercel.json` — Rewrite-based routing for Python backend
+- `frontend/src/app/dashboard/` — Task view, email view, dashboard button
+- `api/index.py` — Email draft approval endpoints
+- `product-summary/20-email-pipeline.md`, `21-frontend-dashboard.md`, `23-governance-security.md`
+
+## Session Anchored Summary (May 4-5, 2026 — Web UI Chat + Vercel Dual-Project Deployment)
+
+### Progress Done This Session
+- **Web UI Chat**: Full messaging interface in browser — send/receive Telegram messages via Web UI. Complete messaging system with sender tracking, message types, Pulse briefing logging. Mirror Telegram flow exactly in the web UI. Fixes: metadata corruption, double-encoding, duplicate messages, Rhodey teal bubble styling, dedup skip for web messages, loading/order/scroll.
+- **Vercel Dual-Project Setup**: Split into `integrated-os` (backend, Python) and `integrated-os-frontend` (frontend, Next.js) Vercel projects from same repo. Root `vercel.json` with `rewrites` for Python routing. `.vercelignore` to exclude frontend from backend build. Frontend `vercel.json` for auto-detection. `.nvmrc` for Node version. Dynamic export on all dashboard pages. Middleware simplified to cookie-check only (no Supabase SSR complication).
+- **Dashboard**: Added "What to Do Now" section — prioritized task list based on urgency, deadlines, and context. Email people name upgrade for display in dashboard.
+- **Memory Retrieval Fixes**: Fixed webhook bug fixes and pulse engine bug fixes across 3 steps. Improved memory retrieval with better context matching.
+
+### Key Files (Foundation)
+- `frontend/src/app/dashboard/` — Web UI chat, dashboard with "What to Do Now"
+- `.vercelignore` — Exclude frontend from backend build
+- `vercel.json` — Dual-project routing with rewrites
+- `api/index.py` — Web chat proxy endpoints
+- `product-summary/06-telegram-intake.md`, `21-frontend-dashboard.md`, `23-governance-security.md`
+
+## Session Anchored Summary (May 2-3, 2026 — Pulse Briefing Agents + Serendipity Engine + Hardening)
+
+### Progress Done This Session
+- **Pulse Briefing Agents**: Integrated 5 specialized agents into the Pulse briefing engine — Dependency Agent (task chain analysis), Social Graph Agent (relationship-aware task context), Temporal Pattern Agent (recurrence/rhythm detection), Serendipity Engine (unexpected connection discovery), Adaptive Briefing Learner (briefing format optimization).
+- **LLM Fallback Chain**: Added structured fallback to backfill_graph.py — Gemini → Gemma → OpenRouter. Fixed missing `fetch_graph_task_context` function. Multi-provider resilience for graph extraction.
+- **Phase 1-2 Hardening**: Removed silent failures across the pipeline. Added heartbeat monitoring for long-running tasks. Tracked `embedding_status` on memory rows. Added `failed_queue` with transactional integrity and retry count tracking. Index predicate fix for volatile function usage.
+- **Agents.md Update**: First structured version of AGENTS.md with project overview, architecture, conventions, and deployment configuration.
+
+### Key Files (Foundation)
+- `core/pulse/engine.py` — Dependency, Social Graph, Temporal Pattern agents
+- `core/pulse/context.py` — Serendipity Engine
+- `core/skills/backfill_graph.py` — LLM fallback chain
+- `db/` — failed_queue migration, heartbeat monitoring
+- `product-summary/12-pulse-engine-overview.md`, `13-pulse-engine-compass-personas.md`, `18-passive-intelligence.md`
+
+## Session Anchored Summary (May 1, 2026 — UI 2.0 Upgrade + Email Pipeline)
+
+### Progress Done This Session
+- **UI 2.0 Upgrade**: Major frontend redesign — upgraded dashboard, tasks, email, and memories UI with new component library (shadcn/ui, Radix primitives). Added date-fns for date handling, sonner for toasts. Defensive classification rendering. Build error fixes across 3 iterations.
+- **Email Pipeline (Draft → Send Workflow)**: Full email intake pipeline with Gmail API integration. Draft email logic with human-in-the-loop approval. Actionable email detection (FYI vs. requires-action) with prompt-based classification. Retry logic with jittered backoff for transient failures. Email frontend with filter types (actionable, drafts, sent, all). Gmail send integration from Web UI.
+
+### Key Files (Foundation)
+- `frontend/src/app/dashboard/` — UI 2.0 upgrade (tasks, email, memories)
+- `core/skills/email_ingest.py` — Email ingestion pipeline
+- `api/index.py` — Draft approval, send endpoints
+- `frontend/src/app/api/email/` — Email draft/send API routes
+- `product-summary/20-email-pipeline.md`, `21-frontend-dashboard.md`
+
+## Session Anchored Summary (Jul 13, 2026 — Part 28: Notebook LM Auto-Sync + Temporal Versioning Migration)
+
+### Progress Done This Session
+- **Notebook LM Auto-Sync via Google Docs**: Replaced rclone `.md` sync with Google Docs API for Notebook LM integration. Created `scripts/sync_notebooklm_docs.py` — creates/updates Google Docs in a shared Drive folder (Docs auto-sync into Notebook LM, markdown files don't). Created `scripts/update_google_oauth.py` — one-time OAuth scope updater adding the `docs` scope. New `.github/workflows/notebooklm-sync.yml` CI workflow triggers on push to `main`. Removed pre-push git hook (replaced by CI).
+- **Temporal Versioning Migration & Cleanup**: Removed app-level `version_memory_for_update()` from `core/services/db.py` — memories versioning now handled entirely by DB triggers. Deleted `test_14_versioning_on_enrichment_update` (tested removed function). Added `.eq('is_current', True)` guards to active project queries across frontend API routes. Misc lint fixes and stale import cleanup across 41 files. Migration `db/31_temporal_versioning_expansion.sql` (255 lines).
+- **Flutter APK Versioning**: Fixed `flutter-distribute.yml` CI pipeline for app versioning (version name/code from `pubspec.yaml`). Created `scripts/export-to-notebooklm.sh`. Fixed pulse run bug in backfill step 2 (`core/skills/backfill_graph.py`). In-app update service hardened with version comparison from release title.
+- **Pulse Memory Versioning Fix**: Fixed pulse engine to properly version memories before mutation in enrichment paths. Added push notification service (`core/services/push_notification.py` — 82 lines) for FCM fire-and-forget on every send. Fixed FCM polling in the Flutter app.
+
+### Key Files (Phase 28)
+- `scripts/sync_notebooklm_docs.py` — NEW: Google Docs create/update for Notebook LM
+- `scripts/update_google_oauth.py` — NEW: OAuth scope updater
+- `.github/workflows/notebooklm-sync.yml` — NEW: CI workflow on push to main
+- `db/31_temporal_versioning_expansion.sql` — NEW: temporal versioning expansion migration
+- `core/services/push_notification.py` — NEW: FCM push notification service
+- `core/services/db.py` — Removed app-level version_memory_for_update()
+- `scripts/export-to-notebooklm.sh` — Updated to use new sync script
+- `.github/workflows/flutter-distribute.yml` — APK versioning CI fixes
+
+## Session Anchored Summary (Jul 10-11, 2026 — Part 27: Rhodey Surface v3 + Push Notifications + Diagnostic Endpoints)
+
+### Progress Done This Session
+- **Rhodey Surface v1-v3 (Flutter App Redesign)**: Three iterative redesigns of the Flutter home screen. v1: card-based feed from `/api/briefing`. v2: briefing-based home screen with sections. v3: Horizon/Traces — editorial typography, warm stone palette, search for tasks/conversations/traces. New `today_screen.dart` with tab-based task/trace/conversation views. New `surface_prototype.dart`. `build_apk.sh` script for local APK builds.
+- **Push Notification Wire (FCM)**: Created `core/services/push_notification.py` — fire-and-forget FCM push on every send. `send_telegram()` now persists response to `raw_dumps` for app access and triggers FCM push. Briefing API (`api/briefing.py`) added `latest_response` field (latest outgoing raw_dump from past hour). Dart `BriefingResponse` model updated. `onPushReceived` handler triggers immediate briefing fetch on foreground push.
+- **Diagnostic Endpoints**: Added `/api/briefing-ping` (health check) and `/api/briefing-debug` (full debug dump with entities, time context, dates) to `api/index.py`.
+- **TypedDict Serialization Fix**: `api/index.py` — converted FastAPI `response_model` TypedDicts to plain dicts to avoid Vercel serialization crash.
+- **PostgREST Upsert Fix**: `scripts/record_app_version.py` — added `?on_conflict=key` to upsert call to prevent HTTP 409 duplicate key errors on CI rebuilds.
+- **process_single_dump Refactoring**: Extracted core processing logic from `dispatch.py` into `core/lib/process_input.py`. 16 files changed, 1,382 insertions across refactored dispatch, workflows, tools, calendar, and commands. Calendar event creation simplified by funneling through existing task workflow — removed 66 lines from `google_service.py`. New test suite (`tests/sim/test_full_pipeline.py`, `tests/unit/test_process_input.py`).
+
+### Key Files (Phase 27)
+- `rhodey_app/lib/screens/rhodey_surface.dart` — Rhodey Surface v3 Horizon/Traces UI
+- `rhodey_app/lib/screens/today_screen.dart` — Task/trace/conversation search
+- `core/services/push_notification.py` — NEW: FCM push service
+- `api/briefing.py` — Added latest_response field
+- `api/index.py` — Diagnostic endpoints + TypedDict fix
+- `core/webhook/telegram.py` — FCM push wire in send_telegram()
+- `rhodey_app/lib/services/notification_service.dart` — Push received callback
+
+## Session Anchored Summary (Jul 8, 2026 — Part 26: App Redesign v2 + Graph Fixes)
+
+### Progress Done This Session
+- **App Redesign v2 (P1-P5)**: Five-phase redesign of the Flutter app: P1 notification refactor, P2 conversation list, P3 individual conversation view, P4 decoration polish, P5 sound/vibration on notification. Removed task-or-note popup dialog — bot responses send directly to the app screen.
+- **Graph Unique Constraints Fix**: `db/` migration for `graph_nodes` and `pending_graph_edges` — fixed unique constraints broken for `ON CONFLICT` (PostgREST functional index mismatch). `approve/reject all` flow fixed in both backend and frontend.
+
+### Key Files (Phase 26)
+- `rhodey_app/lib/main.dart` — App redesign P1-P5
+- `rhodey_app/lib/screens/rhodey_surface.dart` — Redesigned individual screen components
+- `api/index.py` — Removed task-or-note popup endpoint
+- `api/webhook/handler.py` — Simplified webhook response
+
+## Session Anchored Summary (Jul 7, 2026 — Part 25: Flutter App Foundations)
+
+### Progress Done This Session
+- **Flutter Mobile App**: Built the Rhodey Flutter app from scratch across 19 commits. Firebase integration (FCM push, `firebase_options.dart`, `google-services.json`). In-app update system with version check, download, and install (`update_service.dart`). Digital signatures for app updates via CI. RECORD_AUDIO permission for speech recognition. TTS (text-to-speech) for Rhodey responses. Voice mic button on home screen. Signing config vars fixed for Kotlin DSL.
+- **Build Pipeline**: `flutter-distribute.yml` GitHub Action for automated builds. `contents:write` permission for GitHub Releases upload. APK signing and version bump automation.
+- **RPC UNION Type Fix**: `db/20_get_context_for.sql` — fixed `NULL::uuid` vs `text` type mismatch in UNION query (caused 415 error on context retrieval).
+
+### Key Files (Phase 25)
+- `rhodey_app/` — Full Flutter app (main.dart, screens, services, pubspec.yaml)
+- `.github/workflows/flutter-distribute.yml` — CI/CD for Flutter builds
+- `rhodey_app/lib/services/update_service.dart` — In-app update system
+- `rhodey_app/lib/services/notification_service.dart` — FCM notification handling
+
+## Session Anchored Summary (Jul 5, 2026 — Part 24: Bug Fixes + Import Cleanup)
+
+### Progress Done This Session
+- **Thinking Layer Bug Fixes**: Fixed bugs in the pattern learning deliberation layer (`core/lib/planner_critic.py`).
+- **maybe_single_safe Import Fix**: `maybe_single_safe` was missing from imports across 16 files — every file that used it had a pre-existing `NameError` waiting to trigger. Bulk fixed all occurrences.
+
+### Key Files (Phase 24)
+- `core/lib/planner_critic.py` — Thinking layer bug fixes
+- Multiple files across `core/pulse/`, `core/lib/` — maybe_single_safe import fix
+
+## Session Anchored Summary (Jun 25-26, 2026 — Part 23: Graph Redesign + Dedup + Clarification Unification)
+
+### Progress Done This Session
+- **Graph Intelligence Surface (Three-Pane)**: Replaced legacy single-pane graph with coordinated three-pane layout: (1) structural graph context with relation labels and edge hierarchy, (2) focus modes with ranked labels and memory panel, (3) responsive collapsible/resizable panes.
+- **2.5D Spherical Neural Globe**: Upgraded NeuralDisc from flat 2D to spherical (Fibonacci sphere) with majestic uncapped rendering. Wireframe sphere with depth cues, orbiting labels, rich pane context on node click.
+- **4-Layer Graph Dedup**: Built `scripts/backfill_graph_dedup.py` — two-track duplicate cleanup. 4-layer dedup algorithm: exact label → normalized ILIKE → fuzzy trigram → manual review queue. Executed actual node merges with edge consolidation.
+- **Clarification Loop Unification**: Unified clarification feedback loops across both Telegram and Decisions UI. Added missing API proxy route. Fixed recurring task bug, memory titles, graph loading with Redis.
+- **Task Dedup Migration**: Cleaned stale files, applied task dedup migration, added organization support in frontend.
+
+### Key Files (Phase 23)
+- `frontend/src/app/dashboard/graph/` — Three-pane graph layout, NeuralDisc 2.5D
+- `core/pulse/graph.py` — Clarification unification, dedup logic
+- `scripts/backfill_graph_dedup.py` — NEW: 4-layer dedup + merge execution
+- `api/index.py` — Clarification API proxy routes
+- `frontend/src/app/api/clarification/` — Missing route added
+
 ## Session Anchored Summary (Jul 12, 2026 — Part 22: Graph Cross-Domain Linkages & Multi-Layered Edge Extraction)
 
 ### Progress Done This Session
@@ -255,6 +535,7 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 - **launchd Watcher**: Created `~/Library/LaunchAgents/com.meetily.drive.sync.plist` — runs the sync script every 2 minutes, logs to `~/Library/Logs/meetily-drive-sync.log`.
 - **No code changes to Rhodey**: The existing `call_ingest.py` pipeline picks up new `.mp4` files from Drive on its 30-min cron, transcribes with `faster-whisper`, extracts with Gemini, and surfaces in Decision Pulse.
 - **Documentation**: Updated `product-summary/26-call-recording-ingest.md` with full Meetily setup architecture, management commands, and flow diagram. Added RL entry to `.speckit/speckit.specify.md`.
+- **Bare URL Misclassification Fix**: Fixed `quick_process.py` to route bare URLs to resources instead of memories — URL-bearing text no longer enters the memory/graph extraction pipeline. Consistent with the URL quarantine rule already documented in the Architecture section.
 
 ### Key Decisions This Session
 - **Meetily for capture, not transcription**: Processing engine (Qwen 3.5 2B) disabled in Meetily. It's used purely as a recorder. Transcription happens in the existing GHA pipeline.
@@ -477,6 +758,70 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 - `core/pulse/tools.py` — `create_project()`: unknown org → signal + hard reject; `create_task()`: unknown org → warning suffix
 - `core/pulse/graph.py` — `create_graph_node_with_db_record()`: `organization` type now creates `organizations` table row + back-links `graph_node_id`
 - `scripts/simulate_13_scenarios.py` — 13-scenario simulation script; 43 assertions; self-cleaning
+
+## Session Anchored Summary (Jun 21-23, 2026 — Part 4: Brain Graph v1 + Brain Synth v2 + Task Lifecycle Iterations)
+
+### Progress Done This Session
+- **Brain Graph v1 (5 Iterations)**: Built Danny-centered ego graph. New `/api/graph/ego`, `/api/graph/neighborhood`, `/api/graph/resolve-memory` endpoints. NeuralDisc (PixiJS v8) with split-pane layout: LifeStream + WebGL force-directed graph. Episode stream clustering via union-find over 3 signals (entity overlap, source metadata, memory_type). Zoom/pan, collapsible sidebar. Fixed UUID type rot, infinite loop from inline onDiagnostics callback, root lookup race conditions.
+- **Phase 2 Brain Synthesis**: Enhanced canonical page generation with async DB queries (connection drop fix), improved quality via better entity mapping. Removed legacy `brain_synth.py`.
+- **Notes from Telegram**: Captured notes routed directly from Telegram into the existing NOTE pipeline.
+- **Phase 2 Sentinel**: Background watcher engine with roundup logic and operational fixes.
+- **Memory/LLM Limiter**: Added rate limiting to LLM calls during memory processing to prevent API throttling.
+- **Task Completion Fixes (Iteration 1-2)**: Pre-hardening pass for task completion logic — fixed database issues and completion edge cases before the full T-600 audit.
+- **Deps security**: Bumped `pypdf` dependency.
+
+### Key Files (Phase 4)
+- `frontend/src/app/dashboard/graph/` — Brain Graph, NeuralDisc, Episode Stream
+- `api/index.py` — `/api/graph/ego`, `/api/graph/neighborhood`, `/api/graph/resolve-memory`, `/api/episodes/stream`
+- `core/skills/brain_synth_v2.py` — Phase 2 brain synthesis
+- `core/pulse/sentinel.py` — Phase 2 sentinel engine
+
+---
+
+## Session Anchored Summary (Jun 17-19, 2026 — Part 5: Workflow Fixes, Hipporag & Brain Foundations)
+
+### Progress Done This Session
+- **Workflow Bug Fixes**: Fixed three critical workflow sessions related to graph operations — backfill bugs, session continuity, and memory extraction timing.
+- **Flagged Node Approval/Rejection**: Completed the flagged node flow for ungrounded people — `pending_graph_nodes` with `status='flagged'` enables clarification loop questions before final approval.
+- **Time-Based Memory Extraction**: Memory extraction now respects temporal boundaries — recurring patterns are detected across time windows rather than batch-only.
+- **Fully Functional Brain**: Milestone — brain interrogation pipeline fully operational with working `/api/pulse` briefings.
+- **Hipporag (Associative Retrieval) Features**: Initial work on enhancing memory retrieval beyond pgvector-only — LLM entity extraction, lexical n-gram matching, and Redis caching foundations.
+- **HINDSIGHT_STALE Logic**: Added empty flag and widened threshold to 72h for the hindsight signal in associative retrieval. Three-way COMPASS TONE (STALE / EMPTY / neither).
+- **Edge Fixes & Dedup**: Auto-dedup cron for pending edges, safe `db_record_id` lookup for pending merges, entity sorting in UI. Fixed pre-existing Live Tab error.
+- **Canonical Page Quality**: Improved canonical page generation prompt for higher quality summaries.
+
+### Key Files (Phase 5)
+- `core/webhook/handler.py` — Flagged node handling
+- `core/skills/backfill_graph.py` — Workflow bug fixes, edge dedup
+- `core/retrieval/config.py` — HINDSIGHT_STALE logic
+- `core/retrieval/eval.py` — Associative retrieval evaluation foundations
+- `core/retrieval/extractor.py` — Hipporag entity extraction foundations
+
+---
+
+## Session Anchored Summary (Jun 14-16, 2026 — Part 19: KG Hardening, Concept Fluidity & LLM Consolidation)
+
+### Progress Done This Session
+- **Knowledge Graph Hardening (4-Layer Architecture)**: Comprehensive graph integrity upgrade — Layer 1 (Schema + Guardrails): purged legacy nodes, added temporal (`valid_from`, `valid_until`) and epistemic (`epistemic_status`) tracking, replaced BANNED_RELATIONSHIPS with `VALID_EDGE_MATRIX` positive allowlist. Layer 2 (Context Salience): deployed `get_context_for()` bidirectional recursive CTE. Layer 3 (Active Reasoning): wired email triage and Morning Pulse to use `assemble_context()` instead of flat task dumps. Layer 4 (Clarifier Phase 2): similarity dedup checks with 85%+ auto-merge.
+- **Concept Fluidity (Synaptic Plasticity)**: Added `concept` node type with `EVOKES`, `RELATES_TO`, `ASSOCIATED_WITH` edge types. Built and ran `concept_sweep_batch.py` to extract abstract concepts from 416 memories. All concept nodes passed through HITL (pending table → `g{id}` approval). *(Note: concepts later fully removed in Phase 20 — see Part 20.)*
+- **Entities Tab UI**: Added rename, manual merge, and cascade delete capabilities to the frontend entities page. New `graph_type_overrides` table for type corrections. Approve/reject actions added to entity-table-list. Type filtering dropdown for live/pending entities.
+- **Auto-Create Pending Nodes**: When an edge mentions a label with no existing graph node, auto-creates a pending node for it. Cascade live node actions to pending edges.
+- **LLM Layer Consolidation (T-402)**: Eliminated 11 duplication patterns across 45+ files — removed 17 redundant `create_client()` calls, unified Gemini clients under `get_gemini_clients()` (multi-key rotation for 3 API keys), consolidated Google credential factory, deleted 3 redundant pending decision handler files (~300 lines), centralized model constants in `core/llm/constants.py`, replaced hardcoded model strings with `SYNTHESIS_MODEL`/`CLASSIFICATION_MODEL` imports, removed double rate limiter in fallback chain. Effective throughput doubled.
+
+### Key Files (Phase 19)
+- `core/skills/backfill_graph.py` — Graph extraction pipeline hardening
+- `core/lib/graph_rules.py` — VALID_EDGE_MATRIX, graph integrity rules
+- `core/pulse/context.py` — assemble_context(), get_context_for()
+- `core/pulse/clarifier.py` — Clarifier Phase 2
+- `frontend/src/app/dashboard/graph/pending/` — Entities tab with rename/merge
+- `core/llm/client.py` — get_gemini_clients() multi-key rotation
+- `core/llm/constants.py` — Centralized model constants
+- `core/llm/compat.py` — Unified fallback chain
+- `core/services/google_service.py` — get_google_creds() factory
+- `core/services/db.py` — get_supabase() singleton
+- `core/webhook/utils.py` — process_channel_pending_decision() unified handler
+
+---
 
 ## Session Anchored Summary (Jun 24, 2026 — Part 1)
 
