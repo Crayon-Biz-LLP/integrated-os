@@ -117,6 +117,8 @@ Rules:
 - delete_event: removes an external Event.
 - target_id MUST be the exact numeric ID for Tasks, or string ID for Events.
 - Task operations (close_task, cancel_recurring, etc.) MUST use the numeric Task ID. Event IDs can ONLY be used with delete_event.
+- IMPORTANT: A recurring task with status 'done' or 'todo' is STILL AN ACTIVE SERIES. 'done' only skips the current week. If the user asks to cancel a recurring series, target ALL matching recurring tasks regardless of their current status.
+- If the user uses words like "all", "meetings", or "tasks" (plural), return a separate action for EVERY matching candidate.
 - Return empty array or no_op if nothing matches."""
 
     for model in (CLASSIFICATION_MODEL, SYNTHESIS_MODEL):
