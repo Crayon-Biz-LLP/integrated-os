@@ -53,6 +53,17 @@ def get_or_create_folder(drive):
     return folder["id"]
 
 
+def create_doc(drive, folder_id, title, bundle, doc_ids):
+    body = {
+        "name": title,
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": [folder_id],
+    }
+    media = MediaFileUpload(str(bundle), mimetype="text/plain", resumable=True)
+    doc = drive.files().create(body=body, media_body=media, fields="id").execute()
+    doc_ids[title] = doc["id"]
+
+
 def update_doc_via_docs_api(doc_id, text, creds):
     svc = build("docs", "v1", credentials=creds)
     doc = svc.documents().get(documentId=doc_id).execute()
@@ -86,11 +97,21 @@ def main():
     drive = build("drive", "v3", credentials=creds)
     folder_id = get_or_create_folder(drive)
 
+    bundles = sorted(bundles_dir.glob("*.md"))
+    bundle_names = {b.stem for b in bundles if b.stem != "_index"}
+
     doc_ids = {}
     if id_map_path.exists():
         doc_ids = json.loads(id_map_path.read_text())
+    else:
+        existing = drive.files().list(
+            q=f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false",
+            fields="files(name,id)", pageSize=100
+        ).execute()
+        for f in existing.get("files", []):
+            if f["name"] in bundle_names:
+                doc_ids[f["name"]] = f["id"]
 
-    bundles = sorted(bundles_dir.glob("*.md"))
     docs_scope_missing = False
 
     for bundle in bundles:
@@ -120,17 +141,14 @@ def main():
                             print("needs Docs OAuth scope")
                         else:
                             raise
+                elif e.resp.status == 404:
+                    print("recreating (was deleted)...", end=" ", flush=True)
+                    del doc_ids[title]
+                    create_doc(drive, folder_id, title, bundle, doc_ids)
                 else:
                     raise
         else:
-            body = {
-                "name": title,
-                "mimeType": "application/vnd.google-apps.document",
-                "parents": [folder_id],
-            }
-            media = MediaFileUpload(str(bundle), mimetype="text/plain", resumable=True)
-            doc = drive.files().create(body=body, media_body=media, fields="id").execute()
-            doc_ids[title] = doc["id"]
+            create_doc(drive, folder_id, title, bundle, doc_ids)
             print("created")
 
     if docs_scope_missing:
