@@ -68,7 +68,7 @@ async def webhook_route(request: Request):
         await asyncio.wait_for(process_webhook(update), timeout=55.0)
         return {"success": True}
     except asyncio.TimeoutError:
-        print(f"Webhook route timeout: 55s limit reached")
+        print("Webhook route timeout: 55s limit reached")
         # Try to send a timeout message if we can extract chat_id
         try:
             message = update.get("message", {})
@@ -507,8 +507,10 @@ async def update_task_status(request: Request, task_id: int):
 
         task = task_res.data
         current_status = task.get('status')
-        if current_status in ['done', 'cancelled']:
+        if current_status == new_status:
             return {"success": True, "task": task, "message": f"Task already {current_status}"}
+        if current_status == 'cancelled':
+            return {"success": False, "message": "Task was cancelled — cannot change status"}
 
         # --- RECURRING TASK: done = skip instance, cancelled = end series ---
         if task.get('recurrence') not in [None, '', 'none'] and new_status == 'done':

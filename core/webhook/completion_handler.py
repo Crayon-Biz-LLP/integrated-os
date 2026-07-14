@@ -3,16 +3,13 @@ completion_handler.py
 Owns the full lifecycle of COMPLETION dumps.
 State machine: processing_completion -> awaiting_completion_match | completed | partially_synced
 """
-from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm import get_embedding
-import asyncio
 
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import compute_expires_at
 from core.webhook.utils import supabase
 from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import maybe_single_safe
-from core.decisions import record_decision
 from datetime import datetime, timezone
 from core.actions import ActionResult, accumulate_action
 from core.actions.planner import plan_actions
@@ -162,8 +159,10 @@ async def handle_confident_completion(
             if action.operation == "update_metadata":
                 try:
                     upd = {}
-                    if "new_priority" in action.params: upd["priority"] = action.params["new_priority"]
-                    if "new_deadline" in action.params: upd["deadline"] = action.params["new_deadline"]
+                    if "new_priority" in action.params:
+                        upd["priority"] = action.params["new_priority"]
+                    if "new_deadline" in action.params:
+                        upd["deadline"] = action.params["new_deadline"]
                     if upd:
                         supabase.table('tasks').update(upd).eq('id', int(action.target_id)).execute()
                         closed_ids.append(action.target_id)
@@ -196,7 +195,7 @@ async def handle_confident_completion(
                     reminder_at=reminder_at,
                     recurrence=recurrence
                 )
-                if "Error" in result_msg:
+                if "FAIL:" in result_msg:
                     sync_failed = True
                     failed_tasks.append(f"Task {action.target_id}: {result_msg}")
                 else:

@@ -148,6 +148,10 @@ Rules:
                 ))
                 
             if actions:
+                try:
+                    audit_log_sync("planner", "INFO", f"Generated {len(actions)} actions", metadata={"plan": json.dumps([{"operation": a.operation, "target_id": a.target_id} for a in actions])})
+                except Exception:
+                    pass
                 return actions
         except Exception as e:
             audit_log_sync("planner", "WARNING", f"Planner failed with {model}: {e}")

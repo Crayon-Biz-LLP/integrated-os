@@ -77,7 +77,7 @@ async def _process_task_closure(target: str, chat_id: int):
     closed = []
     for t in matching:
         result_msg = update_task_status(task_id=t["id"], status="done")
-        if "Error" not in result_msg:
+        if "FAIL:" not in result_msg:
             closed.append(t["title"])
     return closed
 

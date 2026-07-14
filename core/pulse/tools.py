@@ -191,11 +191,13 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
     try:
         task_ref = maybe_single_safe(supabase.table('tasks').select('*').eq('id', task_id))
         if not task_ref.data:
-            return f"Task {task_id} not found."
+            return f"FAIL: Task {task_id} not found."
             
         td = task_ref.data
-        if td.get('status') in ['done', 'cancelled'] and status in ['done', 'cancelled']:
-            return f"Task {task_id} already {td.get('status')}."
+        if td.get('status') == status:
+            return f"INFO: Task {task_id} already {td.get('status')}."
+        if td.get('status') == 'cancelled':
+            return f"FAIL: Task {task_id} was cancelled — cannot change status."
 
         # --- RECURRING TASK: done = skip instance, cancelled = end series ---
         if td.get('recurrence') and td.get('recurrence') not in ['none', ''] and status == 'done':
@@ -219,7 +221,7 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
                     schedule_index_memory(memory_id, f"Completed instance of recurring task: {td['title']} (Task {task_id})", "outcome", "pulse_tools")
                 except Exception:
                     pass
-                return f"Marked this week's instance done for '{td['title']}'. {skip_msg} The series continues — use 'cancelled' to end it entirely."
+                return f"OK: Marked this week's instance done for '{td['title']}'. {skip_msg} The series continues — use 'cancelled' to end it entirely."
             
         new_reminder = format_rfc3339(reminder_at) if reminder_at else None
         g_id = td.get('google_task_id')
@@ -243,15 +245,20 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
         update_payload = {"status": status, "google_event_id": e_id}
         if status == 'done':
             update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
+        
+        # When cancelled, always clear the recurrence so the RRULE doesn't linger
+        if status == 'cancelled':
+            update_payload["recurrence"] = None
+        elif recurrence is not None:
+            update_payload["recurrence"] = recurrence
+            
         if new_reminder:
             update_payload["reminder_at"] = new_reminder
-        if recurrence is not None:
-            update_payload["recurrence"] = recurrence
 
         supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
-        return f"Task {task_id} updated successfully."
+        return f"OK: Task {task_id} updated successfully."
     except Exception as e:
-        return f"Error updating task {task_id}: {e}"
+        return f"FAIL: Error updating task {task_id}: {e}"
 
 @rhodey_tools.register
 def create_person(name: str, context: str):
