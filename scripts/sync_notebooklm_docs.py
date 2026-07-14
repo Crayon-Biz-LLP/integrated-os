@@ -11,10 +11,12 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
@@ -30,8 +32,13 @@ RHODEY_OS_FOLDER_ID = "1fOk_nKy5jjEKVKel88ZK47RR6KJjN3lJ"
 
 
 def get_creds():
-    from core.services.google_service import get_google_creds
-    return get_google_creds()
+    return Credentials(
+        None,
+        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
+        client_id=os.getenv("GOOGLE_CLIENT_ID"),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+        token_uri="https://oauth2.googleapis.com/token"
+    )
 
 
 def get_or_create_folder(drive):
