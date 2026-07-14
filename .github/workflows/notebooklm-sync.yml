@@ -24,7 +24,8 @@ jobs:
           pip install \
             google-api-python-client \
             google-auth-httplib2 \
-            google-auth-oauthlib
+            google-auth-oauthlib \
+            python-dotenv
 
       - name: Generate .md Source Bundles
         run: python3 scripts/generate_notebooklm_sources.py

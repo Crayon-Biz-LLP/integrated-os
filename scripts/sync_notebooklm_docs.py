@@ -11,7 +11,6 @@ Usage:
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -103,7 +102,7 @@ def main():
                 print("updated")
             except HttpError as e:
                 if e.resp.status in (400, 403):
-                    print(f"trying Docs API...", end=" ", flush=True)
+                    print("trying Docs API...", end=" ", flush=True)
                     try:
                         update_doc_via_docs_api(doc_ids[title], bundle.read_text(encoding="utf-8"), creds)
                         print("ok")
