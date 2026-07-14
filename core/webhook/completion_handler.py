@@ -140,6 +140,15 @@ async def handle_confident_completion(
         failed_tasks = []
         
         for action in valid_actions:
+            if action.operation != "delete_event":
+                try:
+                    int(str(action.target_id))
+                except (ValueError, TypeError):
+                    audit_log_sync("completion", "ERROR", f"Invalid target_id for {action.operation}: {action.target_id}")
+                    failed_tasks.append(f"Invalid target_id for {action.operation}: {action.target_id}")
+                    sync_failed = True
+                    continue
+
             if action.operation == "delete_event":
                 from core.services.google_service import delete_calendar_event
                 try:

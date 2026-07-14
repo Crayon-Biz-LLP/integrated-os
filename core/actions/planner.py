@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from typing import List
 from core.actions.models import Action
 from core.services.db import get_supabase
@@ -12,27 +13,53 @@ async def plan_actions(text: str, title: str, entity: str, active_anchor: dict =
     supabase = get_supabase()
     
     # 1. Fetch active tasks (todo/in_progress)
-    tasks_res = supabase.table("tasks").select("id, title, status, recurrence").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
+    tasks_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
     open_tasks = tasks_res.data or []
     
     # 2. Fetch recurring tasks (even if done, because done means skip instance)
-    recurring_res = supabase.table("tasks").select("id, title, status, recurrence").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
+    recurring_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
     recurring_tasks = [t for t in (recurring_res.data or []) if t["status"] != "cancelled"]
     
     # 3. Fetch upcoming calendar events
     from core.services.google_service import get_upcoming_calendar_events
     upcoming_events = await asyncio.to_thread(get_upcoming_calendar_events, 14)
     
+    # Pre-process upcoming events into base IDs to find next occurrence times
+    base_id_to_time = {}
+    for e in upcoming_events:
+        base_id = re.sub(r'_\d{8}T\d{6}Z$', '', e["id"])
+        # Keep the earliest time for the base ID
+        if base_id not in base_id_to_time:
+            base_id_to_time[base_id] = e["time"]
+    
     # Combine uniquely for tasks
     seen_tasks = set()
     candidates = []
+    task_google_event_ids = set()
+    
     for t in open_tasks + recurring_tasks:
         if t["id"] not in seen_tasks:
             seen_tasks.add(t["id"])
-            candidates.append({"type": "task", "id": t["id"], "title": t["title"], "status": t["status"], "recurrence": t.get("recurrence")})
+            gid = t.get("google_event_id")
+            if gid:
+                task_google_event_ids.add(gid)
+            
+            next_occ = base_id_to_time.get(gid) if gid else None
+            candidates.append({
+                "type": "task", 
+                "id": t["id"], 
+                "title": t["title"], 
+                "status": t["status"], 
+                "recurrence": t.get("recurrence"),
+                "next_occurrence": next_occ
+            })
             
     seen_events = set()
     for e in upcoming_events:
+        base_id = re.sub(r'_\d{8}T\d{6}Z$', '', e["id"])
+        if base_id in task_google_event_ids:
+            continue # Event is linked to a task, already handled above
+            
         if e["id"] not in seen_events:
             seen_events.add(e["id"])
             candidates.append({"type": "event", "id": e["id"], "title": e["title"], "time": e["time"]})
@@ -48,20 +75,21 @@ async def plan_actions(text: str, title: str, entity: str, active_anchor: dict =
     filtered_candidates = []
     for c in candidates:
         candidate_words = c["title"].lower().split()
-        # Keep if any meaningful word overlaps
         if any(w in candidate_words for w in search_words if len(w) > 3):
             filtered_candidates.append(c)
             
     if not filtered_candidates:
-        # Fallback to all if strict filter fails
         filtered_candidates = candidates[:50] 
         
     candidate_lines = []
     for c in filtered_candidates:
         if c["type"] == "task":
-            candidate_lines.append(f"Task ID {c['id']}: {c['title']} (status: {c['status']}, recurring: {bool(c.get('recurrence'))})")
+            rec_str = "recurring" if c.get('recurrence') else "one-off"
+            next_str = f", next: {c['next_occurrence']}" if c.get('next_occurrence') else ""
+            candidate_lines.append(f"Task ID {c['id']}: {c['title']} (status: {c['status']}, {rec_str}{next_str})")
         else:
-            candidate_lines.append(f"Event ID {c['id']}: {c['title']} (time: {c['time']})")
+            candidate_lines.append(f"Event ID {c['id']}: {c['title']} (no linked task, time: {c['time']})")
+            
     candidate_lines_str = "\n".join(candidate_lines)
     
     from datetime import datetime, timezone
@@ -86,8 +114,9 @@ Rules:
 - modify_recurring: changes the schedule of a recurring Task (`params.new_rrule` and `params.new_reminder_at`).
 - reschedule: changes the time of a non-recurring Task (`params.new_reminder_at`).
 - update_metadata: changes priority or deadline of a Task (`params.new_priority`, `params.new_deadline`).
-- delete_event: removes an external Event (use when target is an Event ID).
-- target_id MUST be from the Candidates list (use the Task ID or Event ID).
+- delete_event: removes an external Event.
+- target_id MUST be the exact numeric ID for Tasks, or string ID for Events.
+- Task operations (close_task, cancel_recurring, etc.) MUST use the numeric Task ID. Event IDs can ONLY be used with delete_event.
 - Return empty array or no_op if nothing matches."""
 
     for model in (CLASSIFICATION_MODEL, SYNTHESIS_MODEL):
@@ -106,7 +135,6 @@ Rules:
                 op = a.get("operation", "no_op")
                 tid = a.get("target_id")
                 
-                # We do minimal validation here since IDs can be strings (events) or ints (tasks)
                 if str(tid) == "None" and op != "no_op":
                     continue
                     
