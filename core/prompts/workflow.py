@@ -32,12 +32,23 @@ If the user says "no", "nope", "nothing", "cancel", or similar general rejection
 
 CRITICAL: Per-signal decisions MUST be correct. A user saying "yes for the meeting, no for the deadline" means confirm index 0, decline index 1. Do NOT guess or assume.
 
+Additionally, detect if the user's reply ALSO contains a SEPARATE instruction about tasks NOT in the proposed actions above.
+For example:
+- "Not needed. But close the tasks related to Amita." → has_other_content=true, other_content_text="close the tasks related to Amita"
+- "No" → has_other_content=false
+- "Yes, do these and also close the Qhord task" → decisions are confirm for proposed items, has_other_content=true, other_content_text="close the Qhord task"
+- "Cancel everything" → has_other_content=false (this IS about the proposed actions)
+
+If has_other_content is true, the other_content_text will be processed as a separate message. Extract ONLY what the user explicitly said about OTHER tasks — do not include their response to the proposed actions.
+
 Return JSON:
 {{
   "decisions": [
     {{ "index": 0, "decision": "confirm" | "decline" | "skip" }},
     {{ "index": 1, "decision": "confirm" | "decline" | "skip" }}
-  ]
+  ],
+  "has_other_content": true | false,
+  "other_content_text": "the exact text of the separate instruction (only if has_other_content is true)"
 }}"""
 
     # Single-signal fallback (backward compat)
@@ -75,15 +86,16 @@ Signal Types to Extract:
 1. 'calendar_event' — a specific scheduled event, meeting, call, or discussion at a specific time. Include the resolved time in "reminder_at" as ISO 8601 (YYYY-MM-DDTHH:MM:SS+05:30).
 2. 'deadline' — hard deadline for a specific deliverable ("by Monday evening", "due Friday"). Include the resolved time in "reminder_at" as ISO 8601.
 3. 'task_imperative' — explicit directive to create a task ("I need to...", "Remind me to...").
-4. 'person_intro' — a new person is introduced with their organization or role.
-5. 'financial' — a quote, budget, cost, invoice, or opportunity amount.
-6. 'dependency' — multi-step planning or blockers ("discuss with X first").
+4. 'task_closure' — explicit instruction to close, cancel, or mark-as-done an existing task ("close the tasks related to Amita", "mark FC Madras tasks done", "cancel the Qhord task"). Include the description of which tasks to close in "target_task_description".
+5. 'person_intro' — a new person is introduced with their organization or role.
+6. 'financial' — a quote, budget, cost, invoice, or opportunity amount.
+7. 'dependency' — multi-step planning or blockers ("discuss with X first").
 
 Return JSON:
 {{
   "signals": [
     {{
-      "type": "calendar_event|deadline|task_imperative|person_intro|financial|dependency",
+      "type": "calendar_event|deadline|task_imperative|task_closure|person_intro|financial|dependency",
       "title": "Short title describing the signal",
       "reminder_at": "ISO 8601 datetime (for calendar_event/deadline, use Current time above to resolve relative dates)",
       "duration_minutes": 30,
@@ -93,6 +105,7 @@ Return JSON:
       "org": "Organization (for person_intro)",
       "role": "Role (for person_intro)",
       "task_title": "Task title (for calendar_event/deadline/task_imperative)",
+      "target_task_description": "Description of which tasks to close (for task_closure only — e.g., 'tasks related to Amita', 'FC Madras tasks')",
       "amount": "numeric amount or string (for financial)",
       "depends_on": "what it depends on (for dependency)",
       "confidence": 0.0-1.0

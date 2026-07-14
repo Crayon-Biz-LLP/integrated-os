@@ -1,5 +1,6 @@
 import re
 from datetime import datetime, timezone
+from typing import Tuple, Optional
 from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
@@ -34,11 +35,12 @@ def get_deterministic_decision(text: str):
 
     return None
 
-async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> bool:
+async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> Tuple[bool, Optional[str]]:
     """
     Checks if there's an active workflow for this chat.
     If so, evaluates the user's reply to see if it confirms, declines, or ignores the workflow.
-    Returns True if the workflow handled the message, False if normal routing should proceed.
+    Returns (True, None) if the message was consumed, (True, ancillary_text) if the workflow
+    handled the offer but there's a separate instruction to re-process, (False, None) if normal routing.
     """
     supabase = get_supabase()
     
@@ -62,10 +64,10 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
             .execute()
     except Exception as e:
         audit_log_sync("workflow", "ERROR", f"DB lookup failure falling open to general: {e}")
-        return False
+        return False, None
         
     if not res.data:
-        return False
+        return False, None
         
     if len(res.data) > 1:
         # Mark older ones as superseded
@@ -79,7 +81,7 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         }).in_('id', superseded_ids).execute()
         
         audit_log_sync("workflow", "WARNING", f"Multiple active workflows for chat {chat_id}. Superseded older ones, falling open.")
-        return False
+        return False, None
         
     workflow = res.data[0]
     w_id = workflow['id']
@@ -90,7 +92,7 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     if text and not _check_topic_overlap(text, payload):
         audit_log_sync("workflow", "INFO",
             f"Workflow {w_id} bypassed: message entities don't match workflow payload — falling through")
-        return False
+        return False, None
 
     # 1+2: Decision determination
     if w_type == "batch":
@@ -112,9 +114,11 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                 )
                 raw = analysis_res.parse_json()
                 signal_decisions = raw.get("decisions", [])
+                has_other_content = raw.get("has_other_content", False)
+                other_content_text = raw.get("other_content_text", "")
             except Exception as e:
                 audit_log_sync("workflow", "ERROR", f"Batch LLM eval failed falling open: {e}")
-                return False
+                return False, None
         decision = "confirm" if any(sd.get("decision") == "confirm" for sd in signal_decisions) else "decline"
     else:
         # Single-signal workflow
@@ -132,12 +136,12 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                 decision = analysis_res.parse_json().get("decision", "unrelated")
             except Exception as e:
                 audit_log_sync("workflow", "ERROR", f"LLM eval failed falling open: {e}")
-                return False
+                return False, None
             
     # 3. Handle Decision
     if decision == "unrelated":
         audit_log_sync("workflow", "INFO", f"Workflow {w_id} bypassed due to unrelated reply. Remains active.")
-        return False
+        return False, None
         
     # ATOMIC UPDATE FOR IDEMPOTENCY
     try:
@@ -150,23 +154,28 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         
         if not update_res.data:
             audit_log_sync("workflow", "WARNING", f"Workflow {w_id} already resolved concurrently. Skipping.")
-            return True
+            return True, other_content_text if decision == "decline" and 'other_content_text' in locals() and other_content_text else None
     except Exception as e:
         audit_log_sync("workflow", "ERROR", f"Failed atomic update for {w_id}: {e}")
-        return False
+        return False, None
         
     if decision == "decline":
-        reply_text = "Cancelled."
+        has_other = 'has_other_content' in locals() and has_other_content and other_content_text.strip()
+        reply_text = "Cancelled the pending items." if has_other else "Cancelled."
         await send_telegram(chat_id, reply_text)
         log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
         log_exchange(thread_id, 'bot', 'WORKFLOW_RESOLUTION', reply_text, chat_id)
-        return True
+        if has_other:
+            return True, other_content_text.strip()
+        return True, None
         
     elif decision == "confirm":
         reply_text = "Done."
 
         if w_type == "batch":
             signals_list = payload.get("signals", [])
+            # Cache active tasks once for task_closure matching
+            active_tasks = []
             for sd in signal_decisions:
                 if sd.get("decision") != "confirm":
                     continue
@@ -184,6 +193,24 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                 elif sig_type == "task_imperative":
                     pi = ProcessInput(category="TASK", text=title, source="workflow", title=title)
                     await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
+                elif sig_type == "task_closure":
+                    if not active_tasks:
+                        tasks_res = supabase.table("tasks") \
+                            .select("id, title") \
+                            .eq("is_current", True) \
+                            .not_.in_("status", ["done", "cancelled"]) \
+                            .execute()
+                        active_tasks = tasks_res.data or []
+                    target = sig.get("target_task_description", "") or title
+                    target_lower = target.lower()
+                    matching = [
+                        t for t in active_tasks
+                        if any(word in t["title"].lower() for word in target_lower.split() if len(word) > 3)
+                    ]
+                    if matching:
+                        from core.pulse.tools import update_task_status
+                        for t in matching:
+                            update_task_status(task_id=t["id"], status="done")
 
         elif w_type in ("deadline", "calendar_event"):
             title = payload.get("task_title") or payload.get("proposed_title") or payload.get("title", "New Task")
@@ -213,6 +240,9 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         await send_telegram(chat_id, reply_text)
         log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
         log_exchange(thread_id, 'bot', 'WORKFLOW_RESOLUTION', reply_text, chat_id)
-        return True
+        has_other = 'has_other_content' in locals() and has_other_content and other_content_text.strip()
+        if has_other:
+            return True, other_content_text.strip()
+        return True, None
         
-    return False
+    return False, None

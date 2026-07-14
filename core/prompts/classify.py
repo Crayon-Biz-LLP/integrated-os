@@ -29,7 +29,14 @@ Return ONLY valid JSON (no markdown, no explanation):
     "reasoning": "brief logic",
     "person_name": "extracted person name (for ROLE_UPDATE only)",
     "role_title": "role title like Pastor or Treasurer (for ROLE_UPDATE only)",
-    "org_name": "organization name like Ashraya Chennai Central (for ROLE_UPDATE only)"
+    "org_name": "organization name like Ashraya Chennai Central (for ROLE_UPDATE only)",
+    "secondary_actions": [
+        {{
+            "type": "task_closure|task_imperative",
+            "target": "description of what to close or create",
+            "confidence": 0.0-1.0
+        }}
+    ]
 }}
 
 Rules:
@@ -39,8 +46,10 @@ Rules:
 - PROJECT ROUTING: Route tasks about personal finances, bills, home, or family to PERSONAL. Route Ashraya church administration, operations, accounts to ASHRAYA. Route personal spiritual practices (bible reading, prayer, volunteering) to PERSONAL. Only route to CRAYON if it relates to corporate governance, business taxes, or legal compliance. Route tech/client work to SOLVSTRAT.
 - STATUS vs TASK: Task-referential has-happened actions map to COMPLETION; general wins, observations, and milestones still map to NOTE.
 - PROJECT_UPDATE: If the message contains mixed content like status updates, team changes, finance/invoice mentions, decisions, or meeting fallout. This is a rich, multi-faceted update. Use this instead of COMPLETION if the message describes multiple things happening or includes entities/details, even if one of those things is completing a task.
-- COMPLETION: If the message describes a task-referential has-happened action that closes a specific known item (e.g., "Finished the Vasanth status sync call", "Done with the Qhord pricing page"), classify as COMPLETION. Extract the closest matching task description into `title`. This MUST be a single-action message that unambiguously closes one specific task. If the message also contains new decisions, project updates, or team changes, classify it as PROJECT_UPDATE instead.
+- COMPLETION: If the message describes a task-referential action that closes a specific known item — either past-tense ("Finished the Vasanth call", "Done with the Qhord pricing") or imperative ("Close the Amita tasks", "Cancel the FC Madras project", "Mark the Qhord pricing done") — classify as COMPLETION. Extract the closest matching task description into `title`. If the message contains multiple entity references, decisions, or mixed actions beyond just closing tasks, classify it as PROJECT_UPDATE instead (the enrichment pipeline will extract the closure as a secondary signal).
 - MEETING MINUTES: Structured meeting minutes (attendee lists, agenda sections, key decisions, action items) are always NOTE, never COMPLETION or TASK. Action items within minutes are records of what was agreed, not completion reports. The entire document is a contextual record.
+- TASK MANAGEMENT DIRECTIVES: If the message explicitly instructs to close, cancel, or mark-done existing tasks identified by name, person, or project (e.g., "Close the Amita tasks", "Cancel the FC Madras tasks", "Mark the Qhord pricing done"), classify as COMPLETION. The action describes closing existing items, not creating new ones. Single-word replies like "Done" or "Cancelled" in context of active workflows are handled by the workflow system, not this rule.
+- SECONDARY ACTIONS: If the user's message contains TWO separate intents (e.g., a question AND a task instruction like "Who is Amita and close her tasks"), set the PRIMARY intent to the dominant action, and list the secondary action(s) in the "secondary_actions" array. Each secondary action must specify its type (task_closure or task_imperative) and target description. Example: "Who is Amita and close her tasks" → intent="QUERY", secondary_actions=[{"type": "task_closure", "target": "close the tasks related to Amita", "confidence": 0.8}]. The system will execute the primary intent first, then process secondary actions.
 - TASK: Any message that implies an action, including adding calendar events, meetings, or recurring meetings (e.g. "Add a meeting every Monday"). Do not require a date or time.
 - NOTE: Ideas, insights, or learnings worth remembering.
 - MEETING NOTES & OBSERVATIONS: "Vasanth call went well", "sync with Ashraya team was productive" — if it describes an outcome or observation without closing a specific task → NOTE, not COMPLETION.

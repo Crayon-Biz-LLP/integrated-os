@@ -743,6 +743,14 @@ This enables natural-language note capture without special syntax.
 
 ---
 
+## Today's Changes (Jul 14, 2026)
+
+### [COMPLETED] T-MULTI-001: Multi-Intent Messages + Task Closure Pipeline
+**Files**: `core/prompts/classify.py`, `core/prompts/workflow.py`, `core/webhook/dispatch.py`, `core/webhook/workflows.py`, `core/webhook/handler.py`
+**Change**: Extended Smart Batch Enrichment for compound human messages. (A) `check_and_resume_workflow` returns `Tuple[bool, Optional[str]]` — ancillary text falls through to classify. (B) `task_closure` signal type with `target_task_description` in enrichment prompt. (C) `secondary_actions` array in classify prompt for multi-intent routing at 0.5 confidence. (D) `_process_task_closure` helper fuzzy-matches entity names against open task titles via substring/ILIKE. 5 files, +134 lines.
+
+---
+
 
 
 ## Today's Changes (Jul 1, 2026)

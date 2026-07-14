@@ -1089,9 +1089,13 @@ async def process_webhook(update: dict):
 
         # ── CONSUMER PRECEDENCE: Check active workflow before normal routing ──
         try:
-            workflow_handled = await check_and_resume_workflow(chat_id, text, session_id)
+            result = await check_and_resume_workflow(chat_id, text, session_id)
+            workflow_handled, ancillary_text = result if isinstance(result, tuple) else (result, None)
             if workflow_handled:
-                return {"success": True}
+                if ancillary_text:
+                    text = ancillary_text
+                else:
+                    return {"success": True}
         except Exception as e:
             audit_log_sync("workflow", "ERROR", f"Workflow check failed, falling open: {e}")
 

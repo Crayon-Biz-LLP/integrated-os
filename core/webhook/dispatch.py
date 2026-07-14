@@ -25,7 +25,7 @@ from core.lib.decision_audit import log_decision, DecisionStage, set_decision_ch
 from core.pulse.entity_extractor import extract_and_link_entities
 from core.lib.graph_rules import normalize_label
 from core.pulse.entity_resolver import resolve_entities_from_text
-from core.services.db import maybe_single_safe
+from core.services.db import maybe_single_safe, get_supabase
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:
@@ -48,6 +48,38 @@ def _format_task_line(title: str, project_name: str, priority: str = None, suffi
     if suffix:
         line += suffix
     return line
+
+async def _process_task_closure(target: str, chat_id: int):
+    """Find active tasks matching a target description and close them.
+    
+    Shared helper used by batch workflow execution and secondary_actions processing.
+    Returns list of closed task titles.
+    """
+    supabase = get_supabase()
+    tasks_res = supabase.table("tasks") \
+        .select("id, title") \
+        .eq("is_current", True) \
+        .not_.in_("status", ["done", "cancelled"]) \
+        .execute()
+    active_tasks = tasks_res.data or []
+    if not active_tasks:
+        return []
+
+    target_lower = target.lower()
+    matching = [
+        t for t in active_tasks
+        if any(word in t["title"].lower() for word in target_lower.split() if len(word) > 3)
+    ]
+    if not matching:
+        return []
+
+    from core.pulse.tools import update_task_status
+    closed = []
+    for t in matching:
+        result_msg = update_task_status(task_id=t["id"], status="done")
+        if "Error" not in result_msg:
+            closed.append(t["title"])
+    return closed
 
 async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, conversation_history: str = ""):
     """
@@ -485,7 +517,7 @@ async def _run_post_capture_enrichment(
         return followup_msg
 
     # Stage 2: Rank
-    PRIORITY = ["calendar_event", "deadline", "task_imperative", "person_intro", "financial", "dependency"]
+    PRIORITY = ["calendar_event", "deadline", "task_imperative", "task_closure", "person_intro", "financial", "dependency"]
     
     def get_priority(s):
         t = s.get("type", "")
@@ -522,6 +554,8 @@ async def _run_post_capture_enrichment(
             actionable.append(s)
         elif s.get("type") == "task_imperative":
             actionable.append(s)
+        elif s.get("type") == "task_closure":
+            actionable.append(s)
 
     # Stage 3: Promote as batch
     if actionable and enable_workflow:
@@ -537,6 +571,8 @@ async def _run_post_capture_enrichment(
                     line += f" — {sig['reminder_at']}"
             elif st == "deadline":
                 line = f"  {i+1}. 📅 Deadline: {title}"
+            elif st == "task_closure":
+                line = f"  {i+1}. ✅ Close: {title}"
             else:
                 line = f"  {i+1}. 📝 Task: {title}"
             lines.append(line)
@@ -1071,6 +1107,22 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         await handle_noise(chat_id)
     else:
         await handle_clarification(text, "Could you provide more details?", chat_id, session_id=session_id)
+
+    # Process secondary_actions after primary handler completes
+    if classification:
+        secondary = classification.get("secondary_actions", [])
+        for sa in secondary:
+            sa_type = sa.get("type")
+            sa_target = sa.get("target", "")
+            sa_conf = sa.get("confidence", 0)
+            if sa_conf < 0.5 or not sa_target:
+                continue
+            if sa_type == "task_closure":
+                closed = await _process_task_closure(sa_target, chat_id)
+                if closed:
+                    await send_telegram(chat_id, f"✅ Closed: {', '.join(closed)}")
+                else:
+                    audit_log_sync("secondary_actions", "INFO", f"No tasks matched for closure: {sa_target}")
 
     _persist_chain_id(session_id)
 

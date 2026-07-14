@@ -823,6 +823,24 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 
 ---
 
+## Session Anchored Summary (Jul 14, 2026 — Part 50: Multi-Intent Messages & Task Closure Pipeline)
+
+### Progress Done This Session
+- **Problem**: Rhodey's Telegram webhook had a single-intent bottleneck — "Not needed.. You can just close the open tasks related to Amita and FC Madras." only got "Cancelled." from the workflow handler, dropping the task-closure intent entirely.
+- **Root Cause**: 4 independent gaps — (A) workflow handler ate compound reply messages (returned `bool`, classifier never ran for ancillary text), (B) enrichment prompt had no `task_closure` signal type, (C) classifier returned one intent, no multi-intent concept, (D) no helper to bulk-close tasks by fuzzy entity matching.
+- **Gap A fix** (`core/webhook/workflows.py`): Changed `check_and_resume_workflow` return from `bool` to `Tuple[bool, Optional[str]]`. If ancillary text remains after batch confirm/decline, handler falls through to classify with extracted text.
+- **Gap B fix** (`core/prompts/workflow.py`): Added `task_closure` signal type + `target_task_description` to enrichment prompt. `_run_post_capture_enrichment` now collects and displays task_closure signals.
+- **Gap C fix** (`core/prompts/classify.py`): Added TASK MANAGEMENT DIRECTIVES rule (imperative close/cancel → COMPLETION) and SECONDARY ACTIONS rule — LLM now populates `secondary_actions` array for multi-intent messages. `route_by_intent` processes these after primary handler with 0.5 confidence threshold.
+- **Gap D fix** (`core/webhook/dispatch.py`): Added `_process_task_closure` helper — fuzzy-matches entity names against open task titles via substring/ILIKE. Shared by both batch executor and `route_by_intent`.
+- **5 files changed, +134 lines, ruff check clean**.
+
+### Key Files (Part 50)
+- `core/prompts/classify.py` — TASK MANAGEMENT DIRECTIVES + SECONDARY ACTIONS rules, `secondary_actions` JSON schema
+- `core/prompts/workflow.py` — `task_closure` signal type, `has_other_content` in batch resume prompt
+- `core/webhook/dispatch.py` — `_process_task_closure`, secondary_actions processing, enrichment collector
+- `core/webhook/workflows.py` — Tuple return, task_closure batch execution
+- `core/webhook/handler.py` — Tuple handling, ancillary text re-routing
+
 ## Session Anchored Summary (Jun 24, 2026 — Part 1)
 
 ### Progress Done This Session
