@@ -233,3 +233,31 @@ def check_conflict(start_iso):
     except Exception as e:
         audit_log_sync("google_service", "WARNING", f"Conflict check failed: {e}")
         return None
+
+def get_upcoming_calendar_events(days=14):
+    try:
+        service = get_cached_service('calendar', 'v3')
+        start_dt = datetime.now(timezone.utc)
+        end_dt = start_dt + timedelta(days=days)
+        events_res = service.events().list(
+            calendarId='primary',
+            timeMin=start_dt.isoformat(),
+            timeMax=end_dt.isoformat(),
+            singleEvents=True,
+            orderBy='startTime',
+            maxResults=100
+        ).execute()
+        events = []
+        for e in events_res.get('items', []):
+            start = e.get('start', {})
+            dt = start.get('dateTime') or start.get('date', '')
+            events.append({
+                'time': dt,
+                'title': e.get('summary', 'Untitled'),
+                'source': 'google',
+                'id': e.get('id'),
+            })
+        return events
+    except Exception as e:
+        audit_log_sync('google_service', 'WARNING', f'Google calendar upcoming fetch failed: {e}')
+        return []

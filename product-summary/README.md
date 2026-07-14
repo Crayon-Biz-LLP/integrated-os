@@ -97,6 +97,7 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [46-role-update-intent.md](46-role-update-intent.md) | ROLE_UPDATE intent — detect role attributions, update people.role, SERVES_AT edges |
 | [47-classification-context-boundary.md](47-classification-context-boundary.md) | Bounded classify context, bot receipt stripping, PERSON QUERIES rule |
 | [50-multi-intent-task-closure.md](50-multi-intent-task-closure.md) | Multi-intent messages, task closure via enrichment pipeline, secondary_actions in classify |
+| [51-action-planner-architecture.md](51-action-planner-architecture.md) | Universal Action Planner replacing single-intent matchers for tasks, recurring series, and calendar operations |
 
 ### Mobile App (Flutter — Rhodey)
 | File | What It Covers |

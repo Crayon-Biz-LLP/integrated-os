@@ -50,13 +50,16 @@ class SlidingWindowLimiter:
 
     async def acquire_async(self):
         """Asynchronous acquire — awaits until a token is available."""
-        wait = 0
-        with self.lock:
-            wait = self._get_wait_secs()
-            if wait == 0:
-                now = time.time()
-                self._prune(now)
-                self.timestamps.append(now)
+        def _sync_acquire():
+            with self.lock:
+                w = self._get_wait_secs()
+                if w == 0:
+                    n = time.time()
+                    self._prune(n)
+                    self.timestamps.append(n)
+                return w
+                
+        wait = await asyncio.to_thread(_sync_acquire)
 
         if wait > 0:
             await asyncio.sleep(wait)

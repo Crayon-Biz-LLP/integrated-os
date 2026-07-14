@@ -77,6 +77,22 @@ When proposing fixes, making architectural changes, or summarizing completed wor
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
 
+## Session Anchored Summary (Jul 15, 2026 — Part 51: Universal Action Planner & Multi-System Routing)
+
+### Progress Done This Session
+- **Universal Action Planner**: Upgraded Rhodey's single-intent routing architecture (`core/actions/planner.py`) to resolve complex actions spanning tasks, recurring series, and raw calendar events in a single LLM pass. Replaced fragile `completion_handler` degradation logic.
+- **Operations Expansion**: Planner supports 7 typed operations: `close_task`, `cancel_recurring` (end series), `suppress_instance` (skip occurrence), `modify_recurring` (parse new RRULE and date), `reschedule` (push deadline/reminder), `update_metadata` (priority/deadline), and `delete_event` (raw GCal deletions).
+- **Multi-Source Candidate Pool**: Instead of only searching open tasks, Planner fetches (1) active tasks, (2) recurring tasks (even if `status='done'`), and (3) a live 14-day window of upcoming Google Calendar events. Allows acting on calendar events even if they were never Rhodey tasks.
+- **Silent Timeout Fix (Vercel)**: Wrapped main webhook execution in `api/index.py` with `asyncio.wait_for(timeout=55)`. Intercepts Vercel's 60s hard kill, returns cleanly to Telegram with a "still thinking" message, and preserves audit logs.
+- **Async Locks**: Fixed event loop starvation in `core/lib/rate_limiter.py` by converting `threading.Lock` to `asyncio.Lock` and wrapping sync Redis HTTP checks in `asyncio.to_thread()`.
+
+### Key Files (Phase 51)
+- `core/actions/models.py` — NEW: Typed `Action` and `Operation` definitions
+- `core/actions/planner.py` — NEW: `plan_actions()` multi-source query and LLM execution
+- `core/webhook/completion_handler.py` — Refactored to execute planner outputs directly
+- `core/pulse/tools.py` — `update_task_status` enhanced to persist `recurrence` changes natively
+- `core/services/google_service.py` — NEW: `get_upcoming_calendar_events()`
+
 ## Session Anchored Summary (Jun 11-13, 2026 — Teams + NLP Graph + Message Table Unification + Graph Overhaul + Clarification Loop)
 
 ### Progress Done This Session

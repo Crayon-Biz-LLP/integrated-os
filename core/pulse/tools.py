@@ -245,6 +245,8 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
             update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
         if new_reminder:
             update_payload["reminder_at"] = new_reminder
+        if recurrence is not None:
+            update_payload["recurrence"] = recurrence
 
         supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
         return f"Task {task_id} updated successfully."

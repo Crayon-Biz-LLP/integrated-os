@@ -1053,3 +1053,6 @@ These features were built organically before the spec-kit task tracking system w
 
 ### T-RHODE-011 (S5): Follow-up auto-cancel
 **Status**: Still pending (~1d effort, needs inbound entity resolution)
+
+### TF-004 (P1): Universal Action Planner
+**Status**: Completed (Jul 15, 2026). Handled edge case where single-intent routing failed to execute complex actions across tasks, calendar, and recurring series. Replaced `completion_handler` degradation logic with multi-source planner. Supports `close_task`, `cancel_recurring`, `suppress_instance`, `modify_recurring`, `reschedule`, `update_metadata`, and `delete_event`. Includes Vercel 55s timeout safety net and `asyncio.Lock` fixes for rate limiting.

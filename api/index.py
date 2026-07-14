@@ -64,8 +64,22 @@ async def webhook_route(request: Request):
     trace_id_var.set(req_id)
     begin_action_context()
     try:
-        await process_webhook(update)
+        import asyncio
+        await asyncio.wait_for(process_webhook(update), timeout=55.0)
         return {"success": True}
+    except asyncio.TimeoutError:
+        print(f"Webhook route timeout: 55s limit reached")
+        # Try to send a timeout message if we can extract chat_id
+        try:
+            message = update.get("message", {})
+            chat = message.get("chat", {})
+            chat_id = chat.get("id")
+            if chat_id:
+                from core.webhook.telegram import send_telegram
+                asyncio.create_task(send_telegram(chat_id, "This is taking a bit longer than expected... I'm still processing it in the background."))
+        except Exception:
+            pass
+        return {"success": True, "note": "timeout_handled"}
     except Exception as e:
         print(f"Webhook route error: {e}")
         raise HTTPException(status_code=500, detail="Internal processing error")
