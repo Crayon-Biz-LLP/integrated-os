@@ -610,12 +610,12 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
             return resolution["node_id"]
         
         try:
-            res = supabase.table("graph_nodes").insert({
+            res = supabase.table("graph_nodes").upsert({
                 "label": label,
                 "type": typ,
                 "normalized_label": normalize_label(label),
                 "metadata": source_info
-            }).execute()
+            }, on_conflict="normalized_label, type").execute()
             if res.data:
                 return res.data[0]["id"]
         except Exception as e:

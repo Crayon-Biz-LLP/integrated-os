@@ -13,8 +13,32 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from core.lib.telemetry import hash_features
 from core.pulse.sentinel import hash_features_simple
 
-# Reuse the _BuilderMock from test_auto_approve.py
-from tests.unit.test_auto_approve import _make_builder
+# Local builder mock (replaces import from deleted test_auto_approve.py)
+def _make_builder():
+    """Create a mock query builder chain."""
+    m = MagicMock()
+    m.select.return_value = m
+    m.eq.return_value = m
+    m.in_.return_value = m
+    m.or_.return_value = m
+    m.is_.return_value = m
+    m.not_.return_value = m
+    m.limit.return_value = m
+    m.order.return_value = m
+    m.range.return_value = m
+    m.maybe_single.return_value = m
+    m.ilike.return_value = m
+    m.gte.return_value = m
+    m.lt.return_value = m
+    m.neq.return_value = m
+    m.filter.return_value = m
+    m.text_search.return_value = m
+    m.upsert.return_value = m
+    m.insert.return_value = m
+    m.update.return_value = m
+    m.delete.return_value = m
+    m.execute.return_value = MagicMock(data=[])
+    return m
 
 
 # ── S1: Hash chain consistency ──────────────────────────────────────────────

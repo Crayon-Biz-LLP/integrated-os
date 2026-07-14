@@ -19,7 +19,7 @@ from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 from core.retrieval.config import config as retrieval_config
 from core.retrieval.pipeline import process_pending_index_jobs, retry_failed_index_runs
-from core.retrieval.cleanup import sweep_orphan_retrieval_entries, cleanup_memory_retrieval_index
+
 
 
 async def run_index_queue(max_jobs: int = 3) -> int:
@@ -67,35 +67,18 @@ def run_memory_sweep() -> int:
             audit_log_sync("maintenance", "INFO", "Memory sweep: no expired memories")
             return 0
 
-        failed = 0
+        deleted = 0
         for mid in expired_ids:
-            ok = False
-            for attempt in range(2):
-                try:
-                    cleanup_memory_retrieval_index(mid)
-                    supabase.table("memories").delete().eq("id", mid).execute()
-                    ok = True
-                    break
-                except Exception:
-                    if attempt == 0:
-                        continue
-            if not ok:
-                failed += 1
+            try:
+                supabase.table("memories").delete().eq("id", mid).execute()
+                deleted += 1
+            except Exception as e:
                 audit_log_sync("maintenance", "WARNING",
-                               f"Memory sweep: failed to clean memory {mid} after 2 attempts")
+                               f"Memory sweep: failed to delete memory {mid}: {e}")
 
-        if failed > len(expired_ids) // 2:
-            audit_log_sync("maintenance", "WARNING",
-                           f"Memory sweep: {failed}/{len(expired_ids)} items failed cleanup")
         audit_log_sync("maintenance", "INFO",
-                       f"Memory sweep: {len(expired_ids) - failed}/{len(expired_ids)} expired memory(ies) removed")
-
-        # Also run orphan sweep after cleanup
-        try:
-            sweep_orphan_retrieval_entries()
-        except Exception:
-            pass
-        return len(expired_ids) - failed
+                       f"Memory sweep: {deleted}/{len(expired_ids)} expired memory(ies) removed (trigger handles index cleanup)")
+        return deleted
     except Exception as e:
         audit_log_sync("maintenance", "WARNING", f"Memory sweep error: {e}")
         return 0
@@ -122,14 +105,13 @@ def run_raw_dump_cleanup() -> int:
 
 
 def run_orphan_sweep() -> int:
-    """Sweep orphaned retrieval entries."""
-    try:
-        sweep_orphan_retrieval_entries()
-        audit_log_sync("maintenance", "INFO", "Orphan sweep: completed")
-        return 1
-    except Exception as e:
-        audit_log_sync("maintenance", "WARNING", f"Orphan sweep error: {e}")
-        return 0
+    """Deprecated: replaced by DB trigger trg_memories_cleanup (db/32).
+
+    The AFTER DELETE trigger on memories table handles cleanup automatically.
+    Kept as no-op for backward compatibility.
+    """
+    audit_log_sync("maintenance", "INFO", "Orphan sweep: skipped — DB trigger handles cleanup")
+    return 0
 
 
 def run_graph_edge_expiry(expiry_days: int = 90) -> int:

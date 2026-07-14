@@ -84,7 +84,7 @@ async def create_graph_node_with_db_record(
             }
             supabase.table("graph_nodes").upsert(
                 node_data,
-                on_conflict="normalized_label"
+                on_conflict="normalized_label, type"
             ).execute()
 
             # Post-creation hook: Conservative org link
@@ -189,7 +189,7 @@ async def create_graph_node_with_db_record(
                         "memory_id": source_text,
                     }
                 },
-                on_conflict="normalized_label"
+                on_conflict="normalized_label, type"
             ).execute()
 
             # Back-link: store graph_node_id on the people row
@@ -286,7 +286,7 @@ async def create_graph_node_with_db_record(
                     "db_record_id": str(org_db_id) if org_db_id else None,
                     "metadata": node_meta,
                 },
-                on_conflict="normalized_label"
+                on_conflict="normalized_label, type"
             ).execute()
 
             # Back-link: store graph_node_id on the organizations row
@@ -736,7 +736,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                 "task_id": task_id,
                 "project_id": project_id
             }
-        }, on_conflict="normalized_label").execute()
+        }, on_conflict="normalized_label, type").execute()
 
         if project_id:
             proj_node = supabase.table('graph_nodes') \

@@ -156,7 +156,7 @@ def main():
                 "metadata": {"source": src}
             })
         try:
-            res = supabase.table('graph_nodes').upsert(rows, on_conflict="normalized_label").execute()
+            res = supabase.table('graph_nodes').upsert(rows, on_conflict="normalized_label, type").execute()
             if res.data:
                 for n in res.data:
                     gn_map[n['label'].lower()] = n['id']
