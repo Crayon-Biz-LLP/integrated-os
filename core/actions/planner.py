@@ -9,7 +9,7 @@ from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.llm.constants import CLASSIFICATION_MODEL, SYNTHESIS_MODEL
 
-async def plan_actions(text: str, title: str, entity: str, active_anchor: dict = None, exclude_signal_types: list = None) -> List[Action]:
+async def plan_actions(text: str, title: str, entity: str, active_anchor: dict = None) -> List[Action]:
     supabase = get_supabase()
     
     # 1. Fetch active tasks (todo/in_progress)
@@ -115,7 +115,11 @@ Rules:
 - reschedule: changes the time of a non-recurring Task (`params.new_reminder_at`).
 - update_metadata: changes priority or deadline of a Task (`params.new_priority`, `params.new_deadline`).
 - delete_event: removes an external Event.
-- target_id MUST be the exact numeric ID for Tasks, or string ID for Events.
+- create_task: creates a new task. Requires `params.title`. Optional: `params.project_name`, `params.deadline`, `params.priority`, `params.reminder_at`, `params.rrule`.
+- create_note: saves information to memory. Requires `params.content`. Optional: `params.project_name`.
+- create_event: schedules a calendar event. Requires `params.title`, `params.time`.
+- query_info: fetches information from the brain to answer the user's question. Requires `params.query`.
+- target_id MUST be the exact numeric ID for existing Tasks, or string ID for existing Events. Not used for create operations.
 - Task operations (close_task, cancel_recurring, etc.) MUST use the numeric Task ID. Event IDs can ONLY be used with delete_event.
 - IMPORTANT: A recurring task with status 'done' or 'todo' is STILL AN ACTIVE SERIES. 'done' only skips the current week. If the user asks to cancel a recurring series, target ALL matching recurring tasks regardless of their current status.
 - If the user uses words like "all", "meetings", or "tasks" (plural), return a separate action for EVERY matching candidate.

@@ -25,7 +25,7 @@ from core.lib.decision_audit import log_decision, DecisionStage, set_decision_ch
 from core.pulse.entity_extractor import extract_and_link_entities
 from core.lib.graph_rules import normalize_label
 from core.pulse.entity_resolver import resolve_entities_from_text
-from core.services.db import maybe_single_safe, get_supabase
+from core.services.db import maybe_single_safe
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:
@@ -48,38 +48,6 @@ def _format_task_line(title: str, project_name: str, priority: str = None, suffi
     if suffix:
         line += suffix
     return line
-
-async def _process_task_closure(target: str, chat_id: int):
-    """Find active tasks matching a target description and close them.
-    
-    Shared helper used by batch workflow execution and secondary_actions processing.
-    Returns list of closed task titles.
-    """
-    supabase = get_supabase()
-    tasks_res = supabase.table("tasks") \
-        .select("id, title") \
-        .eq("is_current", True) \
-        .not_.in_("status", ["done", "cancelled"]) \
-        .execute()
-    active_tasks = tasks_res.data or []
-    if not active_tasks:
-        return []
-
-    target_lower = target.lower()
-    matching = [
-        t for t in active_tasks
-        if any(word in t["title"].lower() for word in target_lower.split() if len(word) > 3)
-    ]
-    if not matching:
-        return []
-
-    from core.pulse.tools import update_task_status
-    closed = []
-    for t in matching:
-        result_msg = update_task_status(task_id=t["id"], status="done")
-        if "FAIL:" not in result_msg:
-            closed.append(t["title"])
-    return closed
 
 async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, conversation_history: str = ""):
     """
@@ -1038,12 +1006,12 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         history_text = format_history_for_prompt(pairs)
 
     handler_map = {
-        'TASK': 'handle_confident_task',
+        'TASK': 'plan_actions',
         'DAILY_BRIEF': 'handle_daily_brief',
         'QUERY': 'interrogate_brain',
-        'COMPLETION': 'handle_confident_completion',
-        'NOTE': 'handle_confident_note',
-        'PROJECT_UPDATE': 'handle_project_update',
+        'COMPLETION': 'plan_actions',
+        'NOTE': 'plan_actions',
+        'PROJECT_UPDATE': 'plan_actions',
         'DELEGATE': 'handle_delegate',
         'DECLARE_PRACTICE': 'handle_declare_practice',
         'ROLE_UPDATE': 'handle_role_update',
@@ -1059,86 +1027,55 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         summary=f"Routing {intent} ({confidence:.0%}) → {handler_name}"
     )
 
-    exclude_signals = []
-    if classification:
-        for sa in classification.get("secondary_actions", []):
-            if sa.get("confidence", 0) >= 0.5 and sa.get("type"):
-                exclude_signals.append(sa["type"])
 
-    if intent == 'TASK':
-        title = classification.get('title', text) if classification else text
-        receipt = classification.get('receipt') if classification else None
-        entity = classification.get('entity') if classification else None
-        time_context = classification.get('time_context', '') if classification else ''
-        task_update_id = task_update_id if task_update_id is not None else (classification.get('task_update_id') if classification else None)
-        extraction_method = classification.get('extraction_method') if classification else None
-        reply = await handle_confident_task(text, title, time_context, chat_id, receipt, entity=entity, source=source, sender=sender, task_update_id=task_update_id, history_text=history_text, session_id=session_id, extraction_method=extraction_method)
+    contains_hidden = classification.get("contains_hidden_action", False) if classification else False
+    
+    title = classification.get('title', text) if classification else text
+    entity = classification.get('entity') if classification else None
+    task_update_id = task_update_id if task_update_id is not None else (classification.get('task_update_id') if classification else None)
+
+    # Handle queries (potentially compound)
+    if intent == 'QUERY':
+        reply = await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
+        
+        if contains_hidden:
+            from core.actions.planner import plan_actions
+            from core.actions.executor import execute_planned_actions
+            actions = await plan_actions(text, title, entity, active_anchor)
+            await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id)
+            
         if reply:
             capture_response(reply)
+
+    # Handle all action-centric intents via the planner
+    elif intent in ('TASK', 'COMPLETION', 'NOTE', 'PROJECT_UPDATE'):
+        from core.actions.planner import plan_actions
+        from core.actions.executor import execute_planned_actions
+        actions = await plan_actions(text, title, entity, active_anchor)
+        await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id)
+        
     elif intent == 'DAILY_BRIEF':
         reply = await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
         if reply:
             capture_response(reply)
-    elif intent == 'QUERY':
-        reply = await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
-        if reply:
-            capture_response(reply)
-    elif intent == 'COMPLETION':
-        from core.webhook.completion_handler import handle_confident_completion
-        receipt = classification.get('receipt') if classification else None
-        entity = classification.get('entity') if classification else None
-        await handle_confident_completion(
-            text=text,
-            title=classification.get("title", text) if classification else text,
-            chat_id=chat_id,
-            receipt=receipt,
-            entity=entity,
-            source=source,
-            sender=sender,
-            exclude_signal_types=exclude_signals
-        )
-    elif intent == 'NOTE':
-        receipt = classification.get('receipt') if classification else None
-        entity = classification.get('entity') if classification else None
-        extraction_method = classification.get('extraction_method') if classification else None
-        reply = await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor, exclude_signal_types=exclude_signals)
-        if reply:
-            capture_response(reply)
-    elif intent == 'PROJECT_UPDATE':
-        receipt = classification.get('receipt') if classification else None
-        entity = classification.get('entity') if classification else None
-        extraction_method = classification.get('extraction_method') if classification else None
-        reply = await handle_project_update(text, chat_id, receipt or "Update logged.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor, exclude_signal_types=exclude_signals)
-        if reply:
-            capture_response(reply)
+            
     elif intent == 'DELEGATE':
         supabase.table('agent_queue').insert({"query": text, "status": "pending"}).execute()
         ack = classification.get('receipt', "The intern is on it. I'll ping you when the research is ready.") if classification else "The intern is on it. I'll ping you when the research is ready."
         await send_telegram(chat_id, f"✓ {ack}")
+        
     elif intent == 'DECLARE_PRACTICE':
         await handle_declare_practice(text, chat_id, classification or {})
+        
     elif intent == 'ROLE_UPDATE':
         await handle_role_update(text, chat_id, classification or {}, source=source)
+        
     elif intent == 'NOISE':
         await handle_noise(chat_id)
+        
     else:
         await handle_clarification(text, "Could you provide more details?", chat_id, session_id=session_id)
 
-    # Process secondary_actions after primary handler completes
-    if classification:
-        secondary = classification.get("secondary_actions", [])
-        for sa in secondary:
-            sa_type = sa.get("type")
-            sa_target = sa.get("target", "")
-            sa_conf = sa.get("confidence", 0)
-            if sa_conf < 0.5 or not sa_target:
-                continue
-            if sa_type == "task_closure":
-                closed = await _process_task_closure(sa_target, chat_id)
-                if closed:
-                    await send_telegram(chat_id, f"✅ Closed: {', '.join(closed)}")
-                else:
-                    audit_log_sync("secondary_actions", "INFO", f"No tasks matched for closure: {sa_target}")
 
     _persist_chain_id(session_id)
 

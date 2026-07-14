@@ -30,13 +30,7 @@ Return ONLY valid JSON (no markdown, no explanation):
     "person_name": "extracted person name (for ROLE_UPDATE only)",
     "role_title": "role title like Pastor or Treasurer (for ROLE_UPDATE only)",
     "org_name": "organization name like Ashraya Chennai Central (for ROLE_UPDATE only)",
-    "secondary_actions": [
-        {{
-            "type": "task_closure|task_imperative",
-            "target": "description of what to close or create",
-            "confidence": 0.0-1.0
-        }}
-    ]
+    "contains_hidden_action": true/false
 }}
 
 Rules:
@@ -49,7 +43,8 @@ Rules:
 - COMPLETION: If the message describes a task-referential action that closes a specific known item — either past-tense ("Finished the Vasanth call", "Done with the Qhord pricing") or imperative ("Close the Amita tasks", "Cancel the FC Madras project", "Mark the Qhord pricing done") — classify as COMPLETION. Extract the closest matching task description into `title`. If the message contains multiple entity references, decisions, or mixed actions beyond just closing tasks, classify it as PROJECT_UPDATE instead (the enrichment pipeline will extract the closure as a secondary signal).
 - MEETING MINUTES: Structured meeting minutes (attendee lists, agenda sections, key decisions, action items) are always NOTE, never COMPLETION or TASK. Action items within minutes are records of what was agreed, not completion reports. The entire document is a contextual record.
 - TASK MANAGEMENT DIRECTIVES: If the message explicitly instructs to close, cancel, or mark-done existing tasks identified by name, person, or project (e.g., "Close the Amita tasks", "Cancel the FC Madras tasks", "Mark the Qhord pricing done"), classify as COMPLETION. The action describes closing existing items, not creating new ones. Single-word replies like "Done" or "Cancelled" in context of active workflows are handled by the workflow system, not this rule.
-- SECONDARY ACTIONS: If the user's message contains TWO separate intents (e.g., a question AND a task instruction like "Who is Amita and close her tasks"), set the PRIMARY intent to the dominant action, and list the secondary action(s) in the "secondary_actions" array. Each secondary action must specify its type (task_closure or task_imperative) and target description. Example: "Who is Amita and close her tasks" → intent="QUERY", secondary_actions=[{{"type": "task_closure", "target": "close the tasks related to Amita", "confidence": 0.8}}]. The system will execute the primary intent first, then process secondary actions.
+- CONTAINS HIDDEN ACTION: If the user's message is a QUERY but ALSO contains an actionable command (like creating, closing, or modifying a task), set "contains_hidden_action" to true. Example: "Who is Amita and close her tasks" -> intent="QUERY", contains_hidden_action=true. If the message is purely informational or just a query, set it to false.
+- EXPLANATORY CONTEXT RULE: Do NOT treat explanatory phrases (reasons, justifications, context) as hidden actions. Phrases like "until X", "since Y", "because Z", "so that", "for now", "given that" are CONTEXT that explain the primary intent. They are NOT separate commands.
 - TASK: Any message that implies an action, including adding calendar events, meetings, or recurring meetings (e.g. "Add a meeting every Monday"). Do not require a date or time.
 - NOTE: Ideas, insights, or learnings worth remembering.
 - MEETING NOTES & OBSERVATIONS: "Vasanth call went well", "sync with Ashraya team was productive" — if it describes an outcome or observation without closing a specific task → NOTE, not COMPLETION.
