@@ -184,7 +184,7 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                     continue
                 sig = signals_list[idx]
                 sig_type = sig.get("type")
-                title = sig.get("task_title") or sig.get("proposed_title") or sig.get("title", "New Task")
+                title = sig.get("task_title") or sig.get("proposed_title") or sig.get("title") or sig.get("target_task_description", "") or "New Task"
                 reminder_at = sig.get("reminder_at")
 
                 if sig_type in ("deadline", "calendar_event"):

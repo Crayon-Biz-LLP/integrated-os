@@ -481,6 +481,7 @@ async def _run_post_capture_enrichment(
     receipt: str = None, enable_workflow: bool = True,
     active_anchor: dict = None,
     memory_id: int = None,
+    exclude_signal_types: list = None,
 ) -> str:
     """Post-capture enrichment: ask LLM if the capture implies a task or has a critical ambiguity.
 
@@ -546,16 +547,22 @@ async def _run_post_capture_enrichment(
     for s in signals:
         if s.get("confidence", 0) < 0.5:
             continue
-        if s.get("type") in ("calendar_event", "deadline"):
+        sig_type = s.get("type")
+        if exclude_signal_types and sig_type in exclude_signal_types:
+            continue
+            
+        if sig_type in ("calendar_event", "deadline"):
             if not s.get("reminder_at"):
                 dt_iso = _resolve_calendar_datetime(s.get("raw_date_text", ""), s.get("raw_time_text", ""), capture_dt)
                 if dt_iso:
                     s["reminder_at"] = dt_iso
             actionable.append(s)
-        elif s.get("type") == "task_imperative":
+        elif sig_type == "task_imperative":
             actionable.append(s)
-        elif s.get("type") == "task_closure":
-            actionable.append(s)
+        elif sig_type == "task_closure":
+            target_desc = (s.get("target_task_description") or "").strip()
+            if len(target_desc) >= 3:
+                actionable.append(s)
 
     # Stage 3: Promote as batch
     if actionable and enable_workflow:
@@ -564,7 +571,7 @@ async def _run_post_capture_enrichment(
         lines = []
         for i, sig in enumerate(actionable):
             st = sig.get("type")
-            title = sig.get("task_title") or sig.get("proposed_title") or sig.get("title") or "Untitled"
+            title = sig.get("task_title") or sig.get("proposed_title") or sig.get("title") or sig.get("target_task_description", "") or "Untitled"
             if st == "calendar_event":
                 line = f"  {i+1}. 📅 Event: {title}"
                 if sig.get("reminder_at"):
@@ -617,7 +624,7 @@ async def _run_post_capture_enrichment(
     return followup_msg
 
 
-async def handle_project_update(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None) -> str | None:
+async def handle_project_update(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None, exclude_signal_types: list = None) -> str | None:
     """Handle a PROJECT_UPDATE intent — save update to memory.
 
     Returns the final response text sent (or None).
@@ -695,6 +702,7 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
             receipt=receipt, enable_workflow=True,
             active_anchor=active_anchor,
             memory_id=memory_id,
+            exclude_signal_types=exclude_signal_types
         )
         ack = receipt or "✅ Update logged and entities extracted."
         _last_sent = f"{ack}{followup_msg}"
@@ -718,7 +726,7 @@ async def handle_project_update(text: str, chat_id: int, receipt: str = None, so
     return _last_sent
 
 
-async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None) -> str | None:
+async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None, exclude_signal_types: list = None) -> str | None:
     """Handle a NOTE intent — save note to memory.
 
     Returns the final response text sent (or None).
@@ -820,6 +828,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
                 receipt=receipt, enable_workflow=True,
                 active_anchor=active_anchor,
                 memory_id=memory_id,
+                exclude_signal_types=exclude_signal_types
             )
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Note enrichment failed: {e}")
@@ -1050,6 +1059,12 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         summary=f"Routing {intent} ({confidence:.0%}) → {handler_name}"
     )
 
+    exclude_signals = []
+    if classification:
+        for sa in classification.get("secondary_actions", []):
+            if sa.get("confidence", 0) >= 0.5 and sa.get("type"):
+                exclude_signals.append(sa["type"])
+
     if intent == 'TASK':
         title = classification.get('title', text) if classification else text
         receipt = classification.get('receipt') if classification else None
@@ -1079,20 +1094,21 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
             receipt=receipt,
             entity=entity,
             source=source,
-            sender=sender
+            sender=sender,
+            exclude_signal_types=exclude_signals
         )
     elif intent == 'NOTE':
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None
         extraction_method = classification.get('extraction_method') if classification else None
-        reply = await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor)
+        reply = await handle_confident_note(text, chat_id, receipt or "Note secured.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor, exclude_signal_types=exclude_signals)
         if reply:
             capture_response(reply)
     elif intent == 'PROJECT_UPDATE':
         receipt = classification.get('receipt') if classification else None
         entity = classification.get('entity') if classification else None
         extraction_method = classification.get('extraction_method') if classification else None
-        reply = await handle_project_update(text, chat_id, receipt or "Update logged.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor)
+        reply = await handle_project_update(text, chat_id, receipt or "Update logged.", source=source, sender=sender, entity=entity, extraction_method=extraction_method, session_id=session_id, active_anchor=active_anchor, exclude_signal_types=exclude_signals)
         if reply:
             capture_response(reply)
     elif intent == 'DELEGATE':

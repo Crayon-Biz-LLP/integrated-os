@@ -32,6 +32,7 @@ async def handle_confident_completion(
     entity: str = None,
     source: str = "telegram",
     sender: str = "user",
+    exclude_signal_types: list = None
 ):
     dump_id = None
     try:
@@ -230,6 +231,7 @@ Response: {{"matched_task_ids": [...]}}"""
                     receipt=receipt, enable_workflow=False,
                     active_anchor=None,
                     memory_id=memory_id,
+                    exclude_signal_types=exclude_signal_types
                 )
                 ack = receipt or "✅ Logged as update (no matching task found)."
                 await _send(chat_id, f"{ack}{followup_msg}")
