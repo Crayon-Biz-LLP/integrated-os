@@ -7,9 +7,9 @@ from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.llm.constants import SYNTHESIS_MODEL
+from core.llm.constants import CLASSIFICATION_MODEL
 
-async def plan_actions(text: str, title: str, entity: str, active_anchor: dict = None) -> List[Action]:
+async def plan_actions(text: str, title: str = "", entity: str = "", active_anchor: dict = None, intent: str = None) -> List[Action]:
     supabase = get_supabase()
     
     # 1. Fetch active tasks (todo/in_progress)
@@ -163,7 +163,7 @@ Rules:
         res = await generate_content_with_fallback(
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
-            primary_model=SYNTHESIS_MODEL,
+            primary_model=CLASSIFICATION_MODEL,
             config={"response_mime_type": "application/json"}
         )
         parsed = res.parse_json()
