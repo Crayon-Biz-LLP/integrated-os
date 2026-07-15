@@ -176,7 +176,7 @@ Rules:
             op = a.get("operation", "no_op")
             tid = a.get("target_id")
             
-            if str(tid) == "None" and op != "no_op":
+            if str(tid) == "None" and not op.startswith("create_") and op not in ["query_info", "no_op"]:
                 continue
                 
             actions.append(Action(
