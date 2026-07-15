@@ -1,3 +1,4 @@
+import uuid
 from typing import List, Optional
 from core.actions.models import Action
 from core.services.db import get_supabase
@@ -141,7 +142,8 @@ async def execute_planned_actions(
     entity: str = None, 
     source: str = "telegram", 
     sender: str = "user", 
-    session_id: str = None
+    session_id: str = None,
+    intent: str = None
 ):
     """Executes a list of planned actions directly — NO legacy dispatch, NO process_single_dump.
 
@@ -214,7 +216,62 @@ async def execute_planned_actions(
     created_labels = []
     completed_actions = []  # Track for rollback
     
-    for action in valid_actions:
+    execute_actions = []
+    intercepted_tasks = []
+    
+    # Intercept tasks extracted from NOTE intents for user approval
+    if intent == "NOTE":
+        for action in valid_actions:
+            if action.operation in ("create_task", "create_event"):
+                intercepted_tasks.append(action)
+            else:
+                execute_actions.append(action)
+    else:
+        execute_actions = valid_actions
+        
+    if intercepted_tasks and session_id:
+        signals = []
+        for act in intercepted_tasks:
+            sig = {
+                "type": "deadline" if act.operation == "create_event" else "task_imperative",
+                "title": act.params.get("title") or act.human_label or "New Task",
+                "reminder_at": act.params.get("time") or act.params.get("reminder_at")
+            }
+            if act.params.get("project_name"):
+                sig["project_name"] = act.params["project_name"]
+            signals.append(sig)
+            
+        w_id = str(uuid.uuid4())
+        
+        try:
+            # Clear old active workflows for this thread to prevent duplicates
+            supabase.table('conversation_workflows').update({'status': 'cancelled'}).eq('thread_id', session_id).eq('status', 'active').execute()
+            
+            supabase.table('conversation_workflows').insert({
+                'id': w_id,
+                'chat_id': chat_id,
+                'thread_id': session_id,
+                'workflow_type': 'batch',
+                'status': 'active',
+                'awaiting_user_input': True,
+                'payload': {'signals': signals}
+            }).execute()
+            
+            msg_lines = ["📋 I found these items:"]
+            for i, sig in enumerate(signals):
+                icon = "📅" if sig["type"] == "deadline" else "📝"
+                title = sig["title"]
+                msg_lines.append(f"  {i+1}. {icon} {title}")
+            msg_lines.append("\nWant me to handle them?")
+            
+            import asyncio
+            asyncio.create_task(send_telegram(chat_id, "\n".join(msg_lines)))
+        except Exception as e:
+            audit_log_sync("executor", "WARNING", f"Failed to create batch workflow: {e}")
+            # Fallback: if we fail to create the workflow, we just execute them
+            execute_actions.extend(intercepted_tasks)
+
+    for action in execute_actions:
         if action.operation == "no_op":
             continue
             

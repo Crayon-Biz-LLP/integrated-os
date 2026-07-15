@@ -172,9 +172,13 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                 reminder_at = sig.get("reminder_at")
 
                 if sig_type in ("deadline", "calendar_event"):
-                    await create_task_direct(title=title, reminder_at=reminder_at)
+                    res = await create_task_direct(title=title, reminder_at=reminder_at)
+                    if res.get("action") == "created":
+                        reply_text += f"\n✅ Task created: {title}"
                 elif sig_type == "task_imperative":
-                    await create_task_direct(title=title)
+                    res = await create_task_direct(title=title)
+                    if res.get("action") == "created":
+                        reply_text += f"\n✅ Task created: {title}" 
                 elif sig_type == "task_closure":
                     if not active_tasks:
                         tasks_res = supabase.table("tasks") \

@@ -426,7 +426,7 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
             from core.actions.planner import plan_actions
             from core.actions.executor import execute_planned_actions
             actions = await plan_actions(text, title, entity, active_anchor, intent=intent)
-            await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id)
+            await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent)
         if reply:
             capture_response(reply)
 
@@ -434,7 +434,7 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         from core.actions.planner import plan_actions
         from core.actions.executor import execute_planned_actions
         actions = await plan_actions(text, title, entity, active_anchor, intent=intent)
-        await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id)
+        await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent)
         
     elif intent == 'DAILY_BRIEF':
         reply = await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
