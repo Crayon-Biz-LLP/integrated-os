@@ -271,6 +271,8 @@ async def handle_undo_command(text: str, chat_id: int):
         dump_id = r['id']
         content = r.get('content', '')
 
+        from core.lib.state_machines import guard_require_valid_transition
+
         if undo_d:
             supabase.table('raw_dumps').update({
                 "status": "cancelled",
@@ -278,11 +280,15 @@ async def handle_undo_command(text: str, chat_id: int):
             }).eq('id', dump_id).execute()
             # Best-effort cancel any task Pulse may have created
             try:
-                supabase.table('tasks').update({"status": "cancelled"}) \
+                task_ids = supabase.table('tasks').select('id, status') \
                     .eq('is_current', True) \
                     .ilike('title', content[:100]) \
                     .in_('status', ['todo', 'in_progress']) \
                     .execute()
+                for t in (task_ids.data or []):
+                    current_status = t['status']
+                    if guard_require_valid_transition("tasks", current_status, "cancelled", record_id=t['id'], context="undo_d"):
+                        supabase.table('tasks').update({"status": "cancelled"}).eq('id', t['id']).execute()
             except Exception:
                 pass
             await send_telegram(chat_id, f"🗑️ Deleted: _{content[:80]}..._")
@@ -300,11 +306,15 @@ async def handle_undo_command(text: str, chat_id: int):
                 }).eq('id', dump_id).execute()
             # Best-effort cancel any task Pulse may have created
             try:
-                supabase.table('tasks').update({"status": "cancelled"}) \
+                task_ids = supabase.table('tasks').select('id, status') \
                     .eq('is_current', True) \
                     .ilike('title', content[:100]) \
                     .in_('status', ['todo', 'in_progress']) \
                     .execute()
+                for t in (task_ids.data or []):
+                    current_status = t['status']
+                    if guard_require_valid_transition("tasks", current_status, "cancelled", record_id=t['id'], context="undo_n"):
+                        supabase.table('tasks').update({"status": "cancelled"}).eq('id', t['id']).execute()
             except Exception:
                 pass
             await send_telegram(chat_id, f"📝 Flipped to note: _{content[:80]}..._")

@@ -524,6 +524,26 @@ Context:
         except Exception as dlq_err:
             audit_log_sync("sentinel", "WARNING", f"DLQ consumer error (non-critical): {dlq_err}")
 
+        # --- PIGGYBACK: P6 Enrichment Queue Consumer ---
+        # Processes pending task_graph and note_enrich jobs that were queued
+        # during create_task_direct / create_note_direct. Runs every sentinel cycle
+        # (every 5 min) up to 3 jobs per cycle to stay within the 30s timeout.
+        try:
+            from core.lib.enrichment_queue import process_pending_enrichment
+            last_enrich_sweep = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%enrichment queue%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(minutes=4)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_enrich_sweep.data:
+                processed = await process_pending_enrichment(max_jobs=3)
+                if processed > 0:
+                    audit_log_sync("sentinel", "INFO", f"enrichment queue: processed {processed} job(s)")
+        except Exception as enrich_err:
+            audit_log_sync("sentinel", "WARNING", f"Enrichment queue consumer error (non-critical): {enrich_err}")
+
         # Memory sweep, index queue, and retry-failed-runs deferred to maintenance.py (daily mode)
 
         # --- PIGGYBACK: T4 Orphan recurring calendar events ---

@@ -239,6 +239,8 @@ async def execute_planned_actions(
             }
             if act.params.get("project_name"):
                 sig["project_name"] = act.params["project_name"]
+            if act.params.get("organization_name"):
+                sig["organization_name"] = act.params["organization_name"]
             signals.append(sig)
             
         w_id = str(uuid.uuid4())

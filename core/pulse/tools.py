@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import List
@@ -208,7 +209,12 @@ async def create_task_direct(
     when project_id/organization_id are not already provided.
     Returns {"action": "created"|"skipped"|"error", "task_id": id, "reason": str}.
     """
+    task_id = None
     try:
+        # Normalize dedup_key: hash to 16 chars for DB column compatibility (varchar(16))
+        if dedup_key and len(dedup_key) > 16:
+            dedup_key = hashlib.md5(dedup_key.encode()).hexdigest()[:16]
+
         if dedup_key:
             exist = supabase.table('tasks').select('id').eq('dedup_key', dedup_key) \
                 .eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
@@ -261,8 +267,17 @@ async def create_task_direct(
         # Calendar sync if reminder_at is set
         if reminder_at:
             try:
-                from core.services.google_service import sync_to_calendar, format_rfc3339
+                from core.services.google_service import sync_to_calendar, format_rfc3339, check_conflict
                 formatted = format_rfc3339(reminder_at)
+
+                # Conflict check before creating event
+                try:
+                    conflict_title = check_conflict(reminder_at)
+                    if conflict_title:
+                        audit_log_sync("tools", "INFO", f"Calendar conflict detected for '{title}': overlaps with '{conflict_title}'")
+                except Exception:
+                    pass  # Non-blocking — proceed with sync even if conflict check fails
+
                 e_id = sync_to_calendar(title, formatted, duration_mins=duration_mins, priority=priority, recurrence=recurrence)
                 if e_id:
                     supabase.table('tasks').update({'google_event_id': e_id}).eq('id', task_id).execute()
@@ -276,58 +291,27 @@ async def create_task_direct(
         except Exception as gt_e:
             audit_log_sync("tools", "WARNING", f"Google Tasks sync failed: {gt_e}")
 
-        # Enrichment: graph edges + entity extraction (fire-and-forget, non-blocking)
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(_enrich_task_for_graph(
-                    task_id=task_id, title=title, text=title, project_id=resolved_project_id
-                ))
-        except Exception:
-            pass
+        # Enrichment: queue graph edges + entity extraction (survives Vercel cold kills)
+        from core.lib.enrichment_queue import enqueue_enrichment
+        enqueue_enrichment(
+            job_type="task_graph",
+            target_type="task",
+            target_id=task_id,
+            content=title,
+            related_id=resolved_project_id,
+        )
 
         accumulate_action(ActionResult(action_type="task_create", status="executed", entity_id=task_id, human_label=title))
         return {"action": "created", "task_id": task_id}
     except Exception as e:
         audit_log_sync("tools", "ERROR", f"create_task_direct failed: {e}")
-        return {"action": "error", "reason": str(e)}
-
-
-async def _enrich_task_for_graph(task_id: int, title: str, text: str, project_id: str = None):
-    """Background enrichment: graph edges + entity extraction for newly created tasks."""
-    try:
-        from core.pulse.graph import write_graph_edges_for_task
-        from core.pulse.entity_extractor import extract_and_link_entities
-        await write_graph_edges_for_task(task_id, title, project_id or "")
-        await extract_and_link_entities(text, task_id, 'task')
-        audit_log_sync("tools", "INFO", f"Enriched task {task_id}: graph edges + entities")
-    except Exception as e:
-        audit_log_sync("tools", "WARNING", f"Task enrichment failed for {task_id}: {e}")
-
-
-async def _enrich_note_for_graph(memory_id: int, content: str, source: str):
-    """Background enrichment: entity extraction + embedding for newly created notes."""
-    try:
-        from core.pulse.entity_extractor import extract_and_link_entities
-        from core.llm import get_embedding
-        
-        # Entity extraction
-        await extract_and_link_entities(content, memory_id, 'memory')
-        
-        # Embedding generation (inline — important for immediate searchability)
+        # Write to DLQ so it can be retried
         try:
-            embedding_res = await get_embedding(content)
-            embedding = embedding_res.vector if embedding_res else None
-            if embedding:
-                supabase.table('memories').update({
-                    "embedding": embedding
-                }).eq('id', memory_id).eq('is_current', True).execute()
-        except Exception as emb_e:
-            audit_log_sync("tools", "WARNING", f"Embedding gen failed for note {memory_id}: {emb_e}")
-        
-        audit_log_sync("tools", "INFO", f"Enriched note {memory_id}: entities + embedding")
-    except Exception as e:
-        audit_log_sync("tools", "WARNING", f"Note enrichment failed for {memory_id}: {e}")
+            from core.lib.audit_logger import write_dlq
+            write_dlq("tasks", str(task_id) if task_id else "unknown", title, str(e))
+        except Exception:
+            pass
+        return {"action": "error", "reason": str(e)}
 
 
 @rhodey_tools.register
@@ -339,6 +323,7 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
     when project_id/organization_id are not already provided.
     Returns {"action": "filed"|"error", "memory_id": id, "reason": str}.
     """
+    memory_id = None
     try:
         # Resolve name→ID if IDs not provided but names are
         if (not project_id or not organization_id) and (project_name or organization_name):
@@ -369,30 +354,47 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
 
         memory_id = res.data[0]['id']
 
-        # Schedule retrieval index as background task
+        # Compute expiry if content contains time-sensitive phrases
         try:
-            import asyncio
+            from core.lib.time_utils import compute_expires_at
+            from datetime import datetime, timezone
+            expires_at = compute_expires_at(content, datetime.now(timezone.utc).isoformat())
+            if expires_at:
+                supabase.table('memories').update({'expires_at': expires_at}).eq('id', memory_id).execute()
+        except Exception:
+            pass
+
+        # Schedule retrieval index via queue (survives Vercel cold kills)
+        try:
             from core.retrieval.pipeline import schedule_index_memory
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 loop.create_task(asyncio.to_thread(schedule_index_memory, memory_id, content, "note", source))
+            else:
+                schedule_index_memory(memory_id, content, "note", source)
         except Exception:
             pass
 
-        # Enrichment: entity extraction + embedding (fire-and-forget, non-blocking)
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(_enrich_note_for_graph(
-                    memory_id=memory_id, content=content, source=source
-                ))
-        except Exception:
-            pass
+        # Enrichment: queue entity extraction + embedding (survives Vercel cold kills)
+        from core.lib.enrichment_queue import enqueue_enrichment
+        enqueue_enrichment(
+            job_type="note_enrich",
+            target_type="note",
+            target_id=memory_id,
+            content=content,
+            related_id=source,
+        )
 
         accumulate_action(ActionResult(action_type="note_create", status="executed", entity_id=memory_id, human_label=content[:80]))
         return {"action": "filed", "memory_id": memory_id}
     except Exception as e:
         audit_log_sync("tools", "ERROR", f"create_note_direct failed: {e}")
+        # Write to DLQ so it can be retried
+        try:
+            from core.lib.audit_logger import write_dlq
+            write_dlq("memories", str(memory_id) if memory_id else "unknown", content, str(e))
+        except Exception:
+            pass
         return {"action": "error", "reason": str(e)}
 
 

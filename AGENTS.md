@@ -95,6 +95,21 @@ When proposing fixes, making architectural changes, or summarizing completed wor
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
 
+## Session Anchored Summary (Jul 16, 2026 — Part 56: Enrichment Queue & Final Architecture Gap Closure)
+
+### Progress Done This Session
+- **Enrichment Queue (Same Pattern as pending_retrieval_index_jobs)**: Fixed the last critical gap from the architecture audit — enrichment (graph edges, entity extraction, embeddings) was running as fire-and-forget `asyncio.create_task()` calls, which Vercel silently kills when the serverless function returns. Created `pending_enrichment_jobs` table (`db/42_pending_enrichment_jobs.sql`) with `claim_pending_enrichment_job()` RPC for atomic status transitions. New `core/lib/enrichment_queue.py` module with `enqueue_enrichment()` (synchronous DB insert, survives Vercel cold kills) and `process_pending_enrichment()` (consumer with 3-retry dead-letter lifecycle). Wired into sentinel piggyback (P6, every ~5 min with 4-min throttle).
+- **Gaps Restored in create_task_direct/create_note_direct**: Replaced all fire-and-forget enrichment calls with queue-based enrichment. Also restored 3 side-effects lost during the Action Planner refactoring: (1) calendar conflict check before `sync_to_calendar()`, (2) DLQ write on creation failure, (3) `expires_at` computation for notes via `compute_expires_at()`.
+- **dedup_key Hash Ordering Bug Fix**: `dedup_key` normalization (MD5 hash to 16 chars for `varchar(16)` column compat) was running AFTER the dedup check — the check searched for the raw 17-char key while the insert stored the 16-char hash. Moved normalization before the check. Also moved `import hashlib` to top of file, removed redundant `str()` wrapping.
+- **E2E Verification**: Ran 25-check end-to-end test against live Supabase. 23/25 passed (2 expected: test assertion bug + `RETRIEVAL_INDEXING_ENABLED=false`). Verified: task creation with all fields, note creation with `expires_at`, dedup skip, enrichment queue jobs, state machine guards, validate_operation(), DLQ write, compensation rollback.
+
+### Key Files (Part 56)
+- `core/lib/enrichment_queue.py` — NEW: queue module (enqueue + process + per-type processors)
+- `core/pulse/tools.py` — create_task_direct + create_note_direct: queue enrichment, conflict check, expires_at, DLQ, dedup_key fix
+- `core/pulse/sentinel.py` — P6 piggyback for enrichment queue processing
+- `db/42_pending_enrichment_jobs.sql` — NEW: migration (table, indexes, claim RPC)
+- `product-summary/56-enrichment-queue.md` — Documentation
+
 ## Session Anchored Summary (Jul 15, 2026 — Part 55: 4W1H Root Cause Enforcement)
 
 ### Progress Done This Session

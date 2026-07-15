@@ -50,7 +50,23 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
             return final
 
         from core.pulse.tools import create_note_direct
-        await create_note_direct(content=text, source=source or "telegram")
+
+        # Pass active_anchor context for org routing (N:/Note: shortcuts)
+        project_name = None
+        organization_id = None
+        if active_anchor:
+            organization_id = active_anchor.get("last_org_id")
+            if active_anchor.get("last_project_id"):
+                try:
+                    proj_res = supabase.table('projects').select('organization_id, name').eq('id', active_anchor["last_project_id"]).limit(1).execute()
+                    if proj_res.data:
+                        project_name = proj_res.data[0].get('name')
+                        if not organization_id:
+                            organization_id = proj_res.data[0].get('organization_id')
+                except Exception:
+                    pass
+
+        await create_note_direct(content=text, source=source or "telegram", project_name=project_name, organization_id=organization_id)
 
         final = receipt or "\u2705"
         await send_telegram(chat_id, final)
@@ -1366,7 +1382,7 @@ async def process_webhook(update: dict):
             note_content = text[2:].strip() if text.startswith('N:') else text[5:].strip()
             if note_content:
                 receipt = "Note vaulted."
-                await handle_confident_note(note_content, chat_id, receipt, source=source)
+                await handle_confident_note(note_content, chat_id, receipt, source=source, session_id=session_id, active_anchor=active_anchor)
             return {"success": True}
 
         if re.match(r'^undo\s+(n(?:ote)?|t(?:ask)?|d(?:elete)?)\s*$', text.strip(), re.IGNORECASE):

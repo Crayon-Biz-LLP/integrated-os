@@ -172,7 +172,10 @@ def _auto_expire_recurring_tasks():
                 continue
 
         if expired:
+            from core.lib.state_machines import guard_require_valid_transition
             for tid in expired:
+                if not guard_require_valid_transition("tasks", "todo", "cancelled", record_id=tid, context="auto_expire_recurring_tasks"):
+                    continue
                 supabase.table('tasks').update({
                     'status': 'cancelled',
                     'completed_at': now.isoformat()

@@ -821,6 +821,39 @@ This enables natural-language note capture without special syntax.
 
 ---
 
+## Today's Changes (Jul 16, 2026 — Part 56: Enrichment Queue & Final Architecture Gap Closure)
+
+### [COMPLETED] T-STATE-014: Queue-Based Enrichment (Replace Fire-and-Forget)
+**Files**: `core/lib/enrichment_queue.py` (NEW), `db/42_pending_enrichment_jobs.sql` (NEW), `core/pulse/tools.py`, `core/pulse/sentinel.py`
+**Change**: Replaced fire-and-forget `asyncio.create_task(_enrich_task_for_graph(...))` / `_enrich_note_for_graph(...)` with synchronous queue insert (`enqueue_enrichment()`). New `pending_enrichment_jobs` table with `claim_pending_enrichment_job()` RPC for atomic claim, 3-retry dead-letter lifecycle. Sentinel P6 piggyback calls `process_pending_enrichment(max_jobs=3)` every ~5 min with 4-min throttle.
+**Root cause**: `asyncio.create_task` is killed by Vercel on serverless function return — enrichment never ran, tasks/notes were created in DB but invisible to graph/retrieval. Same class of bug as the 61% passage→phrase_node link gap.
+**How prevents recurrence**: Enqueue is synchronous DB insert (~5ms, always survives Vercel cold kills). Consumer uses same proven pattern as `pending_retrieval_index_jobs` with atomic claim and dead-letter escalation. No more fire-and-forget background tasks.
+**Deploy safe**: YES — additive queue, old fire-and-forget paths still exist but unused.
+
+### [COMPLETED] T-STATE-015: Restore Calendar Conflict Check
+**File**: `core/pulse/tools.py`
+**Change**: Added `check_conflict()` call before `sync_to_calendar()` in `create_task_direct()`. Non-blocking — logs conflict but still creates event.
+**Root cause**: Lost during Action Planner refactoring — old `_run_task_syncs()` called `check_conflict()` but `create_task_direct()` didn't.
+**Deploy safe**: YES — additive, read-only check.
+
+### [COMPLETED] T-STATE-016: Restore DLQ Write on Creation Failure
+**File**: `core/pulse/tools.py`
+**Change**: Both `create_task_direct()` and `create_note_direct()` now write to `dead_letter_queue` on creation failure. `task_id`/`memory_id` initialized to `None` before try block for safer exception handling (no more `dir()` runtime checks). `import hashlib` moved to top of file, redundant `str()` wrapping removed.
+**Deploy safe**: YES — additive DLQ write, existing audit log still fires.
+
+### [COMPLETED] T-STATE-017: Restore expires_at for Notes
+**File**: `core/pulse/tools.py`
+**Change**: `create_note_direct()` now calls `compute_expires_at()` to set `memories.expires_at` based on time-sensitive phrases in note content.
+**Root cause**: Lost during Action Planner refactoring — old `_persist_note()` called `compute_expires_at()` but `create_note_direct()` didn't.
+**Deploy safe**: YES — additive field, defaults to NULL.
+
+### [COMPLETED] T-STATE-018: Fix dedup_key Hash Ordering
+**File**: `core/pulse/tools.py`
+**Change**: Moved dedup_key normalization (MD5 hash to 16 chars for `varchar(16)` column compat) BEFORE the dedup check. The normalization was running after the check, so the check searched for the raw 17-char key while the insert stored the 16-char hash — every creation succeeded (no dedup), and the second call would crash on the DB unique constraint.
+**Deploy safe**: YES — ordering fix only, no new behavior.
+
+---
+
 ## Today's Changes (Jul 15, 2026 — Part 55: 4W1H Root Cause Enforcement)
 
 ### [COMPLETED] T-STATE-013: Root Cause Enforcement in Commit Hook

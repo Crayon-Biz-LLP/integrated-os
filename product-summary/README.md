@@ -101,6 +101,7 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [53-architecture-stabilization.md](53-architecture-stabilization.md) | DB-backed state, formal state machines, unified ingest, URL quarantine module, async webhook queue |
 | [54-hardening-trigger-fix-graph-cleanup-push-fix.md](54-hardening-trigger-fix-graph-cleanup-push-fix.md) | close_task_edges trigger crash fix, graph node duplicate cleanup, WhatsApp JSON parse fix, push notification device_tokens table |
 | [55-root-cause-enforcement.md](55-root-cause-enforcement.md) | 4W1H root cause enforcement — commit-msg hook, AGENTS.md Step 10, opencode.json commit rules |
+| [56-enrichment-queue.md](56-enrichment-queue.md) | Queue-based enrichment replacing fire-and-forget — Vercel-safe graph edges, entity extraction, embeddings |
 
 ### Mobile App (Flutter — Rhodey)
 | File | What It Covers |

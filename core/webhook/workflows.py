@@ -10,30 +10,6 @@ from core.lib.conversation import log_exchange, _check_topic_overlap
 from core.actions import ActionResult, accumulate_action
 from core.pulse.tools import create_task_direct
 
-# ── Workflow cache: avoids DB hit on every message ──
-# Simple in-memory TTL cache. Cleared on cold restart (safe: just causes a DB re-fetch).
-_workflow_cache: dict[int, tuple] = {}  # chat_id -> (workflow_dict, expires_at)
-_WORKFLOW_CACHE_TTL_SECONDS = 10
-
-def _get_cached_workflow(chat_id: int):
-    """Get cached active workflow for chat_id, or None if expired/missing."""
-    cached = _workflow_cache.get(chat_id)
-    if cached:
-        data, expires_at = cached
-        if datetime.now(timezone.utc).timestamp() < expires_at:
-            return data
-        del _workflow_cache[chat_id]
-    return None
-
-def _set_cached_workflow(chat_id: int, workflow_data: dict):
-    """Cache active workflow for chat_id with TTL."""
-    expires_at = datetime.now(timezone.utc).timestamp() + _WORKFLOW_CACHE_TTL_SECONDS
-    _workflow_cache[chat_id] = (workflow_data, expires_at)
-
-def _clear_cached_workflow(chat_id: int):
-    """Clear cached workflow for chat_id (e.g., after resolution)."""
-    _workflow_cache.pop(chat_id, None)
-
 
 async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> Tuple[bool, Optional[str]]:
     """
@@ -55,39 +31,36 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     except Exception:
         pass
     
-    # Check cache first, fall back to DB
-    workflow = _get_cached_workflow(chat_id)
-    if not workflow:
-        try:
-            res = supabase.table('conversation_workflows') \
-                .select('*') \
-                .eq('chat_id', chat_id) \
-                .eq('status', 'active') \
-                .eq('awaiting_user_input', True) \
-                .execute()
-        except Exception as e:
-            audit_log_sync("workflow", "ERROR", f"DB lookup failure falling open to general: {e}")
-            return False, None
-            
-        if not res.data:
-            return False, None
-            
-        if len(res.data) > 1:
-            # Mark older ones as superseded
-            sorted_ws = sorted(res.data, key=lambda x: x['created_at'])
-            superseded_ids = [w['id'] for w in sorted_ws[:-1]]
-            now_iso = datetime.now(timezone.utc).isoformat()
-            supabase.table('conversation_workflows').update({
-                'status': 'cancelled', 
-                'resolved_at': now_iso,
-                'updated_at': now_iso
-            }).in_('id', superseded_ids).execute()
-            
-            audit_log_sync("workflow", "WARNING", f"Multiple active workflows for chat {chat_id}. Superseded older ones, falling open.")
-            return False, None
-            
-        workflow = res.data[0]
-        _set_cached_workflow(chat_id, workflow)
+    # Always query DB directly (cache removed — DB lookup is fast and restart-safe)
+    try:
+        res = supabase.table('conversation_workflows') \
+            .select('*') \
+            .eq('chat_id', chat_id) \
+            .eq('status', 'active') \
+            .eq('awaiting_user_input', True) \
+            .execute()
+    except Exception as e:
+        audit_log_sync("workflow", "ERROR", f"DB lookup failure falling open to general: {e}")
+        return False, None
+        
+    if not res.data:
+        return False, None
+        
+    if len(res.data) > 1:
+        # Mark older ones as superseded
+        sorted_ws = sorted(res.data, key=lambda x: x['created_at'])
+        superseded_ids = [w['id'] for w in sorted_ws[:-1]]
+        now_iso = datetime.now(timezone.utc).isoformat()
+        supabase.table('conversation_workflows').update({
+            'status': 'cancelled', 
+            'resolved_at': now_iso,
+            'updated_at': now_iso
+        }).in_('id', superseded_ids).execute()
+        
+        audit_log_sync("workflow", "WARNING", f"Multiple active workflows for chat {chat_id}. Superseded older ones, falling open.")
+        return False, None
+        
+    workflow = res.data[0]
     w_id = workflow['id']
     w_type = workflow['workflow_type']
     payload = workflow.get('payload') or {}
@@ -126,7 +99,7 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         audit_log_sync("workflow", "INFO", f"Workflow {w_id} bypassed due to unrelated reply. Remains active.")
         return False, None
         
-    # ATOMIC UPDATE FOR IDEMPOTENCY + CLEAR CACHE
+    # ATOMIC UPDATE FOR IDEMPOTENCY
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
         update_res = supabase.table('conversation_workflows').update({
@@ -141,7 +114,6 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     except Exception as e:
         audit_log_sync("workflow", "ERROR", f"Failed atomic update for {w_id}: {e}")
         return False, None
-    _clear_cached_workflow(chat_id)
     
     if decision == "decline":
         has_other = 'has_other_content' in locals() and has_other_content and other_content_text.strip()
@@ -172,11 +144,15 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                 reminder_at = sig.get("reminder_at")
 
                 if sig_type in ("deadline", "calendar_event"):
-                    res = await create_task_direct(title=title, reminder_at=reminder_at)
+                    project_name = sig.get("project_name")
+                    organization_name = sig.get("organization_name")
+                    res = await create_task_direct(title=title, reminder_at=reminder_at, project_name=project_name, organization_name=organization_name)
                     if res.get("action") == "created":
                         reply_text += f"\n✅ Task created: {title}"
                 elif sig_type == "task_imperative":
-                    res = await create_task_direct(title=title)
+                    project_name = sig.get("project_name")
+                    organization_name = sig.get("organization_name")
+                    res = await create_task_direct(title=title, project_name=project_name, organization_name=organization_name)
                     if res.get("action") == "created":
                         reply_text += f"\n✅ Task created: {title}" 
                 elif sig_type == "task_closure":
