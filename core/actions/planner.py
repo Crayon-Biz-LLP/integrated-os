@@ -124,12 +124,13 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
     current_time = datetime.now(timezone.utc).astimezone().isoformat()
 
     prompt = f"""You are an action planner. Match the user's request to the correct tasks/events and operations.
-Return ONLY valid JSON: {{"actions": [{{"operation": "close_task|cancel_recurring|suppress_instance|modify_recurring|reschedule|update_metadata|delete_event|no_op", "target_id": "123", "params": {{"new_reminder_at": "YYYY-MM-DDTHH:MM:SS"}}, "human_label": "Description"}}]}}
+Return ONLY valid JSON: {{"actions": [{{"operation": "create_task|create_note|create_event|query_info|close_task|cancel_recurring|suppress_instance|modify_recurring|reschedule|update_metadata|delete_event|no_op", "target_id": "123", "params": {{"new_reminder_at": "YYYY-MM-DDTHH:MM:SS"}}, "human_label": "Description"}}]}}
 
 CURRENT TIME: {current_time}
 
 User text: "{text}"
 Extracted intent title: "{title}"
+Classifier intent: "{intent or 'UNKNOWN'}"
 Entity: "{entity}"
 
 Candidates:

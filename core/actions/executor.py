@@ -152,6 +152,7 @@ async def execute_planned_actions(
       - Handles closures via existing update_task_status.
     """
     if not actions:
+        await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
         return
         
     supabase = get_supabase()
@@ -173,6 +174,8 @@ async def execute_planned_actions(
         if pre_failures:
             details = "\\n".join(pre_failures)
             await send_telegram(chat_id, f"⚠️ All actions blocked by validation:\\n{details}")
+        else:
+            await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
         return
     
     # ── Stage 1: Save dump and memory for closures (zero data loss) ──

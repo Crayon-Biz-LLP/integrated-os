@@ -11,7 +11,6 @@ Following the Action Planner unification (Phase 51-52), this phase formalizes th
 | Active sessions | `active_sessions` dict in `graph.py` | `pending_graph_clarifications` table with `pending_type='session'` |
 | Status transitions | ad-hoc `if status == X` scattered everywhere | `state_machines.py` — single source of truth, guard function |
 | Node creation/merge | `pending_graph_nodes` mixed concerns | `pending_nodes` + `merge_proposals` tables, explicit schema |
-| Webhook jobs | `asyncio.wait_for(55)` + fire-and-forget | `pending_webhook_jobs` table, reliable consumer |
 | Ingest contracts | per-channel duplicate classify/persist | single `ingest()` with DB-backed pipeline |
 | URL quarantine | inline check in handler.py | `url_filter.py` — single source of truth |
 
@@ -61,18 +60,10 @@ The caller handles fetching + classifying; `ingest()` handles persisting. Elimin
 ### 5. URL Quarantine Module (`core/lib/url_filter.py`)
 Single `check_and_quarantine_url()` at every ingress point. Returns `URLQuarantineResult` with: `is_url`, `url`, `action` ('inserted' | 'dismissed' | 'skipped_dedup' | 'none'), `message`. Extracted from inline checks in `handler.py` that were being copied across channels.
 
-### 6. Async Webhook Queue (`core/skills/webhook_queue_consumer.py`)
-The `asyncio.wait_for(55)` timeout workaround in `api/index.py` had a fundamental flaw: if the LLM took 56s, Vercel killed the request silently. The async queue solves this:
-1. Webhook endpoint INSERTs the full `update_data` JSONB into `pending_webhook_jobs`
-2. Returns HTTP 200 immediately to Telegram
-3. Dedicated consumer (/api/process-webhook-jobs) processes pending jobs every ~15s
-4. Sentinel piggyback acts as 5-min catch-all
-5. Failed jobs retry up to 3 times, then escalate to dead_letter
-
-### 7. DLQ Consumer (`core/skills/dlq_consumer.py`)
+### 6. DLQ Consumer (`core/skills/dlq_consumer.py`)
 Phase C of the pipeline overhaul. `process_dlq()` sweeps `audit_logs` (service='dlq'), retries with exponential backoff (30s, 2min, 5min), escalates to Telegram alert on permanent failure.
 
-### 8. Shared Email Classify Prompt (`core/prompts/email_classify.py`)
+### 7. Shared Email Classify Prompt (`core/prompts/email_classify.py`)
 Single `build_email_classify_prompt()` for both Gmail (personal) and Outlook (work) classification. Prevents prompt drift — mailbox-specific context injected via parameters. Companion test: `tests/unit/test_email_classify_prompt.py` (112 lines, no DB/Gemini).
 
 ## Key Files
@@ -82,10 +73,8 @@ Single `build_email_classify_prompt()` for both Gmail (personal) and Outlook (wo
 - `core/lib/ingest.py` — Unified ingestion pipeline
 - `core/lib/url_filter.py` — URL quarantine single source of truth
 - `core/prompts/email_classify.py` — Shared email classify prompt
-- `core/skills/webhook_queue_consumer.py` — Async webhook consumer
 - `core/skills/dlq_consumer.py` — DLQ consumer
 - `db/34_pending_nodes_merge_proposals_deleted_at.sql` — Schema migration
 - `db/35_drop_pending_graph_nodes.sql` — Drop legacy table
-- `db/36_pending_webhook_jobs.sql` — Webhook queue table
 - `db/37_graph_clarifications.sql` — Clarification state table
 - `tests/sim/test_validation_refactor.py` — 19 validation tests
