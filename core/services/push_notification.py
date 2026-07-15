@@ -77,8 +77,12 @@ async def send_push_notification(
 
     # Fetch all registered device tokens
     supabase = get_supabase()
-    tokens_res = supabase.table("device_tokens").select("token,platform").execute()
-    tokens = tokens_res.data if tokens_res and tokens_res.data else []
+    tokens = []
+    try:
+        tokens_res = supabase.table("device_tokens").select("token,platform").execute()
+        tokens = tokens_res.data if tokens_res and tokens_res.data else []
+    except Exception as e:
+        audit_log_sync("push", "WARNING", f"Could not query device_tokens table: {e}")
     if not tokens:
         audit_log_sync("push", "INFO", "No registered device tokens — skipping push")
         return 0

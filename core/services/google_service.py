@@ -136,6 +136,16 @@ def delete_calendar_event(event_id):
         audit_log_sync("google_service", "WARNING", f"Calendar event {event_id} delete failed (likely already gone): {e}")
 
 
+def delete_google_task(google_task_id):
+    if not google_task_id:
+        return
+    service = get_tasks_service()
+    try:
+        service.tasks().delete(tasklist='@default', task=google_task_id).execute()
+    except Exception as e:
+        audit_log_sync("google_service", "WARNING", f"Google Task {google_task_id} delete failed (likely already gone): {e}")
+
+
 def delete_calendar_instance(recurring_event_id, instance_id):
     """Delete a single instance of a recurring Google Calendar event.
     recurring_event_id: the ID of the recurring series.

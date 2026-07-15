@@ -1,0 +1,39 @@
+#!/bin/sh
+# commit-msg hook — tracked in .githooks/ (git config core.hooksPath .githooks)
+# Requires every commit to contain a "Root Cause:" line in the message body.
+# The commit-msg hook runs after the user writes the message.
+# Bypass: git commit --no-verify
+
+COMMIT_MSG_FILE=$1
+
+if [ ! -f "$COMMIT_MSG_FILE" ]; then
+    exit 0
+fi
+
+# Skip merge commits, amend, squash
+COMMIT_SOURCE=$2
+if [ "$COMMIT_SOURCE" = "merge" ] || [ "$COMMIT_SOURCE" = "squash" ]; then
+    exit 0
+fi
+
+# Check for "Root Cause:" line in the message body (case-insensitive)
+if ! grep -qiE "^Root Cause:" "$COMMIT_MSG_FILE"; then
+    echo ""
+    echo "  ❌ Commit rejected: missing 'Root Cause:' line."
+    echo ""
+    echo "     Every commit must document the root cause of what it fixes."
+    echo "     The message body should include (4W1H format):"
+    echo ""
+    echo '       Root Cause: <why the bug happened — chain of events, not what you changed>'
+    echo '       What:       <what the fix does at the code level>'
+    echo '       Where:      <which files, functions, lines>'
+    echo '       When:       <reproduction conditions>'
+    echo '       How:        <how this prevents recurrence>'
+    echo ""
+    echo "     For purely additive docs/config:  Root Cause: N/A — docs/config update"
+    echo "     To bypass this hook:              git commit --no-verify"
+    echo ""
+    exit 1
+fi
+
+exit 0

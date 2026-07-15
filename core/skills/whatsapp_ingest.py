@@ -75,7 +75,11 @@ Return ONLY valid JSON, NO markdown, NO explanation:
         model=CLASSIFICATION_MODEL,
         config={"response_mime_type": "application/json"}
     )
-    return json.loads(response.text)
+    try:
+        return json.loads(response.text)
+    except json.JSONDecodeError:
+        print(f"WhatsApp classify JSON parse failed, text={response.text[:200]}")
+        return {"classification": "fyi", "summary": "Unparseable message", "suggested_title": None, "suggested_project": None, "linked_person_name": None, "has_memory_value": False}
 
 
 async def process_whatsapp_message(sender_name: str, sender_phone: str, message_text: str, received_at: str = None) -> dict:

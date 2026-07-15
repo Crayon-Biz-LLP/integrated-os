@@ -99,6 +99,8 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [50-multi-intent-task-closure.md](50-multi-intent-task-closure.md) | Multi-intent messages, task closure via enrichment pipeline, secondary_actions in classify |
 | [51-action-planner-architecture.md](51-action-planner-architecture.md) | Universal Action Planner replacing single-intent matchers for tasks, recurring series, and calendar operations |
 | [53-architecture-stabilization.md](53-architecture-stabilization.md) | DB-backed state, formal state machines, unified ingest, URL quarantine module, async webhook queue |
+| [54-hardening-trigger-fix-graph-cleanup-push-fix.md](54-hardening-trigger-fix-graph-cleanup-push-fix.md) | close_task_edges trigger crash fix, graph node duplicate cleanup, WhatsApp JSON parse fix, push notification device_tokens table |
+| [55-root-cause-enforcement.md](55-root-cause-enforcement.md) | 4W1H root cause enforcement — commit-msg hook, AGENTS.md Step 10, opencode.json commit rules |
 
 ### Mobile App (Flutter — Rhodey)
 | File | What It Covers |

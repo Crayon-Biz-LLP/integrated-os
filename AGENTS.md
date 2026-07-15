@@ -18,6 +18,8 @@ For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the p
 
 Before applying any fix, follow this procedure step by step. Do NOT skip steps. Each step ensures the fix targets the root cause, not a symptom or a wrong assumption.
 
+**Enforcement**: The `.githooks/commit-msg` hook rejects any commit that lacks a `Root Cause:` line. The 4W1H documentation (Step 10) feeds this line. There is no way to commit a fix without documenting its root cause — the hook enforces it, the procedure defines it, and the `diagnose` skill provides the workflow for complex bugs.
+
 ### Step 1: Read the error traceback exactly
 - Note the exact error message, error code, file path, line number, and column.
 - Note which function/module the error propagates through.
@@ -57,6 +59,22 @@ Before applying any fix, follow this procedure step by step. Do NOT skip steps. 
 - Only after all 8 preceding steps confirm the root cause.
 - The fix must be the smallest change that addresses the root cause — NOT a workaround or symptom patch.
 
+### Step 10: Document the 4W1H
+Before committing, write the Root Cause documentation following the 4W1H format. This goes in the commit message body:
+
+```
+Root Cause: <why the bug happened, not what you changed — the chain of events that led to the faulty state>
+What:       <what the fix does at the code level>
+Where:      <which files, which functions, which line ranges>
+When:       <reproduction conditions — what input, what state, what sequence triggers it>
+How:        <how this fix prevents recurrence — not just "fixed it" but why it won't come back>
+```
+
+- The `Root Cause:` line is **enforced by the commit-msg hook** — the commit will be rejected without it.
+- The other 4 fields are strongly recommended for any non-trivial fix.
+- The `Root Cause:` line feeds into the commit message body, making every commit searchable by root cause later.
+- If the fix is purely additive documentation or config, the root cause can be "N/A — docs/config update" to satisfy the hook.
+
 
 ## Engineering Standards & Claims (Non-Negotiable)
 
@@ -76,6 +94,36 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 4. **Prove behavior, don't just lint.**
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
+
+## Session Anchored Summary (Jul 15, 2026 — Part 55: 4W1H Root Cause Enforcement)
+
+### Progress Done This Session
+- **Root Cause Enforcement (Three Layers)**: Built `.githooks/commit-msg` hook that rejects any commit without a `Root Cause:` line. Enhanced AGENTS.md Step 10 with 4W1H format (Why/What/Where/When/How). Updated opencode.json with commit rules. The hook is the forcing function — AGENTS.md defines the format, the hook enforces it.
+- **delete_google_task()**: Added `delete_google_task()` to `google_service.py` (parallel to `delete_calendar_event()`) for deleting orphan Google Tasks.
+- **Orphan Google Task Cleanup**: Deleted 2 orphans — "Call Amita" (created directly in Google Tasks, no DB entry) and "Schedule Qhord review" (likely from a deleted test task). Verified all 20 remaining Google Tasks have matching DB entries.
+
+### Key Files (Phase 55)
+- `.githooks/commit-msg` — NEW: git hook enforcing Root Cause: in commit messages
+- `AGENTS.md` — Step 10 4W1H documentation added to Root Cause Investigation Procedure
+- `opencode.json` — commit rules config section
+- `core/services/google_service.py` — delete_google_task() function
+- `product-summary/55-root-cause-enforcement.md` — Documentation
+
+## Session Anchored Summary (Jul 15, 2026 — Part 54: Hardening — Trigger Fix, Graph Cleanup, Push & WhatsApp Fixes)
+
+### Progress Done This Session
+- **close_task_edges() Trigger Crash Fix**: Subquery `SELECT id FROM graph_nodes WHERE db_record_id = NEW.id::text AND type = 'task'` returned 19 rows (1 current + 18 archived) for task 228 — crashed on any close. Added `AND is_current = true` guard. Task 228 and 252 closed successfully post-fix.
+- **Graph Node Duplicate Cleanup** (`db/40_cleanup_duplicate_graph_nodes.sql`): Root cause — `write_graph_edges_for_task()` ran for each archived task version before `unique_graph_nodes_normalized_label_type` index existed (added Jul 9). Set `db_record_id` on 104 orphan task + 328 orphan memory nodes. Deleted 26 edgeless backfill orphans. 1065 archived entries preserved as version chains (0 edges, `supersedes_id` FK). 40 tasks had 8-24 duplicates each.
+- **WhatsApp JSON Parse Fix** (`core/skills/whatsapp_ingest.py:78`): `json.loads(response.text)` wrapped in try/except — returns safe `fyi` fallback on malformed Gemini output.
+- **Push Notification Fix** (`db/41_create_device_tokens.sql`, `core/services/push_notification.py`): Created `device_tokens` table (Flutter client already registered but table never existed). Added try/except safety net at query boundary.
+- **Test Data Cleanup**: Deleted 3 test tasks (1738, 1612, 1609) + 6 graph nodes + Google Calendar event for 1609.
+
+### Key Files (Phase 54)
+- `db/40_cleanup_duplicate_graph_nodes.sql` — Trigger fix + cleanup migration
+- `db/41_create_device_tokens.sql` — Push notification table
+- `core/skills/whatsapp_ingest.py` — JSON parse hardening
+- `core/services/push_notification.py` — device_tokens safety net
+- `product-summary/54-hardening-trigger-fix-graph-cleanup-push-fix.md` — Documentation
 
 ## Session Anchored Summary (Jul 15, 2026 — Part 53: Architecture Stabilization — DB-Backed State & Formal State Machines)
 

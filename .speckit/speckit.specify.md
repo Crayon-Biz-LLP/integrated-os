@@ -82,6 +82,11 @@
 - **Split pending_graph_nodes → pending_nodes + merge_proposals**: The old `pending_graph_nodes` table (mixed node creation + merge concerns) split into dedicated tables. `core/lib/node_tables.py` abstraction layer. 381 rows migrated. `pending_graph_nodes` dropped.
 - **Unified Ingestion Pipeline**: Single `ingest()` contract for all channels — telegram, whatsapp, email, call, teams. URL quarantine extracted to `core/lib/url_filter.py` as single source of truth. Per-channel duplicate classify/persist logic eliminated.
 - **Async Webhook Queue**: `pending_webhook_jobs` table + dedicated consumer — replaces the `asyncio.wait_for(55)` timeout hack. Webhook returns 200 immediately, jobs processed reliably with retry/dead-letter.
+- **close_task_edges() Trigger Fix**: Subquery added `AND is_current = true` guard — prevents crash when multiple graph node versions exist for the same task (40 tasks affected, 1065 archived duplicate nodes excluded from live queries).
+- **Graph Node Duplicate Cleanup**: Migration removed 26 edgeless orphan nodes, linked 104 task + 328 memory orphan nodes via `db_record_id`. Archived duplicates preserved as version chains (via `supersedes_id` FK). New duplicates prevented by `unique_graph_nodes_normalized_label_type` index.
+- **WhatsApp JSON Parse Hardening**: `json.loads()` wrapped in try/except at `whatsapp_ingest.py:78` — returns safe fallback on Gemini malformed output.
+- **Push Notification Fix**: Created `device_tokens` table (migration 41) — Flutter client was already registered and calling `/api/register-device` but table was missing. Added try/except safety net.
+- **4W1H Root Cause Enforcement**: Every commit requires a `Root Cause:` line in the message body, enforced by `.githooks/commit-msg` hook. The AGENTS.md Root Cause Investigation Procedure (Step 10) mandates 4W1H documentation (Why/What/Where/When/How) before committing fixes. `opencode.json` documents the requirement at config level. The `diagnose` skill provides the workflow for complex bug investigations.
 
 ### What is broken or incomplete
 - **DEFERRED**: Graph UI polish — PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range [STILL DEFERRED]

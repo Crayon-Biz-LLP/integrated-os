@@ -795,6 +795,43 @@ This enables natural-language note capture without special syntax.
 
 ---
 
+## Today's Changes (Jul 15, 2026 — Part 54: Hardening — Trigger Fix, Graph Cleanup, Push Fix)
+
+### [COMPLETED] T-STATE-009: close_task_edges Trigger Fix
+**Files**: `db/40_cleanup_duplicate_graph_nodes.sql`
+**Change**: Added `AND is_current = true` to both `SELECT id FROM graph_nodes` subqueries in `close_task_edges()` trigger. Without this, closing any of 40 tasks with multiple archived graph node versions crashed with "more than one row returned by a subquery".
+**Root cause**: `write_graph_edges_for_task()` called for each archived task version before `unique_graph_nodes_normalized_label_type` index existed (added Jul 9). The `ON CONFLICT (normalized_label, type)` was a no-op without the underlying unique constraint.
+**Deploy safe**: YES — pure trigger fix, no schema change.
+
+### [COMPLETED] T-STATE-010: Graph Node Duplicate Cleanup
+**Files**: `db/40_cleanup_duplicate_graph_nodes.sql`
+**Change**: Set `db_record_id` on 104 orphan task + 328 orphan memory nodes (had `metadata->>task_id/memory_id` but no `db_record_id`). Deleted 26 edgeless backfill orphans. Did NOT delete 1065 archived task nodes — they form version chains via `supersedes_id` FK (0 edges, excluded by `is_current = true`).
+**Scale**: 130→1 orphan current task nodes, 328→0 orphan current memory nodes.
+**Deploy safe**: YES — additive linking, deletions are standalone edgeless nodes.
+
+### [COMPLETED] T-STATE-011: WhatsApp JSON Parse Fix
+**Files**: `core/skills/whatsapp_ingest.py`
+**Change**: Wrapped `json.loads(response.text)` in try/except — returns safe `fyi` fallback dict on Gemini JSON parse failure.
+**Deploy safe**: YES — narrow try/except at parse boundary only.
+
+### [COMPLETED] T-STATE-012: Push Notification device_tokens Table
+**Files**: `db/41_create_device_tokens.sql`, `core/services/push_notification.py`
+**Change**: Created `device_tokens` table (never existed — Flutter client was already registered and calling `/api/register-device` but no DB table). Added try/except safety net at query boundary.
+**Deploy safe**: YES — additive table + exception guard.
+
+---
+
+## Today's Changes (Jul 15, 2026 — Part 55: 4W1H Root Cause Enforcement)
+
+### [COMPLETED] T-STATE-013: Root Cause Enforcement in Commit Hook
+**Files**: `.githooks/commit-msg` (NEW), `AGENTS.md`, `opencode.json`
+**Change**: Three-layer enforcement preventing quick-fix commits. (1) `.githooks/commit-msg` hook rejects any commit without `Root Cause:` line in the message body — enforced at git level, bypassable only via `--no-verify`. (2) `AGENTS.md` Step 10 added documenting 4W1H format (Why/What/Where/When/How) — all fixes must document root cause before committing. (3) `opencode.json` `"commit"` section documents the requirement at config level. The `diagnose` skill is referenced for complex bug investigations.
+**Root cause**: No enforcement mechanism existed — agent could commit quick-fix bandaids without documenting root cause. The investigation procedure was advisory only.
+**How prevents recurrence**: The commit-msg hook is a tracked git hook with no way to bypass accidentally. The AGENTS.md procedure feeds into the hook. Every future commit will be rejected if it lacks Root Cause documentation.
+**Deploy safe**: YES — no runtime code changes.
+
+---
+
 ## Today's Changes (Jul 1, 2026)
 
 ### [COMPLETED] T-PHASE11-001: sync_organizations_to_graph_nodes()
