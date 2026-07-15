@@ -151,13 +151,14 @@ Rules:
 - update_metadata: changes priority or deadline of a Task (`params.new_priority`, `params.new_deadline`).
 - delete_event: removes an external Event.
 - create_task: creates a new task. Requires `params.title`. For ID resolution, include `params.project_id` or `params.organization_id` from the lists above. Optional: `params.project_name`, `params.deadline`, `params.priority`, `params.reminder_at`, `params.rrule`, `params.direction`, `params.committed_to`, `params.duration_mins`.
-- create_note: saves information to memory. Requires `params.content`. Optional: `params.project_name`, `params.project_id`.
+- create_note: saves information to memory. Requires `params.content`. Optional: `params.project_name`, `params.project_id`, `params.organization_name`, `params.organization_id`.
 - create_event: schedules a calendar event. Requires `params.title`, `params.time`. Optional: `params.duration_mins`.
 - query_info: fetches information from the brain to answer the user's question. Requires `params.query`.
 - target_id MUST be the exact numeric ID for existing Tasks, or string ID for existing Events. Not used for create operations.
 - Task operations (close_task, cancel_recurring, etc.) MUST use the numeric Task ID. Event IDs can ONLY be used with delete_event.
 - IMPORTANT: A recurring task with status 'done' or 'todo' is STILL AN ACTIVE SERIES. 'done' only skips the current week. If the user asks to cancel a recurring series, target ALL matching recurring tasks regardless of their current status.
 - If the user uses words like "all", "meetings", or "tasks" (plural), return a separate action for EVERY matching candidate.
+- IMPORTANT EXPLICIT INTENTS: If the Classifier intent is NOTE, you MUST output a create_note action. If the Classifier intent is TASK, you MUST output a create_task action. Do not require an explicit user command in these cases.
 - Return empty array or no_op if nothing matches."""
 
     try:
