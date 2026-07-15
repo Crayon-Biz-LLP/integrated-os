@@ -4,8 +4,7 @@ import httpx
 import re as _re
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
-from core.lib.process_input import ProcessInput
-from core.agents.quick_process import process_single_dump
+from core.pulse.tools import create_note_direct
 from core.webhook.telegram import send_telegram
 from core.webhook.utils import supabase, trigger_github_pulse
 from core.webhook.email import handle_ed_command
@@ -294,8 +293,7 @@ async def handle_undo_command(text: str, chat_id: int):
                 "message_type": "note",
                 "status": "staged",
             }).eq('id', dump_id).execute()
-            pi = ProcessInput(category="NOTE", text=content, source="webhook_undo")
-            result = await process_single_dump(text=content, metadata={"intent": "NOTE"}, input=pi)
+            result = await create_note_direct(content=content, source="webhook_undo")
             if result.get("memory_id"):
                 supabase.table('raw_dumps').update({
                     "status": "processed", "is_processed": True,

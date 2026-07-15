@@ -1,5 +1,4 @@
 from core.llm.constants import CLASSIFICATION_MODEL
-from core.llm import get_embedding
 import os
 import json
 import asyncio
@@ -7,8 +6,6 @@ import re
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-from core.retrieval.pipeline import schedule_index_memory
-from core.pulse.entity_extractor import extract_and_link_entities
 from core.lib.constants import EmailStatus
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.time_utils import compute_expires_at
@@ -115,79 +112,15 @@ Body:
 
 
 async def classify_email(sender: str, subject: str, body: str, to_header: str = '', cc_header: str = '') -> dict:
-    prompt = f"""You are classifying an email for Danny (Yashwant Daniel), founder of Crayon, Chennai, India.
-
-MAILBOX CONTEXT: This is Danny's WORK Outlook inbox. It receives exclusively work-related emails. Personal and church emails do NOT arrive here.
-
-What legitimately arrives here:
-- Clients: briefs, feedback, approvals, project questions
-- Vendors: quotes, invoices (human-sent), delivery confirmations requiring action
-- Team: employees, contractors, freelancers, collaborators
-- Business partners: legal, CA, compliance, banking (human-sent)
-- Business entities: Crayon, Solvstrat, Product Labs, Qhord.
-
-Sender: {sender}
-To: {to_header}
-CC: {cc_header}
-Subject: {subject}
-Body:
-{body[:1000]}
-
-─── CLASSIFICATION RULES ───
-
-CLASSIFY AS "ignored" IF ANY of these are true:
-- Sender contains: noreply, no-reply, donotreply, mailer-daemon, bounce, notifications@, automated@, alert@
-- It is an automated SaaS notification (GitHub, Notion, Slack, Stripe, Razorpay, Jira, Trello, any platform digest)
-- It is a newsletter, promotional offer, or cold outreach sales email
-- Subject starts with FW: or Fwd: with no new content added
-- It is a payment receipt, invoice auto-confirmation, or automated billing notification
-
-CLASSIFY AS "fyi" IF:
-- Danny is in CC or BCC
-- A team member or partner is sharing a status update, report, or information that needs no response
-- It is a human-sent update where no action is required from Danny specifically
-
-CLASSIFY AS "actionable" IF:
-- Addressed directly To: Danny
-- From a real individual (client, vendor, team member, CA, lawyer, partner, contractor)
-- Requires Danny to respond, approve, review, decide, schedule, or fulfill a business obligation
-- Bias toward actionable for client and vendor emails — when in doubt, surface it
-
-─── OUTPUT RULES ───
-
-suggested_task:
-- Verb-first, specific (e.g., "Send revised proposal to Ananya at TechCorp", "Approve Siva's leave request", "Reply to CA Suresh with Q1 financials")
-- NULL if fyi or ignored
-- NULL if action is too vague to state specifically
-
-needs_draft:
-- true if Danny needs to write a reply
-- true if is_human_sender = true AND the sender is waiting for acknowledgement,
-  confirmation, or an update — even if the task itself is an offline action
-- false ONLY if the task is a call, meeting, or internal action where 
-  the sender has no expectation of a response
-
-is_human_sender:
-- true if sender is a real individual person
-- false for any automated system, platform, or bulk sender
-
-has_memory_value:
-- true if email contains a decision, project update, confirmed terms, client commitment, or business context worth remembering weeks later
-- false for transactional or routine notifications
-- Can only be true if is_human_sender is also true
-
-Return ONLY valid JSON, NO markdown, NO explanation:
-{{
-  "classification": "ignored|fyi|actionable",
-  "summary": "2 sentences max. Who sent it, what they want or shared.",
-  "suggested_task": "verb-first task or null",
-  "needs_draft": true or false,
-  "linked_person_name": "full name if identifiable, else null",
-  "linked_project_name": "project or company name if mentioned, else null",
-  "is_human_sender": true or false,
-  "has_memory_value": true or false
-}}"""
-
+    from core.prompts.email_classify import build_email_classify_prompt
+    prompt = build_email_classify_prompt(
+        mailbox_type="work",
+        sender=sender,
+        subject=subject,
+        body=body[:1000],
+        to_header=to_header,
+        cc_header=cc_header,
+    )
     response = await call_gemini_with_retry(
         prompt,
         model=CLASSIFICATION_MODEL,
@@ -392,30 +325,26 @@ async def ingest_outlook_messages(limit=25):
             }
 
             if classification == "fyi":
-                insert_res = supabase.table('messages').insert(email_row).execute()
-                if not getattr(insert_res, 'data', None):
-                    print(f"⚠️ Email insert returned no data for {subject}")
-                    continue
-                
-                # FYI path: write relationship_note if human sender with memory value
-                is_human = classification_data.get("is_human_sender", False)
-                has_memory = classification_data.get("has_memory_value", False)
-                if is_human and has_memory:
-                    _summary = classification_data.get("summary", "")
-                    _mem_content = f"{sender} ({sender_email}): {_summary}"
-                    _emb_res = await get_embedding(_mem_content)
-                    _emb = _emb_res.vector if _emb_res else None
-                    result = supabase.table('memories').insert({
-                        "content": _mem_content,
-                        "memory_type": "relationship_note",
-                        "embedding": _emb,
-                        "expires_at": compute_expires_at(_mem_content, datetime.now(timezone.utc).isoformat())
-                    }).execute()
-                    memory_id = result.data[0]['id']
-                    schedule_index_memory(memory_id, _mem_content, "relationship_note", "outlook_fyi")
-                    extract_and_link_entities(_mem_content, str(memory_id), 'memory')
-                    print(f"🧠 [relationship_note] FYI memory saved for {sender_email}")
-                
+                from core.lib.ingest import ingest
+                await ingest(
+                    text=classification_data.get('summary', '') or subject,
+                    source='outlook',
+                    classification='fyi',
+                    summary=classification_data.get('summary', '')[:1000],
+                    is_human_sender=classification_data.get('is_human_sender', False),
+                    has_memory_value=classification_data.get('has_memory_value', False),
+                    channel_specific_data={
+                        "sender_name": sender,
+                        "sender_email": sender_email,
+                        "subject": subject,
+                        "to_header": to_header,
+                        "cc_header": cc_header,
+                        "body_raw": body,
+                    },
+                    tracking_id=msg_id,
+                    received_at=normalized.get("received_at"),
+                    body=normalized.get("body_raw", "")[:20000],
+                )
                 print(f"✅ [fyi] {subject} | From: {sender_email}")
                 processed += 1
 
@@ -423,7 +352,6 @@ async def ingest_outlook_messages(limit=25):
                 linked_person_id = None
                 linked_person_name = classification_data.get("linked_person_name")
                 if linked_person_name:
-                    # Exact match first (case-insensitive), fall back to partial
                     person_res = maybe_single_safe(supabase.table('people').select('id, name').ilike('name', linked_person_name).eq('is_current', True))
                     if not getattr(person_res, 'data', None):
                         person_res = maybe_single_safe(supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').eq('is_current', True))
@@ -433,64 +361,60 @@ async def ingest_outlook_messages(limit=25):
                 linked_project_id = None
                 linked_project_name = classification_data.get("linked_project_name")
                 if linked_project_name:
-                    # Exact match first (case-insensitive), fall back to partial
                     project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', linked_project_name).eq('is_current', True))
                     if not getattr(project_res, 'data', None):
                         project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').eq('is_current', True))
                     if getattr(project_res, 'data', None):
                         linked_project_id = project_res.data['id']
                 
-                email_row['linked_person_id'] = linked_person_id
-                email_row['linked_project_id'] = linked_project_id
-                
                 suggested_task = classification_data.get("suggested_task")
                 is_human = classification_data.get("is_human_sender", False)
-                email_row['is_human_sender'] = is_human
-                
+                dedup_decision = None
+
                 if suggested_task:
-                    suggested_title = suggested_task or ''
-                    email_row['suggested_title'] = suggested_task
-                    email_row['suggested_project'] = linked_project_name
-                    
-                    # Check rejected tasks first
-                    rejected_guard = check_duplicate(suggested_title, rejected_task_list)
+                    rejected_guard = check_duplicate(suggested_task, rejected_task_list)
                     if rejected_guard['result'] in ['block', 'flag']:
-                        print(f"⏭️  Skipping task as it matches previously rejected task: {rejected_guard['matched_title']}")
-                        email_row['danny_decision'] = 'skipped'
+                        print(f"⏭️ Skipping task — matches rejected task: {rejected_guard['matched_title']}")
+                        dedup_decision = 'skipped'
                     else:
-                        guard = check_duplicate(suggested_title, active_task_list)
+                        guard = check_duplicate(suggested_task, active_task_list)
                         if guard['result'] == 'block':
                             if guard['is_superset'] and guard['matched_id']:
                                 try:
-                                    supabase.table('tasks').update({'title': suggested_title}).eq('id', guard['matched_id']).execute()
-                                    print(f"🔁 Auto-updated task {guard['matched_id']}: '{guard['matched_title']}' → '{suggested_title}'")
-                                    email_row['danny_decision'] = 'merged'
-                                except Exception as upd_err:
-                                    print(f"⚠️ Auto-update failed: {upd_err}")
-                                    email_row['danny_decision'] = 'skipped'
+                                    supabase.table('tasks').update({'title': suggested_task}).eq('id', guard['matched_id']).execute()
+                                    dedup_decision = 'merged'
+                                except Exception:
+                                    dedup_decision = 'skipped'
                             else:
-                                print(f"⚠️ Duplicate guard (block): '{suggested_title}' matches existing task [{guard['matched_id']}]. Skipping.")
-                                email_row['danny_decision'] = 'skipped'
-                        elif guard['result'] == 'flag':
-                            email_row['possible_duplicate'] = True
-                            email_row['duplicate_of_title'] = guard['matched_title']
-                            print(f"⚠️ Duplicate guard (flag): '{suggested_title}' may be similar to task '{guard['matched_title']}'. Created with flag.")
+                                dedup_decision = 'skipped'
 
-                insert_res = supabase.table('messages').insert(email_row).execute()
-                if not getattr(insert_res, 'data', None):
-                    print(f"⚠️ Email insert returned no data for {subject}")
-                    continue
-                email_id = insert_res.data[0]['id']
-                
-                if classification_data.get("needs_draft"):
-                    draft_body = await generate_draft(sender, subject, body)
-                    if draft_body:
-                        supabase.table('email_drafts').insert({
-                            "message_id": email_id,
-                            "draft_body": draft_body,
-                            "status": "pending"
-                        }).execute()
-                
+                from core.lib.ingest import ingest
+                classification_for_ingest = 'ignored' if dedup_decision == 'skipped' else 'actionable'
+                await ingest(
+                    text=classification_data.get('summary', '') or suggested_task or subject,
+                    source='outlook',
+                    classification=classification_for_ingest,
+                    summary=classification_data.get('summary', '')[:1000],
+                    suggested_title=suggested_task,
+                    suggested_project=linked_project_name,
+                    linked_person_id=linked_person_id,
+                    linked_project_id=linked_project_id,
+                    is_human_sender=is_human,
+                    has_memory_value=classification_data.get('has_memory_value', False),
+                    needs_draft=classification_data.get('needs_draft', False),
+                    channel_specific_data={
+                        "sender_name": sender,
+                        "sender_email": sender_email,
+                        "subject": subject,
+                        "to_header": to_header,
+                        "cc_header": cc_header,
+                        "danny_decision": dedup_decision,
+                        "body_raw": body,
+                    },
+                    tracking_id=msg_id,
+                    received_at=normalized.get("received_at"),
+                    body=normalized.get("body_raw", "")[:20000],
+                )
                 print(f"✅ [actionable] {subject} | From: {sender_email}")
                 processed += 1
 

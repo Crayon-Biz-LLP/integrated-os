@@ -351,11 +351,9 @@ def mock_telegram():
 @pytest.fixture
 def mock_google():
     with patch('core.pulse.tools.sync_to_calendar') as mock_cal, \
-         patch('core.agents.quick_process.sync_to_calendar') as mock_cal_qp, \
          patch('core.pulse.tools.delete_calendar_event') as mock_del_cal, \
          patch('core.services.google_service.get_cached_service') as mock_gs:
         mock_cal.return_value = "mock_event_id"
-        mock_cal_qp.return_value = "mock_event_id"
         mock_del_cal.return_value = None
         mock_service = MagicMock()
         mock_events = MagicMock()

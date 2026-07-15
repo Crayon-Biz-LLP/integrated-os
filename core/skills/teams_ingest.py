@@ -213,26 +213,27 @@ async def ingest_teams_messages(limit_chats=5, limit_messages=10):
             if attachments_text:
                 full_body += "\n\n" + attachments_text
                 
-            # Insert to DB
-            teams_row = {
-                "channel": "teams",
-                "source": "teams",
-                "sender_id": sender_id,
-                "sender_name": sender_name,
-                "body": full_body,
-                "classification": class_type,
-                "suggested_title": classification.get("suggested_title"),
-                "processing_status": "completed",
-                "received_at": msg.get("createdDateTime", datetime.now(timezone.utc).isoformat()),
-                "metadata": {
+            # Route through ingest() — same contract as email/whatsapp
+            from core.lib.ingest import ingest
+            await ingest(
+                text=text_content,
+                source='teams',
+                classification=class_type,
+                summary=classification.get('summary', '')[:1000],
+                suggested_title=classification.get('suggested_title'),
+                is_human_sender=True,
+                has_memory_value=(class_type != 'ignored'),
+                channel_specific_data={
                     "teams_message_id": msg_id,
                     "chat_id": chat_id,
                     "chat_type": chat_type,
-                    "summary": classification.get("summary")
-                }
-            }
-            
-            supabase.table('messages').insert(teams_row).execute()
+                    "sender_name": sender_name,
+                    "sender_id": sender_id,
+                    "summary": classification.get('summary'),
+                },
+                received_at=msg.get("createdDateTime", datetime.now(timezone.utc).isoformat()),
+                body=full_body,
+            )
             processed += 1
             print(f"✅ [{class_type}] Teams msg from {sender_name}: {classification.get('suggested_title') or text_content[:50]}")
             

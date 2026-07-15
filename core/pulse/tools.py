@@ -9,6 +9,7 @@ from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
 from core.actions import ActionResult, accumulate_action
 from core.lib.graph_rules import normalize_label
+from core.lib.state_machines import guard_require_valid_transition
 
 supabase = get_supabase()
 
@@ -145,10 +146,264 @@ def create_project(name: str, description: str = "", keywords: List[str] = None,
     return "Failed to create project."
 
 @rhodey_tools.register
+
+def _resolve_project_and_org_id(project_name: str = None, organization_name: str = None):
+    """Resolve names to (project_id, organization_id)."""
+    if not project_name and not organization_name:
+        return None, None
+        
+    from core.services.db import fetch_active_projects, get_supabase
+    supabase = get_supabase()
+    
+    project_id = None
+    org_id = None
+    
+    if project_name:
+        projects = fetch_active_projects()
+        for p in projects:
+            if p['name'].lower() == project_name.lower():
+                project_id = p['id']
+                break
+                
+    if organization_name and not org_id:
+        try:
+            org_res = supabase.table('organizations').select('id').ilike('name', organization_name).limit(1).execute()
+            if org_res.data:
+                org_id = org_res.data[0]['id']
+        except Exception:
+            pass
+            
+    # Also log to project_creation_signals if organization missing
+    from core.features import is_org_routing_enabled
+    if is_org_routing_enabled() and project_name and not project_id and not org_id:
+        try:
+            supabase.table('project_creation_signals').insert({
+                "project_name": f"{project_name} [unknown_org={organization_name}]" if organization_name else project_name,
+                "source": "tools_resolver"
+            }).execute()
+        except Exception:
+            pass
+            
+    return project_id, org_id
+
+async def create_task_direct(
+    title: str, 
+    project_id: str = None, 
+    organization_id: str = None,
+    project_name: str = None,
+    organization_name: str = None,
+    reminder_at: str = None, 
+    priority: str = "important",
+    duration_mins: int = 15,
+    recurrence: str = None,
+    deadline: str = None,
+    direction: str = "inbound",
+    committed_to: str = None,
+    dedup_key: str = None,
+) -> dict:
+    """Direct task creation — no process_single_dump dependency.
+
+    Inserts directly into tasks table with minimal dedup check.
+    Resolves project_name/organization_name to IDs via DB lookup
+    when project_id/organization_id are not already provided.
+    Returns {"action": "created"|"skipped"|"error", "task_id": id, "reason": str}.
+    """
+    try:
+        if dedup_key:
+            exist = supabase.table('tasks').select('id').eq('dedup_key', dedup_key) \
+                .eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
+            if exist.data:
+                audit_log_sync("tools", "INFO", f"Direct create skipped (dedup): {title}")
+                return {"action": "skipped", "task_id": exist.data[0]['id']}
+
+        # Resolve name→ID if IDs not provided but names are
+        if (not project_id or not organization_id) and (project_name or organization_name):
+            
+            resolved_proj, resolved_org = _resolve_project_and_org_id(project_name, organization_name)
+            if not project_id:
+                project_id = resolved_proj
+            if not organization_id:
+                organization_id = resolved_org
+
+        resolved_project_id = project_id
+        resolved_org_id = organization_id
+
+        insert_data = {
+            "title": title,
+            "status": "todo",
+            "is_current": True,
+            "priority": priority,
+            "direction": direction,
+            "duration_mins": duration_mins,
+            "estimated_minutes": duration_mins,
+        }
+        if resolved_project_id:
+            insert_data["project_id"] = resolved_project_id
+        if resolved_org_id:
+            insert_data["organization_id"] = resolved_org_id
+        if reminder_at:
+            insert_data["reminder_at"] = reminder_at
+        if deadline:
+            insert_data["deadline"] = deadline
+        if recurrence and recurrence not in ('none', ''):
+            insert_data["recurrence"] = recurrence
+        if committed_to:
+            insert_data["committed_to"] = committed_to
+        if dedup_key:
+            insert_data["dedup_key"] = dedup_key
+
+        res = supabase.table('tasks').insert(insert_data).execute()
+        if not res.data:
+            return {"action": "error", "reason": "DB insert returned no data"}
+
+        task_id = res.data[0]['id']
+
+        # Calendar sync if reminder_at is set
+        if reminder_at:
+            try:
+                from core.services.google_service import sync_to_calendar, format_rfc3339
+                formatted = format_rfc3339(reminder_at)
+                e_id = sync_to_calendar(title, formatted, duration_mins=duration_mins, priority=priority, recurrence=recurrence)
+                if e_id:
+                    supabase.table('tasks').update({'google_event_id': e_id}).eq('id', task_id).execute()
+            except Exception as cal_e:
+                audit_log_sync("tools", "WARNING", f"Calendar sync failed for task {task_id}: {cal_e}")
+
+        # Google Tasks sync
+        try:
+            from core.services.google_service import sync_to_google, get_tasks_service
+            sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=deadline or reminder_at)
+        except Exception as gt_e:
+            audit_log_sync("tools", "WARNING", f"Google Tasks sync failed: {gt_e}")
+
+        # Enrichment: graph edges + entity extraction (fire-and-forget, non-blocking)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(_enrich_task_for_graph(
+                    task_id=task_id, title=title, text=title, project_id=resolved_project_id
+                ))
+        except Exception:
+            pass
+
+        accumulate_action(ActionResult(action_type="task_create", status="executed", entity_id=task_id, human_label=title))
+        return {"action": "created", "task_id": task_id}
+    except Exception as e:
+        audit_log_sync("tools", "ERROR", f"create_task_direct failed: {e}")
+        return {"action": "error", "reason": str(e)}
+
+
+async def _enrich_task_for_graph(task_id: int, title: str, text: str, project_id: str = None):
+    """Background enrichment: graph edges + entity extraction for newly created tasks."""
+    try:
+        from core.pulse.graph import write_graph_edges_for_task
+        from core.pulse.entity_extractor import extract_and_link_entities
+        await write_graph_edges_for_task(task_id, title, project_id or "")
+        await extract_and_link_entities(text, task_id, 'task')
+        audit_log_sync("tools", "INFO", f"Enriched task {task_id}: graph edges + entities")
+    except Exception as e:
+        audit_log_sync("tools", "WARNING", f"Task enrichment failed for {task_id}: {e}")
+
+
+async def _enrich_note_for_graph(memory_id: int, content: str, source: str):
+    """Background enrichment: entity extraction + embedding for newly created notes."""
+    try:
+        from core.pulse.entity_extractor import extract_and_link_entities
+        from core.llm import get_embedding
+        
+        # Entity extraction
+        await extract_and_link_entities(content, memory_id, 'memory')
+        
+        # Embedding generation (inline — important for immediate searchability)
+        try:
+            embedding_res = await get_embedding(content)
+            embedding = embedding_res.vector if embedding_res else None
+            if embedding:
+                supabase.table('memories').update({
+                    "embedding": embedding
+                }).eq('id', memory_id).eq('is_current', True).execute()
+        except Exception as emb_e:
+            audit_log_sync("tools", "WARNING", f"Embedding gen failed for note {memory_id}: {emb_e}")
+        
+        audit_log_sync("tools", "INFO", f"Enriched note {memory_id}: entities + embedding")
+    except Exception as e:
+        audit_log_sync("tools", "WARNING", f"Note enrichment failed for {memory_id}: {e}")
+
+
+@rhodey_tools.register
+async def create_note_direct(content: str, source: str = "executor", project_id: str = None, organization_id: str = None, project_name: str = None, organization_name: str = None) -> dict:
+    """Direct note creation — no process_single_dump dependency.
+
+    Inserts directly into memories table.
+    Resolves project_name/organization_name to IDs via DB lookup
+    when project_id/organization_id are not already provided.
+    Returns {"action": "filed"|"error", "memory_id": id, "reason": str}.
+    """
+    try:
+        # Resolve name→ID if IDs not provided but names are
+        if (not project_id or not organization_id) and (project_name or organization_name):
+            
+            resolved_proj, resolved_org = _resolve_project_and_org_id(project_name, organization_name)
+            if not project_id:
+                project_id = resolved_proj
+            if not organization_id:
+                organization_id = resolved_org
+
+        insert_data = {
+            "content": content,
+            "memory_type": "note",
+            "source": source,
+            "is_current": True,
+            "version": 1,
+        }
+        if project_id:
+            insert_data["metadata"] = {"project_id": project_id}
+        if organization_id:
+            if "metadata" not in insert_data:
+                insert_data["metadata"] = {}
+            insert_data["metadata"]["organization_id"] = organization_id
+
+        res = supabase.table('memories').insert(insert_data).execute()
+        if not res.data:
+            return {"action": "error", "reason": "DB insert returned no data"}
+
+        memory_id = res.data[0]['id']
+
+        # Schedule retrieval index as background task
+        try:
+            import asyncio
+            from core.retrieval.pipeline import schedule_index_memory
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(asyncio.to_thread(schedule_index_memory, memory_id, content, "note", source))
+        except Exception:
+            pass
+
+        # Enrichment: entity extraction + embedding (fire-and-forget, non-blocking)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(_enrich_note_for_graph(
+                    memory_id=memory_id, content=content, source=source
+                ))
+        except Exception:
+            pass
+
+        accumulate_action(ActionResult(action_type="note_create", status="executed", entity_id=memory_id, human_label=content[:80]))
+        return {"action": "filed", "memory_id": memory_id}
+    except Exception as e:
+        audit_log_sync("tools", "ERROR", f"create_note_direct failed: {e}")
+        return {"action": "error", "reason": str(e)}
+
+
+@rhodey_tools.register
 async def create_task(title: str, project_id: int = None, organization_name: str = None, priority: str = "important", duration_mins: int = 15, reminder_at: str = None, recurrence: str = None):
-    """Creates a new task and optionally schedules it on the calendar."""
-    from core.lib.process_input import ProcessInput
-    from core.agents.quick_process import process_single_dump
+    """Creates a new task and optionally schedules it on the calendar.
+
+    Delegates to create_task_direct which handles name→ID resolution,
+    calendar sync, Google Tasks sync, and enrichment (graph edges +
+    entity extraction) via the single, unified task creation path.
+    """
     from core.features import is_org_routing_enabled
 
     project_name = None
@@ -160,16 +415,16 @@ async def create_task(title: str, project_id: int = None, organization_name: str
     org_unresolved = False
     if is_org_routing_enabled() and organization_name and not project_name:
         project_name = organization_name
-        org_res = supabase.table('organizations').select('id').ilike('name', organization_name).limit(1).execute()
-        org_unresolved = not org_res.data
 
-    pi = ProcessInput(category="TASK", text=title, source="pulse_tools", title=title,
-                      priority=priority, duration_mins=duration_mins,
-                      reminder_at=reminder_at, recurrence=recurrence,
-                      project_name=project_name)
-
-    result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi,
-                                       tasks_service=get_tasks_service())
+    result = await create_task_direct(
+        title=title,
+        project_name=project_name,
+        organization_name=organization_name,
+        reminder_at=reminder_at,
+        priority=priority,
+        duration_mins=duration_mins,
+        recurrence=recurrence,
+    )
 
     if result.get("action") == "error":
         accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": result.get('reason')}))
@@ -198,6 +453,10 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
             return f"INFO: Task {task_id} already {td.get('status')}."
         if td.get('status') == 'cancelled':
             return f"FAIL: Task {task_id} was cancelled — cannot change status."
+
+        # State machine guard
+        if not guard_require_valid_transition("tasks", td.get('status', ''), status, record_id=task_id, context="update_task_status"):
+            return f"FAIL: Invalid transition '{td.get('status')}' → '{status}' for task {task_id}."
 
         # --- RECURRING TASK: done = skip instance, cancelled = end series ---
         if td.get('recurrence') and td.get('recurrence') not in ['none', ''] and status == 'done':
@@ -264,7 +523,7 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
 def create_person(name: str, context: str):
     """Records a new person in the Knowledge Graph."""
     try:
-        existing_node = maybe_single_safe(supabase.table('pending_graph_nodes').select('id').eq('label', name).eq('type', 'person').in_('status', ['pending', 'flagged']))
+        existing_node = maybe_single_safe(supabase.table('pending_nodes').select('id').eq('label', name).eq('node_type', 'person').in_('status', ['pending', 'flagged']))
         if existing_node and existing_node.data:
             return f"Person '{name}' already pending approval (ID: {existing_node.data['id']})."
 
@@ -279,7 +538,7 @@ def create_person(name: str, context: str):
             db_id = existing_live.data.get('db_record_id')
             return f"Person '{name}' already exists in graph.{' ID ' + str(db_id) if db_id else ''}"
 
-        res = supabase.table('pending_graph_nodes').insert({
+        res = supabase.table('pending_nodes').insert({
             "label": name,
             "type": "person",
             "status": "pending",

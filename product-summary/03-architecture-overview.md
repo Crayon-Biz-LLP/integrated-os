@@ -58,7 +58,7 @@ Telegram Message
     → Webhook (dedup + auth)
     → Gemini Classification (intent + entity)
     → Route by Intent:
-        TASK    → raw_dumps → quick_process → tasks table + Google Calendar + Google Tasks + graph edges
+        TASK    → handler.py → plan_actions() → create_task_direct → tasks table + Google Calendar + Google Tasks + graph edges
         NOTE    → raw_dumps → memories table (with embedding)
         QUERY   → hybrid search (graph + vector + canonical) → Gemini answer
         NOISE   → silent ack (👍)

@@ -408,7 +408,7 @@ Return ONLY valid JSON:
                 metadata['typical_days'] = sorted(day_set)
 
                 # Route to pending
-                node_res = supabase.table('pending_graph_nodes').insert({
+                node_res = supabase.table('pending_nodes').insert({
                     "label": canonical_name,
                     "type": "practice",
                     "source_text": "practice_detection",

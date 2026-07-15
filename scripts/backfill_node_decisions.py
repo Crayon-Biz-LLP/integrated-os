@@ -9,7 +9,7 @@ BATCH = 100
 
 async def run():
     supabase = get_supabase()
-    nodes = (supabase.table('pending_graph_nodes').select('id,label,type,source_text,status')
+    nodes = (supabase.table('pending_nodes').select('id,label,type,source_text,status')
              .eq('source_text', 'batch').in_('status', ['approved', 'auto_approved']).execute()).data or []
     print(f'Batch-created nodes: {len(nodes)}', flush=True)
     if not nodes:

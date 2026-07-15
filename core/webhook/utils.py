@@ -2,7 +2,7 @@ from core.services.db import get_supabase
 from core.decisions import record_decision
 import os
 import httpx
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
@@ -45,29 +45,27 @@ async def process_channel_pending_decision(channel: str, pending_id: int, decisi
     is_approved = decision.lower() in ["y", "yes", "approve", "approved"]
 
     title = msg.get('suggested_title') or msg.get('body', '')[:60]
-    sender_name = msg.get('sender_name', '')
-    sender_id = msg.get('sender_id', '')
     summary = msg.get('summary', '') or msg.get('metadata', {}).get('summary', '')
 
     if is_approved:
-        # Route to raw_dumps for extraction
-        supabase.table('raw_dumps').insert({
-            "content": title,
-            "source": channel,
-            "status": "pending",
-            "direction": "incoming",
-            "sender": "user",
-            "message_type": "task",
-            "metadata": {
-                "sender_name": sender_name,
-                "sender_id": sender_id,
-                f"{channel}_summary": summary,
-                "source": f"{channel}_approval",
-                "original_msg_id": msg['id']
-            }
-        }).execute()
+        # Process immediately via Action Planner
+        from core.actions.planner import plan_actions
+        from core.actions.executor import execute_planned_actions
         
-        action_msg = "approved and queued for extraction"
+        chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+        
+        try:
+            actions = await plan_actions(
+                text=title,
+                intent="TASK"
+            )
+            if actions:
+                await execute_planned_actions(actions, chat_id, text=title, source=channel)
+            action_msg = "approved and processed"
+        except Exception as plan_err:
+            audit_log_sync("webhook", "ERROR", f"Failed to plan/execute {channel} approval: {plan_err}")
+            action_msg = "approved but processing failed"
+        
         decision_val = "approved"
     else:
         action_msg = "rejected and discarded"
@@ -129,27 +127,6 @@ def is_already_in_tasks_table(title: str) -> dict:
     except Exception as e:
         audit_log_sync("webhook", "WARNING", f"Duplicate guard check failed (failing open): {e}")
         return {"result": "clear", "matched_id": None, "matched_title": None, "is_superset": False, "ratio": 0.0}
-
-
-def is_recent_raw_dump(content: str, source: str) -> bool:
-    """Check if identical content+source was inserted in the last 5 minutes.
-    Used as idempotency guard against Telegram double-fires and user double-taps."""
-    try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-        dup = supabase.table('raw_dumps') \
-            .select('id') \
-            .eq('content', content) \
-            .eq('source', source) \
-            .gte('created_at', cutoff) \
-            .limit(1) \
-            .execute()
-        if dup.data:
-            print(f"Duplicate guard: Skipping '{content[:50]}...' — inserted within 5 minutes")
-            return True
-        return False
-    except Exception as e:
-        audit_log_sync("webhook", "WARNING", f"Duplicate guard check failed (failing open): {e}")
-        return False
 
 async def get_recent_context(limit: int = 2) -> list:
     try:

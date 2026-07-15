@@ -30,19 +30,19 @@ export default async function DecisionsPage() {
       .order("created_at", { ascending: false })
       .limit(2000),
     supabase
-      .from("pending_graph_nodes")
+      .from("pending_nodes")
       .select("*")
       .in("status", ["pending", "flagged", "awaiting_clarification"])
       .order("created_at", { ascending: false })
       .limit(1000),
     supabase
-      .from("pending_graph_nodes")
+      .from("merge_proposals")
       .select("*")
-      .eq("status", "merge_proposed")
-      .order("created_at", { ascending: false })
+      .eq("status", "proposed")
+      .order("proposed_at", { ascending: false })
       .limit(50),
     supabase
-      .from("pending_graph_nodes")
+      .from("pending_nodes")
       .select("*")
       .eq("status", "rejected")
       .order("created_at", { ascending: false })
@@ -86,8 +86,8 @@ export default async function DecisionsPage() {
     if (res.data) res.data.forEach(c => clarMap.set(`pending_graph_edges:${c.source_id}`, c));
   }
   if (nodeClarificationIds.length > 0) {
-    const res = await supabase.from('clarification_feedback').select('*').eq('source_table', 'pending_graph_nodes').in('source_id', nodeClarificationIds);
-    if (res.data) res.data.forEach(c => clarMap.set(`pending_graph_nodes:${c.source_id}`, c));
+    const res = await supabase.from('clarification_feedback').select('*').eq('source_table', 'pending_nodes').in('source_id', nodeClarificationIds);
+    if (res.data) res.data.forEach(c => clarMap.set(`pending_nodes:${c.source_id}`, c));
   }
 
   for (const item of graphItems) {
@@ -98,7 +98,7 @@ export default async function DecisionsPage() {
   }
   for (const node of graphNodes) {
     if (node.status === 'awaiting_clarification') {
-      const clar = clarMap.get(`pending_graph_nodes:${node.id}`);
+      const clar = clarMap.get(`pending_nodes:${node.id}`);
       if (clar) (node as any).clarification = clar;
     }
   }

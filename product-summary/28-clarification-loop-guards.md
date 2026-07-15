@@ -62,13 +62,13 @@ Applied in both `get_or_create_node()` and `upsert_nodes()` in `backfill_graph.p
 
 ## Guard 4: URL Quarantine
 
-**File**: `backfill_graph.py:fetch_memories()`, `quick_process.py:process_single_dump()`, `entity_extractor.py`
+**File**: `backfill_graph.py:fetch_memories()`, `core/actions/planner.py`, `entity_extractor.py`
 
 Any text containing `http://` or `https://` is:
 
 1. **Not stored as a memory** — `fetch_memories()` filters out URL-containing records
 2. **Not extracted for entities** — `entity_extractor.py` returns early if text contains a URL
-3. **Saved only as a resource** — `quick_process.py` routes URL NOTES to `resources` table instead of `memories`
+3. **Saved only as a resource** — `handler.py` URL quarantine routes URL NOTES to `resources` table instead of `memories`
 
 This prevents bookmark articles, shared links, and URL-containing notes from hallucinating fake entities into the graph.
 

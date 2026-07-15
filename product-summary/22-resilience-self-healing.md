@@ -246,7 +246,7 @@ When anything fails, the system degrades gracefully instead of crashing:
 | Embedding fails | Zero vector `[0] * 768` + queued to failed_queue |
 | Calendar sync fails | Logged as non-critical, task still created in DB |
 | Google Tasks sync fails | Logged as non-critical, task synced on next run |
-| Import fails (dispatch.py) | No-op inline function replaces quick_process |
+| Import fails (dispatch.py) | No-op inline function in Action Planner |
 | Versioned update fails | Falls back to direct in-place update |
 | DB query fails | Returns `[]` or `{}` defaults |
 | Batch enrichment / cluster discovery / Google sync / heartbeat fails | Individual phase failure logged, remaining post-processing phases continue |

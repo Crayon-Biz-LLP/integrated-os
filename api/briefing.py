@@ -423,9 +423,9 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     async def _get_graph_nodes():
         try:
-            res = supabase.table("pending_graph_nodes")\
-                .select("id, label, type, status, eval_context")\
-                .in_("status", ["pending", "flagged", "merge_proposed"])\
+            res = supabase.table("pending_nodes")\
+                .select("id, label, node_type as type, status, eval_context")\
+                .in_("status", ["pending", "flagged"])\
                 .order("created_at", desc=True)\
                 .limit(30)\
                 .execute()

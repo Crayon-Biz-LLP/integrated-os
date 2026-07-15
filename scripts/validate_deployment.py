@@ -19,12 +19,12 @@ def validate_deployment(deploy_timestamp: str):
     res = supabase.table('graph_nodes').select('label, type, id, created_at').eq('type', 'organization').gt('created_at', deploy_timestamp).execute()
     
     if res.data:
-        # Check if they are in pending_graph_nodes or organizations
+        # Check if they are in pending_nodes or organizations
         leaked = []
         for row in res.data:
             org_check = maybe_single_safe(supabase.table('organizations').select('id').eq('graph_node_id', row['id']))
             if not getattr(org_check, 'data', None):
-                pend = maybe_single_safe(supabase.table('pending_graph_nodes').select('id').eq('label', row['label']))
+                pend = maybe_single_safe(supabase.table('pending_nodes').select('id').eq('label', row['label']))
                 if not getattr(pend, 'data', None):
                     leaked.append(row)
         if leaked:
@@ -36,9 +36,9 @@ def validate_deployment(deploy_timestamp: str):
     else:
         print("✅ No organization leak detected.")
         
-    # 2. Check pending_graph_nodes routing
+    # 2. Check pending_nodes routing
     # The SDK count doesn't group, so we group locally
-    p_nodes_all = supabase.table('pending_graph_nodes').select('status').gt('created_at', deploy_timestamp).execute()
+    p_nodes_all = supabase.table('pending_nodes').select('status').gt('created_at', deploy_timestamp).execute()
     
     status_counts = {}
     for row in p_nodes_all.data:

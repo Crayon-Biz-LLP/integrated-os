@@ -75,16 +75,16 @@ export async function PATCH(
         }
       }
 
-      // Graph node approval: revert pending_graph_nodes back to pending status
+      // Graph node approval: revert pending_nodes back to pending status
       if (decisionType === 'graph_node_approval' && entityType === 'pending_graph_node' && entityId) {
         const { data: node } = await supabase
-          .from('pending_graph_nodes')
+          .from('pending_nodes')
           .select('id, status')
           .eq('id', Number(entityId))
           .maybeSingle();
         if (node && ['approved', 'pending'].includes(node.status)) {
           await supabase
-            .from('pending_graph_nodes')
+            .from('pending_nodes')
             .update({ status: 'pending' })
             .eq('id', Number(entityId));
           undoResults.push(`Reverted graph node #${entityId} to pending`);

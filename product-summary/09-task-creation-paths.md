@@ -12,7 +12,7 @@ Tasks enter the `tasks` table through exactly 3 direct INSERT paths and 1 indire
 ```
 Telegram text → classify → handle_confident_task()
     → insert into raw_dumps (status='pending')
-    → process_single_dump() [called inline, same async context]
+    → plan_actions() → execute_planned_actions() [via Action Planner]
         → build_combined_prompt() with active projects
         → Gemini classifies: TASK/COMPLETION/NOTE/NOISE
         → if TASK: insert into tasks table
@@ -21,7 +21,7 @@ Telegram text → classify → handle_confident_task()
         → update task with google IDs
 ```
 
-**File**: `core/agents/quick_process.py:159`
+**File**: `core/pulse/tools.py:create_task_direct()`
 
 **Key characteristics**:
 - Single task, created immediately
@@ -106,13 +106,13 @@ process_email_pending_decision(id, 'approve')
 
 | Path | Insert Location | Mode | Graph Edges? | Calendar? | Tasks? | Trigger |
 |------|----------------|------|-------------|-----------|--------|---------|
-| Quick Process | quick_process.py:210 | Single inline | Yes (Async) | Yes | Yes | Telegram task / 5-min cron |
+| Action Planner | planner.py → executor.py | Single inline | Yes (Async) | Yes | Yes | All task/note/completion paths |
 | Pulse Batch | engine.py:1411 | Batch | Yes | Yes | Yes | Scheduled pulse |
 | Temporal Lineage | temporal_lineage.py:102 | Single versioned | No | No | No | Google Tasks external completion |
-| Email Indirect | email.py:104 → quick_process.py | Two-phase indirect | No | Yes | Yes | User email approval |
+| Email Indirect | email.py → planner.py | Two-phase indirect | No | Yes | Yes | User email approval |
 
 ## Recurrence & Clarification Loops
-- **Conversational `CLARIFY`:** Both Webhook intake and `quick_process.py` support interactive disambiguation loops. If critical info (like time) is missing, Rhodey will halt extraction, ask the user on Telegram, and pass `history_text` on the second pass so the task is created perfectly.
+- **Conversational `CLARIFY`:** Webhook intake supports interactive disambiguation loops via the Action Planner. If critical info (like time) is missing, Rhodey will halt extraction, ask the user on Telegram, and pass `history_text` on the second pass so the task is created perfectly.
 - **Recurring Tasks (`UNTIL` Support):** The `TASK` extraction models support infinite and finite recurrences. If the user says "every Wednesday until August 31", the system generates an iCalendar RRULE (e.g., `RRULE:FREQ=WEEKLY;UNTIL=20260831T000000Z`) and pushes it directly to Google Calendar. Recurring tasks handle status changes as follows:
   - **`done`** → skips the next Google Calendar instance, writes an outcome memory, but leaves the task as `todo` — the series continues
   - **`cancelled`** → deletes the entire series from Google Calendar, marks the task as `cancelled` in the DB

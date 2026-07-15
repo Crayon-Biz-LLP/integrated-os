@@ -82,9 +82,9 @@ def main():
     missing = [lbl for lbl in sorted(labels) if lbl.lower() not in gn_map]
     print(f"Missing from graph_nodes: {len(missing)}")
 
-    # 4. Pre-fetch pending_graph_nodes matching missing labels
+    # 4. Pre-fetch pending_nodes matching missing labels
     missing_lower = set(lbl.lower() for lbl in missing)
-    pgn_all = supabase.table('pending_graph_nodes') \
+    pgn_all = supabase.table('pending_nodes') \
         .select('id, label, type, status') \
         .execute()
     pgn_map = {}
@@ -132,16 +132,16 @@ def main():
             to_insert_gn.append((lbl, node_type, 'batch_approve_create'))
             stats['nodes_created'] += 1
 
-    # 6. Execute batch updates for pending_graph_nodes
+    # 6. Execute batch updates for pending_nodes
     for chunk in batch(to_update_pgn_ids, 200):
         try:
-            supabase.table('pending_graph_nodes').update({'status': 'approved'}) \
+            supabase.table('pending_nodes').update({'status': 'approved'}) \
                 .in_('id', chunk) \
                 .execute()
         except Exception as e:
             stats['errors'].append(f"pgn status update: {e}")
 
-    print(f"Updated {len(to_update_pgn_ids)} pending_graph_nodes to approved")
+    print(f"Updated {len(to_update_pgn_ids)} pending_nodes to approved")
 
     # 7. Batch upsert graph_nodes
     inserted_count = 0

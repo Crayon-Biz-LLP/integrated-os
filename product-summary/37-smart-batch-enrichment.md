@@ -25,7 +25,7 @@ Replaced single-signal promotion with **smart batch collection** — enrichment 
 - Deterministic fast path: "yes"/"sure" = confirm all; "no"/"cancel" = decline all
 - LLM slow path: parse per-signal decisions
 - Per-signal execution: iterates confirmed indices, creates one task per signal
-- `process_single_dump()` handles task creation + internal `accumulate_action()` — no duplicate accumulation
+- `execute_planned_actions()` handles task creation + internal `accumulate_action()` — no duplicate accumulation
 - Title fallback chain: `task_title → proposed_title → title → "New Task"`
 
 ## Signal Types

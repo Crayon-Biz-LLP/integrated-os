@@ -67,7 +67,7 @@ If no shortcode or clarification match is found, the message goes to Gemini for 
 
 | Intent | Handler | Action |
 |--------|---------|--------|
-| TASK | `handle_confident_task()` | Insert raw_dump, inline process via `process_single_dump()` (Includes Semantic Guard + Graph Edges) |
+| TASK | `handle_confident_task()` | Plan actions via `plan_actions()` → `execute_planned_actions()` (Includes Semantic Guard + Graph Edges) |
 | NOTE | `handle_confident_note()` | Insert raw_dump (staged), embed, save to memories |
 | COMPLETION | `handle_confident_completion()` | Embed → save to memories, LLM match to open task, close + Google sync, or park as `awaiting_completion_match` |
 | QUERY | `interrogate_brain()` | Universal intelligence — hybrid graph + vector + canonical search, parallel 14-source fetch, anaphora resolution, active anchor scoping, source selection heuristics |

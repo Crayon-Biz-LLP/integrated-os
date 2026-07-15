@@ -838,7 +838,7 @@ No telemetry needed here — the individual decision handlers (`process_graph_pe
 
 #### Step 1.6 — Task Routing Sensor
 
-**File:** `core/agents/quick_process.py` or wherever task project/org reassignments happen
+**File:** `core/actions/planner.py` or wherever task project/org reassignments happen
 
 The key site is when Danny changes a task's `project_id` or `organization_id`. The `/ed` command handler in `handler.py` (line 609+ — `handle_ed_command`) and `core/webhook/commands.py` are the entry points.
 

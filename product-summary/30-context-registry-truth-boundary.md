@@ -19,7 +19,7 @@ Post-generation claim validation layer. Prevents the LLM from asserting it perfo
 
 ### Integration
 - `send_telegram()` in `core/webhook/telegram.py`: Final send boundary invariant — snapshots evidence, validates, appends receipts, drains context
-- Six mutation paths wired: workflows.py, dispatch.py, completion_handler.py, quick_process.py, pulse/tools.py, pulse/memory.py
+- Six mutation paths wired: workflows.py, dispatch.py, completion_handler.py, pulse/tools.py, pulse/memory.py, actions/executor.py
 - Two confirmation states: `awaiting_actionable_confirmation` (action disputes), `awaiting_disambiguation_confirmation` (entity ambiguity)
 - Internal messages skip validation via `skip_validation` param
 
@@ -64,7 +64,7 @@ All LLM prompts centralized in dedicated files:
 | `briefing.py` | Daily briefing, sentinel pre-flight prompts |
 | `classify.py` | Intent classification prompt |
 | `workflow.py` | Disambiguation, confirmation workflow prompts |
-| `ingest.py` | Note extraction, entity extraction prompts |
+| *(merged into planner)* | Note extraction, entity extraction prompts (now in Action Planner) |
 
 ---
 

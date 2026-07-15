@@ -7,17 +7,17 @@ from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.llm.constants import CLASSIFICATION_MODEL, SYNTHESIS_MODEL
+from core.llm.constants import SYNTHESIS_MODEL
 
 async def plan_actions(text: str, title: str, entity: str, active_anchor: dict = None) -> List[Action]:
     supabase = get_supabase()
     
     # 1. Fetch active tasks (todo/in_progress)
-    tasks_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
+    tasks_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
     open_tasks = tasks_res.data or []
     
     # 2. Fetch recurring tasks (even if done, because done means skip instance)
-    recurring_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
+    recurring_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
     recurring_tasks = [t for t in (recurring_res.data or []) if t["status"] != "cancelled"]
     
     # 3. Fetch upcoming calendar events
@@ -45,13 +45,18 @@ async def plan_actions(text: str, title: str, entity: str, active_anchor: dict =
                 task_google_event_ids.add(gid)
             
             next_occ = base_id_to_time.get(gid) if gid else None
+            proj_name = t.get("projects", {}).get("name") if t.get("projects") else None
+            org_name = t.get("organizations", {}).get("name") if t.get("organizations") else None
+            
             candidates.append({
                 "type": "task", 
                 "id": t["id"], 
                 "title": t["title"], 
                 "status": t["status"], 
                 "recurrence": t.get("recurrence"),
-                "next_occurrence": next_occ
+                "next_occurrence": next_occ,
+                "project_name": proj_name,
+                "organization_name": org_name
             })
             
     seen_events = set()
@@ -64,8 +69,19 @@ async def plan_actions(text: str, title: str, entity: str, active_anchor: dict =
             seen_events.add(e["id"])
             candidates.append({"type": "event", "id": e["id"], "title": e["title"], "time": e["time"]})
             
-    if not candidates:
-        return [Action(operation="no_op", human_label="No tasks or events available to act on")]
+    # 4. Fetch organizations and projects for LLM resolution
+    orgs_res = supabase.table("organizations").select("id, name").execute()
+    orgs = orgs_res.data or []
+    org_lines = "\n".join([f"  - {o['name']} (ID: {o['id']})" for o in orgs]) if orgs else "  - (none)"
+    
+    projects_all_res = supabase.table("projects").select("id, name, organization_id, organizations(name)").eq("is_current", True).neq("status", "archived").execute()
+    projects_all = projects_all_res.data or []
+    project_lines = []
+    for p in projects_all:
+        org_name = p.get('organizations', {}).get('name', 'INBOX') if p.get('organizations') else 'INBOX'
+        project_lines.append(f"  - {p['name']} (ID: {p['id']}, org: {org_name})")
+    project_lines_str = "\n".join(project_lines) if project_lines else "  - (none)"
+    
 
     # Pre-filter lexically to save tokens
     title_lower = title.lower()
@@ -75,6 +91,11 @@ async def plan_actions(text: str, title: str, entity: str, active_anchor: dict =
     filtered_candidates = []
     for c in candidates:
         candidate_words = c["title"].lower().split()
+        if c.get("project_name"):
+            candidate_words.extend(c["project_name"].lower().split())
+        if c.get("organization_name"):
+            candidate_words.extend(c["organization_name"].lower().split())
+            
         if any(w in candidate_words for w in search_words if len(w) > 3):
             filtered_candidates.append(c)
             
@@ -86,7 +107,14 @@ async def plan_actions(text: str, title: str, entity: str, active_anchor: dict =
         if c["type"] == "task":
             rec_str = "recurring" if c.get('recurrence') else "one-off"
             next_str = f", next: {c['next_occurrence']}" if c.get('next_occurrence') else ""
-            candidate_lines.append(f"Task ID {c['id']}: {c['title']} (status: {c['status']}, {rec_str}{next_str})")
+            org_proj = []
+            if c.get("organization_name"):
+                org_proj.append(f"org: {c['organization_name']}")
+            if c.get("project_name"):
+                org_proj.append(f"proj: {c['project_name']}")
+            ctx_str = f" [{', '.join(org_proj)}]" if org_proj else ""
+            
+            candidate_lines.append(f"Task ID {c['id']}: {c['title']}{ctx_str} (status: {c['status']}, {rec_str}{next_str})")
         else:
             candidate_lines.append(f"Event ID {c['id']}: {c['title']} (no linked task, time: {c['time']})")
             
@@ -107,6 +135,12 @@ Entity: "{entity}"
 Candidates:
 {candidate_lines_str}
 
+Available Organizations:
+{org_lines}
+
+Available Projects:
+{project_lines_str}
+
 Rules:
 - close_task: marks a normal Task as done.
 - suppress_instance: skips the next occurrence of a recurring Task.
@@ -115,9 +149,9 @@ Rules:
 - reschedule: changes the time of a non-recurring Task (`params.new_reminder_at`).
 - update_metadata: changes priority or deadline of a Task (`params.new_priority`, `params.new_deadline`).
 - delete_event: removes an external Event.
-- create_task: creates a new task. Requires `params.title`. Optional: `params.project_name`, `params.deadline`, `params.priority`, `params.reminder_at`, `params.rrule`.
-- create_note: saves information to memory. Requires `params.content`. Optional: `params.project_name`.
-- create_event: schedules a calendar event. Requires `params.title`, `params.time`.
+- create_task: creates a new task. Requires `params.title`. For ID resolution, include `params.project_id` or `params.organization_id` from the lists above. Optional: `params.project_name`, `params.deadline`, `params.priority`, `params.reminder_at`, `params.rrule`, `params.direction`, `params.committed_to`, `params.duration_mins`.
+- create_note: saves information to memory. Requires `params.content`. Optional: `params.project_name`, `params.project_id`.
+- create_event: schedules a calendar event. Requires `params.title`, `params.time`. Optional: `params.duration_mins`.
 - query_info: fetches information from the brain to answer the user's question. Requires `params.query`.
 - target_id MUST be the exact numeric ID for existing Tasks, or string ID for existing Events. Not used for create operations.
 - Task operations (close_task, cancel_recurring, etc.) MUST use the numeric Task ID. Event IDs can ONLY be used with delete_event.
@@ -125,39 +159,38 @@ Rules:
 - If the user uses words like "all", "meetings", or "tasks" (plural), return a separate action for EVERY matching candidate.
 - Return empty array or no_op if nothing matches."""
 
-    for model in (CLASSIFICATION_MODEL, SYNTHESIS_MODEL):
-        try:
-            res = await generate_content_with_fallback(
-                prompt=prompt,
-                workload=WorkloadProfile.INTERACTIVE,
-                primary_model=model,
-                config={"response_mime_type": "application/json"}
-            )
-            parsed = res.parse_json()
-            raw_actions = parsed.get("actions", [])
+    try:
+        res = await generate_content_with_fallback(
+            prompt=prompt,
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model=SYNTHESIS_MODEL,
+            config={"response_mime_type": "application/json"}
+        )
+        parsed = res.parse_json()
+        raw_actions = parsed.get("actions", [])
+        
+        actions = []
+        for a in raw_actions:
+            op = a.get("operation", "no_op")
+            tid = a.get("target_id")
             
-            actions = []
-            for a in raw_actions:
-                op = a.get("operation", "no_op")
-                tid = a.get("target_id")
+            if str(tid) == "None" and op != "no_op":
+                continue
                 
-                if str(tid) == "None" and op != "no_op":
-                    continue
-                    
-                actions.append(Action(
-                    operation=op,
-                    target_id=tid,
-                    params=a.get("params", {}),
-                    human_label=a.get("human_label", "")
-                ))
-                
-            if actions:
-                try:
-                    audit_log_sync("planner", "INFO", f"Generated {len(actions)} actions", metadata={"plan": json.dumps([{"operation": a.operation, "target_id": a.target_id} for a in actions])})
-                except Exception:
-                    pass
-                return actions
-        except Exception as e:
-            audit_log_sync("planner", "WARNING", f"Planner failed with {model}: {e}")
+            actions.append(Action(
+                operation=op,
+                target_id=tid,
+                params=a.get("params", {}),
+                human_label=a.get("human_label", "")
+            ))
             
-    return []
+        if actions:
+            try:
+                audit_log_sync("planner", "INFO", f"Generated {len(actions)} actions", metadata={"plan": json.dumps([{"operation": a.operation, "target_id": a.target_id} for a in actions])})
+            except Exception:
+                pass
+            return actions
+        return []
+    except Exception as e:
+        audit_log_sync("planner", "WARNING", f"Planner failed: {e}")
+        return []

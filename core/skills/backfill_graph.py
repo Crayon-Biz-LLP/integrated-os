@@ -123,14 +123,14 @@ pending_entities_cache = set()
 def fetch_pending_entities():
     global pending_entities_cache
     try:
-        res = fetch_all_paginated("pending_graph_nodes", "label", in_filter_col="status", in_filter_val=["pending", "approved", "rejected"])
+        res = fetch_all_paginated("pending_nodes", "label", in_filter_col="status", in_filter_val=["pending", "approved", "rejected"])
         pending_entities_cache = {n['label'] for n in res}
     except Exception:
         pass
 
 def _check_pending_label_exists(label: str) -> bool:
     label_clean = label.strip().lower()
-    existing = supabase.table("pending_graph_nodes") \
+    existing = supabase.table("pending_nodes") \
         .select("id") \
         .filter("label", "ilike", label_clean) \
         .limit(1) \
@@ -138,7 +138,7 @@ def _check_pending_label_exists(label: str) -> bool:
     if existing.data:
         return True
     if len(label_clean) >= 6:
-        existing = supabase.table("pending_graph_nodes") \
+        existing = supabase.table("pending_nodes") \
             .select("id") \
             .filter("label", "ilike", f"%{label_clean}%") \
             .limit(1) \

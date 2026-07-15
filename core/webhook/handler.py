@@ -19,35 +19,51 @@ from core.webhook.utils import process_channel_pending_decision
 
 
 from core.pulse.graph import process_graph_pending_decision, process_pending_edge_decision
-from core.webhook.graph import interpret_graph_corrections, apply_graph_actions, active_sessions, get_active_session, clear_session
-from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, ask_intent_disambiguation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_confident_note, handle_clarification
+from core.webhook.graph import interpret_graph_corrections, apply_graph_actions
+from core.lib.clarification_state import (
+    get_active_clarification, get_active_session, set_clarification, set_session_state,
+    resolve_clarification, clear_session
+)
+from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_clarification
 from core.webhook.commands import handle_command, handle_undo_command
 from core.webhook.multimodal import process_multimodal_content
 
 
-def _has_broader_context_signals(text: str) -> bool:
-    import re
-    words = text.split()
-    if len(words) < 15:
-        # Too short to be a multi-intent project update, even if it has trigger words
-        return False
-        
-    pattern = r'\b(hired|fired|replaced|phase|discussion|meeting|will|continue|invoice|payment|cad|usd|amount|decided|because)\b'
-    matches = re.findall(pattern, text.lower())
-    
-    # If it has 3+ distinct signal words, it's likely a rich update.
-    if len(set(matches)) >= 3:
-        return True
-        
-    # Check for multiple sentences
-    sentences = re.split(r'[.!?]\s+', text)
-    if len(sentences) >= 3 and len(words) > 20:
-        return True
-        
-    return False
+async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None, exclude_signal_types: list = None) -> str | None:
+    """NOTE handler: routes bare URLs and /note shortcuts to the processing pipeline.
 
-# Pending graph clarification state for context collection
-pending_graph_clarifications = {}
+    Used by bare URL /note path.
+    Does NOT insert raw_dumps — callers own the audit trail.
+    Does NOT do enrichment — enrichment is the planner's job.
+    """
+    try:
+        from core.lib.url_filter import check_and_quarantine_url
+
+        # URL quarantine at ingress: URL-bearing text is a resource, never a memory
+        url_result = check_and_quarantine_url(text, source=source)
+        if url_result.is_url:
+            if url_result.action == "dismissed":
+                await send_telegram(chat_id, "Already seen this link and dismissed it. Skipping.")
+                return receipt or "\u2705"
+            final = url_result.message if url_result.action == "inserted" else (receipt or "\u2705")
+            await send_telegram(chat_id, final)
+            return final
+
+        from core.pulse.tools import create_note_direct
+        await create_note_direct(content=text, source=source or "telegram")
+
+        final = receipt or "\u2705"
+        await send_telegram(chat_id, final)
+        return final
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"handle_confident_note failed: {e}")
+        final = receipt or "\u2705 Captured."
+        await send_telegram(chat_id, final)
+        return final
+
+
+# Pending graph clarification state — now DB-backed via pending_graph_clarifications table
+# See core/lib/clarification_state.py for helpers
 
 async def resolve_graph_person_context(chat_id: int, context_text: str, pending_id: int, label: str):
     ctx = context_text.strip() if context_text and context_text.strip() else None
@@ -64,8 +80,7 @@ async def resolve_graph_person_context(chat_id: int, context_text: str, pending_
         await send_telegram(chat_id, msg)
     else:
         await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
-    if chat_id in pending_graph_clarifications:
-        del pending_graph_clarifications[chat_id]
+    resolve_clarification(chat_id, 'node')
 
 async def process_callback_query(callback_query: dict):
     trace_id_var.set(str(uuid.uuid4())[:12])
@@ -91,7 +106,7 @@ async def process_callback_query(callback_query: dict):
         persontag_match = re.match(r'^persontag_skip_g(\d+)$', data)
         if persontag_match:
             pending_id = int(persontag_match.group(1))
-            pending_item = maybe_single_safe(supabase.table('pending_graph_nodes').select('label').eq('id', pending_id))
+            pending_item = maybe_single_safe(supabase.table('pending_nodes').select('label').eq('id', pending_id))
             label = pending_item.data.get('label', 'Unknown') if pending_item and pending_item.data else 'Unknown'
             await resolve_graph_person_context(chat_id, None, pending_id, label)
             return {"success": True}
@@ -100,9 +115,8 @@ async def process_callback_query(callback_query: dict):
         cancel_clar_match = re.match(r'^cancel_clarification_g(\d+)$', data)
         if cancel_clar_match:
             pending_id = int(cancel_clar_match.group(1))
-            if chat_id in pending_graph_clarifications:
-                del pending_graph_clarifications[chat_id]
-            supabase.table('pending_graph_nodes').update({'status': 'pending'}).eq('id', pending_id).eq('status', 'awaiting_details').execute()
+            resolve_clarification(chat_id, 'node')
+            supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', pending_id).eq('status', 'awaiting_details').execute()
             await send_telegram(chat_id, "Cancelled. Node stays pending for next Decision Pulse.")
             return {"success": True}
 
@@ -163,24 +177,24 @@ async def process_callback_query(callback_query: dict):
                             audit_log_sync("webhook", "ERROR", f"Undo channels failed: {e}")
                     elif undo_target == "graph" and entity_id:
                         try:
-                            # Look up the pending_graph_nodes row by id
+                            # Look up the pending_nodes row by id
                             # Auto-approved graph nodes have entity_id = node UUID
                             # Move them back to pending
-                            node_check = supabase.table('pending_graph_nodes').select('id')\
+                            node_check = supabase.table('pending_nodes').select('id')\
                                 .eq('id', int(entity_id))\
                                 .execute()
                             if node_check.data:
-                                supabase.table('pending_graph_nodes').update({'status': 'pending'})\
+                                supabase.table('pending_nodes').update({'status': 'pending'})\
                                     .eq('id', int(entity_id))\
                                     .execute()
                                 undone_count += 1
                             else:
                                 # Try by label — find matching pending node
-                                node_res = supabase.table('pending_graph_nodes').select('id, status')\
+                                node_res = supabase.table('pending_nodes').select('id, status')\
                                     .eq('status', 'approved')\
                                     .execute()
                                 for n in node_res.data or []:
-                                    supabase.table('pending_graph_nodes').update({'status': 'pending'})\
+                                    supabase.table('pending_nodes').update({'status': 'pending'})\
                                         .eq('id', n['id'])\
                                         .execute()
                                     undone_count += 1
@@ -250,7 +264,7 @@ async def process_callback_query(callback_query: dict):
         if merge_match:
             merge_action = merge_match.group(1)
             pending_id = int(merge_match.group(2))
-            pending_row = maybe_single_safe(supabase.table('pending_graph_nodes').select('*').eq('id', pending_id))
+            pending_row = maybe_single_safe(supabase.table('pending_nodes').select('*').eq('id', pending_id))
             if not pending_row or not pending_row.data:
                 await send_telegram(chat_id, "Merge proposal not found.")
                 return {"success": True}
@@ -259,7 +273,7 @@ async def process_callback_query(callback_query: dict):
                 await send_telegram(chat_id, "Merge proposal already processed.")
                 return {"success": True}
             if merge_action == 'reject':
-                supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', pending_id).execute()
+                supabase.table('pending_nodes').update({'status': 'rejected'}).eq('id', pending_id).execute()
                 await send_telegram(chat_id, f"Merge rejected for '{pr['label']}'.")
                 return {"success": True}
             target_id = pr.get('merge_candidate_id')
@@ -274,7 +288,7 @@ async def process_callback_query(callback_query: dict):
                 supabase.table('graph_nodes').update({'canonical_id': target_canonical}).eq('id', source_node_id).execute()
                 supabase.table('graph_edges').update({'source_node_id': target_canonical}).eq('source_node_id', source_node_id).execute()
                 supabase.table('graph_edges').update({'target_node_id': target_canonical}).eq('target_node_id', source_node_id).execute()
-            supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
+            supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
             await send_telegram(chat_id, f"✅ Merged '{pr['label']}' → {target_canonical[:8]}... Edges reassigned.")
             return {"success": True}
 
@@ -300,7 +314,7 @@ async def process_callback_query(callback_query: dict):
                     else:
                         results["failure"] += 1
             elif target == 'nodes':
-                items_res = supabase.table('pending_graph_nodes').select('id').eq('status', 'pending').execute()
+                items_res = supabase.table('pending_nodes').select('id').eq('status', 'pending').execute()
                 for item in (items_res.data or []):
                     result = await process_graph_pending_decision(item['id'], 'approve' if is_approve else 'reject')
                     if result.get('success'):
@@ -345,30 +359,28 @@ async def process_callback_query(callback_query: dict):
                         return {"success": True}
                         
                     pe = pe_res.data
-                    pending_graph_clarifications[chat_id] = {
-                        "pending_id": sc_int,
-                        "step": "awaiting_edge_edit",
-                        "type": "edge",
-                        "expires_at": datetime.now() + timedelta(minutes=15)
-                    }
+                    set_clarification(
+                        chat_id, sc_int,
+                        pending_type='edge', step='awaiting_edge_edit',
+                        label='', expires_minutes=15
+                    )
                     await send_telegram(chat_id, f"Editing edge: {pe['source_label']} → {pe['relationship']} → {pe['target_label']}\nReply with the corrected edge, e.g. `pe{sc_int} Danny KNOWS Alice` or `pe{sc_int} KNOWS`")
                     return {"success": True}
                 else:
                     result = await process_pending_edge_decision(sc_int, 'approve' if is_approve else 'reject')
             elif prefix == 'g':
                 if not is_approve:
-                    if chat_id in pending_graph_clarifications:
-                        del pending_graph_clarifications[chat_id]
+                    resolve_clarification(chat_id, 'node')
                     result = await process_graph_pending_decision(sc_int, 'reject')
                 else:
-                    pending_item = maybe_single_safe(supabase.table('pending_graph_nodes').select('id, label, type').eq('id', sc_int))
+                    pending_item = maybe_single_safe(supabase.table('pending_nodes').select('id, label, node_type as type').eq('id', sc_int))
                     if pending_item and pending_item.data:
                         ptype = pending_item.data.get('type')
                         label = pending_item.data.get('label')
                         if ptype == 'project':
                             result = await process_graph_pending_decision(sc_int, 'approve')
                         elif ptype == 'person':
-                            supabase.table('pending_graph_nodes').update({'status': 'awaiting_details'}).eq('id', sc_int).execute()
+                            supabase.table('pending_nodes').update({'status': 'awaiting_details'}).eq('id', sc_int).execute()
                             keyboard = [
                                 [{"text": "⏭️ Skip", "callback_data": f"persontag_skip_g{sc_int}"}],
                                 [{"text": "❌ Cancel", "callback_data": f"cancel_clarification_g{sc_int}"}]
@@ -575,68 +587,66 @@ async def process_webhook(update: dict):
         # ---------------------------------------------------------
         # PENDING GRAPH CLARIFICATION CHECK (context text replies)
         # ---------------------------------------------------------
-        if chat_id in pending_graph_clarifications:
-            clar = pending_graph_clarifications[chat_id]
-            if 'expires_at' in clar and datetime.now() > clar['expires_at']:
-                del pending_graph_clarifications[chat_id]
-            else:
-                step = clar.get('step')
-                if text.strip().lower() in ('cancel',):
-                    supabase.table('pending_graph_nodes').update({'status': 'pending'}).eq('id', clar['pending_id']).eq('status', 'awaiting_details').execute()
-                    del pending_graph_clarifications[chat_id]
-                    await send_telegram(chat_id, "Cancelled. Node stays pending for next Decision Pulse.")
-                    return {"success": True}
-                if step == 'awaiting_person_context':
-                    if text.strip().lower() in ('skip', 'no', 'none', 'n/a'):
-                        await resolve_graph_person_context(chat_id, None, clar['pending_id'], clar['label'])
+        clar = get_active_clarification(chat_id, 'node') or get_active_clarification(chat_id, 'edge')
+        if clar:
+            step = clar.get('step')
+            pending_type = clar.get('pending_type', 'node')
+            if text.strip().lower() in ('cancel',):
+                supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', clar['pending_id']).eq('status', 'awaiting_details').execute()
+                resolve_clarification(chat_id, pending_type)
+                await send_telegram(chat_id, "Cancelled. Node stays pending for next Decision Pulse.")
+                return {"success": True}
+            if step == 'awaiting_person_context':
+                if text.strip().lower() in ('skip', 'no', 'none', 'n/a'):
+                    await resolve_graph_person_context(chat_id, None, clar['pending_id'], clar['label'])
+                else:
+                    await resolve_graph_person_context(chat_id, text, clar['pending_id'], clar['label'])
+                return {"success": True}
+            elif step == 'awaiting_edge_edit':
+                _sc = clar['pending_id']
+                _value = text.strip()
+                parts = _value.split()
+                if len(parts) == 1:
+                    new_rel = parts[0]
+                    new_source, new_target = None, None
+                elif len(parts) >= 3:
+                    rel_idx = -1
+                    for i, p in enumerate(parts):
+                        if p.isupper() and len(p) > 1:
+                            rel_idx = i
+                            break
+                    if rel_idx > 0 and rel_idx < len(parts) - 1:
+                        new_source = " ".join(parts[:rel_idx])
+                        new_rel = parts[rel_idx]
+                        new_target = " ".join(parts[rel_idx+1:])
                     else:
-                        await resolve_graph_person_context(chat_id, text, clar['pending_id'], clar['label'])
-                    return {"success": True}
-                elif step == 'awaiting_edge_edit':
-                    _sc = clar['pending_id']
-                    _value = text.strip()
-                    parts = _value.split()
-                    if len(parts) == 1:
-                        new_rel = parts[0]
-                        new_source, new_target = None, None
-                    elif len(parts) >= 3:
-                        rel_idx = -1
-                        for i, p in enumerate(parts):
-                            if p.isupper() and len(p) > 1:
-                                rel_idx = i
-                                break
-                        if rel_idx > 0 and rel_idx < len(parts) - 1:
-                            new_source = " ".join(parts[:rel_idx])
-                            new_rel = parts[rel_idx]
-                            new_target = " ".join(parts[rel_idx+1:])
-                        else:
-                            new_rel = parts[1]
-                            new_source = parts[0]
-                            new_target = " ".join(parts[2:])
-                    else:
-                        new_source, new_rel, new_target = parts[0], parts[1] if len(parts) > 1 else None, None
-                        
-                    result = await process_pending_edge_decision(
-                        pending_id=_sc, decision='approve',
-                        new_source=new_source, new_target=new_target, new_rel=new_rel
-                    )
-                    if result.get('success'):
-                        await send_telegram(chat_id, f"✅ {result['message']}")
-                    else:
-                        await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
-                    del pending_graph_clarifications[chat_id]
-                    return {"success": True}
+                        new_rel = parts[1]
+                        new_source = parts[0]
+                        new_target = " ".join(parts[2:])
+                else:
+                    new_source, new_rel, new_target = parts[0], parts[1] if len(parts) > 1 else None, None
+                    
+                result = await process_pending_edge_decision(
+                    pending_id=_sc, decision='approve',
+                    new_source=new_source, new_target=new_target, new_rel=new_rel
+                )
+                if result.get('success'):
+                    await send_telegram(chat_id, f"✅ {result['message']}")
+                else:
+                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                resolve_clarification(chat_id, 'edge')
+                return {"success": True}
 
         # DB recovery: if in-memory state was lost (restart/cold start), check awaiting_details items directly
         text_clean = text.strip().lower()
-        awaiting_people = supabase.table('pending_graph_nodes').select('id, label').eq('status', 'awaiting_details').eq('type', 'person').limit(2).execute().data or []
+        awaiting_people = supabase.table('pending_nodes').select('id, label').eq('status', 'awaiting_details').eq('node_type', 'person').limit(2).execute().data or []
         if len(awaiting_people) == 1 and text_clean not in ('yes', 'no', 'approve', 'reject', 'drop', 'skip'):
             item = awaiting_people[0]
-            pending_graph_clarifications[chat_id] = {
-                "pending_id": item['id'], "step": "awaiting_person_context",
-                "type": "person", "label": item['label'],
-                "expires_at": datetime.now() + timedelta(minutes=5)
-            }
+            set_clarification(
+                chat_id, item['id'],
+                pending_type='node', step='awaiting_person_context',
+                label=item['label'], expires_minutes=5
+            )
             if text_clean in ('skip', 'no', 'none', 'n/a'):
                 await resolve_graph_person_context(chat_id, None, item['id'], item['label'])
             else:
@@ -664,25 +674,23 @@ async def process_webhook(update: dict):
                 audit_log_sync("webhook", "ERROR", f"Error handling c-shortcode: {e}")
                 return {"success": False, "message": str(e)}
 
-        # g-prefix: direct to pending_graph_nodes
+        # g-prefix: direct to pending_nodes
         if _graph_approve_match:
             try:
                 _sc = _graph_approve_match.group(1)
-                pending_item = maybe_single_safe(supabase.table('pending_graph_nodes').select('id, label, type').eq('id', int(_sc)))
+                pending_item = maybe_single_safe(supabase.table('pending_nodes').select('id, label, node_type:type').eq('id', int(_sc)))
                 if pending_item and pending_item.data:
                     ptype = pending_item.data.get('type')
                     label = pending_item.data.get('label')
                     if ptype == 'project':
                         result = await process_graph_pending_decision(pending_id=int(_sc), decision='approve')
                     elif ptype == 'person':
-                        supabase.table('pending_graph_nodes').update({'status': 'awaiting_details'}).eq('id', int(_sc)).execute()
-                        pending_graph_clarifications[chat_id] = {
-                            "pending_id": int(_sc),
-                            "step": "awaiting_person_context",
-                            "type": "person",
-                            "label": label,
-                            "expires_at": datetime.now() + timedelta(minutes=5)
-                        }
+                        supabase.table('pending_nodes').update({'status': 'awaiting_details'}).eq('id', int(_sc)).execute()
+                        set_clarification(
+                            chat_id, int(_sc),
+                            pending_type='node', step='awaiting_person_context',
+                            label=label, expires_minutes=5
+                        )
                         await send_telegram(chat_id, f"Any context for '{label}'? (role, relationship) Reply 'skip' to approve without context.")
                         clear_session(chat_id)
                         return {"success": True}
@@ -726,7 +734,7 @@ async def process_webhook(update: dict):
             try:
                 _sc = int(_graph_direct_match.group(1))
                 _value = _graph_direct_match.group(2)
-                pending_item = maybe_single_safe(supabase.table('pending_graph_nodes').select('id, label, type').eq('id', _sc))
+                pending_item = maybe_single_safe(supabase.table('pending_nodes').select('id, label, type').eq('id', _sc))
                 if not pending_item or not pending_item.data:
                     await send_telegram(chat_id, "⚠️ Pending item not found.")
                     clear_session(chat_id)
@@ -919,7 +927,7 @@ async def process_webhook(update: dict):
         if re.search(r'[gG]\d+', text):
             try:
                 # Fetch pending items
-                pending_res = supabase.table('pending_graph_nodes').select('id, label, type, source_text').eq('status', 'pending').execute()
+                pending_res = supabase.table('pending_nodes').select('id, label, type, source_text').eq('status', 'pending').execute()
                 pending_items = pending_res.data or []
                 
                 if pending_items:
@@ -934,11 +942,7 @@ async def process_webhook(update: dict):
                     
                     # Store in session cache
                     original_map = {item['id']: item for item in pending_items}
-                    active_sessions[chat_id] = {
-                        "actions": actions,
-                        "original_items_map": original_map,
-                        "expires_at": datetime.now() + timedelta(minutes=5)
-                    }
+                    set_session_state(chat_id, actions, original_map, expires_minutes=5)
                     
                     # Format proposed actions for confirmation
                     proposal_lines = ["*Here is what I understood:*"]
@@ -1126,9 +1130,15 @@ async def process_webhook(update: dict):
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Error checking waiting_for_note state: {e}")
 
-        CLARIFICATION_REPLY_WORDS = {'u', 'update', 'n', 'new', 'create', 't', 'task', 'note',
-                                      'q', 'query', 'b', 'daily_brief', 'r', 'delegate', 'p', 'declare_practice', 'x', 'noise', 'none'}
-        if text.strip().lower() in CLARIFICATION_REPLY_WORDS or text.strip().isdigit():
+        # Dynamic CLARIFICATION_REPLY_WORDS derived from INTENT_OPTIONS
+        # to avoid hardcoded drift between handler.py and classify.py
+        _intent_option_words = set()
+        from core.webhook.classify import INTENT_OPTIONS
+        for _sc, (_intent_name, _intent_label) in INTENT_OPTIONS.items():
+            _intent_option_words.add(_sc)
+            _intent_option_words.add(_intent_name.lower().replace('_', ''))
+        _clar_reply_words = _intent_option_words | {'u', 'update', 'new', 'create', 'none'}
+        if text.strip().lower() in _clar_reply_words or text.strip().isdigit():
             try:
                 last_clar = supabase.table('conversations') \
                     .select('content') \
@@ -1368,8 +1378,6 @@ async def process_webhook(update: dict):
         thresholds = INTENT_THRESHOLDS.get(intent, (0.8, 0.5))
         CONFIDENCE_HIGH = thresholds[0]
         CONFIDENCE_LOW = thresholds[1]
-        possible_intents = classification.get('possible_intents', [])
-
         if intent == 'TASK' and confidence >= CONFIDENCE_HIGH:
             first_word = text.strip().lower().split()[0] if text.strip() else ''
             if first_word in UPDATE_TRIGGER_WORDS:
@@ -1379,83 +1387,12 @@ async def process_webhook(update: dict):
                     await ask_task_update_confirmation(text, classification, chat_id, session_id, matched)
                     return {"success": True}
 
-        if intent == 'COMPLETION' and confidence >= CONFIDENCE_HIGH:
-            if _has_broader_context_signals(text):
-                classification['intent'] = 'PROJECT_UPDATE'
-                intent = 'PROJECT_UPDATE'
-                
+        # COMPLETION intent no longer overridden by regex heuristic.
+        # All intents go through the LLM classify; the `contains_hidden_action` 
+        # field in classify output handles multi-intent detection.
+        
         if confidence >= CONFIDENCE_HIGH:
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
-        elif possible_intents and len(possible_intents) >= 2 and confidence >= CONFIDENCE_LOW:
-            # ── Planner/Critic: deliberate on ambiguous intents ──
-            from core.lib.planner_critic import plan_and_critique_intent
-            deliberation = await plan_and_critique_intent(text, classification)
-            if deliberation["recommendation"] == "auto_execute":
-                cand_str = ",".join(
-                    f"{c['intent']}:{c['score']:.2f}"
-                    for c in deliberation["candidates"]
-                )
-                audit_log_sync(
-                    "webhook", "INFO",
-                    f"Planner auto-executed: {deliberation['best']} "
-                    f"(delta={deliberation['delta']:.2f}, [{cand_str}])")
-                classification["intent"] = deliberation["best"]
-                classification["confidence"] = deliberation["candidates"][0]["score"]
-                await route_by_intent(
-                    deliberation["best"], text, chat_id, session_id,
-                    classification=classification, source=source, sender=sender,
-                    active_anchor=active_anchor
-                )
-                # Emit observation so correct auto-executions strengthen patterns
-                _feat = {
-                    "intent": deliberation["best"],
-                    "runner_up": deliberation["runner_up"] or "",
-                    "delta": deliberation["delta"],
-                    "num_candidates": len(deliberation["candidates"]),
-                    "source": source,
-                }
-                _best = deliberation["best"]
-                _conf = deliberation["candidates"][0]["score"]
-                await emit_observation(
-                    subsystem="classification",
-                    event_type="auto_execute",
-                    features=_feat,
-                    predicted=_best,
-                    actual=_best,
-                    outcome="predicted",
-                    confidence=_conf,
-                    session_id=session_id,
-                )
-                # Store pending auto-execution on thread for next-message confirmation
-                _anchor = active_anchor or {}
-                _anchor['_last_auto_execution'] = {
-                    'intent': _best,
-                    'confidence': _conf,
-                    'classified_at': datetime.now(timezone.utc).isoformat(),
-                }
-                try:
-                    supabase.table('conversation_threads').update({
-                        'active_anchor': _anchor
-                    }).eq('id', session_id).execute()
-                except Exception:
-                    pass
-            else:
-                _cands = deliberation["candidates"]
-                runner_up_score = (
-                    _cands[1]["score"] if len(_cands) > 1 else 0
-                )
-                _best_score = _cands[0]["score"]
-                _runner = deliberation["runner_up"]
-                audit_log_sync(
-                    "webhook", "INFO",
-                    f"Planner deferred ({len(possible_intents)} candidates, "
-                    f"best={deliberation['best']}@{_best_score:.2f}, "
-                    f"runner_up={_runner}@{runner_up_score:.2f}, "
-                    f"delta={deliberation['delta']:.2f})")
-                await ask_intent_disambiguation(
-                    text, possible_intents, chat_id, session_id,
-                    deliberation=deliberation,
-                )
         elif intent == 'CLARIFICATION_NEEDED':
             await handle_clarification(
                 text,

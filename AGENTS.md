@@ -77,6 +77,26 @@ When proposing fixes, making architectural changes, or summarizing completed wor
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
 
+## Session Anchored Summary (Jul 15, 2026 — Part 52: Unified Action Planner — Holistic Architecture Completion)
+
+### Progress Done This Session
+- **Holistic Architecture — All Paths Unified**: Completed the migration from the legacy three-headed architecture (Webhook + Quick Process cron + Pulse Engine staging sorter) to a unified Action Planner pipeline. All 6 former `process_single_dump` callers now route through `plan_actions()` → `execute_planned_actions()`.
+- **Channel & Email Approvals Wired**: `core/webhook/utils.py` (WhatsApp/Teams/Calls) and `core/webhook/email.py` approval handlers now call the Action Planner directly instead of inserting `raw_dumps` with `status='pending'`. Eliminates the parking-latency window.
+- **Project/Org Context in Planner**: `core/actions/planner.py` fetches `projects(name)` and `organizations(name)` via JOINs so the LLM sees org/project context in candidate lines (e.g. `Task ID 123: Review legal doc [org: FC Madras, proj: Amita]`).
+- **URL Quarantine at Ingress**: `core/webhook/handler.py` now intercepts bare URLs at ingress (before classifier) — routes directly to `resources` table, no LLM call. Consistent with URL quarantine rule.
+- **Dead Code Removal (~700 lines)**: Deleted `core/agents/quick_process.py` (545 lines), `core/lib/process_input.py`, `core/prompts/ingest.py`, `.github/workflows/quick_process.yml`, and two orphaned test files. Cleaned up orphaned mocks in `tests/sim/conftest.py`.
+- **Restored _resolve_project_and_org_id**: `core/pulse/tools.py` regained this helper (was lost when `process_input.py` was deleted).
+- **Entity Extraction Preserved**: `_enrich_task_for_graph` and `_enrich_note_for_graph` fire background tasks → `extract_and_link_entities` → `pending_nodes` → Decision Pulse for approval. Knowledge graph pipeline unchanged.
+- **No DB migrations needed**: `raw_dumps` status column still correctly used by Pulse Engine logging and state machine.
+
+### Key Files (Phase 52)
+- `core/actions/planner.py` — JOIN-based org/project lookup for LLM context
+- `core/actions/executor.py` — Dispatches operations to create_task_direct / create_note_direct / update_task_status
+- `core/pulse/tools.py` — create_task_direct, create_note_direct, _resolve_project_and_org_id, enrichment flares
+- `core/webhook/handler.py` — URL quarantine at ingress
+- `core/webhook/utils.py` — Channel approvals → Action Planner (was raw_dumps parking)
+- `core/webhook/email.py` — Email approvals → Action Planner (was raw_dumps parking)
+
 ## Session Anchored Summary (Jul 15, 2026 — Part 51: Universal Action Planner & Multi-System Routing)
 
 ### Progress Done This Session
@@ -311,7 +331,7 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 - **Diagnostic Endpoints**: Added `/api/briefing-ping` (health check) and `/api/briefing-debug` (full debug dump with entities, time context, dates) to `api/index.py`.
 - **TypedDict Serialization Fix**: `api/index.py` — converted FastAPI `response_model` TypedDicts to plain dicts to avoid Vercel serialization crash.
 - **PostgREST Upsert Fix**: `scripts/record_app_version.py` — added `?on_conflict=key` to upsert call to prevent HTTP 409 duplicate key errors on CI rebuilds.
-- **process_single_dump Refactoring**: Extracted core processing logic from `dispatch.py` into `core/lib/process_input.py`. 16 files changed, 1,382 insertions across refactored dispatch, workflows, tools, calendar, and commands. Calendar event creation simplified by funneling through existing task workflow — removed 66 lines from `google_service.py`. New test suite (`tests/sim/test_full_pipeline.py`, `tests/unit/test_process_input.py`).
+- **process_single_dump Refactoring**: Extracted core processing logic from `dispatch.py` into `core/lib/process_input.py`. 16 files changed, 1,382 insertions across refactored dispatch, workflows, tools, calendar, and commands. Calendar event creation simplified by funneling through existing task workflow — removed 66 lines from `google_service.py`. New test suite (`tests/sim/test_full_pipeline.py`, `tests/unit/test_process_input.py`) *(both deleted in Part 52 — merged into Action Planner)*.
 
 ### Key Files (Phase 27)
 - `rhodey_app/lib/screens/rhodey_surface.dart` — Rhodey Surface v3 Horizon/Traces UI
@@ -682,7 +702,7 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 - **Hallucination Fix — Truth Boundary + Context Registry**: Eliminated LLM hallucination of unexecuted actions and pre-flight context leakage (Dog walk → Shifrah) via two layered subsystems:
   - **`core/actions.py` (Truth Boundary)**: `ActionResult` dataclass, contextvar accumulator, `validate_action_claims()` scanner/rewriter with `CLAIM_LEXICON` phrase-family classifier + `RESERVED_ACTION_PATTERNS` regex, `render_actions()` deterministic renderer, `can_claim_action()` gate. Wired into `send_telegram()` as the final send boundary invariant — snapshots evidence, validates claims, appends receipts, drains context. Added `awaiting_actionable_confirmation` and `awaiting_disambiguation_confirmation` workflow branches. Six use sites wired (workflows.py, dispatch.py, completion_handler.py, quick_process.py, pulse/tools.py, pulse/memory.py).
   - **`core/context/` (Context Registry)**: `schema.py`, `config.py`, `gates.py`, `pipeline.py` — 6 named strategies (`PRE_FLIGHT_CONFIG`, `BRIEFING_CONFIG`, `HINDSIGHT_CONFIG`, `HYDRATE_TASKS_CONFIG`, `HYDRATE_MEMORIES_CONFIG`, `BRAIN_SYNTH_CONFIG`). Entity-grounding gates (hard/soft/none). Neutral context penalty (0.5x). `semantic_requires_anchor=True` for PreFlight. All 6 callers migrated: `sentinel.py` (fetch_event_context), `memory.py` (2), `context.py` (2), `brain_synth_v2.py` (1).
-  - **`core/prompts/` (Prompt Registry)**: Separated all prompts from inline code into `guards.py`, `query.py`, `briefing.py`, `classify.py`, `workflow.py`, `ingest.py`.
+  - **`core/prompts/` (Prompt Registry)**: Separated all prompts from inline code into `guards.py`, `query.py`, `briefing.py`, `classify.py`, `workflow.py`.
   - **Structured Outputs + JSON Fail-Close**: `interrogate_brain`, `handle_daily_brief`, `process_sentinel` now fail closed — raw `.text.strip()` replaced with deterministic safe text on JSON parse failure.
   - **Observability**: Structured audit logging for `context_registry` — logs strategy, threshold, gate_mode, candidate/rejected/final counts, neutral vs grounded counts, rejection reasons, `semantic_skipped_no_anchor`.
   - **Sentinel prompt rewritten**: From speculative "Write a Pre-Flight Briefing" to fact-only "Below is verified context. Restate only what is shown." Prevents AI inference from absent context.
@@ -1066,7 +1086,7 @@ Some workflows use an **external cron service** because GitHub Actions free plan
 - **Commitment highlighting**: Tasks with `direction=outbound` are Danny's promises to others — highlight them. Tasks with `direction=waiting_on` are blockers — flag them. Show `committed_to` name when available.
 - **Schedule queries** ("meetings this week?"): Route to QUERY (interrogate_brain), not DAILY_BRIEF. Calendar events are tagged [PAST] in Python before LLM input. The current time (IST) is injected into the prompt. Never invent headings like "Immediate Priorities" or "Today's Bottleneck" — answer the question directly first, then optional Context section.
 - **Query responses**: Max 600 tokens. Answer first (factual), Context section second (bottlenecks/patterns). Never self-analyze or repeat data after Context section.
-- **URL quarantine**: Any text containing http/https is saved as a resource only, never as a memory or graph entity. backfill_graph.py fetch_memories() filters URL memories; quick_process.py routes URL NOTES to resources only; entity_extractor.py returns early if text contains URL.
+- **URL quarantine**: Any text containing http/https is saved as a resource only, never as a memory or graph entity. backfill_graph.py fetch_memories() filters URL memories; handler.py quarantines URLs at ingress; entity_extractor.py returns early if text contains URL.
 
 ### Data Deletion Safety (Non-Negotiable)
 - **NEVER delete any database records (people, tasks, graph_nodes, etc.) without explicit user approval.** Present what would be deleted and ask before executing.

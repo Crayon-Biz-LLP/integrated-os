@@ -187,12 +187,12 @@ def run_weekly_housekeeping() -> dict:
         summary["unresolved_clarifications"] = len(clar.data or [])
 
         # Pending graph nodes
-        pg = supabase.table("pending_graph_nodes") \
+        pg = supabase.table("pending_nodes") \
             .select("id") \
             .eq("status", "pending") \
             .limit(10) \
             .execute()
-        summary["pending_graph_nodes"] = len(pg.data or [])
+        summary["pending_nodes"] = len(pg.data or [])
 
         # Pending graph edges
         pe = supabase.table("pending_graph_edges") \

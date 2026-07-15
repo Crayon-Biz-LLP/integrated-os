@@ -20,7 +20,7 @@
 | priority | TEXT | `critical`, `high`, `medium`, `low` |
 | project_id | TEXT | FK → `projects.id` |
 | due_date | TIMESTAMPTZ | |
-| source | TEXT | `pulse`, `telegram`, `quick_process` |
+| source | TEXT | `pulse`, `telegram`, `action_planner` |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 | raw_dump_id | BIGINT | FK → `raw_dumps.id` |

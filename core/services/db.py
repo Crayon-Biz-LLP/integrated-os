@@ -82,21 +82,31 @@ def query_list_safe(builder, max_results=100):
 def zombie_recovery():
     from datetime import datetime, timezone, timedelta
     supabase = get_supabase()
+    from core.lib.audit_logger import audit_log_sync
     try:
         ten_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
-        supabase.table('raw_dumps') \
+        
+        # Recover dumps stuck in 'processing' — atomic status claim via in_ filter
+        proc_res = supabase.table('raw_dumps') \
             .update({"status": "staged"}) \
             .eq('status', 'processing') \
             .lt('created_at', ten_mins_ago) \
             .execute()
-        # Also recover orphaned completion dumps stuck in processing_completion
-        supabase.table('raw_dumps') \
+        proc_count = len(proc_res.data or [])
+        if proc_count:
+            audit_log_sync("db", "INFO", f"Zombie recovery: reset {proc_count} 'processing' dumps to 'staged'")
+        
+        # Recover orphaned completion dumps stuck in processing_completion
+        comp_res = supabase.table('raw_dumps') \
             .update({"status": "awaiting_completion_match"}) \
             .eq('status', 'processing_completion') \
             .lt('created_at', ten_mins_ago) \
             .execute()
+        comp_count = len(comp_res.data or [])
+        if comp_count:
+            audit_log_sync("db", "INFO", f"Zombie recovery: reset {comp_count} 'processing_completion' dumps")
+            
     except Exception as e:
-        from core.lib.audit_logger import audit_log_sync
         audit_log_sync("db", "WARNING", f"Zombie recovery failed: {e}")
 
 

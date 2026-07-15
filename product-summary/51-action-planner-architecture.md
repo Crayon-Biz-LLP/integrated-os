@@ -3,6 +3,8 @@
 ## Overview
 Rhodey's single-intent routing architecture has been upgraded with a universal Action Planner. Previously, completion handling was bottlenecked by a single LLM matching path that only queried open tasks. The new Action Planner enables multi-source, multi-operation execution for natural language commands affecting tasks, recurring series, and raw calendar events.
 
+In **Phase 52 (Holistic Architecture Completion)**, the Action Planner became the **single unified pipeline** for all task/note/completion operations — replacing the three-headed architecture (Webhook + Quick Process cron + Pulse Engine staging sorter). All 6 former `process_single_dump` callers now route through `plan_actions()` → `execute_planned_actions()`.
+
 ## Motivation & Crash Fix
 The legacy completion matcher had a fatal flaw: if no open task matched the input, it entered a degradation path (`compute_pattern_confidence`) which relied on `SlidingWindowLimiter`. This limiter used a synchronous `threading.Lock` over a synchronous Redis HTTP check, blocking the async event loop and causing a silent 60-second Vercel timeout on unmatched complex requests (like cancelling a recurring series that was already marked 'done' for the week).
 

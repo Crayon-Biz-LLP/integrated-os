@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from core.lib.audit_logger import info, warning, error, audit_log_sync
+from core.lib.url_filter import is_url_text
 from core.lib.temporal_lineage import detect_drift
 from core.lib.conversation import get_or_create_session, format_history_for_prompt
 from core.decisions import record_decision
@@ -287,7 +288,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         # Revert stale awaiting_details graph items back to pending
         try:
-            supabase.table('pending_graph_nodes')\
+            supabase.table('pending_nodes')\
                 .update({'status': 'pending'})\
                 .eq('status', 'awaiting_details')\
                 .lt('created_at', cutoff)\
@@ -360,7 +361,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             audit_log_sync("decision_pulse", "WARNING", f"Pattern prune failed (non-blocking): {prune_err}")
 
         # ── Auto-approve high-confidence graph nodes before display ──
-        pending_graph = supabase.table('pending_graph_nodes')\
+        pending_graph = supabase.table('pending_nodes')\
             .select('id, label, type, source_text')\
             .eq('status', 'pending')\
             .order('created_at', desc=False)\
@@ -574,7 +575,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         # Show awaiting_details count so items stuck in clarification are visible
         try:
-            awaiting_res = supabase.table('pending_graph_nodes').select('id', count='exact').eq('status', 'awaiting_details').execute()
+            awaiting_res = supabase.table('pending_nodes').select('id', count='exact').eq('status', 'awaiting_details').execute()
             awaiting_count = awaiting_res.count if hasattr(awaiting_res, 'count') else len(awaiting_res.data or [])
             if awaiting_count:
                 lines.append(f"⏳ {awaiting_count} node(s) waiting for details (tap ✅ to provide context)")
@@ -994,9 +995,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                     gemini_category = item.get('category', '').upper()
                     
                     dump_content = raw_dump.get('content', '')
-                    has_url = bool(re.search(r'https?://\S+', dump_content))
-                    
-                    if has_url:
+                    if is_url_text(dump_content):
                         gemini_category = 'NOTE'
                         
                     category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE', 'COMPLETION', 'PROJECT_UPDATE'] else metadata.get('intent', 'NOISE').upper()
@@ -1004,10 +1003,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                     if category in ('NOTE', 'PROJECT_UPDATE'):
                         dump_content = raw_dump.get('content')
                         if dump_content:
-                            from core.agents.quick_process import process_single_dump
-                            from core.lib.process_input import ProcessInput
-                            pi = ProcessInput(category="NOTE", text=dump_content, source="pulse_note")
-                            result = await process_single_dump(text=dump_content, metadata={"intent": "NOTE"}, input=pi)
+                            from core.pulse.tools import create_note_direct
+                            result = await create_note_direct(content=dump_content, source="pulse_note")
                             if result.get("memory_id"):
                                 note_dump_ids.append(dump_id)
                                 audit_log_sync("pulse", "INFO", f"📝 Note filed to memory: {dump_content[:50]}...")

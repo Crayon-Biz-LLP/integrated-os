@@ -114,8 +114,14 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
                 classification=classification, source=source
             )
         else:
-            from core.webhook.dispatch import handle_confident_note
-            await handle_confident_note(raw_text, chat_id, source=source, extraction_method=extraction_method)
+            from core.lib.ingest import ingest
+            await ingest(
+                text=raw_text,
+                source="multimodal",
+                classification="note",
+                has_memory_value=True,
+                channel_specific_data={"extraction_method": extraction_method}
+            )
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Multimodal processing error: {e}")

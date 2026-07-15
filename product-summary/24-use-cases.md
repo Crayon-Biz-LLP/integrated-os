@@ -11,7 +11,7 @@
 2. `multimodal.py` downloads the audio, sends it to Gemini for transcription
 3. Gemini returns: `{"intent": "TASK", "title": "Prepare Q3 pricing proposal", "entity": "SOLVSTRAT", "time_context": "Friday 3pm"}`
 4. `handle_confident_task()` inserts into raw_dumps
-5. `process_single_dump()` runs inline: creates task in DB, syncs to Google Calendar (Friday 3pm), syncs to Google Tasks
+5. `plan_actions()` → `execute_planned_actions()` runs inline: creates task in DB, syncs to Google Calendar (Friday 3pm), syncs to Google Tasks
 6. Telegram receipt: *"Task logged."* (stealth — no entity mentioned)
 
 **Time**: ~3-5 seconds from voice memo to Google Calendar event.
@@ -311,7 +311,7 @@
 
 **What happens**:
 1. Gemini classifies: COMPLETION (past tense detected)
-2. `process_single_dump()` matches the dedup_key against active tasks
+2. `execute_planned_actions()` matches the dedup_key against active tasks
 3. Finds matching task → marks as done
 4. `delete_calendar_event()` removes the Google Calendar event
 5. `sync_to_google()` marks Google Tasks as complete
@@ -440,7 +440,7 @@
 1. Webhook receives the text, no shortcode match, no clarification state
 2. Stage 6 intent classification: Gemini returns `{"intent": "TASK", "entity": "ASHRAYA", "confidence": 0.92}`
 3. High confidence → `handle_confident_task()` inserts into raw_dumps
-4. `process_single_dump()` runs inline: creates task in DB, syncs to Google Tasks, no time context so no calendar event
+4. `execute_planned_actions()` runs inline: creates task in DB, syncs to Google Tasks, no time context so no calendar event
 5. Telegram receipt: *"Task logged."*
 6. Within 5 seconds, the task exists in both the database and Google Tasks
 
@@ -449,10 +449,9 @@
 **Scenario**: Danny sends *"Buy milk"* and *"Call plumber"* while walking through the grocery store. Both go through the inline path, but neither creates graph edges.
 
 **What happens**:
-1. Both tasks created via `process_single_dump()` — immediate task in DB
+1. Both tasks created via `execute_planned_actions()` — immediate task in DB
 2. Graph edges NOT created (Quick Process inline path does not create graph nodes — architectural constraint)
-3. Every 5 minutes during waking hours, `quick_process.yml` runs on GitHub Actions
-4. The cron run calls `process_pending_dumps()` which picks up any dumps the inline path missed (e.g., if the webhook returned before processing finished)
+3. *(Quick Process cron removed — Action Planner handles all paths inline)* (e.g., if the webhook returned before processing finished)
 5. `backfill_graph.yml` eventually catches the missing graph edges via `backfill_orphaned_tasks()`
 6. By the next Pulse briefing, the graph is consistent — edges exist for both tasks
 

@@ -81,28 +81,19 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
             }
 
         try:
-            insert_data = {
-                "content": title,
-                "source": "email",
-                "status": "pending",
-                "direction": "incoming",
-                "sender": "user",
-                "message_type": "task",
-                "metadata": {
-                    "email_id": email_id,
-                    "is_human_sender": is_human
-                }
-            }
-            if guard['result'] == 'flag':
-                insert_data['metadata']['possible_duplicate'] = True
-                insert_data['metadata']['duplicate_of_title'] = guard['matched_title']
-                insert_data['metadata']['duplicate_of_id'] = guard['matched_id']
-
-            client.table('raw_dumps').insert([insert_data]).execute()
-        except Exception:
+            from core.actions.planner import plan_actions
+            from core.actions.executor import execute_planned_actions
+            import os
+            
+            chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+            actions = await plan_actions(text=title, intent="TASK")
+            if actions:
+                await execute_planned_actions(actions, chat_id, text=title, source="email")
+        except Exception as plan_err:
+            audit_log_sync("webhook", "ERROR", f"Failed to plan/execute email approval: {plan_err}")
             return {
                 "success": False, "action": "staging_failed",
-                "message": f"Task staging failed for [{row['id']}]. You can retry."
+                "message": f"Task processing failed for [{row['id']}]. You can retry."
             }
 
         client.table('messages').update({'danny_decision': 'approved'}).eq('id', row['id']).execute()
@@ -118,14 +109,14 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
         )
 
         if guard['result'] == 'flag':
-            audit_log_sync("webhook", "INFO", f"Staged to raw_dumps with possible_duplicate flag: {title}")
+            audit_log_sync("webhook", "INFO", f"Processed email task with possible_duplicate flag: {title}")
             return {
                 "success": True, "action": "approved",
-                "message": f"Task staged: {title}\n⚠️ Looks similar to '{guard['matched_title']}' — kept both."
+                "message": f"Task processed: {title}\n⚠️ Looks similar to '{guard['matched_title']}' — kept both."
             }
 
-        audit_log_sync("webhook", "INFO", f"Staged to raw_dumps via email approval: {title}")
-        return {"success": True, "action": "approved", "message": f"Task staged: {title}"}
+        audit_log_sync("webhook", "INFO", f"Processed task via email approval: {title}")
+        return {"success": True, "action": "approved", "message": f"Task processed: {title}"}
 
     elif decision == 'reject':
         client.table('messages').update({'danny_decision': 'rejected'}).eq('id', row['id']).execute()

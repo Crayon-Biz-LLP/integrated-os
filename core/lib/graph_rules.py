@@ -163,7 +163,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
     1. person_aliases table (Amma -> Mother, user -> Danny)
     2. Length check (< 3 chars -> noise)
     3. graph_nodes ILIKE match
-    4. pending_graph_nodes ILIKE match
+    4. pending_nodes ILIKE match
     5. people/projects/organizations ILIKE match
     6. NOISE_LABELS check
     
@@ -213,16 +213,16 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
         except Exception:
             pass
             
-        # 4. ILIKE match against pending_graph_nodes
+        # 4. ILIKE match against pending_nodes
         try:
-            pgn_res = maybe_single_safe(supabase.table("pending_graph_nodes").select("id, label, type, status").ilike("label", label))
+            pgn_res = maybe_single_safe(supabase.table("pending_nodes").select("id, label, node_type as type, status").ilike("label", label))
             if pgn_res and pgn_res.data:
                 if pgn_res.data["status"] == "rejected":
                     result["label"] = pgn_res.data["label"]
                     result["is_rejected"] = True
                     result["confidence"] = 0.0
                     return result
-                elif pgn_res.data["status"] in ["pending", "approved", "merge_proposed", "flagged"]:
+                elif pgn_res.data["status"] in ["pending", "approved", "flagged"]:
                     result["label"] = pgn_res.data["label"]
                     result["node_id"] = str(pgn_res.data["id"])
                     result["node_type"] = pgn_res.data["type"]
@@ -234,11 +234,17 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
             
         # 5. DB lookup for grounded types — exact guard pattern (not order-dependent)
         # 5a: People table — skip if role marks deletion/org-change/merge
+        #         or if deleted_at is set (new canonical approach)
         try:
-            db_res = maybe_single_safe(supabase.table('people').select('id, name, role').ilike('name', label).eq('is_current', True))
+            db_res = maybe_single_safe(supabase.table('people').select('id, name, role, deleted_at').ilike('name', label).eq('is_current', True))
             if db_res and db_res.data:
                 role = str(db_res.data.get('role') or '')
-                if not any(m in role for m in ["[DELETED]", "[CHANGED TO ORGANIZATION]", "[MERGED INTO"]):
+                is_deleted = False
+                if any(m in role for m in ["[DELETED]", "[CHANGED TO ORGANIZATION]", "[MERGED INTO"]):
+                    is_deleted = True
+                if db_res.data.get('deleted_at'):
+                    is_deleted = True
+                if not is_deleted:
                     result["label"] = db_res.data["name"]
                     result["node_type"] = "person"
                     result["confidence"] = 0.9
@@ -471,31 +477,16 @@ def propose_merge(source_node_id: str, target_node_id: str) -> dict:
     src_label = src_res.data["label"]
     tgt_label = tgt_res.data["label"]
     
-    # Check if already proposed
-    existing = maybe_single_safe(
-        supabase.table("pending_graph_nodes").select("id, status, merge_candidate_id")
-        .ilike("label", src_label)
+    # Write to merge_proposals table (replaces old pending_graph_nodes merge_proposed status)
+    from core.lib.node_tables import insert_merge_proposal
+    insert_merge_proposal(
+        source_label=src_label,
+        source_type=src_res.data["type"],
+        target_node_id=target_node_id,
+        target_label=tgt_label,
+        source_node_id=source_node_id,
+        rationale="dedup_scan",
     )
-        
-    if existing and existing.data:
-        if existing.data.get("status") == "merge_proposed" and existing.data.get("merge_candidate_id") == target_node_id:
-            return {"success": False, "message": "Already proposed"}
-        # Update existing record
-        supabase.table("pending_graph_nodes").update({
-            "status": "merge_proposed",
-            "merge_candidate_id": target_node_id,
-            "source_text": "dedup_scan"
-        }).eq("id", existing.data["id"]).execute()
-    else:
-        # Insert new merge proposal
-        supabase.table("pending_graph_nodes").insert({
-            "label": src_label,
-            "type": src_res.data["type"],
-            "status": "merge_proposed",
-            "merge_candidate_id": target_node_id,
-            "source_text": "dedup_scan"
-        }).execute()
-        
     return {"success": True, "message": f"Merge proposed: {src_label} → {tgt_label}"}
 
 
@@ -625,32 +616,45 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
                     return existing.data["id"]
             audit_log_sync("graph_pipeline", "ERROR", f"Failed to persist_label direct: {e}")
             return None
-            
+    
     if route == "pending":
-        existing_p = maybe_single_safe(supabase.table("pending_graph_nodes").select("id").ilike("label", label))
+        # Dual-write: new table + old table for compat
+        existing_p = maybe_single_safe(supabase.table("pending_nodes").select("id").ilike("label", label))
         if existing_p and existing_p.data:
             return str(existing_p.data["id"])
-            
+
         status = "flagged"
         meta = {"source": source_info} if source_info else {}
         if source_info and source_info.get("flag_reason"):
             meta["flag_reason"] = source_info["flag_reason"]
-            
+
         try:
+            from core.lib.node_tables import insert_pending_node
+            new_id = insert_pending_node(
+                label=label,
+                node_type=typ,
+                source_text=source_info.get("source_text", "") if source_info else "",
+                eval_context=meta if meta else None,
+                status=status,
+            )
+            if new_id:
+                return str(new_id)
+
+            # Fallback to pending_nodes directly
             insert_data = {
                 "label": label,
-                "type": typ,
+                "node_type": typ,
                 "source_text": source_info.get("source_text", "") if source_info else "",
                 "status": status,
             }
             if meta:
                 insert_data["eval_context"] = meta
-            res = supabase.table("pending_graph_nodes").insert(insert_data).execute()
+            res = supabase.table("pending_nodes").insert(insert_data).execute()
             if res.data:
                 return str(res.data[0]["id"])
         except Exception as e:
             if hasattr(e, "code") and e.code == "23505":
-                existing = maybe_single_safe(supabase.table("pending_graph_nodes").select("id").ilike("label", label))
+                existing = maybe_single_safe(supabase.table("pending_nodes").select("id").ilike("label", label))
                 if existing and existing.data:
                     return str(existing.data["id"])
             audit_log_sync("graph_pipeline", "ERROR", f"Failed to persist_label pending: {e}")

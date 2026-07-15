@@ -46,7 +46,7 @@ core/
 │   └── utils.py                  — Formatting, routing context
 ├── agents/                       — Autonomous workers
 │   ├── research_agent.py         — Jina AI web search + Gemini dossier
-│   ├── quick_process.py          — Inline raw dump processing
+│   ├── actions/                  — Action Planner (models.py, planner.py, executor.py)
 │   ├── janitor_check.py          — Pipeline health diagnostics
 │   └── cleanup_orphans.py        — Database maintenance
 ├── skills/                       — Batch scripts (CI-run)
@@ -76,7 +76,7 @@ core/
 ### Key Design Decisions
 
 - **Serverless**: Runs as a single Vercel serverless function with 60s timeout
-- **Inline + async hybrid**: Telegram processing happens inline (fast), heavy lifting is background (quick_process, research agent)
+- **Inline + async hybrid**: Telegram processing happens inline (fast), heavy lifting is background (research agent, sentinel piggyback)
 - **Fire-and-forget pattern**: Task creation runs inline; the webhook returns immediately while processing continues
 - **All rewrites, no routes**: Uses Vercel `rewrites` (not `routes`) to avoid cross-project interference (two Vercel projects share one GitHub repo)
 

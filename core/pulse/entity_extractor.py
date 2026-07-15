@@ -1,5 +1,6 @@
 from core.llm.constants import CLASSIFICATION_MODEL
 from core.lib.audit_logger import audit_log_sync
+from core.lib.url_filter import is_url_text
 from core.services.db import get_supabase, maybe_single_safe
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
@@ -14,8 +15,7 @@ async def extract_and_link_entities(text: str, source_id: str, source_type: str 
     source_type: 'task', 'memory', or 'raw_dump'
     """
     # URL FILTER: Do not extract entities from text containing URLs
-    import re
-    if re.search(r'https?://', text, re.IGNORECASE):
+    if is_url_text(text):
         audit_log_sync("pulse", "INFO", "Skipped entity extraction: text contains URL")
         return [], []
 

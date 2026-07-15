@@ -174,63 +174,61 @@ async def process_recordings():
                 print("  Failed to insert recording record — skipping items")
                 continue
 
-            items = []
+            # Route through ingest() — one call per action item/decision
+            from core.lib.ingest import ingest
+            item_count = 0
             for ai in extraction.get("action_items", []):
                 task = ai.get("task", "").strip()
                 if task:
-                    items.append({
-                        "channel": "call",
-                        "source": "call_recording",
-                        "recording_id": recording_id,
-                        "classification": "actionable",
-                        "suggested_title": task,
-                        "suggested_project": ai.get("project"),
-                        "body": task,
-                        "summary": extraction.get("summary", "")[:500],
-                        "processing_status": "completed",
-                        "metadata": {
-                            "action_type": "task",
-                            "people_mentioned": extraction.get("people_mentioned", [])
-                        }
-                    })
+                    await ingest(
+                        text=task,
+                        source='call_recording',
+                        classification='actionable',
+                        summary=extraction.get('summary', '')[:500],
+                        suggested_title=task,
+                        suggested_project=ai.get('project'),
+                        channel_specific_data={
+                            'action_type': 'task',
+                            'people_mentioned': extraction.get('people_mentioned', []),
+                            'recording_id': recording_id,
+                        },
+                    )
+                    item_count += 1
             for kd in extraction.get("key_decisions", []):
-                kd = kd.strip()
-                if kd:
-                    items.append({
-                        "channel": "call",
-                        "source": "call_recording",
-                        "recording_id": recording_id,
-                        "classification": "actionable",
-                        "suggested_title": kd,
-                        "body": kd,
-                        "summary": extraction.get("summary", "")[:500],
-                        "processing_status": "completed",
-                        "metadata": {
-                            "action_type": "decision",
-                            "people_mentioned": extraction.get("people_mentioned", [])
-                        }
-                    })
+                kd_text = kd.strip()
+                if kd_text:
+                    await ingest(
+                        text=kd_text,
+                        source='call_recording',
+                        classification='actionable',
+                        summary=extraction.get('summary', '')[:500],
+                        suggested_title=kd_text,
+                        channel_specific_data={
+                            'action_type': 'decision',
+                            'people_mentioned': extraction.get('people_mentioned', []),
+                            'recording_id': recording_id,
+                        },
+                    )
+                    item_count += 1
             if extraction.get("has_memory_value") and extraction.get("summary"):
-                items.append({
-                    "channel": "call",
-                    "source": "call_recording",
-                    "recording_id": recording_id,
-                    "classification": "actionable",
-                    "suggested_title": f"Call summary: {extraction['summary'][:100]}",
-                    "body": f"Call summary: {extraction['summary'][:100]}",
-                    "summary": extraction.get("summary", "")[:500],
-                    "processing_status": "completed",
-                    "metadata": {
-                        "action_type": "note",
-                        "people_mentioned": extraction.get("people_mentioned", [])
-                    }
-                })
+                summary_text = extraction['summary']
+                await ingest(
+                    text=summary_text,
+                    source='call_recording',
+                    classification='fyi',
+                    summary=summary_text[:500],
+                    has_memory_value=True,
+                    is_human_sender=True,
+                    channel_specific_data={
+                        'action_type': 'note',
+                        'people_mentioned': extraction.get('people_mentioned', []),
+                        'recording_id': recording_id,
+                    },
+                )
+                item_count += 1
 
-            if items:
-                supabase.table("messages").insert(items).execute()
-
-            task_count = sum(1 for i in items if i["metadata"]["action_type"] == "task")
-            decision_count = sum(1 for i in items if i["metadata"]["action_type"] == "decision")
+            task_count = sum(1 for ai in extraction.get("action_items", []) if ai.get('task', '').strip())
+            decision_count = sum(1 for kd in extraction.get("key_decisions", []) if kd.strip())
             total_tasks += task_count
             total_decisions += decision_count
             processed_count += 1

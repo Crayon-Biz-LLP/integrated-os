@@ -93,7 +93,7 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | File | What It Covers |
 |------|---------------|
 | [37-smart-batch-enrichment.md](37-smart-batch-enrichment.md) | Smart batch enrichment — multi-signal collection, per-signal LLM decision parsing, calendar_event signal type |
-| [40-process-input-refactoring.md](40-process-input-refactoring.md) | process_single_dump refactoring, calendar event simplification, new test suite |
+| [40-process-input-refactoring.md](40-process-input-refactoring.md) | process_single_dump refactoring, calendar event simplification *(superseded by Action Planner)* |
 | [46-role-update-intent.md](46-role-update-intent.md) | ROLE_UPDATE intent — detect role attributions, update people.role, SERVES_AT edges |
 | [47-classification-context-boundary.md](47-classification-context-boundary.md) | Bounded classify context, bot receipt stripping, PERSON QUERIES rule |
 | [50-multi-intent-task-closure.md](50-multi-intent-task-closure.md) | Multi-intent messages, task closure via enrichment pipeline, secondary_actions in classify |

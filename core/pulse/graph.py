@@ -8,6 +8,7 @@ from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
 from core.lib.people_utils import normalize_person_name
 from core.lib.graph_rules import find_similar_node, resolve_alias, canonicalize_relationship, normalize_label_display, get_canonical_id, normalize_label
+from core.clarifier import evaluate_node, evaluate_edge, store_and_send_clarification
 from core.decisions import record_decision
 
 supabase = get_supabase()
@@ -439,7 +440,7 @@ Format:
                 rel,
                 {
                     "source_text": "graph_approval_inference",
-                    "source_table": "pending_graph_nodes",
+                    "source_table": "pulse_inference",
                     # type gets resolved inside insert_pending_edge if not provided, or we can look it up
                 }
             )
@@ -452,66 +453,72 @@ Format:
 
 
 async def process_graph_pending_decision(pending_id: int, decision: str, context: str = None, new_label: str = None, auto_decided: bool = False) -> dict:
+    """Process a pending node decision (approve/reject/unreject)."""
     try:
-        pending_res = maybe_single_safe(supabase.table('pending_graph_nodes').select('*').eq('id', pending_id))
+        pending_res = maybe_single_safe(supabase.table('pending_nodes').select('*').eq('id', pending_id))
         if not pending_res or not pending_res.data:
             return {"success": False, "action": "not_found", "message": "Graph item not found."}
-
         pending_item = pending_res.data
-        if pending_item.get('status') not in ('pending', 'awaiting_details', 'flagged') and decision != 'unreject':
+
+        raw_type = pending_item.get('node_type', 'concept')
+        status = pending_item.get('status', 'pending')
+
+        if status not in ('pending', 'awaiting_details', 'flagged') and decision != 'unreject':
             return {"success": False, "action": "already_processed", "message": "Already processed."}
 
+        # ── Unreject ──
         if decision == 'unreject':
-            if pending_item.get('status') != 'rejected':
+            if status != 'rejected':
                 return {"success": False, "action": "not_rejected", "message": "Item is not rejected."}
-            supabase.table('pending_graph_nodes').update({'status': 'pending', 'merge_candidate_id': None}).eq('id', pending_id).execute()
+            supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', pending_id).execute()
             return {"success": True, "action": "unrejected", "message": f"Un-rejected node {pending_item['label']}"}
 
+        # ── Reject ──
         if decision == 'reject':
             label = pending_item['label']
-            supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', pending_id).execute()
+            supabase.table('pending_nodes').update({'status': 'rejected'}).eq('id', pending_id).execute()
             # Cascade reject edges
             supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('source_label', label).execute()
             supabase.table('pending_graph_edges').update({'status': 'rejected'}).eq('target_label', label).execute()
-            # Record rejection decision
             try:
                 record_decision(
-                            decision_type="graph_node_rejection",
-                            title=f"Rejected {pending_item.get('type', 'node')}: {label}",
-                            context=f"Pending node #{pending_id} rejected.",
-                            entity_type="graph_node",
-                            entity_id=str(pending_id),
-                            confidence=1.0,
-                            source="decision_pulse",
-                            auto_decided=auto_decided,
-                        )
+                    decision_type="graph_node_rejection",
+                    title=f"Rejected {raw_type}: {label}",
+                    context=f"Pending node #{pending_id} rejected.",
+                    entity_type="graph_node",
+                    entity_id=str(pending_id),
+                    confidence=1.0,
+                    source="decision_pulse",
+                    auto_decided=auto_decided,
+                )
             except Exception as dec_err:
                 audit_log_sync("pulse", "WARNING", f"Failed to record graph node rejection: {dec_err}")
             await emit_observation(
                 subsystem='entity_extraction',
                 event_type='rejection',
-                features={"node_type": pending_item.get('type')},
-                predicted=pending_item.get('type'),
+                features={"node_type": raw_type},
+                predicted=raw_type,
                 actual='rejected',
                 outcome='rejected',
                 source='decision_pulse'
             )
             return {"success": True, "action": "rejected", "message": f"Rejected node and related edges for {label}"}
 
+        # ── Approve ──
         if decision == 'approve':
             label = pending_item['label']
-            node_type = pending_item['type']
+            node_type = raw_type
             source_text = pending_item.get('source_text', '')
 
-            # If label was edited, rewrite pending_graph_edges first
+            # If label was edited, rewrite pending_graph_edges and pending_nodes
             if new_label and new_label.strip() and new_label.strip() != label:
                 old_label = label
                 label = new_label.strip()
                 supabase.table('pending_graph_edges').update({'source_label': label}).eq('source_label', old_label).execute()
                 supabase.table('pending_graph_edges').update({'target_label': label}).eq('target_label', old_label).execute()
-                supabase.table('pending_graph_nodes').update({'label': label}).eq('id', pending_id).execute()
+                supabase.table('pending_nodes').update({'label': label, 'status': status}).eq('id', pending_id).execute()
 
-            # Auto-approve any pending Danny→KNOWS edge for this label before creating node
+            # Auto-approve any pending Danny→KNOWS edge for this label
             danny_edge_res = maybe_single_safe(
                 supabase.table("pending_graph_edges")
                 .select("id")
@@ -533,13 +540,9 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
 
             if result.get('success'):
                 if result.get('action') == 'merge_proposed':
-                    supabase.table('pending_graph_nodes').update({
-                        'status': 'merge_proposed',
-                        'merge_candidate_id': result.get('merge_candidate_id')
-                    }).eq('id', pending_id).execute()
+                    supabase.table('pending_nodes').update({'status': 'merge_proposed'}).eq('id', pending_id).execute()
                 else:
-                    supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
-                    # Record decision
+                    supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
                     try:
                         record_decision(
                             decision_type="graph_node_approval",
@@ -563,7 +566,6 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                 outcome='confirmed',
                 source='decision_pulse'
             )
-
             return result
 
     except Exception as e:
@@ -1295,6 +1297,16 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
         source_info = {"source_text": f"{source_type}:{source_id}", "flag_reason": val.get("reason", "")}
         node_id = persist_label(route, res, source_info)
         
+        # 4b. Clarifier: evaluate new nodes for disambiguation
+        if route == "pending" and node_id:
+            try:
+                clar = evaluate_node(res, batch_mode=True)
+                if clar:
+                    # Fire-and-forget: send clarification via Telegram
+                    asyncio.ensure_future(store_and_send_clarification(clar, "pending_nodes", str(node_id)))
+            except Exception as clar_err:
+                audit_log_sync("graph_pipeline", "WARNING", f"Clarifier evaluate_node failed: {clar_err}")
+        
         if node_id:
             c_lbl = res["label"]
             node_id_map[c_lbl] = node_id
@@ -1429,7 +1441,7 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
             except Exception:
                 pass
         
-        insert_pending_edge(
+        edge_result = insert_pending_edge(
             s_c, 
             t_c, 
             rel, 
@@ -1440,6 +1452,22 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                 "target_type": t_res.get("node_type", "concept")
             }
         )
+        
+        # 6b. Clarifier: evaluate new pending edges for contradictions
+        if edge_result.get("status") == "inserted":
+            try:
+                edge_clar = evaluate_edge({
+                    "source_label": s_c,
+                    "target_label": t_c,
+                    "relationship": rel,
+                    "source_type": s_res.get("node_type", "concept"),
+                    "target_type": t_res.get("node_type", "concept"),
+                    "confidence": 0.5,  # Default confidence for LLM-extracted edges
+                }, batch_mode=True)
+                if edge_clar:
+                    asyncio.ensure_future(store_and_send_clarification(edge_clar, "pending_graph_edges", str(edge_result.get("id", ""))))
+            except Exception as edge_clar_err:
+                audit_log_sync("graph_pipeline", "WARNING", f"Clarifier evaluate_edge failed: {edge_clar_err}")
 
     # 7. Layer 2: Deterministic pattern backstop for NEW persons -> orgs
     if source_content:

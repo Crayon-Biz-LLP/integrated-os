@@ -720,6 +720,7 @@ This enables natural-language note capture without special syntax.
 **Files**: `core/lib/process_input.py` (NEW), `core/webhook/dispatch.py`, `core/webhook/workflows.py`, `core/pulse/tools.py`, `core/services/google_service.py`, +10 more (16 total)
 **Status**: Completed (Jul 11, 2026)
 **Details**: Major refactoring extracted core processing logic from `dispatch.py` into `core/lib/process_input.py`. 1,382 insertions across 16 files. Calendar event creation simplified by funneling through existing task workflow — removed 66 lines from `google_service.py`. New test suite: `tests/sim/test_full_pipeline.py`, `tests/unit/test_process_input.py`.
+**Note**: *Superseded by Action Planner Holistic Architecture (Phase 52). `process_input.py` and test files deleted. Logic replaced by `core/actions/planner.py` + `core/actions/executor.py`.*
 
 ---
 
@@ -1055,4 +1056,6 @@ These features were built organically before the spec-kit task tracking system w
 **Status**: Still pending (~1d effort, needs inbound entity resolution)
 
 ### TF-004 (P1): Universal Action Planner
-**Status**: Completed (Jul 15, 2026). Handled edge case where single-intent routing failed to execute complex actions across tasks, calendar, and recurring series. Replaced `completion_handler` degradation logic with multi-source planner. Supports `close_task`, `cancel_recurring`, `suppress_instance`, `modify_recurring`, `reschedule`, `update_metadata`, and `delete_event`. Includes Vercel 55s timeout safety net and `asyncio.Lock` fixes for rate limiting.
+**Status**: Completed (Jul 15, 2026). Two phases:
+- **Phase 51**: Handled edge case where single-intent routing failed to execute complex actions across tasks, calendar, and recurring series. Replaced `completion_handler` degradation logic with multi-source planner. Supports `close_task`, `cancel_recurring`, `suppress_instance`, `modify_recurring`, `reschedule`, `update_metadata`, and `delete_event`. Includes Vercel 55s timeout safety net and `asyncio.Lock` fixes for rate limiting.
+- **Phase 52 (Holistic Architecture Completion)**: Wired ALL 6 former `process_single_dump` callers through `plan_actions()` → `execute_planned_actions()`. Channel/email approvals now call Action Planner directly (no more `raw_dumps` parking). URL quarantine at ingress. Deleted `quick_process.py`, `process_input.py`, `ingest.py`, `quick_process.yml`, and orphaned test files. Project/org context via JOINs in planner queries. Entity extraction pipeline unchanged.

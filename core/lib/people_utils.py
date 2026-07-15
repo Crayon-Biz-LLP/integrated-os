@@ -24,7 +24,7 @@ def is_blocklisted_person(name: str) -> bool:
     """Dynamic check — no hardcoded blocklist.
     Only blocks names too short to be real people.
     Everything else passes through to the existing guards:
-    - resolve_canonical_label() checks pending_graph_nodes rejected entries
+    - resolve_canonical_label() checks pending_nodes rejected entries
     - Entity extraction has text-anchoring validation
     - HITL requires approval for new person nodes
     - Sync functions skip orphaned [DELETED] entries"""

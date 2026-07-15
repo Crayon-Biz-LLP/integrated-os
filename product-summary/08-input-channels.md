@@ -6,7 +6,7 @@ Data flows into Integrated-OS through 5 distinct channels, each with its own pro
 
 ## Channel 1: Telegram Capture
 
-The primary real-time channel. Text messages, voice notes, photos, and documents arrive via Telegram Bot API webhook. Each message goes through classification → entity routing → intent dispatch. Tasks are inserted into `raw_dumps` and processed inline by `quick_process.py`. Notes are embedded and stored in `memories`. Queries trigger hybrid graph+vector search.
+The primary real-time channel. Text messages, voice notes, photos, and documents arrive via Telegram Bot API webhook. Each message goes through classification → entity routing → intent dispatch. Tasks are processed inline by the Action Planner (`core/actions/planner.py` → `executor.py`). Notes are embedded and stored in `memories`. Queries trigger hybrid graph+vector search.
 
 **Speed**: Task to Google Calendar in under 5 seconds.
 

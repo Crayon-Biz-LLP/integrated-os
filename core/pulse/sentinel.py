@@ -264,7 +264,7 @@ Context:
                     if clar_res.data:
                         sweep_lines.append(f"❓ {len(clar_res.data)} unanswered clarification(s)")
                     # Pending graph nodes
-                    pg_res = supabase.table('pending_graph_nodes') \
+                    pg_res = supabase.table('pending_nodes') \
                         .select('id, label, type') \
                         .eq('status', 'pending') \
                         .order('created_at', desc=True) \
@@ -506,6 +506,40 @@ Context:
                     audit_log_sync("sentinel", "INFO", f"auto-cancel: {len(cancelled)} stale waiting_on task(s) auto-cancelled (>14d)")
         except Exception as ac_err:
             audit_log_sync("sentinel", "WARNING", f"Auto-cancel error (non-critical): {ac_err}")
+
+        # --- PIGGYBACK: P5 DLQ Consumer ---
+        try:
+            from core.skills.dlq_consumer import process_dlq
+            last_dlq_sweep = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%dlq consumer%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_dlq_sweep.data:
+                dlq_result = await process_dlq(max_items=5, max_retries=3)
+                if dlq_result.get('processed', 0) > 0:
+                    audit_log_sync("sentinel", "INFO", f"dlq consumer: {dlq_result['succeeded']} succeeded, {dlq_result['failed']} failed, {dlq_result['escalated']} escalated")
+        except Exception as dlq_err:
+            audit_log_sync("sentinel", "WARNING", f"DLQ consumer error (non-critical): {dlq_err}")
+
+        # --- PIGGYBACK: Webhook queue consumer (catch-all for missed jobs) ---
+        try:
+            from core.skills.webhook_queue_consumer import process_pending_webhook_jobs
+            last_wq_sweep = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%webhook queue%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_wq_sweep.data:
+                wq_result = await process_pending_webhook_jobs(max_jobs=3)
+                if wq_result.get('processed', 0) > 0:
+                    audit_log_sync("sentinel", "INFO", f"webhook queue: {wq_result['succeeded']} succeeded, {wq_result['failed']} failed")
+        except Exception as wq_err:
+            audit_log_sync("sentinel", "WARNING", f"Webhook queue consumer error (non-critical): {wq_err}")
 
         # Memory sweep, index queue, and retry-failed-runs deferred to maintenance.py (daily mode)
 

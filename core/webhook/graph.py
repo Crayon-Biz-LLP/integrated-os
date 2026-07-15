@@ -1,6 +1,4 @@
 import json
-from datetime import datetime
-from typing import Dict, Any
 
 from core.webhook.utils import supabase
 from core.services.llm import call_gemini_classify
@@ -8,22 +6,10 @@ from core.lib.audit_logger import audit_log_sync
 from core.services.db import maybe_single_safe
 from core.pulse.graph import create_graph_node_with_db_record
 
-# In-memory session cache
-# Structure: { chat_id: {"actions": [...], "expires_at": datetime, "pending_ids": [...]} }
-active_sessions: Dict[int, Dict[str, Any]] = {}
+# NOTE: active session state is now DB-backed via pending_graph_clarifications.
+# get_active_session/set_session_state/clear_session live in
+# core.lib.clarification_state and are imported by handler.py directly.
 
-def get_active_session(chat_id: int):
-    session = active_sessions.get(chat_id)
-    if session:
-        if datetime.now() > session['expires_at']:
-            del active_sessions[chat_id]
-            return None
-        return session
-    return None
-
-def clear_session(chat_id: int):
-    if chat_id in active_sessions:
-        del active_sessions[chat_id]
 
 async def interpret_graph_corrections(text: str, pending_items: list) -> list:
     """Uses Gemini to parse natural language corrections into structured actions."""
@@ -56,25 +42,25 @@ Rules:
 
 Return format MUST be a valid JSON array:
 [
-  {
+  {{
     "id": 1,
     "action": "approve",
     "corrected_label": "Paulsons Ledgers",
     "corrected_type": "organization"
-  },
-  {
+  }},
+  {{
     "id": 2,
     "action": "approve",
     "corrected_label": "Sarah Johnson",
     "corrected_type": "person",
     "context": "VP Engineering at Equisoft"
-  },
-  {
+  }},
+  {{
     "id": 3,
     "action": "approve",
     "corrected_label": "Qhord Cloud Console",
     "corrected_type": "project"
-  }
+  }}
 ]
 """
     try:
@@ -117,7 +103,7 @@ async def apply_graph_actions(actions: list, original_items_map: dict) -> dict:
             
         # Re-verify status is still pending to prevent race conditions
         try:
-            current = maybe_single_safe(supabase.table('pending_graph_nodes').select('status').eq('id', node_id))
+            current = maybe_single_safe(supabase.table('pending_nodes').select('status').eq('id', node_id))
             if not current or not current.data or current.data.get('status') != 'pending':
                 results["failed"] += 1
                 results["details"].append(f"g{node_id} failed: no longer pending")
@@ -130,17 +116,12 @@ async def apply_graph_actions(actions: list, original_items_map: dict) -> dict:
         try:
             if action_type == 'reject':
                 reason = action.get('reason', '')
-                # Update status
-                supabase.table('pending_graph_nodes').update({'status': 'rejected'}).eq('id', node_id).execute()
-                
-                # Audit log
+                supabase.table('pending_nodes').update({'status': 'rejected'}).eq('id', node_id).execute()
                 audit_log_sync("webhook", "INFO", f"Graph NLP: Rejected g{node_id} '{original['label']}'. Reason: {reason}")
-                
                 results["applied"] += 1
                 results["details"].append(f"✅ g{node_id} rejected")
                 
             elif action_type == 'approve':
-                # Use corrected values or fall back to original
                 final_label = action.get('corrected_label')
                 if final_label is None or final_label.strip() == '':
                     final_label = original['label']
@@ -151,7 +132,6 @@ async def apply_graph_actions(actions: list, original_items_map: dict) -> dict:
                 
                 source_text = original.get('source_text', '')
                 
-                # Use shared helper to create DB record + graph_node + Danny edge
                 result = await create_graph_node_with_db_record(
                     label=final_label,
                     node_type=final_type,
@@ -161,9 +141,7 @@ async def apply_graph_actions(actions: list, original_items_map: dict) -> dict:
                 )
                 
                 if result.get('success'):
-                    # Update pending status
-                    supabase.table('pending_graph_nodes').update({'status': 'approved'}).eq('id', node_id).execute()
-                    
+                    supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', node_id).execute()
                     audit_log_sync("webhook", "INFO", f"Graph NLP: Approved g{node_id}. Label: '{original['label']}' -> '{final_label}'. Type: '{original['type']}' -> '{final_type}'")
                     results["applied"] += 1
                     results["details"].append(f"✅ g{node_id} approved as '{final_label}' ({final_type})")
@@ -178,4 +156,3 @@ async def apply_graph_actions(actions: list, original_items_map: dict) -> dict:
             results["details"].append(f"❌ g{node_id} failed: {e}")
             
     return results
-

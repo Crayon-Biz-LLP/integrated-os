@@ -86,7 +86,7 @@ def run_sweep():
             if clarification:
                 # Queue clarification
                 try:
-                    supabase.table("pending_graph_nodes").insert({
+                    supabase.table("pending_nodes").insert({
                         "label": node["label"],
                         "type": "concept",
                         "status": "flagged",
@@ -100,7 +100,7 @@ def run_sweep():
             else:
                 # Insert pending node
                 try:
-                    supabase.table("pending_graph_nodes").insert({
+                    supabase.table("pending_nodes").insert({
                         "label": node["label"],
                         "type": "concept",
                         "status": "pending",

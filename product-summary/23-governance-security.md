@@ -77,7 +77,7 @@ CRAYON for corporate governance/tax/legal.
 | Workflow | Schedule | Timeout | What It Does |
 |----------|----------|---------|-------------|
 | `pulse.yml` | 5x weekday + 2x weekend | 20 min | Full intelligence cycle: archive ingest → graph backfill → pulse briefing |
-| `quick_process.yml` | Every 5 min (7:30AM-10:30PM IST) | 5 min | Process pending raw_dumps → create tasks + notes |
+| *(Deleted)* | *(Quick Process cron removed — Action Planner handles all paths inline)* | — | — |
 | `email_ingest.yml` | 4x weekday + 2x weekend | 10 min | Gmail + Outlook fetch → classify → pending tasks + drafts |
 | `research_worker.yml` | 2x daily | 10 min | Agent queue → Jina search → Gemini dossier |
 | `synthesis.yml` | 1x daily (night) | 15 min | Brain synthesis: canonical page consolidation |

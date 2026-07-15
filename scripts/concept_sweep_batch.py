@@ -158,7 +158,7 @@ def run_batch_sweep():
                 clarification = evaluate_node(node, batch_mode=True)
                 if clarification:
                     try:
-                        supabase.table("pending_graph_nodes").insert({
+                        supabase.table("pending_nodes").insert({
                             "label": label,
                             "type": "concept",
                             "status": "flagged",
@@ -174,7 +174,7 @@ def run_batch_sweep():
                             print(f"    Failed to flag concept {label}: {e}")
                 else:
                     try:
-                        supabase.table("pending_graph_nodes").insert({
+                        supabase.table("pending_nodes").insert({
                             "label": label,
                             "type": "concept",
                             "status": "pending",
@@ -243,7 +243,7 @@ def run_batch_sweep():
                             "linked_entity": linked_entity,
                             "relationship": relationship
                         }
-                        supabase.table("pending_graph_nodes")\
+                        supabase.table("pending_nodes")\
                             .update({"eval_context": eval_ctx})\
                             .ilike("label", label)\
                             .eq("source_text", f"memories:{mem_id}")\

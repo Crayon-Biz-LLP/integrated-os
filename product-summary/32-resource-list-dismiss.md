@@ -22,7 +22,7 @@ A `viewMode` state toggle (`'grid' | 'list'`) in `clusters-shell.tsx`. The heade
 
 **Backend**:
 - `resources.dismissed_at TIMESTAMPTZ` column (migration `db/20_resources_dismissed.sql`)
-- URL dedup in `dispatch.py`, `quick_process.py`, `engine.py` checks `dismissed_at` — if set, skips re-storage and replies "Already seen this link and dismissed it." in Telegram
+- URL dedup in `dispatch.py`, `engine.py` checks `dismissed_at` (quick_process.py merged into Action Planner) — if set, skips re-storage and replies "Already seen this link and dismissed it." in Telegram
 
 ### Files changed
 
@@ -36,7 +36,7 @@ A `viewMode` state toggle (`'grid' | 'list'`) in `clusters-shell.tsx`. The heade
 | `frontend/src/lib/resources/api.ts` | Add `dismissResource()` |
 | `frontend/src/lib/resources/types.ts` | Add `dismissed_at` to `Resource` |
 | `core/webhook/dispatch.py` | Check `dismissed_at` in URL dedup, reply message |
-| `core/agents/quick_process.py` | Check `dismissed_at` in URL dedup |
+| *(merged into Action Planner)* | `dismissed_at` check in URL dedup (handled by handler.py quarantine) |
 | `core/pulse/engine.py` | Check `dismissed_at` in URL dedup |
 
 ### Key Decisions

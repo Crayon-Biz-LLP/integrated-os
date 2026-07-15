@@ -1,4 +1,3 @@
-import re
 from datetime import datetime, timezone
 from typing import Tuple, Optional
 from core.services.db import get_supabase
@@ -9,31 +8,32 @@ from core.webhook.classify import CLASSIFICATION_MODEL
 from core.webhook.telegram import send_telegram
 from core.lib.conversation import log_exchange, _check_topic_overlap
 from core.actions import ActionResult, accumulate_action
-from core.lib.process_input import ProcessInput
-from core.agents.quick_process import process_single_dump, get_tasks_service
+from core.pulse.tools import create_task_direct
 
-CONFIRM_PHRASES = {'yes', 'y', 'yep', 'do it', 'go ahead', 'sure', 'ok', 'okay', 'yeah', 'please', 'absolutely'}
-DECLINE_PHRASES = {'no', 'n', 'nope', 'cancel', 'skip', 'nevermind', 'ignore', 'stop'}
-NEGATION_WORDS = {'not', "n't", 'never'}
+# ── Workflow cache: avoids DB hit on every message ──
+# Simple in-memory TTL cache. Cleared on cold restart (safe: just causes a DB re-fetch).
+_workflow_cache: dict[int, tuple] = {}  # chat_id -> (workflow_dict, expires_at)
+_WORKFLOW_CACHE_TTL_SECONDS = 10
 
-def get_deterministic_decision(text: str):
-    cleaned = re.sub(r'[^\w\s]', '', text.lower()).strip()
-    if cleaned in CONFIRM_PHRASES:
-        return 'confirm'
-    if cleaned in DECLINE_PHRASES:
-        return 'decline'
-
-    words = cleaned.split()
-    if len(words) <= 4:
-        has_negation = any(w in NEGATION_WORDS for w in words)
-        has_confirm = any(w in CONFIRM_PHRASES for w in words)
-        has_decline = any(w in DECLINE_PHRASES for w in words)
-        if has_confirm and not has_decline and not has_negation:
-            return 'confirm'
-        if has_decline and not has_confirm and not has_negation:
-            return 'decline'
-
+def _get_cached_workflow(chat_id: int):
+    """Get cached active workflow for chat_id, or None if expired/missing."""
+    cached = _workflow_cache.get(chat_id)
+    if cached:
+        data, expires_at = cached
+        if datetime.now(timezone.utc).timestamp() < expires_at:
+            return data
+        del _workflow_cache[chat_id]
     return None
+
+def _set_cached_workflow(chat_id: int, workflow_data: dict):
+    """Cache active workflow for chat_id with TTL."""
+    expires_at = datetime.now(timezone.utc).timestamp() + _WORKFLOW_CACHE_TTL_SECONDS
+    _workflow_cache[chat_id] = (workflow_data, expires_at)
+
+def _clear_cached_workflow(chat_id: int):
+    """Clear cached workflow for chat_id (e.g., after resolution)."""
+    _workflow_cache.pop(chat_id, None)
+
 
 async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> Tuple[bool, Optional[str]]:
     """
@@ -54,36 +54,40 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         }).eq('chat_id', chat_id).eq('status', 'active').lt('expires_at', now_iso).execute()
     except Exception:
         pass
-
-    try:
-        res = supabase.table('conversation_workflows') \
-            .select('*') \
-            .eq('chat_id', chat_id) \
-            .eq('status', 'active') \
-            .eq('awaiting_user_input', True) \
-            .execute()
-    except Exception as e:
-        audit_log_sync("workflow", "ERROR", f"DB lookup failure falling open to general: {e}")
-        return False, None
-        
-    if not res.data:
-        return False, None
-        
-    if len(res.data) > 1:
-        # Mark older ones as superseded
-        sorted_ws = sorted(res.data, key=lambda x: x['created_at'])
-        superseded_ids = [w['id'] for w in sorted_ws[:-1]]
-        now_iso = datetime.now(timezone.utc).isoformat()
-        supabase.table('conversation_workflows').update({
-            'status': 'cancelled', 
-            'resolved_at': now_iso,
-            'updated_at': now_iso
-        }).in_('id', superseded_ids).execute()
-        
-        audit_log_sync("workflow", "WARNING", f"Multiple active workflows for chat {chat_id}. Superseded older ones, falling open.")
-        return False, None
-        
-    workflow = res.data[0]
+    
+    # Check cache first, fall back to DB
+    workflow = _get_cached_workflow(chat_id)
+    if not workflow:
+        try:
+            res = supabase.table('conversation_workflows') \
+                .select('*') \
+                .eq('chat_id', chat_id) \
+                .eq('status', 'active') \
+                .eq('awaiting_user_input', True) \
+                .execute()
+        except Exception as e:
+            audit_log_sync("workflow", "ERROR", f"DB lookup failure falling open to general: {e}")
+            return False, None
+            
+        if not res.data:
+            return False, None
+            
+        if len(res.data) > 1:
+            # Mark older ones as superseded
+            sorted_ws = sorted(res.data, key=lambda x: x['created_at'])
+            superseded_ids = [w['id'] for w in sorted_ws[:-1]]
+            now_iso = datetime.now(timezone.utc).isoformat()
+            supabase.table('conversation_workflows').update({
+                'status': 'cancelled', 
+                'resolved_at': now_iso,
+                'updated_at': now_iso
+            }).in_('id', superseded_ids).execute()
+            
+            audit_log_sync("workflow", "WARNING", f"Multiple active workflows for chat {chat_id}. Superseded older ones, falling open.")
+            return False, None
+            
+        workflow = res.data[0]
+        _set_cached_workflow(chat_id, workflow)
     w_id = workflow['id']
     w_type = workflow['workflow_type']
     payload = workflow.get('payload') or {}
@@ -94,56 +98,35 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
             f"Workflow {w_id} bypassed: message entities don't match workflow payload — falling through")
         return False, None
 
-    # 1+2: Decision determination
-    if w_type == "batch":
-        signals_list = payload.get("signals", [])
-        d = get_deterministic_decision(text)
-        if d == "confirm":
-            signal_decisions = [{"index": i, "decision": "confirm"} for i in range(len(signals_list))]
-        elif d == "decline":
-            signal_decisions = [{"index": i, "decision": "decline"} for i in range(len(signals_list))]
+    # 1+2: Decision determination — always through LLM (deterministic bypass removed)
+    from core.prompts.workflow import build_workflow_resume_prompt
+    prompt = build_workflow_resume_prompt(w_type, payload, text)
+    try:
+        analysis_res = await generate_content_with_fallback(
+            prompt=prompt,
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model=CLASSIFICATION_MODEL,
+            config={'response_mime_type': 'application/json'}
+        )
+        raw = analysis_res.parse_json()
+        
+        if w_type == "batch":
+            signal_decisions = raw.get("decisions", [])
+            has_other_content = raw.get("has_other_content", False)
+            other_content_text = raw.get("other_content_text", "")
+            decision = "confirm" if any(sd.get("decision") == "confirm" for sd in signal_decisions) else "decline"
         else:
-            from core.prompts.workflow import build_workflow_resume_prompt
-            prompt = build_workflow_resume_prompt(w_type, payload, text)
-            try:
-                analysis_res = await generate_content_with_fallback(
-                    prompt=prompt,
-                    workload=WorkloadProfile.INTERACTIVE,
-                    primary_model=CLASSIFICATION_MODEL,
-                    config={'response_mime_type': 'application/json'}
-                )
-                raw = analysis_res.parse_json()
-                signal_decisions = raw.get("decisions", [])
-                has_other_content = raw.get("has_other_content", False)
-                other_content_text = raw.get("other_content_text", "")
-            except Exception as e:
-                audit_log_sync("workflow", "ERROR", f"Batch LLM eval failed falling open: {e}")
-                return False, None
-        decision = "confirm" if any(sd.get("decision") == "confirm" for sd in signal_decisions) else "decline"
-    else:
-        # Single-signal workflow
-        decision = get_deterministic_decision(text)
-        if not decision:
-            from core.prompts.workflow import build_workflow_resume_prompt
-            prompt = build_workflow_resume_prompt(w_type, payload, text)
-            try:
-                analysis_res = await generate_content_with_fallback(
-                    prompt=prompt,
-                    workload=WorkloadProfile.INTERACTIVE,
-                    primary_model=CLASSIFICATION_MODEL,
-                    config={'response_mime_type': 'application/json'}
-                )
-                decision = analysis_res.parse_json().get("decision", "unrelated")
-            except Exception as e:
-                audit_log_sync("workflow", "ERROR", f"LLM eval failed falling open: {e}")
-                return False, None
+            decision = raw.get("decision", "unrelated")
+    except Exception as e:
+        audit_log_sync("workflow", "ERROR", f"LLM eval failed falling open: {e}")
+        return False, None
             
     # 3. Handle Decision
     if decision == "unrelated":
         audit_log_sync("workflow", "INFO", f"Workflow {w_id} bypassed due to unrelated reply. Remains active.")
         return False, None
         
-    # ATOMIC UPDATE FOR IDEMPOTENCY
+    # ATOMIC UPDATE FOR IDEMPOTENCY + CLEAR CACHE
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
         update_res = supabase.table('conversation_workflows').update({
@@ -158,7 +141,8 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     except Exception as e:
         audit_log_sync("workflow", "ERROR", f"Failed atomic update for {w_id}: {e}")
         return False, None
-        
+    _clear_cached_workflow(chat_id)
+    
     if decision == "decline":
         has_other = 'has_other_content' in locals() and has_other_content and other_content_text.strip()
         reply_text = "Cancelled the pending items." if has_other else "Cancelled."
@@ -188,11 +172,9 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                 reminder_at = sig.get("reminder_at")
 
                 if sig_type in ("deadline", "calendar_event"):
-                    pi = ProcessInput(category="TASK", text=title, source="workflow", title=title, reminder_at=reminder_at)
-                    await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
+                    await create_task_direct(title=title, reminder_at=reminder_at)
                 elif sig_type == "task_imperative":
-                    pi = ProcessInput(category="TASK", text=title, source="workflow", title=title)
-                    await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
+                    await create_task_direct(title=title)
                 elif sig_type == "task_closure":
                     if not active_tasks:
                         tasks_res = supabase.table("tasks") \
@@ -215,8 +197,7 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         elif w_type in ("deadline", "calendar_event"):
             title = payload.get("task_title") or payload.get("proposed_title") or payload.get("title", "New Task")
             reminder_at = payload.get("reminder_at")
-            pi = ProcessInput(category="TASK", text=title, source="workflow", title=title, reminder_at=reminder_at)
-            result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi)
+            result = await create_task_direct(title=title, reminder_at=reminder_at)
             task_id = result.get("task_id")
             accumulate_action(ActionResult(
                 action_type="task_create",
@@ -225,9 +206,7 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
 
         elif w_type == "task_creation" or w_type == "awaiting_actionable_confirmation":
             title = payload.get("title", "New Item")
-            pi = ProcessInput(category="TASK", text=title, source="workflow", title=title)
-            tasks_service = get_tasks_service()
-            result = await process_single_dump(text=title, metadata={"intent": "TASK"}, input=pi, tasks_service=tasks_service)
+            result = await create_task_direct(title=title)
             task_id = result.get("task_id")
             accumulate_action(ActionResult(
                 action_type="task_create",

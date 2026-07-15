@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 import pytest
 from core.services.db import get_supabase
 from core.retrieval.cleanup import cleanup_memory_retrieval_index, sweep_orphan_retrieval_entries
-from core.webhook.workflows import get_deterministic_decision, check_and_resume_workflow
+from core.webhook.workflows import check_and_resume_workflow
 from core.lib.conversation import resolve_thread
 
 supabase = get_supabase()
@@ -178,32 +178,6 @@ class TestNoteCaptureCorrectness:
 # ─────────────────────────────────────────────
 
 class TestWorkflowContinuity:
-
-    def test_04_deterministic_confirm_decline(self):
-        assert get_deterministic_decision("yes") == "confirm"
-        assert get_deterministic_decision("do it") == "confirm"
-        assert get_deterministic_decision("go ahead") == "confirm"
-        assert get_deterministic_decision("sure") == "confirm"
-        assert get_deterministic_decision("ok") == "confirm"
-        assert get_deterministic_decision("yeah") == "confirm"
-        assert get_deterministic_decision("please") == "confirm"
-        assert get_deterministic_decision("absolutely") == "confirm"
-
-        assert get_deterministic_decision("no") == "decline"
-        assert get_deterministic_decision("cancel") == "decline"
-        assert get_deterministic_decision("skip") == "decline"
-        assert get_deterministic_decision("stop") == "decline"
-        assert get_deterministic_decision("nope") == "decline"
-        assert get_deterministic_decision("nevermind") == "decline"
-
-        assert get_deterministic_decision("yes please do it") == "confirm"
-        assert get_deterministic_decision("no stop that") == "decline"
-
-        assert get_deterministic_decision("yes but no") is None
-        assert get_deterministic_decision("maybe later") is None
-        assert get_deterministic_decision("I'm not sure") is None
-        assert get_deterministic_decision("not really") is None
-        assert get_deterministic_decision("I don't know") is None
 
     @pytest.mark.asyncio
     async def test_05_delayed_confirmation_idempotent(self):

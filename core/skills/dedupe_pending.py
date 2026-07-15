@@ -1,5 +1,5 @@
 """
-Dedupe Pending Nodes — Background deduplication for pending_graph_nodes.
+Dedupe Pending Nodes — Background deduplication for pending_nodes.
 
 Fuzzy-matches pending nodes against live graph_nodes table.
 When a match above threshold is found, sets status='merge_proposed' 
@@ -13,11 +13,12 @@ from core.lib.graph_rules import find_similar_node
 supabase = get_supabase()
 
 def dedupe_pending():
-    # Get all pending nodes that haven't been proposed for merge yet
-    result = supabase.table('pending_graph_nodes') \
-        .select('id, label, type') \
+    from core.lib.node_tables import insert_merge_proposal
+    
+    # Get all pending nodes not yet matched
+    result = supabase.table('pending_nodes') \
+        .select('id, label, node_type as type') \
         .eq('status', 'pending') \
-        .is_('merge_candidate_id', 'null') \
         .execute()
     
     pending = result.data or []
@@ -25,27 +26,25 @@ def dedupe_pending():
     
     proposed = 0
     for node in pending:
-        # We only try to dedupe people, organizations, and projects (ignore concept/resource for now if any)
-        # Actually find_similar_node filters by type so it's safe.
         matches = find_similar_node(node['label'], node['type'], threshold=0.55)
         
         if matches:
             best = matches[0]
-            # Double check the types match just in case
             if best['type'] != node['type']:
                 continue
                 
             try:
-                supabase.table('pending_graph_nodes') \
-                    .update({
-                        'status': 'merge_proposed',
-                        'merge_candidate_id': best['id'],
-                        'confidence': best['score']
-                    }) \
-                    .eq('id', node['id']) \
-                    .execute()
-                proposed += 1
-                print(f"  [+] Proposed merge: '{node['label']}' -> '{best['label']}' (score={best['score']})")
+                # Write merge proposal to merge_proposals table
+                mp_id = insert_merge_proposal(
+                    source_label=node['label'],
+                    source_type=node['type'],
+                    target_node_id=best['id'],
+                    target_label=best['label'],
+                    rationale=f"Auto-dedup (score={best['score']})",
+                )
+                if mp_id:
+                    proposed += 1
+                    print(f"  [+] Proposed merge: '{node['label']}' -> '{best['label']}' (score={best['score']})")
             except Exception as e:
                 print(f"  [!] Error proposing merge for '{node['label']}': {e}")
                 

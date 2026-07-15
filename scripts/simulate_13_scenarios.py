@@ -239,7 +239,7 @@ async def test_s7_pending_org_approval():
     org_label = f"{PREFIX} S7 Pending Org"
 
     # Insert a pending_graph_node of type 'organization'
-    ins = supabase.table('pending_graph_nodes').insert({
+    ins = supabase.table('pending_nodes').insert({
         "label": org_label,
         "type": "organization",
         "status": "pending",
@@ -266,10 +266,10 @@ async def test_s7_pending_org_approval():
         has_backlink = bool(org_row.data.get('graph_node_id'))
         assert_true(has_backlink, "S7", f"graph_node_id back-linked: {org_row.data['graph_node_id']}", "graph_node_id not set on organizations row")
 
-    # Confirm pending_graph_nodes row is now 'approved'
-    pn = maybe_single_safe(supabase.table('pending_graph_nodes').select('status').eq('id', pending_id))
+    # Confirm pending_nodes row is now 'approved'
+    pn = maybe_single_safe(supabase.table('pending_nodes').select('status').eq('id', pending_id))
     is_approved = pn.data and pn.data.get('status') == 'approved'
-    assert_true(is_approved, "S7", "pending_graph_nodes status = approved", f"Expected approved, got: {pn.data}")
+    assert_true(is_approved, "S7", "pending_nodes status = approved", f"Expected approved, got: {pn.data}")
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +287,7 @@ async def test_s8_rejected_pending_node():
     count_orgs_before = len(orgs_before.data or [])
     count_projs_before = len(projs_before.data or [])
 
-    ins = supabase.table('pending_graph_nodes').insert({
+    ins = supabase.table('pending_nodes').insert({
         "label": org_label,
         "type": "organization",
         "status": "pending",
@@ -303,9 +303,9 @@ async def test_s8_rejected_pending_node():
     assert_true(result.get('success'), "S8", f"Rejection returned success: {result}", f"Rejection failed: {result}")
 
     # Confirm status is 'rejected'
-    pn = maybe_single_safe(supabase.table('pending_graph_nodes').select('status').eq('id', pending_id))
+    pn = maybe_single_safe(supabase.table('pending_nodes').select('status').eq('id', pending_id))
     is_rejected = pn.data and pn.data.get('status') == 'rejected'
-    assert_true(is_rejected, "S8", "pending_graph_nodes status = rejected", f"Expected rejected, got: {pn.data}")
+    assert_true(is_rejected, "S8", "pending_nodes status = rejected", f"Expected rejected, got: {pn.data}")
 
     # Confirm no new org or project row was created
     orgs_after = supabase.table('organizations').select('id').ilike('name', f"{PREFIX}%").execute()
@@ -552,8 +552,8 @@ def cleanup():
 
     for pnid in created_pending_node_ids:
         try:
-            supabase.table('pending_graph_nodes').delete().eq('id', pnid).execute()
-            print(f"  Deleted pending_graph_node {pnid}")
+            supabase.table('pending_nodes').delete().eq('id', pnid).execute()
+            print(f"  Deleted pending_node {pnid}")
         except Exception as e:
             errors.append(f"Pending node {pnid}: {e}")
 
