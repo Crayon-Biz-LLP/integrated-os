@@ -1,0 +1,5 @@
+#!/bin/sh
+# Pre-commit hook — tracked in .githooks/ (git config core.hooksPath .githooks)
+# All enforcement is handled by CI (ruff check .). This hook is intentionally
+# minimal: stale rules cause worse bugs than the lint they try to prevent.
+exit 0

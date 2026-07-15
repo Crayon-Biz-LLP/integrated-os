@@ -524,23 +524,6 @@ Context:
         except Exception as dlq_err:
             audit_log_sync("sentinel", "WARNING", f"DLQ consumer error (non-critical): {dlq_err}")
 
-        # --- PIGGYBACK: Webhook queue consumer (catch-all for missed jobs) ---
-        try:
-            from core.skills.webhook_queue_consumer import process_pending_webhook_jobs
-            last_wq_sweep = supabase.table('audit_logs') \
-                .select('id') \
-                .eq('service', 'sentinel') \
-                .ilike('message', '%webhook queue%') \
-                .gte('created_at', (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()) \
-                .limit(1) \
-                .execute()
-            if not last_wq_sweep.data:
-                wq_result = await process_pending_webhook_jobs(max_jobs=3)
-                if wq_result.get('processed', 0) > 0:
-                    audit_log_sync("sentinel", "INFO", f"webhook queue: {wq_result['succeeded']} succeeded, {wq_result['failed']} failed")
-        except Exception as wq_err:
-            audit_log_sync("sentinel", "WARNING", f"Webhook queue consumer error (non-critical): {wq_err}")
-
         # Memory sweep, index queue, and retry-failed-runs deferred to maintenance.py (daily mode)
 
         # --- PIGGYBACK: T4 Orphan recurring calendar events ---

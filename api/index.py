@@ -18,8 +18,6 @@ from core.webhook import (
     process_webhook,
     send_draft_reply,
     process_email_pending_decision,
-    
-    
 )
 from core.pulse.graph import process_pending_edge_decision
 from core.skills.whatsapp_ingest import process_whatsapp_message
@@ -56,30 +54,23 @@ app.add_middleware(
 def health_check():
     return {"status": "Integrated OS API is running on Python 🐍"}
 
-# --- TELEGRAM INTAKE (Routes to async queue) ---
+# --- TELEGRAM INTAKE (Inline processing with 55s timeout) ---
 @app.post("/api/webhook")
 async def webhook_route(request: Request):
     update = await request.json()
-    supabase = get_supabase()
+    trace_id_var.set(f"tg_{update.get('update_id', uuid.uuid4().hex[:8])}")
+    begin_action_context()
     try:
-        supabase.table("pending_webhook_jobs").insert({
-            "update_data": update,
-            "status": "pending",
-        }).execute()
-        return {"success": True, "queued": True}
+        await asyncio.wait_for(process_webhook(update), timeout=55)
+        return {"success": True}
+    except asyncio.TimeoutError:
+        print("Webhook processing timed out (>55s). Vercel may kill at 60s.")
+        return {"success": True, "message": "Processing started"}
     except Exception as e:
-        print(f"Webhook queue insert error: {e}")
-        # Fallback: try inline processing
-        trace_id_var.set(f"tg_{update.get('update_id', uuid.uuid4().hex[:8])}")
-        begin_action_context()
-        try:
-            await process_webhook(update)
-            return {"success": True}
-        except Exception as e2:
-            print(f"Webhook fallback error: {e2}")
-            raise HTTPException(status_code=500, detail="Internal processing error")
-        finally:
-            clear_action_context()
+        print(f"Webhook error: {e}")
+        raise HTTPException(status_code=500, detail="Internal processing error")
+    finally:
+        clear_action_context()
 
 def verify_hmac(payload: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
@@ -134,25 +125,7 @@ async def sentinel_route(request: Request):
     result = await process_sentinel(auth_secret=cron_secret, trigger="cron")
     return result
 
-# --- WEBHOOK QUEUE CONSUMER (Processes pending webhook jobs async) ---
-@app.api_route("/api/process-webhook-jobs", methods=["GET", "POST"])
-async def process_webhook_jobs_route(request: Request):
-    """Process pending webhook jobs. Called by cron-job.org every 15s.
 
-    Auth: x-pulse-secret header matching PULSE_SECRET.
-    """
-    auth_header = request.headers.get("Authorization", "")
-    cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
-
-    if not cron_secret:
-        raise HTTPException(status_code=500, detail="CRON_SECRET missing")
-
-    if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    from core.skills.webhook_queue_consumer import process_pending_webhook_jobs
-    result = await process_pending_webhook_jobs(max_jobs=3)
-    return result
 
 # --- DECISION PULSE (Pending Approvals) ---
 @app.api_route("/api/decision-pulse", methods=["GET", "POST"])

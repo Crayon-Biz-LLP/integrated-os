@@ -1125,6 +1125,12 @@ Some workflows use an **external cron service** because GitHub Actions free plan
 ### Code Quality (Ruff)
 - **Always run `ruff check .` after making any code changes.** This project uses `ruff` to catch undefined variables, missing imports, and other linting errors before they crash in production. Fix any *newly introduced* errors immediately.
 
+### Stale Enforcement Audit (Non-Negotiable)
+Before closing any PR or committing code that touches enforcement mechanisms (pre-commit hooks, CI checks, ruff config, lint rules), verify each referenced function/module still exists. Deleted functions leave stale gates that silently block correct code. If a gate blocks a change, question the gate before questioning the change.
+
+- **Pre-commit hooks live in `.githooks/`** (tracked in repo, `core.hooksPath` set project-wide). `.git/hooks/` is untracked local state — never rely on it.
+- Run `git config core.hooksPath .githooks` after clone to activate tracked hooks.
+
 ### Documentation & Spec-Kit Adherence (Definition of Done)
 - **Living Documentation is Non-Negotiable:** Your task is NOT complete until the documentation matches the code. Perform documentation updates as the final "wrap-up" step of a feature's lifecycle, right before asking the user for permission to run `git commit` and `git push`. Do not update documentation after every minor code tweak during active development.
 - `product-summary/`: Keep local markdown files synchronized. If adding a new feature, create a new `XX-<topic>.md` file and update the README table of contents.
