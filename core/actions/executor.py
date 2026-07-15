@@ -420,7 +420,12 @@ async def execute_planned_actions(
         await send_telegram(chat_id, f"⚠️ **Partial Sync Failure**\\nSome actions failed. {rollback_msg}\
 \\nDetails: {error_details}")
     
-    # Send success messages for closures (creations send their own via their handlers)
+    # Send success messages for creations
+    if created_labels:
+        titles = ", ".join(created_labels)
+        await send_telegram(chat_id, f"✅ Logged: {titles}")
+
+    # Send success messages for closures
     if closed_ids:
         active_tasks = []
         try:
