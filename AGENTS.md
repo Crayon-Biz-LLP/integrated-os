@@ -77,6 +77,35 @@ When proposing fixes, making architectural changes, or summarizing completed wor
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
 
+## Session Anchored Summary (Jul 15, 2026 — Part 53: Architecture Stabilization — DB-Backed State & Formal State Machines)
+
+### Progress Done This Session
+- **DB-Backed Clarification State**: Replaced in-memory `pending_graph_clarifications` dict (lost on Vercel cold start) with `pending_graph_clarifications` table (`db/37_graph_clarifications.sql`). Same for `active_sessions` dict in `graph.py` — now stored with `pending_type='session'`. Survives cold restarts, queryable.
+- **pending_nodes / merge_proposals Split** (`core/lib/node_tables.py`, `db/34_`, `db/35_`): Split the old `pending_graph_nodes` table (mixed node-creation + merge concerns) into `pending_nodes` (creation approvals) and `merge_proposals` (merge target→source proposals). `pending_graph_nodes` dropped. Backfill script migrated 381 rows.
+- **Formal State Machines** (`core/lib/state_machines.py`, 468 lines): Single source of truth for all valid status transitions across 16 tables (raw_dumps, tasks, memories, messages, pending_nodes, merge_proposals, pending_graph_edges, graph_nodes, graph_edges, conversations, conversation_threads, decisions, email_drafts, pending_retrieval_index_jobs, pending_graph_clarifications, agent_queue, call_recordings, retrieval_index_runs). Uses `guard_is_valid_transition()` before every status update. No more ad-hoc status values.
+- **Unified Ingestion Pipeline** (`core/lib/ingest.py`, `core/lib/url_filter.py`): Single `ingest()` contract for all channels (telegram, whatsapp, email, call, teams). URL quarantine extracted into `url_filter.py` — single source of truth. Per-channel duplicate classify/persist logic eliminated.
+- **Async Webhook Queue** (`core/skills/webhook_queue_consumer.py`, `db/36_pending_webhook_jobs.sql`): Replaces the `asyncio.wait_for(55)` timeout workaround. Webhook returns 200 immediately, enqueues the job, separate consumer processes it reliably with retry/dead-letter.
+- **DLQ Consumer** (`core/skills/dlq_consumer.py`): Phase C of pipeline overhaul — processes dead letter queue with exponential backoff (3 retries → escalation).
+- **Shared Email Classify Prompt** (`core/prompts/email_classify.py`, `tests/unit/test_email_classify_prompt.py`): Single source of truth for Gmail and Outlook email classification. Prevents prompt drift between mailboxes. 112-line unit test with pure string assertions.
+- **Validation Tests** (`tests/sim/test_validation_refactor.py`): 19 tests across 7 categories validating all refactored paths against real Supabase.
+
+### Key Files (Phase 53)
+- `core/lib/state_machines.py` — Formal state machines (468 lines, 16 tables)
+- `core/lib/node_tables.py` — pending_nodes / merge_proposals abstraction layer
+- `core/lib/clarification_state.py` — DB-backed clarification state for handler + graph
+- `core/lib/ingest.py` — Unified ingestion pipeline
+- `core/lib/url_filter.py` — URL quarantine single source of truth
+- `core/prompts/email_classify.py` — Shared email classify prompt template
+- `core/skills/webhook_queue_consumer.py` — Async webhook job consumer
+- `core/skills/dlq_consumer.py` — DLQ consumer with exponential backoff
+- `db/37_graph_clarifications.sql` — DB-backed clarification state table
+- `db/34_pending_nodes_merge_proposals_deleted_at.sql` — pending_nodes + merge_proposals tables
+- `db/35_drop_pending_graph_nodes.sql` — Drops legacy pending_graph_nodes
+- `db/36_pending_webhook_jobs.sql` — Async webhook job queue table
+- `scripts/archive/backfill_pending_graph_nodes.py` — One-time backfill script
+- `tests/sim/test_validation_refactor.py` — 19 validation tests
+- `tests/unit/test_email_classify_prompt.py` — Email prompt unit tests
+
 ## Session Anchored Summary (Jul 15, 2026 — Part 52: Unified Action Planner — Holistic Architecture Completion)
 
 ### Progress Done This Session

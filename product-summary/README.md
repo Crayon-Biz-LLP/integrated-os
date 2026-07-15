@@ -98,6 +98,7 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [47-classification-context-boundary.md](47-classification-context-boundary.md) | Bounded classify context, bot receipt stripping, PERSON QUERIES rule |
 | [50-multi-intent-task-closure.md](50-multi-intent-task-closure.md) | Multi-intent messages, task closure via enrichment pipeline, secondary_actions in classify |
 | [51-action-planner-architecture.md](51-action-planner-architecture.md) | Universal Action Planner replacing single-intent matchers for tasks, recurring series, and calendar operations |
+| [53-architecture-stabilization.md](53-architecture-stabilization.md) | DB-backed state, formal state machines, unified ingest, URL quarantine module, async webhook queue |
 
 ### Mobile App (Flutter — Rhodey)
 | File | What It Covers |

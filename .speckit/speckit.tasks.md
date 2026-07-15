@@ -749,10 +749,51 @@ This enables natural-language note capture without special syntax.
 ### [COMPLETED] T-MULTI-001: Multi-Intent Messages + Task Closure Pipeline
 **Files**: `core/prompts/classify.py`, `core/prompts/workflow.py`, `core/webhook/dispatch.py`, `core/webhook/workflows.py`, `core/webhook/handler.py`
 **Change**: Extended Smart Batch Enrichment for compound human messages. (A) `check_and_resume_workflow` returns `Tuple[bool, Optional[str]]` — ancillary text falls through to classify. (B) `task_closure` signal type with `target_task_description` in enrichment prompt. (C) `secondary_actions` array in classify prompt for multi-intent routing at 0.5 confidence. (D) `_process_task_closure` helper fuzzy-matches entity names against open task titles via substring/ILIKE. 5 files, +134 lines.
-
 ---
 
+## Today's Changes (Jul 15, 2026 — Part 53)
 
+### [COMPLETED] T-STATE-001: DB-Backed Clarification State
+**Files**: `core/lib/clarification_state.py` (NEW), `db/37_graph_clarifications.sql` (NEW)
+**Change**: Replaced in-memory pending_graph_clarifications dict (handler.py) and active_sessions dict (graph.py) with `pending_graph_clarifications` table. Implements `get_active_clarification()`, `set_clarification()`, `resolve_clarification()` with 5-min expiry. Survives Vercel cold restarts.
+**Deploy safe**: YES — additive, old in-memory path still exists as fallback.
+
+### [COMPLETED] T-STATE-002: Split pending_graph_nodes → pending_nodes + merge_proposals
+**Files**: `core/lib/node_tables.py` (NEW), `db/34_pending_nodes_merge_proposals_deleted_at.sql`, `db/35_drop_pending_graph_nodes.sql`, `scripts/archive/backfill_pending_graph_nodes.py`
+**Change**: Separated node creation approvals (pending_nodes) from merge target→source proposals (merge_proposals). `core/lib/node_tables.py` provides `insert_pending_node()`, `get_pending_node()`, `approve_pending_node()`, `reject_pending_node()`. 381 rows migrated. Old `pending_graph_nodes` dropped.
+**Deploy safe**: YES — tables already exist in production, this is source-of-truth alignment.
+
+### [COMPLETED] T-STATE-003: Formal State Machines
+**Files**: `core/lib/state_machines.py` (NEW)
+**Change**: Single source of truth for all valid status transitions across 16 tables. Exports `guard_is_valid_transition(table, from_status, to_status)` — use before every status update. No more ad-hoc status values.
+**Deploy safe**: YES — additive, old ad-hoc checks continue to work.
+
+### [COMPLETED] T-STATE-004: Unified Ingestion Pipeline
+**Files**: `core/lib/ingest.py` (NEW), `core/lib/url_filter.py` (NEW)
+**Change**: Single `ingest()` contract for all channels (telegram, whatsapp, email, call, teams). URL quarantine extracted to `core/lib/url_filter.py` — single source of truth. `check_and_quarantine_url()` at every ingress point. Per-channel duplicate classify/persist logic eliminated.
+**Deploy safe**: YES — additive, channels not migrated continue to use existing paths.
+
+### [COMPLETED] T-STATE-005: Async Webhook Queue
+**Files**: `core/skills/webhook_queue_consumer.py` (NEW), `db/36_pending_webhook_jobs.sql` (NEW)
+**Change**: Replaces `asyncio.wait_for(55)` + fire-and-forget pattern. Webhook endpoint INSERTs into `pending_webhook_jobs` → returns 200 immediately. Dedicated consumer processes jobs with atomic claim, 3-retry dead-letter lifecycle.
+**Deploy safe**: YES — additive, currently only used for jobs queued after webhook acceptance.
+
+### [COMPLETED] T-STATE-006: DLQ Consumer
+**Files**: `core/skills/dlq_consumer.py` (NEW)
+**Change**: Phase C of pipeline overhaul. Processes dead letter queue items with exponential backoff (3 retries → escalation). Can be triggered by sentinel piggyback or dedicated schedule.
+**Deploy safe**: YES — additive, not wired into any cron yet.
+
+### [COMPLETED] T-STATE-007: Shared Email Classify Prompt
+**Files**: `core/prompts/email_classify.py` (NEW), `tests/unit/test_email_classify_prompt.py` (NEW)
+**Change**: Single source of truth for Gmail and Outlook email classification. `build_email_classify_prompt()` injects mailbox-specific context via parameters, preventing prompt drift. 112-line unit test with pure string assertions (no DB/Gemini).
+**Deploy safe**: YES — additive, existing email classify paths unchanged.
+
+### [COMPLETED] T-STATE-008: Validation Test Suite
+**Files**: `tests/sim/test_validation_refactor.py` (NEW)
+**Change**: 19 tests across 7 categories: Planner→Executor direct path, URL quarantine, unified ingest, DB-backed clarification state, pending_nodes CRUD, formal state machine transitions, async webhook queue. All self-cleaning with [SIM_TEST] prefix.
+**Deploy safe**: YES — tests only.
+
+---
 
 ## Today's Changes (Jul 1, 2026)
 
