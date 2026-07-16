@@ -54,12 +54,13 @@ export interface GraphPendingEdge {
 
 export interface GraphMergeProposal {
   id: number;
-  label: string;
-  type: string;
-  merge_candidate_id: string;
+  source_label: string;
+  source_type: string;
+  target_node_id: string;
+  target_label: string;
   merge_candidate_label?: string;
-  status: 'merge_proposed';
-  created_at: string;
+  status: 'proposed' | 'accepted' | 'rejected';
+  proposed_at: string;
 }
 
 export interface AutoDecisionItem {
@@ -83,7 +84,7 @@ export interface AutoDecisionItem {
 export interface GraphPendingNode {
   id: number;
   label: string;
-  type: string;
+  node_type: string;
   source_text: string;
   status: 'pending' | 'flagged' | 'approved' | 'rejected' | 'awaiting_clarification';
   created_at: string;

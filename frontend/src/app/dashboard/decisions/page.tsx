@@ -135,13 +135,13 @@ export default async function DecisionsPage() {
     }
   }
 
-  const candidateIds = [...new Set(mergeProposals.map(m => m.merge_candidate_id).filter(Boolean))];
+  const candidateIds = [...new Set(mergeProposals.map(m => m.target_node_id).filter(Boolean))];
   if (candidateIds.length > 0) {
     const candidateRes = await supabase.from("graph_nodes").select("id, label").in("id", candidateIds);
     if (candidateRes.error) console.error('Failed to resolve merge candidate sources:', candidateRes.error);
     const candidateMap = new Map((candidateRes.data ?? []).map(n => [n.id, n.label]));
     for (const proposal of mergeProposals) {
-      const label = candidateMap.get(proposal.merge_candidate_id);
+      const label = candidateMap.get(proposal.target_node_id);
       if (label) proposal.merge_candidate_label = label;
     }
   }

@@ -994,7 +994,7 @@ async def graph_node_rename_route(pending_id: str, request: Request):
         except ValueError:
             return {"success": False, "message": "Invalid pending ID"}
             
-        pending_res = maybe_single_safe(supabase.table('pending_nodes').select('label, type').eq('id', pending_id_int))
+        pending_res = maybe_single_safe(supabase.table('pending_nodes').select('label, node_type').eq('id', pending_id_int))
         if not pending_res or not pending_res.data:
             return {"success": False, "message": "Pending node not found"}
             
@@ -1063,7 +1063,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
                         'strategic_weight': 0
                     }).eq('id', p_id).execute()
             
-            supabase.table('graph_nodes').update({'node_type': new_type}).eq('id', pending_id).execute()
+            supabase.table('graph_nodes').update({'type': new_type}).eq('id', pending_id).execute()
             supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
             return {"success": True, "message": f"Changed type to {new_type}"}
             
@@ -1162,7 +1162,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
         except ValueError:
             return {"success": False, "message": "Invalid pending ID"}
             
-        pending_res = maybe_single_safe(supabase.table('pending_nodes').select('label, type').eq('id', pending_id_int))
+        pending_res = maybe_single_safe(supabase.table('pending_nodes').select('label, node_type').eq('id', pending_id_int))
         if not pending_res or not pending_res.data:
             return {"success": False, "message": "Pending node not found"}
             
@@ -1416,7 +1416,8 @@ async def graph_nodes_search_route(request: Request):
         if scope != 'pending':
             query = query.eq('is_current', True)
         if node_type:
-            query = query.eq('type', node_type)
+            filter_col = 'node_type' if scope == 'pending' else 'type'
+            query = query.eq(filter_col, node_type)
         res = query.limit(10).execute()
         return res.data or []
     except Exception:

@@ -556,7 +556,58 @@ class ContextProvider:
             result_blocks.append(graph_context)
             
         return "\n\n".join(result_blocks)
-        
+
+    async def get_master_page_context(self, project_names: list = None, match_count: int = 3) -> str:
+        """
+        Fetch canonical master pages for relevant projects.
+        Uses ilike matching to find pages whose titles contain any project name.
+        Returns a formatted context string for the pulse briefing.
+        """
+        if not project_names:
+            return ""
+        try:
+            seen_titles = set()
+            collected = []
+            for name in project_names[:10]:
+                raw = name.strip()
+                if not raw:
+                    continue
+                # Escape LIKE wildcards so project names like "100% Review" match literally
+                sanitized = raw.replace('%', r'\%').replace('_', r'\_')
+                res = supabase.table('canonical_pages') \
+                    .select('title, content, last_synth_at, source_count') \
+                    .eq('is_current', True) \
+                    .ilike('title', f'%{sanitized}%') \
+                    .order('last_synth_at', desc=True) \
+                    .limit(3) \
+                    .execute()
+                for p in (res.data or []):
+                    tid = p.get('title', '')
+                    if tid and tid not in seen_titles:
+                        seen_titles.add(tid)
+                        collected.append(p)
+                if len(collected) >= match_count:
+                    break
+
+            if not collected:
+                return ""
+
+            lines = ["🗂️ MASTER PAGES:"]
+            for p in collected[:match_count]:
+                title = p.get('title', 'Unknown')
+                content = (p.get('content') or '')[:300]
+                last_synth = p.get('last_synth_at', '')
+                source_count = p.get('source_count', 0)
+                if last_synth:
+                    last_synth = str(last_synth)[:10]
+                lines.append(f"\n--- {title} (sources: {source_count}, last synced: {last_synth}) ---")
+                lines.append(content)
+            return "\n".join(lines)
+        except Exception as e:
+            audit_log_sync('context', 'WARNING', f'Master page context fetch failed: {e}')
+            return ""
+
+
 # Global instance
 context_provider = ContextProvider()
 

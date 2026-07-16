@@ -102,8 +102,8 @@ def resolve_alias(label: str) -> str:
                 "resolution_count": count + 1,
                 "last_resolved_at": "now()"
             }).eq("alias", lookup).execute()
-        except Exception:
-            pass
+        except Exception as e:
+            audit_log_sync("graph_pipeline", "WARNING", f"Alias write-back failed for '{lookup}': {e}")
         return canonical
     return label
 

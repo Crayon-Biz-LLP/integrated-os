@@ -52,8 +52,8 @@ export function MergePendingList({ items: initialItems }: { items: GraphMergePro
     <div className="space-y-4">
       {items.map((item) => {
         const isSwapped = swappedIds.has(item.id);
-        const sourceLabel = isSwapped ? (item.merge_candidate_label || 'canonical') : item.label;
-        const targetLabel = isSwapped ? item.label : (item.merge_candidate_label || 'canonical');
+        const sourceLabel = isSwapped ? (item.merge_candidate_label || item.target_label) : item.source_label;
+        const targetLabel = isSwapped ? item.source_label : (item.merge_candidate_label || item.target_label);
 
         return (
           <Card key={item.id}>
@@ -76,10 +76,9 @@ export function MergePendingList({ items: initialItems }: { items: GraphMergePro
             <CardContent>
               <div className="flex flex-wrap items-center gap-2 mb-3 bg-zinc-900/50 p-3 rounded-md font-mono text-sm">
                 <span className="text-yellow-400 font-semibold">{sourceLabel}</span>
-                <span className="text-zinc-500">({item.type})</span>
+                <span className="text-zinc-500">({item.source_type})</span>
                 <span className="text-zinc-500">→</span>
                 <span className="text-green-400 font-semibold">{targetLabel}</span>
-                <span className="text-zinc-500">({item.type})</span>
               </div>
               <p className="text-sm text-muted-foreground mb-3">
                 The node on the left will be merged into the node on the right. The left node will act as an alias.
@@ -88,7 +87,7 @@ export function MergePendingList({ items: initialItems }: { items: GraphMergePro
                 <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
                   <span>m{item.id}</span>
                   <span>·</span>
-                  <span>{formatDistanceToNow(parseISO(item.created_at), { addSuffix: true })}</span>
+                  <span>{formatDistanceToNow(parseISO(item.proposed_at), { addSuffix: true })}</span>
                 </div>
                 <div className="flex gap-2">
                   <Button

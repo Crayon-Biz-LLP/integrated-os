@@ -75,10 +75,12 @@ async def run_full_health_check() -> dict:
             _send_processing_alert(counts['stuck_processing'])
 
         # ── Null embeddings (last 7 days) ──
+        # Exclude pulse_briefing type — those are briefing transcripts that don't need semantic search
         seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         null_emb_res = supabase.table('memories') \
             .select('id', count='exact') \
             .is_('embedding', 'null') \
+            .neq('memory_type', 'pulse_briefing') \
             .gte('created_at', seven_days_ago) \
             .execute()
         counts["null_embeddings"] = null_emb_res.count or 0

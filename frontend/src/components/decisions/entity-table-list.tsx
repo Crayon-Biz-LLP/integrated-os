@@ -163,7 +163,7 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
   const handleChangeType = async (id: number | string, newType: string) => {
     try {
       await changePendingGraphNodeType(id, newType, scope);
-      setItems(prev => prev.map(i => i.id === id ? { ...i, type: newType } : i));
+      setItems(prev => prev.map(i => i.id === id ? { ...i, node_type: newType } : i));
       setChangingTypeId(null);
       toast.success("Changed type successfully");
     } catch (e: any) {
@@ -224,9 +224,9 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
     .filter(item => {
       if (filterType === 'all') return true;
       if (filterType === 'other') {
-        return !['person', 'project', 'organization', 'concept'].includes(item.type);
+        return !['person', 'project', 'organization', 'concept'].includes(item.node_type);
       }
-      return item.type === filterType;
+      return item.node_type === filterType;
     })
     .sort((a, b) => a.label.localeCompare(b.label));
 
@@ -328,7 +328,7 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
                     <div className="flex flex-col gap-2">
                       <span className="text-muted-foreground text-xs">Merge &apos;{item.label}&apos; into:</span>
                       <MergeSearchInput
-                        nodeType={item.type}
+                        nodeType={item.node_type}
                         scope={scope}
                         onSelect={(targetId, targetLabel) => handleMerge(item.id, targetId, targetLabel)}
                       />
@@ -342,7 +342,7 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
                   {changingTypeId === item.id ? (
                     <select
                       className="h-7 rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm"
-                      defaultValue={item.type}
+                      defaultValue={item.node_type}
                       onChange={(e) => handleChangeType(item.id, e.target.value)}
                       onBlur={() => setChangingTypeId(null)}
                       autoFocus
@@ -362,7 +362,7 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
                       className="inline-flex items-center rounded-md bg-secondary px-2 py-1 text-xs font-medium ring-1 ring-inset ring-secondary-foreground/10 hover:bg-secondary/80 cursor-pointer"
                       title="Click to change type"
                     >
-                      {item.type}
+                      {item.node_type}
                     </button>
                   )}
                 </TableCell>

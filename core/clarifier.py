@@ -39,10 +39,6 @@ async def store_and_send_clarification(clar: dict, source_table: str, source_id:
                     "sent_at": datetime.now(timezone.utc).isoformat()
                 }).eq("shortcode", clar["shortcode"]).execute()
 
-def _invoke_llm_evaluation(prompt: str, schema: dict) -> dict:
-    """Helper to call LLM for evaluation."""
-    pass
-
 def evaluate_node(node_data: dict, batch_mode: bool = False) -> Optional[dict]:
     """
     Phase 2 implementation:

@@ -87,10 +87,10 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
     setItems(initialItems);
     
     // Proactive merge check for non-project nodes
-    const toCheck = initialItems.filter(i => i.type !== 'project');
+    const toCheck = initialItems.filter(i => i.node_type !== 'project');
     Promise.all(toCheck.map(async (item) => {
       try {
-        const matches = await checkSimilarGraphNodes(item.label, item.type);
+        const matches = await checkSimilarGraphNodes(item.label, item.node_type);
         if (matches && matches.length > 0) {
           setSimilarNodes(prev => ({ ...prev, [item.id]: matches }));
         }
@@ -158,7 +158,7 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
   const handleChangeType = async (id: number, newType: string) => {
     try {
       await changePendingGraphNodeType(id, newType, 'pending');
-      setItems(prev => prev.map(i => i.id === id ? { ...i, type: newType } : i));
+      setItems(prev => prev.map(i => i.id === id ? { ...i, node_type: newType } : i));
       setChangingTypeId(null);
       toast.success(`Changed type to ${newType}`);
     } catch (e: any) {
@@ -208,7 +208,7 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                   {changingTypeId === item.id ? (
                     <select
                       className="h-6 rounded-md border border-input bg-background px-1.5 py-0 text-xs shadow-sm font-semibold"
-                      defaultValue={item.type}
+                      defaultValue={item.node_type}
                       onChange={(e) => handleChangeType(item.id, e.target.value)}
                       onBlur={() => setChangingTypeId(null)}
                       autoFocus
@@ -228,7 +228,7 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                       className="inline-flex items-center rounded-md bg-secondary px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ring-1 ring-inset ring-secondary-foreground/10 hover:bg-secondary/80 cursor-pointer"
                       title="Click to change type"
                     >
-                      {item.type}
+                      {item.node_type}
                     </button>
                   )}
                   <span className="text-muted-foreground text-xs font-normal">NODE</span>
@@ -299,7 +299,7 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                           {item.eval_context.justification && (
                             <p><span className="font-semibold text-zinc-400">Why:</span> {item.eval_context.justification}</p>
                           )}
-                          {item.type === 'practice' && item.eval_context.frequency && (
+                          {item.node_type === 'practice' && item.eval_context.frequency && (
                             <p><span className="font-semibold text-zinc-400">Frequency:</span> {item.eval_context.frequency}</p>
                           )}
                         </div>
@@ -316,7 +316,7 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                     <div className="mt-3 bg-muted/50 p-3 rounded-md border">
                       <p className="text-xs font-medium mb-1">Merge into existing node:</p>
                       <MergeDropdown 
-                        nodeType={item.type} 
+                        nodeType={item.node_type} 
                         onSelect={(targetId) => handleMerge(item.id, targetId)} 
                       />
                       <Button 
