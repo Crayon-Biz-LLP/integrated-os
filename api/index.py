@@ -36,7 +36,7 @@ from core.pulse import (
     format_rfc3339,
 )
 from core.pulse.tools import skip_recurring_instance
-from core.pulse.maintenance import process_maintenance
+from core.pulse.pipeline import run_full_health_check
 from core.services.db import get_supabase, maybe_single_safe
 
 app = FastAPI(title="Integrated-OS")
@@ -143,13 +143,20 @@ async def decision_pulse_route(request: Request):
     result = await process_decision_pulse(auth_secret=cron_secret, trigger="cron")
     return result
 
-# --- MAINTENANCE RUNNER (Independent of Sentinel) ---
+# Backward-compat redirect for old /api/maintenance (now /api/health)
 @app.api_route("/api/maintenance", methods=["GET", "POST"])
-async def maintenance_route(request: Request):
-    """Triggered by cron-job.org or GitHub Actions — runs maintenance tasks.
+async def maintenance_redirect_route(request: Request):
+    """Redirect to /api/health. Old route kept for backward compat."""
+    return await health_check_route(request)
 
-    Independent of the sentinel process. If sentinel fails, maintenance still runs.
-    Supports query param ?mode=standard|daily|weekly.
+# --- HEALTH CHECK (replaces old /api/maintenance) ---
+@app.api_route("/api/health", methods=["GET", "POST"])
+async def health_check_route(request: Request):
+    """Triggered by cron-job.org or GitHub Actions — runs full health check.
+
+    Replaces the old /api/maintenance route. Runs all health checks
+    (stuck dumps, DLQ, recent errors, LLM degradation) and returns results.
+    Supports query param ?mode=standard|daily|weekly (modes preserved for compat).
     """
     auth_header = request.headers.get("Authorization", "")
     cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
@@ -160,11 +167,7 @@ async def maintenance_route(request: Request):
     if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    mode = request.query_params.get("mode", "standard")
-    if mode not in ("standard", "daily", "weekly"):
-        raise HTTPException(status_code=400, detail="mode must be standard, daily, or weekly")
-
-    result = await process_maintenance(mode=mode)
+    result = await run_full_health_check()
     return result
 
 

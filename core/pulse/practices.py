@@ -3,6 +3,7 @@ from core.services.db import get_supabase
 from core.llm import get_embedding
 import json
 from datetime import datetime, timezone, timedelta
+from core.lib.time_utils import IST_TIMEZONE
 from core.lib.audit_logger import audit_log_sync
 from core.pulse.llm import  cosine_similarity
 from core.llm.fallback import generate_content_with_fallback
@@ -28,7 +29,7 @@ async def detect_practices():
     - Creates ASSOCIATED_WITH edges to entity nodes
     - Updates core_config exclusion list for dismissed practices
     """
-    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    ist_offset = IST_TIMEZONE
     now = datetime.now(ist_offset)
     fourteen_days_ago = (now - timedelta(days=14)).isoformat()
 

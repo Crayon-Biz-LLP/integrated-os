@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from core.lib.audit_logger import info, warning, error, audit_log_sync
-from core.lib.url_filter import is_url_text
 from core.lib.temporal_lineage import detect_drift
 from core.lib.conversation import get_or_create_session, format_history_for_prompt
 from core.decisions import record_decision
@@ -897,148 +896,17 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         except Exception as e:
             error("pulse", f"Cluster discovery failed, continuing pulse: {e}", format_error(e))
         
-        # --- 1. READ: Fetch and Lock ---
-        # 1.1 Fetch pending, staged, synced, partially_synced, and awaiting_completion_match items
-        dumps_res = supabase.table('raw_dumps') \
-            .select('id, content, metadata, status, message_type') \
-            .in_('status', ['pending', 'staged', 'synced', 'partially_synced', 'awaiting_completion_match']) \
-            .execute()
-
-        all_dumps = dumps_res.data or []
-
-        synced_dumps = [d for d in all_dumps if d.get('status') == 'synced']
-        dumps = [d for d in all_dumps if d.get('status') != 'synced']
-
-        completion_dump_ids = []
-        
-        if dumps:
-            dump_ids = [d['id'] for d in dumps]
-            
-            # 🔒 THE LOCK: Immediately claim these for processing
-            if request_id:
-                # Store request_id in metadata for idempotency
-                for d in dumps:
-                    try:
-                        raw_meta = d.get('metadata') or {}
-                        if isinstance(raw_meta, str):
-                            meta = json.loads(raw_meta) if raw_meta else {}
-                        elif isinstance(raw_meta, dict):
-                            meta = raw_meta
-                        else:
-                            meta = {}
-                        meta['request_id'] = request_id
-                        supabase.table('raw_dumps') \
-                            .update({"metadata": meta}) \
-                            .eq('id', d['id']) \
-                            .execute()
-                    except Exception:
-                        pass
-            
-            supabase.table('raw_dumps') \
-                .update({"status": "processing"}) \
-                .in_('id', dump_ids) \
-                .execute()
-            
-            audit_log_sync("pulse", "INFO", f"🔒 Locked {len(dump_ids)} dumps for processing.")
-
         active_tasks_res = supabase.table('tasks').select('id, title, project_id, organization_id, priority, created_at, reminder_at, google_event_id, direction, committed_to').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
         active_tasks = active_tasks_res.data or []
 
-        # --- 🗃️ STAGING AREA SORTER (Pre-Processor) ---
-        if dumps:
-            sort_prompt = f"""You are Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
-
-            PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', or 'I'll handle it'. You cannot contact people. Your only job is to confirm Danny's task is SECURED in his system.
-            Categorize each input into one of five types:
-            - TASK: Explicit action items, things to do, commitments, reminders.
-            - PROJECT_UPDATE: Mixed content like status updates, team changes, finance/invoice mentions, decisions, or meeting fallout.
-            - COMPLETION: Single-action past tense — "finished", "done", "sorted", "sent" (unambiguously closes one specific task)
-            - NOTE: Ideas, insights, observations, learnings (not actionable)
-            - NOISE: Casual conversation, acknowledgments, or low-value content
-            Rhodey Rule: Be dismissive of NOISE. If it's low-value chatter, categorize it and keep the brief silent about it.
-            If an input is 'Check with X,' categorize it as a TASK for Danny, never as something for the system to do.
-
-            Return ONLY a valid JSON array (no markdown, no explanation):
-            [{{"id": {dumps[0]['id']}, "category": "TASK|COMPLETION|NOTE|PROJECT_UPDATE|NOISE"}}, ...]
-
-            Inputs:
-            {json.dumps([{"id": d['id'], "content": d['content'][:500]} for d in dumps], indent=2)}"""
-            
-            try:
-                sort_response = await generate_content_with_fallback(
-                    prompt=sort_prompt,
-                    workload=WorkloadProfile.SYNTHESIS,
-                    primary_model=CLASSIFICATION_MODEL,
-                    config={'response_mime_type': 'application/json'},
-                    require_json=True
-                )
-                
-                sort_result = sort_response.parse_json()
-                
-                task_dump_ids = []
-                note_dump_ids = []
-                completion_dump_ids = []
-                
-                for item in sort_result:
-                    dump_id = item.get('id')
-                    raw_dump = next((d for d in dumps if d['id'] == dump_id), None)
-                    if raw_dump is None:
-                        audit_log_sync("pulse", "WARNING", f"⚠️ Sorter: dump_id {dump_id} not found in dumps, skipping.")
-                        continue
-                    metadata = {}
-                    try:
-                        raw_meta = raw_dump.get('metadata')
-                        if isinstance(raw_meta, str):
-                            metadata = json.loads(raw_meta)
-                        elif isinstance(raw_meta, dict):
-                            metadata = raw_meta
-                    except Exception as e:
-                        audit_log_sync("pulse", "WARNING", f"⚠️ Metadata parse error for dump {dump_id}: {e}")
-
-                    gemini_category = item.get('category', '').upper()
-                    
-                    dump_content = raw_dump.get('content', '')
-                    if is_url_text(dump_content):
-                        gemini_category = 'NOTE'
-                        
-                    category = gemini_category if gemini_category in ['TASK', 'NOTE', 'NOISE', 'COMPLETION', 'PROJECT_UPDATE'] else metadata.get('intent', 'NOISE').upper()
-                    
-                    if category in ('NOTE', 'PROJECT_UPDATE'):
-                        dump_content = raw_dump.get('content')
-                        if dump_content:
-                            from core.pulse.tools import create_note_direct
-                            result = await create_note_direct(content=dump_content, source="pulse_note")
-                            if result.get("memory_id"):
-                                note_dump_ids.append(dump_id)
-                                audit_log_sync("pulse", "INFO", f"📝 Note filed to memory: {dump_content[:50]}...")
-                    
-                    elif category == 'NOISE':
-                        note_dump_ids.append(dump_id)
-                    
-                    elif category == 'TASK':
-                        task_dump_ids.append(dump_id)
-                    
-                    elif category == 'COMPLETION':
-                        task_dump_ids.append(dump_id)
-                        completion_dump_ids.append(dump_id)
-                
-                if note_dump_ids:
-                    supabase.table('raw_dumps').update({"status": "completed", "is_processed": True}).in_('id', note_dump_ids).execute()
-                    audit_log_sync("pulse", "INFO", f"🗃️ Staging Area: {len(task_dump_ids)} tasks, {len(note_dump_ids)} notes/noise")
-                
-                dumps = [d for d in dumps if d['id'] in task_dump_ids]
-            
-            except Exception as e:
-                audit_log_sync("pulse", "ERROR", f"Staging Area Sort error: {e}")
-
-        # 💡 Only silence the tool if BOTH new dumps AND open tasks are empty
-        if not dumps and not active_tasks:
+        # 💡 Only silence the pulse when there are no active tasks at all
+        if not active_tasks:
             await complete_pulse_run(supabase, run_id, status="completed",
                 dumps_processed=0, tasks_created=0,
                 metadata={"reason": "nothing_to_process"})
             return {"message": "Nothing to process, nothing to nag about. Silence is golden."}
 
-        audit_log_sync("pulse", "INFO", f"🚀 PULSE START: Processing {len(dumps)} new dumps and {len(active_tasks)} active tasks.")
+        audit_log_sync("pulse", "INFO", f"🚀 PULSE START: Processing {len(active_tasks)} active tasks.")
         audit_log_sync("pulse", "INFO", "📦 Step 1: Fetching metadata...")
 
         # Fetch supporting metadata
@@ -1293,20 +1161,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         else:
             stale_context = None
 
-        def _enrich(d: dict) -> str:
-            content = d.get('content', '')
-            meta = d.get('metadata') or {}
-            if isinstance(meta, str):
-                try:
-                    meta = json.loads(meta)
-                except Exception:
-                    meta = {}
-            tid = meta.get('task_update_id')
-            return f"⚠️ TASK UPDATE (task #{tid}): {content}" if tid else content
-
-        # --- 🕒 1.8 INPUT PREP ---
-        new_inputs_text = "\n---\n".join([_enrich(d) for d in dumps]) if dumps else "None"
-        
         # --- 🧠 DRIFT DETECTION (Temporal Lineage) ---
         drift_alerts = []
         for proj in (legacy_projects or []):
@@ -1326,7 +1180,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
 
         # --- 🧠 HIGH-RES HINDSIGHT RETRIEVAL (Hybrid Graph + Vector) ---
         hindsight_context = "None"
-        task_inputs = [d['content'] for d in dumps] if dumps else []
+        task_inputs = []
 
         # 🕸️ ADD-ON: Graph-aware person→task context (non-blocking)
         # Reusing people and graph_projects fetched earlier
@@ -1510,8 +1364,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # Phase 2: Context Hydration Engine
         query_focus = f"Briefing for {briefing_mode}"
         compressed_tasks_final, universal_task_map = await context_provider.hydrate_tasks_context(query_focus)
-        new_inputs_text = "\n---\n".join([_enrich(d) for d in dumps])
-        new_input_summary = " | ".join([_enrich(d) for d in dumps[:5]])
+        new_inputs_text = "None"
+        new_input_summary = "None"
 
         # Removed synced_inputs_text completely to prevent LLM from double processing inline updates
         current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
@@ -1597,7 +1451,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             urgency_parts.append(stale_context)
         urgency_lists = "\n".join(urgency_parts) if urgency_parts else "None"
 
-        new_input_tags = " | ".join([d.get('status', '') for d in dumps[:5]]) if dumps else "None"
+        new_input_tags = "None"
 
         people_names = ", ".join([p['name'] for p in people])
 
@@ -1660,7 +1514,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # --- AI GENERATION ---
         # 🛡️ Step 1: Initialize variables to prevent "UnboundLocalError"
         ai_data = {
-            "briefing": f"⚠️ FALLBACK MODE\n\n{len(dumps)} new inputs:\n{new_input_summary[:200]}",
+            "briefing": f"⚠️ FALLBACK MODE\n\nNew inputs:\n{new_input_summary[:200]}",
             "new_tasks": [], "logs": [], "completed_task_ids": [], "new_projects": [], "new_people": [],
             "resources": []
         }
@@ -1792,45 +1646,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         if hour >= 20 or hour < 4:
             await generate_after_action_report()
 
-        # ✅ COMPLETION DUMP CLOSER — seal the raw dumps that were completion signals
-        # Also ensure matching tasks are actually marked done in the DB
-        if completion_dump_ids:
-            if ai_data.get('completed_task_ids'):
-                from core.pulse.tools import update_task_status
-                for ct in ai_data['completed_task_ids']:
-                    try:
-                        result = update_task_status(task_id=ct.id, status=ct.status)
-                        audit_log_sync("pulse", "INFO", f"Completion closer: update_task_status({ct.id}, {ct.status}) → {result[:100]}")
-                    except Exception as close_err:
-                        audit_log_sync("pulse", "ERROR", f"Completion closer failed for task {ct.id}: {close_err}")
-                supabase.table('raw_dumps').update({"status": "completed", "is_processed": True}).in_('id', completion_dump_ids).execute()
-                audit_log_sync("pulse", "INFO", f"✅ Sealed {len(completion_dump_ids)} completion dumps.")
-            else:
-                audit_log_sync("pulse", "INFO", f"Skipped sealing {len(completion_dump_ids)} completion dumps — no tasks matched.")
+
 
         # --- AUTO-EXPIRY: End recurring tasks whose RRULE UNTIL has passed ---
         _auto_expire_recurring_tasks()
 
-        # --- PHASE 3: Processed Gate ---
-        if dumps:
-            dump_ids = [d['id'] for d in dumps]
-            supabase.table('raw_dumps').update({
-                "status": "completed",
-                "is_processed": True 
-            }).in_('id', dump_ids).execute()
-            audit_log_sync("pulse", "INFO", f"✅ Phase 3: Marked {len(dump_ids)} dumps as completed.")
-
-        if synced_dumps:
-            synced_ids = [d['id'] for d in synced_dumps]
-            supabase.table('raw_dumps').update({
-                "status": "completed",
-                "is_processed": True
-            }).in_('id', synced_ids).execute()
-            audit_log_sync("pulse", "INFO", f"✅ Sealed {len(synced_ids)} synced dumps after briefing.")
-
         tasks_created = len(ai_data.get("new_tasks", [])) if ai_data else 0
         await complete_pulse_run(supabase, run_id, status="completed",
-            dumps_processed=len(dumps) if dumps else 0,
+            dumps_processed=0,
             tasks_created=tasks_created)
         release_lock(lock_key)
         return {"success": True, "briefing": briefing_text}

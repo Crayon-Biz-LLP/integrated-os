@@ -1,4 +1,5 @@
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from core.lib.time_utils import IST_TIMEZONE
 from google import genai
 from core.lib.audit_logger import audit_log_sync
 from core.webhook.telegram import send_telegram
@@ -39,7 +40,7 @@ def guess_mime_type(file_bytes: bytes, default_mime: str) -> str:
 
 async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int, ist_hour: int = None, core_json: str = "[]"):
     """Two-pass extraction: verbatim OCR → standard text pipeline."""
-    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    ist_offset = IST_TIMEZONE
     now = datetime.now(ist_offset)
     current_hour = ist_hour if ist_hour is not None else now.hour
 

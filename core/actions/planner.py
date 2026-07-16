@@ -128,6 +128,14 @@ Return ONLY valid JSON: {{"actions": [{{"operation": "create_task|create_note|cr
 
 CURRENT TIME: {current_time}
 
+TIME FORMATTING RULES:
+- All times MUST be in IST (UTC+05:30) using ISO-8601 format.
+- "today 3pm" → YYYY-MM-DDT15:00:00+05:30 (use CURRENT TIME to determine today's date)
+- "tomorrow" → YYYY-MM-DD (date only, no time)
+- "next Friday 2pm" → compute the date of next Friday and output YYYY-MM-DDT14:00:00+05:30
+- "6:30 pm today" → YYYY-MM-DDT18:30:00+05:30
+- If no time is given, return null for reminder_at. Do not invent a time.
+
 User text: "{text}"
 Extracted intent title: "{title}"
 Classifier intent: "{intent or 'UNKNOWN'}"
@@ -159,6 +167,9 @@ Rules:
 - IMPORTANT: A recurring task with status 'done' or 'todo' is STILL AN ACTIVE SERIES. 'done' only skips the current week. If the user asks to cancel a recurring series, target ALL matching recurring tasks regardless of their current status.
 - If the user uses words like "all", "meetings", or "tasks" (plural), return a separate action for EVERY matching candidate.
 - IMPORTANT EXPLICIT INTENTS: If the Classifier intent is NOTE, you MUST output a create_note action. If the Classifier intent is TASK, you MUST output a create_task action. Do not require an explicit user command in these cases.
+- If the user says 'Check with [someone]' or 'Talk to [someone]' or asks Danny to contact someone, ALWAYS output a create_task action for Danny. NEVER use query_info, create_event, or any other operation. Danny needs a reminder to check, not an answer or an event.
+- For mixed or informational content (status updates, team changes, finance mentions, decisions, meeting fallout): If the classifier intent is NOTE, ALWAYS route as create_note — do NOT split into multiple tasks. If the classifier intent is TASK, create the task but include informational context in params.content.
+- Never make up or hallucinate details not in the user's message. Every field in params (title, project_name, reminder_at, priority, etc.) must be directly derived from the user's text. Do not infer, guess, or fill in defaults that the user did not provide.
 - Return empty array or no_op if nothing matches."""
 
     try:

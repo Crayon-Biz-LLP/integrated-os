@@ -1,6 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@dietrichgebert/ponytail"],
+  "plugin": [
+    "@dietrichgebert/ponytail"
+  ],
   "permission": {
     "bash": {
       "git push*": "deny",
@@ -8,13 +10,4 @@
       "*": "allow"
     }
   },
-  "commit": {
-    "require": [
-      "Root Cause:"
-    ],
-    "format": {
-      "body": "Root Cause: <why the bug happened — chain of events, not what you changed>\nWhat:       <what the fix does at the code level>\nWhere:      <which files, functions, lines>\nWhen:       <reproduction conditions>\nHow:        <how this prevents recurrence>"
-    },
-    "note": "Enforced by .githooks/commit-msg. The 'Root Cause:' line is mandatory for all commits. Bypass: git commit --no-verify."
-  }
 }

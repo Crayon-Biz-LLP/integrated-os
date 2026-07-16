@@ -3,7 +3,7 @@ import json
 import asyncio
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
-from core.lib.time_utils import age_tag
+from core.lib.time_utils import age_tag, IST_TIMEZONE, now_ist
 from core.pulse.context import context_provider
 from core.lib.conversation import get_history, log_exchange, format_history_for_prompt, get_thread_summary
 from core.webhook.telegram import send_telegram
@@ -52,7 +52,7 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
     recently_completed = []
 
     try:
-        ist = timezone(timedelta(hours=5, minutes=30))
+        ist = IST_TIMEZONE
         now = datetime.now(ist)
         lowtext = text.lower()
 
@@ -472,7 +472,7 @@ async def delayed_searching_msg(chat_id: int):
 
 def resolve_dates_from_query(query: str):
     low = query.lower()
-    now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    now = now_ist()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     
     if 'this week' in low:
@@ -517,7 +517,7 @@ async def safe_fetch(coro, default=None):
         return default
 
 def _build_rich_anchor(graph_node_id, name):
-    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    now_ist_value = now_ist()
     anchor = {
         "id": str(graph_node_id) if graph_node_id else None,
         "name": name,
@@ -527,7 +527,7 @@ def _build_rich_anchor(graph_node_id, name):
         "last_project_id": None,
         "last_org_id": None,
         "last_summary_snippet": None,
-        "last_mentioned_at": now_ist.isoformat()
+        "last_mentioned_at": now_ist_value.isoformat()
     }
     try:
         node_res = supabase.table('graph_nodes').select('type').eq('id', graph_node_id).execute()
@@ -691,7 +691,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             events = await context_provider.get_range_calendar_events(start_dt, end_dt)
             if not events:
                 return "None"
-            now_local = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+            now_local = now_ist()
             lines = []
             for e in events:
                 time_str = e.get("time", "")
@@ -913,7 +913,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         else:
             header = "\U0001f9e0 Here's what I found:"
 
-        now_str = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%A, %d %B %Y, %H:%M %p IST')
+        now_str = now_ist().strftime('%A, %d %B %Y, %H:%M %p IST')
         prompt = build_interrogate_brain_prompt(now_str, sources_str, context_str, conversation_history, query)
 
         entity_name = active_anchor["name"] if active_anchor else resolved_entity
@@ -1080,7 +1080,7 @@ async def handle_declare_practice(text: str, chat_id: int, classification: dict)
                     await send_telegram(chat_id, f"Already tracking: {p_label}")
                     return
 
-        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        ist_offset = IST_TIMEZONE
         now = datetime.now(ist_offset)
         metadata = {
             "declared": True,

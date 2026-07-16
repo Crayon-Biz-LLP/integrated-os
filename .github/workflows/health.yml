@@ -1,0 +1,45 @@
+name: System Health Check
+
+on:
+  schedule:
+    # Every 2 hours during business hours — checks raw_dumps, DLQ, errors, LLM health
+    - cron: '0 */2 * * 1-5'
+    # Twice on weekends
+    - cron: '0 4,12 * * 0,6'
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Health Check
+        id: run
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: python scripts/run_health.py --force 2>&1 | tail -20
+
+  notify_failure:
+    runs-on: ubuntu-latest
+    needs: health
+    if: failure()
+    steps:
+      - name: Notify on failure
+        run: |
+          echo "⚠️ System Health Check FAILED at $(date)"
+          echo "Check the Decision Pulse or audit_logs for details."

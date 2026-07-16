@@ -34,18 +34,21 @@ jobs:
           done
           echo "✅ All secrets present"
 
-      - name: "Guard: no unversioned memories.update() bypassing version_memory_for_update"
+      - name: "Guard: no unversioned content updates on memories"
         run: |
+          # DB triggers now handle memory versioning (version_memory_for_update removed intentionally).
+          # Only flag updates that change content fields (content, memory_type, embedding, etc).
+          # expires_at-only updates are fine (metadata field, DB trigger handles archive).
           BAD=$(grep -rn "\.table('memories')\.update({" \
             --include="*.py" \
-            . || true)
+            . | grep -E "'(content|memory_type|embedding|source)'" || true)
           if [ -n "$BAD" ]; then
-            echo "❌ Inline memories.update({...}) bypasses version_memory_for_update:"
+            echo "❌ Inline memories.update({...}) changes content fields without versioning guard:"
             echo "$BAD"
-            echo "Use version_memory_for_update() from core/services/db.py instead."
+            echo "Only expires_at-only updates are OK (DB triggers handle versioning)."
             exit 1
           fi
-          echo "✅ No unversioned memories.update() calls found"
+          echo "✅ No unversioned content updates on memories found"
 
       - name: Set up Python
         uses: actions/setup-python@v4

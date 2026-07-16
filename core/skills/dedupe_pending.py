@@ -17,7 +17,7 @@ def dedupe_pending():
     
     # Get all pending nodes not yet matched
     result = supabase.table('pending_nodes') \
-        .select('id, label, node_type as type') \
+        .select('id, label, node_type') \
         .eq('status', 'pending') \
         .execute()
     
@@ -26,18 +26,18 @@ def dedupe_pending():
     
     proposed = 0
     for node in pending:
-        matches = find_similar_node(node['label'], node['type'], threshold=0.55)
+        matches = find_similar_node(node['label'], node['node_type'], threshold=0.55)
         
         if matches:
             best = matches[0]
-            if best['type'] != node['type']:
+            if best['type'] != node['node_type']:
                 continue
                 
             try:
                 # Write merge proposal to merge_proposals table
                 mp_id = insert_merge_proposal(
                     source_label=node['label'],
-                    source_type=node['type'],
+                    source_type=node['node_type'],
                     target_node_id=best['id'],
                     target_label=best['label'],
                     rationale=f"Auto-dedup (score={best['score']})",

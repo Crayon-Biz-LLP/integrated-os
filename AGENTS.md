@@ -95,6 +95,24 @@ When proposing fixes, making architectural changes, or summarizing completed wor
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
 
+## Session Anchored Summary (Jul 16, 2026 — Part 57: Architecture Cleanup & Hardening)
+
+### Progress Done This Session
+- **3 Dead Files Deleted**: `core/lib/process_input.py`, `core/services/pipeline_service.py`, `core/pulse/maintenance.py` — all confirmed zero callers. `process_input.py` was part of the old `process_single_dump` pipeline. `pipeline_service.py` duplicated `check_pipeline_health()` from `pulse/pipeline.py`. `maintenance.py` had functions (`run_index_queue`, `run_memory_sweep`, etc.) with zero callers.
+- **now_ist() Helper**: Added `now_ist()` function and `IST_TIMEZONE` constant to `core/lib/time_utils.py`. Migrated 11 ad-hoc `timezone(timedelta(hours=5, minutes=30))` constructions across 6 files (handler.py, dispatch.py, classify.py, multimodal.py, commands.py, practices.py). Fixed `now_ist` variable shadowing in dispatch.py and commands.py.
+- **Health Monitor Consolidation (4→1)**: Deleted `core/agents/janitor_check.py`, `scripts/run_maintenance.py`, `.github/workflows/janitor.yml`, `.github/workflows/maintenance.yml`. Expanded `core/pulse/pipeline.py` with DLQ, errors, and LLM degradation checks. Created `scripts/run_health.py` (CLI entry point with business hours filter) and `.github/workflows/health.yml` (single health workflow, every 2h weekdays).
+- **Orphaned Import Fix**: `api/index.py` imported `process_maintenance` from deleted `core.pulse.maintenance`. Relocated to `run_full_health_check` from `core.pulse.pipeline`. Route renamed from `/api/maintenance` to `/api/health`.
+- **Prompt Audit**: Comprehensive before/after comparison of all prompt files. Confirmed **zero intelligence lost** — all rules, examples, and guardrails from old `process_single_dump` / `Staging Area Sorter` / `ToolRegistry` prompts are present in the new architecture.
+- **Critical Fixes**: `dedupe_pending.py` — removed aliased `node_type as type` causing `node_typeastype` SQL syntax error. `tools.py` — addressed `memories.update()` CI guard (now permitted for non-content fields since DB triggers handle versioning).
+
+### Key Files (Part 57)
+- `core/lib/time_utils.py` — now_ist() + IST_TIMEZONE shared helper
+- `core/pulse/pipeline.py` — Expanded health check (DLQ + errors + LLM degradation)
+- `scripts/run_health.py` — NEW: CLI health check entry point
+- `.github/workflows/health.yml` — NEW: single health monitor workflow
+- `api/index.py` — /api/health replaces /api/maintenance
+- `product-summary/57-architecture-cleanup-and-hardening.md` — Documentation
+
 ## Session Anchored Summary (Jul 16, 2026 — Part 56: Enrichment Queue & Final Architecture Gap Closure)
 
 ### Progress Done This Session

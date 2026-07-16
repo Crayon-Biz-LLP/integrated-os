@@ -314,7 +314,6 @@ async def create_task_direct(
         return {"action": "error", "reason": str(e)}
 
 
-@rhodey_tools.register
 async def create_note_direct(content: str, source: str = "executor", project_id: str = None, organization_id: str = None, project_name: str = None, organization_name: str = None) -> dict:
     """Direct note creation — no process_single_dump dependency.
 
@@ -398,51 +397,8 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
         return {"action": "error", "reason": str(e)}
 
 
-@rhodey_tools.register
-async def create_task(title: str, project_id: int = None, organization_name: str = None, priority: str = "important", duration_mins: int = 15, reminder_at: str = None, recurrence: str = None):
-    """Creates a new task and optionally schedules it on the calendar.
 
-    Delegates to create_task_direct which handles name→ID resolution,
-    calendar sync, Google Tasks sync, and enrichment (graph edges +
-    entity extraction) via the single, unified task creation path.
-    """
-    from core.features import is_org_routing_enabled
 
-    project_name = None
-    if project_id:
-        p_res = supabase.table('projects').select('name').eq('id', project_id).limit(1).execute()
-        if p_res.data:
-            project_name = p_res.data[0]['name']
-
-    org_unresolved = False
-    if is_org_routing_enabled() and organization_name and not project_name:
-        project_name = organization_name
-
-    result = await create_task_direct(
-        title=title,
-        project_name=project_name,
-        organization_name=organization_name,
-        reminder_at=reminder_at,
-        priority=priority,
-        duration_mins=duration_mins,
-        recurrence=recurrence,
-    )
-
-    if result.get("action") == "error":
-        accumulate_action(ActionResult(action_type="task_create", status="failed", evidence={"error": result.get('reason')}))
-        return f"Error creating task: {result.get('reason')}"
-
-    task_id = result.get("task_id")
-    if not task_id:
-        return "Failed to create task."
-
-    accumulate_action(ActionResult(action_type="task_create", status="executed", entity_id=task_id, human_label=title))
-    return f"Task created with ID {task_id}" + (
-        f" (WARNING: organization '{organization_name}' not found — task has no org routing. "
-        "Approve this org via Decisions first.)" if org_unresolved else ""
-    )
-
-@rhodey_tools.register
 def update_task_status(task_id: int, status: str = "done", duration_mins: int = 15, reminder_at: str = None, recurrence: str = None):
     """Updates a task's status (done/cancelled/todo) and reschedules it if a new reminder_at is provided."""
     try:
@@ -585,6 +541,40 @@ def log_audit_message(message: str, level: str = "INFO"):
 
 
 @rhodey_tools.register
+async def execute_planned_actions(operations: list, chat_id: int = None):
+    """Execute a list of planned actions through the Action Planner.
+
+    Each operation should have:
+      - operation: str (create_task, create_note, close_task, etc.)
+      - target_id: str (optional, for existing tasks)
+      - params: dict (operation-specific parameters)
+      - human_label: str (optional, user-facing description)
+
+    Goes through validate_operation() and compensate_action() for safety.
+    """
+    from core.actions.models import Action
+    from core.actions.executor import execute_planned_actions as _exec
+    import os
+    
+    action_objects = []
+    for op in operations:
+        action_objects.append(Action(
+            operation=op.get("operation", "no_op"),
+            target_id=op.get("target_id"),
+            params=op.get("params", {}),
+            human_label=op.get("human_label", "")
+        ))
+    
+    await _exec(
+        actions=action_objects,
+        chat_id=chat_id or int(os.getenv("TELEGRAM_CHAT_ID", "0")),
+        source="pulse_tools_executor",
+        sender="rhodey",
+        suppress_telegram=True,
+    )
+    return f"Executed {len(action_objects)} action(s)."
+
+
 def skip_recurring_instance(task_id: int, date_str: str = None):
     """Skip (delete) a single occurrence of a recurring event/task.
     If no date_str is provided, the next upcoming instance is skipped.

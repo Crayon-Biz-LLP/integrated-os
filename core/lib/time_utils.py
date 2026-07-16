@@ -2,6 +2,18 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+# ── Shared IST timezone (UTC+05:30) ──
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def now_ist() -> datetime:
+    """Return current datetime in Indian Standard Time (UTC+05:30)."""
+    return datetime.now(_IST)
+
+
+# Re-export the timezone object for callers that need it
+IST_TIMEZONE = _IST
+
 
 def age_tag(created_at_str: str | None) -> str:
     """Returns a bracketed age string for an ISO timestamp, or empty string.

@@ -172,6 +172,41 @@ Flutter APK version name/code is derived from `pubspec.yaml`. The CI pipeline (`
 
 ---
 
+### P15 — No Quick Fixes. Every Fix Must Be Holistic.
+
+A "quick fix" is any change that addresses a symptom without eliminating the root cause. Quick fixes are banned.
+
+**Every bug fix MUST follow the 4W1H method before any code is written:**
+
+| Question | What to answer |
+|---|---|
+| **Why** | What chain of events led to this bug? Not the proximate cause, the chain. "Because X called Y which assumed Z but Z changed" not "because function returned null." |
+| **What** | What is the smallest change that permanently eliminates the root cause? |
+| **Where** | Which files, functions, and line ranges need to change? |
+| **When** | Under what conditions does this bug reproduce? What input, what state, what sequence? |
+| **How** | How does this fix prevent recurrence? Not just "fixed it" but why it won't come back — new guard, new invariant, new test, or removed the vulnerability entirely. |
+
+**Three tests to distinguish holistic fix from quick fix:**
+
+1. **Does this fix eliminate the class of bug, not just this instance?**
+   - ❌ Quick fix: Adding a null check at the crash site
+   - ✅ Holistic fix: Tracing why the value was null upstream, fixing the source, adding a schema constraint or invariant so it can never be null again
+
+2. **Would this fix survive a refactoring of the surrounding code?**
+   - ❌ Quick fix: Adding a try/except that swallows the error
+   - ✅ Holistic fix: Adding a DB constraint, a state machine guard, or a typed interface that makes the wrong state unrepresentable
+
+3. **If the same mistake happens in another caller, does this fix catch it?**
+   - ❌ Quick fix: Patching only the one caller that failed
+   - ✅ Holistic fix: Moving the guard into the shared function, adding a CI check, or enforcing it at the schema level
+
+**Violation examples from this codebase's history (the 45% fix-rate problem):**
+- ❌ `grep -v expires_at` instead of understanding why the CI guard was stale → invert to positive-match
+- ❌ Adding a null check at each crash site instead of fixing the `maybe_single` pattern → create `maybe_single_safe`
+- ❌ `asyncio.create_task` for enrichment that Vercel kills → create `pending_enrichment_jobs` queue
+
+**This principle is enforced by the `.githooks/commit-msg` hook** — it requires a `Root Cause:` line. If the root cause reveals a quick fix, reject it and redesign.
+
 ## 7. What "Done" Means
 
 A feature is DONE when:

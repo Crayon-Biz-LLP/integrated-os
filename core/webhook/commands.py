@@ -3,6 +3,7 @@ import os
 import httpx
 import re as _re
 from datetime import datetime, timezone, timedelta
+from core.lib.time_utils import IST_TIMEZONE, now_ist
 from core.lib.audit_logger import audit_log_sync
 from core.pulse.tools import create_note_direct
 from core.webhook.telegram import send_telegram
@@ -119,7 +120,7 @@ async def handle_practices_command(chat_id: int):
 async def handle_status_command(chat_id: int):
     """Pure DB snapshot. No LLM. No Pulse trigger."""
     try:
-        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        ist_offset = IST_TIMEZONE
         now = datetime.now(ist_offset)
         stale_cutoff = (now - timedelta(days=7)).isoformat()
 
@@ -464,8 +465,8 @@ async def handle_command(text: str, chat_id: int):
                     reply = "❌ Database Error"
 
     elif text in ['/urgent', '🔴 Urgent']:
-        now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-        now_iso = now_ist.strftime('%Y-%m-%dT%H:%M:%S+05:30')
+        now_ist_value = now_ist()
+        now_iso = now_ist_value.strftime('%Y-%m-%dT%H:%M:%S+05:30')
         fire_res = supabase.table('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').eq('is_current', True).or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}").limit(1).execute()
         if fire_res.data:
             fire = fire_res.data[0]

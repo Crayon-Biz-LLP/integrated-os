@@ -143,7 +143,8 @@ async def execute_planned_actions(
     source: str = "telegram", 
     sender: str = "user", 
     session_id: str = None,
-    intent: str = None
+    intent: str = None,
+    suppress_telegram: bool = False,
 ):
     """Executes a list of planned actions directly — NO legacy dispatch, NO process_single_dump.
 
@@ -152,9 +153,11 @@ async def execute_planned_actions(
       - #4: compensate_action() rolls back completed actions if a later one fails
       - Creates tasks/notes/events via direct DB inserts (create_task_direct/create_note_direct).
       - Handles closures via existing update_task_status.
+      - suppress_telegram: skip Telegram notifications (used by ToolRegistry wrapper).
     """
     if not actions:
-        await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
+        if not suppress_telegram:
+            await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
         return
         
     supabase = get_supabase()
@@ -173,11 +176,12 @@ async def execute_planned_actions(
             valid_actions.append(action)
     
     if not valid_actions:
-        if pre_failures:
-            details = "\\n".join(pre_failures)
-            await send_telegram(chat_id, f"⚠️ All actions blocked by validation:\\n{details}")
-        else:
-            await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
+        if not suppress_telegram:
+            if pre_failures:
+                details = "\\n".join(pre_failures)
+                await send_telegram(chat_id, f"⚠️ All actions blocked by validation:\\n{details}")
+            else:
+                await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
         return
     
     # ── Stage 1: Save dump and memory for closures (zero data loss) ──
@@ -266,8 +270,9 @@ async def execute_planned_actions(
                 msg_lines.append(f"  {i+1}. {icon} {title}")
             msg_lines.append("\nWant me to handle them?")
             
-            import asyncio
-            asyncio.create_task(send_telegram(chat_id, "\n".join(msg_lines)))
+            if not suppress_telegram:
+                import asyncio
+                asyncio.create_task(send_telegram(chat_id, "\n".join(msg_lines)))
         except Exception as e:
             audit_log_sync("executor", "WARNING", f"Failed to create batch workflow: {e}")
             # Fallback: if we fail to create the workflow, we just execute them
@@ -474,18 +479,19 @@ async def execute_planned_actions(
         # Remove rolled-back IDs from closed_ids so the success message doesn't claim them
         closed_ids = [cid for cid in closed_ids if str(cid) not in rolled_back_ids]
 
-        rollback_msg = f"↩️ Rolled back {len(completed_actions)} previously completed actions." if completed_actions else ""
-        error_details = "\\n".join(failed_tasks)
-        await send_telegram(chat_id, f"⚠️ **Partial Sync Failure**\\nSome actions failed. {rollback_msg}\
+        if not suppress_telegram:
+            rollback_msg = f"↩️ Rolled back {len(completed_actions)} previously completed actions." if completed_actions else ""
+            error_details = "\\n".join(failed_tasks)
+            await send_telegram(chat_id, f"⚠️ **Partial Sync Failure**\\nSome actions failed. {rollback_msg}\
 \\nDetails: {error_details}")
     
     # Send success messages for creations
-    if created_labels:
+    if created_labels and not suppress_telegram:
         titles = ", ".join(created_labels)
         await send_telegram(chat_id, f"✅ Logged: {titles}")
 
     # Send success messages for closures
-    if closed_ids:
+    if closed_ids and not suppress_telegram:
         active_tasks = []
         try:
             tasks_res = supabase.table("tasks").select("id, title").in_("id", closed_ids).execute()

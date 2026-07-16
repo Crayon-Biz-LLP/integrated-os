@@ -3,6 +3,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone, timedelta
+from core.lib.time_utils import now_ist, IST_TIMEZONE
 from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.telemetry import emit_observation
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
@@ -463,7 +464,7 @@ async def process_webhook(update: dict):
                     # Fail open if it's a random DB timeout so we don't drop the message
                     pass
 
-        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        ist_offset = IST_TIMEZONE
         now = datetime.now(ist_offset)
 
         intent_signal = update.get('intent')
@@ -1056,7 +1057,7 @@ async def process_webhook(update: dict):
                                 if isinstance(_rm, str):
                                     _rm = json.loads(_rm)
                                 _rm['status'] = 'dismissed'
-                                _rm['dismissed_at'] = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%Y-%m-%d')
+                                _rm['dismissed_at'] = now_ist().strftime('%Y-%m-%d')
                                 supabase.table('graph_nodes').update({'metadata': _rm}).eq('id', _n['id']).execute()
                                 _variants = _rm.get('variants', [_n.get('label', '')])
                                 _excl = maybe_single_safe(supabase.table('core_config').select('content').eq('key', 'dismissed_practice_variants'))
@@ -1261,7 +1262,7 @@ async def process_webhook(update: dict):
                         raw_meta = {}
 
                 raw_meta['status'] = 'dismissed'
-                raw_meta['dismissed_at'] = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%Y-%m-%d')
+                raw_meta['dismissed_at'] = now_ist().strftime('%Y-%m-%d')
 
                 supabase.table('graph_nodes') \
                     .update({'metadata': raw_meta}) \

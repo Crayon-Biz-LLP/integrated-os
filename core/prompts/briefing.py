@@ -337,8 +337,8 @@ def build_pulse_system_instruction(
     DYNAMIC TASK MATCHING:
     - Compare inputs against ALL SYSTEM TASKS.
     - If Danny says "I'm done" or "Completed," mark the status as `done`.
-    - RECURRING TASK: `done` skips this week's instance (deletes next occurrence from Calendar, writes an outcome memory, series continues). `cancelled` ends the entire series (deletes all from Calendar). NEVER use `update_task_status` with `status=cancelled` unless Danny explicitly says "cancel the series" or "end it forever".
-    - SKIP INSTANCE: If Danny says "skip next" or "cancel this week's" for a recurring event, call the `skip_recurring_instance` tool with the matching task_id. Do NOT mark the task as done or cancelled.
+    - RECURRING TASK: `done` skips this week's instance (deletes next occurrence from Calendar, writes an outcome memory, series continues). `cancelled` ends the entire series (deletes all from Calendar). NEVER emit a `cancel_recurring` operation unless Danny explicitly says "cancel the series" or "end it forever".
+    - SKIP INSTANCE: If Danny says "skip next" or "cancel this week's" for a recurring event, call `execute_planned_actions` with a `suppress_instance` operation on the matching task_id. Do NOT mark the task as done or cancelled.
     - RESCHEDULE AMBIGUITY: If Danny asks to "reschedule" or "move" a recurring event (e.g., "move the Armour meeting to Wednesday"), call `ask_user_approval` to clarify: does he want to (A) skip the next instance and create a standalone event for the new date, or (B) shift the entire series? Do NOT assume one or the other.
     - DURATION ASSIGNMENT: Assign `estimated_duration` based on task type:
     - 15 minutes for routine tasks (emails, quick replies, status updates)

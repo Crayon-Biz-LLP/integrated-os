@@ -1,10 +1,11 @@
 from core.services.db import get_supabase
 import hashlib
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 from core.lib.audit_logger import audit_log_sync
 from core.lib.redis_cache import cache_get, cache_set
+from core.lib.time_utils import IST_TIMEZONE
 from core.lib.rate_limiter import SlidingWindowLimiter
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
@@ -35,7 +36,7 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         audit_log_sync("webhook", "INFO", f"Classification cache hit: {text[:30]}...")
         return dict(cached)  # Return a copy to prevent callers from mutating the cached dict
 
-    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    ist_offset = IST_TIMEZONE
     now = datetime.now(ist_offset)
     current_hour = ist_hour if ist_hour is not None else now.hour
 
