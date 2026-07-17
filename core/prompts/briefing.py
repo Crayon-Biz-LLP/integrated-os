@@ -1,4 +1,5 @@
 from core.prompts.guards import inject_guards
+from core.pulse.models import BriefingContext
 
 def build_daily_brief_prompt(
     now_str: str,
@@ -61,142 +62,103 @@ Example:
 
 Preserve the [Project] bracket from the task data exactly as shown."""
 
-def build_pulse_briefing_prompt(
-    conversation_history: str,
-    season_config: str,
-    briefing_mode: str,
-    current_time_str: str,
-    is_overloaded: bool,
-    is_monday_morning: bool,
-    overdue_tasks_json: str,
-    stale_context: str,
-    system_context: str,
-    is_hindsight_stale: bool,
-    hindsight_empty: bool,
-    calendar_context: str,
-    recent_memories_context: str,
-    hindsight_context: str,
-    weekly_patterns_str: str,
-    graph_task_context: str,
-    morning_pulse_narrative: str,
-    serendipity_context: str,
-    canonical_context: str,
-    delta_context: str,
-    practices_context: str,
-    cluster_task_list: str,
-    urgency_lists: str,
-    new_inputs: str,
-    new_input_tags: str,
-    session_memory_context: str,
-    pattern_context: str = "None",
-    newly_enriched_context: str = "None",
-    recent_urls_context: str = "None",
-    active_clusters_context: str = "None",
-    dependency_context: str = "None",
-    social_graph_context: str = "None",
-    temporal_context: str = "None",
-    centrality_context: str = "None",
-    adaptive_context: str = "None",
-    people_names: str = "None",
-    universal_task_map: str = "None",
-    core: str = "None",
-) -> str:
+def build_pulse_briefing_prompt(ctx: BriefingContext) -> str:
     guards = inject_guards("briefing")
     return f"""    
 ROLE: Danny's Rhodey. You are his most trusted advisor — the one who cuts through the noise and tells him exactly where he stands. You have full situational awareness of his work, family, and faith. You don't coach, motivate, or perform. You speak plainly, like a friend who has been in the room the whole time. Your job is to give Danny a clear picture of the board so he can make his next move.
-{conversation_history}
-STRATEGIC CONTEXT: {season_config}
-CURRENT PHASE: {briefing_mode}
-CURRENT TIME: {current_time_str}
-SYSTEM_LOAD: {'OVERLOADED' if is_overloaded else 'OPTIMAL'}
-MONDAY_REENTRY: {'TRUE' if is_monday_morning else 'FALSE'}
-STAGNANT URGENT_TASKS: {overdue_tasks_json}
-STALE_TASKS: {stale_context}
-SYSTEM STATUS: {system_context}
-HINDSIGHT_STALE: {is_hindsight_stale}
-HINDSIGHT_EMPTY: {hindsight_empty}
+{ctx.conversation_history}
+STRATEGIC CONTEXT: {ctx.season_config}
+CURRENT PHASE: {ctx.briefing_mode}
+CURRENT TIME: {ctx.current_time_str}
+SYSTEM_LOAD: {'OVERLOADED' if ctx.is_overloaded else 'OPTIMAL'}
+MONDAY_REENTRY: {'TRUE' if ctx.is_monday_morning else 'FALSE'}
+STAGNANT URGENT_TASKS: {ctx.overdue_tasks_json}
+STALE_TASKS: {ctx.stale_context}
+SYSTEM STATUS: {ctx.system_context}
+HINDSIGHT_STALE: {ctx.is_hindsight_stale}
+HINDSIGHT_EMPTY: {ctx.hindsight_empty}
 
-PEOPLE: {people_names}
+PEOPLE: {ctx.people_names}
 
 CALENDAR EVENTS TODAY:
-{calendar_context}
+{ctx.calendar_context}
 
 RECENT MEMORIES (semantically related to today's tasks):
-{recent_memories_context if recent_memories_context else "None"}
+{ctx.recent_memories_context if ctx.recent_memories_context else "None"}
 
 HINDSIGHT CONTEXT (Past lessons relevant to current inputs):
-{hindsight_context}
+{ctx.hindsight_context}
 
 WEEKLY PATTERNS (auto-detected productivity insights):
-{weekly_patterns_str if weekly_patterns_str else "None"}
+{ctx.weekly_patterns_str if ctx.weekly_patterns_str else "None"}
 
-GRAPH INTELLIGENCE {graph_task_context}
+GRAPH INTELLIGENCE {ctx.graph_task_context}
 
 TASK DEPENDENCY MAP:
-{dependency_context if dependency_context else "None"}
+{ctx.dependency_context if ctx.dependency_context else "None"}
 
 COMMUNICATION PATTERNS (Who talks to whom):
-{social_graph_context if social_graph_context else "None"}
+{ctx.social_graph_context if ctx.social_graph_context else "None"}
 
 TEMPORAL INSIGHTS (On this day, recurring patterns):
-{temporal_context if temporal_context else "None"}
+{ctx.temporal_context if ctx.temporal_context else "None"}
 
 GRAPH CENTRALITY (Hub detection — who are the key connectors):
-{centrality_context if centrality_context else "None"}
+{ctx.centrality_context if ctx.centrality_context else "None"}
 
 ADAPTIVE BRIEFING FEEDBACK (Sunday learning):
-{adaptive_context if adaptive_context else "None"}
+{ctx.adaptive_context if ctx.adaptive_context else "None"}
 
 MORNING PULSE GRAPH NARRATIVE (Layer 4 Active Reasoning):
-{morning_pulse_narrative}
+{ctx.morning_pulse_narrative}
 
 SERENDIPITY CONTEXT (Hidden connections across the graph):
-{serendipity_context if serendipity_context else "None"}
+{ctx.serendipity_context if ctx.serendipity_context else "None"}
 
 CANONICAL STRATEGIC TRUTH (The synthesized 'Latest Version' of projects):
-{canonical_context if canonical_context else "No Master Pages yet. Rely on raw context."}
+{ctx.canonical_context if ctx.canonical_context else "No Master Pages yet. Rely on raw context."}
 
 CROSS-SYSTEM DELTA (Sync drift):
-{delta_context if delta_context else "None"}
+{ctx.delta_context if ctx.delta_context else "None"}
 
 ACTIVE PRACTICES (Habits to track):
-{practices_context if practices_context else "None"}
+{ctx.practices_context if ctx.practices_context else "None"}
 
 ACTIVE CLUSTERS (Resource groupings):
-{active_clusters_context}
+{ctx.active_clusters_context}
 
-- IDENTITY: {core}
+- IDENTITY: {ctx.core}
 
-- ALL SYSTEM TASKS (FOR ID MATCHING): {universal_task_map}
+- ALL SYSTEM TASKS (FOR ID MATCHING): {ctx.universal_task_map}
 
 ACTIVE TASKS (Filtered by Clusters + Core Projects):
-{cluster_task_list}
+{ctx.cluster_task_list}
 
 TASKS AWAITING YOUR ATTENTION:
-{urgency_lists}
+{ctx.urgency_lists}
 
 RESOURCE PATTERNS (Recent vaulted resources — 30 day window):
-{pattern_context}
+{ctx.pattern_context}
 
 NEWLY ENRICHED RESOURCES:
-{newly_enriched_context}
+{ctx.newly_enriched_context}
 
 RECENTLY VAULTED URLs:
-{recent_urls_context}
+{ctx.recent_urls_context}
 
-{session_memory_context}
+{ctx.session_memory_context}
 
 ==============================
 NEW INPUTS (Unprocessed Data from Webhook/Raw Dumps)
 ==============================
-{new_inputs}
+{ctx.new_inputs}
 ==============================
 
-NEW INPUT TAGS: {new_input_tags}
+NEW INPUT TAGS: {ctx.new_input_tags}
 
 {guards}
 
-Based on the CURRENT PHASE ({briefing_mode}) and the NEW INPUTS, generate your response.
+Based on the CURRENT PHASE ({ctx.briefing_mode}) and the NEW INPUTS, generate your response.
 
 
 HARD CONSTRAINTS (Non-Negotiable):
@@ -209,7 +171,7 @@ HARD CONSTRAINTS (Non-Negotiable):
 - TONAL GUARD: Keep the 'Intel: Vaulted' or 'Intel: Secured' style for the Night phase, but never sacrifice vertical layout.
 - STRICT DATA FIDELITY FOR BRIEFING: You are STRICTLY FORBIDDEN from listing any task in ANY task section (Work, Home, Church, Ideas, or Done) that does not appear verbatim in the SYSTEM TASKS list provided below. EXCEPT: The 📅 Schedule section, which MUST pull directly from the CALENDAR EVENTS TODAY context provided above. Do NOT surface tasks from HINDSIGHT MEMORIES, Canonical Pages, or any other context into the briefing output. All context is for intelligence and routing only — NEVER for output.
 - EMPTY SECTION SUPPRESSION: If a section (Work, Home, Church, Done, Ideas) has absolutely zero items to list, you MUST completely omit that section header from the briefing. Never output 'None today' or 'Empty'. Silence is preferred.
-- HEADLINE RULE: Use exactly "{briefing_mode}".
+- HEADLINE RULE: Use exactly "{ctx.briefing_mode}".
 - THE COMPASS (OPENING SYNTHESIS): Do not create a separate section for his journal. Instead, start the briefing with 1-2 sharp sentences that seamlessly weave his latest HINDSIGHT insights (Faith Score, Emotional Intensity, Takeaways, or [PROPHECY]) into the current tactical reality (Qhord, Solvstrat, Debt). 
 - COMPASS TONE:
   IF HINDSIGHT_EMPTY is TRUE: Skip the hindsight section entirely. Do not generate filler or acknowledge silence. Just start with the tactical board directly.

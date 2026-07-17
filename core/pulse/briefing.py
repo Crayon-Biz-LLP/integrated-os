@@ -753,7 +753,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # LLM BRIEFING GENERATION (Single call — no agent loop)
         # ═══════════════════════════════════════
 
-        prompt = build_pulse_briefing_prompt(
+        from core.pulse.models import BriefingContext
+        ctx = BriefingContext(
             conversation_history=conversation_history,
             season_config=season_config,
             briefing_mode=briefing_mode,
@@ -793,6 +794,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             universal_task_map=universal_task_map,
             core=json.dumps(core) if core else "None",
         )
+        prompt = build_pulse_briefing_prompt(ctx)
 
         system_instruction = build_pulse_system_instruction(
             system_persona=system_persona,
