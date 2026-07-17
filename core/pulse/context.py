@@ -324,9 +324,8 @@ class ContextProvider:
             else:
                 semantic_pool.append({"task": t, "formatted": formatted, "score": 0.0})
                 
-        # --- X3: Embedding-aware similarity boost ---
-        # Use query embedding to find semantically related memories, then boost
-        # tasks that those memories reference.
+        # Embedding-aware similarity boost — use query to find semantically related
+        # memories, then boost tasks that those memories reference.
         boosted_task_ids = set()
         if query_text:
             try:

@@ -1,0 +1,235 @@
+{
+  "timestamp": "20260717_153703",
+  "total": 17,
+  "passed": 16,
+  "failed": 1,
+  "scenarios": [
+    {
+      "id": "S1",
+      "name": "Task creation with org",
+      "status": "PASS",
+      "tier": 1,
+      "errors": [],
+      "details": {
+        "task_id": 2137,
+        "action": "created",
+        "enrichment_queued": false
+      }
+    },
+    {
+      "id": "S2",
+      "name": "Entity resolution (org from text)",
+      "status": "PASS",
+      "tier": 1,
+      "errors": [],
+      "details": {
+        "task_id": 1873
+      }
+    },
+    {
+      "id": "S3",
+      "name": "Note/FYI creation",
+      "status": "PASS",
+      "tier": 1,
+      "errors": [],
+      "details": {
+        "memory_id": 2984,
+        "memory_type": "note",
+        "memory_content": "TestOrg Alpha pricing discussion concluded. Will send proposal.",
+        "enrichment_queued": true
+      }
+    },
+    {
+      "id": "S4",
+      "name": "URL quarantine at ingress",
+      "status": "PASS",
+      "tier": 1,
+      "errors": [],
+      "details": {
+        "resource_found": false,
+        "in_raw_dumps": false,
+        "telegram_sent": false
+      }
+    },
+    {
+      "id": "S5",
+      "name": "Task closure via planner",
+      "status": "FAIL",
+      "tier": 1,
+      "errors": [
+        "Task status is 'todo', expected 'done'",
+        "completed_at is not set"
+      ],
+      "details": {
+        "task_id": 2138,
+        "status": "todo",
+        "completed_at": null
+      }
+    },
+    {
+      "id": "S6",
+      "name": "Duplicate prevention (dedup_key)",
+      "status": "PASS",
+      "tier": 1,
+      "errors": [],
+      "details": {
+        "first_action": "created",
+        "first_task_id": 2139,
+        "second_action": "skipped",
+        "existing_task_id": 2139
+      }
+    },
+    {
+      "id": "S7",
+      "name": "NOTE with hidden TASK (batch workflow)",
+      "status": "PASS",
+      "tier": 2,
+      "errors": [],
+      "details": {
+        "workflow_id": "12cf5703-07c6-4482-ae63-ec628aa4fa18",
+        "signals_count": 1
+      }
+    },
+    {
+      "id": "S8",
+      "name": "QUERY with hidden action",
+      "status": "PASS",
+      "tier": 2,
+      "errors": [],
+      "details": {
+        "telegram_sent": false,
+        "hidden_task_created": true
+      }
+    },
+    {
+      "id": "S9",
+      "name": "Batch workflow confirmation (deterministic)",
+      "status": "PASS",
+      "tier": 2,
+      "errors": [],
+      "details": {
+        "workflow_id": "fd58fd89-2e8e-41d3-a160-952869120bfd",
+        "session_id": "2fa84d3e-1e35-43c2-aa68-629a590d58b2",
+        "workflow_resolved": false,
+        "workflow_status_after": "active"
+      }
+    },
+    {
+      "id": "S10",
+      "name": "Entity linker resolves org before task creation",
+      "status": "PASS",
+      "tier": 2,
+      "errors": [],
+      "details": {
+        "task_id": 2140,
+        "organization_id": "8dadf8ae-f0c6-4db1-beda-d76a50535aa9",
+        "org_name": "[UAT] TestOrg Beta"
+      }
+    },
+    {
+      "id": "S11",
+      "name": "Enrichment queue: enqueue -> claim -> process",
+      "status": "PASS",
+      "tier": 3,
+      "errors": [],
+      "details": {
+        "task_id": 2141,
+        "enrichment_job_id": 110,
+        "enrichment_job_type": "task_graph",
+        "enrichment_status_before": "pending",
+        "enrichment_processed": 4,
+        "enrichment_status_after": "failed"
+      }
+    },
+    {
+      "id": "S12",
+      "name": "Memory retrieval via query",
+      "status": "PASS",
+      "tier": 3,
+      "errors": [],
+      "details": {
+        "memory_id": 3038,
+        "query_reply": "\ud83e\udde0 Here's what I found:\n\nPART 1 \u2014 [Answer to the question]:\n- The decision regarding decision-73f24584 was to proceed with the alpha launch in Q4.\n\nPART 2 \u2014 **Context:**\n- This matches your logged note"
+      }
+    },
+    {
+      "id": "S13",
+      "name": "DLQ consumer recovery",
+      "status": "PASS",
+      "tier": 3,
+      "errors": [],
+      "details": {
+        "dlq_processed": 0,
+        "dlq_succeeded": 0,
+        "dlq_failed": 0,
+        "dlq_escalated": 0
+      }
+    },
+    {
+      "id": "S14",
+      "name": "Pulse Engine briefing generation",
+      "status": "PASS",
+      "tier": 4,
+      "errors": [],
+      "details": {
+        "success": true,
+        "briefing_length": 531,
+        "has_briefing": true,
+        "briefing_in_memories": true,
+        "briefing_in_raw_dumps": true,
+        "telegram_sent": true
+      }
+    },
+    {
+      "id": "S15",
+      "name": "Decision Pulse pending items",
+      "status": "PASS",
+      "tier": 4,
+      "errors": [],
+      "details": {
+        "success": false,
+        "message": "",
+        "decision_count": 0
+      }
+    },
+    {
+      "id": "S16",
+      "name": "Sentinel upcoming event nudge",
+      "status": "PASS",
+      "tier": 4,
+      "errors": [],
+      "details": {
+        "success": true,
+        "alerted": 0,
+        "error": null
+      }
+    },
+    {
+      "id": "S17",
+      "name": "Health check",
+      "status": "PASS",
+      "tier": 5,
+      "errors": [],
+      "details": {
+        "health": {
+          "issues": [
+            "\u26a0\ufe0f 4 LLM fallback/degradations (429s/timeouts) in last hour"
+          ],
+          "report": "PIPELINE HEALTH REPORT:\n\u2705 Pulse last ran 0.1 hours ago\n\u26a0\ufe0f 4 LLM fallback/degradations (429s/timeouts) in last hour",
+          "counts": {
+            "stalled_dumps": 0,
+            "stuck_processing": 0,
+            "null_embeddings": 0,
+            "pulse_hours_ago": 0.1,
+            "dlq_items": 0,
+            "recent_errors": 0,
+            "llm_degradations": 4
+          }
+        },
+        "issues_count": 1,
+        "report_preview": "PIPELINE HEALTH REPORT:\n\u2705 Pulse last ran 0.1 hours ago\n\u26a0\ufe0f 4 LLM fallback/degradations (429s/timeouts) in last hour",
+        "real_issues": []
+      }
+    }
+  ]
+}

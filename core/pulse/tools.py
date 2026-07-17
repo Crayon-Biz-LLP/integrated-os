@@ -207,6 +207,7 @@ async def create_task_direct(
     Inserts directly into tasks table with minimal dedup check.
     Resolves project_name/organization_name to IDs via DB lookup
     when project_id/organization_id are not already provided.
+    Uses entity_linker for deterministic entity resolution BEFORE creation.
     Returns {"action": "created"|"skipped"|"error", "task_id": id, "reason": str}.
     """
     task_id = None
@@ -221,6 +222,25 @@ async def create_task_direct(
             if exist.data:
                 audit_log_sync("tools", "INFO", f"Direct create skipped (dedup): {title}")
                 return {"action": "skipped", "task_id": exist.data[0]['id']}
+
+        # NEW: Run deterministic entity resolution BEFORE resolving names
+        # This uses n-gram matching against known orgs/projects/people
+        # resolve_entities is sync — no await needed
+        from core.lib.entity_linker import resolve_entities
+        entity_resolution = resolve_entities(
+            text=title,
+            planner_org_name=organization_name,
+            planner_proj_name=project_name,
+            write_signal_on_miss=True,
+        )
+
+        # Use resolved entities — override planner's guess with deterministic result
+        if entity_resolution.organization_id:
+            organization_id = entity_resolution.organization_id
+            organization_name = entity_resolution.organization_name
+        if entity_resolution.project_id:
+            project_id = entity_resolution.project_id
+            project_name = entity_resolution.project_name
 
         # Resolve name→ID if IDs not provided but names are
         if (not project_id or not organization_id) and (project_name or organization_name):
@@ -267,7 +287,8 @@ async def create_task_direct(
         # Calendar sync if reminder_at is set
         if reminder_at:
             try:
-                from core.services.google_service import sync_to_calendar, format_rfc3339, check_conflict
+                # Use module-level imports (sync_to_calendar, format_rfc3339 already imported at top)
+                from core.services.google_service import check_conflict
                 formatted = format_rfc3339(reminder_at)
 
                 # Conflict check before creating event
@@ -284,14 +305,14 @@ async def create_task_direct(
             except Exception as cal_e:
                 audit_log_sync("tools", "WARNING", f"Calendar sync failed for task {task_id}: {cal_e}")
 
-        # Google Tasks sync
+        # Google Tasks sync (uses module-level sync_to_google, get_tasks_service)
         try:
-            from core.services.google_service import sync_to_google, get_tasks_service
             sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=deadline or reminder_at)
         except Exception as gt_e:
             audit_log_sync("tools", "WARNING", f"Google Tasks sync failed: {gt_e}")
 
         # Enrichment: queue graph edges + entity extraction (survives Vercel cold kills)
+        # Pass both project_id AND org_id so enrichment can create task→org edges
         from core.lib.enrichment_queue import enqueue_enrichment
         enqueue_enrichment(
             job_type="task_graph",
@@ -299,6 +320,7 @@ async def create_task_direct(
             target_id=task_id,
             content=title,
             related_id=resolved_project_id,
+            related_org_id=resolved_org_id,  # NEW: pass org_id for task→org edge
         )
 
         accumulate_action(ActionResult(action_type="task_create", status="executed", entity_id=task_id, human_label=title))

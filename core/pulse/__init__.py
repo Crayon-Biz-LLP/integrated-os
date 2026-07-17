@@ -14,7 +14,7 @@ from core.pulse.memory import write_outcome_memory
 from core.pulse.briefing import process_pulse
 from core.pulse.decision_pulse import process_decision_pulse
 from core.pulse.cluster_discovery import discover_new_clusters
-from core.pulse.models import PulseOutput, CompletedTask, NewTask, NewProject, NewPerson, ResourceItem
+from core.pulse.models import PulseOutput
 
 __all__ = [
     "get_tasks_service",
@@ -30,9 +30,4 @@ __all__ = [
     "process_decision_pulse",
     "discover_new_clusters",
     "PulseOutput",
-    "CompletedTask",
-    "NewTask",
-    "NewProject",
-    "NewPerson",
-    "ResourceItem",
 ]

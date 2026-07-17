@@ -259,6 +259,15 @@ def seed_full_test_data():
     }
     supabase = get_supabase()
 
+    # Sweep any stale [SIM_TEST] rows before seeding to avoid duplicate key errors
+    for tbl, col in [('organizations', 'name'), ('projects', 'name'),
+                     ('graph_nodes', 'label'), ('memories', 'content'),
+                     ('raw_dumps', 'text'), ('tasks', 'title')]:
+        try:
+            supabase.table(tbl).delete().ilike(col, '[SIM_TEST]%').execute()
+        except Exception:
+            pass
+
     orgs_data = [
         {'name': '[SIM_TEST] Crayon Biz LLP'},
         {'name': '[SIM_TEST] Equisoft'},

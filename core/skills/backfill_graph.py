@@ -282,43 +282,23 @@ def extract_graph_elements(text: str, memory_id: str, known_entities: set = None
     cleaned_text = re.sub(r'\[CLUSTER\].*?(\n|$)', '', cleaned_text, flags=re.IGNORECASE)
     cleaned_text = re.sub(r'https?://\S+', '', cleaned_text)
     
-    known_list = ", ".join(sorted(known_entities)) if known_entities else "None"
-    prompt = f"""Extract knowledge graph elements from this text.
-    
-Return a JSON object with:
-- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"place"|"animal"|"event"|"emotional_state"|"task", "epistemic": "asserted"|"inferred"|"hypothetical", "justification": string}}
-- "edges": array of objects with {{"source": string, "target": string, "relationship": string, "epistemic": "asserted"|"inferred"|"hypothetical", "justification": string}}
-    
-Text: {cleaned_text}
-    
-Rules:
-- Extract People (names), Organizations, Projects, Places, and Animals as nodes
-- Create edges for relationships between nodes
-- Use UPPERCASE relationship types: "DISCUSSED_WITH", "WORKS_AT", "WORKS_ON", "CLIENT_OF", "VENDOR_TO", "MEMBER_OF", "PARENT_OF", "SPOUSE_OF", "SIBLING_OF", "FAMILY_OF", "PET_OF", "FRIEND_OF", "MET_WITH", "INTRODUCED", "MENTORS", "SERVES_AT", "EVOKES", "RELATES_TO", "ASSOCIATED_WITH", "BELONGS_TO"
-- RELATIONAL EDGES (extract these first, from explicit statements):
-  - Person → Organization: extract WORKS_AT for employer relationships
-  - Person → Project: extract WORKS_ON for work relationships
-  - Project → Organization: extract BELONGS_TO when a project is described as belonging to or being for an org
-- When a project's organization_id already exists in the database, use that FK over text inference. Text fills gaps, not overrides.
-- Skip edges where you cannot confidently determine the relationship type.
+    from core.prompts.entity_extraction import SHARED_EXTRACTION_PROMPT
+    known_list_str = ", ".join(sorted(known_entities))[:500] if known_entities else ""
+    known_hint = f"\n- Existing approved entities (person, org, project): {known_list_str}" if known_list_str else ""
+    extra_rules = """
 - For every extracted node and edge, include:
   "epistemic": "asserted" | "inferred" | "hypothetical"
   "justification": one sentence explaining why this was extracted
 - asserted: Danny explicitly stated this fact
 - inferred: logically implied but not directly stated
 - hypothetical: speculative, uncertain, or future-conditional
-- Negatives precede positives in all examples.
 - PROJECT DEFINITION: A named initiative with a defined goal and stakeholders.
   ✓ QHORD, Ashraya, Solvstrat, Rhodey OS
   ✗ "Church cash rotation incident" (event), "New Habit" (intention), "Journaling tool" (concept), "Call Marcus" (task)
   If it doesn't have a formal name someone would use to refer to an ongoing initiative — skip it.
 - CRITICAL RULE: EVERY node you extract MUST have at least one connecting edge. Do not output isolated nodes.
-- CRITICAL RULE: Only extract entities that are explicitly, verbatim stated in the text. Do NOT infer, guess, or add external knowledge.
-- Standardize labels to Title Case.
-- CRITICAL: Do NOT extract anything from URLs, file paths, or online handles except to tag them as resources.
-- CONSISTENCY: EVERY label referenced in an edge's "source" or "target" MUST also appear in the "nodes" array with its type.
-- Existing approved entities (person, org, project): {known_list}
-- Do NOT create nodes for entities not in this list unless they are a clearly identifiable place or animal."""
+"""
+    prompt = SHARED_EXTRACTION_PROMPT + extra_rules + known_hint + f"\n\nText: {cleaned_text}\n"
     
     try:
         response = call_llm_with_fallback_sync(

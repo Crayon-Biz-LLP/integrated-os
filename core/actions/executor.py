@@ -1,4 +1,5 @@
 import uuid
+import hashlib
 from typing import List, Optional
 from core.actions.models import Action
 from core.services.db import get_supabase
@@ -271,8 +272,7 @@ async def execute_planned_actions(
             msg_lines.append("\nWant me to handle them?")
             
             if not suppress_telegram:
-                import asyncio
-                asyncio.create_task(send_telegram(chat_id, "\n".join(msg_lines)))
+                await send_telegram(chat_id, "\n".join(msg_lines))
         except Exception as e:
             audit_log_sync("executor", "WARNING", f"Failed to create batch workflow: {e}")
             # Fallback: if we fail to create the workflow, we just execute them
@@ -368,8 +368,11 @@ async def execute_planned_actions(
 
             try:
                 from core.pulse.tools import create_task_direct
+                # Compute dedup_key from title to prevent duplicate webhook submissions
+                dedup_key = hashlib.md5(title.encode()).hexdigest()[:16] if title else None
                 result = await create_task_direct(
                     title=title,
+                    dedup_key=dedup_key,
                     project_id=action.params.get("project_id") or action.project_id,
                     organization_id=action.params.get("organization_id") or action.organization_id,
                     project_name=action.params.get("project_name"),

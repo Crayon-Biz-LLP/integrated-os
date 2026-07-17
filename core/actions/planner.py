@@ -7,10 +7,38 @@ from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.llm.constants import CLASSIFICATION_MODEL
+from core.llm.constants import CLASSIFICATION_MODEL, SYNTHESIS_MODEL
 
 async def plan_actions(text: str, title: str = "", entity: str = "", active_anchor: dict = None, intent: str = None) -> List[Action]:
     supabase = get_supabase()
+    
+    # --- DETERMINISTIC PRE-FILTER: "Mark task N as done" → close_task ---
+    # Same pattern as the classify pre-filter. Extracts the task ID directly
+    # from "Mark task 123 as done" and creates a close_task Action without
+    # any LLM call. This is the only reliable way to handle task closures
+    # — LLMs consistently fail to generate close_task with the correct target_id.
+    _mark_done_match = re.search(r'[Mm]ark\s+task\s+(\d+)\s+as\s+done', text.strip())
+    if _mark_done_match and intent == "COMPLETION":
+        task_id_str = _mark_done_match.group(1)
+        print(f"[PLANNER_DEBUG] Pre-filter matched! text={text!r}, task_id={task_id_str}, intent={intent}")
+        try:
+            task_id = int(task_id_str)
+            task_check = supabase.table("tasks").select("id, status").eq("id", task_id).limit(1).execute()
+            if task_check.data:
+                if task_check.data[0]["status"] == "done":
+                    audit_log_sync("planner", "INFO", f"Task {task_id} already done — skipping close_task")
+                    return []
+                audit_log_sync("planner", "INFO", f"Deterministic close_task for task {task_id} (pre-filter match)")
+                return [Action(
+                    operation="close_task",
+                    target_id=task_id,
+                    params={},
+                    human_label=f"Close task {task_id}"
+                )]
+            else:
+                audit_log_sync("planner", "WARNING", f"Task {task_id} not found for close_task (pre-filter)")
+        except (ValueError, TypeError):
+            audit_log_sync("planner", "WARNING", f"Invalid task ID in close text: '{task_id_str}'")
     
     # 1. Fetch active tasks (todo/in_progress)
     tasks_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
@@ -166,17 +194,19 @@ Rules:
 - Task operations (close_task, cancel_recurring, etc.) MUST use the numeric Task ID. Event IDs can ONLY be used with delete_event.
 - IMPORTANT: A recurring task with status 'done' or 'todo' is STILL AN ACTIVE SERIES. 'done' only skips the current week. If the user asks to cancel a recurring series, target ALL matching recurring tasks regardless of their current status.
 - If the user uses words like "all", "meetings", or "tasks" (plural), return a separate action for EVERY matching candidate.
-- IMPORTANT EXPLICIT INTENTS: If the Classifier intent is NOTE, you MUST output a create_note action. If the Classifier intent is TASK, you MUST output a create_task action. Do not require an explicit user command in these cases.
+- IMPORTANT EXPLICIT INTENTS: If the Classifier intent is NOTE, you MUST output a create_note action. If the Classifier intent is TASK, you MUST output a create_task action. If the Classifier intent is COMPLETION, you MUST output a close_task action for the matching task ID. Do not require an explicit user command in these cases.
 - If the user says 'Check with [someone]' or 'Talk to [someone]' or asks Danny to contact someone, ALWAYS output a create_task action for Danny. NEVER use query_info, create_event, or any other operation. Danny needs a reminder to check, not an answer or an event.
 - For mixed or informational content (status updates, team changes, finance mentions, decisions, meeting fallout): If the classifier intent is NOTE, ALWAYS route as create_note — do NOT split into multiple tasks. If the classifier intent is TASK, create the task but include informational context in params.content.
 - Never make up or hallucinate details not in the user's message. Every field in params (title, project_name, reminder_at, priority, etc.) must be directly derived from the user's text. Do not infer, guess, or fill in defaults that the user did not provide.
 - Return empty array or no_op if nothing matches."""
 
     try:
+        # Use SYNTHESIS_MODEL for COMPLETION intents (close_task needs reliable matching)
+        planner_model = SYNTHESIS_MODEL if intent == "COMPLETION" else CLASSIFICATION_MODEL
         res = await generate_content_with_fallback(
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
-            primary_model=CLASSIFICATION_MODEL,
+            primary_model=planner_model,
             config={"response_mime_type": "application/json"}
         )
         parsed = res.parse_json()

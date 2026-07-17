@@ -1409,6 +1409,7 @@ async def process_webhook(update: dict):
         # field in classify output handles multi-intent detection.
         
         if confidence >= CONFIDENCE_HIGH:
+            print(f"[HANDLER_DEBUG] Routing: intent={intent}, confidence={confidence}, text={text!r}", flush=True)
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
         elif intent == 'CLARIFICATION_NEEDED':
             await handle_clarification(

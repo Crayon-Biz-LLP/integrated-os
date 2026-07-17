@@ -20,13 +20,21 @@ This is not a SaaS product or a generic productivity app. It is a bespoke, hyper
 | Frontend components | 88 |
 | Infrastructure cost | $0 (free tiers) |
 
-## The Core Loop
+## The Architecture (6 Layers)
 
-The system operates as a triangular engine:
+The system operates as 6 vertical layers spanning ingestion to presentation:
 
-1. **Intake**: A FastAPI webhook receiver for Telegram (text, voice, images, documents) plus Gmail/Outlook email ingestion and Google Sheets journal sync
-2. **Intelligence**: A Gemini-powered processing layer that classifies intent, extracts entities, searches memories, queries knowledge graphs, and generates briefings
-3. **Execution**: A scheduled briefing engine (The Pulse) that syncs calendars, creates tasks, manages projects, auto-discovers people, detects spiritual practices, and delivers AI-generated situation reports via Telegram
+1. **Ingestion Layer**: Receives messages from all channels (Telegram, WhatsApp, Email, Outlook, Teams, Calls) through a unified `ingest()` contract. Classifies intent via Gemini, quarantines URLs at ingress (`url_filter.py`), and deduplicates at 3 levels (Telegram update_id, dedup_key, DB constraints).
+
+2. **Processing Layer**: Routes classified intents through the unified Action Planner (`plan_actions()` → `execute_planned_actions()`). Executes typed operations (create_task, close_task, reschedule, cancel_recurring) via direct DB operations (`create_task_direct()`, `create_note_direct()`). Entity resolution happens BEFORE creation via deterministic `resolve_entities()` linker. Enrichment (graph edges, entities, embeddings) is queued via `pending_enrichment_jobs` to survive Vercel cold kills.
+
+3. **Intelligence Layer**: Associative retrieval with 7-signal ranking (semantic, PPR, recency, importance, project, specificity, person_boost). Knowledge graph with 5 node types and 16 edge types — all edges flow through HITL approval via `pending_graph_edges`. Context registry with 6 strategies and entity-grounded gates. Brain synthesis at the organization level.
+
+4. **Presentation Layer**: Pulse Engine generates AI briefings via a single LLM call (no agent loop). Decision Pulse collects pending approvals without AI. Sentinel watches for upcoming events and runs 7 background jobs as piggybacks. Consolidated health monitor (`run_full_health_check()`) checks all subsystems.
+
+5. **Persistence Layer**: 16 formal state machines with documented valid transitions. DB-backed state (clarifications, sessions, workflows survive cold restarts). Temporal lineage via DB triggers on tasks and canonical_pages. `pending_nodes` + `merge_proposals` for graph node approvals.
+
+6. **Integration Layer**: Google Calendar/Tasks sync with 404 auto-heal. Telegram bot with FCM push notifications. cron-job.org for high-frequency schedules (sentinel every 5min, decision pulse every 30min). GitHub Actions for Pulse, backfill, health, and NotebookLM sync.
 
 ## What Makes It Unique
 

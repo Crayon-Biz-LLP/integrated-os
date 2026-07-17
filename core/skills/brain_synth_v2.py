@@ -53,21 +53,21 @@ def filter_fragments_by_project_strict(results, project_name):
     return filtered
 
 async def fetch_entity_graph_edges(entity_name: str, max_edges=20):
-    """Fetches depth-1 relationships from graph_edges for the given entity."""
+    """Fetches depth-1 relationships from graph_edges for the given entity.
+
+    Uses direct ILIKE label matching instead of embedding similarity —
+    deterministic, no LLM call, no embedding latency.
+    """
     try:
-        entity_embedding_res = await get_embedding(entity_name)
-        if not entity_embedding_res or not entity_embedding_res.vector:
-            return []
-            
         nodes = await asyncio.to_thread(
-            lambda: supabase.rpc('match_graph_nodes', {
-                'query_embedding': entity_embedding_res.vector,
-                'match_threshold': 0.7,
-                'match_count': 1
-            }).execute()
+            lambda: supabase.table('graph_nodes') \
+            .select('id') \
+            .ilike('label', entity_name) \
+            .limit(1) \
+            .execute()
         )
         
-        if not nodes.data:
+        if not nodes or not nodes.data:
             return []
             
         node_id = nodes.data[0]['id']

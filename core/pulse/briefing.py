@@ -45,8 +45,6 @@ from core.pulse.practices import (
 from core.pulse.resources import batch_enrich_resources
 from core.pulse.cluster_discovery import discover_new_clusters
 from core.prompts.briefing import build_pulse_briefing_prompt, build_pulse_system_instruction
-from core.pulse.context_salience import generate_morning_pulse
-
 
 # ──────────────────────────────────────────
 # CONSTANTS
@@ -710,13 +708,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         except Exception as e:
             audit_log_sync("pulse", "WARNING", f"Calendar context fetch failed: {e}")
 
-        # ── Morning narrative ──
+        # ── Morning narrative (reserved for future context registry integration) ──
         morning_pulse_narrative = ""
-        if briefing_mode == "Morning Status: We're cleared.":
-            try:
-                morning_pulse_narrative = await generate_morning_pulse(filtered_tasks, compressed_tasks_list)
-            except Exception as e:
-                audit_log_sync("pulse", "WARNING", f"Morning pulse narrative failed: {e}")
 
         # ── People names ──
         people_names = "None"

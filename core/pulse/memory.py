@@ -77,14 +77,14 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
         if not memories:
             return ""
 
-        # Fix 3: Re-apply strict 30-day cutoff after context strategy
+        # Re-apply strict 30-day cutoff after context strategy
         cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         memories = [
             m for m in memories
             if (m.metadata.get('created_at') or '') >= cutoff_30d
         ]
 
-        # Fix 4: Shadow mode A/B comparison hook
+        # Shadow mode A/B comparison hook
         if retrieval_config.shadow_mode:
             try:
                 from core.pulse.context import _shadow_comparison
@@ -299,7 +299,7 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list, 
         if not start_node_ids:
             return "No graph nodes found for active tasks."
 
-        # S6: Add pattern-detected active projects as seed nodes for cross-domain insight
+        # Add pattern-detected active projects as seed nodes for cross-domain insight
         if pattern_context:
             try:
                 pattern_terms = [t.split(':', 1)[1].strip() for t in pattern_context.split('|') if ':' in t]
@@ -367,78 +367,8 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list, 
 
 async def adaptive_briefing_learner(briefing_history: list = None) -> str:
     """
-    ADAPTIVE BRIEFING LEARNER: Learns from past briefings to improve future ones.
-    Tracks which insights were useful, adjusts briefing style, and personalizes
-    the briefing based on Danny's interaction patterns.
+    ADAPTIVE BRIEFING LEARNER: Placeholder for future pattern-based briefing adaptation.
+    Currently returns empty string — no pseudo-insights. The Pulse Engine already
+    has rich context (hindsight, serendipity, patterns) for briefing adaptation.
     """
-    try:
-        # For now, implement basic pattern tracking
-        # In future, this could read from a 'briefing_feedback' table
-
-        insights = []
-
-        # 1. Check briefing mode effectiveness
-        # Track which briefing modes (morning/afternoon/night) produce more actionable insights
-        try:
-            # Look at recent memories to see which time of day produced more reflections
-            recent_memories = supabase.table('memories') \
-                .select('content, memory_type, created_at') \
-                .gte('created_at', (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()) \
-                .execute()
-
-            if recent_memories.data:
-                morning_count = 0
-                evening_count = 0
-                for m in recent_memories.data:
-                    dt_str = m.get('created_at', '')
-                    if len(dt_str) >= 13:
-                        try:
-                            hour = int(dt_str[11:13])
-                            if hour < 12:
-                                morning_count += 1
-                            else:
-                                evening_count += 1
-                        except ValueError:
-                            pass
-
-                if morning_count > evening_count * 2:
-                    insights.append("🌅 Morning briefings seem more reflective — consider adding deeper synthesis")
-                elif evening_count > morning_count * 2:
-                    insights.append("🌙 Evening briefings generate more insights — consider longer night briefings")
-        except Exception:
-            pass
-
-        # 2. Section density learning
-        # Track if certain sections are consistently empty and suggest hiding them
-        try:
-            recent_tasks = supabase.table('tasks') \
-                .select('organization_id, priority, status') \
-                .eq('status', 'active') \
-                .execute()
-
-            if recent_tasks.data:
-                tag_counts = {}
-                for t in recent_tasks.data:
-                    tag = str(t.get('organization_id', 'INBOX'))
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
-
-                # Suggest hiding sections with < 2 tasks
-                sparse_tags = [tag for tag, count in tag_counts.items() if count < 2]
-                if sparse_tags:
-                    insights.append(f"📊 Sparse sections detected: {', '.join(sparse_tags)} — consider condensing")
-        except Exception:
-            pass
-
-        # 3. Prompt token optimization suggestion
-        insights.append("🎯 Tip: Keep briefings under 3 bullets per section for maximum clarity")
-
-        if insights:
-            lines = ["🧠 ADAPTIVE LEARNING:"]
-            lines.extend(insights[:4])  # Cap at 4 insights
-            return "\n".join(lines)
-
-        return ""
-
-    except Exception as e:
-        audit_log_sync("pulse", "WARNING", f"⚠️ Adaptive Briefing Learner failed (non-critical): {e}")
-        return ""
+    return ""

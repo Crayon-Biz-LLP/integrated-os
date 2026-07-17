@@ -103,6 +103,16 @@ async def process_dlq(max_items: int = 5, max_retries: int = 3) -> dict:
                     from core.retrieval.pipeline import schedule_index_memory
                     schedule_index_memory(int(record_id), item["message"][:5000], 'note', 'dlq_retry')
                     success = True
+            elif table == 'pending_enrichment_jobs' and record_id:
+                # Reset dead_letter enrichment jobs back to 'failed' for re-processing
+                supabase.table('pending_enrichment_jobs') \
+                    .update({'status': 'failed', 'error': None, 'retry_count': retry_count}) \
+                    .eq('id', int(record_id)) \
+                    .eq('status', 'dead_letter') \
+                    .execute()
+                audit_log_sync("dlq_consumer", "INFO",
+                    f"DLQ re-queued enrichment job {record_id} (attempt {retry_count + 1})")
+                success = True
             else:
                 # Generic: just mark as re-processable if we can't determine type
                 audit_log_sync("dlq_consumer", "INFO",

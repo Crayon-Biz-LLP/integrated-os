@@ -98,10 +98,13 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [47-classification-context-boundary.md](47-classification-context-boundary.md) | Bounded classify context, bot receipt stripping, PERSON QUERIES rule |
 | [50-multi-intent-task-closure.md](50-multi-intent-task-closure.md) | Multi-intent messages, task closure via enrichment pipeline, secondary_actions in classify |
 | [51-action-planner-architecture.md](51-action-planner-architecture.md) | Universal Action Planner replacing single-intent matchers for tasks, recurring series, and calendar operations |
+| [52-unified-action-planner-holistic.md](52-unified-action-planner-holistic.md) | *(Deprecated — merged into 58)* Unified Action Planner holistic architecture completion |
 | [53-architecture-stabilization.md](53-architecture-stabilization.md) | DB-backed state, formal state machines, unified ingest, URL quarantine module, async webhook queue |
 | [54-hardening-trigger-fix-graph-cleanup-push-fix.md](54-hardening-trigger-fix-graph-cleanup-push-fix.md) | close_task_edges trigger crash fix, graph node duplicate cleanup, WhatsApp JSON parse fix, push notification device_tokens table |
 | [55-root-cause-enforcement.md](55-root-cause-enforcement.md) | 4W1H root cause enforcement — commit-msg hook, AGENTS.md Step 10, opencode.json commit rules |
 | [56-enrichment-queue.md](56-enrichment-queue.md) | Queue-based enrichment replacing fire-and-forget — Vercel-safe graph edges, entity extraction, embeddings |
+| [57-architecture-cleanup-and-hardening.md](57-architecture-cleanup-and-hardening.md) | Dead file cleanup, now_ist(), health monitor consolidation, prompt audit |
+| [58-final-architecture-overhaul.md](58-final-architecture-overhaul.md) | Complete 6-layer architecture overhaul (Parts 51-58), final architecture diagram, 22-scenario UAT validation |
 
 ### Mobile App (Flutter — Rhodey)
 | File | What It Covers |

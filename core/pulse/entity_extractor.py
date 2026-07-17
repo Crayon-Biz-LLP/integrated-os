@@ -5,6 +5,7 @@ from core.services.db import get_supabase, maybe_single_safe
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.pulse.graph import insert_extracted_entities
+from core.prompts.entity_extraction import SHARED_EXTRACTION_PROMPT
 
 supabase = get_supabase()
 
@@ -27,40 +28,9 @@ async def extract_and_link_entities(text: str, source_id: str, source_type: str 
     except Exception:
         known_str = "Danny, Mother, Qhord, Ashraya, Solvstrat, Rhodey OS"
 
-    prompt = f"""Extract knowledge graph elements from this text.
-    
-Return a JSON object with:
-- "nodes": array of objects with {{"label": string, "type": "person"|"organization"|"project"|"place"|"event"|"animal"|"emotional_state"}}
-- "edges": array of objects with {{"source": string, "target": string, "relationship": string}}
-    
-RULES:
-- Only extract explicitly mentioned entities.
-- Keep labels concise (e.g. "Danny", "Qhord").
-- COMMON MISTAKES TO AVOID:
-  - Use canonical names for known entities: "Danny" (not "I", "me", "user"), "Mother" (not "Amma", "amma").
-  - Do not extract pronouns or generic terms ("he", "the project", "loops") as nodes.
-- RELATIONAL EDGES (extract these first, from explicit statements):
-  - Person → Organization: extract WORKS_AT for employer affiliations. Examples: "Marcus from Ashraya" -> WORKS_AT, "talked to Binu at Equisoft" -> WORKS_AT
-  - Person → Project: extract WORKS_ON for work relationships
-  - Project → Organization: extract BELONGS_TO when a project is described as belonging to or being for an org
-- When a project's organization_id already exists in the database, use that FK over text inference. Text fills gaps, not overrides.
-- Skip edges where you cannot confidently determine the relationship type.
-- KNOWN ENTITIES (use exact spelling if referring to these): {known_str}
-- AVOID COMBINING ENTITIES: Never combine an organization and a project into a single label. E.g. "Armour Cyber AI Gateway" must be split into "Armour Cyber" (organization) and "AI Gateway" (project).
-- TYPE GUIDANCE:
-  - "place": A physical location, venue, or geographic area (e.g. "St. Mary's Church", "Kakkanad office").
-  - "event": A scheduled or past occurrence with a time/date (e.g. "Sunday service", "team standup").
-  - "animal": Named or referenced pets, animals (e.g. "Max", "the stray cat").
-  - "emotional_state": A feeling, mood, or emotional condition (e.g. "stressed", "excited", "overwhelmed").
-  - "project": A named initiative with a defined goal and stakeholders.
-    ✓ QHORD, Ashraya, Solvstrat, Rhodey OS
-    ✗ "Church cash rotation incident" (event), "New Habit" (intention), "Journaling tool" (concept), "Call Marcus" (task)
-    If it doesn't have a formal name someone would use to refer to an ongoing initiative — skip it.
-- If no clear entities/relationships, return empty arrays.
-- Normalize person names to First Last if obvious.
-    
-Text: "{text}"
-"""
+    known_str_extra = f"\n- KNOWN ENTITIES (use exact spelling if referring to these): {known_str}" if known_str else ""
+    prompt = SHARED_EXTRACTION_PROMPT + known_str_extra + f"\n\nText: \"{text}\"\n"
+
     try:
         response = await generate_content_with_fallback(
             prompt=prompt,
@@ -74,7 +44,28 @@ Text: "{text}"
         data = response.parse_json()
         nodes = data.get("nodes", [])
         edges = data.get("edges", [])
-        
+
+        # ── Guard B: Text-anchoring validation ──
+        # Drop any extracted node whose label doesn't appear verbatim in the source text
+        text_lower = text.lower()
+        valid_nodes = []
+        for n in nodes:
+            label = n.get("label", "") if isinstance(n, dict) else ""
+            if not label:
+                continue
+            if label.lower() in text_lower or label.lower() == 'danny':
+                valid_nodes.append(n)
+            else:
+                audit_log_sync("pulse", "INFO",
+                               f"Text-anchoring guard: dropped hallucinated node '{label}' from {source_type}:{source_id}")
+        valid_labels = {n.get('label', '').lower() for n in valid_nodes}
+        valid_edges = []
+        for e in edges:
+            if isinstance(e, dict) and e.get('source', '').lower() in valid_labels and e.get('target', '').lower() in valid_labels:
+                valid_edges.append(e)
+        nodes = valid_nodes
+        edges = valid_edges
+
         if not nodes and not edges:
             return [], []
             

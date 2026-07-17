@@ -105,14 +105,19 @@ async def run_full_health_check() -> dict:
             lines.append("⚠️ No Pulse heartbeat found")
         counts["pulse_hours_ago"] = round(hours_ago, 1) if hours_ago is not None else None
 
-        # ── DLQ unresolved items ──
-        dlq_res = supabase.table('dead_letter_queue') \
-            .select('id', count='exact') \
-            .eq('resolved', False) \
-            .execute()
-        counts["dlq_items"] = dlq_res.count or 0
-        if counts["dlq_items"] > 0:
-            lines.append(f"⚠️ {counts['dlq_items']} unresolved items in dead_letter_queue")
+        # ── DLQ unresolved items (query audit_logs where the DLQ lives) ──
+        dlq_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        try:
+            dlq_res = supabase.table('audit_logs') \
+                .select('id', count='exact') \
+                .eq('service', 'dlq') \
+                .gte('created_at', dlq_cutoff) \
+                .execute()
+            counts["dlq_items"] = dlq_res.count or 0
+            if counts["dlq_items"] > 0:
+                lines.append(f"⚠️ {counts['dlq_items']} unresolved items in dead letter queue (audit_logs)")
+        except Exception as e:
+            audit_log_sync("pipeline", "WARNING", f"DLQ health check query failed: {e}")
 
         # ── Recent errors (last hour) ──
         one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
@@ -136,6 +141,9 @@ async def run_full_health_check() -> dict:
         if counts["llm_degradations"] > 0:
             lines.append(f"⚠️ {counts['llm_degradations']} LLM fallback/degradations (429s/timeouts) in last hour")
 
+        # Separate informational lines from actual issues
+        issues = [line for line in lines if line.startswith("⚠️")]
+
         if not lines:
             return {
                 "issues": [],
@@ -143,7 +151,7 @@ async def run_full_health_check() -> dict:
                 "counts": counts,
             }
         return {
-            "issues": lines,
+            "issues": issues,
             "report": "PIPELINE HEALTH REPORT:\n" + "\n".join(lines),
             "counts": counts,
         }

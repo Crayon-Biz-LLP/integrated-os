@@ -26,6 +26,24 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     # The message is vaulted as a NOTE — embedded into memories, never enters
     # task/completion pipeline. No Telegram error shown.
     # ---
+    # --- DETERMINISTIC PRE-FILTER: "Mark task N as done" → COMPLETION ---
+    # This runs BEFORE any LLM call, so the COMPLETION routing is guaranteed
+    # regardless of LLM behavior. Matches patterns like:
+    #   "Mark task 123 as done" / "mark task 456 as done" / "Mark task 789 as done"
+    _mark_done = re.search(r'[Mm]ark\s+task\s+\d+\s+as\s+done', text.strip())
+    if _mark_done:
+        audit_log_sync("classify", "INFO", "Deterministic pre-filter: 'Mark task N as done' → COMPLETION")
+        return {
+            "intent": "COMPLETION",
+            "confidence": 1.0,
+            "entity": "INBOX",
+            "title": text,
+            "receipt": "Task closure logged.",
+            "possible_intents": [],
+            "reasoning": "Deterministic regex match: 'Mark task N as done' → COMPLETION",
+            "contains_hidden_action": False,
+        }
+
     # --- M3: Query caching ---
     # Cache key includes text + conversation history (the two most variable inputs)
     # Context and core_json change rarely and don't warrant cache-busting

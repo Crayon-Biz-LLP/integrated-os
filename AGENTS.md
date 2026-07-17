@@ -95,6 +95,22 @@ When proposing fixes, making architectural changes, or summarizing completed wor
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
 
+## Session Anchored Summary (Jul 17, 2026 — Part 58: Final Architecture Overhaul & UAT Validation)
+
+### Progress Done This Session
+- **Comprehensive 22-Scenario UAT Suite**: Built and ran end-to-end UAT against LIVE_DB across all 4 primary layers (Ingestion, Processing, Intelligence, Presentation). Scenarios S1-S22 cover: task creation with org linkage, entity resolution from text, note creation, URL quarantine, task closure, dedup prevention, hidden action detection, batch workflows, enrichment queue lifecycle, memory retrieval, DLQ recovery, graph enrichment E2E (task→org BELONGS_TO edge via HITL), task reschedule, recurring task lifecycle (skip+cancel), Google Calendar/Task sync (mocked), Pulse Engine briefing, Decision Pulse, Sentinel nudge, health check, and briefing content quality (hallucination detection). **All 22 passing**.
+- **S18 Graph Enrichment E2E Fix**: Fixed `title`→`task_title` keyword argument mismatch in `_process_task_graph_enrichment()` (enrichment_queue.py) — enrichment was silently failing to pass the correct parameter to `write_graph_edges_for_task()`. This had been broken since enrichment queue was created (Part 56). Also added `db_record_id` to org graph node seeding so the BELONGS_TO edge lookup succeeds.
+- **S18 Test Fix**: The S18 scenario was checking `graph_edges` table for BELONGS_TO edges, but `insert_pending_edge()` writes to `pending_graph_edges` (HITL approval table). Fixed test to check the correct table.
+- **DB Cleanup**: All test data cleaned from production DB. Zero `[UAT]` or `[SIM_TEST]` rows remaining across all tables.
+- **Documentation Updated**: Created `product-summary/58-final-architecture-overhaul.md` — comprehensive doc covering Parts 51-58, final 6-layer architecture diagram, UAT validation matrix, and all changes. Updated `product-summary/README.md` with new references. Updated AGENTS.md with Part 58 session summary.
+
+### Key Files (Part 58)
+- `tests/uat/run_uat.py` — 22-scenario UAT suite (S1-S22, all passing)
+- `core/lib/enrichment_queue.py` — Fixed `title`→`task_title` parameter name in `_process_task_graph_enrichment()`
+- `core/pulse/tools.py` — Removed lazy imports in `create_task_direct()` (enables proper mocking for tests)
+- `db/36_pending_enrichment_jobs_related_org_id.sql` — Added related_org_id column to pending_enrichment_jobs
+- `product-summary/58-final-architecture-overhaul.md` — Documentation
+
 ## Session Anchored Summary (Jul 16, 2026 — Part 57: Architecture Cleanup & Hardening)
 
 ### Progress Done This Session

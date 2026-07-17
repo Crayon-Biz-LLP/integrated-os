@@ -60,10 +60,11 @@ def resolve_entities_from_text(text: str) -> Tuple[Optional[str], Optional[int],
         if norm_name in text_ngrams:
             matched_orgs.append(org)
     if not matched_orgs:
-        # X4: substring ILIKE fallback
+        # X4: substring ILIKE fallback — only for multi-word names (>10 chars) to prevent
+        # single common words like "project", "test", "review" from matching unrelated orgs
         for org in orgs:
             norm_name = _normalize_for_substring(org['name'])
-            if norm_name and norm_name in substr_text:
+            if norm_name and len(norm_name) > 10 and norm_name in substr_text:
                 matched_orgs.append(org)
                 
     # 5. Match projects — exact n-gram first, then substring fallback
@@ -73,10 +74,11 @@ def resolve_entities_from_text(text: str) -> Tuple[Optional[str], Optional[int],
         if norm_name in text_ngrams:
             matched_projs.append(proj)
     if not matched_projs:
-        # X4: substring ILIKE fallback
+        # X4: substring ILIKE fallback — only for multi-word names (>10 chars) to prevent
+        # single common words from matching unrelated projects
         for proj in projs:
             norm_name = _normalize_for_substring(proj['name'])
-            if norm_name and norm_name in substr_text:
+            if norm_name and len(norm_name) > 10 and norm_name in substr_text:
                 matched_projs.append(proj)
             
     # 5. Apply confidence rules

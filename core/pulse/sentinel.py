@@ -508,6 +508,34 @@ Context:
             audit_log_sync("sentinel", "WARNING", f"Auto-cancel error (non-critical): {ac_err}")
 
         # --- PIGGYBACK: P5 DLQ Consumer ---
+        # --- PIGGYBACK: Consume project_creation_signals ---
+        try:
+            signals_res = supabase.table('project_creation_signals') \
+                .select('*') \
+                .is_('status', 'pending') \
+                .limit(10) \
+                .execute()
+            if signals_res and signals_res.data:
+                signal_items = []
+                for sig in signals_res.data:
+                    project_name = sig.get('project_name', 'Unknown')
+                    source = sig.get('source', 'unknown')
+                    signal_items.append(f"  • {project_name} (source: {source})")
+                    
+                    # Mark as resolved so we don't alert again
+                    supabase.table('project_creation_signals') \
+                        .update({'status': 'notified'}) \
+                        .eq('id', sig['id']) \
+                        .execute()
+                
+                if signal_items:
+                    alert_msg = "⚠️ *Unknown Organization Signals*\n\nProjects were attempted with orgs that don't exist in the `organizations` table. Approve the org first via Decisions, or check the name.\n" + "\n".join(signal_items)
+                    await send_telegram(int(telegram_chat_id), alert_msg)
+                    audit_log_sync("sentinel", "INFO", f"project_creation_signals: alerted {len(signal_items)} unknown org(s)")
+        except Exception as sig_err:
+            audit_log_sync("sentinel", "WARNING", f"Project creation signals consumer error (non-critical): {sig_err}")
+
+        # --- PIGGYBACK: P5 DLQ Consumer ---
         try:
             from core.skills.dlq_consumer import process_dlq
             last_dlq_sweep = supabase.table('audit_logs') \

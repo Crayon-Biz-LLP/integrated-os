@@ -3,7 +3,24 @@
 
 ---
 
-## Current System State (as of July 2026)
+## Current System State (as of Jul 17, 2026)
+
+### Architecture (6 Vertical Layers)
+
+The system is organized into 6 cleanly-separated verticals. See `product-summary/58-final-architecture-overhaul.md` for the full architecture diagram and details.
+
+| Layer | What It Does | Key Files |
+|-------|-------------|-----------|
+| **Ingestion** | Channel intake, classify, URL quarantine, dedup | `handler.py`, `classify.py`, `ingest.py`, `url_filter.py` |
+| **Processing** | Action Planner, execution, enrichment queue, DLQ | `planner.py`, `executor.py`, `tools.py`, `enrichment_queue.py`, `state_machines.py` |
+| **Intelligence** | Associative retrieval, knowledge graph, context registry | `search.py`, `graph.py`, `entity_resolver.py`, `context/pipeline.py` |
+| **Presentation** | Pulse Engine (single LLM call), Decision Pulse, Sentinel | `briefing.py`, `decision_pulse.py`, `sentinel.py`, `pipeline.py` |
+| **Persistence** | 16 state machines, DB-backed state, temporal lineage | `state_machines.py`, `node_tables.py`, `clarification_state.py` |
+| **Integration** | Google Calendar/Tasks, Telegram, FCM push, cron | `google_service.py`, `telegram.py`, `push_notification.py` |
+
+All task/note operations route through the **unified Action Planner** (`plan_actions()` → `execute_planned_actions()`). Enrichment is queue-based (`pending_enrichment_jobs` with atomic claim + retry + DLQ). All graph edges flow through **HITL** (`pending_graph_edges`). The Pulse Engine is a **single LLM call** with write-behind pattern (no agent loop).
+
+UAT validation: **22/22 scenarios passing** against LIVE_DB (S1-S22 in `tests/uat/run_uat.py`).
 
 ### What is built and working
 - Telegram webhook intake (`core/webhook/handler.py`) — classification, task/note routing, multimodal support

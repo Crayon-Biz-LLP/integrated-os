@@ -4,6 +4,7 @@ from core.llm import get_embedding
 from core.llm.fallback import generate_content_with_fallback
 import json
 import asyncio
+import uuid
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
 from core.lib.people_utils import normalize_person_name
@@ -12,6 +13,18 @@ from core.clarifier import evaluate_node, evaluate_edge, store_and_send_clarific
 from core.decisions import record_decision
 
 supabase = get_supabase()
+
+
+def is_valid_uuid(val: str) -> bool:
+    """Check if a value is a valid UUID string."""
+    if not val:
+        return False
+    try:
+        uuid.UUID(str(val))
+        return True
+    except ValueError:
+        return False
+
 
 TYPE_TO_DANNY_EDGE = {
     'project': 'OWNS',
@@ -723,10 +736,11 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
         audit_log_sync("pulse", "ERROR", f"Error processing edge decision: {e}")
         return {"success": False, "action": "error", "message": str(e)}
 
-async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: int = None, task_description: str = None, people_cache=None):
+async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: int = None, task_description: str = None, people_cache=None, organization_id: str = None):
     """
     Add-on: Writes graph edges after a task is created.
     Non-blocking. If this fails, the task is already saved — no rollback needed.
+    Now also creates task→org BELONGS_TO edge when organization_id is provided.
     """
     try:
         supabase.table('graph_nodes').upsert({
@@ -759,6 +773,38 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
                         "source_table": "task_engine",
                         "source_type": "task",
                         "target_type": "project"
+                    }
+                )
+
+        # NEW: Task→Organization BELONGS_TO edge
+        if organization_id:
+            org_node = supabase.table('graph_nodes') \
+                .select('id, label') \
+                .eq('type', 'organization') \
+                .filter('metadata->>organization_id', 'eq', str(organization_id)) \
+                .maybe_single() \
+                .execute()
+
+            if not org_node or not org_node.data:
+                # Fallback: match by db_record_id
+                org_node = supabase.table('graph_nodes') \
+                    .select('id, label') \
+                    .eq('type', 'organization') \
+                    .eq('db_record_id', str(organization_id)) \
+                    .maybe_single() \
+                    .execute()
+
+            if org_node and org_node.data:
+                from core.lib.graph_rules import insert_pending_edge
+                insert_pending_edge(
+                    task_title,
+                    org_node.data.get('label', str(organization_id)),
+                    "BELONGS_TO",
+                    {
+                        "source_text": f"tasks:{task_id}",
+                        "source_table": "task_engine",
+                        "source_type": "task",
+                        "target_type": "organization"
                     }
                 )
 
@@ -1411,16 +1457,6 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
         # Check permanent edge skip
         s_id = s_res.get("node_id") or node_id_map.get(s_c)
         t_id = t_res.get("node_id") or node_id_map.get(t_c)
-        def is_valid_uuid(val):
-            if not val:
-                return False
-            try:
-                import uuid
-                uuid.UUID(str(val))
-                return True
-            except ValueError:
-                return False
-
         if is_valid_uuid(s_id) and is_valid_uuid(t_id):
             try:
                 from core.lib.graph_rules import canonicalize_relationship

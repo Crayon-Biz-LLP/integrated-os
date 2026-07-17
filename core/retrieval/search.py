@@ -220,60 +220,30 @@ async def associative_retrieve(
     )
 
 
-QUERY_ENTITY_PROMPT = """Extract the most important entities from this query.
-
-An entity is a specific person, project, organization, topic, or concept.
-
-Return a JSON array of strings. Each string is a single entity using wording close to the query.
-Do NOT include generic words like "me", "my", "this", "that", "things".
-If there are no specific entities, return an empty array [].
-
-Examples:
-Query: "meetings with Ashraya this week"
-Response: ["Ashraya"]
-
-Query: "what did we decide about QHORD pricing"
-Response: ["QHORD", "pricing"]
-
-Query: "remind me about church admin work"
-Response: ["church admin"]
-
-Query: "anything related to SOLVSTRAT"
-Response: ["SOLVSTRAT"]
-
-Query: "{query}"
-"""
-
-
 async def _extract_query_entities(query: str) -> List[str]:
-    """Extract entities from query using an LLM call.
+    """Extract entities from query using deterministic entity resolution.
 
-    Uses CLASSIFICATION_MODEL for fast, lightweight extraction.
-    Returns empty list on any failure (caller falls back to lexical).
+    Uses entity_resolver.py (n-gram + substring ILIKE matching) instead of an
+    LLM call — no probabilistic failure, no latency, no token cost.
+    Returns empty list if no known entities found (caller falls back to lexical).
     """
-    from core.llm.fallback import generate_content_with_fallback
-    from core.llm.config import WorkloadProfile
-    from core.llm.constants import CLASSIFICATION_MODEL
-    import json
     try:
-        prompt = QUERY_ENTITY_PROMPT.replace("{query}", query)
-        response = await generate_content_with_fallback(
-            prompt=prompt,
-            workload=WorkloadProfile.INTERACTIVE,
-            primary_model=CLASSIFICATION_MODEL,
-            config={'response_mime_type': 'application/json'},
-        )
-        if not response or not response.text:
+        from core.pulse.entity_resolver import resolve_entities_from_text
+        org_id, proj_id, reason = resolve_entities_from_text(query)
+        if "no_matches" in reason:
             return []
-        raw = response.text.strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw.startswith("json"):
-                raw = raw[4:]
-        data = json.loads(raw)
-        if not isinstance(data, list):
-            return []
-        return [e.strip() for e in data if isinstance(e, str) and e.strip()]
+        # Return entity labels from the resolved IDs
+        labels = []
+        supabase = get_supabase()
+        if org_id:
+            org = supabase.table('organizations').select('name').eq('id', org_id).maybe_single().execute()
+            if org and org.data:
+                labels.append(org.data['name'])
+        if proj_id:
+            proj = supabase.table('projects').select('name').eq('id', proj_id).eq('is_current', True).maybe_single().execute()
+            if proj and proj.data:
+                labels.append(proj.data['name'])
+        return labels
     except Exception:
         return []
 
