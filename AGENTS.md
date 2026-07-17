@@ -111,6 +111,18 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 - `db/36_pending_enrichment_jobs_related_org_id.sql` — Added related_org_id column to pending_enrichment_jobs
 - `product-summary/58-final-architecture-overhaul.md` — Documentation
 
+## Session Anchored Summary (Jul 17, 2026 — Part 59: Post-UAT Data Cleanup & Hardening)
+
+### Progress Done This Session
+- **Comprehensive DB Cleanup Audit**: Three-phase cleanup of all UAT/test artifacts left after Part 58. Phase 1 deleted ~822 rows with `[UAT]`/`[SIM_TEST]` bracket markers across 12 tables. Phase 2 deep audit found unbracketed test data (hash-label pending_nodes, `Test Rhodey` graph_nodes/memories, `TestOrg*` orgs, `sim-test` resources, `Decision-*` pending_nodes — ~231 rows deleted across 14 tables). Phase 3 cleaned remaining retrieval artifacts and orphaned graph nodes (~30 rows). Final total: **~1,094 rows deleted**.
+- **Multi-table Cross-Reference Detection**: The initial bracket-only sweep missed many artifacts. Follow-up audits used pattern matching (hash fragments, test prefixes without brackets, source_text cross-references) to find orphaned `pending_enrichment_jobs`, `pending_graph_edges` referencing deleted graph nodes, `project_creation_signals` with `[TEST]`/`[DIAG]` content, and `pending_nodes` with hash/UAT labels.
+- **User-Directed Cleanup**: User identified additional test data in `pending_nodes` (hash fragments, UAT scenario labels) that the automated sweep missed — manually directed deletion of 11 more rows across 4 tables, plus `graph_nodes` (11 archived test nodes with `[TEST]` labels), `raw_dumps`, `retrieval_passages`, and `conversations`.
+- **Ad-hoc User Task Deletion**: Deleted task "Send the proposal" + related memory, raw_dump, project_creation_signal, and orphaned Google Calendar event via API.
+- **Final Verification**: 21 tables verified zero test artifacts across all known test patterns. Database fully clean.
+
+### Key Files (Part 59)
+- (All changes were direct SQL deletions — no code files modified)
+
 ## Session Anchored Summary (Jul 16, 2026 — Part 57: Architecture Cleanup & Hardening)
 
 ### Progress Done This Session
