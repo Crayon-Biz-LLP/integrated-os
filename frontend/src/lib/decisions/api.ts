@@ -228,5 +228,5 @@ export async function fetchLiveGraphNodes(): Promise<any[]> {
     throw new Error(`Failed to fetch live nodes: ${msg}`);
   }
   const json = await res.json();
-  return json.data || [];
+  return (json.data || []).map((n: any) => ({ ...n, node_type: n.type }));
 }
