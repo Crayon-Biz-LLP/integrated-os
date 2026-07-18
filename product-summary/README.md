@@ -131,6 +131,11 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 |------|---------------|
 | [32-resource-list-dismiss.md](32-resource-list-dismiss.md) | Resource clusters list view toggle and dismiss/read feature |
 
+### Document Extraction
+| File | What It Covers |
+|------|---------------|
+| [60-hybrid-document-extraction.md](60-hybrid-document-extraction.md) | Hybrid document extraction — local PyMuPDF (PDF), python-docx (DOCX), openpyxl (XLSX), python-pptx (PPTX) with Gemini Flash fallback for images/scanned docs |
+
 ### Use Cases
 | File | What It Covers |
 |------|---------------|

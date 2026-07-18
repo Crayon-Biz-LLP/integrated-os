@@ -1,7 +1,17 @@
+"""Multimodal content processing: hybrid extraction → standard text pipeline.
+
+Architecture:
+  - Documents (PDF, DOCX, XLSX, PPTX) → local extraction (50ms, free, verbatim)
+  - Images → Gemini vision (OCR for scanned docs, photos)
+  - Audio → Gemini audio transcription (unchanged)
+  - Fallback → Gemini Flash Lite via direct API call (no wrapper duplication)
+"""
+
 from datetime import datetime
 from core.lib.time_utils import IST_TIMEZONE
 from google import genai
 from core.lib.audit_logger import audit_log_sync
+from core.lib.document_extractor import extract_text
 from core.webhook.telegram import send_telegram
 from core.webhook.classify import classify_intent
 from core.llm.constants import SYNTHESIS_MODEL
@@ -14,7 +24,7 @@ def guess_mime_type(file_bytes: bytes, default_mime: str) -> str:
     """Guess MIME type from file signatures (magic numbers) for common formats."""
     if not file_bytes:
         return default_mime
-        
+
     if file_bytes.startswith(b'\xff\xd8\xff'):
         return 'image/jpeg'
     elif file_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
@@ -32,76 +42,117 @@ def guess_mime_type(file_bytes: bytes, default_mime: str) -> str:
     elif file_bytes.startswith(b'RIFF') and file_bytes[8:12] == b'WAVE':
         return 'audio/wav'
     elif len(file_bytes) > 8 and file_bytes[4:8] == b'ftyp':
-        # common for both video/mp4 and audio/mp4(m4a)
-        # Gemini handles 'audio/mp4' well for audio files
         return 'audio/mp4'
-        
+
     return default_mime
 
 
-async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id: int, ist_hour: int = None, core_json: str = "[]"):
-    """Two-pass extraction: verbatim OCR → standard text pipeline."""
+async def _extract_via_gemini(file_bytes: bytes, mime_type: str, is_audio: bool) -> str:
+    """Fallback extraction using Gemini vision/audio.
+
+    This is the OLD path — kept for images and audio only.
+    Documents (PDF, DOCX, XLSX, PPTX) use local extraction now.
+    """
+    if is_audio:
+        extraction_prompt = (
+            "Transcribe this audio message exactly as spoken. "
+            "Do not summarize, normalize, or omit any content. "
+            "Return ONLY the raw text — no explanations, no formatting."
+        )
+    else:
+        extraction_prompt = (
+            "Transcribe ALL visible text from this image exactly as shown. "
+            "Preserve original line breaks, spacing, and punctuation. "
+            "Do not summarize, normalize, or omit any content. "
+            "Return ONLY the raw text — no explanations, no formatting."
+        )
+
+    # Build content parts: prompt + file bytes
+    parts = [genai.types.Part(text=extraction_prompt)]
+
+    if mime_type.startswith('image/'):
+        parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+    elif mime_type.startswith('audio/'):
+        parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+    elif mime_type in ('application/pdf',):
+        parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+    else:
+        # Fallback: send as text
+        try:
+            text_content = file_bytes.decode('utf-8', errors='ignore')
+            parts.append(genai.types.Part(text=text_content))
+        except Exception:
+            return ""
+
+    content_parts = [genai.types.Content(parts=parts)]
+
+    # Direct API call — prompt is ONLY in contents, NOT duplicated
+    response = await generate_content_with_fallback(
+        prompt="",  # Empty — instruction is in contents[0].parts[0]
+        workload=WorkloadProfile.INTERACTIVE,
+        contents=content_parts,
+        primary_model=SYNTHESIS_MODEL,
+        config={'response_mime_type': 'text/plain'}
+    )
+
+    raw_text = response.text.strip() if response and response.text else ""
+    return raw_text
+
+
+async def process_multimodal_content(
+    file_bytes: bytes, mime_type: str, chat_id: int,
+    ist_hour: int = None, core_json: str = "[]"
+):
+    """Two-pass processing: extract → classify → route.
+
+    Pass 1: Hybrid extraction (local for docs, Gemini for images/audio)
+    Pass 2: Standard text pipeline (classify → plan → execute)
+    """
     ist_offset = IST_TIMEZONE
     now = datetime.now(ist_offset)
     current_hour = ist_hour if ist_hour is not None else now.hour
 
     try:
-        # ── Pass 1: Pure verbatim extraction ──
+        # ── MIME resolution ──
         if mime_type == 'application/octet-stream' or not mime_type:
             mime_type = guess_mime_type(file_bytes, mime_type)
 
         is_audio = mime_type and mime_type.startswith('audio/')
-        
-        if is_audio:
-            extraction_prompt = "Transcribe this audio message exactly as spoken. Do not summarize, normalize, or omit any content. Return ONLY the raw text — no explanations, no formatting."
-        else:
-            extraction_prompt = "Transcribe ALL visible text from this document or image exactly as shown. Preserve original line breaks, spacing, and punctuation. Do not summarize, normalize, or omit any content. Return ONLY the raw text — no explanations, no formatting."
+        extraction_method = "voice_memo" if is_audio else "alt_image"
 
-        parts = [genai.types.Part(text=extraction_prompt)]
+        # ── Pass 1: Extract text ──
+        raw_text = ""
 
-        if mime_type.startswith('image/'):
-            parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
-        elif mime_type.startswith('audio/'):
-            parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
-        elif mime_type in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']:
-            parts.append(genai.types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
-        elif mime_type == 'application/octet-stream':
-            # Still octet-stream even after guess? Try decoding as text, or send a generic failure
-            try:
-                text_content = file_bytes.decode('utf-8')
-                parts.append(genai.types.Part(text=text_content))
-            except UnicodeDecodeError:
-                await send_telegram(chat_id, "Unsupported file format (couldn't infer type).")
-                return
-        else:
-            parts.append(genai.types.Part(text=file_bytes.decode('utf-8', errors='ignore')))
+        # Try local extraction first (PDF, DOCX, XLSX, PPTX, text)
+        if not is_audio:
+            extracted = extract_text(file_bytes, mime_type)
+            if extracted:
+                raw_text = extracted
+                extraction_method = "document_extract"
 
-        content_parts = [genai.types.Content(parts=parts)]
-
-        response = await generate_content_with_fallback(
-            prompt=extraction_prompt,
-            workload=WorkloadProfile.INTERACTIVE,
-            contents=content_parts,
-            primary_model=SYNTHESIS_MODEL,
-            config={'response_mime_type': 'text/plain'}
-        )
-        raw_text = response.text.strip()
+        # Fall back to Gemini for images, audio, or failed local extraction
+        if not raw_text:
+            raw_text = await _extract_via_gemini(file_bytes, mime_type, is_audio)
 
         if not raw_text:
             await send_telegram(chat_id, "Couldn't extract any text from that.")
             return
 
-        if not is_audio:
-            raw_text = f"ALT IMAGE: {raw_text}"
+        # Tag extraction source for downstream transparency
+        if not is_audio and extraction_method == "document_extract":
+            tagged = raw_text
+        elif not is_audio:
+            tagged = f"ALT IMAGE: {raw_text}"
+        else:
+            tagged = raw_text
 
         # ── Pass 2: Feed into standard text pipeline ──
         classification = await classify_intent(
-            raw_text,
+            tagged,
             context=[],
             ist_hour=current_hour,
-            core_json=core_json
+            core_json=core_json,
         )
-        extraction_method = "voice_memo" if is_audio else "alt_image"
         classification["extraction_method"] = extraction_method
 
         intent = classification.get('intent', 'NOTE')
@@ -112,17 +163,19 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
 
         if confidence >= CONFIDENCE_LOW:
             await route_by_intent(
-                intent, raw_text, chat_id, session_id=None,
-                classification=classification, source=source
+                intent, tagged, chat_id, session_id=None,
+                classification=classification, source=source,
             )
         else:
             from core.lib.ingest import ingest
             await ingest(
-                text=raw_text,
+                text=tagged,
                 source="multimodal",
                 classification="note",
                 has_memory_value=True,
-                channel_specific_data={"extraction_method": extraction_method}
+                channel_specific_data={
+                    "extraction_method": extraction_method,
+                },
             )
 
     except Exception as e:

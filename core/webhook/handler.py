@@ -541,7 +541,7 @@ async def process_webhook(update: dict):
                 file_id = document.get('file_id')
                 mime = document.get('mime_type', '')
 
-                if mime in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'] or mime.startswith('text/'):
+                if mime in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'] or mime.startswith('text/'):
                     await send_telegram(chat_id, "Processing document...")
                     file_bytes, mime = await download_telegram_file(file_id)
                     await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour, core_json=core_json)

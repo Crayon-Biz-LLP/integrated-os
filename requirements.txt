@@ -8,9 +8,10 @@ google-api-python-client==2.194.0
 google-genai==1.71.0
 python-dotenv==1.2.2
 upstash-redis==1.7.0
-pypdf==6.13.3
+pymupdf==1.28.0
 python-docx==1.1.2
 openpyxl==3.1.2
+python-pptx==1.0.2
 # Development/Linting
 ruff==0.4.5
 pre-commit==4.6.0
