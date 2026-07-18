@@ -60,75 +60,72 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
         target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=day_offset)
         day_label = "Tomorrow" if day_offset else "Today"
 
-        try:
-            cal_events = await context_provider.get_calendar_events(target)
-            for e in cal_events:
-                time_str = e.get("time", "")
-                title = e.get("title", "")
-                is_past = False
-                if time_str:
-                    try:
-                        event_dt = datetime.fromisoformat(time_str)
-                        if event_dt < now:
-                            is_past = True
-                    except Exception:
-                        pass
-                events_list.append({"time": time_str, "title": title, "is_past": is_past})
-        except Exception as cal_err:
-            audit_log_sync("webhook", "WARNING", f"Brief calendar query failed: {cal_err}")
+        # ── Gather all independent queries in parallel ──
+        (
+            cal_events_data,
+            compressed_tasks_data,
+            overdue_res_data,
+            completed_raw_data,
+        ) = await asyncio.gather(
+            safe_fetch(context_provider.get_calendar_events(target)),
+            safe_fetch(context_provider.hydrate_tasks_context(text), (None, None)),
+            safe_fetch(asyncio.to_thread(lambda: supabase.table('tasks').select('title, project_id, organization_id, priority').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).not_.is_('reminder_at', None).lt('reminder_at', now.isoformat()).execute().data or []), []),
+            safe_fetch(context_provider.get_recently_completed_tasks(), []),
+        )
 
-        try:
-            compressed_tasks, _ = await context_provider.hydrate_tasks_context(text)
+        # ── Process calendar events ──
+        cal_events = cal_events_data or []
+        for e in cal_events:
+            time_str = e.get("time", "")
+            title = e.get("title", "")
+            is_past = False
+            if time_str:
+                try:
+                    event_dt = datetime.fromisoformat(time_str)
+                    if event_dt < now:
+                        is_past = True
+                except Exception:
+                    pass
+            events_list.append({"time": time_str, "title": title, "is_past": is_past})
+
+        # ── Process tasks ──
+        if compressed_tasks_data:
+            compressed_tasks, _ = compressed_tasks_data
             active_tasks_list = compressed_tasks.split(" | ") if compressed_tasks else []
-        except Exception as t_err:
-            audit_log_sync("webhook", "WARNING", f"Brief tasks query failed: {t_err}")
 
-        try:
-            now_iso = now.isoformat()
-            overdue_res = supabase.table('tasks') \
-                .select('title, project_id, organization_id, priority') \
-                .eq('is_current', True) \
-                .not_.in_('status', ['done', 'cancelled']) \
-                .not_.is_('reminder_at', None) \
-                .lt('reminder_at', now_iso) \
-                .execute()
-            if overdue_res.data:
-                from core.features import is_org_routing_enabled
-                projects = await context_provider.get_projects()
-                proj_map = {p['id']: p['name'] for p in projects}
-                
-                org_map = {}
-                if is_org_routing_enabled():
-                    orgs = await context_provider.get_organizations()
-                    org_map = {o['id']: o['name'] for o in orgs}
+        # ── Fetch projects + orgs ONCE, share between overdue and completed ──
+        projects_for_brief = None
+        org_map_for_brief = {}
+        if overdue_res_data:
+            from core.features import is_org_routing_enabled
+            projects_for_brief = await context_provider.get_projects()
+            proj_map = {p['id']: p['name'] for p in (projects_for_brief or [])}
+            if is_org_routing_enabled():
+                orgs = await context_provider.get_organizations()
+                org_map_for_brief = {o['id']: o['name'] for o in orgs}
 
-                for t in overdue_res.data:
-                    pn = proj_map.get(t.get('project_id'), 'INBOX')
-                    org_id = t.get('organization_id')
-                    o_name = org_map.get(org_id) if org_id else None
-                    overdue_tasks.append(_format_task_line(t.get('title', ''), pn, t.get('priority'), organization_name=o_name))
-        except Exception as err:
-            audit_log_sync("webhook", "WARNING", f"Brief overdue query failed: {err}")
+            for t in overdue_res_data:
+                pn = proj_map.get(t.get('project_id'), 'INBOX')
+                org_id = t.get('organization_id')
+                o_name = org_map_for_brief.get(org_id) if org_id else None
+                overdue_tasks.append(_format_task_line(t.get('title', ''), pn, t.get('priority'), organization_name=o_name))
 
-        try:
-            completed_raw = await context_provider.get_recently_completed_tasks()
-            if completed_raw:
-                from core.features import is_org_routing_enabled
-                projects = await context_provider.get_projects()
-                proj_map = {p['id']: p['name'] for p in projects}
-                
-                org_map = {}
-                if is_org_routing_enabled():
-                    orgs = await context_provider.get_organizations()
-                    org_map = {o['id']: o['name'] for o in orgs}
-                
-                for t in completed_raw:
-                    pn = proj_map.get(t.get('project_id'), 'INBOX')
-                    org_id = t.get('organization_id')
-                    o_name = org_map.get(org_id) if org_id else None
-                    recently_completed.append(_format_task_line(t.get('title', ''), pn, organization_name=o_name))
-        except Exception as err:
-            audit_log_sync("webhook", "WARNING", f"Brief recent completions failed: {err}")
+        # ── Process recently completed (reuses projects + orgs from above) ──
+        completed_raw = completed_raw_data or []
+        if completed_raw:
+            from core.features import is_org_routing_enabled
+            if projects_for_brief is None:
+                projects_for_brief = await context_provider.get_projects()
+            proj_map = {p['id']: p['name'] for p in (projects_for_brief or [])}
+            if is_org_routing_enabled() and not org_map_for_brief:
+                orgs = await context_provider.get_organizations()
+                org_map_for_brief = {o['id']: o['name'] for o in orgs}
+
+            for t in completed_raw:
+                pn = proj_map.get(t.get('project_id'), 'INBOX')
+                org_id = t.get('organization_id')
+                o_name = org_map_for_brief.get(org_id) if org_id else None
+                recently_completed.append(_format_task_line(t.get('title', ''), pn, organization_name=o_name))
 
         def fmt_list(items):
             if not items:

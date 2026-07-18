@@ -45,6 +45,7 @@ from core.pulse.practices import (
 from core.pulse.resources import batch_enrich_resources
 from core.pulse.cluster_discovery import discover_new_clusters
 from core.prompts.briefing import build_pulse_briefing_prompt, build_pulse_system_instruction
+from core.pulse.calendar import get_calendar_context
 
 # ──────────────────────────────────────────
 # CONSTANTS
@@ -97,6 +98,15 @@ def _get_recent_briefings_context() -> str:
             return ""
         return f"PREVIOUSLY BRIEFED (last {len(parts)} briefings — do NOT repeat this content verbatim):\n" + "\n".join(parts)
     except Exception:
+        return ""
+
+
+async def _wrap_calendar_context() -> str:
+    """Safe wrapper around get_calendar_context() for parallel gather."""
+    try:
+        return await get_calendar_context()
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"Calendar context fetch failed: {e}")
         return ""
 
 
@@ -343,16 +353,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 'legacy_id': metadata.get('legacy_id')
             })
 
-        audit_log_sync("pulse", "INFO", "📦 Step 2: Fetching projects...")
-        legacy_projects = await context_provider.get_projects()
-
-        audit_log_sync("pulse", "INFO", "📦 Step 3: Fetching people...")
-        people = await context_provider.get_people()
-
-        orgs_list = await context_provider.get_organizations()
-        org_map = {o['id']: o['name'] for o in orgs_list}
-
-        # ── Time & Day Intelligence ──
+        # ── Time & Day Intelligence (CPU-only, no IO — compute before parallel phase 1) ──
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist_offset)
         day = now.isoweekday()
@@ -387,6 +388,32 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 system_persona = "Focus on closure and transition. Secure the board. Highlight what was ✅ Done today and what matters on the 🏠 Home front. Keep work loops minimal but visible. Maintain the 'Grid'—vertical sections are mandatory."
 
         is_overloaded = len(active_tasks) > 15
+
+        # ═══════════════════════════════════════
+        # CONTEXT ASSEMBLY — PARALLEL PHASE 1
+        # Independent DB/LLM queries that can run simultaneously
+        # ═══════════════════════════════════════
+        (
+            legacy_projects,
+            people,
+            orgs_list,
+            dependency_context,
+            temporal_context,
+            centrality_context,
+            calendar_context,
+            (compressed_tasks_final, universal_task_map),
+        ) = await asyncio.gather(
+            context_provider.get_projects(),
+            context_provider.get_people(),
+            context_provider.get_organizations(),
+            check_task_dependencies(active_tasks),
+            detect_temporal_patterns(),
+            get_graph_centrality_context(),
+            _wrap_calendar_context(),
+            context_provider.hydrate_tasks_context(f"Briefing for {briefing_mode}"),
+        )
+        org_map = {o['id']: o['name'] for o in orgs_list}
+        audit_log_sync("pulse", "INFO", f"📦 Phase 1 context fetched in parallel ({len(legacy_projects)} projects, {len(people)} people, {len(orgs_list)} orgs)")
 
         # ── Priority decay ──
         try:
@@ -519,19 +546,134 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
 
         drift_context = "\n".join(drift_alerts) if drift_alerts else "None"
 
-        # ── Hindsight ──
+        # ── Hindsight (depends on people + graph_projects from Phase 1) ──
         thirty_days_ago = (now - timedelta(days=30)).isoformat()
         hindsight_context = "None"
         task_inputs = []
         graph_node_projects = graph_projects
 
-        if people and active_tasks:
-            graph_task_context = await fetch_graph_task_context(people, active_tasks)
-        else:
-            graph_task_context = ""
-
         all_entity_terms = [p['name'] for p in people] + [p['label'] for p in graph_node_projects]
-        hindsight_memories, hindsight_timestamp = await retrieve_hindsight_memories(task_inputs, active_tasks, entity_terms=all_entity_terms)
+
+        # ── Resource & memory queries (parallel phase 2) ──
+        recent_lib_res = supabase.table('resources') \
+            .select('id, url, category, title, summary, strategic_note, created_at') \
+            .gt('created_at', thirty_days_ago) \
+            .eq('is_current', True) \
+            .order('created_at', desc=True) \
+            .limit(50) \
+            .execute()
+        recent_lib_data = recent_lib_res.data or []
+
+        mem_query = " | ".join([t.get('title', '') for t in filtered_tasks[:5]])
+
+        # ── Weekly patterns (no IO — reads from already-fetched core_config) ──
+        weekly_patterns_str = ""
+        try:
+            wp_row = next((c for c in core if c.get('key') == 'weekly_patterns'), None)
+            if wp_row and wp_row.get('content'):
+                weekly_patterns_str = wp_row['content']
+        except Exception:
+            pass
+
+        # ═══════════════════════════════════════
+        # CONTEXT ASSEMBLY — PARALLEL PHASE 2
+        # Depends on Phase 1's people + projects
+        # All independent of each other
+        # ═══════════════════════════════════════
+        phase2_tasks = []
+        
+        # Graph task context
+        if people and active_tasks:
+            phase2_tasks.append(fetch_graph_task_context(people, active_tasks))
+        else:
+            phase2_tasks.append(asyncio.sleep(0, result=""))
+        
+        # Hindsight memories
+        phase2_tasks.append(retrieve_hindsight_memories(task_inputs, active_tasks, entity_terms=all_entity_terms))
+        
+        # Cross-referenced memories
+        phase2_tasks.append(context_provider.get_cross_referenced_context(mem_query, task_inputs, people, graph_node_projects, match_count=5))
+        
+        # Social graph / communication patterns
+        phase2_tasks.append(analyze_communication_patterns(people))
+        
+        # Serendipity engine
+        phase2_tasks.append(serendipity_engine(active_tasks, people, recent_lib_data, pattern_context=weekly_patterns_str or None))
+        
+        # Master page / canonical synthesis
+        relevant_project_names = list(set([
+            t.get('title', '').strip() for t in filtered_tasks
+            if t.get('title', '').strip()
+        ] + [
+            p.get('name', '').strip() for p in projects
+            if p.get('name', '').strip()
+        ]))
+        phase2_tasks.append(context_provider.get_master_page_context(
+            project_names=relevant_project_names[:5],
+            match_count=3
+        ))
+        
+        # Adaptive briefing learner (only on Sundays)
+        if now.weekday() == 6:
+            phase2_tasks.append(adaptive_briefing_learner())
+        else:
+            phase2_tasks.append(asyncio.sleep(0, result="None"))
+
+        phase2_results = await asyncio.gather(*phase2_tasks, return_exceptions=True)
+
+        # Unpack phase 2 results with error handling
+        _graph_task_ctx_result = phase2_results[0]
+        if isinstance(_graph_task_ctx_result, Exception):
+            audit_log_sync("pulse", "WARNING", f"Graph task context failed: {_graph_task_ctx_result}")
+            graph_task_context = ""
+        else:
+            graph_task_context = _graph_task_ctx_result
+
+        _hindsight_result = phase2_results[1]
+        if isinstance(_hindsight_result, Exception):
+            audit_log_sync("pulse", "WARNING", f"Hindsight retrieval failed: {_hindsight_result}")
+            hindsight_memories, hindsight_timestamp = [], None
+        else:
+            hindsight_memories, hindsight_timestamp = _hindsight_result
+
+        _cross_ref_result = phase2_results[2]
+        if isinstance(_cross_ref_result, Exception):
+            audit_log_sync("pulse", "WARNING", f"Cross-referenced context failed: {_cross_ref_result}")
+            recent_memories_context = ""
+        else:
+            recent_memories_context = _cross_ref_result
+
+        _social_result = phase2_results[3]
+        if isinstance(_social_result, Exception):
+            audit_log_sync("pulse", "WARNING", f"Social graph analysis failed: {_social_result}")
+            social_graph_context = ""
+        else:
+            social_graph_context = _social_result
+
+        _serendipity_result = phase2_results[4]
+        if isinstance(_serendipity_result, Exception):
+            audit_log_sync("pulse", "WARNING", f"Serendipity engine failed: {_serendipity_result}")
+            serendipity_context = ""
+        else:
+            serendipity_context = _serendipity_result
+
+        _master_page_result = phase2_results[5]
+        if isinstance(_master_page_result, Exception):
+            audit_log_sync("pulse", "WARNING", f"Master page fetch failed: {_master_page_result}")
+            master_page_context = ""
+        else:
+            master_page_context = _master_page_result
+
+        _adaptive_result = phase2_results[6]
+        if isinstance(_adaptive_result, Exception):
+            audit_log_sync("pulse", "WARNING", f"Adaptive learner failed: {_adaptive_result}")
+            adaptive_context = "None"
+        else:
+            adaptive_context = _adaptive_result
+
+        audit_log_sync("pulse", "INFO", "📦 Phase 2 context fetched in parallel")
+
+        # ── Process hindsight results ──
         memory_lines = []
         memory_lines.extend(hindsight_memories)
         hindsight_block = "\n".join(memory_lines)
@@ -547,18 +689,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         else:
             hindsight_empty = True
 
-        # ── Resource patterns ──
-        recent_lib = supabase.table('resources') \
-            .select('id, url, category, title, summary, strategic_note, created_at') \
-            .gt('created_at', thirty_days_ago) \
-            .eq('is_current', True) \
-            .order('created_at', desc=True) \
-            .limit(50) \
-            .execute()
-
-        if recent_lib.data:
+        # ── Resource patterns (from recent_lib_data already fetched) ──
+        if recent_lib_data:
             enriched_items = []
-            for r in recent_lib.data:
+            for r in recent_lib_data:
                 note = r.get('strategic_note') or ""
                 enriched_items.append(f"[ID:{r['id']}] [{r['category']}] {r['title']} | {note}".strip())
             pattern_context = " | ".join(enriched_items)
@@ -571,40 +705,17 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             newly_enriched_context = " | ".join(newly_enriched_lines)
 
         recent_urls_context = "None"
-        if recent_lib.data:
+        if recent_lib_data:
             url_lines = []
-            for r in recent_lib.data[:30]:
+            for r in recent_lib_data[:30]:
                 label = r.get('title') or r.get('url', 'Unknown')
                 cat = r.get('category') or 'RAW'
                 note = r.get('strategic_note') or ''
                 url_lines.append(f"[ID:{r['id']}] [{cat}] {label} | {note}".strip().rstrip('| '))
             recent_urls_context = "\n".join(url_lines)
 
-        mem_query = " | ".join([t.get('title', '') for t in filtered_tasks[:5]])
-        recent_memories_context = await context_provider.get_cross_referenced_context(mem_query, task_inputs, people, graph_node_projects, match_count=5)
-
         active_clusters_res = supabase.table('clusters').select('title, description').eq('status', 'active').execute()
         active_clusters_context = "\n".join([f"- {c['title']}: {c.get('description', '')}" for c in active_clusters_res.data]) if active_clusters_res.data else "None"
-
-        # ── Agent contexts ──
-        dependency_context = await check_task_dependencies(active_tasks)
-        social_graph_context = await analyze_communication_patterns(people)
-        temporal_context = await detect_temporal_patterns()
-
-        weekly_patterns_str = ""
-        try:
-            wp_row = next((c for c in core if c.get('key') == 'weekly_patterns'), None)
-            if wp_row and wp_row.get('content'):
-                weekly_patterns_str = wp_row['content']
-        except Exception:
-            pass
-
-        serendipity_context = await serendipity_engine(active_tasks, people, recent_lib.data or [], pattern_context=weekly_patterns_str or None)
-        centrality_context = await get_graph_centrality_context()
-
-        adaptive_context = "None"
-        if now.weekday() == 6:
-            adaptive_context = await adaptive_briefing_learner()
 
         try:
             last_pulse_row = next((c for c in core if c.get('key') == 'last_pulse_summary'), None)
@@ -658,30 +769,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         except Exception as e:
             audit_log_sync("pulse", "WARNING", f"Delta briefing history error: {e}")
 
-        # ── Context hydration ──
-        query_focus = f"Briefing for {briefing_mode}"
-        compressed_tasks_final, universal_task_map = await context_provider.hydrate_tasks_context(query_focus)
         new_inputs_text = "None"
         new_input_summary = "None"
 
         current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
-
-        # ── Canonical synthesis (master pages) ──
-        master_page_context = ""
-        relevant_project_names = list(set([
-            t.get('title', '').strip() for t in filtered_tasks
-            if t.get('title', '').strip()
-        ] + [
-            p.get('name', '').strip() for p in projects
-            if p.get('name', '').strip()
-        ]))
-        try:
-            master_page_context = await context_provider.get_master_page_context(
-                project_names=relevant_project_names[:5],
-                match_count=3
-            )
-        except Exception as e:
-            audit_log_sync("pulse", "WARNING", f"Master page fetch failed: {e}")
 
         # ── Practices context ──
         practices_context = ""
@@ -699,14 +790,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                     practices_context = await build_rhythms_section(practice_results)
             except Exception as e:
                 audit_log_sync("pulse", "WARNING", f"Practice detection failed: {e}")
-
-        # ── Calendar context ──
-        calendar_context = ""
-        try:
-            from core.pulse.calendar import get_calendar_context
-            calendar_context = await get_calendar_context()
-        except Exception as e:
-            audit_log_sync("pulse", "WARNING", f"Calendar context fetch failed: {e}")
 
         # ── Morning narrative (reserved for future context registry integration) ──
         morning_pulse_narrative = ""

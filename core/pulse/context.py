@@ -276,15 +276,13 @@ class ContextProvider:
         2. Semantic Tail: remaining tasks ranked by similarity to query_text.
         """
         from core.features import is_org_routing_enabled
-        tasks = await self.get_active_tasks()
-        projects = await self.get_projects()
+        tasks, projects, orgs = await asyncio.gather(
+            self.get_active_tasks(),
+            self.get_projects(),
+            self.get_organizations() if is_org_routing_enabled() else asyncio.sleep(0, result=[]),
+        )
         proj_map = {p['id']: p for p in projects}
-        
-        orgs = []
-        org_map = {}
-        if is_org_routing_enabled():
-            orgs = await self.get_organizations()
-            org_map = {o['id']: o['name'] for o in orgs}
+        org_map = {o['id']: o['name'] for o in (orgs or [])}
         
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
