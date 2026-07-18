@@ -1223,7 +1223,7 @@ async def graph_node_manual_merge_route(request: Request):
         supabase = get_supabase()
         
         if scope == 'live':
-            source_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label, node_type as type').eq('id', pending_id))
+            source_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label, type').eq('id', pending_id))
             if not source_res or not source_res.data:
                 return {"success": False, "message": "Source live node not found"}
             source_label = source_res.data['label']
@@ -1297,7 +1297,7 @@ async def graph_node_manual_merge_route(request: Request):
             return {"success": True, "message": f"Merged live '{source_label}' into '{target_label}'"}
             
         # Source node (pending)
-        source_res = maybe_single_safe(supabase.table('pending_nodes').select('label, type').eq('id', pending_id))
+        source_res = maybe_single_safe(supabase.table('pending_nodes').select('label, node_type as type').eq('id', pending_id))
         if not source_res or not source_res.data:
             return {"success": False, "message": "Source pending node not found"}
         source_label = source_res.data['label']
@@ -1440,7 +1440,7 @@ async def graph_nodes_similar_route(request: Request):
         
         # Also check pending_nodes for exact/high matches
         supabase = get_supabase()
-        pending_res = supabase.table('pending_nodes').select('id, label, node_type as type').eq('type', node_type).execute()
+        pending_res = supabase.table('pending_nodes').select('id, label, node_type as type').eq('node_type', node_type).execute()
         pending_nodes = pending_res.data or []
         import difflib
         target_lower = label.lower()

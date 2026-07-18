@@ -72,8 +72,8 @@ export default async function DecisionsPage() {
   })) as unknown as WhatsAppPendingMessage[];
 
   const graphItems = (graphRes.data ?? []) as GraphPendingEdge[];
-  const graphNodes = (nodeRes.data ?? []) as GraphPendingNode[];
-  const rejectedNodes = (rejectedRes.data ?? []) as GraphPendingNode[];
+  const graphNodes = ((nodeRes.data ?? []) as any[]).map(n => ({ ...n, type: n.node_type })) as GraphPendingNode[];
+  const rejectedNodes = ((rejectedRes.data ?? []) as any[]).map(n => ({ ...n, type: n.node_type })) as GraphPendingNode[];
   const mergeProposals = (mergeRes.data ?? []) as GraphMergeProposal[];
   const autoDecisions = (autoDecisionsRes.data ?? []) as AutoDecisionItem[];
 

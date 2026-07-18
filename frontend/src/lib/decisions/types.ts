@@ -84,7 +84,7 @@ export interface AutoDecisionItem {
 export interface GraphPendingNode {
   id: number;
   label: string;
-  node_type: string;
+  type: string;
   source_text: string;
   status: 'pending' | 'flagged' | 'approved' | 'rejected' | 'awaiting_clarification';
   created_at: string;
