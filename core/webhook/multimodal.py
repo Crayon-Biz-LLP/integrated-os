@@ -3,7 +3,8 @@ from core.lib.time_utils import IST_TIMEZONE
 from google import genai
 from core.lib.audit_logger import audit_log_sync
 from core.webhook.telegram import send_telegram
-from core.webhook.classify import CLASSIFICATION_MODEL, classify_intent
+from core.webhook.classify import classify_intent
+from core.llm.constants import SYNTHESIS_MODEL
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.webhook.dispatch import route_by_intent
@@ -81,7 +82,7 @@ async def process_multimodal_content(file_bytes: bytes, mime_type: str, chat_id:
             prompt=extraction_prompt,
             workload=WorkloadProfile.INTERACTIVE,
             contents=content_parts,
-            primary_model=CLASSIFICATION_MODEL,
+            primary_model=SYNTHESIS_MODEL,
             config={'response_mime_type': 'text/plain'}
         )
         raw_text = response.text.strip()

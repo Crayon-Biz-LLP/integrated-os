@@ -126,7 +126,11 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
                             resp = await client.post(url, json=payload)
                         if resp.status_code == 200:
                             break
-                        if attempt == 0:
+                        if attempt == 1:
+                            audit_log_sync("telegram", "ERROR", f"Telegram chunk {i+1}/{total} failed: HTTP {resp.status_code}")
+                            success = False
+                            last_failed = i
+                        else:
                             await asyncio.sleep(1)
                     except Exception as e:
                         if attempt == 0:
