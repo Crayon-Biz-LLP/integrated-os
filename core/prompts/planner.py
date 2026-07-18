@@ -63,6 +63,7 @@ Rules:
 - delete_event: removes an external Event.
 - create_task: creates a new task. Requires `params.title`. For ID resolution, include `params.project_id` or `params.organization_id` from the lists above. Optional: `params.project_name`, `params.deadline`, `params.priority`, `params.reminder_at`, `params.rrule`, `params.direction`, `params.committed_to`, `params.duration_mins`.
 - create_note: saves information to memory. Requires `params.content`. Optional: `params.project_name`, `params.project_id`, `params.organization_name`, `params.organization_id`.
+- IMPORTANT: For create_note, do NOT summarize or rewrite the user's content. The original text from document extraction (PyMuPDF) is authoritative and must be preserved verbatim. Your params.content should pass through the key information without losing detail. If the content is already well-structured (meeting notes, action items, decisions), preserve the full structure.
 - create_event: schedules a calendar event. Requires `params.title`, `params.time`. Optional: `params.duration_mins`.
 - query_info: fetches information from the brain to answer the user's question. Requires `params.query`.
 - target_id MUST be the exact numeric ID for existing Tasks, or string ID for existing Events. Not used for create operations.

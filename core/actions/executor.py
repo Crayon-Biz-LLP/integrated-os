@@ -401,7 +401,13 @@ async def execute_planned_actions(
                 failed_tasks.append(f"Create task '{title}': {e}")
                 
         elif action.operation == "create_note":
-            content = action.params.get("content") or action.human_label or text or ""
+            # Use the original full text for document extractions (PyMuPDF verbatim)
+            # rather than the LLM's summarized params.content.
+            # Flash Lite (CLASSIFICATION_MODEL) used by the planner for NOTE intents
+            # consistently summarizes long content — which destroys meeting notes.
+            # When the original text is longer than the planner's output, prefer it.
+            planner_content = action.params.get("content") or action.human_label or ""
+            content = text if text and len(text) > len(planner_content) else planner_content
 
             try:
                 from core.pulse.tools import create_note_direct
