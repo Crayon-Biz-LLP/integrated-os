@@ -1,40 +1,6 @@
 from core.services.db import get_supabase
 from core.llm import get_embedding
-import asyncio
-from typing import Callable, Dict, Any, List
 from core.lib.audit_logger import audit_log_sync
-
-class ToolRegistry:
-    def __init__(self):
-        self.tools: Dict[str, Callable] = {}
-        
-    def register(self, func: Callable):
-        """Register a python function as a tool."""
-        self.tools[func.__name__] = func
-        return func
-        
-    def get_tools_list(self) -> List[Callable]:
-        return list(self.tools.values())
-        
-    async def execute_tool_call(self, function_call: Any) -> Any:
-        """Execute a tool call returned by the LLM."""
-        name = function_call.name
-        if name not in self.tools:
-            raise ValueError(f"Unknown tool: {name}")
-            
-        # google-genai function_call.args is a dict
-        args = function_call.args
-        if hasattr(args, "model_dump"):
-            args = args.model_dump()
-            
-        func = self.tools[name]
-        if asyncio.iscoroutinefunction(func):
-            return await func(**args)
-        else:
-            return func(**args)
-
-# Global tool registry
-
 
 supabase = get_supabase()
 

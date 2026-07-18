@@ -538,10 +538,22 @@ def _build_rich_anchor(graph_node_id, name):
             .eq('is_current', True) \
             .neq('status', 'done') \
             .neq('status', 'cancelled') \
-            .or_(f"title.ilike.%{name}%,metadata->>entity.ilike.%{name}%") \
+            .ilike('title', f'%{name}%') \
             .order('created_at', desc=True) \
             .limit(1) \
             .execute()
+        if not task_res.data:
+            # Fallback: search via metadata->>entity (PostgREST's or() can't handle ->>)
+            # Note: .filter() handles ->> correctly outside of or() expressions
+            task_res = supabase.table('tasks') \
+                .select('id, title, project_id, organization_id, status') \
+                .eq('is_current', True) \
+                .neq('status', 'done') \
+                .neq('status', 'cancelled') \
+                .filter('metadata->>entity', 'ilike', f'%{name}%') \
+                .order('created_at', desc=True) \
+                .limit(1) \
+                .execute()
         if task_res.data:
             t = task_res.data[0]
             anchor["last_task_id"] = str(t['id'])

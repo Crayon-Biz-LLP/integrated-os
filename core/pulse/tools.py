@@ -2,151 +2,15 @@ import asyncio
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import List
 
 from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import get_supabase, maybe_single_safe
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
 from core.actions import ActionResult, accumulate_action
-from core.lib.graph_rules import normalize_label
 from core.lib.state_machines import guard_require_valid_transition
 
 supabase = get_supabase()
-
-class ToolRegistry:
-    def __init__(self):
-        self.tools = {}
-        
-    def register(self, func):
-        self.tools[func.__name__] = func
-        return func
-        
-    def get_tools_list(self):
-        return list(self.tools.values())
-        
-    async def execute_tool_call(self, function_call):
-        name = function_call.name
-        if name not in self.tools:
-            raise ValueError(f"Unknown tool: {name}")
-            
-        args = function_call.args
-        if hasattr(args, "model_dump"):
-            args = args.model_dump()
-            
-        func = self.tools[name]
-        if asyncio.iscoroutinefunction(func):
-            return await func(**args)
-        else:
-            return func(**args)
-
-rhodey_tools = ToolRegistry()
-
-class HitlInterrupt(Exception):
-    def __init__(self, action: str, reason: str, pending_id: str = None):
-        self.action = action
-        self.reason = reason
-        self.pending_id = pending_id
-
-# -----------------
-# Rhodey Tools
-# -----------------
-
-@rhodey_tools.register
-def ask_user_approval(action: str, reason: str):
-    """Ask the user for approval before performing a sensitive action. The run pauses here."""
-    raise HitlInterrupt(action, reason)
-
-@rhodey_tools.register
-def save_briefing(text: str):
-    """Saves the final strategic briefing text to the system for the user to read."""
-    supabase.table('core_config').upsert({
-        "key": "latest_briefing",
-        "content": text
-    }, on_conflict="key").execute()
-    return "Briefing saved successfully."
-
-@rhodey_tools.register
-def create_project(name: str, description: str = "", keywords: List[str] = None, organization_name: str = None, client_organization_name: str = None):
-    """Creates a new project. Optionally provide organization_name and client_organization_name for proper org routing."""
-    from core.features import is_org_routing_enabled
-    
-    try:
-        data = {
-            "name": name,
-            "description": description,
-            "context": "work",
-            "status": "active",
-            "is_active": True,
-            "keywords": keywords or []
-        }
-        
-        org_id = None
-        client_org_id = None
-        
-        if is_org_routing_enabled() and (organization_name or client_organization_name):
-            orgs_res = supabase.table('organizations').select('id, name').execute()
-            orgs_dict = {o['name'].lower(): o['id'] for o in (orgs_res.data or [])}
-
-            if organization_name:
-                if organization_name.lower() in orgs_dict:
-                    org_id = orgs_dict[organization_name.lower()]
-                    data['organization_id'] = org_id
-                else:
-                    # Unknown org — write signal so Pulse can surface it, then reject
-                    try:
-                        supabase.table('project_creation_signals').insert({
-                            "project_name": f"{name} [unknown_org={organization_name}]",
-                            "source": "create_project_tool",
-                        }).execute()
-                    except Exception as sig_e:
-                        audit_log_sync("tools", "WARNING", f"Failed to write project_creation_signal: {sig_e}")
-                    return (
-                        f"Error creating project: organization '{organization_name}' not found. "
-                        "Ask the user to approve this org via Decisions first, or use an existing org name."
-                    )
-
-            if client_organization_name:
-                if client_organization_name.lower() in orgs_dict:
-                    client_org_id = orgs_dict[client_organization_name.lower()]
-                else:
-                    return (
-                        f"Error creating project: client organization '{client_organization_name}' not found. "
-                        "Ask the user to approve this org via Decisions first, or use an existing org name."
-                    )
-
-        res = supabase.table('projects').insert(data).execute()
-        
-        if res.data:
-            proj_id = res.data[0]['id']
-            
-            if is_org_routing_enabled():
-                if org_id:
-                    supabase.table('project_organizations').insert({
-                        "project_id": proj_id,
-                        "organization_id": org_id,
-                        "role": "performer"
-                    }).execute()
-                if client_org_id and client_org_id != org_id:
-                    supabase.table('project_organizations').insert({
-                        "project_id": proj_id,
-                        "organization_id": client_org_id,
-                        "role": "client"
-                    }).execute()
-            
-            # Create graph node
-            supabase.table('graph_nodes').insert({
-                "label": name,
-                "type": "project",
-                "normalized_label": normalize_label(name),
-                "metadata": {"source": "pulse_tools", "project_id": str(proj_id)}
-            }).execute()
-            return f"Project created with ID {proj_id}"
-    except Exception as e:
-        return f"Error creating project: {str(e)}"
-    return "Failed to create project."
-
-@rhodey_tools.register
 
 def _resolve_project_and_org_id(project_name: str = None, organization_name: str = None):
     """Resolve names to (project_id, organization_id)."""
@@ -420,7 +284,6 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
 
 
 
-
 def update_task_status(task_id: int, status: str = "done", duration_mins: int = 15, reminder_at: str = None, recurrence: str = None):
     """Updates a task's status (done/cancelled/todo) and reschedules it if a new reminder_at is provided."""
     try:
@@ -498,104 +361,6 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
         return f"OK: Task {task_id} updated successfully."
     except Exception as e:
         return f"FAIL: Error updating task {task_id}: {e}"
-
-@rhodey_tools.register
-def create_person(name: str, context: str):
-    """Records a new person in the Knowledge Graph."""
-    try:
-        existing_node = maybe_single_safe(supabase.table('pending_nodes').select('id').eq('label', name).eq('node_type', 'person').in_('status', ['pending', 'flagged']))
-        if existing_node and existing_node.data:
-            return f"Person '{name}' already pending approval (ID: {existing_node.data['id']})."
-
-        existing_live = maybe_single_safe(supabase.table('graph_nodes').select('id, db_record_id, canonical_id').eq('label', name).eq('type', 'person').eq('is_current', True))
-        if existing_live and existing_live.data:
-            if existing_live.data.get('canonical_id'):
-                from core.lib.graph_rules import get_canonical_id
-                c_id = get_canonical_id(existing_live.data['id'])
-                c_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('id', c_id))
-                if c_node and c_node.data and c_node.data.get('db_record_id'):
-                    return f"Person '{name}' was merged. ID {c_node.data['db_record_id']}"
-            db_id = existing_live.data.get('db_record_id')
-            return f"Person '{name}' already exists in graph.{' ID ' + str(db_id) if db_id else ''}"
-
-        res = supabase.table('pending_nodes').insert({
-            "label": name,
-            "type": "person",
-            "status": "pending",
-            "source_text": f"pulse_tools: {context[:100]}",
-            "metadata": {"source": "pulse_tools", "context": context}
-        }).execute()
-        if res.data:
-            pending_id = res.data[0]['id']
-            from core.lib.graph_rules import insert_pending_edge
-            insert_pending_edge(
-                "Danny",
-                name,
-                "KNOWS",
-                {"source_text": "pulse_tools_create_person", "source_type": "person", "target_type": "person"}
-            )
-            return f"Person '{name}' queued for approval (pending ID: {pending_id})."
-    except Exception as e:
-        return f"Error: {e}"
-    return "Failed to create person."
-
-@rhodey_tools.register
-def link_resource_to_cluster(resource_id: int, cluster_name: str):
-    """Links an existing resource to a cluster (creating the cluster if it doesn't exist)."""
-    try:
-        exist = maybe_single_safe(supabase.table('clusters').select('id').ilike('title', cluster_name))
-        if exist.data:
-            c_id = exist.data['id']
-        else:
-            c_res = supabase.table('clusters').insert({"title": cluster_name, "status": "active"}).execute()
-            c_id = c_res.data[0]['id']
-            
-        supabase.table('resources').update({"cluster_id": c_id}).eq('id', resource_id).execute()
-        return f"Resource {resource_id} linked to cluster {cluster_name}"
-    except Exception as e:
-        return f"Error linking resource: {e}"
-
-@rhodey_tools.register
-def log_audit_message(message: str, level: str = "INFO"):
-    """Logs an internal system message for observability."""
-    audit_log_sync("pulse_agent", level, message)
-    return "Logged."
-
-
-@rhodey_tools.register
-async def execute_planned_actions(operations: list, chat_id: int = None):
-    """Execute a list of planned actions through the Action Planner.
-
-    Each operation should have:
-      - operation: str (create_task, create_note, close_task, etc.)
-      - target_id: str (optional, for existing tasks)
-      - params: dict (operation-specific parameters)
-      - human_label: str (optional, user-facing description)
-
-    Goes through validate_operation() and compensate_action() for safety.
-    """
-    from core.actions.models import Action
-    from core.actions.executor import execute_planned_actions as _exec
-    import os
-    
-    action_objects = []
-    for op in operations:
-        action_objects.append(Action(
-            operation=op.get("operation", "no_op"),
-            target_id=op.get("target_id"),
-            params=op.get("params", {}),
-            human_label=op.get("human_label", "")
-        ))
-    
-    await _exec(
-        actions=action_objects,
-        chat_id=chat_id or int(os.getenv("TELEGRAM_CHAT_ID", "0")),
-        source="pulse_tools_executor",
-        sender="rhodey",
-        suppress_telegram=True,
-    )
-    return f"Executed {len(action_objects)} action(s)."
-
 
 def skip_recurring_instance(task_id: int, date_str: str = None):
     """Skip (delete) a single occurrence of a recurring event/task.

@@ -154,7 +154,7 @@ async def execute_planned_actions(
       - #4: compensate_action() rolls back completed actions if a later one fails
       - Creates tasks/notes/events via direct DB inserts (create_task_direct/create_note_direct).
       - Handles closures via existing update_task_status.
-      - suppress_telegram: skip Telegram notifications (used by ToolRegistry wrapper).
+      - suppress_telegram: skip Telegram notifications.
     """
     if not actions:
         if not suppress_telegram:
