@@ -543,14 +543,13 @@ def _build_rich_anchor(graph_node_id, name):
             .limit(1) \
             .execute()
         if not task_res.data:
-            # Fallback: search via metadata->>entity (PostgREST's or() can't handle ->>)
-            # Note: .filter() handles ->> correctly outside of or() expressions
+            # Fallback: JSONB contains on metadata.entity (PostgREST can't handle ->> in filters)
             task_res = supabase.table('tasks') \
                 .select('id, title, project_id, organization_id, status') \
                 .eq('is_current', True) \
                 .neq('status', 'done') \
                 .neq('status', 'cancelled') \
-                .filter('metadata->>entity', 'ilike', f'%{name}%') \
+                .contains('metadata', {"entity": name}) \
                 .order('created_at', desc=True) \
                 .limit(1) \
                 .execute()
@@ -950,19 +949,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             audit_log_sync("webhook", "ERROR", f"interrogate_brain JSON parse failed: {e}. Failing closed.")
             answer = "\U0001f9e0 *I found some information, but had trouble formatting it safely.*"
         
-        proactive_msg = ""
-        if active_anchor:
-            from core.pulse.proactive import check_proactive_signals
-            try:
-                proactive_msg = await asyncio.wait_for(
-                    check_proactive_signals(active_anchor["name"]), timeout=1.5
-                )
-            except asyncio.TimeoutError:
-                proactive_msg = ""
-            
         final_reply = f"{header}\n\n{answer}"
-        if proactive_msg:
-            final_reply += f"\n\n{proactive_msg}"
             
         _last_reply = final_reply
         await send_telegram(chat_id, final_reply)
