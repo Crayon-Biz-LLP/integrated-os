@@ -62,7 +62,8 @@ class ContextProvider:
             'people': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:people"),
             'calendar': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:calendar"),
             'recent_tasks': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:recent_tasks"),
-            'organizations': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:organizations")
+            'organizations': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:organizations"),
+            'graph_nodes': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:graph_nodes")
         }
         
     def cosine_similarity(self, vec_a, vec_b):
@@ -131,6 +132,27 @@ class ContextProvider:
         events.sort(key=lambda x: x.get("time", ""))
         self.caches['calendar'].set(events)
         return events
+
+    async def get_graph_nodes(self):
+        """Fetch all active person/organization/project graph nodes with TTL caching.
+        
+        Single source of truth for the graph_nodes ALL-type query.
+        Multiple callers across interrogate_brain() and sub-fetchers
+        reuse the cache instead of issuing 5+ redundant HTTP requests.
+        Returns list of dicts with id, label, type, normalized_label.
+        """
+        cached = self.caches['graph_nodes'].get()
+        if cached is not None:
+            return cached
+        
+        res = supabase.table('graph_nodes') \
+            .select('id, label, type, normalized_label') \
+            .in_('type', ['person', 'organization', 'project']) \
+            .eq('is_current', True) \
+            .execute()
+        nodes = res.data or []
+        self.caches['graph_nodes'].set(nodes)
+        return nodes
 
     async def get_people(self):
         cached = self.caches['people'].get()
@@ -214,11 +236,14 @@ class ContextProvider:
         cache_set(cache_key, events, ttl=120)
         return events
 
-    async def get_resources_context(self, query_text: str, match_count: int = 5):
+    async def get_resources_context(self, query_text: str, match_count: int = 5, precomputed_embedding: list = None):
         if not query_text:
             return "None"
         try:
-            embedding = (await get_embedding(query_text)).vector
+            if precomputed_embedding:
+                embedding = precomputed_embedding
+            else:
+                embedding = (await get_embedding(query_text)).vector
             if not embedding:
                 return "None"
             res = supabase.rpc('match_resources', {
@@ -235,6 +260,58 @@ class ContextProvider:
             return "\n".join(lines)
         except Exception as e:
             audit_log_sync('context', 'WARNING', f'Resource hydration failed: {e}')
+            return "None"
+
+    async def get_email_context(self, query_text: str, match_count: int = 3, precomputed_embedding: list = None):
+        if not query_text:
+            return "None"
+        try:
+            if precomputed_embedding:
+                embedding = precomputed_embedding
+            else:
+                embedding = (await get_embedding(query_text)).vector
+            if not embedding:
+                return "None"
+            res = supabase.rpc('match_emails_hybrid', {
+                'query_embedding': embedding,
+                'match_count': match_count,
+                'match_threshold': 0.5
+            }).execute()
+            emails = res.data or []
+            if not emails:
+                return "None"
+            lines = []
+            for e in emails:
+                lines.append(f"- From {e.get('sender', '')}: {e.get('subject', '')} ({e.get('body_summary', '')})")
+            return "\n".join(lines)
+        except Exception as e:
+            audit_log_sync('context', 'WARNING', f'Email hydration failed: {e}')
+            return "None"
+
+    async def get_whatsapp_context(self, query_text: str, match_count: int = 5, precomputed_embedding: list = None):
+        if not query_text:
+            return "None"
+        try:
+            if precomputed_embedding:
+                embedding = precomputed_embedding
+            else:
+                embedding = (await get_embedding(query_text)).vector
+            if not embedding:
+                return "None"
+            res = supabase.rpc('match_whatsapp_hybrid', {
+                'query_embedding': embedding,
+                'match_count': match_count,
+                'match_threshold': 0.5
+            }).execute()
+            msgs = res.data or []
+            if not msgs:
+                return "None"
+            lines = []
+            for m in msgs:
+                lines.append(f"- {m.get('sender_name', '')}: {m.get('message_text', '')}")
+            return "\n".join(lines)
+        except Exception as e:
+            audit_log_sync('context', 'WARNING', f'WhatsApp hydration failed: {e}')
             return "None"
 
     async def get_practices_context(self):
@@ -422,52 +499,6 @@ class ContextProvider:
         except Exception as e:
             audit_log_sync('context', 'WARNING', f'Memory hydration failed: {e}')
             return [] if return_raw else "None"
-
-    async def get_email_context(self, query_text: str, match_count: int = 3):
-        if not query_text:
-            return "None"
-        try:
-            embedding = (await get_embedding(query_text)).vector
-            if not embedding:
-                return "None"
-            res = supabase.rpc('match_emails_hybrid', {
-                'query_embedding': embedding,
-                'match_count': match_count,
-                'match_threshold': 0.5
-            }).execute()
-            emails = res.data or []
-            if not emails:
-                return "None"
-            lines = []
-            for e in emails:
-                lines.append(f"- From {e.get('sender', '')}: {e.get('subject', '')} ({e.get('body_summary', '')})")
-            return "\n".join(lines)
-        except Exception as e:
-            audit_log_sync('context', 'WARNING', f'Email hydration failed: {e}')
-            return "None"
-
-    async def get_whatsapp_context(self, query_text: str, match_count: int = 5):
-        if not query_text:
-            return "None"
-        try:
-            embedding = (await get_embedding(query_text)).vector
-            if not embedding:
-                return "None"
-            res = supabase.rpc('match_whatsapp_hybrid', {
-                'query_embedding': embedding,
-                'match_count': match_count,
-                'match_threshold': 0.5
-            }).execute()
-            msgs = res.data or []
-            if not msgs:
-                return "None"
-            lines = []
-            for m in msgs:
-                lines.append(f"- {m.get('sender_name', '')}: {m.get('message_text', '')}")
-            return "\n".join(lines)
-        except Exception as e:
-            audit_log_sync('context', 'WARNING', f'WhatsApp hydration failed: {e}')
-            return "None"
 
     async def get_pending_decisions_context(self):
         try:

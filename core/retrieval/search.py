@@ -835,20 +835,34 @@ async def search_memories_compat(
     enabled = use_associative if use_associative is not None else config.associative_enabled
     if enabled:
         bundle = await associative_retrieve(query=query_text, top_k=top_k)
+        if not bundle.items:
+            return []
         results = []
         now_iso = datetime.now(timezone.utc).isoformat()
-        for item in bundle.items:
-            mem = supabase.table("memories") \
+        
+        # Batch-fetch all memory contents in a single query instead of N sequential queries
+        memory_ids = [item.memory_id for item in bundle.items]
+        mem_map = {}
+        try:
+            mem_res = supabase.table("memories") \
                 .select("id, content, memory_type, created_at, expires_at") \
-                .eq("id", item.memory_id) \
-                .maybe_single() \
+                .in_("id", memory_ids) \
                 .execute()
-            if mem and mem.data:
-                expires = mem.data.get("expires_at")
-                if expires and expires < now_iso:
-                    continue
-                mem.data["similarity"] = item.score
-                results.append(mem.data)
+            if mem_res and mem_res.data:
+                for row in mem_res.data:
+                    mid = row["id"]
+                    expires = row.get("expires_at")
+                    if expires and expires < now_iso:
+                        continue
+                    mem_map[mid] = row
+        except Exception:
+            pass
+        
+        for item in bundle.items:
+            row = mem_map.get(item.memory_id)
+            if row:
+                row["similarity"] = item.score
+                results.append(row)
         return results
 
     from core.llm import get_embedding as _get_embedding

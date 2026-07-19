@@ -1,5 +1,6 @@
 import contextvars
 import re
+import re as _re
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
@@ -162,3 +163,94 @@ def validate_action_claims(text: str, evidence: list[ActionResult]) -> tuple[str
                 text = text[:m.start()] + rewrite + text[m.end():]
                 
     return text, downgrades
+
+
+# ──────────────────────────────────────────
+# Factual claim validation (date hallucination guard)
+# ──────────────────────────────────────────
+
+# Match "15 July 2026", "July 15, 2026", "15th July", "Jul 15" — month+day patterns
+_DATE_PATTERNS = [
+    _re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*(?:(\d{4}))?\b", _re.I),
+    _re.compile(r"\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(?:(\d{4}))?\b", _re.I),
+]
+
+
+def _normalize_date_text(text: str) -> str:
+    """Normalize date-like strings to a canonical form for comparison.
+    E.g., '15 July 2026' and 'July 15, 2026' both become '15/july/2026'."""
+    month_map = {
+        'january': '1', 'february': '2', 'march': '3', 'april': '4',
+        'may': '5', 'june': '6', 'july': '7', 'august': '8',
+        'september': '9', 'october': '10', 'november': '11', 'december': '12',
+        'jan': '1', 'feb': '2', 'mar': '3', 'apr': '4', 'jun': '6',
+        'jul': '7', 'aug': '8', 'sep': '9', 'oct': '10', 'nov': '11', 'dec': '12'
+    }
+    text_lower = text.lower().strip().rstrip(',').rstrip('.')
+    for pattern in _DATE_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            groups = m.groups()
+            # First group is day in pattern 1, month in pattern 2
+            if groups[0].lower() in month_map:
+                # Pattern 2: "July 15, 2026" — month first
+                month = month_map[groups[0].lower()]
+                day = groups[1]
+                year = groups[2] or ''
+            else:
+                # Pattern 1: "15 July 2026" — day first
+                day = groups[0]
+                month = month_map.get(groups[1].lower(), '0')
+                year = groups[2] or ''
+            return f"{day}/{month}/{year}"
+    return text_lower
+
+
+def validate_factual_claims(response_text: str, context_str: str) -> tuple[str, list[dict]]:
+    """
+    Scan the LLM response for date references and verify each one exists
+    in the context string. If an unbacked date is found, flag it.
+
+    Returns (cleaned_text, hallucination_events) where hallucination_events
+    are dicts with keys: date_mentioned, context_found (bool).
+    """
+    hallucination_events = []
+    
+    # Normalize context for comparison
+    context_lower = context_str.lower()
+    
+    # Find all date-like patterns in the response
+    seen_dates = set()
+    for pattern in _DATE_PATTERNS:
+        for m in pattern.finditer(response_text):
+            raw = m.group(0)
+            if raw in seen_dates:
+                continue
+            seen_dates.add(raw)
+            
+            norm = _normalize_date_text(raw)
+            
+            # Check if this date (or parts of it) appears in the context
+            date_in_context = norm.lower() in context_lower
+            
+            # Also check for the raw date string in context
+            if not date_in_context:
+                date_in_context = raw.rstrip(',').rstrip('.').lower() in context_lower
+            
+            # Also check for partial matches (e.g. "15 July" in context but year differs)
+            if not date_in_context and '/' in norm:
+                parts = norm.split('/')
+                if len(parts) >= 2:
+                    day_month = f"{parts[0]}/{parts[1]}"
+                    for word in context_lower.split():
+                        if day_month in word:
+                            date_in_context = True
+                            break
+            
+            hallucination_events.append({
+                "date_mentioned": raw,
+                "normalized": norm,
+                "context_found": date_in_context
+            })
+    
+    return response_text, hallucination_events

@@ -16,6 +16,7 @@ from core.prompts.briefing import build_daily_brief_prompt
 from core.webhook.utils import supabase
 from core.pulse.graph import hybrid_search_graph
 from core.lib.decision_audit import log_decision, DecisionStage, set_decision_chain_id, get_decision_chain_id
+from core.actions import validate_factual_claims
 from core.lib.graph_rules import normalize_label
 
 
@@ -460,6 +461,9 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
 _searching_locks = set()
 
 async def delayed_searching_msg(chat_id: int):
+    """Send 'Searching your vault...' after a brief delay.
+    Can be cancelled if the response completes before the delay fires.
+    Now invoked from handler.py BEFORE classification to give immediate feedback."""
     try:
         await asyncio.sleep(0.8)
         if chat_id in _searching_locks:
@@ -502,7 +506,41 @@ def resolve_dates_from_query(query: str):
             start = today + timedelta(days=days_ahead)
             end = start + timedelta(hours=23, minutes=59, seconds=59)
             return start, end
-            
+    
+    # Try parsing specific date formats: "15 July 2026", "July 15, 2026", "15th July"
+    import re
+    month_names = r'(january|february|march|april|may|june|july|august|september|october|november|december)'
+    month_abbr = r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)'
+    month_pat = f'({month_names}|{month_abbr})'
+    # Pattern 1: "15 July 2026" or "15th July"
+    m = re.search(rf'\b(\d{{1,2}})(?:st|nd|rd|th)?\s+{month_pat}\s*(\d{{4}})?\b', low, re.I)
+    if m:
+        day = int(m.group(1))
+        month_str = m.group(2).lower()
+        year_str = m.group(5)
+        month_map = {'january':1,'february':2,'march':3,'april':4,'may':5,'june':6,'july':7,'august':8,'september':9,'october':10,'november':11,'december':12,
+                     'jan':1,'feb':2,'mar':3,'apr':4,'jun':6,'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12}
+        month = month_map.get(month_str, 0)
+        year = int(year_str) if year_str else today.year
+        if month > 0:
+            start = today.replace(year=year, month=month, day=min(day, 28), hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(hours=23, minutes=59, seconds=59)
+            return start, end
+    # Pattern 2: "July 15, 2026" or "July 15th"
+    m = re.search(rf'{month_pat}\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s*(\d{{4}})?\b', low, re.I)
+    if m:
+        month_str = m.group(1).lower()
+        day = int(m.group(4))
+        year_str = m.group(5)
+        month_map = {'january':1,'february':2,'march':3,'april':4,'may':5,'june':6,'july':7,'august':8,'september':9,'october':10,'november':11,'december':12,
+                     'jan':1,'feb':2,'mar':3,'apr':4,'jun':6,'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12}
+        month = month_map.get(month_str, 0)
+        year = int(year_str) if year_str else today.year
+        if month > 0:
+            start = today.replace(year=year, month=month, day=min(day, 28), hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(hours=23, minutes=59, seconds=59)
+            return start, end
+    
     return None, None
 
 async def safe_fetch(coro, default=None):
@@ -542,17 +580,9 @@ def _build_rich_anchor(graph_node_id, name):
             .order('created_at', desc=True) \
             .limit(1) \
             .execute()
-        if not task_res.data:
-            # Fallback: JSONB contains on metadata.entity (PostgREST can't handle ->> in filters)
-            task_res = supabase.table('tasks') \
-                .select('id, title, project_id, organization_id, status') \
-                .eq('is_current', True) \
-                .neq('status', 'done') \
-                .neq('status', 'cancelled') \
-                .contains('metadata', {"entity": name}) \
-                .order('created_at', desc=True) \
-                .limit(1) \
-                .execute()
+        # NOTE: Removed broken JSONB .contains('metadata', {"entity": name}) fallback
+        # that was causing 400 Bad Request. The ILIKE title match above is sufficient
+        # for entity-anchored task lookups.
         if task_res.data:
             t = task_res.data[0]
             anchor["last_task_id"] = str(t['id'])
@@ -580,6 +610,9 @@ def _build_rich_anchor(graph_node_id, name):
 async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None) -> str | None:
     search_task = None
     _last_reply = None
+    # 'Searching your vault...' message is now dispatched from handler.py
+    # BEFORE classify_intent(), ensuring immediate feedback. This block
+    # manages the lock for cancellation/cleanup on this code path.
     if chat_id not in _searching_locks:
         _searching_locks.add(chat_id)
         search_task = asyncio.create_task(delayed_searching_msg(chat_id))
@@ -672,11 +705,21 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
 
         tactical_map_task = safe_fetch(hybrid_search_graph(search_term, active_anchor["id"] if active_anchor else None), "")
         tasks_task = safe_fetch(context_provider.hydrate_tasks_context(query), ("", "")) if (fetch_all or is_action or is_schedule) else safe_fetch(_empty_fetch(("", "")), ("", ""))
-        memories_task = safe_fetch(context_provider.hydrate_memories_context(query), "None") if (fetch_all or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
-        resources_task = safe_fetch(context_provider.get_resources_context(query), "None") if (fetch_all or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
-        practices_task = safe_fetch(context_provider.get_practices_context(), "None") if (fetch_all or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
-        emails_task = safe_fetch(context_provider.get_email_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None")
-        whatsapp_task = safe_fetch(context_provider.get_whatsapp_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None")
+        memories_task = safe_fetch(context_provider.hydrate_memories_context(query), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
+        # Pre-compute single query embedding — shared across all 3 hybrid RPCs (resources, email, whatsapp)
+        # Previously each method called get_embedding() independently, wasting ~1.5s on duplicate API calls
+        _shared_embedding = None
+        try:
+            _emb_result = await get_embedding(query)
+            if _emb_result and _emb_result.vector:
+                _shared_embedding = _emb_result.vector
+        except Exception:
+            pass
+        
+        resources_task = safe_fetch(context_provider.get_resources_context(query, precomputed_embedding=_shared_embedding), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
+        practices_task = safe_fetch(context_provider.get_practices_context(), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
+        emails_task = safe_fetch(context_provider.get_email_context(query, precomputed_embedding=_shared_embedding), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None")
+        whatsapp_task = safe_fetch(context_provider.get_whatsapp_context(query, precomputed_embedding=_shared_embedding), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None")
         pending_decisions_task = safe_fetch(context_provider.get_pending_decisions_context(), "None")
         
         async def fetch_people():
@@ -948,6 +991,15 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         except Exception as e:
             audit_log_sync("webhook", "ERROR", f"interrogate_brain JSON parse failed: {e}. Failing closed.")
             answer = "\U0001f9e0 *I found some information, but had trouble formatting it safely.*"
+        
+        # Post-generation factual claim validation — detect unbacked dates
+        if answer and context_str:
+            _, hallucination_events = validate_factual_claims(answer, context_str)
+            unbacked = [e for e in hallucination_events if not e.get("context_found")]
+            if unbacked:
+                date_list = ", ".join(e["date_mentioned"] for e in unbacked)
+                audit_log_sync("webhook", "WARNING", 
+                    f"interrogate_brain factual hallucination: dates not in context: {date_list} | query='{query[:80]}'")
         
         final_reply = f"{header}\n\n{answer}"
             
