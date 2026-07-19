@@ -148,18 +148,24 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
             recent_done_text=fmt_list(recently_completed)
         )
 
-        response = await generate_content_with_fallback(
-            prompt=prompt,
-            workload=WorkloadProfile.INTERACTIVE,
-            primary_model=CLASSIFICATION_MODEL,
-            config={'response_mime_type': 'application/json', 'max_output_tokens': 800}
-        )
-        try:
-            data = response.parse_json()
-            reply = data.get("user_facing_summary", "").strip()
-        except Exception as e:
-            audit_log_sync("webhook", "ERROR", f"Daily brief JSON parse failed: {e}. Failing closed.")
-            reply = None
+        # ── Stream daily brief ──
+        from core.lib.stream_adapter import TelegramStreamAdapter
+        from core.llm.stream_provider import stream_with_fallback
+        
+        reply = None
+        async with TelegramStreamAdapter(chat_id) as adapter:
+            await adapter.send_header(f"\U0001f4cb *{day_label}'s Briefing*\n\n")
+            brief_text = ""
+            async for token in stream_with_fallback(
+                prompt=prompt,
+                workload=WorkloadProfile.INTERACTIVE,
+                primary_model=CLASSIFICATION_MODEL,
+            ):
+                brief_text += token
+                await adapter.send_chunk(token)
+            
+            await adapter.send_complete()
+            reply = brief_text.strip()
 
     except Exception as e:
         audit_log_sync("webhook", "WARNING", f"Daily brief generation failed: {e}")
@@ -182,8 +188,7 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
         if not events_list and not active_tasks_list:
             fallback_lines.append(f"\nNothing on for {day_label.lower()}.")
         reply = "\n".join(fallback_lines)
-
-    await send_telegram(chat_id, f"{reply}")
+        await send_telegram(chat_id, f"{reply}")
 
     if session_id:
         log_exchange(session_id, 'bot', 'DAILY_BRIEF', reply, chat_id)
@@ -703,7 +708,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
 
         async def _empty_fetch(val): return val
 
-        tactical_map_task = safe_fetch(hybrid_search_graph(search_term, active_anchor["id"] if active_anchor else None), "")
+        tactical_map_task = safe_fetch(hybrid_search_graph(search_term, active_anchor["id"] if active_anchor else None), "") if (fetch_all or is_action) else safe_fetch(_empty_fetch(""), "")
         tasks_task = safe_fetch(context_provider.hydrate_tasks_context(query), ("", "")) if (fetch_all or is_action or is_schedule) else safe_fetch(_empty_fetch(("", "")), ("", ""))
         memories_task = safe_fetch(context_provider.hydrate_memories_context(query), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
         # Pre-compute single query embedding — shared across all 3 hybrid RPCs (resources, email, whatsapp)
@@ -847,7 +852,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 return "None"
             return "\n".join(lines)
             
-        raw_comms_task = safe_fetch(fetch_raw_comms(), "None")
+        raw_comms_task = safe_fetch(fetch_raw_comms(), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None")
 
         async def fetch_canonical():
             if not active_anchor and not resolved_entity:
@@ -965,7 +970,6 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             header = "\U0001f9e0 Here's what I found:"
 
         now_str = now_ist().strftime('%A, %d %B %Y, %H:%M %p IST')
-        prompt = build_interrogate_brain_prompt(now_str, sources_str, context_str, conversation_history, query)
 
         entity_name = active_anchor["name"] if active_anchor else resolved_entity
         retrieved_items = [{"id": src, "content": src, "score": 1.0, "source": "interrogate_brain"} for src in available_sources]
@@ -978,34 +982,39 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             summary=f"interrogate_brain: {len(available_sources)} sources consulted \u2014 {sources_str}"
         )
 
-        response = await generate_content_with_fallback(
-            prompt=prompt,
-            workload=WorkloadProfile.INTERACTIVE,
-            primary_model=CLASSIFICATION_MODEL,
-            config={'response_mime_type': 'application/json', 'max_output_tokens': 800}
+        # ── Stream response via Gemini streaming ──
+        from core.lib.stream_adapter import TelegramStreamAdapter
+        from core.llm.stream_provider import stream_with_fallback
+        
+        # Build a streaming prompt — no JSON wrapper, plain text output
+        stream_prompt = build_interrogate_brain_prompt(
+            now_str, sources_str, context_str, conversation_history, query, streaming=True
         )
-
-        try:
-            data = response.parse_json()
-            answer = data.get("user_facing_summary", "").strip()
-        except Exception as e:
-            audit_log_sync("webhook", "ERROR", f"interrogate_brain JSON parse failed: {e}. Failing closed.")
-            answer = "\U0001f9e0 *I found some information, but had trouble formatting it safely.*"
         
-        # Post-generation factual claim validation — detect unbacked dates
-        if answer and context_str:
-            _, hallucination_events = validate_factual_claims(answer, context_str)
-            unbacked = [e for e in hallucination_events if not e.get("context_found")]
-            if unbacked:
-                date_list = ", ".join(e["date_mentioned"] for e in unbacked)
-                audit_log_sync("webhook", "WARNING", 
-                    f"interrogate_brain factual hallucination: dates not in context: {date_list} | query='{query[:80]}'")
-        
-        final_reply = f"{header}\n\n{answer}"
+        # Stream to Telegram progressively
+        async with TelegramStreamAdapter(chat_id) as adapter:
+            await adapter.send_header(f"{header}\n\n")
+            answer = ""
+            async for token in stream_with_fallback(
+                prompt=stream_prompt,
+                workload=WorkloadProfile.INTERACTIVE,
+                primary_model=CLASSIFICATION_MODEL,
+            ):
+                answer += token
+                await adapter.send_chunk(token)
             
+            # Stream complete — flush any remaining text
+            if not answer.strip():
+                # Empty response safety net — streaming or fallback yielded nothing
+                await adapter.flush_text(f"{header}\n\n\U0001f9e0 *I found some information, but had trouble formatting it safely.*")
+                answer = "\U0001f9e0 *I found some information, but had trouble formatting it safely.*"
+            else:
+                await adapter.send_complete()
+            final_reply = f"{header}\n\n{answer.strip()}"
+        
         _last_reply = final_reply
-        await send_telegram(chat_id, final_reply)
-
+        
+        # Log exchange and persist state AFTER streaming completes
         if session_id:
             meta = {}
             if active_anchor:
@@ -1020,7 +1029,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 except Exception as persist_e:
                     audit_log_sync("webhook", "WARNING", f"Failed to persist end-of-query anchor: {persist_e}")
             _persist_chain_id(session_id)
-
+        
         try:
             supabase.table('raw_dumps').insert([{
                 "content": final_reply,
@@ -1037,6 +1046,15 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             }]).execute()
         except Exception as log_err:
             audit_log_sync("webhook", "WARNING", f"Failed to log query response to raw_dumps: {log_err}")
+        
+        # Post-generation factual claim validation — detect unbacked dates
+        if answer and context_str:
+            _, hallucination_events = validate_factual_claims(answer, context_str)
+            unbacked = [e for e in hallucination_events if not e.get("context_found")]
+            if unbacked:
+                date_list = ", ".join(e["date_mentioned"] for e in unbacked)
+                audit_log_sync("webhook", "WARNING", 
+                    f"interrogate_brain factual hallucination: dates not in context: {date_list} | query='{query[:80]}'")
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Interrogation error: {e}")
