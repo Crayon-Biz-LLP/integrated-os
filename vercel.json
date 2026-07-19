@@ -1,8 +1,8 @@
 {
+  "fluid": true,
   "functions": {
     "api/index.py": {
-      "maxDuration": 60,
-      "fluid": true
+      "maxDuration": 60
     }
   },
   "rewrites": [
