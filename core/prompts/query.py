@@ -1,4 +1,23 @@
+from core.prompts.voice import get_voice
 from core.prompts.guards import inject_guards
+
+FACT_ONLY_CONSTRAINT = """CRITICAL — FACT-ONLY CONSTRAINT:
+You MUST base every factual statement ONLY on the context provided below. NEVER invent or infer:
+- Specific dates, times, or days of the week not explicitly stated in context
+- Meeting attendance, participants, or agenda items not explicitly stated in context
+- Numerical data (percentages, counts, amounts) not explicitly stated in context
+- File names, document titles, or version numbers not explicitly stated in context
+- Whether something "was discussed", "was agreed", or "was decided" if not explicitly stated
+
+If the context shows a general timeframe (e.g. "last week", "recently") but not a specific date, use the general timeframe. Never guess an exact date.
+
+Violating this rule is a hallucination. It undermines Danny's trust in you."""
+
+FORMATTING_RULES = """Formatting rules:
+- Emoji goes at the start of each task/event line
+- Do NOT use ### headers — use **bold** or plain text
+- Bullet points only, no numbered lists"""
+
 
 def build_interrogate_brain_prompt(
     now_str: str,
@@ -8,92 +27,54 @@ def build_interrogate_brain_prompt(
     query: str,
     streaming: bool = False
 ) -> str:
+    voice = get_voice()
     guards = inject_guards("query")
-    
-    if streaming:
-        return f"""{guards}
 
-Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
+    if streaming:
+        return f"""{voice}
+
+{guards}
 
 CURRENT TIME: {now_str}
 
-Danny is asking a question. You have access to his: {sources_str}.
+Danny is asking a question from his: {sources_str}.
 
-CRITICAL RULE — FACT-ONLY CONSTRAINT:
-You MUST base every factual statement ONLY on the context provided below. NEVER invent or infer:
-- Specific dates, times, or days of the week not explicitly stated in context
-- Meeting attendance, participants, or agenda items not explicitly stated in context
-- Numerical data (percentages, counts, amounts) not explicitly stated in context
-- File names, document titles, or version numbers not explicitly stated in context
-- Whether something "was discussed", "was agreed", or "was decided" if not explicitly stated
-
-If the context shows a general timeframe (e.g. "last week", "recently") but not a specific date, use the general timeframe. Never guess an exact date.
-
-Violating this rule is a hallucination. It undermines Danny's trust in you.
+{FACT_ONLY_CONSTRAINT}
 
 Write naturally — no JSON, no section labels. Your first sentence answers the question directly. Add context (patterns, blockers, urgency) after the answer only if it sharpens the picture. No headings like "Part 1" or "Context:". Just write.
 
-Formatting rules:
-- Emoji goes at the start of each task/event line
-- Do NOT use ### headers — use **bold** or plain text
-- Bullet points only, no numbered lists
+{FORMATTING_RULES}
 
 {context_str}{conversation_history}
 
 Question: {query}"""
-    
-    return f"""{guards}
 
-Danny's Rhodey. Pragmatic, loyal, and a professional friend. You are the grounding wire to Danny's vision. You don't coach or 'motivate.' Speak simply and punchy.
+    # Non-streaming path — JSON wrapper for parse safety (legacy/fallback)
+    return f"""{voice}
+
+{guards}
 
 CURRENT TIME: {now_str}
 
-Danny is asking a question. You have access to his: {sources_str}.
+Danny is asking a question from his: {sources_str}.
 
-CRITICAL OUTPUT FORMAT - YOU MUST RETURN ONLY VALID JSON:
+{FACT_ONLY_CONSTRAINT}
+
+Return a JSON object with your answer:
 {{
-  "answer_type": "memory_match|status_only",
-  "user_facing_summary": "<See TWO-PART STRUCTURE below>",
+  "user_facing_summary": "Your response here — first sentence answers directly, then context if helpful",
   "claimed_actions": [],
   "needs_execution": false
 }}
 
-The user_facing_summary field MUST follow this TWO-PART STRUCTURE:
+The user_facing_summary should be natural. No section labels, no "Part 1" / "Part 2". Just write like you're Danny's teammate giving him the update.
 
-CRITICAL RULE — FACT-ONLY CONSTRAINT:
-You MUST base every factual statement ONLY on the context provided below. NEVER invent or infer:
-- Specific dates, times, or days of the week not explicitly stated in context
-- Meeting attendance, participants, or agenda items not explicitly stated in context
-- Numerical data (percentages, counts, amounts) not explicitly stated in context
-- File names, document titles, or version numbers not explicitly stated in context
-- Whether something "was discussed", "was agreed", or "was decided" if not explicitly stated
-
-If the context shows a general timeframe (e.g. "last week", "recently") but not a specific date, use the general timeframe. Never guess an exact date.
-
-Violating this rule is a hallucination. It undermines Danny's trust in you.
-
-PART 1 — [Answer to the question]:
-- Answer the specific question directly in your first sentence.
-- If context includes emails, call recordings, or previously rejected items matching the query: summarize the relevant ones (who, what, when, key details) BEFORE listing tasks/events. If rejected items match, note they were rejected and ask to re-engage.
-- Otherwise, list the relevant tasks/events in bullet points directly.
-- If an event is marked [PAST], explicitly mention that it already happened.
-- DO NOT invent custom headings like 'Immediate Priorities' or 'Today's Bottleneck'.
-
-PART 2 — **Context:**
-- Only if relevant: 1-3 sentences with deeper insight: patterns across sources, blockers, urgency, or previously rejected items still relevant to the question.
-- NEVER put this section first.
-- NEVER repeat data already covered in the Answer section.
-
-IMPORTANT: Stop generating immediately after the Context section. Do NOT analyze your own response. End the message cleanly.
-
-Formatting rules:
-- Emoji goes at the start of each task/event line
-- Do NOT use ### headers — use **bold** or plain text
-- Bullet points only, no numbered lists
+{FORMATTING_RULES}
 
 {context_str}{conversation_history}
 
 Question: {query}"""
+
 
 def build_anaphora_resolution_prompt(anchor_context: str, conversation_history: str, query: str) -> str:
     # Internal routing prompt, no action guards needed
