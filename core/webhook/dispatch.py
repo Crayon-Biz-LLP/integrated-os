@@ -5,13 +5,13 @@ from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import age_tag, IST_TIMEZONE, now_ist
 from core.pulse.context import context_provider
-from core.lib.conversation import get_history, log_exchange, format_history_for_prompt, get_thread_summary
+from core.lib.conversation import get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
 from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_BY_KEYWORD
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.actions import capture_response
-from core.prompts.query import build_interrogate_brain_prompt, build_anaphora_resolution_prompt
+from core.prompts.query import build_interrogate_brain_prompt, new_anaphora_prompt, get_query_type_sections
 from core.prompts.briefing import build_daily_brief_prompt
 from core.webhook.utils import supabase
 from core.pulse.graph import hybrid_search_graph
@@ -426,7 +426,19 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
     task_update_id = task_update_id if task_update_id is not None else (classification.get('task_update_id') if classification else None)
 
     if intent == 'QUERY':
-        reply = await interrogate_brain(text, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
+        # Generate truncated conversation context for anaphora resolution
+        # — avoids passing 100+ exchanges to the anaphora LLM
+        classify_ctx = ""  # Will be populated below if session_id exists
+        if not classify_ctx and session_id:
+            try:
+                _pairs = get_history(session_id, max_tokens=2000)
+                classify_ctx = format_classify_context(_pairs, 
+                    thread_summary=get_thread_summary(session_id), active_anchor=active_anchor)
+            except Exception:
+                classify_ctx = ""
+        reply = await interrogate_brain(text, chat_id, session_id=session_id, 
+            conversation_history=history_text, active_anchor=active_anchor,
+            classify_context=classify_ctx)
         if contains_hidden:
             from core.actions.planner import plan_actions
             from core.actions.executor import execute_planned_actions
@@ -615,7 +627,39 @@ def _build_rich_anchor(graph_node_id, name):
         pass
     return anchor
 
-async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None) -> str | None:
+
+class SharedQueryContext:
+    """Caches expensive results (embedding, tasks, people) within one interrogate_brain call.
+    Prevents redundant DB/API roundtrips when multiple context sections need the same data."""
+    
+    def __init__(self, query_text: str):
+        self.query_text = query_text
+        self._embedding = None
+        self._active_tasks = None
+        self._people = None
+    
+    async def get_embedding(self):
+        if self._embedding is None:
+            try:
+                emb_result = await get_embedding(self.query_text)
+                if emb_result and emb_result.vector:
+                    self._embedding = emb_result.vector
+            except Exception:
+                pass
+        return self._embedding
+    
+    async def get_active_tasks(self):
+        if self._active_tasks is None:
+            self._active_tasks = await context_provider.get_active_tasks()
+        return self._active_tasks
+    
+    async def get_people(self):
+        if self._people is None:
+            self._people = await context_provider.get_people()
+        return self._people
+
+
+async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None, classify_context: str = "") -> str | None:
     search_task = None
     _last_reply = None
     # 'Searching your vault...' message is now dispatched from handler.py
@@ -626,8 +670,27 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         search_task = asyncio.create_task(delayed_searching_msg(chat_id))
         
     try:
-        resolved_entity = None
-        try:
+        # ── Shared context for this interrogation ──
+        _shared = SharedQueryContext(query)
+        
+        # ── Determine date range and keyword-based flags (Phase 1 — no entity needed) ──
+        start_dt, end_dt = resolve_dates_from_query(query)
+        
+        lq = query.lower()
+        is_schedule = any(w in lq for w in ['calendar', 'schedule', 'meeting', 'meet', 'today', 'tomorrow', 'week', 'when'])
+        is_comms = any(w in lq for w in ['email', 'message', 'said', 'told', 'chat', 'whatsapp', 'contact'])
+        is_action = any(w in lq for w in ['task', 'todo', 'block', 'status', 'progress', 'done', 'completed'])
+        
+        fetch_all = not (is_schedule or is_comms or is_action)
+        
+        async def _empty_fetch(val): return val
+        
+        # ── PHASE 1: Start ALL independent work in parallel ──
+        # Everything in Phase 1 has ZERO dependency on entity resolution:
+        # anaphora LLM, embedding, and 11 context sections start simultaneously.
+        
+        # Anaphora resolution — with TRUNCATED context (classify_context, not full history)
+        async def _resolve_anaphora():
             anchor_context = ""
             if active_anchor:
                 parts = [f"Active context: {active_anchor.get('name', '')}"]
@@ -643,28 +706,179 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 thread_summary = get_thread_summary(session_id)
             if thread_summary:
                 anchor_context += f"\nEarlier in conversation: {thread_summary[:500]}"
-            resolve_prompt = build_anaphora_resolution_prompt(anchor_context, conversation_history, query)
-
+            
+            # Use classify_context (truncated to last exchange + thread summary)
+            # instead of full conversation_history (saves ~14s on long threads)
+            resolve_prompt = new_anaphora_prompt(anchor_context, classify_context, query)
+            
             resolve_response = await generate_content_with_fallback(
                 prompt=resolve_prompt,
                 workload=WorkloadProfile.INTERACTIVE,
                 primary_model=CLASSIFICATION_MODEL,
                 config={'response_mime_type': 'application/json'}
             )
+            entity, query_type, resolved_query_text = None, "general", None
             if resolve_response and resolve_response.text:
                 try:
                     data = json.loads(resolve_response.text.strip())
-                    resolved_query = data.get("resolved_query", "").strip()
-                    if resolved_query and resolved_query.lower() != query.lower() and resolved_query.lower() != "none":
-                        query = resolved_query
+                    resolved_query_text = data.get("resolved_query", "").strip()
                     ent = data.get("primary_entity", "").strip()
                     if ent and ent.lower() != "none":
-                        resolved_entity = ent
+                        entity = ent
+                    qt = data.get("query_type", "").strip().lower()
+                    if qt in ("relationship", "status_update", "historical", "schedule", "people"):
+                        query_type = qt
                 except json.JSONDecodeError:
                     pass
+            return entity, query_type, resolved_query_text
+        
+        # Start anaphora and embedding immediately (they run in background)
+        _anaphora_future = asyncio.create_task(_resolve_anaphora())
+        _embedding_future = asyncio.create_task(_shared.get_embedding())
+        
+        # Start non-entity-dependent context fetches in parallel with anaphora
+        _phase1_tasks = []
+        
+        # Memories, resources, practices — no entity dependency
+        _p1_memories = asyncio.create_task(safe_fetch(
+            context_provider.hydrate_memories_context(query), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_memories)
+        
+        _p1_resources = asyncio.create_task(safe_fetch(
+            context_provider.get_resources_context(query), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_resources)
+        
+        _p1_practices = asyncio.create_task(safe_fetch(
+            context_provider.get_practices_context(), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_practices)
+        
+        # People (uses SharedQueryContext for caching)
+        async def _fetch_people():
+            people = await _shared.get_people()
+            if not people:
+                return "None"
+            return ", ".join([p.get("name", "") for p in people if p.get("name")])
+        _p1_people = asyncio.create_task(safe_fetch(_fetch_people(), "None") if (fetch_all or is_comms or is_schedule) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_people)
+        
+        # Completed tasks
+        async def _fetch_completed():
+            completed = await context_provider.get_recently_completed_tasks()
+            if not completed:
+                return "None"
+            return "\n".join([f"- {t.get('title', '')}" for t in completed])
+        _p1_completed = asyncio.create_task(safe_fetch(_fetch_completed(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_completed)
+        
+        # Calendar (uses start_dt/end_dt from query, not entity)
+        async def _fetch_calendar():
+            if start_dt is None or end_dt is None:
+                return "None"
+            events = await context_provider.get_range_calendar_events(start_dt, end_dt)
+            if not events:
+                return "None"
+            now_local = now_ist()
+            lines = []
+            for e in events:
+                time_str = e.get("time", "")
+                t_display = time_str[:16].replace("T", " ") if time_str else ""
+                if time_str:
+                    try:
+                        event_dt = datetime.fromisoformat(time_str)
+                        if event_dt < now_local:
+                            lines.append(f"- [PAST] {t_display} {e.get('title', '')} ({e.get('source', '')})")
+                            continue
+                    except Exception:
+                        pass
+                lines.append(f"- {t_display} {e.get('title', '')} ({e.get('source', '')})")
+            return "\n".join(lines)
+        _p1_calendar = asyncio.create_task(safe_fetch(_fetch_calendar(), "None") if (fetch_all or is_schedule or start_dt is not None) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_calendar)
+        
+        # Temporal patterns
+        async def _fetch_temporal():
+            from core.pulse.memory import detect_temporal_patterns
+            return await detect_temporal_patterns()
+        _p1_temporal = asyncio.create_task(safe_fetch(_fetch_temporal(), "None") if (fetch_all) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_temporal)
+        
+        # Serendipity (uses SharedQueryContext for tasks + people caching)
+        async def _fetch_serendipity():
+            from core.pulse.memory import serendipity_engine
+            tasks = await _shared.get_active_tasks()
+            people = await _shared.get_people()
+            return await serendipity_engine(tasks, people, [], max_paths=5)
+        _p1_serendipity = asyncio.create_task(safe_fetch(_fetch_serendipity(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_serendipity)
+        
+        # Hindsight (uses SharedQueryContext for tasks caching)
+        async def _fetch_hindsight():
+            from core.pulse.memory import retrieve_hindsight_memories
+            tasks = await _shared.get_active_tasks()
+            memories_raw, _ = await retrieve_hindsight_memories([query], tasks, top_k=5)
+            if memories_raw:
+                cleaned = [m.replace("[MEMORY CONTEXT ONLY \u2014 DO NOT LIST IN BRIEFING] ", "") for m in memories_raw]
+                return "\n".join(cleaned)
+            return "None"
+        _p1_hindsight = asyncio.create_task(safe_fetch(_fetch_hindsight(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_hindsight)
+        
+        # Pending decisions — always loaded
+        _p1_pending = asyncio.create_task(safe_fetch(context_provider.get_pending_decisions_context(), "None"))
+        _phase1_tasks.append(_p1_pending)
+        
+        # Projects
+        async def _fetch_projects():
+            try:
+                res = supabase.table('projects').select('name, status, organization_id, organizations(name)').eq('is_current', True).neq('status', 'archived').order('name').execute()
+                if res.data:
+                    lines = []
+                    for p in res.data:
+                        org_name = p.get('organizations', {}).get('name', 'INBOX') if p.get('organizations') else 'INBOX'
+                        lines.append(f"- [{org_name}] {p.get('name')} ({p.get('status')})")
+                    return "\n".join(lines)
+            except Exception:
+                pass
+            return "None"
+        _p1_projects = asyncio.create_task(safe_fetch(_fetch_projects(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_projects)
+        
+        # Emails (embedding-independent for now; shared embedding applied later)
+        _p1_emails = asyncio.create_task(safe_fetch(
+            context_provider.get_email_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_emails)
+        
+        # WhatsApp
+        _p1_whatsapp = asyncio.create_task(safe_fetch(
+            context_provider.get_whatsapp_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1_tasks.append(_p1_whatsapp)
+        
+        # ── AWAIT ANAPHORA (entity resolves now, while Phase 1 tasks continue in background) ──
+        resolved_entity = None
+        query_type = "general"
+        try:
+            _entity, _query_type, _resolved_query = await _anaphora_future
+            if _resolved_query and _resolved_query.lower() != query.lower() and _resolved_query.lower() != "none":
+                query = _resolved_query
+            if _entity:
+                resolved_entity = _entity
+            query_type = _query_type
+            
+            # Refine context selection flags based on query_type
+            if query_type != "general":
+                _qt = get_query_type_sections(query_type)
+                if _qt.get("fetch_all"):
+                    fetch_all = True
+                if _qt.get("is_action"):
+                    is_action = True
+                if _qt.get("is_schedule"):
+                    is_schedule = True
+                if _qt.get("is_comms"):
+                    is_comms = True
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Anaphora/Entity resolution failed: {e}")
-
+        
+        # ── Entity resolution: resolve to graph node, build anchor ──
         if resolved_entity:
             try:
                 node_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{resolved_entity}%').eq('is_current', True).execute()
@@ -697,177 +911,23 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                             audit_log_sync("webhook", "WARNING", f"Failed to persist active_anchor: {persist_e}")
             except Exception as e:
                 audit_log_sync("webhook", "WARNING", f"Anchor node lookup failed: {e}")
-
+        
+        # ── PHASE 2: Entity-dependent context tasks ──
+        # These start NOW while Phase 1 tasks may still be completing
         search_term = active_anchor["name"] if active_anchor else query
-
-        start_dt, end_dt = resolve_dates_from_query(query)
-        
-        lq = query.lower()
-        is_schedule = any(w in lq for w in ['calendar', 'schedule', 'meeting', 'meet', 'today', 'tomorrow', 'week', 'when'])
-        is_comms = any(w in lq for w in ['email', 'message', 'said', 'told', 'chat', 'whatsapp', 'contact'])
-        is_action = any(w in lq for w in ['task', 'todo', 'block', 'status', 'progress', 'done', 'completed'])
-        
-        fetch_all = not (is_schedule or is_comms or is_action)
-
-        async def _empty_fetch(val): return val
-
-        tactical_map_task = safe_fetch(hybrid_search_graph(search_term, active_anchor["id"] if active_anchor else None), "") if (fetch_all or is_action) else safe_fetch(_empty_fetch(""), "")
-        # Pass resolved entity name to filter tasks — prevents hallucination where
-        # ALL system-wide tasks appear under "Active Tasks" for an entity-specific query
         _entity_for_tasks = resolved_entity or (active_anchor.get("name") if active_anchor else None)
-        tasks_task = safe_fetch(context_provider.hydrate_tasks_context(query, entity_name=_entity_for_tasks), ("", "")) if (fetch_all or is_action or is_schedule) else safe_fetch(_empty_fetch(("", "")), ("", ""))
-        memories_task = safe_fetch(context_provider.hydrate_memories_context(query), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
-        # Pre-compute single query embedding — shared across all 3 hybrid RPCs (resources, email, whatsapp)
-        # Previously each method called get_embedding() independently, wasting ~1.5s on duplicate API calls
-        _shared_embedding = None
-        try:
-            _emb_result = await get_embedding(query)
-            if _emb_result and _emb_result.vector:
-                _shared_embedding = _emb_result.vector
-        except Exception:
-            pass
         
-        resources_task = safe_fetch(context_provider.get_resources_context(query, precomputed_embedding=_shared_embedding), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
-        practices_task = safe_fetch(context_provider.get_practices_context(), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
-        emails_task = safe_fetch(context_provider.get_email_context(query, precomputed_embedding=_shared_embedding), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None")
-        whatsapp_task = safe_fetch(context_provider.get_whatsapp_context(query, precomputed_embedding=_shared_embedding), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None")
-        pending_decisions_task = safe_fetch(context_provider.get_pending_decisions_context(), "None")
+        _phase2_tasks = []
         
-        async def fetch_people():
-            people = await context_provider.get_people()
-            if not people:
-                return "None"
-            return ", ".join([p.get("name", "") for p in people if p.get("name")])
-        people_task = safe_fetch(fetch_people(), "None") if (fetch_all or is_comms or is_schedule) else safe_fetch(_empty_fetch("None"), "None")
+        _p2_tactical = asyncio.create_task(safe_fetch(
+            hybrid_search_graph(search_term, active_anchor["id"] if active_anchor else None), "") if (fetch_all or is_action) else safe_fetch(_empty_fetch(""), ""))
+        _phase2_tasks.append(_p2_tactical)
         
-        async def fetch_completed():
-            completed = await context_provider.get_recently_completed_tasks()
-            if not completed:
-                return "None"
-            return "\n".join([f"- {t.get('title', '')}" for t in completed])
-        completed_task = safe_fetch(fetch_completed(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None")
+        _p2_tasks = asyncio.create_task(safe_fetch(
+            context_provider.hydrate_tasks_context(query, entity_name=_entity_for_tasks), ("", "")) if (fetch_all or is_action or is_schedule) else safe_fetch(_empty_fetch(("", "")), ("", "")))
+        _phase2_tasks.append(_p2_tasks)
         
-        async def fetch_calendar():
-            if start_dt is None or end_dt is None:
-                return "None"
-            events = await context_provider.get_range_calendar_events(start_dt, end_dt)
-            if not events:
-                return "None"
-            now_local = now_ist()
-            lines = []
-            for e in events:
-                time_str = e.get("time", "")
-                t_display = time_str[:16].replace("T", " ") if time_str else ""
-                if time_str:
-                    try:
-                        event_dt = datetime.fromisoformat(time_str)
-                        if event_dt < now_local:
-                            lines.append(f"- [PAST] {t_display} {e.get('title', '')} ({e.get('source', '')})")
-                            continue
-                    except Exception:
-                        pass
-                lines.append(f"- {t_display} {e.get('title', '')} ({e.get('source', '')})")
-            return "\n".join(lines)
-        calendar_task = safe_fetch(fetch_calendar(), "None") if (fetch_all or is_schedule or start_dt is not None) else safe_fetch(_empty_fetch("None"), "None")
-
-        async def fetch_temporal():
-            from core.pulse.memory import detect_temporal_patterns
-            return await detect_temporal_patterns()
-        temporal_task = safe_fetch(fetch_temporal(), "None") if (fetch_all) else safe_fetch(_empty_fetch("None"), "None")
-
-        async def fetch_serendipity():
-            from core.pulse.memory import serendipity_engine
-            tasks = await context_provider.get_active_tasks()
-            people = await context_provider.get_people()
-            return await serendipity_engine(tasks, people, [], max_paths=5)
-        serendipity_task = safe_fetch(fetch_serendipity(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None")
-
-        async def fetch_hindsight():
-            from core.pulse.memory import retrieve_hindsight_memories
-            tasks = await context_provider.get_active_tasks()
-            memories_raw, _ = await retrieve_hindsight_memories([query], tasks, top_k=5)
-            if memories_raw:
-                cleaned = [m.replace("[MEMORY CONTEXT ONLY \u2014 DO NOT LIST IN BRIEFING] ", "") for m in memories_raw]
-                return "\n".join(cleaned)
-            return "None"
-        hindsight_task = safe_fetch(fetch_hindsight(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None")
-
-        async def fetch_raw_comms():
-            if not active_anchor and not resolved_entity:
-                return "None"
-            search_val = (active_anchor["name"] if active_anchor else resolved_entity).lower().replace(',', ' ')
-            if not search_val or search_val == "none" or len(search_val) < 3:
-                return "None"
-                
-            lines = []
-            try:
-                now_iso = datetime.now(timezone.utc).isoformat()
-                e_res = supabase.table('messages').select('id, subject, sender_name, sender_id, body, received_at, processing_status, direction, metadata') \
-                    .eq('channel', 'email') \
-                    .or_(f"subject.ilike.%{search_val}%,body.ilike.%{search_val}%,sender_id.ilike.%{search_val}%") \
-                    .in_('processing_status', ['pending', 'completed']) \
-                    .or_(f"expires_at.is.null,expires_at.gte.{now_iso}") \
-                    .order('received_at', desc=True).limit(8).execute()
-                
-                found_sent = False
-                if e_res.data:
-                    for e in e_res.data:
-                        direction = e.get('direction', 'incoming')
-                        if direction == 'outgoing':
-                            found_sent = True
-                            preview = (e.get('body') or '').replace('\n', ' ')[:150]
-                            lines.append(f"{age_tag(e.get('received_at'))} - [YOUR REPLY] Re: {e.get('subject', '')}: \"{preview}\"... (to {e.get('sender_id', '')})")
-                        else:
-                            lines.append(f"{age_tag(e.get('received_at'))} - [EMAIL] {e.get('subject', '')} (from {e.get('sender_name') or e.get('sender_id', '')}, status: {e.get('processing_status', '')})")
-                            
-                if not found_sent:
-                    try:
-                        from core.email_search import search_gmail_sent, search_outlook_sent
-                        import asyncio
-                        g_task = asyncio.to_thread(search_gmail_sent, search_val, 2)
-                        o_task = asyncio.to_thread(search_outlook_sent, search_val, 2)
-                        g_res, o_res = await asyncio.gather(g_task, o_task)
-                        for msg in g_res + o_res:
-                            preview = (msg.get('body_summary') or '').replace('\n', ' ')[:150]
-                            lines.append(f"- [YOUR REPLY] Re: {msg.get('subject', '')}: \"{preview}\"... (to {msg.get('sender_email', '')}) - REALTIME API")
-                    except Exception as e:
-                        audit_log_sync("webhook", "WARNING", f"Fallback realtime sent fetch failed: {e}")
-            except Exception:
-                pass
-                
-            try:
-                now_iso = datetime.now(timezone.utc).isoformat()
-                w_res = supabase.table('messages').select('id, sender_name, body, received_at').eq('channel', 'whatsapp').ilike('body', f"%{search_val}%").or_(f"expires_at.is.null,expires_at.gte.{now_iso}").order('received_at', desc=True).limit(3).execute()
-                if w_res.data:
-                    for w in w_res.data:
-                        sender_name = (w.get('sender_name') or '').lower().strip()
-                        if sender_name in BOT_SENDERS:
-                            continue
-                        text = w.get('body', '').replace('\n', ' ')[:100]
-                        lines.append(f"{age_tag(w.get('received_at'))} - [WHATSAPP] {text}... (from {w.get('sender_name', '')})")
-            except Exception:
-                pass
-                
-            try:
-                c_res = supabase.table('call_recordings').select('id, drive_file_name, transcript, created_at').ilike('transcript', f"%{search_val}%").order('created_at', desc=True).limit(2).execute()
-                if c_res.data:
-                    for c in c_res.data:
-                        text = c.get('transcript', '').replace('\n', ' ')[:150]
-                        lines.append(f"{age_tag(c.get('created_at'))} - [CALL RECORDING] {c.get('drive_file_name', '')}: {text}...")
-            except Exception:
-                pass
-                
-            if not lines:
-                return "None"
-            return "\n".join(lines)
-            
-        # Raw comms only for explicit message/email queries — for general "update" queries,
-        # the pgvector-based whatsapp_context and email_context already provide the relevant items.
-        # Including raw_comms for general queries causes duplicate data (same message in both
-        # WHATSAPP and RAW COMMS sections), confusing the LLM with reinforced old data.
-        raw_comms_task = safe_fetch(fetch_raw_comms(), "None") if is_comms else safe_fetch(_empty_fetch("None"), "None")
-
-        async def fetch_canonical():
+        async def _fetch_canonical():
             if not active_anchor and not resolved_entity:
                 return "None"
             search_val = (active_anchor["name"] if active_anchor else resolved_entity)
@@ -882,41 +942,129 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                     task_history_idx = c.find("## Task History")
                     if task_history_idx != -1:
                         c = c[:task_history_idx].strip()
-                    # Safety cap at 2000 chars
                     c = c[:2000]
                     synth_at = (res.data[0].get('last_synth_at') or '')[:10]
-                    return f"{res.data[0].get('title')}: [HISTORICAL — synthesized {synth_at}]\n{c}"
+                    return f"{res.data[0].get('title')}: [HISTORICAL \u2014 synthesized {synth_at}]\n{c}"
             except Exception:
                 pass
             return "None"
-        canonical_task = safe_fetch(fetch_canonical(), "None")
-
-        async def fetch_projects():
+        _p2_canonical = asyncio.create_task(safe_fetch(_fetch_canonical(), "None"))
+        _phase2_tasks.append(_p2_canonical)
+        
+        # Raw comms only for explicit message/email queries
+        async def _fetch_raw_comms():
+            if not active_anchor and not resolved_entity:
+                return "None"
+            search_val = (active_anchor["name"] if active_anchor else resolved_entity).lower().replace(',', ' ')
+            if not search_val or search_val == "none" or len(search_val) < 3:
+                return "None"
+            lines = []
             try:
-                res = supabase.table('projects').select('name, status, organization_id, organizations(name)').eq('is_current', True).neq('status', 'archived').order('name').execute()
-                if res.data:
-                    lines = []
-                    for p in res.data:
-                        org_name = p.get('organizations', {}).get('name', 'INBOX') if p.get('organizations') else 'INBOX'
-                        lines.append(f"- [{org_name}] {p.get('name')} ({p.get('status')})")
-                    return "\n".join(lines)
+                now_iso = datetime.now(timezone.utc).isoformat()
+                e_res = supabase.table('messages').select('id, subject, sender_name, sender_id, body, received_at, processing_status, direction, metadata') \
+                    .eq('channel', 'email') \
+                    .or_(f"subject.ilike.%{search_val}%,body.ilike.%{search_val}%,sender_id.ilike.%{search_val}%") \
+                    .in_('processing_status', ['pending', 'completed']) \
+                    .or_(f"expires_at.is.null,expires_at.gte.{now_iso}") \
+                    .order('received_at', desc=True).limit(8).execute()
+                found_sent = False
+                if e_res.data:
+                    for e in e_res.data:
+                        direction = e.get('direction', 'incoming')
+                        if direction == 'outgoing':
+                            found_sent = True
+                            preview = (e.get('body') or '').replace('\n', ' ')[:150]
+                            lines.append(f"{age_tag(e.get('received_at'))} - [YOUR REPLY] Re: {e.get('subject', '')}: \"{preview}\"... (to {e.get('sender_id', '')})")
+                        else:
+                            lines.append(f"{age_tag(e.get('received_at'))} - [EMAIL] {e.get('subject', '')} (from {e.get('sender_name') or e.get('sender_id', '')}, status: {e.get('processing_status', '')})")
+                if not found_sent:
+                    try:
+                        from core.email_search import search_gmail_sent, search_outlook_sent
+                        import asyncio
+                        g_task = asyncio.to_thread(search_gmail_sent, search_val, 2)
+                        o_task = asyncio.to_thread(search_outlook_sent, search_val, 2)
+                        g_res, o_res = await asyncio.gather(g_task, o_task)
+                        for msg in g_res + o_res:
+                            preview = (msg.get('body_summary') or '').replace('\n', ' ')[:150]
+                            lines.append(f"- [YOUR REPLY] Re: {msg.get('subject', '')}: \"{preview}\"... (to {msg.get('sender_email', '')}) - REALTIME API")
+                    except Exception as e:
+                        audit_log_sync("webhook", "WARNING", f"Fallback realtime sent fetch failed: {e}")
             except Exception:
                 pass
-            return "None"
-        projects_task = safe_fetch(fetch_projects(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None")
-
-        results = await asyncio.gather(
-            tactical_map_task, tasks_task, memories_task, resources_task,
-            practices_task, people_task, completed_task, calendar_task,
-            emails_task, whatsapp_task, pending_decisions_task,
-            temporal_task, serendipity_task, hindsight_task, raw_comms_task,
-            canonical_task, projects_task
-        )
-        tactical_map, (compressed_tasks, _), memories_context, resources_context, \
-            practices_context, people_context, completed_context, calendar_context, \
-            emails_context, whatsapp_context, pending_decisions_context, \
-            temporal_context, serendipity_context, hindsight_context, raw_comms_context, \
-            canonical_context, projects_context = results
+            try:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                w_res = supabase.table('messages').select('id, sender_name, body, received_at').eq('channel', 'whatsapp').ilike('body', f"%{search_val}%").or_(f"expires_at.is.null,expires_at.gte.{now_iso}").order('received_at', desc=True).limit(3).execute()
+                if w_res.data:
+                    for w in w_res.data:
+                        sender_name = (w.get('sender_name') or '').lower().strip()
+                        if sender_name in BOT_SENDERS:
+                            continue
+                        text = w.get('body', '').replace('\n', ' ')[:100]
+                        lines.append(f"{age_tag(w.get('received_at'))} - [WHATSAPP] {text}... (from {w.get('sender_name', '')})")
+            except Exception:
+                pass
+            try:
+                c_res = supabase.table('call_recordings').select('id, drive_file_name, transcript, created_at').ilike('transcript', f"%{search_val}%").order('created_at', desc=True).limit(2).execute()
+                if c_res.data:
+                    for c in c_res.data:
+                        text = c.get('transcript', '').replace('\n', ' ')[:150]
+                        lines.append(f"{age_tag(c.get('created_at'))} - [CALL RECORDING] {c.get('drive_file_name', '')}: {text}...")
+            except Exception:
+                pass
+            if not lines:
+                return "None"
+            return "\n".join(lines)
+        _p2_raw_comms = asyncio.create_task(safe_fetch(_fetch_raw_comms(), "None") if is_comms else safe_fetch(_empty_fetch("None"), "None"))
+        _phase2_tasks.append(_p2_raw_comms)
+        
+        # ── AWAIT ALL pending tasks ──
+        # Phase 1 tasks + Phase 2 tasks have been running in parallel all along.
+        # The total wall-clock time = max(anaphora_time + phase2_time, phase1_time)
+        _all_results = await asyncio.gather(*_phase1_tasks, *_phase2_tasks)
+        
+        # Unpack: Phase 1 = 13 tasks, Phase 2 = 4 tasks
+        _p1_count = len(_phase1_tasks)
+        _r1 = _all_results[:_p1_count]
+        _r2 = _all_results[_p1_count:]
+        
+        _ri = 0
+        memories_context = _r1[_ri]
+        _ri += 1
+        resources_context = _r1[_ri]
+        _ri += 1
+        practices_context = _r1[_ri]
+        _ri += 1
+        people_context = _r1[_ri]
+        _ri += 1
+        completed_context = _r1[_ri]
+        _ri += 1
+        calendar_context = _r1[_ri]
+        _ri += 1
+        temporal_context = _r1[_ri]
+        _ri += 1
+        serendipity_context = _r1[_ri]
+        _ri += 1
+        hindsight_context = _r1[_ri]
+        _ri += 1
+        pending_decisions_context = _r1[_ri]
+        _ri += 1
+        projects_context = _r1[_ri]
+        _ri += 1
+        emails_context = _r1[_ri]
+        _ri += 1
+        whatsapp_context = _r1[_ri]
+        _ri += 1
+        
+        _ri = 0
+        tactical_map = _r2[_ri]
+        _ri += 1
+        _tasks_tup = _r2[_ri]
+        _ri += 1
+        compressed_tasks = _tasks_tup[0] if isinstance(_tasks_tup, tuple) else (_tasks_tup or "")
+        canonical_context = _r2[_ri]
+        _ri += 1
+        raw_comms_context = _r2[_ri]
+        _ri += 1
 
         available_sources = []
         all_context = []
