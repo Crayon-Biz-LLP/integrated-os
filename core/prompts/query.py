@@ -20,12 +20,26 @@ CONTEXT_SECTION_RULES = """The context below is organized into labelled sections
 - **RECENTLY COMPLETED TASKS**: Tasks closed recently. These are done.
 - **RELEVANT MEMORIES / HINDSIGHT MEMORIES / ON THIS DAY**: Historical records, past notes, temporal patterns.
 - **TACTICAL MAP / SERENDIPITY / canonical pages**: Graph connections and background intelligence. ***CRITICAL:** Tasks listed under headings like 'Active Tasks' within canonical pages are historical records from past synthesis — do NOT present them as current active tasks.*
-- **ALL OTHER SECTIONS** (emails, whatsapp, resources, calendar, people, practices, projects): Supporting context."""
+- **ALL OTHER SECTIONS** (emails, whatsapp, resources, calendar, people, practices, projects): Supporting context.
+
+***CRITICAL — TASK SOURCE OF TRUTH:***
+Each context item is tagged with its source section using `[source:section_name]`. For example:
+- `[source:active_tasks]` — a current active task. ONLY items with this tag are current tasks.
+- `[source:canonical]` — historical background knowledge. NOT a current task.
+- `[source:memories]` — a past memory or note. NOT a current task.
+- `[source:emails]`, `[source:whatsapp]` — past communications. NOT a current task.
+- `[source:completed_tasks]` — a task that's already done. NOT a current task.
+- Any item with `[BACKGROUND — NOT a current task]` appended is explicitly NOT a current task.
+
+**If the ACTIVE TASKS section is empty for a specific entity, say "None" or "No active tasks." NEVER reformat items from other sections (memories, canonical pages, WhatsApp, emails, etc.) into task items. They are context and background — not a to-do list.**"""
 
 FORMATTING_RULES = """Formatting rules:
 - Emoji goes at the start of each task/event line
 - Do NOT use ### headers — use **bold** or plain text
-- Bullet points only, no numbered lists"""
+- Bullet points only, no numbered lists
+- **Do NOT invent custom section headings** like "Immediate Priorities", "Scheduled", "Today's Bottleneck", or "Summary". Just write naturally.
+- **Do NOT include intent labels** like TASK, NOTE, or QUERY in your response text.
+- **Cite your sources**: When you mention information from a specific section, note which source it came from. E.g., "From the email thread with Anita..." or "Marcus mentioned in a WhatsApp message..." rather than making unsourced claims."""
 
 
 def build_interrogate_brain_prompt(

@@ -19,6 +19,7 @@ from core.lib.decision_audit import log_decision, DecisionStage, set_decision_ch
 from core.actions import validate_factual_claims
 from core.lib.graph_rules import normalize_label
 from core.lib.constants import BOT_SENDERS
+import re
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:
@@ -920,56 +921,66 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         available_sources = []
         all_context = []
         
+        # ── Context Assembly with Source Tags ──
+        # Layer 1+2: Every section is tagged with [source:name] so the LLM
+        # can always trace which data came from which section.
+        # Non-task sections also get a disclaimer that their content is
+        # NOT current active tasks — preventing task hallucination
+        # by burning the source of truth into the data, not just the prompt.
+        
+        def _source_tag(name): return f"[source:{name}]"
+        _HIST_TAG = "[BACKGROUND — NOT a current task]"
+        
         if tactical_map:
-            all_context.append(f"TACTICAL MAP:\n{tactical_map}")
+            all_context.append(f"{_source_tag('tactical_map')} TACTICAL MAP:\n{tactical_map}")
             available_sources.append("tactical map")
         if compressed_tasks:
-            all_context.append(f"ACTIVE TASKS:\n{compressed_tasks}")
+            all_context.append(f"{_source_tag('active_tasks')} ACTIVE TASKS — Danny's live to-do list. ONLY items in this section are current active tasks.:\n{compressed_tasks}")
             available_sources.append("active tasks")
         if pending_decisions_context != "None":
-            all_context.append(pending_decisions_context)
+            all_context.append(f"{_source_tag('pending_decisions')} PENDING APPROVALS — items awaiting Danny's decision (not current tasks):\n{pending_decisions_context}")
             available_sources.append("pending decisions")
         if completed_context != "None":
-            all_context.append(f"RECENTLY COMPLETED TASKS:\n{completed_context}")
+            all_context.append(f"{_source_tag('completed_tasks')} RECENTLY COMPLETED TASKS — these are done. The ACTIVE TASKS section above has what's still pending.:\n{completed_context}")
             available_sources.append("completed tasks")
         if memories_context != "None":
-            all_context.append(f"RELEVANT MEMORIES:\n{memories_context}")
+            all_context.append(f"{_source_tag('memories')} RELEVANT MEMORIES {_HIST_TAG}:\n{memories_context}")
             available_sources.append("vault memories")
         if hindsight_context != "None" and hindsight_context != "":
-            all_context.append(f"HINDSIGHT MEMORIES (Multi-signal):\n{hindsight_context}")
+            all_context.append(f"{_source_tag('hindsight')} HINDSIGHT MEMORIES (Multi-signal) {_HIST_TAG}:\n{hindsight_context}")
             available_sources.append("hindsight memories")
         if temporal_context != "None" and temporal_context != "":
-            all_context.append(f"ON THIS DAY (Temporal patterns):\n{temporal_context}")
+            all_context.append(f"{_source_tag('temporal')} ON THIS DAY (Temporal patterns) {_HIST_TAG}:\n{temporal_context}")
             available_sources.append("temporal patterns")
         if serendipity_context != "None" and "No multi-hop" not in serendipity_context and "No active tasks" not in serendipity_context and "Graph nodes unavailable" not in serendipity_context and "No graph nodes found" not in serendipity_context:
-            all_context.append(f"SERENDIPITY (Hidden graph connections):\n{serendipity_context}")
+            all_context.append(f"{_source_tag('serendipity')} SERENDIPITY (Hidden graph connections) {_HIST_TAG}:\n{serendipity_context}")
             available_sources.append("serendipity connections")
         if emails_context != "None":
-            all_context.append(f"EMAILS:\n{emails_context}")
+            all_context.append(f"{_source_tag('emails')} EMAILS {_HIST_TAG}:\n{emails_context}")
             available_sources.append("emails")
         if whatsapp_context != "None":
-            all_context.append(f"WHATSAPP MESSAGES:\n{whatsapp_context}")
+            all_context.append(f"{_source_tag('whatsapp')} WHATSAPP MESSAGES {_HIST_TAG}:\n{whatsapp_context}")
             available_sources.append("whatsapp messages")
         if resources_context != "None":
-            all_context.append(f"RESOURCES:\n{resources_context}")
+            all_context.append(f"{_source_tag('resources')} RESOURCES {_HIST_TAG}:\n{resources_context}")
             available_sources.append("resources")
         if practices_context != "None":
-            all_context.append(f"PRACTICES:\n{practices_context}")
+            all_context.append(f"{_source_tag('practices')} PRACTICES:\n{practices_context}")
             available_sources.append("practices")
         if people_context != "None":
-            all_context.append(f"PEOPLE:\n{people_context}")
+            all_context.append(f"{_source_tag('people')} PEOPLE:\n{people_context}")
             available_sources.append("people network")
         if calendar_context != "None":
-            all_context.append(f"CALENDAR EVENTS:\n{calendar_context}")
+            all_context.append(f"{_source_tag('calendar')} CALENDAR EVENTS:\n{calendar_context}")
             available_sources.append("calendar events")
         if raw_comms_context != "None":
-            all_context.append(f"RAW EMAILS/MESSAGES (Exact match):\n{raw_comms_context}")
+            all_context.append(f"{_source_tag('raw_comms')} RAW EMAILS/MESSAGES (Exact match) {_HIST_TAG}:\n{raw_comms_context}")
             available_sources.append("raw comms")
         if canonical_context != "None":
-            all_context.append(f"CANONICAL KNOWLEDGE:\n{canonical_context}")
+            all_context.append(f"{_source_tag('canonical')} CANONICAL KNOWLEDGE {_HIST_TAG}:\n{canonical_context}")
             available_sources.append("canonical knowledge")
         if projects_context != "None":
-            all_context.append(f"ACTIVE PROJECTS:\n{projects_context}")
+            all_context.append(f"{_source_tag('projects')} ACTIVE PROJECTS:\n{projects_context}")
             available_sources.append("active projects")
 
         if not all_context:
@@ -1075,6 +1086,82 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 date_list = ", ".join(e["date_mentioned"] for e in unbacked)
                 audit_log_sync("webhook", "WARNING", 
                     f"interrogate_brain factual hallucination: dates not in context: {date_list} | query='{query[:80]}'")
+        
+        # Layer 3 — Post-response task validation
+        # Check if the LLM listed any items under "Active Tasks" that don't
+        # exist in the ACTIVE TASKS data provided to it.
+        # Regex: detect any emoji or bullet prefix (e.g. ✅, 📋, - , * )
+        _EMOJI_BULLET_RE = re.compile(r'^[\s]*(?:[-*]|[\U0001F300-\U0010FFFF])\s+')
+        
+        if answer and compressed_tasks:
+            _valid_task_titles = set()
+            for _part in compressed_tasks.split(" | "):
+                # Extract task title from format like "[loc] title (priority) [ID:N]"
+                _title = _part.split(" [")[0].strip() if "[" in _part else _part.strip()
+                if _title:
+                    _valid_task_titles.add(_title.lower())
+            
+            # Find hallucinated tasks — lines under "Active Tasks" heading that
+            # don't match any item in the provided ACTIVE TASKS data.
+            # Section boundaries: **Recent**, **Context**, **Status**, **Notes** etc. end the zone.
+            # Empty lines stay within the section (task items can have blank line gaps).
+            _in_active_section = False
+            _hallucinated_lines = []
+            for _line in answer.split('\n'):
+                _strip = _line.strip()
+                if 'active task' in _strip.lower() or 'active tasks' in _strip.lower():
+                    _in_active_section = True
+                    continue
+                if not _in_active_section:
+                    continue
+                    
+                # New bold heading that is NOT about Active Tasks = end of section
+                if _strip.startswith('**'):
+                    _lower = _strip.lower()
+                    if 'active task' not in _lower:
+                        _in_active_section = False
+                    continue
+                # Markdown heading = end of section
+                if _strip.startswith('#'):
+                    _in_active_section = False
+                    continue
+                # Empty line — stay in section (task items can be separated by blanks)
+                if not _strip:
+                    continue
+                    
+                # Check if this line looks like a task item (bullet, emoji, or starts with text)
+                _m = _EMOJI_BULLET_RE.match(_line)
+                if _m:
+                    _task_text = _line[_m.end():].strip()
+                else:
+                    # Fallback: treat any non-empty line as potential task text
+                    _task_text = _strip
+                    
+                if not _task_text or len(_task_text) < 5:
+                    continue
+                    
+                _task_lower = _task_text.lower()
+                # Skip lines that are clearly NOT task items (dates, section descriptions, etc.)
+                if _task_lower.startswith('none') or _task_lower.startswith('no ') or _task_lower.startswith('the '):
+                    continue
+                    
+                # Check if this task text matches any valid task title (substring match both ways)
+                _matched = any(vt in _task_lower or _task_lower in vt for vt in _valid_task_titles)
+                if not _matched:
+                    _hallucinated_lines.append(_strip)
+            
+            if _hallucinated_lines:
+                _hallucinated_str = "; ".join(hl[:60] for hl in _hallucinated_lines[:5])
+                audit_log_sync("webhook", "WARNING", 
+                    f"Layer 3 — Task hallucination detected: {len(_hallucinated_lines)} items in response not in ACTIVE TASKS data: {_hallucinated_str} | query='{query[:60]}'")
+                # Strip hallucinated tasks from the final reply
+                for _hl in _hallucinated_lines:
+                    final_reply = final_reply.replace(_hl, '')
+                # Clean up double newlines from stripped lines
+                final_reply = re.sub(r'\n{3,}', '\n\n', final_reply).strip()
+                # If the Active Tasks section was completely cleared, note it's empty
+                if 'active task' in final_reply.lower() and not any(t.lower() in final_reply.lower() for t in list(_valid_task_titles)[:3]):
+                    final_reply += '\n\n*No active tasks for this entity.*'
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Interrogation error: {e}")
