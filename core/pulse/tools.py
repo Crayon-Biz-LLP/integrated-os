@@ -358,6 +358,16 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
             update_payload["reminder_at"] = new_reminder
 
         supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
+
+        # Invalidate task cache so subsequent queries don't show stale closed tasks
+        if status in ['done', 'cancelled']:
+            try:
+                from core.pulse.context import context_provider
+                context_provider.caches['tasks'].invalidate()
+                context_provider.caches['recent_tasks'].invalidate()
+            except Exception:
+                pass
+
         return f"OK: Task {task_id} updated successfully."
     except Exception as e:
         return f"FAIL: Error updating task {task_id}: {e}"

@@ -200,6 +200,12 @@ def _auto_expire_recurring_tasks():
                     )
                 except Exception as dec_err:
                     audit_log_sync("pulse", "WARNING", f"Failed to record auto-expiry decision: {dec_err}")
+            # Invalidate tasks cache so expired tasks disappear from next briefing
+            try:
+                context_provider.caches['tasks'].invalidate()
+                context_provider.caches['recent_tasks'].invalidate()
+            except Exception:
+                pass
             audit_log_sync("pulse", "INFO", f"⏰ Auto-expired {len(expired)} recurring tasks (recurrence ended).")
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Auto-expiry check failed: {e}")
@@ -460,10 +466,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 except Exception as e:
                     audit_log_sync("pulse", "WARNING", f"Horizon guard date parse failed for '{t.get('title')}': {e}")
 
-            if t.get('priority') == 'urgent':
-                filtered_tasks.append(t)
-                continue
-
             project = next((p for p in legacy_projects if p.get('id') == t.get('project_id')), None)
             o_id = t.get('organization_id') or (project.get('organization_id') if project else None)
             o_name = org_map.get(o_id, 'INBOX')
@@ -471,14 +473,23 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             personal_orgs = ['Personal', 'Ashraya', 'Ashraya Chennai', 'Chennai North', 'Chennai Central', 'Chennai India']
 
             if is_weekend:
-                if any(po in o_name for po in personal_orgs):
-                    filtered_tasks.append(t)
+                # Weekend mode: only personal/Ashraya tasks pass through
+                if not any(po in o_name for po in personal_orgs):
+                    continue
             elif hour < 19:
                 if not any(po in o_name for po in personal_orgs) or o_name == 'INBOX':
-                    filtered_tasks.append(t)
+                    pass
+                else:
+                    continue
             else:
                 if any(po in o_name for po in personal_orgs):
-                    filtered_tasks.append(t)
+                    pass
+                else:
+                    continue
+
+            # Urgent priority tasks still MUST pass the org filter above
+            # If they fail the org check, they don't get included — even if urgent
+            filtered_tasks.append(t)
 
         # ── Context compression ──
         compressed_tasks_list = []
@@ -690,29 +701,35 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             hindsight_empty = True
 
         # ── Resource patterns (from recent_lib_data already fetched) ──
-        if recent_lib_data:
-            enriched_items = []
-            for r in recent_lib_data:
-                note = r.get('strategic_note') or ""
-                enriched_items.append(f"[ID:{r['id']}] [{r['category']}] {r['title']} | {note}".strip())
-            pattern_context = " | ".join(enriched_items)
-        else:
+        # Weekend rest mode: strip Ideas/resources data so the LLM literally cannot surface them
+        if is_weekend and not is_pre_monday:
             pattern_context = "None"
+            newly_enriched_context = "None"
+            recent_urls_context = "None"
+        else:
+            if recent_lib_data:
+                enriched_items = []
+                for r in recent_lib_data:
+                    note = r.get('strategic_note') or ""
+                    enriched_items.append(f"[ID:{r['id']}] [{r['category']}] {r['title']} | {note}".strip())
+                pattern_context = " | ".join(enriched_items)
+            else:
+                pattern_context = "None"
 
-        newly_enriched_context = "None"
-        if batch_enrich_results:
-            newly_enriched_lines = [f"[ID:{r.get('id', '?')}] [{r.get('category', 'LINK')}] {r.get('title', 'Unknown')} | {r.get('strategic_note', '')}" for r in batch_enrich_results]
-            newly_enriched_context = " | ".join(newly_enriched_lines)
+            newly_enriched_context = "None"
+            if batch_enrich_results:
+                newly_enriched_lines = [f"[ID:{r.get('id', '?')}] [{r.get('category', 'LINK')}] {r.get('title', 'Unknown')} | {r.get('strategic_note', '')}" for r in batch_enrich_results]
+                newly_enriched_context = " | ".join(newly_enriched_lines)
 
-        recent_urls_context = "None"
-        if recent_lib_data:
-            url_lines = []
-            for r in recent_lib_data[:30]:
-                label = r.get('title') or r.get('url', 'Unknown')
-                cat = r.get('category') or 'RAW'
-                note = r.get('strategic_note') or ''
-                url_lines.append(f"[ID:{r['id']}] [{cat}] {label} | {note}".strip().rstrip('| '))
-            recent_urls_context = "\n".join(url_lines)
+            recent_urls_context = "None"
+            if recent_lib_data:
+                url_lines = []
+                for r in recent_lib_data[:30]:
+                    label = r.get('title') or r.get('url', 'Unknown')
+                    cat = r.get('category') or 'RAW'
+                    note = r.get('strategic_note') or ''
+                    url_lines.append(f"[ID:{r['id']}] [{cat}] {label} | {note}".strip().rstrip('| '))
+                recent_urls_context = "\n".join(url_lines)
 
         active_clusters_res = supabase.table('clusters').select('title, description').eq('status', 'active').execute()
         active_clusters_context = "\n".join([f"- {c['title']}: {c.get('description', '')}" for c in active_clusters_res.data]) if active_clusters_res.data else "None"

@@ -459,7 +459,8 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         await handle_noise(chat_id)
         
     else:
-        await handle_clarification(text, "Could you provide more details?", chat_id, session_id=session_id)
+        question = (classification or {}).get('clarification_question', "Could you provide more details?")
+        await handle_clarification(text, question, chat_id, session_id=session_id)
 
     _persist_chain_id(session_id)
 

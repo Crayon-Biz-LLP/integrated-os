@@ -13,6 +13,16 @@ If the context shows a general timeframe (e.g. "last week", "recently") but not 
 
 Violating this rule is a hallucination. It undermines Danny's trust in you."""
 
+CONTEXT_SECTION_RULES = """CRITICAL — CONTEXT SECTIONS:
+The context is organized into labelled sections. Understand what each section means:
+- **ACTIVE TASKS**: Current pending tasks that still need action. These are Danny's live to-do list.
+- **RECENTLY COMPLETED TASKS**: Tasks that have been closed/completed recently. Historical — do NOT list as current tasks.
+- **RELEVANT MEMORIES / HINDSIGHT MEMORIES / ON THIS DAY**: Historical records, past notes, and temporal patterns. Context for awareness only — do NOT list as actionable items.
+- **TACTICAL MAP / SERENDIPITY / canonical pages**: Graph-derived connections and intelligence. Background context — do not misrepresent as tasks.
+- **ALL OTHER SECTIONS** (emails, whatsapp, resources, calendar, people, practices, projects): Supporting context only.
+
+Only what's under ACTIVE TASKS represents Danny's current workload. Never list items from other sections as if they're active tasks or pending to-dos."""
+
 FORMATTING_RULES = """Formatting rules:
 - Emoji goes at the start of each task/event line
 - Do NOT use ### headers — use **bold** or plain text
@@ -41,6 +51,8 @@ Danny is asking a question from his: {sources_str}.
 
 {FACT_ONLY_CONSTRAINT}
 
+{CONTEXT_SECTION_RULES}
+
 Write naturally — no JSON, no section labels. Your first sentence answers the question directly. Add context (patterns, blockers, urgency) after the answer only if it sharpens the picture. No headings like "Part 1" or "Context:". Just write.
 
 {FORMATTING_RULES}
@@ -59,6 +71,8 @@ CURRENT TIME: {now_str}
 Danny is asking a question from his: {sources_str}.
 
 {FACT_ONLY_CONSTRAINT}
+
+{CONTEXT_SECTION_RULES}
 
 Return a JSON object with your answer:
 {{

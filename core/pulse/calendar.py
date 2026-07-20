@@ -8,6 +8,8 @@ from core.services.google_service import get_google_creds, format_rfc3339
 
 from core.services.outlook_service import get_outlook_calendar_events
 
+from core.pulse.context import context_provider
+
 supabase = get_supabase()
 
 
@@ -97,6 +99,12 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                             'status': 'done',
                             'completed_at': datetime.now(timezone.utc).isoformat()
                         }).eq('id', task_id).execute()
+                        # Invalidate tasks cache so Google-completed tasks disappear from next briefing
+                        try:
+                            context_provider.caches['tasks'].invalidate()
+                            context_provider.caches['recent_tasks'].invalidate()
+                        except Exception:
+                            pass
                     except Exception as e:
                         audit_log_sync("pulse", "ERROR", f"Failed to mark task {task_id} as done: {e}")
 
