@@ -686,9 +686,11 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         
         async def _empty_fetch(val): return val
         
-        # ── PHASE 1: Start ALL independent work in parallel ──
-        # Everything in Phase 1 has ZERO dependency on entity resolution:
-        # anaphora LLM, embedding, and 11 context sections start simultaneously.
+        # ── PHASE 1a: Start lightweight, unconditional work in parallel with anaphora ──
+        # Heavy tasks (memories, emails, serendipity, hindsight) are deferred to Phase 1b,
+        # which fires AFTER anaphora resolves with correct query-type flags.
+        # This prevents tasks like memories (15s phrase node searches) from
+        # running unnecessarily on relationship/people queries.
         
         # Anaphora resolution — with TRUNCATED context (classify_context, not full history)
         async def _resolve_anaphora():
@@ -737,23 +739,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _anaphora_future = asyncio.create_task(_resolve_anaphora())
         _embedding_future = asyncio.create_task(_shared.get_embedding())
         
-        # Start non-entity-dependent context fetches in parallel with anaphora
-        _phase1_tasks = []
-        
-        # Memories, resources, practices — no entity dependency
-        # Skip for relationship/people queries where graph already encodes the info
-        _load_bg = fetch_all or start_dt is not None or (not is_schedule and not is_people)
-        _p1_memories = asyncio.create_task(safe_fetch(
-            context_provider.hydrate_memories_context(query), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_memories)
-        
-        _p1_resources = asyncio.create_task(safe_fetch(
-            context_provider.get_resources_context(query), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_resources)
-        
-        _p1_practices = asyncio.create_task(safe_fetch(
-            context_provider.get_practices_context(), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_practices)
+        # Phase 1a: lightweight tasks (<1s each) that are fine to start before entity resolution
+        _phase1a_tasks = []
         
         # People (uses SharedQueryContext for caching)
         async def _fetch_people():
@@ -761,8 +748,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             if not people:
                 return "None"
             return ", ".join([p.get("name", "") for p in people if p.get("name")])
-        _p1_people = asyncio.create_task(safe_fetch(_fetch_people(), "None") if (fetch_all or is_comms or is_schedule or is_people) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_people)
+        _p1a_people = asyncio.create_task(safe_fetch(_fetch_people(), "None") if (fetch_all or is_comms or is_schedule) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1a_tasks.append(_p1a_people)
         
         # Completed tasks
         async def _fetch_completed():
@@ -770,8 +757,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             if not completed:
                 return "None"
             return "\n".join([f"- {t.get('title', '')}" for t in completed])
-        _p1_completed = asyncio.create_task(safe_fetch(_fetch_completed(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_completed)
+        _p1a_completed = asyncio.create_task(safe_fetch(_fetch_completed(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1a_tasks.append(_p1a_completed)
         
         # Calendar (uses start_dt/end_dt from query, not entity)
         async def _fetch_calendar():
@@ -795,40 +782,15 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                         pass
                 lines.append(f"- {t_display} {e.get('title', '')} ({e.get('source', '')})")
             return "\n".join(lines)
-        _p1_calendar = asyncio.create_task(safe_fetch(_fetch_calendar(), "None") if (fetch_all or is_schedule or start_dt is not None) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_calendar)
+        _p1a_calendar = asyncio.create_task(safe_fetch(_fetch_calendar(), "None") if (fetch_all or is_schedule or start_dt is not None) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1a_tasks.append(_p1a_calendar)
         
         # Temporal patterns
         async def _fetch_temporal():
             from core.pulse.memory import detect_temporal_patterns
             return await detect_temporal_patterns()
-        _p1_temporal = asyncio.create_task(safe_fetch(_fetch_temporal(), "None") if (fetch_all) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_temporal)
-        
-        # Serendipity (uses SharedQueryContext for tasks + people caching)
-        async def _fetch_serendipity():
-            from core.pulse.memory import serendipity_engine
-            tasks = await _shared.get_active_tasks()
-            people = await _shared.get_people()
-            return await serendipity_engine(tasks, people, [], max_paths=5)
-        _p1_serendipity = asyncio.create_task(safe_fetch(_fetch_serendipity(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_serendipity)
-        
-        # Hindsight (uses SharedQueryContext for tasks caching)
-        async def _fetch_hindsight():
-            from core.pulse.memory import retrieve_hindsight_memories
-            tasks = await _shared.get_active_tasks()
-            memories_raw, _ = await retrieve_hindsight_memories([query], tasks, top_k=5)
-            if memories_raw:
-                cleaned = [m.replace("[MEMORY CONTEXT ONLY \u2014 DO NOT LIST IN BRIEFING] ", "") for m in memories_raw]
-                return "\n".join(cleaned)
-            return "None"
-        _p1_hindsight = asyncio.create_task(safe_fetch(_fetch_hindsight(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_hindsight)
-        
-        # Pending decisions — always loaded
-        _p1_pending = asyncio.create_task(safe_fetch(context_provider.get_pending_decisions_context(), "None"))
-        _phase1_tasks.append(_p1_pending)
+        _p1a_temporal = asyncio.create_task(safe_fetch(_fetch_temporal(), "None") if (fetch_all) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1a_tasks.append(_p1a_temporal)
         
         # Projects
         async def _fetch_projects():
@@ -843,18 +805,17 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             except Exception:
                 pass
             return "None"
-        _p1_projects = asyncio.create_task(safe_fetch(_fetch_projects(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_projects)
+        _p1a_projects = asyncio.create_task(safe_fetch(_fetch_projects(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1a_tasks.append(_p1a_projects)
         
-        # Emails (embedding-independent for now; shared embedding applied later)
-        _p1_emails = asyncio.create_task(safe_fetch(
-            context_provider.get_email_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_emails)
+        # Practices
+        _p1a_practices = asyncio.create_task(safe_fetch(
+            context_provider.get_practices_context(), "None") if (fetch_all or start_dt is not None) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1a_tasks.append(_p1a_practices)
         
-        # WhatsApp
-        _p1_whatsapp = asyncio.create_task(safe_fetch(
-            context_provider.get_whatsapp_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1_tasks.append(_p1_whatsapp)
+        # Pending decisions — always loaded
+        _p1a_pending = asyncio.create_task(safe_fetch(context_provider.get_pending_decisions_context(), "None"))
+        _phase1a_tasks.append(_p1a_pending)
         
         # ── AWAIT ANAPHORA (entity resolves now, while Phase 1 tasks continue in background) ──
         resolved_entity = None
@@ -880,6 +841,52 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 is_people = _qt.get("is_people", False)
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Anaphora/Entity resolution failed: {e}")
+
+        # ── PHASE 1b: Heavy context tasks (created AFTER anaphora with CORRECT flags) ──
+        # These tasks are expensive (memories=15s, emails=3s, serendipity=2s) and MUST
+        # use the query-type-overridden flags, not the initial keyword-derived ones.
+        _phase1b_tasks = []
+        
+        # Memories, resources — skip for relationship/people queries (graph is enough)
+        _load_bg = fetch_all or start_dt is not None or (not is_schedule and not is_people)
+        _p1b_memories = asyncio.create_task(safe_fetch(
+            context_provider.hydrate_memories_context(query), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1b_tasks.append(_p1b_memories)
+        
+        _p1b_resources = asyncio.create_task(safe_fetch(
+            context_provider.get_resources_context(query), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1b_tasks.append(_p1b_resources)
+        
+        # Serendipity (uses SharedQueryContext for tasks + people caching)
+        async def _fetch_serendipity():
+            from core.pulse.memory import serendipity_engine
+            tasks = await _shared.get_active_tasks()
+            people = await _shared.get_people()
+            return await serendipity_engine(tasks, people, [], max_paths=5)
+        _p1b_serendipity = asyncio.create_task(safe_fetch(_fetch_serendipity(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1b_tasks.append(_p1b_serendipity)
+        
+        # Hindsight (uses SharedQueryContext for tasks caching)
+        async def _fetch_hindsight():
+            from core.pulse.memory import retrieve_hindsight_memories
+            tasks = await _shared.get_active_tasks()
+            memories_raw, _ = await retrieve_hindsight_memories([query], tasks, top_k=5)
+            if memories_raw:
+                cleaned = [m.replace("[MEMORY CONTEXT ONLY \u2014 DO NOT LIST IN BRIEFING] ", "") for m in memories_raw]
+                return "\n".join(cleaned)
+            return "None"
+        _p1b_hindsight = asyncio.create_task(safe_fetch(_fetch_hindsight(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1b_tasks.append(_p1b_hindsight)
+        
+        # Emails
+        _p1b_emails = asyncio.create_task(safe_fetch(
+            context_provider.get_email_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1b_tasks.append(_p1b_emails)
+        
+        # WhatsApp
+        _p1b_whatsapp = asyncio.create_task(safe_fetch(
+            context_provider.get_whatsapp_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1b_tasks.append(_p1b_whatsapp)
         
         # ── Entity resolution: resolve to graph node, build anchor ──
         if resolved_entity:
@@ -1021,22 +1028,19 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _phase2_tasks.append(_p2_raw_comms)
         
         # ── AWAIT ALL pending tasks ──
-        # Phase 1 tasks + Phase 2 tasks have been running in parallel all along.
-        # The total wall-clock time = max(anaphora_time + phase2_time, phase1_time)
-        _all_results = await asyncio.gather(*_phase1_tasks, *_phase2_tasks)
+        # Phase 1a (lightweight, started before anaphora) + Phase 1b (heavy, started
+        # after anaphora with correct flags) + Phase 2 (entity-dependent).
+        # Wall-clock time = max(anaphora + phase1b + phase2, phase1a + phase1b + phase2)
+        _all_results = await asyncio.gather(*_phase1a_tasks, *_phase1b_tasks, *_phase2_tasks)
         
-        # Unpack: Phase 1 = 13 tasks, Phase 2 = 4 tasks
-        _p1_count = len(_phase1_tasks)
-        _r1 = _all_results[:_p1_count]
-        _r2 = _all_results[_p1_count:]
+        # Unpack: Phase 1a = 7 tasks, Phase 1b = 6 tasks, Phase 2 = 4 tasks
+        _p1a_count = len(_phase1a_tasks)
+        _p1b_count = len(_phase1b_tasks)
+        _r1 = _all_results[:_p1a_count]
+        _r1b = _all_results[_p1a_count:_p1a_count + _p1b_count]
+        _r2 = _all_results[_p1a_count + _p1b_count:]
         
         _ri = 0
-        memories_context = _r1[_ri]
-        _ri += 1
-        resources_context = _r1[_ri]
-        _ri += 1
-        practices_context = _r1[_ri]
-        _ri += 1
         people_context = _r1[_ri]
         _ri += 1
         completed_context = _r1[_ri]
@@ -1045,17 +1049,25 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _ri += 1
         temporal_context = _r1[_ri]
         _ri += 1
-        serendipity_context = _r1[_ri]
+        projects_context = _r1[_ri]
         _ri += 1
-        hindsight_context = _r1[_ri]
+        practices_context = _r1[_ri]
         _ri += 1
         pending_decisions_context = _r1[_ri]
         _ri += 1
-        projects_context = _r1[_ri]
+        
+        _ri = 0
+        memories_context = _r1b[_ri]
         _ri += 1
-        emails_context = _r1[_ri]
+        resources_context = _r1b[_ri]
         _ri += 1
-        whatsapp_context = _r1[_ri]
+        serendipity_context = _r1b[_ri]
+        _ri += 1
+        hindsight_context = _r1b[_ri]
+        _ri += 1
+        emails_context = _r1b[_ri]
+        _ri += 1
+        whatsapp_context = _r1b[_ri]
         _ri += 1
         
         _ri = 0
