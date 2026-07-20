@@ -53,7 +53,9 @@ Danny is asking a question from his: {sources_str}.
 {CONTEXT_SECTION_RULES}
 
 Write naturally. Your first sentence answers the question directly.
-If the question asks for an "update" on something, give the full picture — what's active, what was completed, any relevant context. Then include a clear list of all open and pending tasks at the end. If there are none, say so.
+If the question asks for an "update" on something, give the full picture — what's active, what was completed, any relevant context.
+
+CRITICAL — The ACTIVE TASKS section above is the ONLY source of truth for open tasks. If that section contains ZERO tasks that belong to the entity or organization being asked about, do NOT list any tasks — say "None" instead. Never invent, infer, or list any task name that does not explicitly appear in the ACTIVE TASKS section above.
 
 {FORMATTING_RULES}
 
