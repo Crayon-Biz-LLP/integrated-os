@@ -9,7 +9,7 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 |------|---------------|
 | [01-executive-summary.md](01-executive-summary.md) | One-page system overview, key stats, what makes it unique |
 | [02-origin-philosophy.md](02-origin-philosophy.md) | Origin story, product philosophy, design values |
-| [03-architecture-overview.md](03-architecture-overview.md) | System architecture, triangular engine, data flow |
+| [03-architecture-overview.md](03-architecture-overview.md) | System architecture (5-layer + Infrastructure), data flow, technology stack |
 | [04-backend-frontend.md](04-backend-frontend.md) | Python/FastAPI backend, Next.js/React frontend, deployment |
 | [04b-intelligence-tiers.md](04b-intelligence-tiers.md) | Rhodey's 4-tier intelligence architecture — pulse, context, memory, session working memory |
  
@@ -105,6 +105,8 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [56-enrichment-queue.md](56-enrichment-queue.md) | Queue-based enrichment replacing fire-and-forget — Vercel-safe graph edges, entity extraction, embeddings |
 | [57-architecture-cleanup-and-hardening.md](57-architecture-cleanup-and-hardening.md) | Dead file cleanup, now_ist(), health monitor consolidation, prompt audit |
 | [58-final-architecture-overhaul.md](58-final-architecture-overhaul.md) | Complete 6-layer architecture overhaul (Parts 51-58), final architecture diagram, 22-scenario UAT validation |
+| [59-post-uat-cleanup.md](59-post-uat-cleanup.md) | 3-phase DB cleanup of ~1,094 UAT/test artifacts across 21 tables |
+| [61-optimization-voice-gap-fixes.md](61-optimization-voice-gap-fixes.md) | Parallelization, streaming queries, voice prompt overhaul, ToolRegistry removal, G1-G10 logical gap fixes |
 
 ### Mobile App (Flutter — Rhodey)
 | File | What It Covers |

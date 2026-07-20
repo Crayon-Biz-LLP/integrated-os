@@ -1,3 +1,4 @@
+> **⚠️ LEGACY WARNING**: This file references architecture from an earlier phase. Some modules mentioned (e.g., handle_confident_task, process_single_dump, quick_process, janitor) have been replaced or removed in Parts 57-61. The core concept remains valid — see 58-final-architecture-overhaul.md for current architecture.
 # 6. Telegram Intake & Webhook
 
 ## Overview

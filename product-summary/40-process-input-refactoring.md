@@ -1,3 +1,4 @@
+> **⚠️ LEGACY WARNING**: This file references architecture from an earlier phase. Some modules mentioned (e.g., handle_confident_task, process_single_dump, quick_process, janitor) have been replaced or removed in Parts 57-61. The core concept remains valid — see 58-final-architecture-overhaul.md for current architecture.
 # process_single_dump Refactoring
 
 Major refactor of the capture-to-task pipeline. Extracted core processing logic into a shared module, simplified calendar event creation, and built a comprehensive test suite.

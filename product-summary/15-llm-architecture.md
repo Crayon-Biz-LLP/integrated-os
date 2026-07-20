@@ -170,16 +170,18 @@ All embeddings use `gemini-embedding-2-preview` with `EMBEDDING_DIMENSION = 768`
 If embedding generation fails, the system returns an `EmbeddingResult(degraded=True)` which defaults to a zero vector `[0] * EMBEDDING_DIMENSION` (prevents crashes). Downstream systems see this and:
 1. Set `embedding_status='failed'` on the memory
 2. Queue the operation to `failed_queue` for retry
-3. The Janitor workflow monitors failed embeddings and triggers retries
+3. The DLQ monitor (`core/lib/failed_queue.py` or sentinel piggyback) monitors failed embeddings and triggers retries
 
-## Native Control Layer (Tool Calling & Prompt Mutation)
+## Native Control Layer (Structured Outputs & Fallback)
 
-To guarantee deterministic outputs and prevent API rate-limit hammering, the system natively implements a control layer directly in `call_llm_with_fallback` and `run_agent_loop`:
+The system implements a native control layer directly in `generate_content_with_fallback` and the LLM client:
 
-1. **Tool Registry & Function Calling**: Instead of returning a monolithic JSON schema, the main pulse engine is equipped with a `ToolRegistry`. The LLM issues discrete function calls (e.g., `update_task_status`, `create_project`) which are validated against Pydantic models.
-2. **Targeted Prompt Mutation**: Instead of blindly retrying, the engine appends dynamic correction hints to the prompt. If the model hallucinations a tool name or violates a constraint, the error is fed back dynamically.
-3. **Jittered Backoff**: If validation or network calls fail, the retry loop applies `asyncio.sleep()` with an exponential backoff + random jitter (`_jitter()`). This prevents hammering the Gemini API and triggering 429 Rate Limits.
+1. **Structured JSON Outputs**: The LLM is instructed to return valid JSON for all structured operations (classification, query responses, enrichment). If JSON parsing fails, the system falls back to deterministic safe text rather than raw `.text.strip()`.
+2. **Jittered Backoff**: If API calls fail, the retry loop applies `asyncio.sleep()` with an exponential backoff + random jitter. This prevents hammering the Gemini API and triggering 429 Rate Limits.
+3. **Workload Profiles**: Each type of LLM call has its own timeout and retry profile (INTERACTIVE=55s, SYNTHESIS=300s, BATCH=300s, EMBEDDING=120s).
 4. **Vercel-Friendly**: Built purely with native `async`/`await` primitives, ensuring zero event-loop blocking during the 60s serverless execution window.
+
+> The original `ToolRegistry` and `run_agent_loop` multi-turn agent loop (used by the legacy pulse engine) was removed in Part 61 (ToolRegistry dead code cleanup). Structured operations are now handled by the **Action Planner** (`core/actions/`).
 
 ## History
 

@@ -3,6 +3,20 @@
 
 ---
 
+## Completed Work (Parts 58-61)
+
+### Architecture Overhaul, UAT, Cleanup & Optimization
+
+All items from Parts 58-61 are **completed**:
+- Part 58: 6-layer architecture overhaul — unified Action Planner, enrichment queue, state machines, 22-scenario UAT (all passing)
+- Part 59: 3-phase DB cleanup of ~1,094 test artifacts across 21 tables
+- Part 60: Hybrid document extraction (PyMuPDF, docx, xlsx, pptx) with Gemini vision fallback
+- Part 61: Parallelization (asyncio.gather), streaming queries, voice prompt overhaul, ToolRegistry removal, G1-G10 logical gap fixes
+
+See: `product-summary/58-final-architecture-overhaul.md` through `product-summary/61-optimization-voice-gap-fixes.md`
+
+---
+
 ## Tier 0 — STOP THE BLEEDING (Do This Week)
 
 ### [COMPLETED] T-001: Add try/except to handle_confident_note()

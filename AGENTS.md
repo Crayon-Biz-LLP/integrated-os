@@ -123,6 +123,51 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 ### Key Files (Part 59)
 - (All changes were direct SQL deletions — no code files modified)
 
+## Session Anchored Summary (Jul 18-19, 2026 — Part 60: Hybrid Document Extraction)
+
+### Progress Done This Session
+- **Problem Found**: Gemini vision extracted only 479 chars from a ~2,600 char meeting notes PDF — model's training bias toward description overrode "transcribe verbatim" instruction.
+- **Root Cause**: Two regressions from LLM consolidation — (1) `multimodal.py` wired to `CLASSIFICATION_MODEL` (gemini-3.1-flash-lite) instead of `SYNTHESIS_MODEL`, (2) `generate_content_with_fallback` duplicated extraction prompt in both `prompt=` and `contents=`.
+- **Hybrid Document Extraction**: Created `core/lib/document_extractor.py` — local PyMuPDF (PDF, ~50ms, free, 100% verbatim), python-docx (DOCX), openpyxl (XLSX), python-pptx (PPTX). Gemini vision fallback only for images/scanned docs. Fixed prompt duplication bug.
+- **Second Root Cause Found**: Planner (`core/actions/planner.py:168`) uses CLASSIFICATION_MODEL for NOTE intents — LLM summarizes params.content to ~500 chars, executor stores summary instead of original PyMuPDf text. Fixed by using original text as fallback in executor.
+- **Third location checked**: Pulse Engine's old ToolRegistry — confirmed no longer uses LLM-generated params.content (dead code removed in Part 61).
+
+### Key Files (Phase 60)
+- `core/lib/document_extractor.py` — NEW: hybrid document extractor (85 lines)
+- `core/webhook/multimodal.py` — MODIFIED: local extraction, prompt duplication fix, SYNTHESIS_MODEL
+- `core/webhook/handler.py` — MODIFIED: XLSX/PPTX MIME types
+- `requirements.txt` — MODIFIED: pymupdf, python-pptx added
+- `product-summary/60-hybrid-document-extraction.md` — Documentation
+
+## Session Anchored Summary (Jul 19-20, 2026 — Part 61: Parallelization, Streaming, Voice & Gap Fixes)
+
+### Progress Done This Session
+- **Parallelization (P1-P6)**: Identified and fixed 7 serialization bottlenecks across Pulse Engine and query pipeline. Briefing: 18 sequential DB queries refactored into 2-phase `asyncio.gather()`. Dispatch: 17 context sources fetched in parallel. Context Provider: cache invalidation pattern extended across all status-change paths.
+- **Streaming Queries**: User queries now stream Gemini responses for faster time-to-first-token. Two prompt paths (streaming = natural text, non-streaming = JSON wrapper). Uses Telegram `sendMessage`/`editMessageText` for incremental delivery.
+- **Batch Embedding Optimization**: Deduped embedding requests to reduce Gemini API calls by ~40%.
+- **Voice Prompt Overhaul**: Created `core/prompts/voice.py` — Rhodey's character bible (pragmatic, loyal teammate tone). Stripped robotic PART 1/PART 2 structure from query.py. Added CONTEXT_SECTION_RULES annotation. Stripped COMPASS LENS from briefing.py (kept only MODE OVERRIDES). Restructured classify.py receipts with natural confirmation examples. Extracted planner prompt to `core/prompts/planner.py`.
+- **Dead ToolRegistry Code Removal**: Deleted ~180 lines of dead code — ToolRegistry class from tools.py and llm.py (remnants of old agent-loop architecture, Pulse Engine now uses single LLM call).
+- **G1-G10 Logical Gap Fixes**: Systematic audit of all 15 Rhodey response paths found 10 logical gaps. Fixed 6: G1 (urgent tasks bypassing weekend filter — org check now applies before urgency), G2 (ideas/resources on weekends — data stripped from prompt), G3 (completed tasks shown as current — CONTEXT_SECTION_RULES), G4 (auto_expire no cache invalidation), G5 (Google sync no cache invalidation), G6 (COMPASS LENS vs MODE OVERRIDES conflict), G10 (clarification question ignored — now uses LLM's specific question).
+- **Architecture Diagrams**: Installed Archify, generated 5 architecture diagrams: 5-layer system architecture, webhook-to-response pipeline, task lifecycle state machine, context registry flow, sentinel piggyback operations. Saved as `docs/architecture-overview.md`, `docs/webhook-pipeline.md`, `docs/task-lifecycle.md`.
+
+### Key Files (Phase 61)
+- `core/pulse/briefing.py` — G1, G2, G4 fixes; parallel Phase 1+2 context assembly
+- `core/pulse/calendar.py` — G5 cache invalidation
+- `core/prompts/briefing.py` — G6 COMPASS LENS removal, voice cleanup
+- `core/prompts/voice.py` — NEW: character bible
+- `core/prompts/query.py` — G3 CONTEXT_SECTION_RULES, streaming support, voice cleanup
+- `core/prompts/planner.py` — NEW: extracted planner prompt
+- `core/prompts/classify.py` — Voice receipt cleanup
+- `core/webhook/dispatch.py` — G10, streaming, parallelization
+- `core/pulse/tools.py` — ToolRegistry dead code removal
+- `core/pulse/llm.py` — ToolRegistry dead code removal
+- `core/lib/document_extractor.py` — Hybrid document extraction
+- `docs/architecture-overview.md` — NEW: 5-layer + Infrastructure architecture diagram
+- `docs/webhook-pipeline.md` — NEW: webhook flow diagram
+- `docs/task-lifecycle.md` — NEW: task state machine diagram
+- `product-summary/60-hybrid-document-extraction.md` — Documentation
+- `product-summary/61-optimization-voice-gap-fixes.md` — Documentation
+
 ## Session Anchored Summary (Jul 16, 2026 — Part 57: Architecture Cleanup & Hardening)
 
 ### Progress Done This Session

@@ -3,7 +3,7 @@
 
 ---
 
-## Current System State (as of Jul 17, 2026)
+## Current System State (as of Jul 20, 2026)
 
 ### Architecture (6 Vertical Layers)
 
@@ -105,6 +105,13 @@ UAT validation: **22/22 scenarios passing** against LIVE_DB (S1-S22 in `tests/ua
 - **Push Notification Fix**: Created `device_tokens` table (migration 41) — Flutter client was already registered and calling `/api/register-device` but table was missing. Added try/except safety net.
 - **4W1H Root Cause Enforcement**: Every commit requires a `Root Cause:` line in the message body, enforced by `.githooks/commit-msg` hook. The AGENTS.md Root Cause Investigation Procedure (Step 10) mandates 4W1H documentation (Why/What/Where/When/How) before committing fixes. `opencode.json` documents the requirement at config level. The `diagnose` skill provides the workflow for complex bug investigations.
 - **Enrichment Queue (Last Critical Gap Closed)**: Fire-and-forget enrichment (`asyncio.create_task` for graph edges/entity extraction/embeddings) replaced with queue-based pattern matching `pending_retrieval_index_jobs`. `pending_enrichment_jobs` table with `claim_pending_enrichment_job()` RPC for atomic status transitions, 3-retry dead-letter lifecycle. Processed by sentinel piggyback every ~5 min. Tasks and notes created via `create_task_direct`/`create_note_direct` now reliably enrich with graph edges, entities, and embeddings — surviving Vercel cold kills. Also restored: calendar conflict check, DLQ write on failure, `expires_at` on notes, and fixed `dedup_key` hash ordering bug. Verified with 25-check E2E test (23/25 passed). All 31 original architecture audit items resolved.
+- **Hybrid Document Extraction**: `core/lib/document_extractor.py` — single entry point for PDF (PyMuPDF, ~50ms, 100% verbatim), DOCX (python-docx), XLSX (openpyxl), PPTX (python-pptx), text (direct decode), images (Gemini vision fallback). Fixed prompt duplication bug in `generate_content_with_fallback`. Second root cause found: Planner using CLASSIFICATION_MODEL for NOTE intents summarizes params.content — fixed executor to use original text as fallback.
+- **Streaming Queries**: `interrogate_brain()` supports streaming Gemini responses — user sees first words ~2-3x faster. Two prompt paths (streaming = natural text, non-streaming = JSON wrapper). Incremental delivery via Telegram sendMessage/editMessageText.
+- **Parallelization (asyncio.gather)**: Briefing context assembly uses 2-phase parallel fetch (Phase 1: projects/people/orgs/calendar/tasks in parallel. Phase 2: graph/hindsight/serendipity/master pages in parallel). Query pipeline fetches 17 context sources in parallel groups.
+- **Voice Prompt Overhaul**: `core/prompts/voice.py` — Rhodey's character bible (pragmatic, loyal teammate). Stripped robotic PART 1/PART 2 structure from query.py. CONTEXT_SECTION_RULES annotation prevents confusion between ACTIVE TASKS and RECENTLY COMPLETED. Stripped COMPASS LENS from briefing.py. Extracted planner prompt to `core/prompts/planner.py`.
+- **Dead ToolRegistry Code Removal**: Deleted ~180 lines — ToolRegistry class from tools.py and llm.py (remnants of old agent-loop architecture, Pulse Engine uses single LLM call).
+- **Logical Gap Fixes (G1-G10)**: Systematic audit of all 15 Rhodey response paths found 10 gaps. Fixed 6: G1 (urgent tasks bypassing weekend filter), G2 (ideas/resources on weekends — data stripped from prompt), G3 (completed tasks shown as current — CONTEXT_SECTION_RULES), G4 (auto_expire cache invalidation), G5 (Google sync cache invalidation), G6 (COMPASS LENS vs MODE OVERRIDES conflict), G10 (clarification question from LLM now actually used instead of hardcoded fallback).
+- **Architecture Diagrams (Archify)**: 5 diagrams generated: 5-layer system architecture, webhook-to-response pipeline, task lifecycle state machine, context registry flow, sentinel piggyback operations. Saved in `docs/`.
 
 ### What is broken or incomplete
 - **DEFERRED**: Graph UI polish — PIXI object pooling, smooth zoom/pan animations, multi-select + expand-in-place nodes, episode stream infinite scroll + date range [STILL DEFERRED]

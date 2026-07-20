@@ -26,89 +26,90 @@
 ## Architecture Diagram (Text)
 
 ```
-[Danny: Telegram]
+[Danny: Telegram / Web UI / Flutter App]
        │
        ▼
-[core/webhook/handler.py] ── classify ──► [Gemini Flash]
+[api/index.py] ──── FastAPI proxy ────►
        │
-       ├──► TASK ──────────────► [raw_dumps: staged]
-       │                               │
-       ├──► NOTE ──────────────►       │
-       │                               ▼
-       ├──► QUERY ────────────► [interrogate_brain()]
-       │                               │
-       └──► NOISE ───────────► [log to audit, discard]
-                                        │
-                                [Background Processor]
-                                        │
-                             ┌──────────┴──────────┐
-                             ▼                     ▼
-                      [get_embedding()]      [fail → DLQ]
-                             │
-                      [memories insert]
-                             │
-                      [raw_dumps: processed]
-                             │
-                             ▼
-              ┌──────────────────────────────┐
-              │  Associative Retrieval Index │
-              │  (schedule_index_memory)     │
-              │                              │
-              │  chunk → embed → extract     │
-              │  → upsert phrase nodes       │
-              │  → link passages → bundle    │
-              └──────────┬───────────────────┘
-                         │
-              ┌──────────▼───────────┐
-              │  7 tables: passages  │
-              │  phrase_nodes, stats │
-              │  links, alias_edges  │
-              └──────────────────────┘
+       ├──► url_filter.py (URL quarantine at ingress — no LLM call)
+       │
+       ▼
+[core/webhook/handler.py] ── classify ──► [Gemini Flash Lite]
+       │
+       ├──► TASK / NOTE / COMPLETION / PROJECT_UPDATE ──► [plan_actions()]
+       │                                                         │
+       │                                                 [Action Planner]
+       │                                                         │
+       │                                          ┌──────────────┴──────────────┐
+       │                                          ▼                             ▼
+       │                                   [create_task_direct]         [create_note_direct]
+       │                                   + entity_linker(BEFORE)      + enrichment queue
+       │                                   + enrichment queue            + retrieval index queue
+       │                                   + Google Calendar/Tasks       + expires_at computation
+       │                                          │
+       │                                   [pending_enrichment_jobs]
+       │                                    (Vercel-safe, 3-retry DLQ)
+       │
+       ├──► QUERY ──────────────────────► [interrogate_brain()]
+       │                                    │
+       │                               Parallel context fetch (17 sources)
+       │                                    │
+       │                               ┌────┴────┐
+       │                               ▼         ▼
+       │                         Associative     Context
+       │                         Retrieval       Registry
+       │                         7-signal        6 strategies
+       │                         + PPR           + gates
+       │                                    │
+       │                               Gemini streaming response
+       │                                    │
+       └──► NOISE ───────────────────► [log to audit, discard]
 
-              ┌──────────────────────────────┐
-              │  Associative Retrieval Query │
-              │  (associative_retrieve)      │
-              │                              │
-              │  LLM entities + lexical      │
-              │  → PPR graph traversal       │
-              │  → 7-signal ranking          │
-              │  → ExplainableBundle         │
-              └──────────────────────────────┘
 
+[Action Pipeline — core/actions/]
+  ├── models.py — Typed Action + Operation dataclasses
+  ├── planner.py — Single LLM call, multi-source candidate pool
+  │                  (active tasks + recurring + 14-day calendar)
+  └── executor.py — Execute with validation, compensation on fail
+
+[Pulse Engine — core/pulse/]
+  ├── briefing.py — Single LLM call, parallel Phase 1+2 context
+  ├── decision_pulse.py — AI-free pending approvals
+  ├── sentinel.py — Meeting alarms + 7 piggyback jobs
+  └── pipeline.py — Consolidated health monitor
 
 [GitHub Actions Cron]
-  ├── core/pulse/engine.py (daily briefing)
-  ├── brain_synth.py (weekly synthesis)
+  ├── core/pulse/briefing.py (daily briefing — single LLM call)
+  ├── brain_synth_v2.py (weekly synthesis)
   ├── email_ingest.yml (Gmail + Outlook)
-  ├── janitor.py (every 30 mins health check)
+  ├── health.yml (every 2h — consolidated health check)
   └── notebooklm-sync.yml (on push: Google Docs → Notebook LM)
 
 [Cron-job.org (external)]
-  ├── /api/sentinel (every 5 min — nudge, expiry, index queue)
+  ├── /api/sentinel (every 5 min — nudge, expiry, index queue, enrichment)
   ├── /api/decision-pulse (every 30 min — pending approvals)
   └── /api/roundup (2PM/8PM IST — evening check-in)
 
 [Flutter App — rhodey_app/]
   ├── FCM push notifications from send_telegram()
   ├── In-app update via GitHub Releases (version from pubspec.yaml)
-  ├── Rhodey Surface v3: Horizon/Traces UI (editorial typography, warm stone palette)
-  ├── TTS for Rhodey responses
-  ├── Voice mic button for speech input
-  ├── today_screen: task/trace/conversation search
-  ├── talk_screen: voice + TTS interaction
-  ├── adaptive_home_screen, dump_screen, history_screen, inbox_screen, menu_sheet
-  ├── chat_bubble, decision_card, rich_card_content, voice_states widgets
+  ├── Rhodey Surface v3: Horizon/Traces UI
+  ├── TTS + voice mic button
+  ├── today_screen, talk_screen, inbox_screen, history_screen
   └── API service, notification service, in-app update service
 
-[process_single_dump Refactoring — core/lib/process_input.py]
-  ├── Extracted core processing logic from dispatch.py into a shared module
-  ├── Calendar event creation funneled through existing task workflow
-  └── New test suite: tests/sim/test_full_pipeline.py
+[Hybrid Document Extraction — core/lib/document_extractor.py]
+  ├── PDF → PyMuPDF (~50ms, free, 100% verbatim)
+  ├── DOCX → python-docx (paragraphs + tables)
+  ├── XLSX → openpyxl (all sheets)
+  ├── PPTX → python-pptx (all slides)
+  ├── TXT  → bytes.decode
+  └── Images → Gemini vision fallback only
 
 [Notebook LM Sync — Google Docs API]
-  ├── scripts/sync_notebooklm_docs.py — creates/updates Google Docs in shared Drive
-  ├── scripts/update_google_oauth.py — one-time OAuth scope updater
-  └── .github/workflows/notebooklm-sync.yml — triggers on push to main
+  ├── scripts/sync_notebooklm_docs.py
+  ├── scripts/update_google_oauth.py
+  └── .github/workflows/notebooklm-sync.yml
 ```
 
 ---
