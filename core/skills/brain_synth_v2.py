@@ -438,16 +438,29 @@ RULES:
   (Active / Winding down / On hold — one sentence summary)
   
   ## Recent Activity
-  (New developments since last synthesis)
+  (FACT-BASED bullet list of COMPLETED or IN-PROGRESS events only.
+   Each bullet describes something that actually happened.
+   NEVER use narrative language. NEVER describe actions in present tense.
+   Format: [✅/🔄/⏸️] [What] — [context] [source]
+   Example: "✅ Physical financial paperwork submitted — by Danny, Jul 2026 [memory]"
+   NOT: "Danny has successfully submitted physical financial paperwork")
   
   ## Key People
   (People connected via graph edges, with roles)
   
-  ## Task History
-  (Task records with status)
-  
   ## Decisions & Notes
   (Key decisions, context, blockers)
+- CRITICAL WRITING RULES:
+  - You are writing a KNOWLEDGE DOCUMENT for another AI to consume — not a status report for a human manager.
+  - Write in FACTS, not stories. Every sentence must be a standalone verifiable fact.
+  - BAD: "Danny has successfully submitted physical financial paperwork"
+  - GOOD: "✅ Physical financial paperwork submitted — by Danny, Jul 2026"
+  - BAD: "Ongoing coordination with Christopher John regarding tax notices persists"
+  - GOOD: "🔄 IT hearing notices: Christopher John managing response [memory]"
+  - Use ✅ for completed items. Use 🔄 for items still in progress. Use ⏸️ for blocked items.
+  - Never leave status ambiguous. Every bullet must start with a status marker.
+  - Every bullet must stand alone as a complete fact. No dependent clauses, no flowery transitions.
+  - Do NOT include a Task History section. Task records are tracked in the live task system.
 - CITATIONS: Tag claims with their fragment source type at the end of the bullet point, like: [memory], [email], [whatsapp], [task], [resource], [graph].
 - OUTPUT: Return ONLY the raw Markdown string. No JSON wrapper.
 
