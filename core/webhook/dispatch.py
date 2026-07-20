@@ -1097,9 +1097,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         if tactical_map:
             all_context.append(f"{_source_tag('tactical_map')} TACTICAL MAP:\n{tactical_map}")
             available_sources.append("tactical map")
-        if compressed_tasks:
-            all_context.append(f"{_source_tag('active_tasks')} ACTIVE TASKS — Danny's live to-do list. ONLY items in this section are current active tasks.:\n{compressed_tasks}")
-            available_sources.append("active tasks")
+        all_context.append(f"{_source_tag('active_tasks')} ACTIVE TASKS — Danny's live to-do list. ONLY items in this section are current active tasks.:\n{compressed_tasks if compressed_tasks else 'No active tasks found.'}")
+        available_sources.append("active tasks")
         if pending_decisions_context != "None":
             all_context.append(f"{_source_tag('pending_decisions')} PENDING APPROVALS — items awaiting Danny's decision (not current tasks):\n{pending_decisions_context}")
             available_sources.append("pending decisions")
