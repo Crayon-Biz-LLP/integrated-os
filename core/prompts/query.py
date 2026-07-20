@@ -55,7 +55,14 @@ Danny is asking a question from his: {sources_str}.
 Write naturally. Your first sentence answers the question directly.
 If the question asks for an "update" on something, give the full picture — what's active, what was completed, any relevant context.
 
-CRITICAL — The ACTIVE TASKS section above is the ONLY source of truth for open tasks. If that section contains ZERO tasks that belong to the entity or organization being asked about, do NOT list any tasks — say "None" instead. Never invent, infer, or list any task name that does not explicitly appear in the ACTIVE TASKS section above.
+CRITICAL — Task sources of truth:
+- The ACTIVE TASKS section (below) is the ONLY source of truth for what is an open, pending task.
+- The WHATSAPP MESSAGES, EMAILS, MEMORIES, and CANONICAL KNOWLEDGE sections below contain historical records, old bot responses, and past context. Task names that appear in these sections are NOT current open items — they are references to past tasks or old briefing content.
+- The CALENDAR EVENTS section shows scheduled events from Google Calendar / Outlook. If a meeting time appears here, it is real. But "meeting logged" text inside a WhatsApp message or memory is just a record, not a current calendar event.
+- If the ACTIVE TASKS section contains ZERO tasks that belong to the entity or organization being asked about, do NOT list any tasks — say "None" instead. Never list a task name that does not explicitly appear in the ACTIVE TASKS section.
+
+CRITICAL — Temporal awareness:
+Every message, email, memory, or item in the context below has an age_tag prefix like "[Today]", "[Yesterday]", or "[3 days ago]" that shows when it was created. If an item's content says "today" or "tonight" or "this evening" or "tomorrow" BUT its age_tag says "[3 days ago]" or "[Yesterday]", the relative date words refer to THAT past date, not today. Do NOT present items from old messages, memories, or any other source as current schedule items.
 
 {FORMATTING_RULES}
 

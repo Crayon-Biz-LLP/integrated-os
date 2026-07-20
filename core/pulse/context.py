@@ -10,6 +10,7 @@ from core.services.outlook_service import get_outlook_calendar_events
 from core.lib.redis_cache import cache_get, cache_set, cache_delete
 from core.lib.time_utils import age_tag
 from core.lib.audit_logger import audit_log_sync
+from core.lib.constants import BOT_SENDERS
 from core.retrieval.config import config as retrieval_config
 
 supabase = get_supabase()
@@ -306,9 +307,16 @@ class ContextProvider:
             msgs = res.data or []
             if not msgs:
                 return "None"
+            # Filter out bot's own responses — old briefings containing task lists
+            # shouldn't be fed back as current context (causes hallucination loops)
             lines = []
             for m in msgs:
+                sender_name = (m.get('sender_name') or '').lower().strip()
+                if sender_name in BOT_SENDERS:
+                    continue
                 lines.append(f"- {m.get('sender_name', '')}: {m.get('message_text', '')}")
+            if not lines:
+                return "None"
             return "\n".join(lines)
         except Exception as e:
             audit_log_sync('context', 'WARNING', f'WhatsApp hydration failed: {e}')

@@ -18,6 +18,7 @@ from core.pulse.graph import hybrid_search_graph
 from core.lib.decision_audit import log_decision, DecisionStage, set_decision_chain_id, get_decision_chain_id
 from core.actions import validate_factual_claims
 from core.lib.graph_rules import normalize_label
+from core.lib.constants import BOT_SENDERS
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:
@@ -835,6 +836,9 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 w_res = supabase.table('messages').select('id, sender_name, body, received_at').eq('channel', 'whatsapp').ilike('body', f"%{search_val}%").or_(f"expires_at.is.null,expires_at.gte.{now_iso}").order('received_at', desc=True).limit(3).execute()
                 if w_res.data:
                     for w in w_res.data:
+                        sender_name = (w.get('sender_name') or '').lower().strip()
+                        if sender_name in BOT_SENDERS:
+                            continue
                         text = w.get('body', '').replace('\n', ' ')[:100]
                         lines.append(f"{age_tag(w.get('received_at'))} - [WHATSAPP] {text}... (from {w.get('sender_name', '')})")
             except Exception:
