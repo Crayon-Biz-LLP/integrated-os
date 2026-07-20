@@ -81,6 +81,61 @@ def compute_expires_at(content: str, created_at_iso: str) -> Optional[str]:
     return expiry.isoformat() if expiry else None
 
 
+def resolve_relative_dates(text: str, reference_date: datetime) -> str:
+    """Resolve relative date words in text against a reference timestamp.
+
+    Replaces ambiguous relative words with absolute dates so the LLM can't
+    misinterpret "tomorrow" in a 30-day-old message as "tomorrow from today."
+
+    Handles:
+    - "tomorrow" -> "on {reference_date + 1 day}"
+    - "today" / "tonight" -> "on {reference_date}"
+    - "this Monday/Tuesday..." -> next occurrence from reference_date
+    - "next Monday/Tuesday..." -> next occurrence in the following week
+
+    Returns the text with relative words replaced by absolute dates.
+    """
+    text_lower = text.lower()
+    result = text
+
+    # "tomorrow" -> "on June 21, 2026"
+    if re.search(r'\btomorrow\b', text_lower):
+        tomorrow = reference_date + timedelta(days=1)
+        date_str = tomorrow.strftime('%B %d, %Y')
+        # Replace the word in the original text (preserving case context)
+        result = re.sub(r'\btomorrow\b', f'on {date_str}', result, flags=re.I)
+
+    # "today" / "tonight" -> "on June 20, 2026"
+    for word in ['today', 'tonight']:
+        if re.search(rf'\b{word}\b', text_lower):
+            date_str = reference_date.strftime('%B %d, %Y')
+            result = re.sub(rf'\b{word}\b', f'on {date_str}', result, flags=re.I)
+
+    # "this Monday/Tuesday/..." -> next occurrence from reference_date
+    for i, day in enumerate(_DAY_NAMES):
+        pattern = rf'\bthis\s+{day}\b'
+        if re.search(pattern, text_lower):
+            days_ahead = i - reference_date.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            target = reference_date + timedelta(days=days_ahead)
+            date_str = target.strftime('%A, %B %d, %Y')
+            result = re.sub(pattern, f'on {date_str}', result, flags=re.I)
+
+    # "next Monday/Tuesday/..." -> next occurrence in the following week
+    for i, day in enumerate(_DAY_NAMES):
+        pattern = rf'\bnext\s+{day}\b'
+        if re.search(pattern, text_lower):
+            days_ahead = i - reference_date.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            target = reference_date + timedelta(days=days_ahead + 7)
+            date_str = target.strftime('%A, %B %d, %Y')
+            result = re.sub(pattern, f'on {date_str}', result, flags=re.I)
+
+    return result
+
+
 def resolve_expiry(content: str, created_at: datetime) -> Optional[datetime]:
     """Detect relative time phrases in content and resolve them against created_at.
     

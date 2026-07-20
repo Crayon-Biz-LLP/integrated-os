@@ -857,7 +857,11 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 return "None"
             return "\n".join(lines)
             
-        raw_comms_task = safe_fetch(fetch_raw_comms(), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None")
+        # Raw comms only for explicit message/email queries — for general "update" queries,
+        # the pgvector-based whatsapp_context and email_context already provide the relevant items.
+        # Including raw_comms for general queries causes duplicate data (same message in both
+        # WHATSAPP and RAW COMMS sections), confusing the LLM with reinforced old data.
+        raw_comms_task = safe_fetch(fetch_raw_comms(), "None") if is_comms else safe_fetch(_empty_fetch("None"), "None")
 
         async def fetch_canonical():
             if not active_anchor and not resolved_entity:
@@ -866,10 +870,18 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             if not search_val or search_val == "None":
                 return "None"
             try:
-                res = supabase.table('canonical_pages').select('title, content').eq('is_current', True).ilike('title', f"%{search_val}%").limit(1).execute()
+                res = supabase.table('canonical_pages').select('title, content, last_synth_at').eq('is_current', True).ilike('title', f"%{search_val}%").limit(1).execute()
                 if res.data:
-                    c = res.data[0].get('content', '')[:2000]
-                    return f"{res.data[0].get('title')}:\n{c}..."
+                    c = res.data[0].get('content', '')
+                    # Truncate before ## Task History to prevent LLM from misinterpreting
+                    # historical task records as current active tasks
+                    task_history_idx = c.find("## Task History")
+                    if task_history_idx != -1:
+                        c = c[:task_history_idx].strip()
+                    # Safety cap at 2000 chars
+                    c = c[:2000]
+                    synth_at = (res.data[0].get('last_synth_at') or '')[:10]
+                    return f"{res.data[0].get('title')}: [HISTORICAL — synthesized {synth_at}]\n{c}"
             except Exception:
                 pass
             return "None"

@@ -8,7 +8,7 @@ from core.services.db import get_supabase
 from core.services.google_service import get_google_calendar_events
 from core.services.outlook_service import get_outlook_calendar_events
 from core.lib.redis_cache import cache_get, cache_set, cache_delete
-from core.lib.time_utils import age_tag
+from core.lib.time_utils import age_tag, resolve_relative_dates
 from core.lib.audit_logger import audit_log_sync
 from core.lib.constants import BOT_SENDERS
 from core.retrieval.config import config as retrieval_config
@@ -283,7 +283,17 @@ class ContextProvider:
                 return "None"
             lines = []
             for e in emails:
-                lines.append(f"- From {e.get('sender', '')}: {e.get('subject', '')} ({e.get('body_summary', '')})")
+                # Add age_tag and resolve relative dates
+                ts = e.get('received_at')
+                tag = age_tag(ts)
+                body = e.get('body_summary', '')
+                if ts:
+                    try:
+                        dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                        body = resolve_relative_dates(body, dt)
+                    except Exception:
+                        pass
+                lines.append(f"{tag} From {e.get('sender', '')}: {e.get('subject', '')} ({body})")
             return "\n".join(lines)
         except Exception as e:
             audit_log_sync('context', 'WARNING', f'Email hydration failed: {e}')
@@ -314,7 +324,17 @@ class ContextProvider:
                 sender_name = (m.get('sender_name') or '').lower().strip()
                 if sender_name in BOT_SENDERS:
                     continue
-                lines.append(f"- {m.get('sender_name', '')}: {m.get('message_text', '')}")
+                # Add age_tag and resolve relative dates
+                text = m.get('message_text', '')
+                ts = m.get('received_at')
+                tag = age_tag(ts)
+                if ts:
+                    try:
+                        dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                        text = resolve_relative_dates(text, dt)
+                    except Exception:
+                        pass
+                lines.append(f"{tag} {m.get('sender_name', '')}: {text}")
             if not lines:
                 return "None"
             return "\n".join(lines)
