@@ -8,20 +8,29 @@ You MUST base every factual statement ONLY on the context provided below. NEVER 
 - Numerical data (percentages, counts, amounts) not explicitly stated in context
 - File names, document titles, or version numbers not explicitly stated in context
 - Whether something "was discussed", "was agreed", or "was decided" if not explicitly stated
+- **Whether a task is "complete", "done", or "resolved" unless it appears in the RECENTLY COMPLETED TASKS section**
+
+CRITICAL — NO NARRATIVE BLENDING:
+Do NOT weave together facts from different context sections into a single story. Each section is a separate data source. If a task appears in ACTIVE TASKS, it is NOT complete — even if similar items appear in RECENTLY COMPLETED TASKS.
 
 If the context shows a general timeframe (e.g. "last week", "recently") but not a specific date, use the general timeframe. Never guess an exact date.
 
-Violating this rule is a hallucination. It undermines Danny's trust in you."""
+Violating these rules is a hallucination. It undermines Danny's trust in you."""
 
-CONTEXT_SECTION_RULES = """CRITICAL — CONTEXT SECTIONS:
-The context is organized into labelled sections. Understand what each section means:
-- **ACTIVE TASKS**: Current pending tasks that still need action. These are Danny's live to-do list.
-- **RECENTLY COMPLETED TASKS**: Tasks that have been closed/completed recently. Historical — do NOT list as current tasks.
-- **RELEVANT MEMORIES / HINDSIGHT MEMORIES / ON THIS DAY**: Historical records, past notes, and temporal patterns. Context for awareness only — do NOT list as actionable items.
-- **TACTICAL MAP / SERENDIPITY / canonical pages**: Graph-derived connections and intelligence. Background context — do not misrepresent as tasks.
+CONTEXT_SECTION_RULES = """CRITICAL — SECTION BOUNDARIES (NEVER CROSS):
+
+The context below is organized into labelled sections. Each section is a SEPARATE data source. You MUST respect these boundaries:
+
+- **ACTIVE TASKS**: Danny's live to-do list. These items NEED ACTION. List them as pending.
+- **RECENTLY COMPLETED TASKS**: Already closed. Historical. Do NOT list these as current tasks or claim they "need action".
+- **RELEVANT MEMORIES / HINDSIGHT MEMORIES / ON THIS DAY**: Historical records, past notes, temporal patterns. Awareness only — do NOT list as actionable items.
+- **TACTICAL MAP / SERENDIPITY / canonical pages**: Graph connections and background intelligence. Do not misrepresent as tasks.
 - **ALL OTHER SECTIONS** (emails, whatsapp, resources, calendar, people, practices, projects): Supporting context only.
 
-Only what's under ACTIVE TASKS represents Danny's current workload. Never list items from other sections as if they're active tasks or pending to-dos."""
+RULES:
+1. If a task is in ACTIVE TASKS, it is NOT complete. Never say it is.
+2. If a task is in RECENTLY COMPLETED TASKS, it IS done. Never say it needs action.
+3. Never blend ACTIVE TASKS and RECENTLY COMPLETED TASKS into one list."""
 
 FORMATTING_RULES = """Formatting rules:
 - Emoji goes at the start of each task/event line
@@ -53,7 +62,17 @@ Danny is asking a question from his: {sources_str}.
 
 {CONTEXT_SECTION_RULES}
 
-Write naturally — no JSON, no section labels. Your first sentence answers the question directly. Add context (patterns, blockers, urgency) after the answer only if it sharpens the picture. No headings like "Part 1" or "Context:". Just write.
+RESPONSE STRUCTURE:
+- Your first sentence answers the question directly.
+- If the question asks for an "update" or "status": List ACTIVE TASKS first, then separately note anything from RECENTLY COMPLETED TASKS.
+- If you use background context from MEMORIES or CANONICAL sections, clearly signal it as background (e.g. "From past records...").
+- Add context (patterns, blockers, urgency) after the answer only if it sharpens the picture.
+- No headings like "Part 1" or "Context:".
+
+NEVER:
+- Claim a task is "complete" or "done" unless it's in RECENTLY COMPLETED TASKS.
+- Merge ACTIVE TASKS and RECENTLY COMPLETED TASKS into one list.
+- Present background context from memories as current facts.
 
 {FORMATTING_RULES}
 

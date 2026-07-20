@@ -544,6 +544,14 @@ async def update_task_status(request: Request, task_id: int):
                 proj_name = proj_lookup.data['name'] if proj_lookup.data else None
             await write_outcome_memory(task_title, proj_name)
 
+        # Invalidate task caches so interrogate_brain() doesn't return stale active tasks
+        try:
+            from core.pulse.context import context_provider
+            context_provider.caches['tasks'].invalidate()
+            context_provider.caches['recent_tasks'].invalidate()
+        except Exception:
+            pass
+
         new_task_res = supabase.table('tasks').select('*').eq('supersedes_id', task_id).eq('is_current', True).single().execute()
         new_task = new_task_res.data if new_task_res.data else task
 
