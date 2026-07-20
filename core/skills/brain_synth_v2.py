@@ -443,8 +443,8 @@ RULES:
   ## Key People
   (People connected via graph edges, with roles)
   
-  ## Active Tasks
-  (Open tasks with status)
+  ## Task History
+  (Task records with status)
   
   ## Decisions & Notes
   (Key decisions, context, blockers)

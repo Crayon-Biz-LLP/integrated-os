@@ -19,7 +19,7 @@ CONTEXT_SECTION_RULES = """The context below is organized into labelled sections
 - **ACTIVE TASKS**: Danny's live to-do list. These items still need action.
 - **RECENTLY COMPLETED TASKS**: Tasks closed recently. These are done.
 - **RELEVANT MEMORIES / HINDSIGHT MEMORIES / ON THIS DAY**: Historical records, past notes, temporal patterns.
-- **TACTICAL MAP / SERENDIPITY / canonical pages**: Graph connections and background intelligence.
+- **TACTICAL MAP / SERENDIPITY / canonical pages**: Graph connections and background intelligence. ***CRITICAL:** Tasks listed under headings like 'Active Tasks' within canonical pages are historical records from past synthesis — do NOT present them as current active tasks.*
 - **ALL OTHER SECTIONS** (emails, whatsapp, resources, calendar, people, practices, projects): Supporting context."""
 
 FORMATTING_RULES = """Formatting rules:

@@ -17,18 +17,18 @@ if os.path.exists(_env_path):
                 _v = _v.strip().strip('"').strip("'")
                 os.environ.setdefault(_k.strip(), _v)
 
-import json
-import asyncio
-import uuid
-import traceback
+import json # noqa: E402
+import asyncio # noqa: E402
+import uuid # noqa: E402
+import traceback # noqa: E402
 
-from datetime import datetime, timezone
-from unittest.mock import patch, AsyncMock
+from datetime import datetime, timezone # noqa: E402
+from unittest.mock import patch, AsyncMock # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from core.services.db import get_supabase
-from core.webhook.handler import process_webhook
+from core.services.db import get_supabase # noqa: E402
+from core.webhook.handler import process_webhook # noqa: E402
 
 PREFIX = "[UAT]"
 CLASSIFY_PACING_S = 4.0
@@ -65,7 +65,7 @@ def _log(msg: str):
     print(f"  [UAT_DIAG] {msg}")
 
 # Wrap classify_intent
-import core.webhook.classify as _cl_mod
+import core.webhook.classify as _cl_mod # noqa: E402
 _orig_classify = _cl_mod.classify_intent
 
 async def _diag_classify(text, context, ist_hour=None, core_json="[]", conversation_history=""):
@@ -74,7 +74,7 @@ async def _diag_classify(text, context, ist_hour=None, core_json="[]", conversat
     return result
 
 # Wrap check_and_resume_workflow
-import core.webhook.workflows as _wf_mod
+import core.webhook.workflows as _wf_mod # noqa: E402
 _orig_workflow = _wf_mod.check_and_resume_workflow
 
 async def _diag_workflow(chat_id, text, thread_id):
@@ -84,7 +84,7 @@ async def _diag_workflow(chat_id, text, thread_id):
     return result
 
 # Wrap route_by_intent
-import core.webhook.dispatch as _dp_mod
+import core.webhook.dispatch as _dp_mod # noqa: E402
 _orig_route = _dp_mod.route_by_intent
 
 async def _diag_route(intent, text, chat_id, session_id, classification=None, **kwargs):
@@ -108,10 +108,14 @@ def cleanup_uat_rows():
     except Exception:
         pass
     if uat_org_ids:
-        try: supabase.table('tasks').delete().in_('organization_id', uat_org_ids).execute()
-        except: pass
-        try: supabase.table('projects').delete().in_('organization_id', uat_org_ids).execute()
-        except: pass
+        try:
+            supabase.table('tasks').delete().in_('organization_id', uat_org_ids).execute()
+        except Exception:
+            pass
+        try:
+            supabase.table('projects').delete().in_('organization_id', uat_org_ids).execute()
+        except Exception:
+            pass
     for tbl, col in [
         ('pending_enrichment_jobs', 'content'),
         ('conversation_workflows', 'payload'),
@@ -714,11 +718,16 @@ _TIER_NAMES = {
 _TIER_MAP = {}
 for sid, _, _ in ALL_SCENARIOS:
     n = int(sid[1:])
-    if n <= 6: _TIER_MAP[sid] = 1
-    elif n <= 10: _TIER_MAP[sid] = 2
-    elif n <= 13: _TIER_MAP[sid] = 3
-    elif n <= 16: _TIER_MAP[sid] = 4
-    else: _TIER_MAP[sid] = 5
+    if n <= 6:
+        _TIER_MAP[sid] = 1
+    elif n <= 10:
+        _TIER_MAP[sid] = 2
+    elif n <= 13:
+        _TIER_MAP[sid] = 3
+    elif n <= 16:
+        _TIER_MAP[sid] = 4
+    else:
+        _TIER_MAP[sid] = 5
 
 async def run_all():
     print("=" * 72)
