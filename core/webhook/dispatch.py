@@ -680,6 +680,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         is_schedule = any(w in lq for w in ['calendar', 'schedule', 'meeting', 'meet', 'today', 'tomorrow', 'week', 'when'])
         is_comms = any(w in lq for w in ['email', 'message', 'said', 'told', 'chat', 'whatsapp', 'contact'])
         is_action = any(w in lq for w in ['task', 'todo', 'block', 'status', 'progress', 'done', 'completed'])
+        is_people = False
         
         fetch_all = not (is_schedule or is_comms or is_action)
         
@@ -740,16 +741,18 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _phase1_tasks = []
         
         # Memories, resources, practices — no entity dependency
+        # Skip for relationship/people queries where graph already encodes the info
+        _load_bg = fetch_all or start_dt is not None or (not is_schedule and not is_people)
         _p1_memories = asyncio.create_task(safe_fetch(
-            context_provider.hydrate_memories_context(query), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None"))
+            context_provider.hydrate_memories_context(query), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
         _phase1_tasks.append(_p1_memories)
         
         _p1_resources = asyncio.create_task(safe_fetch(
-            context_provider.get_resources_context(query), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None"))
+            context_provider.get_resources_context(query), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
         _phase1_tasks.append(_p1_resources)
         
         _p1_practices = asyncio.create_task(safe_fetch(
-            context_provider.get_practices_context(), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None"))
+            context_provider.get_practices_context(), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
         _phase1_tasks.append(_p1_practices)
         
         # People (uses SharedQueryContext for caching)
@@ -758,7 +761,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             if not people:
                 return "None"
             return ", ".join([p.get("name", "") for p in people if p.get("name")])
-        _p1_people = asyncio.create_task(safe_fetch(_fetch_people(), "None") if (fetch_all or is_comms or is_schedule) else safe_fetch(_empty_fetch("None"), "None"))
+        _p1_people = asyncio.create_task(safe_fetch(_fetch_people(), "None") if (fetch_all or is_comms or is_schedule or is_people) else safe_fetch(_empty_fetch("None"), "None"))
         _phase1_tasks.append(_p1_people)
         
         # Completed tasks
@@ -865,16 +868,16 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             query_type = _query_type
             
             # Refine context selection flags based on query_type
+            # For specific query types, OVERRIDE all flags (not just add to them)
+            # This prevents ALL 17 sections loading for a targeted question like
+            # "How is Marcus, Anita and Abhishek related?" which only needs people + graph.
             if query_type != "general":
                 _qt = get_query_type_sections(query_type)
-                if _qt.get("fetch_all"):
-                    fetch_all = True
-                if _qt.get("is_action"):
-                    is_action = True
-                if _qt.get("is_schedule"):
-                    is_schedule = True
-                if _qt.get("is_comms"):
-                    is_comms = True
+                fetch_all = _qt.get("fetch_all", False)
+                is_action = _qt.get("is_action", False)
+                is_schedule = _qt.get("is_schedule", False)
+                is_comms = _qt.get("is_comms", False)
+                is_people = _qt.get("is_people", False)
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Anaphora/Entity resolution failed: {e}")
         
@@ -920,11 +923,11 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _phase2_tasks = []
         
         _p2_tactical = asyncio.create_task(safe_fetch(
-            hybrid_search_graph(search_term, active_anchor["id"] if active_anchor else None), "") if (fetch_all or is_action) else safe_fetch(_empty_fetch(""), ""))
+            hybrid_search_graph(search_term, active_anchor["id"] if active_anchor else None), "") if (fetch_all or is_action or is_people) else safe_fetch(_empty_fetch(""), ""))
         _phase2_tasks.append(_p2_tactical)
         
         _p2_tasks = asyncio.create_task(safe_fetch(
-            context_provider.hydrate_tasks_context(query, entity_name=_entity_for_tasks), ("", "")) if (fetch_all or is_action or is_schedule) else safe_fetch(_empty_fetch(("", "")), ("", "")))
+            context_provider.hydrate_tasks_context(query, entity_name=_entity_for_tasks), ("", "")) if (fetch_all or is_action or is_schedule or is_people) else safe_fetch(_empty_fetch(("", "")), ("", "")))
         _phase2_tasks.append(_p2_tasks)
         
         async def _fetch_canonical():
@@ -948,7 +951,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             except Exception:
                 pass
             return "None"
-        _p2_canonical = asyncio.create_task(safe_fetch(_fetch_canonical(), "None"))
+        _p2_canonical = asyncio.create_task(safe_fetch(_fetch_canonical(), "None") if (fetch_all or is_action or not is_people) else safe_fetch(_empty_fetch("None"), "None"))
         _phase2_tasks.append(_p2_canonical)
         
         # Raw comms only for explicit message/email queries
