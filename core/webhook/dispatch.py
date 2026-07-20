@@ -711,7 +711,10 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         async def _empty_fetch(val): return val
 
         tactical_map_task = safe_fetch(hybrid_search_graph(search_term, active_anchor["id"] if active_anchor else None), "") if (fetch_all or is_action) else safe_fetch(_empty_fetch(""), "")
-        tasks_task = safe_fetch(context_provider.hydrate_tasks_context(query), ("", "")) if (fetch_all or is_action or is_schedule) else safe_fetch(_empty_fetch(("", "")), ("", ""))
+        # Pass resolved entity name to filter tasks — prevents hallucination where
+        # ALL system-wide tasks appear under "Active Tasks" for an entity-specific query
+        _entity_for_tasks = resolved_entity or (active_anchor.get("name") if active_anchor else None)
+        tasks_task = safe_fetch(context_provider.hydrate_tasks_context(query, entity_name=_entity_for_tasks), ("", "")) if (fetch_all or is_action or is_schedule) else safe_fetch(_empty_fetch(("", "")), ("", ""))
         memories_task = safe_fetch(context_provider.hydrate_memories_context(query), "None") if (fetch_all or start_dt is not None or not is_schedule) else safe_fetch(_empty_fetch("None"), "None")
         # Pre-compute single query embedding — shared across all 3 hybrid RPCs (resources, email, whatsapp)
         # Previously each method called get_embedding() independently, wasting ~1.5s on duplicate API calls

@@ -374,11 +374,17 @@ class ContextProvider:
                 lines.append(f"- {e.get('title', 'Untitled')}")
         return "\n".join(lines)
 
-    async def hydrate_tasks_context(self, query_text: str = None, max_chars: int = 4000):
+    async def hydrate_tasks_context(self, query_text: str = None, max_chars: int = 4000, entity_name: str = None):
         """
         Implements semantic selection with hard safeguards.
         1. Always-include: urgent, overdue, due today.
         2. Semantic Tail: remaining tasks ranked by similarity to query_text.
+        
+        Args:
+            query_text: The user's query for semantic matching.
+            max_chars: Maximum formatted output length.
+            entity_name: Optional entity to filter tasks by (e.g. "Ashraya").
+                        When provided, only tasks related to this entity are returned.
         """
         from core.features import is_org_routing_enabled
         tasks, projects, orgs = await asyncio.gather(
@@ -388,6 +394,51 @@ class ContextProvider:
         )
         proj_map = {p['id']: p for p in projects}
         org_map = {o['id']: o['name'] for o in (orgs or [])}
+        
+        # Entity-aware task filtering — when a specific entity is resolved (e.g. "Ashraya"),
+        # only show tasks that belong to that entity. Prevents hallucinated task lists
+        # where the LLM sees all system-wide tasks and assumes they're all related.
+        if entity_name:
+            entity_lower = entity_name.lower().strip()
+            
+            # Build set of project IDs that belong to this entity
+            entity_project_ids = set()
+            entity_org_ids = set()
+            for p in projects:
+                p_name = p.get('name', '').lower()
+                if entity_lower in p_name:
+                    entity_project_ids.add(p['id'])
+                    if p.get('organization_id'):
+                        entity_org_ids.add(p['organization_id'])
+            
+            # Find orgs whose names match the entity
+            for oid, oname in org_map.items():
+                if entity_lower in oname.lower():
+                    entity_org_ids.add(oid)
+                    # Add all projects under this org
+                    for p in projects:
+                        if p.get('organization_id') == oid:
+                            entity_project_ids.add(p['id'])
+            
+            filtered = []
+            for t in tasks:
+                t_title = t.get('title', '').lower()
+                t_proj = t.get('project_id')
+                t_org = t.get('organization_id')
+                
+                # Include if: title mentions entity, OR project belongs to entity, OR org matches entity
+                if (entity_lower in t_title or
+                    t_proj in entity_project_ids or
+                    t_org in entity_org_ids):
+                    filtered.append(t)
+                    continue
+                # Also check if the task's project's org matches (when task has no direct org)
+                if t_proj and t_proj in proj_map:
+                    p_org = proj_map[t_proj].get('organization_id')
+                    if p_org and p_org in entity_org_ids:
+                        filtered.append(t)
+            
+            tasks = filtered
         
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
