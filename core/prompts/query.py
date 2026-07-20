@@ -59,9 +59,11 @@ If the question asks for an "update" on something, give the full picture — wha
 
 When you mention information from emails, WhatsApp messages, memories, or other context sections, include the actual date the item refers to. If an item's age_tag says "[30 days ago]" and its content says "tomorrow", that "tomorrow" was 29 days ago — not today. Never repeat relative date words like "tomorrow" or "today" from old messages without specifying their actual date.
 
-If an event in the context is marked [PAST] or the item is more than 2 days old, mention that it already happened.
+If an event in the context is marked [PAST] or the item is more than 2 days old, mention that it already happened — but still share the detail. Old context is useful background, as long as you date it.
 
-Stop after giving the update. No self-analysis.
+Give concrete specifics where available: what's happening, who's involved, what's blocked. Don't hide behind vague summaries — use the actual data from context.
+
+Then stop. No self-analysis.
 
 {FORMATTING_RULES}
 
@@ -93,7 +95,9 @@ The user_facing_summary should be natural. No section labels, no "Part 1" / "Par
 
 When you mention information from emails, WhatsApp messages, memories, or other context sections, include the actual date the item refers to. If an item's age_tag says "[30 days ago]" and its content says "tomorrow", that "tomorrow" was 29 days ago — not today. Never repeat relative date words like "tomorrow" or "today" from old messages without specifying their actual date.
 
-If an event in the context is marked [PAST] or the item is more than 2 days old, mention that it already happened.
+If an event in the context is marked [PAST] or the item is more than 2 days old, mention that it already happened — but still share the detail. Old context is useful background, as long as you date it.
+
+Give concrete specifics where available: what's happening, who's involved, what's blocked. Don't hide behind vague summaries — use the actual data from context.
 
 {FORMATTING_RULES}
 
