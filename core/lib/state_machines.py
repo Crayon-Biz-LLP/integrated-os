@@ -145,16 +145,18 @@ PENDING_NODES_STATUSES = {
     "awaiting_clarification",  # Awaiting disambiguation from clarifier (e.g. duplicate detection)
     "flagged",              # Ungrounded — needs clarification
     "merged",               # Merged into another node
+    "merge_proposed",       # find_similar_node found a match — proposed merge pending user action
 }
 
 PENDING_NODES_TRANSITIONS = {
-    "pending":              {"approved", "rejected", "awaiting_details", "awaiting_clarification", "flagged"},
+    "pending":              {"approved", "rejected", "awaiting_details", "awaiting_clarification", "flagged", "merge_proposed"},
     "approved":             set(),  # terminal
     "rejected":             set(),  # terminal
     "awaiting_details":     {"pending", "approved", "rejected"},
     "awaiting_clarification": {"pending", "approved", "rejected"},
     "flagged":              {"pending", "rejected"},
     "merged":               set(),  # terminal
+    "merge_proposed":       {"approved", "rejected", "merged"},
 }
 
 PENDING_NODES_TYPES = {
