@@ -609,7 +609,7 @@ async def process_webhook(update: dict):
             step = clar.get('step')
             pending_type = clar.get('pending_type', 'node')
             if text.strip().lower() in ('cancel',):
-                supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', clar['pending_id']).eq('status', 'awaiting_details').execute()
+                supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', clar['pending_id']).in_('status', ['awaiting_details', 'awaiting_clarification']).execute()
                 resolve_clarification(chat_id, pending_type)
                 await send_telegram(chat_id, "Cancelled. Node stays pending for next Decision Pulse.")
                 return {"success": True}

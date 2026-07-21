@@ -142,15 +142,17 @@ PENDING_NODES_STATUSES = {
     "approved",             # Approved — graph node + DB record created
     "rejected",             # Rejected
     "awaiting_details",     # Waiting for user context (person role etc.)
+    "awaiting_clarification",  # Awaiting disambiguation from clarifier (e.g. duplicate detection)
     "flagged",              # Ungrounded — needs clarification
     "merged",               # Merged into another node
 }
 
 PENDING_NODES_TRANSITIONS = {
-    "pending":              {"approved", "rejected", "awaiting_details", "flagged"},
+    "pending":              {"approved", "rejected", "awaiting_details", "awaiting_clarification", "flagged"},
     "approved":             set(),  # terminal
     "rejected":             set(),  # terminal
     "awaiting_details":     {"pending", "approved", "rejected"},
+    "awaiting_clarification": {"pending", "approved", "rejected"},
     "flagged":              {"pending", "rejected"},
     "merged":               set(),  # terminal
 }

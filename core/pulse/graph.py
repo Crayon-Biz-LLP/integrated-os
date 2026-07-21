@@ -476,7 +476,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
         raw_type = pending_item.get('node_type', 'concept')
         status = pending_item.get('status', 'pending')
 
-        if status not in ('pending', 'awaiting_details', 'flagged') and decision != 'unreject':
+        if status not in ('pending', 'awaiting_details', 'awaiting_clarification', 'flagged') and decision != 'unreject':
             return {"success": False, "action": "already_processed", "message": "Already processed."}
 
         # ── Unreject ──
