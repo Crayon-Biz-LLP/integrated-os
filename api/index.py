@@ -1420,7 +1420,8 @@ async def graph_nodes_search_route(request: Request):
     try:
         supabase = get_supabase()
         table_name = 'pending_nodes' if scope == 'pending' else 'graph_nodes'
-        query = supabase.table(table_name).select('id, label, type:node_type').ilike('label', f'%{q}%')
+        select_cols = 'id, label, type:node_type' if scope == 'pending' else 'id, label, type'
+        query = supabase.table(table_name).select(select_cols).ilike('label', f'%{q}%')
         if scope != 'pending':
             query = query.eq('is_current', True)
         if node_type:
