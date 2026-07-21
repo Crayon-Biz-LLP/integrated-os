@@ -32,7 +32,7 @@ export default async function DecisionsPage() {
     supabase
       .from("pending_nodes")
       .select("*")
-      .in("status", ["pending", "flagged", "awaiting_clarification"])
+      .in("status", ["pending", "flagged", "awaiting_clarification", "merge_proposed"])
       .order("created_at", { ascending: false })
       .limit(1000),
     supabase

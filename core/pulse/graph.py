@@ -11,6 +11,7 @@ from core.lib.people_utils import normalize_person_name
 from core.lib.graph_rules import find_similar_node, resolve_alias, canonicalize_relationship, normalize_label_display, get_canonical_id, normalize_label
 from core.clarifier import evaluate_node, evaluate_edge, store_and_send_clarification
 from core.decisions import record_decision
+from core.lib.node_tables import resolve_merge_proposal
 
 supabase = get_supabase()
 
@@ -476,7 +477,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
         raw_type = pending_item.get('node_type', 'concept')
         status = pending_item.get('status', 'pending')
 
-        if status not in ('pending', 'awaiting_details', 'awaiting_clarification', 'flagged') and decision != 'unreject':
+        if status not in ('pending', 'awaiting_details', 'awaiting_clarification', 'flagged', 'merge_proposed') and decision != 'unreject':
             return {"success": False, "action": "already_processed", "message": "Already processed."}
 
         # ── Unreject ──
@@ -517,6 +518,33 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
             )
             return {"success": True, "action": "rejected", "message": f"Rejected node and related edges for {label}"}
 
+        # ── Merge Proposed: Approve = accept merge, Reject = create standalone ──
+        if status == 'merge_proposed':
+            merge_proposals_res = supabase.table('merge_proposals').select('*').eq('origin_table', 'pending_nodes').eq('origin_id', pending_id).eq('status', 'proposed').limit(1).execute()
+            mp = (merge_proposals_res.data or [None])[0]
+            if decision == 'approve':
+                if mp:
+                    from core.lib.graph_rules import execute_graph_node_merge, get_canonical_id
+                    label = pending_item['label']
+                    node_res = maybe_single_safe(supabase.table('graph_nodes').select('id').ilike('label', label).eq('is_current', True))
+                    source_node_id = node_res.data['id'] if node_res and node_res.data else None
+                    if source_node_id:
+                        winner_id = get_canonical_id(mp['target_node_id'])
+                        execute_graph_node_merge(source_node_id, winner_id, 'merge_accept')
+                    supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
+                    resolve_merge_proposal(mp['id'], 'accepted')
+                return {"success": True, "action": "merged", "message": f"Merged '{pending_item['label']}' into target node."}
+            elif decision == 'reject':
+                label = pending_item['label']
+                node_type = raw_type
+                result = await create_graph_node_with_db_record(label=label, node_type=node_type,
+                    source_text=pending_item.get('source_text', ''), context=context, source_tag='pending_approval', force=True)
+                if result.get('success'):
+                    supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
+                    if mp:
+                        resolve_merge_proposal(mp['id'], 'rejected')
+                return result
+
         # ── Approve ──
         if decision == 'approve':
             label = pending_item['label']
@@ -553,6 +581,21 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
 
             if result.get('success'):
                 if result.get('action') == 'merge_proposed':
+                    merge_target_id = result.get('merge_candidate_id')
+                    # Get target label from graph_nodes
+                    target_res = supabase.table('graph_nodes').select('label').eq('id', merge_target_id).single().execute()
+                    target_label = target_res.data['label'] if target_res and target_res.data else merge_target_id
+                    # Insert merge_proposal row so the Merges tab shows it
+                    supabase.table('merge_proposals').insert({
+                        'source_label': label,
+                        'source_type': node_type,
+                        'target_node_id': merge_target_id,
+                        'target_label': target_label,
+                        'status': 'proposed',
+                        'rationale': f'Auto-proposed: similar {node_type} found during approval of pending node #{pending_id}',
+                        'origin_table': 'pending_nodes',
+                        'origin_id': pending_id,
+                    }).execute()
                     supabase.table('pending_nodes').update({'status': 'merge_proposed'}).eq('id', pending_id).execute()
                 else:
                     supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()

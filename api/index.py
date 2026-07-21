@@ -11,6 +11,8 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from core.lib.audit_logger import trace_id_var
+from core.lib.telemetry import emit_observation
+from core.decisions import record_decision
 from core.actions import begin_action_context, clear_action_context
 
 from core.webhook import (
@@ -842,6 +844,21 @@ async def graph_merge_action_route(request: Request):
                 }).eq('id', int(pending_id)).execute()
                 if merge_proposal:
                     resolve_merge_proposal(merge_proposal['id'], "rejected")
+                # Learner feedback
+                try:
+                    record_decision(decision_type="graph_node_merge_rejection",
+                                    title=f"Keep both: '{pr['label']}' as separate node",
+                                    entity_type="graph_node", entity_id=str(pending_id),
+                                    confidence=1.0, source="web_ui")
+                except Exception:
+                    pass
+                try:
+                    await emit_observation(subsystem='entity_extraction', event_type='correction',
+                                           features={"action": "reject_merge", "source_label": pr['label']},
+                                           predicted="merge", actual="keep_separate",
+                                           outcome='corrected', source='web_ui')
+                except Exception:
+                    pass
                 return {"success": True, "message": f"Keep both — approved '{pr['label']}' as separate node."}
             return {"success": False, "message": result.get('message', 'Failed to approve node')}
 
@@ -864,6 +881,21 @@ async def graph_merge_action_route(request: Request):
             supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', int(pending_id)).execute()
             if merge_proposal:
                 resolve_merge_proposal(merge_proposal['id'], "accepted")
+            # Learner feedback
+            try:
+                record_decision(decision_type="graph_node_merge",
+                                title=f"Aliased pending '{pr['label']}' to target",
+                                entity_type="graph_node", entity_id=str(pending_id),
+                                confidence=1.0, source="web_ui")
+            except Exception:
+                pass
+            try:
+                await emit_observation(subsystem='entity_extraction', event_type='correction',
+                                       features={"action": "alias_merge", "source_label": pr['label']},
+                                       predicted=pr['label'], actual="aliased",
+                                       outcome='corrected', source='web_ui')
+            except Exception:
+                pass
             return {"success": True, "message": f"Pending label '{pr['label']}' is now aliased to the target node."}
             
         if swap:
@@ -880,6 +912,22 @@ async def graph_merge_action_route(request: Request):
         
         if merge_proposal:
             resolve_merge_proposal(merge_proposal['id'], "accepted")
+
+        # Learner feedback
+        try:
+            record_decision(decision_type="graph_node_merge",
+                            title=f"Merged '{pr['label']}' into canonical node",
+                            entity_type="graph_node", entity_id=str(pending_id),
+                            confidence=1.0, source="web_ui")
+        except Exception:
+            pass
+        try:
+            await emit_observation(subsystem='entity_extraction', event_type='correction',
+                                   features={"action": "accept_merge", "source_label": pr['label']},
+                                   predicted=pr['label'], actual="merged",
+                                   outcome='corrected', source='web_ui')
+        except Exception:
+            pass
 
         return {"success": True, "message": f"Merged '{pr['label']}' into canonical node."}
 
@@ -990,6 +1038,32 @@ async def graph_node_rename_route(pending_id: str, request: Request):
                     'created_at': override_data['created_at']
                 }).execute()
             
+            # Learner feedback
+            node_type = live_res.data.get('type', 'unknown')
+            try:
+                record_decision(
+                    decision_type="graph_node_rename",
+                    title=f"Renamed {old_label} → {new_label}",
+                    entity_type="graph_node",
+                    entity_id=str(pending_id),
+                    confidence=1.0,
+                    source="web_ui",
+                )
+            except Exception:
+                pass
+            try:
+                await emit_observation(
+                    subsystem='entity_extraction',
+                    event_type='correction',
+                    features={"old_label": old_label, "new_label": new_label, "node_type": node_type},
+                    predicted=node_type,
+                    actual='corrected',
+                    outcome='corrected',
+                    source='web_ui'
+                )
+            except Exception:
+                pass
+
             return {"success": True, "message": "Renamed live node"}
 
         if not new_label or not new_label.strip():
@@ -1035,6 +1109,32 @@ async def graph_node_rename_route(pending_id: str, request: Request):
                 'created_at': override_data['created_at']
             }).execute()
 
+        # Learner feedback
+        p_node_type_p = pending_res.data.get('node_type', 'unknown')
+        try:
+            record_decision(
+                decision_type="graph_node_rename",
+                title=f"Renamed pending {p_node_type_p}: {old_label} → {new_label}",
+                entity_type="graph_node",
+                entity_id=str(pending_id_int),
+                confidence=1.0,
+                source="web_ui",
+            )
+        except Exception:
+            pass
+        try:
+            await emit_observation(
+                subsystem='entity_extraction',
+                event_type='correction',
+                features={"old_label": old_label, "new_label": new_label, "node_type": p_node_type_p},
+                predicted=p_node_type_p,
+                actual='corrected',
+                outcome='corrected',
+                source='web_ui'
+            )
+        except Exception:
+            pass
+
         return {"success": True, "message": f"Renamed to '{new_label}'"}
     except Exception:
         import traceback
@@ -1073,6 +1173,32 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
             
             supabase.table('graph_nodes').update({'type': new_type}).eq('id', pending_id).execute()
             supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
+
+            # Learner feedback
+            try:
+                record_decision(
+                    decision_type="graph_node_type_change",
+                    title=f"Changed {label}: {old_type} → {new_type}",
+                    entity_type="graph_node",
+                    entity_id=str(pending_id),
+                    confidence=1.0,
+                    source="web_ui",
+                )
+            except Exception:
+                pass
+            try:
+                await emit_observation(
+                    subsystem='entity_extraction',
+                    event_type='correction',
+                    features={"old_type": old_type, "new_type": new_type, "node_type": new_type},
+                    predicted=old_type,
+                    actual=new_type,
+                    outcome='corrected',
+                    source='web_ui'
+                )
+            except Exception:
+                pass
+
             return {"success": True, "message": f"Changed type to {new_type}"}
             
         try:
@@ -1100,6 +1226,32 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
 
         supabase.table('pending_nodes').update({'node_type': new_type}).eq('id', pending_id_int).execute()
         supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
+
+        # Learner feedback
+        try:
+            record_decision(
+                decision_type="graph_node_type_change",
+                title=f"Changed pending {label}: {old_type} → {new_type}",
+                entity_type="graph_node",
+                entity_id=str(pending_id_int),
+                confidence=1.0,
+                source="web_ui",
+            )
+        except Exception:
+            pass
+        try:
+            await emit_observation(
+                subsystem='entity_extraction',
+                event_type='correction',
+                features={"old_type": old_type, "new_type": new_type, "node_type": new_type},
+                predicted=old_type,
+                actual=new_type,
+                outcome='corrected',
+                source='web_ui'
+            )
+        except Exception:
+            pass
+
         return {"success": True, "message": f"Changed type to {new_type}"}
     except Exception:
         import traceback
@@ -1169,6 +1321,45 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                         orphaned += 1
                         
             supabase.table('graph_nodes').delete().eq('id', pending_id).execute()
+
+            node_type = live_res.data.get('type', 'unknown')
+
+            # Dedup guard: ensure a rejected pending_nodes row exists for this label
+            existing_pn = maybe_single_safe(supabase.table('pending_nodes').select('id').ilike('label', label))
+            if existing_pn and existing_pn.data:
+                supabase.table('pending_nodes').update({'status': 'rejected'}).eq('id', existing_pn.data['id']).execute()
+            else:
+                supabase.table('pending_nodes').insert({
+                    'label': label,
+                    'node_type': node_type,
+                    'status': 'rejected'
+                }).execute()
+
+            # Learner feedback
+            try:
+                record_decision(
+                    decision_type="graph_node_deletion",
+                    title=f"Deleted live {node_type}: {label}",
+                    entity_type="graph_node",
+                    entity_id=str(pending_id),
+                    confidence=1.0,
+                    source="web_ui",
+                )
+            except Exception:
+                pass
+            try:
+                await emit_observation(
+                    subsystem='entity_extraction',
+                    event_type='deletion',
+                    features={"node_type": node_type},
+                    predicted=node_type,
+                    actual='deleted',
+                    outcome='rejected',
+                    source='web_ui'
+                )
+            except Exception:
+                pass
+
             return {"success": True, "message": f"Deleted live node '{label}', {orphaned} orphaned concepts, and rejected matching pending edges"}
         
         try:
@@ -1222,7 +1413,33 @@ async def graph_node_delete_route(pending_id: str, request: Request):
             supabase.table('graph_edges').delete().eq('source_node_id', l_id).execute()
             supabase.table('graph_edges').delete().eq('target_node_id', l_id).execute()
             supabase.table('graph_nodes').delete().eq('id', l_id).execute()
-                    
+
+            # Learner feedback for pending deletion (which also cleaned up live node)
+            p_node_type = pending_res.data.get('node_type', 'unknown')
+            try:
+                record_decision(
+                    decision_type="graph_node_rejection",
+                    title=f"Rejected {p_node_type}: {label}",
+                    entity_type="graph_node",
+                    entity_id=str(pending_id_int),
+                    confidence=1.0,
+                    source="web_ui",
+                )
+            except Exception:
+                pass
+            try:
+                await emit_observation(
+                    subsystem='entity_extraction',
+                    event_type='rejection',
+                    features={"node_type": p_node_type},
+                    predicted=p_node_type,
+                    actual='rejected',
+                    outcome='rejected',
+                    source='web_ui'
+                )
+            except Exception:
+                pass
+
         return {"success": True, "message": f"Deleted node '{label}', rejected edges and {orphaned} orphaned concepts"}
     except Exception:
         import traceback
@@ -1316,6 +1533,32 @@ async def graph_node_manual_merge_route(request: Request):
                         supabase.table('pending_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
             
             # Do NOT delete source live node, keep it as a canonical alias pointer
+
+            # Learner feedback
+            try:
+                record_decision(
+                    decision_type="graph_node_merge",
+                    title=f"Merged live node '{source_label}' into '{target_label}'",
+                    entity_type="graph_node",
+                    entity_id=str(pending_id),
+                    confidence=1.0,
+                    source="web_ui",
+                )
+            except Exception:
+                pass
+            try:
+                await emit_observation(
+                    subsystem='entity_extraction',
+                    event_type='correction',
+                    features={"source_label": source_label, "target_label": target_label, "node_type": source_res.data.get('type', 'unknown')},
+                    predicted=source_label,
+                    actual=target_label,
+                    outcome='corrected',
+                    source='web_ui'
+                )
+            except Exception:
+                pass
+
             return {"success": True, "message": f"Merged live '{source_label}' into '{target_label}'"}
             
         # Source node (pending)
@@ -1414,7 +1657,32 @@ async def graph_node_manual_merge_route(request: Request):
                     
         # Mark source pending node as merged entirely
         supabase.table('pending_nodes').update({'status': 'merged'}).eq('id', pending_id).execute()
-        
+
+        # Learner feedback
+        try:
+            record_decision(
+                decision_type="graph_node_merge",
+                title=f"Merged pending '{source_label}' into '{target_label}'",
+                entity_type="graph_node",
+                entity_id=str(pending_id),
+                confidence=1.0,
+                source="web_ui",
+            )
+        except Exception:
+            pass
+        try:
+            await emit_observation(
+                subsystem='entity_extraction',
+                event_type='correction',
+                features={"source_label": source_label, "target_label": target_label, "node_type": source_type or 'unknown'},
+                predicted=source_label,
+                actual=target_label,
+                outcome='corrected',
+                source='web_ui'
+            )
+        except Exception:
+            pass
+
         return {"success": True, "message": f"Merged '{source_label}' into '{target_label}'"}
         
     except Exception:
