@@ -1135,15 +1135,20 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                 return {"success": False, "message": "Live node not found"}
             label = live_res.data['label']
             
-            # --- Handle people table delete (set deleted_at instead of text marker) ---
-            if live_res.data.get('type') == 'person':
-                p_id = live_res.data.get('db_record_id')
-                if p_id:
-                    supabase.table('people').update({
-                        'deleted_at': 'now()',
-                        'strategic_weight': 0,
-                        'graph_node_id': None
-                    }).eq('id', p_id).execute()
+            # --- Clear FK references before deleting the graph node ---
+            supabase.table('people').update({
+                'deleted_at': 'now()',
+                'strategic_weight': 0,
+                'graph_node_id': None
+            }).eq('graph_node_id', pending_id).execute()
+
+            supabase.table('organizations').update({
+                'graph_node_id': None
+            }).eq('graph_node_id', pending_id).execute()
+
+            supabase.table('graph_nodes').update({
+                'canonical_id': None
+            }).eq('canonical_id', pending_id).execute()
             
             # Cascade delete live edges
             supabase.table('graph_edges').delete().eq('source_node_id', pending_id).execute()
@@ -1198,15 +1203,22 @@ async def graph_node_delete_route(pending_id: str, request: Request):
         live_res = maybe_single_safe(supabase.table('graph_nodes').select('id, type, db_record_id').eq('label', label).eq('is_current', True))
         if live_res and live_res.data:
             l_id = live_res.data['id']
-            if live_res.data.get('type') == 'person':
-                p_id = live_res.data.get('db_record_id')
-                if p_id:
-                    supabase.table('people').update({
-                        'deleted_at': 'now()',
-                        'strategic_weight': 0,
-                        'graph_node_id': None
-                    }).eq('id', p_id).execute()
-                    
+
+            # --- Clear FK references before deleting the graph node ---
+            supabase.table('people').update({
+                'deleted_at': 'now()',
+                'strategic_weight': 0,
+                'graph_node_id': None
+            }).eq('graph_node_id', l_id).execute()
+
+            supabase.table('organizations').update({
+                'graph_node_id': None
+            }).eq('graph_node_id', l_id).execute()
+
+            supabase.table('graph_nodes').update({
+                'canonical_id': None
+            }).eq('canonical_id', l_id).execute()
+
             supabase.table('graph_edges').delete().eq('source_node_id', l_id).execute()
             supabase.table('graph_edges').delete().eq('target_node_id', l_id).execute()
             supabase.table('graph_nodes').delete().eq('id', l_id).execute()
