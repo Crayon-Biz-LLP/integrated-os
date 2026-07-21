@@ -1080,7 +1080,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         except ValueError:
             return {"success": False, "message": "Invalid pending ID"}
             
-        pending_res = maybe_single_safe(supabase.table('pending_nodes').select('id, label, node_type as type').eq('id', pending_id_int))
+        pending_res = maybe_single_safe(supabase.table('pending_nodes').select('id, label, type:node_type').eq('id', pending_id_int))
         if not pending_res or not pending_res.data:
             return {"success": False, "message": "Pending node not found"}
             
@@ -1305,7 +1305,7 @@ async def graph_node_manual_merge_route(request: Request):
             return {"success": True, "message": f"Merged live '{source_label}' into '{target_label}'"}
             
         # Source node (pending)
-        source_res = maybe_single_safe(supabase.table('pending_nodes').select('label, node_type as type').eq('id', pending_id))
+        source_res = maybe_single_safe(supabase.table('pending_nodes').select('label, type:node_type').eq('id', pending_id))
         if not source_res or not source_res.data:
             return {"success": False, "message": "Source pending node not found"}
         source_label = source_res.data['label']
@@ -1420,7 +1420,7 @@ async def graph_nodes_search_route(request: Request):
     try:
         supabase = get_supabase()
         table_name = 'pending_nodes' if scope == 'pending' else 'graph_nodes'
-        query = supabase.table(table_name).select('id, label, node_type as type').ilike('label', f'%{q}%')
+        query = supabase.table(table_name).select('id, label, type:node_type').ilike('label', f'%{q}%')
         if scope != 'pending':
             query = query.eq('is_current', True)
         if node_type:
@@ -1448,7 +1448,7 @@ async def graph_nodes_similar_route(request: Request):
         
         # Also check pending_nodes for exact/high matches
         supabase = get_supabase()
-        pending_res = supabase.table('pending_nodes').select('id, label, node_type as type').eq('node_type', node_type).execute()
+        pending_res = supabase.table('pending_nodes').select('id, label, type:node_type').eq('node_type', node_type).execute()
         pending_nodes = pending_res.data or []
         import difflib
         target_lower = label.lower()
@@ -1719,7 +1719,7 @@ async def pending_nodes_route(request: Request):
     try:
         supabase = get_supabase()
         res = supabase.table('pending_nodes') \
-            .select('id, label, node_type as type, status, source_text, created_at, eval_context')
+            .select('id, label, type:node_type, status, source_text, created_at, eval_context')
         # Pull pending + flagged items (skip approved/rejected/merged)
         res = res.in_('status', ['pending', 'flagged'])
         res = res.order('created_at', desc=True).limit(100).execute()

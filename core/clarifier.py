@@ -229,7 +229,7 @@ def handle_response(shortcode: str, answer: str) -> dict:
         source_update["clarification_answer"] = context
         
     if source_table == "pending_nodes" and response_type == "approved" and question_type in ["auto_merge", "disambiguation"]:
-        pn_res = maybe_single_safe(supabase.table(source_table).select("label, node_type as type").eq("id", source_id))
+        pn_res = maybe_single_safe(supabase.table(source_table).select("label, type:node_type").eq("id", source_id))
         if pn_res and pn_res.data:
             from core.lib.graph_rules import find_similar_node, execute_graph_node_merge
             similar = find_similar_node(pn_res.data["label"], pn_res.data["type"], threshold=0.85)

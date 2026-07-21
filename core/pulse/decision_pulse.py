@@ -128,7 +128,7 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         # ── Auto-approve high-confidence graph nodes before display ──
         pending_graph = supabase.table('pending_nodes')\
-            .select('id, label, node_type as type, source_text')\
+            .select('id, label, type:node_type, source_text')\
             .eq('status', 'pending')\
             .order('created_at', desc=False)\
             .limit(5)\

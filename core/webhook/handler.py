@@ -390,7 +390,7 @@ async def process_callback_query(callback_query: dict):
                     resolve_clarification(chat_id, 'node')
                     result = await process_graph_pending_decision(sc_int, 'reject')
                 else:
-                    pending_item = maybe_single_safe(supabase.table('pending_nodes').select('id, label, node_type as type').eq('id', sc_int))
+                    pending_item = maybe_single_safe(supabase.table('pending_nodes').select('id, label, type:node_type').eq('id', sc_int))
                     if pending_item and pending_item.data:
                         ptype = pending_item.data.get('type')
                         label = pending_item.data.get('label')

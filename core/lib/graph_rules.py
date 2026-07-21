@@ -215,7 +215,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
             
         # 4. ILIKE match against pending_nodes
         try:
-            pgn_res = maybe_single_safe(supabase.table("pending_nodes").select("id, label, node_type as type, status").ilike("label", label))
+            pgn_res = maybe_single_safe(supabase.table("pending_nodes").select("id, label, type:node_type, status").ilike("label", label))
             if pgn_res and pgn_res.data:
                 if pgn_res.data["status"] == "rejected":
                     result["label"] = pgn_res.data["label"]
