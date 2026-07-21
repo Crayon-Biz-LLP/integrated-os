@@ -628,6 +628,106 @@ def _build_rich_anchor(graph_node_id, name):
     return anchor
 
 
+async def _build_active_context(resolved_entity: str, current_thread_id: str, chat_id: int) -> str | None:
+    """Fix D: Scan all recent threads for cross-references to the resolved entity.
+    
+    Returns a formatted "ACTIVE CONVERSATION CONTEXT" brief showing which other
+    threads have discussed the same entity, or None if no cross-references found.
+    Runs in <100ms (single SQL query) — zero latency impact in Phase 2.
+    """
+    if not resolved_entity or not current_thread_id:
+        return None
+    
+    try:
+        now = datetime.now(timezone.utc)
+        cutoff_24h = (now - timedelta(hours=24)).isoformat()
+        
+        # 1. Find recent threads (last 24h, non-archived, excluding current)
+        threads_res = supabase.table('conversation_threads') \
+            .select('id, thread_type, entity_type, entity_label, summary, last_active_at') \
+            .eq('chat_id', chat_id) \
+            .gt('last_active_at', cutoff_24h) \
+            .is_('archived_at', 'null') \
+            .neq('id', current_thread_id) \
+            .order('last_active_at', desc=True) \
+            .limit(5) \
+            .execute()
+        
+        if not threads_res.data:
+            return None
+        
+        entity_lower = resolved_entity.lower()
+        cross_refs = []
+        
+        # 2. Check thread summaries first (Fix A ensures summaries exist)
+        for thread in threads_res.data:
+            summary = thread.get('summary', '') or ''
+            entity_label = thread.get('entity_label', '') or ''
+            
+            if entity_lower in summary.lower() or entity_lower in entity_label.lower():
+                cross_refs.append({
+                    'label': entity_label or thread.get('thread_type', 'general'),
+                    'entity_type': thread.get('entity_type', ''),
+                    'summary': summary[:150] if summary else '',
+                    'last_active': thread.get('last_active_at', '')
+                })
+        
+        # 3. Fall back to scanning raw exchanges in the thread if no summary match
+        if not cross_refs:
+            for thread in threads_res.data:
+                try:
+                    ex_res = supabase.table('conversations') \
+                        .select('content') \
+                        .eq('thread_id', thread['id']) \
+                        .eq('role', 'user') \
+                        .order('created_at', desc=True) \
+                        .limit(5) \
+                        .execute()
+                    for ex in ex_res.data or []:
+                        content = ex.get('content', '') or ''
+                        if entity_lower in content.lower():
+                            cross_refs.append({
+                                'label': thread.get('entity_label', '') or thread.get('thread_type', 'general'),
+                                'entity_type': thread.get('entity_type', ''),
+                                'summary': content[:150],
+                                'last_active': thread.get('last_active_at', '')
+                            })
+                            break  # One reference per thread is enough
+                except Exception:
+                    continue
+        
+        if not cross_refs:
+            return None
+        
+        # 4. Build the brief
+        label_parts = []
+        for ref in cross_refs:
+            label = ref['label']
+            if ref['entity_type']:
+                label = f"{label} ({ref['entity_type']})"
+            time_str = age_tag(ref['last_active'])
+            summary = ref['summary'][:120] if ref['summary'] else '(recently active)'
+            label_parts.append(f"\u25cf {label} \u2014 {time_str}: {summary}")
+        
+        current_label = "General"
+        try:
+            t_res = supabase.table('conversation_threads').select('entity_label, entity_type').eq('id', current_thread_id).limit(1).execute()
+            if t_res.data:
+                entity_label = t_res.data[0].get('entity_label', '') or ''
+                current_label = entity_label or 'General'
+        except Exception:
+            pass
+        
+        lines = [f"You've discussed \"{resolved_entity}\" across these threads recently:"]
+        lines.extend(label_parts)
+        lines.append(f"\nCurrent thread: {current_label}")
+        
+        return "\n".join(lines)
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"Failed to build active context: {e}")
+        return None
+
+
 class SharedQueryContext:
     """Caches expensive results (embedding, tasks, people) within one interrogate_brain call.
     Prevents redundant DB/API roundtrips when multiple context sections need the same data."""
@@ -1070,13 +1170,21 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _p2_raw_comms = asyncio.create_task(safe_fetch(_fetch_raw_comms(), "None") if is_comms else safe_fetch(_empty_fetch("None"), "None"))
         _phase2_tasks.append(_p2_raw_comms)
         
+        # Active conversation context (Fix D) — cross-thread entity awareness
+        async def _fetch_active_context():
+            if resolved_entity and session_id:
+                return await _build_active_context(resolved_entity, session_id, chat_id)
+            return None
+        _p2_active_context = asyncio.create_task(safe_fetch(_fetch_active_context(), None))
+        _phase2_tasks.append(_p2_active_context)
+        
         # ── AWAIT ALL pending tasks ──
         # Phase 1a (lightweight, started before anaphora) + Phase 1b (heavy, started
         # after anaphora with correct flags) + Phase 2 (entity-dependent).
         # Wall-clock time = max(anaphora + phase1b + phase2, phase1a + phase1b + phase2)
         _all_results = await asyncio.gather(*_phase1a_tasks, *_phase1b_tasks, *_phase2_tasks)
         
-        # Unpack: Phase 1a = 7 tasks, Phase 1b = 6 tasks, Phase 2 = 5 tasks
+        # Unpack: Phase 1a = 7 tasks, Phase 1b = 6 tasks, Phase 2 = 6 tasks
         _p1a_count = len(_phase1a_tasks)
         _p1b_count = len(_phase1b_tasks)
         _r1 = _all_results[:_p1a_count]
@@ -1124,6 +1232,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         raw_comms_context = _r2[_ri]
         _ri += 1
         conversation_context = _r2[_ri]
+        _ri += 1
+        active_context = _r2[_ri]
         _ri += 1
 
         available_sources = []
@@ -1192,6 +1302,9 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         if conversation_context != "None":
             all_context.append(f"{_source_tag('past_conversations')} PAST CONVERSATIONS {_HIST_TAG}:\n{conversation_context}")
             available_sources.append("past conversations")
+        if active_context and active_context != "None":
+            all_context.append(f"{_source_tag('active_context')} ACTIVE CONVERSATION CONTEXT {_HIST_TAG}:\n{active_context}")
+            available_sources.append("active conversations")
 
         if not all_context:
             _last_reply = "\U0001f50d *I don't have any relevant data to answer that.*\n\n_Try rephrasing._"

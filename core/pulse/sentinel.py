@@ -552,6 +552,29 @@ Context:
         except Exception as dlq_err:
             audit_log_sync("sentinel", "WARNING", f"DLQ consumer error (non-critical): {dlq_err}")
 
+        # --- PIGGYBACK: H1 Auto-archive stale threads ---
+        # Archive entity threads inactive for >7 days to keep the active thread
+        # set clean and prevent unbounded growth of the conversation_threads table.
+        try:
+            seven_days_ago = (now - timedelta(days=7)).isoformat()
+            stale_res = supabase.table('conversation_threads') \
+                .select('id') \
+                .lt('last_active_at', seven_days_ago) \
+                .is_('archived_at', 'null') \
+                .neq('thread_type', 'general') \
+                .limit(50) \
+                .execute()
+            if stale_res.data:
+                stale_ids = [t['id'] for t in stale_res.data]
+                supabase.table('conversation_threads') \
+                    .update({'archived_at': now.isoformat()}) \
+                    .in_('id', stale_ids) \
+                    .execute()
+                audit_log_sync("sentinel", "INFO",
+                    f"thread archive: {len(stale_ids)} stale thread(s) archived (>7d inactive)")
+        except Exception as arc_err:
+            audit_log_sync("sentinel", "WARNING", f"Thread archive error (non-critical): {arc_err}")
+
         # --- PIGGYBACK: P6 Enrichment Queue Consumer ---
         # Processes pending task_graph and note_enrich jobs that were queued
         # during create_task_direct / create_note_direct. Runs every sentinel cycle

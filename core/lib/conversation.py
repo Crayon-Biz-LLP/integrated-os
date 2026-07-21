@@ -135,11 +135,11 @@ def _fetch_entity_candidates(text: str, chat_id: int) -> list:
     """K2: Fetch all entity candidate threads from text, ranked by recency + confidence.
     
     Returns list of dicts with thread_id, active_anchor, entity_name, score.
-    Uses deterministic resolver first, then LLM fallback for obvious misses.
+    Uses deterministic resolver first (orgs, projects, people), then LLM fallback.
     """
     candidates = []
     
-    # 1. Try deterministic n-gram resolver
+    # 1. Try deterministic n-gram resolver (orgs + projects)
     try:
         from core.pulse.entity_resolver import resolve_entities_from_text
         org_id, proj_id, reason = resolve_entities_from_text(text)
@@ -149,7 +149,14 @@ def _fetch_entity_candidates(text: str, chat_id: int) -> list:
     except Exception:
         pass
     
-    # 2. LLM fallback — if no candidates, check if text references a known entity
+    # 2. Person entity matching (NEW — Fix B): detect people via graph_nodes
+    try:
+        person_candidates = _resolve_person_candidates(text, chat_id)
+        candidates.extend(person_candidates)
+    except Exception:
+        pass
+    
+    # 3. LLM fallback — if no candidates, check if text references a known entity
     if not candidates:
         try:
             llm_candidates = _llm_entity_disambiguation(text, chat_id)
@@ -160,9 +167,102 @@ def _fetch_entity_candidates(text: str, chat_id: int) -> list:
         except Exception:
             pass
     
-    # 3. Sort by score descending
+    # 4. Sort by score descending
     candidates.sort(key=lambda c: c.get('score', 0), reverse=True)
     return candidates
+
+
+def _resolve_person_candidates(text: str, chat_id: int) -> list:
+    """Detect person entities in text and create/lookup person-scoped threads.
+    
+    Uses n-gram matching against graph_nodes with type='person'.
+    Follows the same pattern as _resolve_entity_to_candidates for orgs/projects.
+    Returns list of candidate dicts.
+    """
+    if not text:
+        return []
+    
+    supabase = get_supabase()
+    results = []
+    
+    try:
+        # Fetch known people from graph_nodes
+        people_res = supabase.table('graph_nodes') \
+            .select('id, label') \
+            .eq('type', 'person') \
+            .eq('is_current', True) \
+            .execute()
+        people = people_res.data or []
+        
+        norm_text = text.lower().strip()
+        
+        for person in people:
+            label = person.get('label', '')
+            if not label:
+                continue
+            norm_label = label.lower().strip()
+            
+            # Check if person name is the primary topic of the text
+            if not _entity_is_primary_topic(norm_text, norm_label):
+                continue
+            
+            person_id = str(person['id'])
+            
+            # Check if a person-scoped thread already exists
+            thread = supabase.table('conversation_threads') \
+                .select('id, active_anchor, last_active_at') \
+                .eq('chat_id', chat_id) \
+                .eq('thread_type', 'entity') \
+                .eq('entity_type', 'person') \
+                .eq('entity_id', person_id) \
+                .is_('archived_at', 'null') \
+                .order('last_active_at', desc=True) \
+                .limit(1) \
+                .execute()
+            
+            base_score = 75  # Slightly below project (90) and org (80) to prefer structured entities
+            
+            if thread.data and thread.data[0].get('id'):
+                t = thread.data[0]
+                last_active = t.get('last_active_at')
+                boost = 0
+                if last_active:
+                    try:
+                        hours_ago = (datetime.now(timezone.utc) - datetime.fromisoformat(last_active.replace('Z', '+00:00'))).total_seconds() / 3600
+                        if hours_ago <= 24:
+                            boost = 10
+                        elif hours_ago <= 72:
+                            boost = 5
+                    except Exception:
+                        pass
+                results.append({
+                    'thread_id': t['id'],
+                    'active_anchor': t.get('active_anchor'),
+                    'entity_name': label,
+                    'entity_type': 'person',
+                    'entity_id': person_id,
+                    'score': base_score + boost,
+                    'source': 'person_match',
+                    'is_new': False
+                })
+            else:
+                results.append({
+                    'thread_id': None,
+                    'active_anchor': None,
+                    'entity_name': label,
+                    'entity_type': 'person',
+                    'entity_id': person_id,
+                    'score': base_score - 20,
+                    'source': 'person_match',
+                    'is_new': True
+                })
+            # Only return the best person match (no ambiguous person routing)
+            break
+    except Exception as e:
+        from core.lib.audit_logger import audit_log_sync
+        audit_log_sync("routing", "WARNING", f"Person candidate resolution failed: {e}")
+    
+    return results
 
 
 def _resolve_entity_to_candidates(chat_id: int, entity_type: str, entity_id, source: str, text: str) -> list:
@@ -421,6 +521,7 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
                             'thread_type': 'entity',
                             'entity_type': best.get('entity_type'),
                             'entity_id': best.get('entity_id'),
+                            'entity_label': best.get('entity_name', ''),
                             'routing_confidence': best.get('source', '')
                         }).execute()
                         from core.lib.audit_logger import audit_log_sync
@@ -595,20 +696,23 @@ Topic Summary:"""
     return ""
 
 async def _background_summary_check(session_id: str):
-    """Best-effort background job to generate thread summary if needed."""
+    """Best-effort background job to generate/update thread summary.
+    
+    Fires eagerly every 3 user exchanges so short threads always have
+    a summary for the awareness layer to scan. Always updates the summary
+    so it doesn't go stale as the conversation evolves.
+    """
     try:
-        res = get_supabase().table('conversation_threads').select('summary').eq('id', session_id).execute()
-        if res.data and res.data[0].get('summary'):
-            return  # Already has a summary
-            
         conv_res = get_supabase().table('conversations').select('id').eq('thread_id', session_id).eq('role', 'user').execute()
-        if not conv_res.data or len(conv_res.data) < 2:
-            return  # Not enough user exchanges to warrant a summary
+        user_count = len(conv_res.data or [])
+        if user_count < 2 or user_count % 3 != 0:
+            return  # Generate every 3rd user exchange (2, 5, 8, 11...)
             
         all_pairs = get_history(session_id, max_tokens=8000)
         summary = _compress_to_classify_summary(all_pairs)
         if summary:
-            _store_thread_summary_if_missing(session_id, summary)
+            # Always update the summary (not if_missing) so it stays fresh
+            _store_thread_summary(session_id, summary)
     except Exception as e:
         from core.lib.audit_logger import audit_log_sync
         audit_log_sync("conversation", "WARNING", f"Background summary generation failed: {e}")
@@ -697,6 +801,26 @@ def get_thread_summary(thread_id: str) -> str:
         pass
     return ""
 
+async def _store_exchange_embedding(exchange_id: int, content: str):
+    """Async fire-and-forget task to store embedding on a user exchange.
+    
+    This is Fix C: stores embeddings on ALL user exchanges (not just QUERY),
+    so the match_conversations RPC (Phase 1) can find TASK, NOTE, COMPLETION
+    exchanges too.
+    """
+    try:
+        from core.llm import get_embedding
+        emb = await get_embedding(content)
+        if emb and emb.vector:
+            get_supabase().table('conversations') \
+                .update({'embedding': emb.vector}) \
+                .eq('id', exchange_id) \
+                .execute()
+    except Exception as e:
+        from core.lib.audit_logger import audit_log_sync
+        audit_log_sync("conversation", "WARNING", f"Failed to store exchange embedding: {e}")
+
+
 def log_exchange(session_id: str, role: str, intent: str, content: str, chat_id: int, metadata: dict = None):
     """Insert an exchange row into conversations. Maps session_id to thread_id."""
     try:
@@ -710,8 +834,19 @@ def log_exchange(session_id: str, role: str, intent: str, content: str, chat_id:
             "token_count": _approx_tokens(content),
             "metadata": metadata or {}
         }
-        get_supabase().table('conversations').insert(record).execute()
+        insert_res = get_supabase().table('conversations').insert(record).execute()
         _touch_thread(session_id)
+        
+        # Store embedding for user exchanges (Fix C — fire-and-forget)
+        if role == 'user' and insert_res.data:
+            import asyncio
+            try:
+                exchange_id = insert_res.data[0].get('id')
+                if exchange_id:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_store_exchange_embedding(exchange_id, content))
+            except RuntimeError:
+                pass  # No running event loop
         
         if role == 'bot':
             import asyncio
