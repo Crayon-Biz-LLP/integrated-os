@@ -802,134 +802,118 @@ async def graph_merge_action_route(request: Request):
     require_api_auth(request)
     try:
         body = await request.json()
-        pending_id = body.get('id')
+        merge_proposal_id = body.get('id')
         action = body.get('action', '')
+        swap = body.get('swap', False)
 
-        if not pending_id or action not in ('accept', 'reject'):
+        if not merge_proposal_id or action not in ('accept', 'reject'):
             raise HTTPException(status_code=400, detail="id and valid action (accept/reject) required")
 
         from core.services.db import get_supabase, maybe_single_safe
-        from core.lib.node_tables import list_pending_merge_proposals, resolve_merge_proposal
+        from core.lib.node_tables import resolve_merge_proposal
         supabase = get_supabase()
 
-        # Read merge proposal from merge_proposals table (by source_label match)
-        pending_row = maybe_single_safe(supabase.table('pending_nodes').select('*').eq('id', int(pending_id)))
-        if not pending_row or not pending_row.data:
-            return {"success": False, "message": "Pending node not found."}
-
-        pr = pending_row.data
-        if pr.get('status') == 'approved':
+        # Read merge proposal by its own ID (frontend sends merge_proposals.id)
+        mp_res = maybe_single_safe(supabase.table('merge_proposals').select('*').eq('id', int(merge_proposal_id)))
+        if not mp_res or not mp_res.data:
+            return {"success": False, "message": "Merge proposal not found."}
+        merge_proposal = mp_res.data
+        if merge_proposal.get('status') != 'proposed':
             return {"success": False, "message": "Merge proposal already processed."}
 
-        # Find the merge proposal in merge_proposals table
-        proposals = list_pending_merge_proposals(limit=50)
-        merge_proposal = None
-        for mp in proposals:
-            if mp['source_label'] == pr['label']:
-                merge_proposal = mp
-                break
+        # Find corresponding pending node via origin_id
+        origin_id = merge_proposal.get('origin_id')
+        pending_label = merge_proposal.get('source_label', '')
+        pending_type = merge_proposal.get('source_type', 'person')
 
         if action == 'reject':
             from core.pulse.graph import create_graph_node_with_db_record
             result = await create_graph_node_with_db_record(
-                label=pr['label'],
-                node_type=pr.get('node_type', pr.get('type', 'person')),
-                source_text=pr.get('source_text', ''),
+                label=pending_label,
+                node_type=pending_type,
+                source_text='',
                 source_tag='pending_approval',
                 force=True
             )
             if result.get('success'):
-                supabase.table('pending_nodes').update({
-                    'status': 'approved'
-                }).eq('id', int(pending_id)).execute()
-                if merge_proposal:
-                    resolve_merge_proposal(merge_proposal['id'], "rejected")
-                # Learner feedback
+                if origin_id:
+                    supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', origin_id).execute()
+                resolve_merge_proposal(merge_proposal['id'], "rejected")
                 try:
                     record_decision(decision_type="graph_node_merge_rejection",
-                                    title=f"Keep both: '{pr['label']}' as separate node",
-                                    entity_type="graph_node", entity_id=str(pending_id),
+                                    title=f"Keep both: '{pending_label}' as separate node",
+                                    entity_type="graph_node", entity_id=str(origin_id),
                                     confidence=1.0, source="web_ui")
                 except Exception:
                     pass
                 try:
                     await emit_observation(subsystem='entity_extraction', event_type='correction',
-                                           features={"action": "reject_merge", "source_label": pr['label']},
+                                           features={"action": "reject_merge", "source_label": pending_label},
                                            predicted="merge", actual="keep_separate",
                                            outcome='corrected', source='web_ui')
                 except Exception:
                     pass
-                return {"success": True, "message": f"Keep both — approved '{pr['label']}' as separate node."}
+                return {"success": True, "message": f"Keep both — approved '{pending_label}' as separate node."}
             return {"success": False, "message": result.get('message', 'Failed to approve node')}
 
-        # Get target node ID from merge proposal
-        if not merge_proposal or not merge_proposal.get('target_node_id'):
+        # Accept merge
+        target_id = merge_proposal.get('target_node_id')
+        if not target_id:
             return {"success": False, "message": "Merge candidate not found in proposal."}
-        target_id = merge_proposal['target_node_id']
-            
-        swap = body.get('swap', False)
-        
-        from core.lib.graph_rules import get_canonical_id
-        
-        source_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label').eq('label', pr['label']).eq('is_current', True))
+
+        from core.lib.graph_rules import get_canonical_id, execute_graph_node_merge
+
+        source_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label').eq('label', pending_label).eq('is_current', True))
         source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
-        
         target_canonical = get_canonical_id(target_id)
-        
+
         if not source_node_id:
-            # The pending label was merged before it was ever created as a graph node.
-            supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', int(pending_id)).execute()
-            if merge_proposal:
-                resolve_merge_proposal(merge_proposal['id'], "accepted")
-            # Learner feedback
+            # Pending label was merged before it was ever created as a graph node.
+            if origin_id:
+                supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', origin_id).execute()
+            resolve_merge_proposal(merge_proposal['id'], "accepted")
             try:
                 record_decision(decision_type="graph_node_merge",
-                                title=f"Aliased pending '{pr['label']}' to target",
-                                entity_type="graph_node", entity_id=str(pending_id),
+                                title=f"Aliased pending '{pending_label}' to target",
+                                entity_type="graph_node", entity_id=str(origin_id),
                                 confidence=1.0, source="web_ui")
             except Exception:
                 pass
             try:
                 await emit_observation(subsystem='entity_extraction', event_type='correction',
-                                       features={"action": "alias_merge", "source_label": pr['label']},
-                                       predicted=pr['label'], actual="aliased",
+                                       features={"action": "alias_merge", "source_label": pending_label},
+                                       predicted=pending_label, actual="aliased",
                                        outcome='corrected', source='web_ui')
             except Exception:
                 pass
-            return {"success": True, "message": f"Pending label '{pr['label']}' is now aliased to the target node."}
-            
-        if swap:
-            loser_id = target_canonical
-            winner_id = source_node_id
-        else:
-            loser_id = source_node_id
-            winner_id = target_canonical
+            return {"success": True, "message": f"Pending label '{pending_label}' is now aliased to the target node."}
 
-        from core.lib.graph_rules import execute_graph_node_merge
+        loser_id = target_canonical if swap else source_node_id
+        winner_id = source_node_id if swap else target_canonical
+
         execute_graph_node_merge(loser_id, winner_id, "ui_merge_accept")
-        
-        supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', int(pending_id)).execute()
-        
-        if merge_proposal:
-            resolve_merge_proposal(merge_proposal['id'], "accepted")
+
+        if origin_id:
+            supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', origin_id).execute()
+        resolve_merge_proposal(merge_proposal['id'], "accepted")
 
         # Learner feedback
         try:
             record_decision(decision_type="graph_node_merge",
-                            title=f"Merged '{pr['label']}' into canonical node",
-                            entity_type="graph_node", entity_id=str(pending_id),
+                            title=f"Merged '{pending_label}' into canonical node",
+                            entity_type="graph_node", entity_id=str(origin_id),
                             confidence=1.0, source="web_ui")
         except Exception:
             pass
         try:
             await emit_observation(subsystem='entity_extraction', event_type='correction',
-                                   features={"action": "accept_merge", "source_label": pr['label']},
-                                   predicted=pr['label'], actual="merged",
+                                   features={"action": "accept_merge", "source_label": pending_label},
+                                   predicted=pending_label, actual="merged",
                                    outcome='corrected', source='web_ui')
         except Exception:
             pass
 
-        return {"success": True, "message": f"Merged '{pr['label']}' into canonical node."}
+        return {"success": True, "message": f"Merged '{pending_label}' into canonical node."}
 
     except Exception:
         import traceback
