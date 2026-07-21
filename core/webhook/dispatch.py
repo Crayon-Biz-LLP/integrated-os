@@ -961,6 +961,49 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _p2_canonical = asyncio.create_task(safe_fetch(_fetch_canonical(), "None") if (fetch_all or is_action or not is_people) else safe_fetch(_empty_fetch("None"), "None"))
         _phase2_tasks.append(_p2_canonical)
         
+        # Past conversation retrieval — uses cached embedding from SharedQueryContext
+        # Finds semantically similar past exchanges regardless of thread or recency.
+        # Returns "None" when embedding isn't available (first query, backfill not run yet).
+        async def _fetch_past_conversations():
+            try:
+                query_emb = await _shared.get_embedding()
+                if not query_emb or not session_id:
+                    return "None"
+                # Fetch last 2 exchange IDs for dedup (Watchout A)
+                _last_ids = []
+                try:
+                    _id_res = await asyncio.to_thread(
+                        lambda: supabase.table('conversations') \
+                            .select('id') \
+                            .eq('thread_id', session_id) \
+                            .order('created_at', desc=True) \
+                            .limit(2) \
+                            .execute()
+                    )
+                    _last_ids = [r['id'] for r in (_id_res.data or [])]
+                except Exception:
+                    pass
+                result = await asyncio.to_thread(
+                    lambda: supabase.rpc('match_conversations', {
+                        'query_embedding': query_emb,
+                        'match_count': 3,
+                        'match_threshold': 0.5,
+                        'exclude_ids': _last_ids
+                    }).execute()
+                )
+                if result.data:
+                    lines = []
+                    for row in result.data:
+                        label = "You" if row['role'] == 'user' else "Rhodey"
+                        content = row['content'][:200]
+                        lines.append(f"- [{label}] {content}")
+                    return "\n".join(lines)
+            except Exception:
+                pass
+            return "None"
+        _p2_conversations = asyncio.create_task(safe_fetch(_fetch_past_conversations(), "None"))
+        _phase2_tasks.append(_p2_conversations)
+
         # Raw comms only for explicit message/email queries
         async def _fetch_raw_comms():
             if not active_anchor and not resolved_entity:
@@ -1033,7 +1076,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         # Wall-clock time = max(anaphora + phase1b + phase2, phase1a + phase1b + phase2)
         _all_results = await asyncio.gather(*_phase1a_tasks, *_phase1b_tasks, *_phase2_tasks)
         
-        # Unpack: Phase 1a = 7 tasks, Phase 1b = 6 tasks, Phase 2 = 4 tasks
+        # Unpack: Phase 1a = 7 tasks, Phase 1b = 6 tasks, Phase 2 = 5 tasks
         _p1a_count = len(_phase1a_tasks)
         _p1b_count = len(_phase1b_tasks)
         _r1 = _all_results[:_p1a_count]
@@ -1079,6 +1122,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         canonical_context = _r2[_ri]
         _ri += 1
         raw_comms_context = _r2[_ri]
+        _ri += 1
+        conversation_context = _r2[_ri]
         _ri += 1
 
         available_sources = []
@@ -1144,6 +1189,9 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         if projects_context != "None":
             all_context.append(f"{_source_tag('projects')} ACTIVE PROJECTS:\n{projects_context}")
             available_sources.append("active projects")
+        if conversation_context != "None":
+            all_context.append(f"{_source_tag('past_conversations')} PAST CONVERSATIONS {_HIST_TAG}:\n{conversation_context}")
+            available_sources.append("past conversations")
 
         if not all_context:
             _last_reply = "\U0001f50d *I don't have any relevant data to answer that.*\n\n_Try rephrasing._"
@@ -1213,7 +1261,24 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             if active_anchor:
                 meta["active_anchor"] = active_anchor
             log_exchange(session_id, 'bot', 'QUERY', final_reply, chat_id, metadata=meta)
-            
+
+            # Store embedding on the user exchange for future semantic retrieval
+            # The embedding was already computed in SharedQueryContext — this is nearly free
+            try:
+                query_emb = _shared._embedding  # Already cached, no API call needed
+                if query_emb:
+                    await asyncio.to_thread(
+                        lambda: supabase.table('conversations') \
+                            .eq('thread_id', session_id) \
+                            .eq('role', 'user') \
+                            .order('created_at', desc=True) \
+                            .limit(1) \
+                            .update({'embedding': query_emb}) \
+                            .execute()
+                    )
+            except Exception:
+                pass  # Non-critical — exchange still works without embedding
+
             if active_anchor:
                 try:
                     supabase.table('conversation_threads').update({
