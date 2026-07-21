@@ -1141,7 +1141,8 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                 if p_id:
                     supabase.table('people').update({
                         'deleted_at': 'now()',
-                        'strategic_weight': 0
+                        'strategic_weight': 0,
+                        'graph_node_id': None
                     }).eq('id', p_id).execute()
             
             # Cascade delete live edges
@@ -1202,7 +1203,8 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                 if p_id:
                     supabase.table('people').update({
                         'deleted_at': 'now()',
-                        'strategic_weight': 0
+                        'strategic_weight': 0,
+                        'graph_node_id': None
                     }).eq('id', p_id).execute()
                     
             supabase.table('graph_edges').delete().eq('source_node_id', l_id).execute()
