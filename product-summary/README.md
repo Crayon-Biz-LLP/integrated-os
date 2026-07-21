@@ -107,6 +107,7 @@ A comprehensive guide to the Integrated-OS system — an AI-powered Personal Ope
 | [58-final-architecture-overhaul.md](58-final-architecture-overhaul.md) | Complete 6-layer architecture overhaul (Parts 51-58), final architecture diagram, 22-scenario UAT validation |
 | [59-post-uat-cleanup.md](59-post-uat-cleanup.md) | 3-phase DB cleanup of ~1,094 UAT/test artifacts across 21 tables |
 | [61-optimization-voice-gap-fixes.md](61-optimization-voice-gap-fixes.md) | Parallelization, streaming queries, voice prompt overhaul, ToolRegistry removal, G1-G10 logical gap fixes |
+| [62-thread-anchoring-awareness-layer.md](62-thread-anchoring-awareness-layer.md) | Hardened thread layer — person routing, eager summaries, all-exchange embeddings, cross-thread awareness layer, auto-archive |
 
 ### Mobile App (Flutter — Rhodey)
 | File | What It Covers |

@@ -95,6 +95,26 @@ When proposing fixes, making architectural changes, or summarizing completed wor
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
 
+## Session Anchored Summary (Jul 20-21, 2026 — Part 62: Hardened Thread Layer — Person Routing, Awareness Layer & Auto-Archive)
+
+### Progress Done This Session
+- **Fix A: Eager Summary Generation** (`core/lib/conversation.py`): `_background_summary_check()` now fires every 3rd user exchange instead of lazily on overflow. Always updates summaries — every thread with ≥2 exchanges has a current summary for the awareness layer.
+- **Fix B: Person Entity Thread Routing** (`core/lib/conversation.py`): New `_resolve_person_candidates()` matches people via `graph_nodes` (type='person') using n-gram primary-topic detection. Wired into `_fetch_entity_candidates()` after org/project matching. "Back to Anita" now routes to Anita's person-scoped thread (score 75, below orgs at 80/projects at 90).
+- **Fix C: All-Exchange Embeddings** (`core/lib/conversation.py`): New `_store_exchange_embedding()` async helper stores embedding on every user exchange in `log_exchange()`, not just QUERY. Phase 1 `match_conversations` can now find TASK, NOTE, COMPLETION exchanges.
+- **Fix D: Cross-Thread Awareness Layer** (`core/webhook/dispatch.py`): New `_build_active_context()` scans all recent threads (24h, excl current) for entity cross-references via summaries + raw exchange fallback. Injects `ACTIVE CONVERSATION CONTEXT` section into LLM prompt. Runs as parallel Phase 2 task — zero latency impact.
+- **entity_label Fix** (`core/lib/conversation.py`): Added `'entity_label': best.get('entity_name', '')` to thread creation insert in `resolve_thread()`. All three resolvers already populate `entity_name` — the code wasn't passing it through.
+- **H1: Auto-Archive Stale Threads** (`core/pulse/sentinel.py`): New piggyback archives entity threads with `last_active_at > 7 days` and `archived_at IS NULL`. Excludes general thread. Limited to 50 per cycle.
+- **H2: Backfill Script** (`scripts/backfill_thread_entity_labels.py`, NEW): Populated `entity_label` on 6 existing threads, 9 skipped (orphans with null entity_id).
+- **H3: Embedding Backfill**: Re-ran existing `backfill_conversation_embeddings.py` — 1 exchange processed, 0 failures. All exchanges now have embeddings.
+- **Live Verification**: "Back to Anita" → person-scoped thread with label ✅. Auto-archive found 5 stale targets on first run ✅. Ruff clean, code reviewer clean.
+
+### Key Files (Part 62)
+- `core/lib/conversation.py` — Fixes A, B, C; entity_label fix
+- `core/webhook/dispatch.py` — Fix D: awareness layer `_build_active_context()` + Phase 2 wiring
+- `core/pulse/sentinel.py` — H1: auto-archive piggyback
+- `scripts/backfill_thread_entity_labels.py` — NEW: H2 backfill script
+- `product-summary/62-thread-anchoring-awareness-layer.md` — Documentation
+
 ## Session Anchored Summary (Jul 17, 2026 — Part 58: Final Architecture Overhaul & UAT Validation)
 
 ### Progress Done This Session

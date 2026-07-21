@@ -345,6 +345,26 @@ T-003 (DLQ table) — parallel to T-002, required by T-006
 - **Concept Fluidity (Synaptic Plasticity)**: Upgraded ontology to support `concept` nodes. Added `EVOKES`, `RELATES_TO`, `ASSOCIATED_WITH` relationships to `VALID_EDGE_MATRIX`. Built and ran `concept_sweep_batch.py` to extract abstract concepts from all 416 historical memories.
 - **Frontend Upgrades**: Updated Next.js `node-pending-list` and `graph-pending-list` to surface `eval_context` (justification, linked entities, memory source) and `epistemic_status` in a collapsible UI. Built proactive `find_similar_node` detection that flags 85%+ label matches and offers a 1-click `[Merge into this]` button before approval. Added `processing_log` table for idempotency tracking.
 
+## Today's Changes (Jul 20-21, 2026)
+
+### Part 62: Hardened Thread Layer — Person Routing, Awareness Layer & Auto-Archive
+
+**Files**: `core/lib/conversation.py`, `core/webhook/dispatch.py`, `core/pulse/sentinel.py`, `scripts/backfill_thread_entity_labels.py`
+**Status**: Completed ✅
+**Details**:
+- **Fix A**: Eager summary generation — `_background_summary_check()` fires every 3rd user exchange, always updates summaries
+- **Fix B**: Person entity thread routing — `_resolve_person_candidates()` via graph_nodes type='person', wired into `_fetch_entity_candidates()`
+- **Fix C**: All-exchange embeddings — `_store_exchange_embedding()` in `log_exchange()`, embeds every user exchange regardless of intent
+- **Fix D**: Cross-thread awareness layer — `_build_active_context()` scans 24h threads for entity cross-references, injects `ACTIVE CONVERSATION CONTEXT` into LLM
+- **entity_label fix**: `best.get('entity_name', '')` now passed to thread creation in `resolve_thread()`
+- **H1**: Auto-archive stale entity threads after 7 days via sentinel piggyback
+- **H2**: Backfill script `backfill_thread_entity_labels.py` — 6 entity_label updates, 9 skipped
+- **H3**: Re-ran embedding backfill — 1 exchange processed, 0 failures
+
+**Verification**: "Back to Anita" routes to person-scoped thread. Auto-archive found 5 stale targets. Ruff clean.
+
+---
+
 ## Completed Features (Recent)
 
 ### T-021: Voice Memo → Note Pipeline
