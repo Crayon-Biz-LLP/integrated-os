@@ -154,7 +154,7 @@ PENDING_NODES_TRANSITIONS = {
     "rejected":             set(),  # terminal
     "awaiting_details":     {"pending", "approved", "rejected"},
     "awaiting_clarification": {"pending", "approved", "rejected"},
-    "flagged":              {"pending", "rejected"},
+    "flagged":              {"pending", "approved", "rejected"},
     "merged":               set(),  # terminal
     "merge_proposed":       {"approved", "rejected", "merged"},
 }
