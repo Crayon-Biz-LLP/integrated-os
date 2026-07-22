@@ -8,7 +8,7 @@ import uuid
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
 from core.lib.people_utils import normalize_person_name
-from core.lib.graph_rules import find_similar_node, resolve_alias, canonicalize_relationship, normalize_label_display, get_canonical_id, normalize_label
+from core.lib.graph_rules import find_similar_node, resolve_alias, canonicalize_relationship, normalize_label_display, get_canonical_id, normalize_label, NOISE_LABELS, insert_pending_edge, make_memory_preview
 from core.clarifier import evaluate_node, evaluate_edge, store_and_send_clarification
 from core.decisions import record_decision
 from core.lib.node_tables import resolve_merge_proposal
@@ -70,17 +70,48 @@ async def create_graph_node_with_db_record(
                         "merge_candidate_id": top["id"]}
 
         if node_type == 'project':
+            # ── Resolve org from source_text BEFORE creating the row ──
+            matched_org_id = None
+            matched_org_name = None
+            if source_text and source_text.strip() not in ("", "batch"):
+                orgs_res = supabase.table('organizations').select('id, name').execute()
+                for o in (orgs_res.data or []):
+                    oname = o['name'].strip()
+                    oid = o['id']
+                    if oname.lower() in NOISE_LABELS:
+                        continue
+                    source_lower = source_text.lower()
+                    if f" {oname.lower()} " in f" {source_lower} ":
+                        matched_org_id = oid
+                        matched_org_name = oname
+                        break
+                    canonical = resolve_alias(oname)
+                    if canonical != oname and f" {canonical.lower()} " in f" {source_lower} ":
+                        matched_org_id = oid
+                        matched_org_name = oname
+                        break
+                    if len(oname) >= 6 and oname.lower() in source_lower:
+                        matched_org_id = oid
+                        matched_org_name = oname
+                        break
+
             existing = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', label).eq('is_current', True))
             if existing and existing.data:
                 project_id = existing.data['id']
                 audit_log_sync("pulse", "INFO", f"Reusing existing project '{label}' (ID {project_id})")
+                # If reusing, still backfill org_id if missing and we have it
+                if matched_org_id:
+                    supabase.table('projects').update({'organization_id': str(matched_org_id)}).eq('id', project_id).execute()
             else:
-                result = supabase.table('projects').insert({
+                insert_data = {
                     "name": label,
                     "status": "active",
                     "context": context or "from graph_approval",
                     "is_active": True,
-                }).execute()
+                }
+                if matched_org_id:
+                    insert_data["organization_id"] = str(matched_org_id)
+                result = supabase.table('projects').insert(insert_data).execute()
                 if not result or not result.data:
                     raise Exception("Supabase insert returned no data for projects")
                 project_id = result.data[0]['id']
@@ -102,59 +133,22 @@ async def create_graph_node_with_db_record(
                 on_conflict="normalized_label, type"
             ).execute()
 
-            # Post-creation hook: Conservative org link
-            if source_text and source_text.strip() not in ("", "batch"):
-                # Find all known organizations
-                orgs_res = supabase.table('organizations').select('name').execute()
-                known_orgs = [o['name'].strip() for o in (orgs_res.data or []) if o.get('name')]
-                
-                source_lower = source_text.lower()
-                matched_org = None
-                match_reason = None
-                
-                # Check exact/alias/substring matches
-                # We need to respect stopword-like tokens and minimum length
-                from core.lib.graph_rules import NOISE_LABELS
-                
-                for org in known_orgs:
-                    if org.lower() in NOISE_LABELS:
-                        continue
-                    
-                    # 1. Exact match
-                    if f" {org.lower()} " in f" {source_lower} ":
-                        matched_org = org
-                        match_reason = "exact_match"
-                        break
-                        
-                    # 2. Alias match
-                    canonical = resolve_alias(org)
-                    if canonical != org and f" {canonical.lower()} " in f" {source_lower} ":
-                        matched_org = org
-                        match_reason = "alias_match"
-                        break
-                        
-                    # 3. Substring match (conservative)
-                    if len(org) >= 6 and org.lower() in source_lower:
-                        matched_org = org
-                        match_reason = "substring_match"
-                        break
-                        
-                if matched_org:
-                    from core.lib.graph_rules import insert_pending_edge
-                    res = insert_pending_edge(
-                        label,
-                        matched_org,
-                        "BELONGS_TO",
-                        {
-                            "source_text": f"post_creation_hook:{source_text[:50]}",
-                            "source_table": "graph_nodes",
-                            "source_type": "project",
-                            "target_type": "organization"
-                        }
-                    )
-                    audit_log_sync("pulse", "INFO", f"Post-creation hook: Proposed {label} BELONGS_TO {matched_org} (reason: {match_reason}, status: {res.get('status')})")
-                else:
-                    audit_log_sync("pulse", "INFO", f"Post-creation hook: No confident org match found for project {label} in source text.")
+            # Post-creation hook: Create BELONGS_TO pending edge (graph track)
+            if matched_org_name:
+                res = insert_pending_edge(
+                    label,
+                    matched_org_name,
+                    "BELONGS_TO",
+                    {
+                        "source_text": f"post_creation_hook:{source_text[:50]}",
+                        "source_table": "graph_nodes",
+                        "source_type": "project",
+                        "target_type": "organization"
+                    }
+                )
+                audit_log_sync("pulse", "INFO", f"Post-creation hook: Proposed {label} BELONGS_TO {matched_org_name} (status: {res.get('status')})")
+            else:
+                audit_log_sync("pulse", "INFO", f"Post-creation hook: No confident org match found for project {label} in source text.")
 
             await _ensure_danny_edge(label, node_type)
 
@@ -218,48 +212,47 @@ async def create_graph_node_with_db_record(
                 if graph_node_id:
                     supabase.table('people').update({'graph_node_id': graph_node_id}).eq('id', people_id).execute()
 
-            # Post-creation hook: Conservative org link for person
+            # Resolve org from source_text for people row + pending edge
+            matched_org_name = None
             if source_text and source_text.strip() not in ("", "batch"):
                 orgs_res = supabase.table('organizations').select('name').execute()
-                known_orgs = [o['name'].strip() for o in (orgs_res.data or []) if o.get('name')]
-                
                 source_lower = source_text.lower()
-                matched_org = None
-                match_reason = None
-                
-                from core.lib.graph_rules import NOISE_LABELS
-                
-                for org in known_orgs:
-                    if org.lower() in NOISE_LABELS:
+                for o in (orgs_res.data or []):
+                    oname = o['name'].strip()
+                    if oname.lower() in NOISE_LABELS:
                         continue
-                    if f" {org.lower()} " in f" {source_lower} ":
-                        matched_org = org
-                        match_reason = "exact_match"
+                    if f" {oname.lower()} " in f" {source_lower} ":
+                        matched_org_name = oname
                         break
-                    canonical = resolve_alias(org)
-                    if canonical != org and f" {canonical.lower()} " in f" {source_lower} ":
-                        matched_org = org
-                        match_reason = "alias_match"
+                    canonical = resolve_alias(oname)
+                    if canonical != oname and f" {canonical.lower()} " in f" {source_lower} ":
+                        matched_org_name = oname
                         break
-                    if len(org) >= 6 and org.lower() in source_lower:
-                        matched_org = org
-                        match_reason = "substring_match"
+                    if len(oname) >= 6 and oname.lower() in source_lower:
+                        matched_org_name = oname
                         break
-                        
-                if matched_org:
-                    from core.lib.graph_rules import insert_pending_edge
-                    res = insert_pending_edge(
-                        label,
-                        matched_org,
-                        "WORKS_AT",
-                        {
-                            "source_text": f"post_creation_hook:{source_text[:50]}",
-                            "source_table": "graph_nodes",
-                            "source_type": "person",
-                            "target_type": "organization"
-                        }
-                    )
-                    audit_log_sync("pulse", "INFO", f"Post-creation hook: Proposed {label} WORKS_AT {matched_org} (reason: {match_reason}, status: {res.get('status')})")
+
+            # Backfill organization_name on the people row
+            if matched_org_name:
+                try:
+                    supabase.table('people').update({'organization_name': matched_org_name}).eq('id', people_id).execute()
+                except Exception:
+                    pass
+
+                res = insert_pending_edge(
+                    label,
+                    matched_org_name,
+                    "WORKS_AT",
+                    {
+                        "source_text": f"post_creation_hook:{source_text[:50]}",
+                        "source_table": "graph_nodes",
+                        "source_type": "person",
+                        "target_type": "organization"
+                    }
+                )
+                audit_log_sync("pulse", "INFO", f"Post-creation hook: Set org '{matched_org_name}' on person '{label}' + proposed WORKS_AT (status: {res.get('status')})")
+            else:
+                audit_log_sync("pulse", "INFO", f"Post-creation hook: No confident org match found for person {label}.")
 
             await _ensure_danny_edge(label, node_type)
 
@@ -273,6 +266,8 @@ async def create_graph_node_with_db_record(
                 inferred = await _infer_additional_edges(label, node_type, source_text)
 
             msg = f"Approved person '{label}'"
+            if matched_org_name:
+                msg += f" ({matched_org_name})"
             if context:
                 msg += f" ({context.strip()})"
             return {"success": True, "action": "approved", "message": msg, "inferred_edges": inferred}
@@ -943,6 +938,35 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                 outcome='confirmed'
             )
 
+            # ── Edge approval backfill: Keep DB rows in sync with graph ──
+            # When a BELONGS_TO edge for a project is approved, backfill
+            # projects.organization_id. When a WORKS_AT edge for a person
+            # is approved, backfill people.organization_name.
+            try:
+                if rel == "BELONGS_TO" and pe.get('source_type') == 'project':
+                    # Backfill projects.organization_id
+                    proj_res = supabase.table('projects').select('id, organization_id').ilike('name', s_label).eq('is_current', True).limit(1).execute()
+                    if proj_res and proj_res.data:
+                        proj = proj_res.data[0]
+                        if not proj.get('organization_id'):
+                            t_node_res = supabase.table('graph_nodes').select('db_record_id').eq('id', t_id).limit(1).execute()
+                            if t_node_res and t_node_res.data and t_node_res.data[0].get('db_record_id'):
+                                supabase.table('projects').update({'organization_id': t_node_res.data[0]['db_record_id']}).eq('id', proj['id']).execute()
+                                audit_log_sync("pulse", "INFO", f"Backfill: Set projects.organization_id for '{s_label}' via BELONGS_TO approval")
+
+                elif rel == "WORKS_AT" and pe.get('source_type') == 'person':
+                    # Backfill people.organization_name
+                    person_res = supabase.table('people').select('id, organization_name').ilike('name', s_label).eq('is_current', True).limit(1).execute()
+                    if person_res and person_res.data:
+                        person = person_res.data[0]
+                        if not person.get('organization_name'):
+                            t_node_res = supabase.table('graph_nodes').select('label').eq('id', t_id).limit(1).execute()
+                            if t_node_res and t_node_res.data and t_node_res.data[0].get('label'):
+                                supabase.table('people').update({'organization_name': t_node_res.data[0]['label']}).eq('id', person['id']).execute()
+                                audit_log_sync("pulse", "INFO", f"Backfill: Set people.organization_name for '{s_label}' via WORKS_AT approval")
+            except Exception as backfill_err:
+                audit_log_sync("pulse", "WARNING", f"Edge approval backfill failed for {rel} '{s_label}': {backfill_err}")
+
             return {"success": True, "action": "approved", "message": f"Approved edge: {s_label} → {rel} → {t_label}"}
             
     except Exception as e:
@@ -1468,7 +1492,6 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
         else:
             meta = {f"{source_type}_id": source_id, "source": "insert_extracted_entities"}
             if source_content:
-                from core.lib.graph_rules import make_memory_preview
                 preview = make_memory_preview(source_content)
                 if preview:
                     meta["preview"] = preview
