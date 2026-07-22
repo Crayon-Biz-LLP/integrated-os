@@ -245,6 +245,15 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     text_lower = text.lower()
 
     # ── Pattern A: "[Known Org] [Descriptor] project/app/platform" ──
+    # Produces combined labels like "FC Madras Website" from "FC Madras website project".
+    # The noise word set includes terms like "project", "website", "app", "platform" that
+    # often appear after a project's descriptive name. We use them as delimiters to find
+    # the actual project descriptor.
+    #
+    # Two cases:
+    #   1. "FC Madras Compliance project"  → between=" Compliance"  → descriptor="Compliance"  → "FC Madras Compliance"
+    #   2. "FC Madras website project"     → between="" (website IS the descriptor)
+    #                                       → descriptor="Website" → "FC Madras Website"
     org_labels = [e.label for e in entities if e.type == 'organization']
     for org_label in org_labels:
         org_lower = org_label.lower()
@@ -261,21 +270,24 @@ def detect_entities(text: str) -> List[DetectedEntity]:
             if noise_match:
                 between = after_org[:noise_match.start()].strip()
                 if between:
-                    # Title-case the descriptor words
+                    # Case 1: text between org and noise word IS the descriptor
                     descriptor = between.title().strip()
-                    project_label = f"{org_label} {descriptor}"
-                    project_key = project_label.lower()
-                    if project_key not in seen_labels:
-                        _add(DetectedEntity(
-                            label=project_label,
-                            type='project',
-                            source='pattern_match',
-                            is_new=True,
-                            confidence=0.9,
-                        ))
-                        audit_log_sync("entity_detector", "INFO",
-                            f"Pattern A: Proposed project '{project_label}' from "
-                            f"'{org_label}' + '{descriptor}'")
+                else:
+                    # Case 2: noise word itself IS the descriptor (e.g. "FC Madras website")
+                    descriptor = noise_word.title().strip()
+                project_label = f"{org_label} {descriptor}"
+                project_key = project_label.lower()
+                if project_key not in seen_labels:
+                    _add(DetectedEntity(
+                        label=project_label,
+                        type='project',
+                        source='pattern_match',
+                        is_new=True,
+                        confidence=0.9,
+                    ))
+                    audit_log_sync("entity_detector", "INFO",
+                        f"Pattern A: Proposed project '{project_label}' from "
+                        f"'{org_label}' + '{descriptor}'")
                 break  # Only use first noise word found
 
     # ── Pattern B: Person detection via capitalized names in context ──
