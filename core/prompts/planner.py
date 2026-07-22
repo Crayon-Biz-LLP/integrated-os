@@ -13,6 +13,7 @@ def build_planner_prompt(
     candidate_lines: str,
     org_lines: str,
     project_lines: str,
+    active_anchor: dict = None,
 ) -> str:
     """Build the action planner prompt.
 
@@ -25,11 +26,34 @@ def build_planner_prompt(
         candidate_lines: Formatted string of candidate tasks/events
         org_lines: Formatted string of available organizations
         project_lines: Formatted string of available projects
+        active_anchor: Thread's active entity context (name, type, last_project_id, etc.)
     """
+    # Guard 2: Render active_anchor context so the LLM sees the thread's
+    # actual entity (e.g., "FC Madras") rather than just the classifier's
+    # routing tag (e.g., "SOLVSTRAT"). Prevents entity context loss.
+    thread_context = ""
+    if active_anchor:
+        anchor_name = active_anchor.get('name', '')
+        anchor_type = active_anchor.get('type', '')
+        anchor_org_id = active_anchor.get('last_org_id')
+        anchor_project_id = active_anchor.get('last_project_id')
+        parts = []
+        if anchor_name:
+            parts.append(f"Entity: {anchor_name}")
+        if anchor_type:
+            parts.append(f"Type: {anchor_type}")
+        if anchor_project_id:
+            parts.append(f"Last project ID: {anchor_project_id}")
+        if anchor_org_id:
+            parts.append(f"Organization ID: {anchor_org_id}")
+        if parts:
+            thread_context = "\nTHREAD CONTEXT: " + " | ".join(parts)
+
     return f"""You are an action planner. Match the user's request to the correct tasks/events and operations.
 Return ONLY valid JSON: {{"actions": [{{"operation": "create_task|create_note|create_event|query_info|close_task|cancel_recurring|suppress_instance|modify_recurring|reschedule|update_metadata|delete_event|no_op", "target_id": "123", "params": {{"new_reminder_at": "YYYY-MM-DDTHH:MM:SS"}}, "human_label": "Description"}}]}}
 
 CURRENT TIME: {current_time}
+{thread_context}
 
 TIME FORMATTING RULES:
 - All times MUST be in IST (UTC+05:30) using ISO-8601 format.
@@ -71,7 +95,8 @@ Rules:
 - IMPORTANT: A recurring task with status 'done' or 'todo' is STILL AN ACTIVE SERIES. 'done' only skips the current week. If the user asks to cancel a recurring series, target ALL matching recurring tasks regardless of their current status.
 - If the user uses words like "all", "meetings", or "tasks" (plural), return a separate action for EVERY matching candidate.
 - IMPORTANT EXPLICIT INTENTS: If the Classifier intent is NOTE, you MUST output a create_note action. If the Classifier intent is TASK, you MUST output a create_task action. If the Classifier intent is COMPLETION, you MUST output a close_task action for the matching task ID. Do not require an explicit user command in these cases.
+- PROJECT_UPDATE: Status updates, team changes, finance mentions, decisions, meeting fallout — this is a rich multi-faceted update. If the classifier intent is PROJECT_UPDATE, ALWAYS route as create_note (preserve the full context as content), NEVER split into multiple tasks. If the intent is NOTE or PROJECT_UPDATE, do NOT create tasks unless there's an explicit action being requested.
 - If the user says 'Check with [someone]' or 'Talk to [someone]' or asks Danny to contact someone, ALWAYS output a create_task action for Danny. NEVER use query_info, create_event, or any other operation. Danny needs a reminder to check, not an answer or an event.
-- For mixed or informational content (status updates, team changes, finance mentions, decisions, meeting fallout): If the classifier intent is NOTE, ALWAYS route as create_note — do NOT split into multiple tasks. If the classifier intent is TASK, create the task but include informational context in params.content.
+- For mixed or informational content (status updates, team changes, finance mentions, decisions, meeting fallout): If the classifier intent is NOTE or PROJECT_UPDATE, ALWAYS route as create_note — do NOT split into multiple tasks. If the classifier intent is TASK, create the task but include informational context in params.content.
 - Never make up or hallucinate details not in the user's message. Every field in params (title, project_name, reminder_at, priority, etc.) must be directly derived from the user's text. Do not infer, guess, or fill in defaults that the user did not provide.
 - Return empty array or no_op if nothing matches."""

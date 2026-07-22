@@ -161,6 +161,7 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
         candidate_lines=candidate_lines_str,
         org_lines=org_lines,
         project_lines=project_lines_str,
+        active_anchor=active_anchor,
     )
 
     try:

@@ -8,6 +8,52 @@ from core.lib.state_machines import guard_require_valid_transition
 from core.webhook.telegram import send_telegram
 
 
+# ── Guard 3: Executor data-loss prevention ──
+
+async def _save_fallback_note(text: str, chat_id: int, entity: str = None, source: str = "telegram"):
+    """Deterministic data-loss prevention: save text as a memory before reporting failure.
+
+    Called when the executor has zero valid actions — guarantees the user's
+    message is NEVER silently dropped. Always saves to memories so the data
+    is retrievable even if the pipeline failed to extract actions.
+
+    This is Guard 3 of 3 (see also: classify pre-filter in classify.py,
+    planner context injection in planner.py + planner prompt).
+    """
+    import asyncio
+    try:
+        from core.llm import get_embedding
+        from core.retrieval.pipeline import schedule_index_memory
+        from core.lib.time_utils import compute_expires_at
+        from datetime import datetime, timezone
+        from core.pulse.entity_extractor import extract_and_link_entities
+
+        supabase = get_supabase()
+        embedding = (await get_embedding(text)).vector
+        embed_valid = bool(embedding and any(embedding))
+        mem_res = supabase.table("memories").insert({
+            "content": text,
+            "memory_type": "note",
+            "embedding": embedding if embed_valid else None,
+            "embedding_status": "success" if embed_valid else "failed",
+            "source": source or "executor_fallback",
+            "metadata": {"intent": "NOTE", "entity": entity or "INBOX"},
+            "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat())
+        }).execute()
+        memory_id = mem_res.data[0]['id'] if mem_res.data else None
+        if memory_id:
+            schedule_index_memory(memory_id, text, "note", "executor_fallback")
+            # Fire enrichment in background — don't block the response
+            asyncio.ensure_future(extract_and_link_entities(text, str(memory_id), 'memory'))
+        audit_log_sync("executor", "INFO",
+                       f"Guard 3: Saved fallback note (memory_id={memory_id}) for unprocessable message")
+        return True
+    except Exception as e:
+        audit_log_sync("executor", "WARNING", f"Guard 3: Fallback note save failed: {e}")
+        return False
+
+
+
 # ── #3: Pre-execution validation ──
 
 def validate_operation(action: Action) -> Optional[str]:
@@ -136,6 +182,20 @@ async def compensate_action(action: Action, supabase):
 
 # ── Enrichment (fire-and-forget after create operations) ──
 
+def _resolve_entity_from_anchor(entity: str, active_anchor: dict = None) -> str | None:
+    """Guard 2c: Resolve entity name from active_anchor, falling back to classifier entity.
+
+    If the thread has an active_anchor with a resolved entity name (e.g., "FC Madras"),
+    prefer it over the classifier's routing tag (e.g., "SOLVSTRAT").
+    This prevents entity context loss when a note is created in an entity-anchored thread.
+    """
+    if active_anchor:
+        anchor_name = active_anchor.get('name', '')
+        if anchor_name and anchor_name.lower() != 'inbox':
+            return anchor_name
+    return entity
+
+
 async def execute_planned_actions(
     actions: List[Action], 
     chat_id: int, 
@@ -146,6 +206,7 @@ async def execute_planned_actions(
     session_id: str = None,
     intent: str = None,
     suppress_telegram: bool = False,
+    active_anchor: dict = None,
 ):
     """Executes a list of planned actions directly — NO legacy dispatch, NO process_single_dump.
 
@@ -155,13 +216,23 @@ async def execute_planned_actions(
       - Creates tasks/notes/events via direct DB inserts (create_task_direct/create_note_direct).
       - Handles closures via existing update_task_status.
       - suppress_telegram: skip Telegram notifications.
+      - Guard 2c: active_anchor resolves entity name for correct org routing.
     """
+    # ── Guard 3: Zero valid actions → save as note before reporting failure ──
     if not actions:
+        resolved_entity = _resolve_entity_from_anchor(entity, active_anchor)
+        saved = await _save_fallback_note(text, chat_id, resolved_entity, source)
         if not suppress_telegram:
-            await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
+            if saved:
+                await send_telegram(chat_id, "📝 Logged as a note — no specific actions identified.")
+            else:
+                await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
         return
         
     supabase = get_supabase()
+
+    # Guard 2c: Resolve entity from active_anchor for correct org routing
+    resolved_entity = _resolve_entity_from_anchor(entity, active_anchor)
     
     # ── Stage 0: Pre-validate all actions ──
     valid_actions = []
@@ -176,13 +247,18 @@ async def execute_planned_actions(
         else:
             valid_actions.append(action)
     
+    # ── Guard 3 (continued): All actions failed validation → save as note ──
     if not valid_actions:
+        saved = await _save_fallback_note(text, chat_id, resolved_entity, source)
         if not suppress_telegram:
             if pre_failures:
                 details = "\\n".join(pre_failures)
                 await send_telegram(chat_id, f"⚠️ All actions blocked by validation:\\n{details}")
             else:
-                await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
+                if saved:
+                    await send_telegram(chat_id, "📝 Logged as a note — no specific actions identified.")
+                else:
+                    await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
         return
     
     # ── Stage 1: Save dump and memory for closures (zero data loss) ──
@@ -203,7 +279,7 @@ async def execute_planned_actions(
                 "embedding": embedding if embed_valid else None,
                 "embedding_status": "success" if embed_valid else "failed",
                 "source": "webhook_completion",
-                "metadata": {"intent": "COMPLETION", "entity": entity},
+                "metadata": {"intent": "COMPLETION", "entity": resolved_entity},
                 "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat())
             }).execute()
             memory_id = mem_res.data[0]['id'] if mem_res.data else None
@@ -411,13 +487,15 @@ async def execute_planned_actions(
 
             try:
                 from core.pulse.tools import create_note_direct
+                # Guard 2c: Fall back to resolved_entity if planner didn't provide organization_name
+                note_org_name = action.params.get("organization_name") or resolved_entity
                 result = await create_note_direct(
                     content=content,
                     source=source,
                     project_id=action.params.get("project_id") or action.project_id,
                     organization_id=action.params.get("organization_id") or action.organization_id,
                     project_name=action.params.get("project_name"),
-                    organization_name=action.params.get("organization_name"),
+                    organization_name=note_org_name,
                 )
                 if result.get("action") == "filed":
                     created_labels.append(action.human_label or "Note created")

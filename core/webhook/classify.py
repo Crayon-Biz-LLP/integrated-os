@@ -44,6 +44,64 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
             "contains_hidden_action": False,
         }
 
+    # --- GUARD 1: Past-tense completion language WITHOUT matching open task → NOTE ---
+    # If the user says "X is completed/done/finished" but NO open task title matches X,
+    # it's an observation/milestone, not a task closure. Force NOTE to prevent data loss.
+    # This is the hardened deterministic guard for the Ashraya-completion bug.
+    # The existing 'Mark task N as done' pre-filter above handles the explicit case.
+    # This pre-filter handles the general case: "Ashraya website restoration is completed."
+    _completion_verbs = re.compile(
+        r'\b(completed|done|finished|renewed|resolved|closed|wrapped\s*up|finalized)\b',
+        re.IGNORECASE
+    )
+    if _completion_verbs.search(text.strip()):
+        # Extract content-bearing keywords (words > 3 chars, excluding stop words)
+        _stop = {'completed', 'done', 'finished', 'renewed', 'resolved', 'closed',
+                 'finalized', 'the', 'this', 'that', 'with', 'from', 'have', 'been',
+                 'was', 'were', 'has', 'had', 'are', 'is', 'been', 'being', 'were',
+                 'its', 'into', 'just', 'more', 'some', 'them', 'than', 'then',
+                 'also', 'very', 'well', 'over', 'such', 'each', 'about', 'would',
+                 'could', 'should', 'their', 'there', 'these', 'those', 'because',
+                 'before', 'after', 'other', 'every', 'still', 'already', 'while'}
+        keywords = [w.lower() for w in text.split()
+                    if len(w) > 3 and w.lower() not in _stop]
+
+        if keywords:
+            try:
+                # Check: does ANY open task title contain at least one keyword?
+                has_match = False
+                for kw in keywords[:5]:  # Check top 5 keywords only
+                    task_res = supabase.table('tasks') \
+                        .select('id') \
+                        .eq('is_current', True) \
+                        .not_.in_('status', ['done', 'cancelled']) \
+                        .ilike('title', f'%{kw}%') \
+                        .limit(1) \
+                        .execute()
+                    if task_res and task_res.data:
+                        has_match = True
+                        break
+
+                if not has_match:
+                    audit_log_sync("classify", "INFO",
+                                   f"Guard 1: completion language without matching open task → NOTE ({text[:60]}...)")
+                    return {
+                        "intent": "NOTE",
+                        "confidence": 1.0,
+                        "entity": "INBOX",
+                        "title": text[:80],
+                        "receipt": "Noted.",
+                        "possible_intents": [],
+                        "reasoning": "Deterministic guard: completion language but no matching open task found → saved as note",
+                        "contains_hidden_action": False,
+                    }
+            except Exception as e:
+                # Fail-open: if DB query fails, let the LLM classify as normal
+                audit_log_sync("classify", "WARNING",
+                               f"Guard 1: DB check failed (fail-open): {e}")
+
+    # --- END OF GUARD 1 ---
+
     # --- M3: Query caching ---
     # Cache key includes text + conversation history (the two most variable inputs)
     # Context and core_json change rarely and don't warrant cache-busting
