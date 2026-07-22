@@ -45,19 +45,73 @@ async def extract_and_link_entities(text: str, source_id: str, source_type: str 
         nodes = data.get("nodes", [])
         edges = data.get("edges", [])
 
-        # ── Guard B: Text-anchoring validation ──
-        # Drop any extracted node whose label doesn't appear verbatim in the source text
+        # ── Guard B: 3-layer text-anchoring validation (hardened) ──
+        # Drops hallucinated nodes while preserving valid entities whose label
+        # differs slightly from the source text (e.g., "FC Madras Website" in
+        # "FC Madras website project").
+        #
+        # Layer 1: Verbatim match — exact label appears in text
+        # Layer 2: Strip trailing noise words (project, website, etc.) then re-check
+        # Layer 3: Token-level n-gram overlap of non-noise words
         text_lower = text.lower()
+        text_words = text_lower.split()
+
+        # Noise words that are generic project/organization descriptors
+        # Stripped from the END of labels to find the meaningful core
+        _PROJECT_NOISE_WORDS = {
+            'project', 'website', 'web', 'app', 'application', 'platform',
+            'page', 'site', 'service', 'system', 'product',
+            'tool', 'task', 'note', 'portal', 'dashboard', 'panel',
+            'hub', 'suite', 'manager', 'management', 'tracker',
+        }
+
+        def _is_text_anchored(label: str) -> bool:
+            """3-layer text anchoring check.
+
+            Returns True if the label is grounded in the source text.
+            """
+            label_lower = label.lower()
+
+            # Layer 1: Verbatim match (strict)
+            if label_lower in text_lower or label_lower == 'danny':
+                return True
+
+            # Layer 2: Iteratively strip trailing noise words, then re-check verbatim
+            # Handles: "FC Madras Website" -> strip "website" -> "FC Madras" is verbatim
+            words = label_lower.split()
+            while words and words[-1] in _PROJECT_NOISE_WORDS:
+                words = words[:-1]
+                if words:
+                    stripped = ' '.join(words)
+                    if stripped in text_lower:
+                        return True
+
+            # Layer 3: Token-level n-gram check for remaining non-noise words
+            # Handles cases where noise-stripped words appear as a contiguous
+            # block but weren't caught by verbatim (e.g., different spacing/case)
+            if len(words) >= 2:
+                for i in range(len(text_words) - len(words) + 1):
+                    if text_words[i:i+len(words)] == words:
+                        return True
+
+            return False
+
         valid_nodes = []
+        dropped_labels = []
         for n in nodes:
             label = n.get("label", "") if isinstance(n, dict) else ""
             if not label:
                 continue
-            if label.lower() in text_lower or label.lower() == 'danny':
+            if _is_text_anchored(label):
                 valid_nodes.append(n)
             else:
-                audit_log_sync("pulse", "INFO",
-                               f"Text-anchoring guard: dropped hallucinated node '{label}' from {source_type}:{source_id}")
+                dropped_labels.append(label)
+
+        if dropped_labels:
+            audit_log_sync("pulse", "INFO",
+                f"Text-anchoring guard (hardened): dropped {len(dropped_labels)} hallucinated node(s): "
+                f"{', '.join(dropped_labels[:5])} from {source_type}:{source_id}")
+
         valid_labels = {n.get('label', '').lower() for n in valid_nodes}
         valid_edges = []
         for e in edges:
