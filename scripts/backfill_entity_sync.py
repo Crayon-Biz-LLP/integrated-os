@@ -27,6 +27,18 @@ supabase = get_supabase()
 dry_run = "--dry-run" in sys.argv
 
 
+def is_valid_uuid(val):
+    """Check if a value is a valid UUID string."""
+    if not val:
+        return False
+    try:
+        import uuid
+        uuid.UUID(str(val))
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
 def backfill_graph_to_domain():
     """Find graph_nodes of type person/project/org without matching domain rows, create them."""
     print(f"\n{'[DRY-RUN] ' if dry_run else ''}=== Direction 1: graph_nodes → domain rows ===")
@@ -50,11 +62,16 @@ def backfill_graph_to_domain():
 
             # Check if domain row exists
             exists = False
+            valid_db_id = is_valid_uuid(db_id)
+            
             if node_type == 'person':
-                if db_id:
-                    r = supabase.table('people').select('id').eq('id', db_id).eq('is_current', True).limit(1).execute()
-                    if r.data:
-                        exists = True
+                if valid_db_id:
+                    try:
+                        r = supabase.table('people').select('id').eq('id', db_id).eq('is_current', True).limit(1).execute()
+                        if r.data:
+                            exists = True
+                    except Exception:
+                        pass
                 if not exists:
                     # Try by name
                     r = supabase.table('people').select('id').ilike('name', label).eq('is_current', True).limit(1).execute()
@@ -65,10 +82,13 @@ def backfill_graph_to_domain():
                             supabase.table('graph_nodes').update({'db_record_id': str(r.data[0]['id'])}).eq('id', node_id).execute()
 
             elif node_type == 'project':
-                if db_id:
-                    r = supabase.table('projects').select('id').eq('id', db_id).eq('is_current', True).limit(1).execute()
-                    if r.data:
-                        exists = True
+                if valid_db_id:
+                    try:
+                        r = supabase.table('projects').select('id').eq('id', db_id).eq('is_current', True).limit(1).execute()
+                        if r.data:
+                            exists = True
+                    except Exception:
+                        pass
                 if not exists:
                     r = supabase.table('projects').select('id').ilike('name', label).eq('is_current', True).limit(1).execute()
                     if r.data:
@@ -77,10 +97,13 @@ def backfill_graph_to_domain():
                             supabase.table('graph_nodes').update({'db_record_id': str(r.data[0]['id'])}).eq('id', node_id).execute()
 
             elif node_type == 'organization':
-                if db_id:
-                    r = supabase.table('organizations').select('id').eq('id', db_id).eq('is_active', True).limit(1).execute()
-                    if r.data:
-                        exists = True
+                if valid_db_id:
+                    try:
+                        r = supabase.table('organizations').select('id').eq('id', db_id).eq('is_active', True).limit(1).execute()
+                        if r.data:
+                            exists = True
+                    except Exception:
+                        pass
                 if not exists:
                     r = supabase.table('organizations').select('id').ilike('name', label).eq('is_active', True).limit(1).execute()
                     if r.data:
@@ -115,6 +138,7 @@ def backfill_graph_to_domain():
                         r = supabase.table('projects').insert({
                             'name': label,
                             'status': 'active',
+                            'context': 'from graph_backfill',
                             'is_active': True,
                             'is_current': True,
                         }).execute()
