@@ -275,73 +275,65 @@ def backfill_embeddings():
 
 
 def extract_graph_elements(text: str, memory_id: str, known_entities: set = None) -> dict:
-    known_entities = known_entities or set()
-    # Pre-process: strip URLs and resource/cluster fragments to prevent extracting entities from them
+    """Simplified graph extraction using deterministic entity detection.
+
+    Replaced LLM-based extraction (which had biased prompt examples and
+    a duplicate Guard B) with entity_detector.detect_entities().
+
+    Phase 1: deterministic detection (no LLM)
+    Phase 2: LLM relationship extraction between detected entities
+
+    Returns {"nodes": [...], "edges": [...]} matching the original interface.
+    """
+    # Pre-process: strip URLs and resource/cluster fragments
     import re
     cleaned_text = re.sub(r'\[RESOURCE\].*?(\n|$)', '', text, flags=re.IGNORECASE)
     cleaned_text = re.sub(r'\[CLUSTER\].*?(\n|$)', '', cleaned_text, flags=re.IGNORECASE)
     cleaned_text = re.sub(r'https?://\S+', '', cleaned_text)
-    
-    from core.prompts.entity_extraction import SHARED_EXTRACTION_PROMPT
-    known_list_str = ", ".join(sorted(known_entities))[:500] if known_entities else ""
-    known_hint = f"\n- Existing approved entities (person, org, project): {known_list_str}" if known_list_str else ""
-    extra_rules = """
-- For every extracted node and edge, include:
-  "epistemic": "asserted" | "inferred" | "hypothetical"
-  "justification": one sentence explaining why this was extracted
-- asserted: Danny explicitly stated this fact
-- inferred: logically implied but not directly stated
-- hypothetical: speculative, uncertain, or future-conditional
-- PROJECT DEFINITION: A named initiative with a defined goal and stakeholders.
-  ✓ QHORD, Ashraya, Solvstrat, Rhodey OS
-  ✗ "Church cash rotation incident" (event), "New Habit" (intention), "Journaling tool" (concept), "Call Marcus" (task)
-  If it doesn't have a formal name someone would use to refer to an ongoing initiative — skip it.
-- CRITICAL RULE: EVERY node you extract MUST have at least one connecting edge. Do not output isolated nodes.
-"""
-    prompt = SHARED_EXTRACTION_PROMPT + extra_rules + known_hint + f"\n\nText: {cleaned_text}\n"
-    
-    try:
-        response = call_llm_with_fallback_sync(
-            prompt=prompt,
-            model=CLASSIFICATION_MODEL,
-            config={"response_mime_type": "application/json"},
-            is_critical=False,
-            require_json=True
-        )
-        
-        if hasattr(response, 'text') and response.text:
-            result = json.loads(response.text)
-            if isinstance(result, dict) and ('nodes' in result or 'edges' in result):
-                # Guard B: Text-anchoring validation
-                text_lower = text.lower()
-                valid_nodes = []
-                for n in result.get('nodes', []):
-                    label = n.get('label', '')
-                    if label.lower() in text_lower or label.lower() == 'danny':  # Danny is always valid for AUTHORED edges
-                        valid_nodes.append(n)
-                    else:
-                        audit_log_sync("backfill_graph", "WARNING", f"    ⚠️ Dropped hallucinated node: {label}")
-                
-                valid_labels = {n.get('label', '').lower() for n in valid_nodes}
-                valid_edges = []
-                for e in result.get('edges', []):
-                    if e.get('source', '').lower() in valid_labels and e.get('target', '').lower() in valid_labels:
-                        valid_edges.append(e)
-                
-                result['nodes'] = valid_nodes
-                result['edges'] = valid_edges
 
-                print(f"    Extracted {len(valid_nodes)} valid nodes, {len(valid_edges)} valid edges from memory {memory_id}")
-                return result
-            else:
-                audit_log_sync("backfill_graph", "WARNING", f"    ⚠️ Invalid response format from memory {memory_id}: {str(result)[:100]}")
-                return {"nodes": [], "edges": []}
-        else:
-            audit_log_sync("backfill_graph", "WARNING", f"    ⚠️ Empty response for memory {memory_id}")
-            return {"nodes": [], "edges": []}
-    except Exception as e:
-        audit_log_sync("backfill_graph", "ERROR", f"    ❌ Graph extraction failed for memory {memory_id}: {e}")
-        return {"nodes": [], "edges": []}
+    from core.lib.entity_detector import detect_entities
+    from core.prompts.relationship import RELATIONSHIP_EXTRACTION_PROMPT
+
+    # Phase 1: Deterministic entity detection (no LLM, no bias)
+    entities = detect_entities(cleaned_text)
+
+    nodes = []
+    for e in entities:
+        nodes.append({"label": e.label, "type": e.type})
+
+    # Phase 2: Relationship extraction via LLM (only if entities exist)
+    edges = []
+    if entities:
+        entity_list_str = "\n".join(
+            f"  - {e.label} ({e.type})" for e in entities
+        )
+        prompt = RELATIONSHIP_EXTRACTION_PROMPT.format(
+            text=cleaned_text,
+            entities=entity_list_str,
+        )
+
+        try:
+            response = call_llm_with_fallback_sync(
+                prompt=prompt,
+                model=CLASSIFICATION_MODEL,
+                config={"response_mime_type": "application/json"},
+                is_critical=False,
+                require_json=True
+            )
+            if hasattr(response, 'text') and response.text:
+                result = json.loads(response.text)
+                if isinstance(result, list):
+                    edges = result
+                elif isinstance(result, dict):
+                    edges = result.get("edges", [])
+        except Exception as llm_e:
+            audit_log_sync(
+                "backfill_graph", "WARNING",
+                f"    Relationship LLM failed for memory {memory_id}: {llm_e}"
+            )
+
+    print(f"    Extracted {len(nodes)} nodes (deterministic), {len(edges)} edges (LLM) from memory {memory_id}")
+    return {"nodes": nodes, "edges": edges}
 
 def is_real_project(label: str) -> bool:
     try:
@@ -667,7 +659,7 @@ def run_backfill():
         with ThreadPoolExecutor(max_workers=3) as executor:
             future_to_mem = {
                 executor.submit(
-                    extract_graph_elements, synthesize_content(m), m["id"], fetch_known_entities()
+                    extract_graph_elements, synthesize_content(m), m["id"]
                 ): m for m in batch if synthesize_content(m).strip()
             }
             
