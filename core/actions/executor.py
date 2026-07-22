@@ -496,6 +496,9 @@ async def execute_planned_actions(
                     organization_id=action.params.get("organization_id") or action.organization_id,
                     project_name=action.params.get("project_name"),
                     organization_name=note_org_name,
+                    # Gap 6: Pass thread provenance for retroactive entity linking
+                    session_id=session_id,
+                    active_anchor=active_anchor,
                 )
                 if result.get("action") == "filed":
                     created_labels.append(action.human_label or "Note created")

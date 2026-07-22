@@ -9,8 +9,9 @@ Job types:
   note_enrich  → extract_and_link_entities + get_embedding + metadata update
 """
 
+import json
 from datetime import datetime, timezone
-from core.services.db import get_supabase
+from core.services.db import get_supabase, maybe_single_safe
 from core.lib.audit_logger import audit_log_sync
 
 supabase = get_supabase()
@@ -120,7 +121,8 @@ async def process_pending_enrichment(max_jobs: int = 3) -> int:
             )
         elif job_type == "note_enrich":
             success = await _process_note_enrichment(
-                memory_id=target_id, content=content, source=related_id or "enrichment_queue"
+                memory_id=target_id, content=content, source=related_id or "enrichment_queue",
+                related_org_id=related_org_id,
             )
         else:
             audit_log_sync(
@@ -220,22 +222,85 @@ async def _process_task_graph_enrichment(
 
 
 async def _process_note_enrichment(
-    memory_id: int, content: str, source: str
+    memory_id: int, content: str, source: str, related_org_id: str = None
 ) -> bool:
-    """Process a note_enrich enrichment job: entity extraction + embedding + metadata.
+    """Process a note_enrich enrichment job: entity extraction + embedding + metadata backfill.
 
     Updates the memory row with:
     - embedding vector (from get_embedding)
-    - entities_mentioned (from extract_and_link_entities result, best-effort)
+    - organization_id in metadata (from entity extraction results)
+    - project_id in metadata (from entity extraction results)
+
+    This is the second layer of defense (Bridge B):
+    Layer 1: entity_linker.resolve_entities() runs at creation time in create_note_direct()
+    Layer 2: Entity extraction in enrichment queue backfills any IDs still missing
     """
     try:
         from core.pulse.entity_extractor import extract_and_link_entities
         from core.llm import get_embedding
 
-        # 1. Entity extraction
-        await extract_and_link_entities(content, memory_id, "memory")
+        # 1. Entity extraction — CONSUME return values (org_candidates, proj_candidates)
+        org_candidates, proj_candidates = await extract_and_link_entities(
+            content, memory_id, "memory"
+        )
 
-        # 2. Embedding generation
+        # 2. Backfill organization_id if missing and entity extraction found one
+        if org_candidates:
+            found_org_id = org_candidates[0]
+            # Check if note already has org_id in metadata
+            try:
+                mem_check = maybe_single_safe(
+                    supabase.table('memories').select('metadata').eq('id', memory_id).eq('is_current', True)
+                )
+                if mem_check and mem_check.data:
+                    current_meta = mem_check.data.get('metadata') or {}
+                    if isinstance(current_meta, str):
+                        try:
+                            current_meta = json.loads(current_meta)
+                        except Exception:
+                            current_meta = {}
+                    existing_org = current_meta.get('organization_id')
+                    existing_proj = current_meta.get('project_id')
+
+                    # Only backfill if not already set
+                    updates = {}
+                    if not existing_org:
+                        current_meta['organization_id'] = found_org_id
+                        updates['organization_id'] = found_org_id
+                        audit_log_sync(
+                            "enrichment_queue", "INFO",
+                            f"Backfilled organization_id={found_org_id} for note {memory_id} from entity extraction"
+                        )
+
+                    if proj_candidates and not existing_proj:
+                        found_proj = proj_candidates[0] if isinstance(proj_candidates[0], dict) else {'id': proj_candidates[0]}
+                        found_proj_id = found_proj.get('id') if isinstance(found_proj, dict) else found_proj
+                        if found_proj_id:
+                            current_meta['project_id'] = found_proj_id
+                            updates['project_id'] = found_proj_id
+                            # Also backfill project's org_id if we found it
+                            proj_org_id = found_proj.get('org_id') if isinstance(found_proj, dict) else None
+                            if proj_org_id and not existing_org and not existing_org:
+                                current_meta['organization_id'] = proj_org_id
+                                updates['organization_id'] = proj_org_id
+                            audit_log_sync(
+                                "enrichment_queue", "INFO",
+                                f"Backfilled project_id={found_proj_id} for note {memory_id} from entity extraction"
+                            )
+
+                    if updates:
+                        supabase.table('memories').update({'metadata': current_meta}).eq('id', memory_id).eq('is_current', True).execute()
+                        audit_log_sync(
+                            "enrichment_queue", "INFO",
+                            f"Backfilled note {memory_id} metadata: {updates}"
+                        )
+            except Exception as fb_err:
+                audit_log_sync(
+                    "enrichment_queue", "WARNING",
+                    f"Failed to backfill note {memory_id} metadata: {fb_err}"
+                )
+
+        # 3. Embedding generation
         try:
             emb_res = await get_embedding(content)
             if emb_res and emb_res.vector:

@@ -111,7 +111,7 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
         return matched
 
     from core.pulse.tools import create_person
-    result_msg = create_person(name=name_clean, context=source)
+    result_msg = await create_person(name=name_clean, context=source)
     if "ID " in result_msg:
         try:
             new_id = int(result_msg.split("ID ")[1])

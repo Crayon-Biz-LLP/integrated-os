@@ -158,6 +158,11 @@ async def create_graph_node_with_db_record(
 
             await _ensure_danny_edge(label, node_type)
 
+            # Bridge C: Backfill existing notes/tasks that mention this project
+            await _backfill_existing_content_for_entity(
+                label=label, node_type='project', db_record_id=str(project_id)
+            )
+
             inferred = []
             if source_text and source_text.strip() not in ("", "batch"):
                 inferred = await _infer_additional_edges(label, node_type, source_text)
@@ -258,6 +263,11 @@ async def create_graph_node_with_db_record(
 
             await _ensure_danny_edge(label, node_type)
 
+            # Bridge C: Backfill existing notes/tasks that mention this person
+            await _backfill_existing_content_for_entity(
+                label=label, node_type='person', db_record_id=str(people_id)
+            )
+
             inferred = []
             if source_text and source_text.strip() not in ("", "batch"):
                 inferred = await _infer_additional_edges(label, node_type, source_text)
@@ -312,6 +322,12 @@ async def create_graph_node_with_db_record(
 
             await _ensure_danny_edge(label, node_type)
 
+            # Bridge C: Backfill existing notes/tasks that mention this organization
+            if node_type == 'organization' and org_db_id:
+                await _backfill_existing_content_for_entity(
+                    label=label, node_type='organization', db_record_id=str(org_db_id)
+                )
+
             inferred = []
             if source_text and source_text.strip() not in ("", "batch"):
                 inferred = await _infer_additional_edges(label, node_type, source_text)
@@ -324,6 +340,160 @@ async def create_graph_node_with_db_record(
     except Exception as e:
         audit_log_sync("pulse", "ERROR", f"Error creating graph node with DB record: {e}")
         return {"success": False, "action": "error", "message": str(e)}
+
+
+async def _backfill_existing_content_for_entity(
+    label: str,
+    node_type: str,
+    db_record_id: str = None,
+):
+    """Bridge C: After a project/org/node is approved, backfill existing notes and
+    tasks that mention this entity's label with the correct metadata.
+
+    Layer 3 of defense in depth:
+    Layer 1: entity_linker.resolve_entities() at creation time (create_note_direct / create_task_direct)
+    Layer 2: Enrichment queue backfill (_process_note_enrichment / _process_task_graph_enrichment)
+    Layer 3: Graph node approval triggers retroactive backfill of all existing content
+
+    Scans memories and tasks (max 100 each) that contain the entity label,
+    then updates their metadata to include the newly-created entity IDs.
+    This closes the entity lifecycle loop: when a project/org gets a formal
+    identity in the graph, ALL existing content referencing it gets linked.
+    """
+    try:
+        if not label or not db_record_id:
+            return
+
+        label_lower = label.lower()
+        entity_id_field = None
+        id_value = None
+
+        if node_type == 'project':
+            entity_id_field = 'project_id'
+            id_value = db_record_id
+        elif node_type == 'organization':
+            entity_id_field = 'organization_id'
+            id_value = db_record_id
+        elif node_type == 'person':
+            entity_id_field = 'people_id'
+            id_value = db_record_id
+        else:
+            return  # Only backfill for entity types that have domain tables
+
+        # ── Backfill memories (notes) that mention this entity label ──
+        try:
+            mem_res = supabase.table('memories') \
+                .select('id, metadata') \
+                .eq('is_current', True) \
+                .eq('memory_type', 'note') \
+                .ilike('content', f'%{label_lower}%') \
+                .limit(100) \
+                .execute()
+
+            if mem_res and mem_res.data:
+                backfilled_count = 0
+                for mem in mem_res.data:
+                    current_meta = mem.get('metadata') or {}
+                    if isinstance(current_meta, str):
+                        try:
+                            current_meta = json.loads(current_meta)
+                        except Exception:
+                            current_meta = {}
+
+                    # Only backfill if this entity ID is not already set
+                    existing_val = current_meta.get(entity_id_field)
+                    if existing_val and str(existing_val) == str(id_value):
+                        continue  # Already has this exact ID
+
+                    # Don't overwrite a different ID (another project/org was already linked)
+                    if existing_val and str(existing_val) != str(id_value):
+                        continue
+
+                    current_meta[entity_id_field] = str(id_value)
+                    if node_type == 'project':
+                        current_meta['project_name'] = label
+                    elif node_type == 'organization':
+                        current_meta['organization_name'] = label
+
+                    try:
+                        supabase.table('memories') \
+                            .update({'metadata': current_meta}) \
+                            .eq('id', mem['id']) \
+                            .eq('is_current', True) \
+                            .execute()
+                        backfilled_count += 1
+                    except Exception:
+                        pass
+
+                if backfilled_count > 0:
+                    audit_log_sync(
+                        "pulse", "INFO",
+                        f"Bridge C: Backfilled {backfilled_count} note(s) with {entity_id_field}={id_value} "
+                        f"for '{label}' ({node_type})"
+                    )
+        except Exception as mem_err:
+            audit_log_sync(
+                "pulse", "WARNING",
+                f"Bridge C: Memory backfill scan failed for '{label}': {mem_err}"
+            )
+
+        # ── Backfill open tasks that mention this entity label ──
+        try:
+            task_res = supabase.table('tasks') \
+                .select('id, organization_id, project_id, title') \
+                .eq('is_current', True) \
+                .not_.in_('status', ['done', 'cancelled']) \
+                .ilike('title', f'%{label_lower}%') \
+                .limit(100) \
+                .execute()
+
+            if task_res and task_res.data:
+                backfilled_count = 0
+                for task in task_res.data:
+                    update_data = {}
+
+                    if entity_id_field == 'organization_id':
+                        existing_org = task.get('organization_id')
+                        if existing_org and str(existing_org) == str(id_value):
+                            continue
+                        if existing_org:
+                            continue  # Don't overwrite different org
+                        update_data['organization_id'] = id_value
+                    elif entity_id_field == 'project_id':
+                        existing_proj = task.get('project_id')
+                        if existing_proj and str(existing_proj) == str(id_value):
+                            continue
+                        if existing_proj:
+                            continue
+                        update_data['project_id'] = id_value
+
+                    if update_data:
+                        try:
+                            supabase.table('tasks') \
+                                .update(update_data) \
+                                .eq('id', task['id']) \
+                                .execute()
+                            backfilled_count += 1
+                        except Exception:
+                            pass
+
+                if backfilled_count > 0:
+                    audit_log_sync(
+                        "pulse", "INFO",
+                        f"Bridge C: Backfilled {backfilled_count} task(s) with {entity_id_field}={id_value} "
+                        f"for '{label}' ({node_type})"
+                    )
+        except Exception as task_err:
+            audit_log_sync(
+                "pulse", "WARNING",
+                f"Bridge C: Task backfill scan failed for '{label}': {task_err}"
+            )
+
+    except Exception as e:
+        audit_log_sync(
+            "pulse", "WARNING",
+            f"Bridge C: Backfill failed for '{label}' ({node_type}): {e}"
+        )
 
 
 async def _ensure_danny_edge(label: str, node_type: str):

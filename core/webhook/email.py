@@ -80,15 +80,31 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
                 "message": f"A similar task already exists on your board: [{title}]"
             }
 
+        # Gap 1: Run entity resolution on the title to pass entity context to planner
+        resolved_entity = None
+        try:
+            from core.lib.entity_linker import resolve_entities
+            entity_resolution = resolve_entities(
+                text=title,
+                planner_org_name=row.get('suggested_project'),
+                write_signal_on_miss=True,
+            )
+            if entity_resolution.organization_name or entity_resolution.project_name:
+                resolved_entity = entity_resolution.organization_name or entity_resolution.project_name
+                audit_log_sync("webhook", "INFO",
+                    f"Gap 1: Resolved entity '{resolved_entity}' for email approval #{pending_id}")
+        except Exception:
+            pass
+
         try:
             from core.actions.planner import plan_actions
             from core.actions.executor import execute_planned_actions
             import os
             
             chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
-            actions = await plan_actions(text=title, intent="TASK")
+            actions = await plan_actions(text=title, intent="TASK", entity=resolved_entity)
             if actions:
-                await execute_planned_actions(actions, chat_id, text=title, source="email")
+                await execute_planned_actions(actions, chat_id, text=title, source="email", entity=resolved_entity)
         except Exception as plan_err:
             audit_log_sync("webhook", "ERROR", f"Failed to plan/execute email approval: {plan_err}")
             return {

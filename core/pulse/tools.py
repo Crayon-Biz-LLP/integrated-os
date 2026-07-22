@@ -200,25 +200,51 @@ async def create_task_direct(
         return {"action": "error", "reason": str(e)}
 
 
-async def create_note_direct(content: str, source: str = "executor", project_id: str = None, organization_id: str = None, project_name: str = None, organization_name: str = None) -> dict:
+async def create_note_direct(content: str, source: str = "executor", project_id: str = None, organization_id: str = None, project_name: str = None, organization_name: str = None, session_id: str = None, active_anchor: dict = None) -> dict:
     """Direct note creation — no process_single_dump dependency.
 
     Inserts directly into memories table.
-    Resolves project_name/organization_name to IDs via DB lookup
-    when project_id/organization_id are not already provided.
+    Uses entity_linker for deterministic entity resolution (n-gram matching).
+    Falls back to planner's name→ID resolution if entity_linker misses.
+    Stores thread provenance (session_id, active_anchor) in metadata for
+    retroactive linking.
     Returns {"action": "filed"|"error", "memory_id": id, "reason": str}.
     """
     memory_id = None
     try:
-        # Resolve name→ID if IDs not provided but names are
+        # ── Layer 1: Deterministic entity resolution (n-gram matching) ──
+        # Same pattern as create_task_direct — uses entity_linker's n-gram matching
+        # against known orgs/projects/people BEFORE name lookup.
+        from core.lib.entity_linker import resolve_entities
+        entity_resolution = resolve_entities(
+            text=content,
+            planner_org_name=organization_name,
+            planner_proj_name=project_name,
+            write_signal_on_miss=True,
+        )
+
+        # Override planner's guess with deterministic result
+        if entity_resolution.organization_id:
+            organization_id = entity_resolution.organization_id
+            organization_name = entity_resolution.organization_name
+        if entity_resolution.project_id:
+            project_id = entity_resolution.project_id
+            project_name = entity_resolution.project_name
+
+        audit_log_sync("tools", "INFO",
+            f"create_note_direct entity resolution: org={organization_name or '(none)'} "
+            f"proj={project_name or '(none)'} source={entity_resolution.source}")
+
+        # ── Layer 2: Fallback name→ID resolution (simple ILIKE lookup) ──
         if (not project_id or not organization_id) and (project_name or organization_name):
-            
+
             resolved_proj, resolved_org = _resolve_project_and_org_id(project_name, organization_name)
             if not project_id:
                 project_id = resolved_proj
             if not organization_id:
                 organization_id = resolved_org
 
+        # ── Build insert data with entity context ──
         insert_data = {
             "content": content,
             "memory_type": "note",
@@ -226,12 +252,38 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
             "is_current": True,
             "version": 1,
         }
+
+        # Build metadata with all available entity context
+        metadata = {}
         if project_id:
-            insert_data["metadata"] = {"project_id": project_id}
+            metadata["project_id"] = project_id
         if organization_id:
-            if "metadata" not in insert_data:
-                insert_data["metadata"] = {}
-            insert_data["metadata"]["organization_id"] = organization_id
+            metadata["organization_id"] = organization_id
+        if project_name:
+            metadata["project_name"] = project_name
+        if organization_name:
+            metadata["organization_name"] = organization_name
+
+        # ── Layer 3: Thread provenance for retroactive linking ──
+        if session_id:
+            metadata["thread_id"] = session_id
+        if active_anchor:
+            anchor_name = active_anchor.get("name", "")
+            anchor_type = active_anchor.get("type", "")
+            if anchor_name:
+                metadata["thread_entity_name"] = anchor_name
+                metadata["thread_entity_type"] = anchor_type
+                # If entity resolution didn't find an org but the thread anchor has one,
+                # use the thread anchor as a third-layer fallback
+                if not organization_id and not project_id:
+                    last_org_id = active_anchor.get("last_org_id") or active_anchor.get("organization_id")
+                    if last_org_id:
+                        organization_id = last_org_id
+                        metadata["organization_id"] = last_org_id
+                        metadata["organization_name"] = anchor_name
+
+        if metadata:
+            insert_data["metadata"] = metadata
 
         res = supabase.table('memories').insert(insert_data).execute()
         if not res.data:
@@ -261,6 +313,7 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
             pass
 
         # Enrichment: queue entity extraction + embedding (survives Vercel cold kills)
+        # Pass resolved IDs so enrichment can also backfill if needed
         from core.lib.enrichment_queue import enqueue_enrichment
         enqueue_enrichment(
             job_type="note_enrich",
@@ -268,6 +321,7 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
             target_id=memory_id,
             content=content,
             related_id=source,
+            related_org_id=organization_id,
         )
 
         accumulate_action(ActionResult(action_type="note_create", status="executed", entity_id=memory_id, human_label=content[:80]))
@@ -371,6 +425,66 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
         return f"OK: Task {task_id} updated successfully."
     except Exception as e:
         return f"FAIL: Error updating task {task_id}: {e}"
+
+async def create_person(name: str, context: str = "", source: str = "tools") -> str:
+    """Create a person row + graph node + Danny KNOWS edge.
+
+    Gap 5: Replaces the missing create_person function that email_ingest.py
+    imports. Creates both the people table row AND the graph node, linked
+    via graph_node_id.
+
+    Returns a message string like "Created person: Name (ID 123)"
+    """
+    try:
+        # Check if person already exists
+        existing = maybe_single_safe(
+            supabase.table('people').select('id, name').ilike('name', name).eq('is_current', True)
+        )
+        if existing and existing.data:
+            return f"Person already exists: {existing.data['name']} (ID {existing.data['id']})"
+
+        from core.lib.people_utils import normalize_person_name
+        norm_name = normalize_person_name(name)
+        existing_norm = supabase.table('people').select('id, name').eq('is_current', True).execute()
+        for p in (existing_norm.data or []):
+            if normalize_person_name(p['name']) == norm_name:
+                return f"Person already exists (normalized): {p['name']} (ID {p['id']})"
+
+        # Create people row
+        result = supabase.table('people').insert({
+            "name": name,
+            "source": context or source,
+            "strategic_weight": 5,
+        }).execute()
+        if not result or not result.data:
+            return f"Failed to create person '{name}': DB insert returned no data"
+
+        people_id = result.data[0]['id']
+
+        # Create graph node via create_graph_node_with_db_record
+        from core.pulse.graph import create_graph_node_with_db_record
+        gn_result = await create_graph_node_with_db_record(
+            label=name,
+            node_type='person',
+            source_text=f"{source}:{people_id}",
+            context=context,
+            source_tag=source,
+        )
+
+        if gn_result.get('success'):
+            audit_log_sync("tools", "INFO",
+                f"Gap 5: Created person '{name}' (people_id={people_id}) with graph node")
+            return f"Created person: {name} (ID {people_id})"
+        else:
+            # Graph node failed but people row was created — log and return
+            audit_log_sync("tools", "WARNING",
+                f"Gap 5: Person '{name}' created (ID {people_id}) but graph node failed: {gn_result.get('message')}")
+            return f"Created person (partial): {name} (ID {people_id})"
+
+    except Exception as e:
+        audit_log_sync("tools", "ERROR", f"create_person failed for '{name}': {e}")
+        return f"Failed to create person '{name}': {e}"
+
 
 def skip_recurring_instance(task_id: int, date_str: str = None):
     """Skip (delete) a single occurrence of a recurring event/task.

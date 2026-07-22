@@ -54,13 +54,30 @@ async def process_channel_pending_decision(channel: str, pending_id: int, decisi
         
         chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
         
+        # Gap 1: Run entity resolution on the title to pass entity context to planner
+        resolved_entity = None
+        try:
+            from core.lib.entity_linker import resolve_entities
+            entity_resolution = resolve_entities(
+                text=title,
+                planner_org_name=msg.get('suggested_project'),
+                write_signal_on_miss=True,
+            )
+            if entity_resolution.organization_name or entity_resolution.project_name:
+                resolved_entity = entity_resolution.organization_name or entity_resolution.project_name
+                audit_log_sync("webhook", "INFO",
+                    f"Gap 1: Resolved entity '{resolved_entity}' for {channel} approval #{pending_id}")
+        except Exception:
+            pass
+        
         try:
             actions = await plan_actions(
                 text=title,
-                intent="TASK"
+                intent="TASK",
+                entity=resolved_entity,
             )
             if actions:
-                await execute_planned_actions(actions, chat_id, text=title, source=channel)
+                await execute_planned_actions(actions, chat_id, text=title, source=channel, entity=resolved_entity)
             action_msg = "approved and processed"
         except Exception as plan_err:
             audit_log_sync("webhook", "ERROR", f"Failed to plan/execute {channel} approval: {plan_err}")
