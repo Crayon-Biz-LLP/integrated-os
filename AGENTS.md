@@ -128,6 +128,23 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 - `core/actions/executor.py` — Guards 2c+3: entity resolution + fallback note + active_anchor param (+86 lines)
 - `core/webhook/dispatch.py` — Guard 2c: active_anchor wired to executor
 
+## Session Anchored Summary (Jul 22, 2026 — Part 65: Pipeline Audit — 4 More Deterministic Guards Gaps A-D)
+
+### Progress Done This Session
+- **Systematic Pipeline Audit**: Traced every LLM-to-action decision point across 15 files (classify, planner, executor, dispatch, handler, workflows, engine, tools, sentinel, entity_extractor, graph, context, retrieval). Found 5 remaining gaps where deterministic DB/code guards are possible but missing.
+- **Gap A — Planner COMPLETION redirect** (`core/actions/planner.py`): When the lexical pre-filter finds ZERO matching task candidates and intent is COMPLETION, immediately return `create_note` without calling the LLM. No matching open task → it's a milestone, not a closure. Catches Guard 1's fail-open cases. Saves an LLM call.
+- **Gap B — interrogate_brain empty response fallback** (`core/webhook/dispatch.py`): Two layers: (1) When LLM stream returns empty, compile collected context sections (active tasks, calendar, memories) into a structured fact-only reply instead of generic "had trouble formatting" message. (2) Outer guard: if `_last_reply` is still None after the try block, send "I looked but couldn't find anything relevant" via `send_telegram`.
+- **Gap C — Schedule query pre-filter** (`core/webhook/classify.py`): Regex-based schedule/calendar pattern detection ("meetings this week?", "what's my day look like?") → return QUERY deterministically before any LLM call. Saves LLM call and prevents TASK/NOTE misclassification.
+- **Gap D — Graph inference logging** (`core/pulse/graph.py`): Improved JSON parse error message in `_infer_additional_edges()` to include node label + node type for easier debugging. Existing error handling already preserves the independent deterministic org link hook.
+- **Ruff check**: Clean on all modified files.
+- **Code reviewer**: Confirmed all 4 changes are structurally sound with no issues.
+
+### Key Files (Part 65)
+- `core/actions/planner.py` — Gap A: COMPLETION→create_note redirect
+- `core/webhook/dispatch.py` — Gap B: structured fact-only fallback + outer safety net
+- `core/webhook/classify.py` — Gap C: schedule query pre-filter
+- `core/pulse/graph.py` — Gap D: improved inference failure logging
+
 ## Session Anchored Summary (Jul 20-21, 2026 — Part 62: Hardened Thread Layer — Person Routing, Awareness Layer & Auto-Archive)
 
 ### Progress Done This Session

@@ -427,7 +427,7 @@ Format:
         try:
             edges_to_create = json.loads(content)
         except json.JSONDecodeError:
-            audit_log_sync("pulse", "WARNING", f"Failed to parse inferred edges JSON: {content}")
+            audit_log_sync("pulse", "WARNING", f"Gap D: LLM inference returned unparseable JSON for {label} ({node_type}): {content[:200]}")
             return []
             
         inferred = []

@@ -127,9 +127,27 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
             
         if any(w in candidate_words for w in search_words if len(w) > 3):
             filtered_candidates.append(c)
+    
+    # GAP A: No lexical matches for COMPLETION → deterministic redirect to create_note
+    # If the classifier returned COMPLETION but NO open task's title shares even
+    # one content-bearing keyword with the message, the user is stating a milestone
+    # about something that was completed — not closing a specific open task.
+    # 
+    # This is the planner-level counterpart to Guard 1 in classify.py.
+    # It catches cases where Guard 1's DB query failed (fail-open) and the
+    # classifier fell through to COMPLETION. Instead of calling the LLM
+    # (which will return no_op), immediately save as a note.
+    if not filtered_candidates and intent == "COMPLETION":
+        audit_log_sync("planner", "INFO",
+                       f"Gap A: zero lexical matches for COMPLETION → create_note ({text[:60]}...)")
+        return [Action(
+            operation="create_note",
+            params={"content": text},
+            human_label=text[:80]
+        )]
             
     if not filtered_candidates:
-        filtered_candidates = candidates[:50] 
+        filtered_candidates = candidates[:50]
         
     candidate_lines = []
     for c in filtered_candidates:

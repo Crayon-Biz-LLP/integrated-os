@@ -1359,9 +1359,22 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             
             # Stream complete — flush any remaining text
             if not answer.strip():
-                # Empty response safety net — streaming or fallback yielded nothing
-                await adapter.flush_text(f"{header}\n\n\U0001f9e0 *I found some information, but had trouble formatting it safely.*")
-                answer = "\U0001f9e0 *I found some information, but had trouble formatting it safely.*"
+                # GAP B: Empty LLM response → build structured fact-only fallback
+                # The context sections were already collected — compile them into a
+                # deterministic fact-only reply without calling the LLM again.
+                fallback_parts = []
+                if compressed_tasks:
+                    fallback_parts.append(f"\U0001f4cb *Active Tasks:*\n{compressed_tasks}")
+                if calendar_context and calendar_context != "None":
+                    fallback_parts.append(f"\U0001f4c5 *Calendar:*\n{calendar_context}")
+                if memories_context and memories_context != "None":
+                    fallback_parts.append(f"\U0001f4dd *Notes:*\n{memories_context}")
+                if not fallback_parts:
+                    fallback_parts.append("I looked but couldn't find any relevant information.")
+                fallback_text = "\n\n".join(fallback_parts)
+                await adapter.flush_text(f"{header}\n\n{fallback_text}")
+                answer = fallback_text
+                audit_log_sync("webhook", "INFO", "Gap B: Empty LLM response → structured fact-only fallback used")
             else:
                 await adapter.send_complete()
             final_reply = f"{header}\n\n{answer.strip()}"
@@ -1511,6 +1524,16 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         if search_task:
             search_task.cancel()
         _searching_locks.discard(chat_id)
+        
+        # GAP B (outer): If even the fallback produced nothing, send minimal reply
+        if not _last_reply:
+            audit_log_sync("webhook", "WARNING", "Gap B: interrogate_brain produced no response — sending minimal reply")
+            try:
+                await send_telegram(chat_id, "\U0001f9e0 I looked into it but couldn't find anything relevant.")
+            except Exception:
+                pass
+            _last_reply = "\U0001f9e0 I looked into it but couldn't find anything relevant."
+        
         return _last_reply
 
 async def handle_noise(chat_id: int):
