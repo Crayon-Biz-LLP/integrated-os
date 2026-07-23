@@ -41,22 +41,13 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
         except (ValueError, TypeError):
             audit_log_sync("planner", "WARNING", f"Invalid task ID in close text: '{task_id_str}'")
     
-    # ── A2: Fetch all independent data sources in parallel ──
+    # ── Fetch all independent data sources ──
     from core.services.google_service import get_upcoming_calendar_events
-    _gather_results = await asyncio.gather(
-        supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute(),
-        supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute(),
-        asyncio.to_thread(get_upcoming_calendar_events, 14),
-        supabase.table("organizations").select("id, name").execute(),
-        supabase.table("projects").select("id, name, organization_id, organizations(name)").eq("is_current", True).neq("status", "archived").execute(),
-        return_exceptions=True,
-    )
-    
-    tasks_res = _gather_results[0]
-    recurring_res = _gather_results[1]
-    upcoming_events_raw = _gather_results[2]
-    orgs_res = _gather_results[3]
-    projects_all_res = _gather_results[4]
+    tasks_res = await supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
+    recurring_res = await supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
+    upcoming_events_raw = await asyncio.to_thread(get_upcoming_calendar_events, 14)
+    orgs_res = await supabase.table("organizations").select("id, name").execute()
+    projects_all_res = await supabase.table("projects").select("id, name, organization_id, organizations(name)").eq("is_current", True).neq("status", "archived").execute()
     
     # Handle transient failures gracefully — one failed fetch shouldn't crash the whole plan
     if isinstance(tasks_res, Exception):

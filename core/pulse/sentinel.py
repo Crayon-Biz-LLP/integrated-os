@@ -618,18 +618,6 @@ Context:
         except Exception as oe_err:
             audit_log_sync("sentinel", "WARNING", f"Orphan calendar cleanup error (non-critical): {oe_err}")
 
-        # --- PIGGYBACK: B3 Entity Brief Refresh ---
-        # Pre-computes compressed status snapshots for active entities.
-        # The query path checks this table after anaphora resolution — if a fresh
-        # brief exists, it skips the entire 17-section context assembly (~15-20s).
-        try:
-            from core.lib.entity_briefs import refresh_top_entity_briefs
-            refreshed = await refresh_top_entity_briefs(max_entities=10)
-            if refreshed > 0:
-                audit_log_sync("sentinel", "INFO", f"B3 entity briefs: refreshed {refreshed} brief(s)")
-        except Exception as brief_err:
-            audit_log_sync("sentinel", "WARNING", f"B3 entity brief refresh error (non-critical): {brief_err}")
-
         # --- PIGGYBACK: T5 Graph Integrity Sweep ---
         try:
             # Copy approved pending edges with node_ids to graph_edges if missing
