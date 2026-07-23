@@ -60,6 +60,7 @@ def select_entities_to_refresh(
             .select("label, type") \
             .in_("type", ["organization", "project", "person"]) \
             .eq("is_current", True) \
+            .is_("canonical_id", "null") \
             .execute()
         for n in (gn_res.data or []):
             _add_score(n["label"], n["type"], 4)

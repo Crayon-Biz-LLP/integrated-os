@@ -453,9 +453,14 @@ def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "
     tgt_meta = tgt_node.get("metadata") or {}
     merged_meta = {**src_meta, **tgt_meta}
     
-    # 7. Set canonical_id
+    # 7. Set canonical_id and mark loser as not current
+    # Setting is_current=false hides the merged entity from all downstream
+    # queries (briefs, Live tab, graph visualization) — same as the
+    # `canonical_id IS NULL` filter the Live tab uses, but also catches
+    # any query that doesn't explicitly filter on canonical_id.
     supabase.table("graph_nodes").update({
         "canonical_id": target_id,
+        "is_current": False,
         "metadata": src_meta  # Keep original meta on the loser
     }).eq("id", source_id).execute()
     
