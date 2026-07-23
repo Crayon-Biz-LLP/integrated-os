@@ -136,14 +136,16 @@ async def refresh_entity_brief(entity_name: str, entity_type: str) -> bool:
 
         async def _fetch_open_tasks():
             try:
-                res = supabase.table("tasks") \
-                    .select("id, title, status, priority, created_at") \
-                    .eq("is_current", True) \
-                    .not_.in_("status", ["done", "cancelled"]) \
-                    .ilike("title", f"%{search_val}%") \
-                    .order("created_at", desc=True) \
-                    .limit(10) \
-                    .execute()
+                res = await asyncio.to_thread(
+                    lambda: supabase.table("tasks") \
+                        .select("id, title, status, priority, created_at") \
+                        .eq("is_current", True) \
+                        .not_.in_("status", ["done", "cancelled"]) \
+                        .ilike("title", f"%{search_val}%") \
+                        .order("created_at", desc=True) \
+                        .limit(10) \
+                        .execute()
+                )
                 return res.data or []
             except Exception:
                 return []
@@ -151,34 +153,40 @@ async def refresh_entity_brief(entity_name: str, entity_type: str) -> bool:
         async def _fetch_completed_tasks():
             try:
                 seven_days_ago = (now - timedelta(days=7)).isoformat()
-                res = supabase.table("tasks") \
-                    .select("id, title") \
-                    .eq("is_current", True) \
-                    .eq("status", "done") \
-                    .gte("updated_at", seven_days_ago) \
-                    .ilike("title", f"%{search_val}%") \
-                    .limit(5) \
-                    .execute()
+                res = await asyncio.to_thread(
+                    lambda: supabase.table("tasks") \
+                        .select("id, title") \
+                        .eq("is_current", True) \
+                        .eq("status", "done") \
+                        .gte("updated_at", seven_days_ago) \
+                        .ilike("title", f"%{search_val}%") \
+                        .limit(5) \
+                        .execute()
+                )
                 return res.data or []
             except Exception:
                 return []
 
         async def _fetch_graph_edges():
             try:
-                node_res = supabase.table("graph_nodes") \
-                    .select("id") \
-                    .ilike("label", search_val) \
-                    .eq("is_current", True) \
-                    .limit(1) \
-                    .execute()
+                node_res = await asyncio.to_thread(
+                    lambda: supabase.table("graph_nodes") \
+                        .select("id") \
+                        .ilike("label", search_val) \
+                        .eq("is_current", True) \
+                        .limit(1) \
+                        .execute()
+                )
                 if not node_res or not node_res.data:
                     return []
                 node_id = node_res.data[0]["id"]
-                edge_res = supabase.table("graph_edges") \
-                    .select("source_node_id, target_node_id, relationship_type") \
-                    .or_(f"source_node_id.eq.{node_id},target_node_id.eq.{node_id}") \
-                    .limit(10) \
-                    .execute()
+                edge_res = await asyncio.to_thread(
+                    lambda: supabase.table("graph_edges") \
+                        .select("source_node_id, target_node_id, relationship") \
+                        .or_(f"source_node_id.eq.{node_id},target_node_id.eq.{node_id}") \
+                        .limit(10) \
+                        .execute()
+                )
                 if not edge_res.data:
                     return []
 
@@ -189,17 +197,19 @@ async def refresh_entity_brief(entity_name: str, entity_type: str) -> bool:
                     peer_ids.add(e["target_node_id"])
                 peer_ids.discard(node_id)
 
-                peer_res = supabase.table("graph_nodes") \
-                    .select("id, label") \
-                    .in_("id", list(peer_ids)) \
-                    .execute()
+                peer_res = await asyncio.to_thread(
+                    lambda: supabase.table("graph_nodes") \
+                        .select("id, label") \
+                        .in_("id", list(peer_ids)) \
+                        .execute()
+                )
                 label_map = {n["id"]: n["label"] for n in (peer_res.data or [])}
 
                 result = []
                 for e in edge_res.data:
                     src = label_map.get(e["source_node_id"], "?")
                     tgt = label_map.get(e["target_node_id"], "?")
-                    rel = e.get("relationship_type", "related_to")
+                    rel = e.get("relationship", "related_to")
                     result.append(f"{src} {rel} {tgt}")
                 return result
             except Exception:
@@ -208,29 +218,33 @@ async def refresh_entity_brief(entity_name: str, entity_type: str) -> bool:
         async def _fetch_recent_conversations():
             try:
                 cutoff = (now - timedelta(hours=24)).isoformat()
-                res = supabase.table("conversations") \
-                    .select("content, created_at") \
-                    .eq("role", "user") \
-                    .gte("created_at", cutoff) \
-                    .ilike("content", f"%{search_val}%") \
-                    .order("created_at", desc=True) \
-                    .limit(3) \
-                    .execute()
+                res = await asyncio.to_thread(
+                    lambda: supabase.table("conversations") \
+                        .select("content, created_at") \
+                        .eq("role", "user") \
+                        .gte("created_at", cutoff) \
+                        .ilike("content", f"%{search_val}%") \
+                        .order("created_at", desc=True) \
+                        .limit(3) \
+                        .execute()
+                )
                 return res.data or []
             except Exception:
                 return []
 
         async def _fetch_pending_delegations():
             try:
-                res = supabase.table("tasks") \
-                    .select("id, title, committed_to") \
-                    .eq("is_current", True) \
-                    .eq("status", "todo") \
-                    .eq("direction", "waiting_on") \
-                    .ilike("title", f"%{search_val}%") \
-                    .not_.is_("committed_to", "null") \
-                    .limit(5) \
-                    .execute()
+                res = await asyncio.to_thread(
+                    lambda: supabase.table("tasks") \
+                        .select("id, title, committed_to") \
+                        .eq("is_current", True) \
+                        .eq("status", "todo") \
+                        .eq("direction", "waiting_on") \
+                        .ilike("title", f"%{search_val}%") \
+                        .not_.is_("committed_to", "null") \
+                        .limit(5) \
+                        .execute()
+                )
                 return res.data or []
             except Exception:
                 return []
@@ -248,13 +262,15 @@ async def refresh_entity_brief(entity_name: str, entity_type: str) -> bool:
         # Early exit: if ALL data sources are empty, store a minimal brief without LLM.
         # This saves 2-3s of flash-lite compute AND prevents stale briefs from lingering.
         if not open_tasks and not completed_tasks and not graph_edges and not recent_convs and not delegations:
-            supabase.table("entity_briefs").upsert({
-                "entity_name": entity_name.lower(),
-                "entity_type": entity_type,
-                "brief_text": f"Nothing open on {entity_name} right now.",
-                "open_task_count": 0,
-                "updated_at": now.isoformat(),
-            }, on_conflict="entity_name").execute()
+            await asyncio.to_thread(
+                lambda: supabase.table("entity_briefs").upsert({
+                    "entity_name": entity_name.lower(),
+                    "entity_type": entity_type,
+                    "brief_text": f"Nothing open on {entity_name} right now.",
+                    "open_task_count": 0,
+                    "updated_at": now.isoformat(),
+                }, on_conflict="entity_name").execute()
+            )
             return True
 
         # Step 2: Build state summary
@@ -328,13 +344,15 @@ Keep it under 400 characters — concise but human. Output ONLY the update — n
         brief_text = brief_text[:600]
 
         # Step 4: Store in entity_briefs table
-        supabase.table("entity_briefs").upsert({
-            "entity_name": entity_name.lower(),
-            "entity_type": entity_type,
-            "brief_text": brief_text,
-            "open_task_count": open_task_count,
-            "updated_at": now.isoformat(),
-        }, on_conflict="entity_name").execute()
+        await asyncio.to_thread(
+            lambda: supabase.table("entity_briefs").upsert({
+                "entity_name": entity_name.lower(),
+                "entity_type": entity_type,
+                "brief_text": brief_text,
+                "open_task_count": open_task_count,
+                "updated_at": now.isoformat(),
+            }, on_conflict="entity_name").execute()
+        )
 
         audit_log_sync("entity_briefs", "INFO",
             f"Refreshed brief for {entity_name} ({entity_type}): "

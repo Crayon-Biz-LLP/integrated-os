@@ -1008,6 +1008,22 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 summary=f"B3: Answered from entity brief ({brief_task_count} tasks) — no LLM call"
             )
 
+            # Persist active_anchor for follow-up context
+            # BUG FIX: This code runs instead of the main entity resolution block below,
+            # so we must resolve the graph node and save the anchor here.
+            if resolved_entity and resolved_entity.lower() != "none":
+                try:
+                    node_res = supabase.table('graph_nodes').select('id, label').ilike('label', f'%{resolved_entity}%').eq('is_current', True).limit(1).execute()
+                    if node_res and node_res.data:
+                        chosen = node_res.data[0]
+                        active_anchor = _build_rich_anchor(chosen['id'], chosen['label'])
+                        if session_id:
+                            supabase.table('conversation_threads').update({
+                                'active_anchor': active_anchor
+                            }).eq('id', session_id).execute()
+                except Exception:
+                    pass
+
             if session_id:
                 log_exchange(session_id, 'bot', 'QUERY', msg, chat_id)
             if msg:
