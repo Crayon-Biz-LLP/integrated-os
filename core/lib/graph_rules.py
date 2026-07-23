@@ -530,26 +530,50 @@ def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "
     # 8. Clean up the domain table row for the merged-away entity
     # Without this, the entity detector finds the active domain row and
     # recreates the graph node — causing merged entities to reappear.
+    # Uses db_record_id first, then falls back to graph_node_id on domain table.
     src_type = src_node.get('type')
     src_db_id = src_node.get('db_record_id')
-    if src_type == 'person' and src_db_id:
-        try:
-            supabase.table('people').update({
-                'deleted_at': 'now()',
-                'is_current': False,
-                'strategic_weight': 0,
-                'graph_node_id': None
-            }).eq('id', src_db_id).execute()
-        except Exception as e:
-            audit_log_sync("pulse", "WARNING", f"Failed to clean up people row on merge: {e}")
-    elif src_type == 'organization' and src_db_id:
-        try:
-            supabase.table('organizations').update({
-                'is_active': False,
-                'graph_node_id': None
-            }).eq('id', src_db_id).execute()
-        except Exception as e:
-            audit_log_sync("pulse", "WARNING", f"Failed to clean up org row on merge: {e}")
+    src_domain_id = None
+    
+    # Resolve the domain row ID: by db_record_id first, then by graph_node_id
+    if src_type == 'person':
+        if src_db_id:
+            src_domain_id = src_db_id
+        else:
+            try:
+                p_res = maybe_single_safe(supabase.table('people').select('id').eq('graph_node_id', source_id))
+                if p_res and p_res.data:
+                    src_domain_id = str(p_res.data['id'])
+            except Exception:
+                pass
+        if src_domain_id:
+            try:
+                supabase.table('people').update({
+                    'deleted_at': 'now()',
+                    'is_current': False,
+                    'strategic_weight': 0,
+                    'graph_node_id': None
+                }).eq('id', src_domain_id).execute()
+            except Exception as e:
+                audit_log_sync("pulse", "WARNING", f"Failed to clean up people row on merge: {e}")
+    elif src_type == 'organization':
+        if src_db_id:
+            src_domain_id = src_db_id
+        else:
+            try:
+                o_res = maybe_single_safe(supabase.table('organizations').select('id').eq('graph_node_id', source_id))
+                if o_res and o_res.data:
+                    src_domain_id = str(o_res.data['id'])
+            except Exception:
+                pass
+        if src_domain_id:
+            try:
+                supabase.table('organizations').update({
+                    'is_active': False,
+                    'graph_node_id': None
+                }).eq('id', src_domain_id).execute()
+            except Exception as e:
+                audit_log_sync("pulse", "WARNING", f"Failed to clean up org row on merge: {e}")
     elif src_type == 'project' and src_db_id:
         try:
             supabase.table('projects').update({

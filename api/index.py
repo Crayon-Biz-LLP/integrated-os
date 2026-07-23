@@ -1295,6 +1295,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
             }).eq('graph_node_id', pending_id).execute()
 
             supabase.table('organizations').update({
+                'is_active': False,
                 'graph_node_id': None
             }).eq('graph_node_id', pending_id).execute()
 
@@ -1403,6 +1404,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
             }).eq('graph_node_id', l_id).execute()
 
             supabase.table('organizations').update({
+                'is_active': False,
                 'graph_node_id': None
             }).eq('graph_node_id', l_id).execute()
 
@@ -1505,16 +1507,35 @@ async def graph_node_manual_merge_route(request: Request):
                 else:
                     supabase.table('graph_edges').update({'target_node_id': winner_id}).eq('id', l_edge['id']).execute()
             
-            # --- Handle people table merge (set deleted_at instead of text marker) ---
+            # --- Handle domain table cleanup for merged entities ---
             if source_type == 'person':
-                s_meta = maybe_single_safe(supabase.table('graph_nodes').select('metadata').eq('id', loser_id))
+                s_meta = maybe_single_safe(supabase.table('graph_nodes').select('metadata, db_record_id').eq('id', loser_id))
                 s_people_id = s_meta.data.get('metadata', {}).get('people_id') if s_meta and s_meta.data else None
+                # Fallback: use db_record_id if metadata.people_id not set
+                if not s_people_id and s_meta and s_meta.data:
+                    s_people_id = s_meta.data.get('db_record_id')
                 
                 if s_people_id:
                     supabase.table('people').update({
                         'deleted_at': 'now()',
                         'strategic_weight': 0
                     }).eq('id', s_people_id).execute()
+            elif source_type == 'organization':
+                # Find the org row: by db_record_id (which stores UUID for orgs) or by graph_node_id
+                s_org_id = None
+                s_meta = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('id', loser_id))
+                if s_meta and s_meta.data and s_meta.data.get('db_record_id'):
+                    s_org_id = s_meta.data['db_record_id']
+                else:
+                    org_res = maybe_single_safe(supabase.table('organizations').select('id').eq('graph_node_id', loser_id))
+                    if org_res and org_res.data:
+                        s_org_id = org_res.data['id']
+                
+                if s_org_id:
+                    supabase.table('organizations').update({
+                        'is_active': False,
+                        'graph_node_id': None
+                    }).eq('id', s_org_id).execute()
             
             # Canonicalise and rewire live edges
             # BUG FIX: Set is_current=False on the loser so it stops appearing in
@@ -1625,7 +1646,7 @@ async def graph_node_manual_merge_route(request: Request):
                     else:
                         supabase.table('graph_edges').update({'target_node_id': target_id}).eq('id', l_edge['id']).execute()
                 
-                # Handle people table merge (set deleted_at instead of text marker)
+                # Handle domain table cleanup for merged entities
                 if source_type == 'person':
                     s_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('id', s_live_id))
                     s_pid = s_node.data.get('db_record_id') if s_node and s_node.data else None
@@ -1634,6 +1655,20 @@ async def graph_node_manual_merge_route(request: Request):
                             'deleted_at': 'now()',
                             'strategic_weight': 0
                         }).eq('id', s_pid).execute()
+                elif source_type == 'organization':
+                    s_org_id = None
+                    s_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('id', s_live_id))
+                    if s_node and s_node.data and s_node.data.get('db_record_id'):
+                        s_org_id = s_node.data['db_record_id']
+                    else:
+                        org_res = maybe_single_safe(supabase.table('organizations').select('id').eq('graph_node_id', s_live_id))
+                        if org_res and org_res.data:
+                            s_org_id = org_res.data['id']
+                    if s_org_id:
+                        supabase.table('organizations').update({
+                            'is_active': False,
+                            'graph_node_id': None
+                        }).eq('id', s_org_id).execute()
                         
                 # Update as merged alias instead of deleting
                 # BUG FIX: Set is_current=False on the loser so it stops appearing
