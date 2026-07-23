@@ -587,7 +587,7 @@ class ContextProvider:
             seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
             
             # Pending
-            p_res = supabase.table('messages').select('id, channel, suggested_title, sender_name, has_memory_value').in_('channel', ['email', 'call', 'whatsapp']).is_('danny_decision', 'null').execute()
+            p_res = supabase.table('messages').select('id, channel, suggested_title, sender_name, has_memory_value').in_('channel', ['email', 'call', 'whatsapp']).is_('danny_decision', 'null').order('created_at', desc=True).limit(50).execute()
             if p_res.data:
                 for t in p_res.data:
                     if t['channel'] == 'whatsapp' and t.get('has_memory_value'):
