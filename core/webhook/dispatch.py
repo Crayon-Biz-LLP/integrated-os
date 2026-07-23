@@ -163,7 +163,6 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
                 prompt=prompt,
                 workload=WorkloadProfile.INTERACTIVE,
                 primary_model=INTERACTIVE_MODEL,
-                config={'thinking_level': 'medium'},
             ):
                 brief_text += token
                 await adapter.send_chunk(token)
@@ -1361,7 +1360,6 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 prompt=stream_prompt,
                 workload=WorkloadProfile.INTERACTIVE,
                 primary_model=INTERACTIVE_MODEL,
-                config={'thinking_level': 'medium'},
             ):
                 answer += token
                 await adapter.send_chunk(token)

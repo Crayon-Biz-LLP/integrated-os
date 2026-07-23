@@ -478,7 +478,7 @@ FRAGMENTS (Old & New):
                         prompt=per_prompt,
                         workload=WorkloadProfile.SYNTHESIS,
                         primary_model=INTERACTIVE_MODEL,
-                        config={'response_mime_type': 'text/plain', 'thinking_level': 'medium'}
+                        config={'response_mime_type': 'text/plain'}
                     )
                     if response and response.text:
                         return entity_name, response.text.strip()

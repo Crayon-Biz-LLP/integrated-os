@@ -27,7 +27,7 @@ SAFE_HOLD_CLASSIFICATION = {
 }
 
 CLASSIFICATION_MODEL = "gemini-3.5-flash-lite"
-INTERACTIVE_MODEL = "gemini-3.5-flash-lite"
+INTERACTIVE_MODEL = "gemini-3.1-flash-lite"
 SYNTHESIS_MODEL = "gemini-3.6-flash"
 EMBEDDING_MODEL = "gemini-embedding-2"
 GEMMA_FALLBACK_MODEL = "gemma-4-31b-it"
