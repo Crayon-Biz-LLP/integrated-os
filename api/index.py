@@ -10,6 +10,7 @@ from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from core.lib.audit_logger import trace_id_var
 from core.lib.telemetry import emit_observation
 from core.decisions import record_decision
@@ -41,7 +42,22 @@ from core.pulse.tools import skip_recurring_instance
 from core.pulse.pipeline import run_full_health_check
 from core.services.db import get_supabase, maybe_single_safe
 
-app = FastAPI(title="Integrated-OS")
+
+@asynccontextmanager
+async def lifespan(app):
+    """Pre-warm Gemini client connections on cold start.
+    The first Gemini API call pays a ~1-2s TLS handshake penalty.
+    Initializing the client at startup moves that penalty off the
+    critical path for the first user query."""
+    try:
+        from core.llm.client import get_gemini_clients
+        get_gemini_clients()
+    except Exception:
+        pass  # Fail gracefully — client will init on first API call
+    yield
+
+
+app = FastAPI(title="Integrated-OS", lifespan=lifespan)
 
 # CORS setup for future dashboard scalability
 app.add_middleware(

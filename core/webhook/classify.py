@@ -102,6 +102,51 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     # --- END OF GUARD 1 ---
 
+    # --- D2: Entity status query pattern → QUERY deterministically ---
+    # Questions about an entity's status/updates are always QUERY.
+    # This saves a 2-3s classify LLM call and routes directly to the
+    # B3 entity brief intercept, which can answer from a pre-computed brief.
+    # Extracts the entity name from the pattern so B3 can use it directly.
+    _query_patterns = [
+        r'(give|get|have)\s+(me\s+)?(an\s+)?update\s+(on|about)\s+(\S[\w\s]+)[.!?]?\s*$',
+        r'(what(\'s|\sis))\s+(happening|up|new|going\s*on)\s+(with|on|for)\s+(\S[\w\s]+)[.!?]?\s*$',
+        r'status\s+(on|of|for)\s+(\S[\w\s]+)[.!?]?\s*$',
+        r'(tell|show)\s+(me\s+)?about\s+(\S[\w\s]+)[.!?]?\s*$',
+        r'(anything|any)\s+(new|update)\s+(on|about|with)\s+(\S[\w\s]+)[.!?]?\s*$',
+        r'(how\s+(is|are|\'s|\'re))\s+(\S[\w\s]+)\s+(going|doing|looking)[.!?]?\s*$',
+        r'what\s+(about|of)\s+(\S[\w\s]+)[.!?]?\s*$',
+    ]
+    _query_match = None
+    _matched_entity = None
+    stripped = text.strip()
+    for pattern in _query_patterns:
+        m = re.search(pattern, stripped, re.IGNORECASE)
+        if m:
+            _query_match = True
+            # Extract the entity from the last capture group (varies by pattern)
+            groups = [g for g in m.groups() if g and len(g) > 2]
+            if groups:
+                _matched_entity = groups[-1].strip().rstrip('.!?')
+            break
+
+    if _query_match:
+        audit_log_sync("classify", "INFO",
+            f"D2: Entity status pattern → QUERY (entity={_matched_entity}, text={stripped[:50]}...)")
+        result = {
+            "intent": "QUERY",
+            "confidence": 1.0,
+            "entity": _matched_entity or "INBOX",
+            "title": stripped[:80],
+            "receipt": None,
+            "possible_intents": [],
+            "reasoning": "Deterministic pre-filter: entity status query pattern → QUERY",
+            "contains_hidden_action": False,
+        }
+        # Cache the result so subsequent identical messages skip both pre-filter and LLM
+        cache_hash = hashlib.sha256((stripped + "").encode()).hexdigest()[:16]
+        cache_set(f"rhodey:classify:{cache_hash}", result, ttl=300)
+        return result
+
     # --- GAP C: Schedule/calendar query pattern → QUERY deterministically ---
     # Questions about meetings, schedules, calendars are always QUERY.
     # This saves an LLM call and prevents misclassification as TASK/NOTE.

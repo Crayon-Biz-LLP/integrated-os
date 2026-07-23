@@ -9,6 +9,7 @@ from core.lib.telemetry import emit_observation
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
 from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
 from core.actions import capture_session_id, capture_response
+import asyncio
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
 from core.webhook.classify import classify_intent, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
@@ -25,9 +26,6 @@ from core.lib.clarification_state import (
     get_active_clarification, get_active_session, set_clarification, set_session_state,
     resolve_clarification, clear_session
 )
-from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_clarification
-from core.webhook.commands import handle_command, handle_undo_command
-from core.webhook.multimodal import process_multimodal_content
 
 
 async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None, exclude_signal_types: list = None) -> str | None:
@@ -443,6 +441,12 @@ async def process_webhook(update: dict):
     req_trace_id = str(uuid.uuid4())[:12]
     trace_id_var.set(req_trace_id)
     set_decision_chain_id()
+    
+    # Lazy imports — heavy modules loaded only in the function that uses them.
+    # Cuts ~1-2s off Vercel cold starts by deferring dispatch, commands, and multimodal imports.
+    from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, resolve_anaphora, handle_clarification
+    from core.webhook.commands import handle_command, handle_undo_command
+    from core.webhook.multimodal import process_multimodal_content
     
     try:
         update_id = update.get('update_id')
@@ -1221,7 +1225,13 @@ async def process_webhook(update: dict):
             context = await get_recent_context(limit=2)
             thread_summary = get_thread_summary(session_id)
             classify_context_text = format_classify_context(history, thread_summary=thread_summary, active_anchor=active_anchor)
-            classification = await classify_intent(note_content, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text)
+            from core.webhook.dispatch import resolve_anaphora
+            _classify_task = asyncio.create_task(classify_intent(note_content, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text))
+            _anaphora_task = asyncio.create_task(resolve_anaphora(note_content, session_id, active_anchor, classify_context_text))
+            classification = await _classify_task
+            
+            # Cancel anaphora — /note intent is always NOTE, never QUERY
+            _anaphora_task.cancel()
             
             # 2. Lock intent and confidence
             classification['intent'] = 'NOTE'
@@ -1305,7 +1315,15 @@ async def process_webhook(update: dict):
             return {"success": True}
 
         context = await get_recent_context(limit=2)
-        classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text)
+        # A1: Start classify and anaphora in parallel
+        _classify_task = asyncio.create_task(classify_intent(text, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text))
+        _anaphora_task = asyncio.create_task(resolve_anaphora(text, session_id, active_anchor, classify_context_text))
+        classification = await _classify_task
+        
+        # Cancel anaphora if not QUERY — no entity resolution needed for TASK/NOTE/COMPLETION etc.
+        intent = classification.get('intent', 'NOTE')
+        if intent != 'QUERY':
+            _anaphora_task.cancel()
 
         intent = classification.get('intent', 'TASK')
         confidence = classification.get('confidence', 0.5)
@@ -1410,8 +1428,7 @@ async def process_webhook(update: dict):
         
         if confidence >= CONFIDENCE_HIGH:
             print(f"[HANDLER_DEBUG] Routing: intent={intent}, confidence={confidence}, text={text!r}", flush=True)
-            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
-        elif intent == 'CLARIFICATION_NEEDED':
+            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_future=_anaphora_task)
             await handle_clarification(
                 text,
                 classification.get('clarification_question', 'Could you provide more details?'),
@@ -1420,7 +1437,7 @@ async def process_webhook(update: dict):
                 receipt=receipt
             )
         elif confidence >= CONFIDENCE_LOW:
-            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
+            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_future=_anaphora_task)
         else:
             await handle_clarification(
                 text,
