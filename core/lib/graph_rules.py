@@ -468,6 +468,39 @@ def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "
     supabase.table("graph_nodes").update({"metadata": merged_meta}).eq("id", target_id).execute()
     
     from core.lib.audit_logger import audit_log_sync
+
+    # 8. Clean up the domain table row for the merged-away entity
+    # Without this, the entity detector finds the active domain row and
+    # recreates the graph node — causing merged entities to reappear.
+    src_type = src_node.get('type')
+    src_db_id = src_node.get('db_record_id')
+    if src_type == 'person' and src_db_id:
+        try:
+            supabase.table('people').update({
+                'deleted_at': 'now()',
+                'is_current': False,
+                'strategic_weight': 0,
+                'graph_node_id': None
+            }).eq('id', src_db_id).execute()
+        except Exception as e:
+            audit_log_sync("pulse", "WARNING", f"Failed to clean up people row on merge: {e}")
+    elif src_type == 'organization' and src_db_id:
+        try:
+            supabase.table('organizations').update({
+                'is_active': False,
+                'graph_node_id': None
+            }).eq('id', src_db_id).execute()
+        except Exception as e:
+            audit_log_sync("pulse", "WARNING", f"Failed to clean up org row on merge: {e}")
+    elif src_type == 'project' and src_db_id:
+        try:
+            supabase.table('projects').update({
+                'is_current': False,
+                'status': 'archived'
+            }).eq('id', src_db_id).execute()
+        except Exception as e:
+            audit_log_sync("pulse", "WARNING", f"Failed to clean up project row on merge: {e}")
+
     audit_log_sync("pulse", "INFO", f"Merged node {src_node['label']} into {tgt_node['label']} ({provenance})")
     
     return {"success": True, "message": f"Merged {src_node['label']} into {tgt_node['label']}"}
