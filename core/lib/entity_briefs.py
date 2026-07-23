@@ -251,6 +251,18 @@ async def refresh_entity_brief(entity_name: str, entity_type: str) -> bool:
 
         open_tasks, completed_tasks, graph_edges, recent_convs, delegations = all_results
 
+        # Early exit: if ALL data sources are empty, store a minimal brief without LLM.
+        # This saves 2-3s of flash-lite compute AND prevents stale briefs from lingering.
+        if not open_tasks and not completed_tasks and not graph_edges and not recent_convs and not delegations:
+            supabase.table("entity_briefs").upsert({
+                "entity_name": entity_name.lower(),
+                "entity_type": entity_type,
+                "brief_text": f"Nothing open on {entity_name} right now.",
+                "open_task_count": 0,
+                "updated_at": now.isoformat(),
+            }, on_conflict="entity_name").execute()
+            return True
+
         # Step 2: Build state summary
         open_task_count = len(open_tasks)
         completed_count = len(completed_tasks)
