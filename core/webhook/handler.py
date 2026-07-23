@@ -25,6 +25,9 @@ from core.lib.clarification_state import (
     get_active_clarification, get_active_session, set_clarification, set_session_state,
     resolve_clarification, clear_session
 )
+from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_clarification
+from core.webhook.commands import handle_command, handle_undo_command
+from core.webhook.multimodal import process_multimodal_content
 
 
 async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None, exclude_signal_types: list = None) -> str | None:
@@ -440,12 +443,6 @@ async def process_webhook(update: dict):
     req_trace_id = str(uuid.uuid4())[:12]
     trace_id_var.set(req_trace_id)
     set_decision_chain_id()
-    
-    # Lazy imports — heavy modules loaded only in the function that uses them.
-    # Cuts ~1-2s off Vercel cold starts by deferring dispatch, commands, and multimodal imports.
-    from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_clarification
-    from core.webhook.commands import handle_command, handle_undo_command
-    from core.webhook.multimodal import process_multimodal_content
     
     try:
         update_id = update.get('update_id')
@@ -1309,7 +1306,7 @@ async def process_webhook(update: dict):
 
         context = await get_recent_context(limit=2)
         classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text)
-        
+
         intent = classification.get('intent', 'TASK')
         confidence = classification.get('confidence', 0.5)
 
@@ -1414,6 +1411,7 @@ async def process_webhook(update: dict):
         if confidence >= CONFIDENCE_HIGH:
             print(f"[HANDLER_DEBUG] Routing: intent={intent}, confidence={confidence}, text={text!r}", flush=True)
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
+        elif intent == 'CLARIFICATION_NEEDED':
             await handle_clarification(
                 text,
                 classification.get('clarification_question', 'Could you provide more details?'),

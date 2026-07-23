@@ -3,7 +3,6 @@ import uuid
 import re
 from datetime import datetime, timezone
 
-from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm.compat import call_llm_with_fallback_sync
 
 SESSION_TIMEOUT_MINUTES = 60
@@ -372,7 +371,7 @@ If no entity matches, respond with: NONE
 
 Response (one line only):"""
     
-    resp = call_llm_with_fallback_sync(prompt, model=CLASSIFICATION_MODEL, is_critical=False)
+    resp = call_llm_with_fallback_sync(prompt, model="gemini-3.1-flash-lite", is_critical=False)
     result = resp.text.strip().upper() if resp and resp.text else ""
     
     candidates = []
@@ -627,7 +626,7 @@ Conversation:
 {raw}
 
 Summary:"""
-        resp = call_llm_with_fallback_sync(prompt, model=CLASSIFICATION_MODEL, is_critical=False)
+        resp = call_llm_with_fallback_sync(prompt, model="gemini-3.1-flash-lite", is_critical=False)
         summary = resp.text.strip()
         if summary and len(summary) < 600:
             return summary
@@ -688,7 +687,7 @@ Conversation:
 {raw}
 
 Topic Summary:"""
-        resp = call_llm_with_fallback_sync(prompt, model=CLASSIFICATION_MODEL, is_critical=False)
+        resp = call_llm_with_fallback_sync(prompt, model="gemini-3.1-flash-lite", is_critical=False)
         summary = resp.text.strip()
         if summary and len(summary) < 600:
             return summary

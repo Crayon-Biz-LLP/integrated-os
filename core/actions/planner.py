@@ -41,42 +41,27 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
         except (ValueError, TypeError):
             audit_log_sync("planner", "WARNING", f"Invalid task ID in close text: '{task_id_str}'")
     
-    # ── Fetch all independent data sources ──
-    from core.services.google_service import get_upcoming_calendar_events
-    tasks_res = await supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
-    recurring_res = await supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
-    upcoming_events_raw = await asyncio.to_thread(get_upcoming_calendar_events, 14)
-    orgs_res = await supabase.table("organizations").select("id, name").execute()
-    projects_all_res = await supabase.table("projects").select("id, name, organization_id, organizations(name)").eq("is_current", True).neq("status", "archived").execute()
-    
-    # Handle transient failures gracefully — one failed fetch shouldn't crash the whole plan
-    if isinstance(tasks_res, Exception):
-        audit_log_sync("planner", "WARNING", f"plan_actions: open tasks fetch failed: {tasks_res}")
-        tasks_res = type('obj', (object,), {'data': []})()
-    if isinstance(recurring_res, Exception):
-        audit_log_sync("planner", "WARNING", f"plan_actions: recurring tasks fetch failed: {recurring_res}")
-        recurring_res = type('obj', (object,), {'data': []})()
-    if isinstance(upcoming_events_raw, Exception):
-        audit_log_sync("planner", "WARNING", f"plan_actions: calendar events fetch failed: {upcoming_events_raw}")
-        upcoming_events_raw = []
-    if isinstance(orgs_res, Exception):
-        audit_log_sync("planner", "WARNING", f"plan_actions: orgs fetch failed: {orgs_res}")
-        orgs_res = type('obj', (object,), {'data': []})()
-    if isinstance(projects_all_res, Exception):
-        audit_log_sync("planner", "WARNING", f"plan_actions: projects fetch failed: {projects_all_res}")
-        projects_all_res = type('obj', (object,), {'data': []})()
-    
+    # 1. Fetch active tasks (todo/in_progress)
+    tasks_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
     open_tasks = tasks_res.data or []
-    upcoming_events = upcoming_events_raw
+    
+    # 2. Fetch recurring tasks (even if done, because done means skip instance)
+    recurring_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
     recurring_tasks = [t for t in (recurring_res.data or []) if t["status"] != "cancelled"]
+    
+    # 3. Fetch upcoming calendar events
+    from core.services.google_service import get_upcoming_calendar_events
+    upcoming_events = await asyncio.to_thread(get_upcoming_calendar_events, 14)
     
     # Pre-process upcoming events into base IDs to find next occurrence times
     base_id_to_time = {}
     for e in upcoming_events:
         base_id = re.sub(r'_\d{8}T\d{6}Z$', '', e["id"])
+        # Keep the earliest time for the base ID
         if base_id not in base_id_to_time:
             base_id_to_time[base_id] = e["time"]
     
+    # Combine uniquely for tasks
     seen_tasks = set()
     candidates = []
     task_google_event_ids = set()
@@ -102,19 +87,23 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
                 "project_name": proj_name,
                 "organization_name": org_name
             })
-    
+            
     seen_events = set()
     for e in upcoming_events:
         base_id = re.sub(r'_\d{8}T\d{6}Z$', '', e["id"])
         if base_id in task_google_event_ids:
-            continue
+            continue # Event is linked to a task, already handled above
+            
         if e["id"] not in seen_events:
             seen_events.add(e["id"])
             candidates.append({"type": "event", "id": e["id"], "title": e["title"], "time": e["time"]})
-    
+            
+    # 4. Fetch organizations and projects for LLM resolution
+    orgs_res = supabase.table("organizations").select("id, name").execute()
     orgs = orgs_res.data or []
     org_lines = "\n".join([f"  - {o['name']} (ID: {o['id']})" for o in orgs]) if orgs else "  - (none)"
     
+    projects_all_res = supabase.table("projects").select("id, name, organization_id, organizations(name)").eq("is_current", True).neq("status", "archived").execute()
     projects_all = projects_all_res.data or []
     project_lines = []
     for p in projects_all:

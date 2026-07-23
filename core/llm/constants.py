@@ -26,12 +26,11 @@ SAFE_HOLD_CLASSIFICATION = {
     "reasoning": "safe_hold"
 }
 
-CLASSIFICATION_MODEL = "gemini-3.5-flash-lite"
-INTERACTIVE_MODEL = "gemini-3.1-flash-lite"
-SYNTHESIS_MODEL = "gemini-3.6-flash"
-EMBEDDING_MODEL = "gemini-embedding-2"
+CLASSIFICATION_MODEL = "gemini-3.1-flash-lite"
+SYNTHESIS_MODEL = "gemini-3.5-flash"
+EMBEDDING_MODEL = "gemini-embedding-2-preview"
 GEMMA_FALLBACK_MODEL = "gemma-4-31b-it"
-OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 
 EMBEDDING_DIMENSION = 768
 

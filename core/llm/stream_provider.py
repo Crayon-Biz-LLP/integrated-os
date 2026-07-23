@@ -23,7 +23,6 @@ async def stream_with_fallback(
     prompt: str,
     workload: WorkloadProfile = WorkloadProfile.INTERACTIVE,
     primary_model: str = SYNTHESIS_MODEL,
-    config: dict = None,
 ) -> AsyncGenerator[str, None]:
     """Stream Gemini response token by token.
     
@@ -34,16 +33,9 @@ async def stream_with_fallback(
     clients = get_gemini_clients()
     if not clients:
         audit_log_sync("llm", "WARNING", "stream_with_fallback: no Gemini clients available, falling back")
-        async for token in _fallback_nonstreaming(prompt, workload, primary_model, config):
+        async for token in _fallback_nonstreaming(prompt, workload, primary_model):
             yield token
         return
-
-    # Base config
-    call_config = {
-        "max_output_tokens": 800,
-    }
-    if config:
-        call_config.update(config)
 
     # Try each Gemini client in sequence
     for client_idx, client in enumerate(clients):
@@ -51,7 +43,9 @@ async def stream_with_fallback(
             stream = await client.aio.models.generate_content_stream(
                 model=primary_model,
                 contents=prompt,
-                config=call_config,
+                config={
+                    "max_output_tokens": 800,
+                },
             )
             async for chunk in stream:
                 if chunk.text:
@@ -68,7 +62,7 @@ async def stream_with_fallback(
             # Continue to next client or fallback
 
     # All clients failed — fall back to non-streaming
-    async for token in _fallback_nonstreaming(prompt, workload, primary_model, config):
+    async for token in _fallback_nonstreaming(prompt, workload, primary_model):
         yield token
 
 
@@ -76,7 +70,6 @@ async def _fallback_nonstreaming(
     prompt: str,
     workload: WorkloadProfile,
     model: str,
-    config: dict = None,
 ) -> AsyncGenerator[str, None]:
     """Fall back to non-streaming generate_content_with_fallback.
     Yields the full response as a single token.
@@ -86,7 +79,6 @@ async def _fallback_nonstreaming(
             prompt=prompt,
             workload=workload,
             primary_model=model,
-            config=config,
         )
         if response and response.text:
             yield response.text

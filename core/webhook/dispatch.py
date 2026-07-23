@@ -8,11 +8,10 @@ from core.pulse.context import context_provider
 from core.lib.conversation import get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
 from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_BY_KEYWORD
-from core.llm.constants import INTERACTIVE_MODEL
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.actions import capture_response
-from core.prompts.query import build_interrogate_brain_prompt, new_anaphora_prompt
+from core.prompts.query import build_interrogate_brain_prompt, new_anaphora_prompt, get_query_type_sections
 from core.prompts.briefing import build_daily_brief_prompt
 from core.webhook.utils import supabase
 from core.pulse.graph import hybrid_search_graph
@@ -162,7 +161,7 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
             async for token in stream_with_fallback(
                 prompt=prompt,
                 workload=WorkloadProfile.INTERACTIVE,
-                primary_model=INTERACTIVE_MODEL,
+                primary_model=CLASSIFICATION_MODEL,
             ):
                 brief_text += token
                 await adapter.send_chunk(token)
@@ -388,7 +387,7 @@ async def handle_role_update(text: str, chat_id: int, classification: dict, sour
         await send_telegram(chat_id, "I encountered an error updating the role. Please try again.")
 
 
-async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None, active_anchor: dict = None, anaphora_future: asyncio.Task = None):
+async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None, active_anchor: dict = None):
     cid = get_decision_chain_id()
     if not cid:
         cid = set_decision_chain_id()
@@ -439,7 +438,7 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
                 classify_ctx = ""
         reply = await interrogate_brain(text, chat_id, session_id=session_id, 
             conversation_history=history_text, active_anchor=active_anchor,
-            classify_context=classify_ctx, anaphora_future=anaphora_future)
+            classify_context=classify_ctx)
         if contains_hidden:
             from core.actions.planner import plan_actions
             from core.actions.executor import execute_planned_actions
@@ -478,52 +477,6 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         await handle_clarification(text, question, chat_id, session_id=session_id)
 
     _persist_chain_id(session_id)
-
-async def resolve_anaphora(query: str, session_id: str, active_anchor: dict = None, classify_context: str = "") -> tuple:
-    """A1: Module-level anaphora resolver. Extracted from interrogate_brain()
-    so handler.py can start it in parallel with classify_intent().
-    
-    Returns (entity, query_type, resolved_query_text).
-    """
-    anchor_context = ""
-    if active_anchor:
-        parts = [f"Active context: {active_anchor.get('name', '')}"]
-        if active_anchor.get('type'):
-            parts.append(f"Type: {active_anchor['type']}")
-        if active_anchor.get('last_action'):
-            parts.append(f"Last activity: {active_anchor['last_action']}")
-        if active_anchor.get('last_summary_snippet'):
-            parts.append(f"Recent context: {active_anchor['last_summary_snippet'][:200]}")
-        anchor_context = "\n".join(parts)
-    thread_summary = ""
-    if session_id:
-        thread_summary = get_thread_summary(session_id)
-    if thread_summary:
-        anchor_context += f"\nEarlier in conversation: {thread_summary[:500]}"
-
-    resolve_prompt = new_anaphora_prompt(anchor_context, classify_context, query)
-
-    resolve_response = await generate_content_with_fallback(
-        prompt=resolve_prompt,
-        workload=WorkloadProfile.INTERACTIVE,
-        primary_model=CLASSIFICATION_MODEL,
-        config={'response_mime_type': 'application/json'}
-    )
-    entity, query_type, resolved_query_text = None, "general", None
-    if resolve_response and resolve_response.text:
-        try:
-            data = json.loads(resolve_response.text.strip())
-            resolved_query_text = data.get("resolved_query", "").strip()
-            ent = data.get("primary_entity", "").strip()
-            if ent and ent.lower() != "none":
-                entity = ent
-            qt = data.get("query_type", "").strip().lower()
-            if qt in ("relationship", "status_update", "historical", "schedule", "people"):
-                query_type = qt
-        except json.JSONDecodeError:
-            pass
-    return entity, query_type, resolved_query_text
-
 
 _searching_locks = set()
 
@@ -806,22 +759,7 @@ class SharedQueryContext:
         return self._people
 
 
-_SIGN_OFF_PATTERNS = re.compile(
-    r'^.*\b(?:Query logged|Entity lookup logged|Entity connection lookup logged|Rest well|Connection lookup logged|Search logged|Note logged|Task logged)\b.*$',
-    re.IGNORECASE | re.MULTILINE
-)
-
-def _strip_sign_offs(text: str) -> str:
-    """Remove standalone sign-off/log lines from LLM responses.
-    These are meta-commentary lines the LLM adds (e.g. "Query logged.")
-    that are not part of the actual answer. Stripped line-by-line.
-    Only removes lines that ARE the sign-off — never modifies content lines."""
-    cleaned = _SIGN_OFF_PATTERNS.sub('', text)
-    # Clean up leftover blank lines from removed lines
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
-    return cleaned
-
-async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None, classify_context: str = "", anaphora_future: asyncio.Task = None) -> str | None:
+async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None, classify_context: str = "") -> str | None:
     search_task = None
     _last_reply = None
     # 'Searching your vault...' message is now dispatched from handler.py
@@ -854,10 +792,51 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         # This prevents tasks like memories (15s phrase node searches) from
         # running unnecessarily on relationship/people queries.
         
-        # A1: Anaphora resolution — started in parallel with classify from handler.py if pre-started,
-        # or started here if not (backward compat for non-webhook callers).
-        if anaphora_future is None:
-            anaphora_future = asyncio.create_task(resolve_anaphora(query, session_id, active_anchor, classify_context))
+        # Anaphora resolution — with TRUNCATED context (classify_context, not full history)
+        async def _resolve_anaphora():
+            anchor_context = ""
+            if active_anchor:
+                parts = [f"Active context: {active_anchor.get('name', '')}"]
+                if active_anchor.get('type'):
+                    parts.append(f"Type: {active_anchor['type']}")
+                if active_anchor.get('last_action'):
+                    parts.append(f"Last activity: {active_anchor['last_action']}")
+                if active_anchor.get('last_summary_snippet'):
+                    parts.append(f"Recent context: {active_anchor['last_summary_snippet'][:200]}")
+                anchor_context = "\n".join(parts)
+            thread_summary = ""
+            if session_id:
+                thread_summary = get_thread_summary(session_id)
+            if thread_summary:
+                anchor_context += f"\nEarlier in conversation: {thread_summary[:500]}"
+            
+            # Use classify_context (truncated to last exchange + thread summary)
+            # instead of full conversation_history (saves ~14s on long threads)
+            resolve_prompt = new_anaphora_prompt(anchor_context, classify_context, query)
+            
+            resolve_response = await generate_content_with_fallback(
+                prompt=resolve_prompt,
+                workload=WorkloadProfile.INTERACTIVE,
+                primary_model=CLASSIFICATION_MODEL,
+                config={'response_mime_type': 'application/json'}
+            )
+            entity, query_type, resolved_query_text = None, "general", None
+            if resolve_response and resolve_response.text:
+                try:
+                    data = json.loads(resolve_response.text.strip())
+                    resolved_query_text = data.get("resolved_query", "").strip()
+                    ent = data.get("primary_entity", "").strip()
+                    if ent and ent.lower() != "none":
+                        entity = ent
+                    qt = data.get("query_type", "").strip().lower()
+                    if qt in ("relationship", "status_update", "historical", "schedule", "people"):
+                        query_type = qt
+                except json.JSONDecodeError:
+                    pass
+            return entity, query_type, resolved_query_text
+        
+        # Start anaphora and embedding immediately (they run in background)
+        _anaphora_future = asyncio.create_task(_resolve_anaphora())
         _embedding_future = asyncio.create_task(_shared.get_embedding())
         
         # Phase 1a: lightweight tasks (<1s each) that are fine to start before entity resolution
@@ -942,12 +921,24 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         resolved_entity = None
         query_type = "general"
         try:
-            _entity, _query_type, _resolved_query = await anaphora_future
+            _entity, _query_type, _resolved_query = await _anaphora_future
             if _resolved_query and _resolved_query.lower() != query.lower() and _resolved_query.lower() != "none":
                 query = _resolved_query
             if _entity:
                 resolved_entity = _entity
             query_type = _query_type
+            
+            # Refine context selection flags based on query_type
+            # For specific query types, OVERRIDE all flags (not just add to them)
+            # This prevents ALL 17 sections loading for a targeted question like
+            # "How is Marcus, Anita and Abhishek related?" which only needs people + graph.
+            if query_type != "general":
+                _qt = get_query_type_sections(query_type)
+                fetch_all = _qt.get("fetch_all", False)
+                is_action = _qt.get("is_action", False)
+                is_schedule = _qt.get("is_schedule", False)
+                is_comms = _qt.get("is_comms", False)
+                is_people = _qt.get("is_people", False)
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Anaphora/Entity resolution failed: {e}")
 
@@ -1244,6 +1235,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _ri += 1
         active_context = _r2[_ri]
         _ri += 1
+
         available_sources = []
         all_context = []
         
@@ -1313,6 +1305,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         if active_context and active_context != "None":
             all_context.append(f"{_source_tag('active_context')} ACTIVE CONVERSATION CONTEXT {_HIST_TAG}:\n{active_context}")
             available_sources.append("active conversations")
+
         if not all_context:
             _last_reply = "\U0001f50d *I don't have any relevant data to answer that.*\n\n_Try rephrasing._"
             await send_telegram(chat_id, _last_reply)
@@ -1359,7 +1352,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             async for token in stream_with_fallback(
                 prompt=stream_prompt,
                 workload=WorkloadProfile.INTERACTIVE,
-                primary_model=INTERACTIVE_MODEL,
+                primary_model=CLASSIFICATION_MODEL,
             ):
                 answer += token
                 await adapter.send_chunk(token)
@@ -1385,18 +1378,6 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             else:
                 await adapter.send_complete()
             final_reply = f"{header}\n\n{answer.strip()}"
-            
-            # Strip LLM sign-off/log lines from the response
-            # (e.g. "Query logged.", "Entity lookup logged.", "Rest well", etc.)
-            # This is a deterministic safety net — prompt rules are the primary defense.
-            cleaned_reply = _strip_sign_offs(final_reply)
-            if cleaned_reply and cleaned_reply != final_reply:
-                final_reply = cleaned_reply
-                # Update the Telegram message to remove the sign-off line too
-                try:
-                    await adapter.flush_text(final_reply)
-                except Exception:
-                    pass  # Best-effort — logging already has clean version
         
         _last_reply = final_reply
         

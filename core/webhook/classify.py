@@ -102,6 +102,34 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     # --- END OF GUARD 1 ---
 
+    # --- GAP C: Schedule/calendar query pattern → QUERY deterministically ---
+    # Questions about meetings, schedules, calendars are always QUERY.
+    # This saves an LLM call and prevents misclassification as TASK/NOTE.
+    _schedule_pattern = re.compile(
+        r'\b(meetings?\s+(this\s+)?(week|month|today|tomorrow)'
+        r'|what(\'s|\sis)\s+(on\s+)?(my\s+)?(calendar|schedule)'
+        r'|calendar\s+(events|items|today|this\s+week)'
+        r'|schedule\s+(check|look|today|tomorrow|this\s+week)'
+        r'|(events|meetings)\s+on\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)'
+        r'|what(\'s|\sis)\s+(up|happening)\s+(today|tomorrow|this\s+week)'
+        r'|do\s+I\s+have\s+(anything|any)\s+(on|today|tomorrow)'
+        r'|am\s+I\s+(free|busy)\s+(today|tomorrow|this\s+week|on\s+\w+)'
+        r'|agenda|upcoming|what\s+(do\s+I|does\s+my)\s+day|week\s+(ahead|coming\s+up)|events\s+this|day\s+look|my\s+calendar|my\s+schedule)\b',
+        re.IGNORECASE
+    )
+    if _schedule_pattern.search(text.strip()):
+        audit_log_sync("classify", "INFO", f"Gap C: Schedule pattern detected → QUERY ({text[:60]}...)")
+        return {
+            "intent": "QUERY",
+            "confidence": 1.0,
+            "entity": "INBOX",
+            "title": text[:80],
+            "receipt": "Checking your schedule...",
+            "possible_intents": [],
+            "reasoning": "Deterministic pre-filter: schedule/calendar pattern → QUERY",
+            "contains_hidden_action": False,
+        }
+
     # --- M3: Query caching ---
     # Cache key includes text + conversation history (the two most variable inputs)
     # Context and core_json change rarely and don't warrant cache-busting

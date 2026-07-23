@@ -10,7 +10,7 @@ Architecture:
   - PPTX → python-pptx (algorithmic, extracts all slide text)
   - Images → Gemini vision fallback (scanned docs, photos)
   - Audio → Gemini audio transcription (unchanged)
-  - Fallback → SYNTHESIS_MODEL (gemini-3.6-flash) via direct API call
+  - Fallback → SYNTHESIS_MODEL (gemini-3.5-flash) via direct API call
 """
 
 import io
