@@ -31,9 +31,12 @@ def select_entities_to_refresh(
 ) -> list[dict]:
     """Pick the top ~N active entities to refresh briefs for.
 
+    Reads from graph_nodes (canonical source of truth for all entities —
+    same source as the Decisions UI). Also scores by recency of discussion
+    and task title references.
+
     Scores entities by:
-      4 pts — organization (always worth refreshing — covers most real entities)
-      3 pts — active project (likely to be queried about)
+      4 pts — entity exists in graph_nodes (org/project/person — canonical)
       2 pts — entity discussed in last 24h (from conversation_threads)
       1 pt  — first capitalized word in open task title (noisy, low confidence)
 
@@ -50,28 +53,18 @@ def select_entities_to_refresh(
             scores[key] = {"name": name, "type": etype, "score": 0}
         scores[key]["score"] += points
 
-    # 1. Organizations — highest priority, always include (4 pts)
+    # 1. Graph nodes — canonical source for orgs, projects, people (4 pts)
+    # Matches what the user sees in the Decisions UI.
     try:
-        org_res = supabase.table("organizations") \
-            .select("id, name") \
-            .eq("is_active", True) \
-            .execute()
-        for o in (org_res.data or []):
-            _add_score(o["name"], "organization", 4)
-    except Exception as e:
-        audit_log_sync("entity_briefs", "WARNING", f"select: orgs query failed: {e}")
-
-    # 2. Active projects (3 pts)
-    try:
-        proj_res = supabase.table("projects") \
-            .select("id, name, organization_id") \
-            .eq("status", "active") \
+        gn_res = supabase.table("graph_nodes") \
+            .select("label, type") \
+            .in_("type", ["organization", "project", "person"]) \
             .eq("is_current", True) \
             .execute()
-        for p in (proj_res.data or []):
-            _add_score(p["name"], "project", 3)
+        for n in (gn_res.data or []):
+            _add_score(n["label"], n["type"], 4)
     except Exception as e:
-        audit_log_sync("entity_briefs", "WARNING", f"select: projects query failed: {e}")
+        audit_log_sync("entity_briefs", "WARNING", f"select: graph_nodes query failed: {e}")
 
     # 3. Recent conversation threads — entities discussed in last 24h (2 pts)
     try:
