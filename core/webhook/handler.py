@@ -1225,13 +1225,7 @@ async def process_webhook(update: dict):
             context = await get_recent_context(limit=2)
             thread_summary = get_thread_summary(session_id)
             classify_context_text = format_classify_context(history, thread_summary=thread_summary, active_anchor=active_anchor)
-            from core.webhook.dispatch import resolve_anaphora
-            _classify_task = asyncio.create_task(classify_intent(note_content, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text))
-            _anaphora_task = asyncio.create_task(resolve_anaphora(note_content, session_id, active_anchor, classify_context_text))
-            classification = await _classify_task
-            
-            # Cancel anaphora — /note intent is always NOTE, never QUERY
-            _anaphora_task.cancel()
+            classification = await classify_intent(note_content, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text)
             
             # 2. Lock intent and confidence
             classification['intent'] = 'NOTE'
@@ -1315,16 +1309,8 @@ async def process_webhook(update: dict):
             return {"success": True}
 
         context = await get_recent_context(limit=2)
-        # A1: Start classify and anaphora in parallel
-        _classify_task = asyncio.create_task(classify_intent(text, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text))
-        _anaphora_task = asyncio.create_task(resolve_anaphora(text, session_id, active_anchor, classify_context_text))
-        classification = await _classify_task
+        classification = await classify_intent(text, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text)
         
-        # Cancel anaphora if not QUERY — no entity resolution needed for TASK/NOTE/COMPLETION etc.
-        intent = classification.get('intent', 'NOTE')
-        if intent != 'QUERY':
-            _anaphora_task.cancel()
-
         intent = classification.get('intent', 'TASK')
         confidence = classification.get('confidence', 0.5)
 
@@ -1428,7 +1414,7 @@ async def process_webhook(update: dict):
         
         if confidence >= CONFIDENCE_HIGH:
             print(f"[HANDLER_DEBUG] Routing: intent={intent}, confidence={confidence}, text={text!r}", flush=True)
-            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_future=_anaphora_task)
+            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
             await handle_clarification(
                 text,
                 classification.get('clarification_question', 'Could you provide more details?'),
@@ -1437,7 +1423,7 @@ async def process_webhook(update: dict):
                 receipt=receipt
             )
         elif confidence >= CONFIDENCE_LOW:
-            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_future=_anaphora_task)
+            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
         else:
             await handle_clarification(
                 text,

@@ -11,7 +11,7 @@ from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.actions import capture_response
-from core.prompts.query import build_interrogate_brain_prompt, new_anaphora_prompt, get_query_type_sections
+from core.prompts.query import build_interrogate_brain_prompt, new_anaphora_prompt
 from core.prompts.briefing import build_daily_brief_prompt
 from core.webhook.utils import supabase
 from core.pulse.graph import hybrid_search_graph
@@ -932,18 +932,6 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             if _entity:
                 resolved_entity = _entity
             query_type = _query_type
-            
-            # Refine context selection flags based on query_type
-            # For specific query types, OVERRIDE all flags (not just add to them)
-            # This prevents ALL 17 sections loading for a targeted question like
-            # "How is Marcus, Anita and Abhishek related?" which only needs people + graph.
-            if query_type != "general":
-                _qt = get_query_type_sections(query_type)
-                fetch_all = _qt.get("fetch_all", False)
-                is_action = _qt.get("is_action", False)
-                is_schedule = _qt.get("is_schedule", False)
-                is_comms = _qt.get("is_comms", False)
-                is_people = _qt.get("is_people", False)
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Anaphora/Entity resolution failed: {e}")
 
