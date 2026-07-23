@@ -584,6 +584,15 @@ def route_label(resolution: dict, validation: dict) -> str:
     """Pure routing policy based on resolution and validation."""
     if validation.get("verdict") == "reject":
         return "discard"
+
+    # If label was previously rejected via pending_nodes, discard it.
+    # Without this check, resolve_canonical_label correctly identifies
+    # rejected labels (is_rejected=True, confidence=0.0) but routes back
+    # to "pending" because confidence < 0.75. This creates an infinite
+    # loop of rejection → recreation for noise labels like "Uncle",
+    # "The Boys", etc. that are deleted 10+ times.
+    if resolution.get("is_rejected"):
+        return "discard"
         
     if resolution.get("confidence", 0.0) >= 0.75:
         return "direct"
