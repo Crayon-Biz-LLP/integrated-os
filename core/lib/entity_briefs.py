@@ -32,9 +32,10 @@ def select_entities_to_refresh(
     """Pick the top ~N active entities to refresh briefs for.
 
     Scores entities by:
-      3 pts — entity name appears in open task titles (active engagement)
-      2 pts — entity was discussed in last 24h (from conversation_threads)
-      1 pt  — entity is an org/project with open tasks (likely to be queried)
+      4 pts — organization (always worth refreshing — covers most real entities)
+      3 pts — active project (likely to be queried about)
+      2 pts — entity discussed in last 24h (from conversation_threads)
+      1 pt  — first capitalized word in open task title (noisy, low confidence)
 
     Returns list of {"name": str, "type": str, "score": int} sorted by score desc.
     """
@@ -49,25 +50,18 @@ def select_entities_to_refresh(
             scores[key] = {"name": name, "type": etype, "score": 0}
         scores[key]["score"] += points
 
-    # 1. Open tasks — extract entity names from titles (3 pts)
+    # 1. Organizations — highest priority, always include (4 pts)
     try:
-        tasks_res = supabase.table("tasks") \
-            .select("id, title, project_id, organization_id") \
-            .eq("is_current", True) \
-            .not_.in_("status", ["done", "cancelled"]) \
-            .limit(200) \
+        org_res = supabase.table("organizations") \
+            .select("id, name") \
+            .eq("is_active", True) \
             .execute()
-        for t in (tasks_res.data or []):
-            title_words = t.get("title", "").split()
-            # If title starts with a capitalized word that looks like an entity name
-            if title_words:
-                first = title_words[0]
-                if first[0].isupper() and len(first) > 2:
-                    _add_score(first, "project", 3)
+        for o in (org_res.data or []):
+            _add_score(o["name"], "organization", 4)
     except Exception as e:
-        audit_log_sync("entity_briefs", "WARNING", f"select: open tasks query failed: {e}")
+        audit_log_sync("entity_briefs", "WARNING", f"select: orgs query failed: {e}")
 
-    # 2. Projects and orgs with open tasks — always include (1 pt)
+    # 2. Active projects (3 pts)
     try:
         proj_res = supabase.table("projects") \
             .select("id, name, organization_id") \
@@ -75,16 +69,9 @@ def select_entities_to_refresh(
             .eq("is_current", True) \
             .execute()
         for p in (proj_res.data or []):
-            _add_score(p["name"], "project", 1)
-
-        org_res = supabase.table("organizations") \
-            .select("id, name") \
-            .eq("is_active", True) \
-            .execute()
-        for o in (org_res.data or []):
-            _add_score(o["name"], "organization", 1)
+            _add_score(p["name"], "project", 3)
     except Exception as e:
-        audit_log_sync("entity_briefs", "WARNING", f"select: projects/orgs query failed: {e}")
+        audit_log_sync("entity_briefs", "WARNING", f"select: projects query failed: {e}")
 
     # 3. Recent conversation threads — entities discussed in last 24h (2 pts)
     try:
@@ -102,9 +89,35 @@ def select_entities_to_refresh(
     except Exception as e:
         audit_log_sync("entity_briefs", "WARNING", f"select: threads query failed: {e}")
 
-    # Sort by score, return top N
-    ranked = sorted(scores.values(), key=lambda x: x["score"], reverse=True)
-    return ranked[:max_entities]
+    # 4. Open task title first words (1 pt, noisy signal — low confidence)
+    try:
+        tasks_res = supabase.table("tasks") \
+            .select("id, title, project_id, organization_id") \
+            .eq("is_current", True) \
+            .not_.in_("status", ["done", "cancelled"]) \
+            .limit(200) \
+            .execute()
+        for t in (tasks_res.data or []):
+            title_words = t.get("title", "").split()
+            if title_words:
+                first = title_words[0]
+                if first[0].isupper() and len(first) > 2:
+                    _add_score(first, "project", 1)
+    except Exception as e:
+        audit_log_sync("entity_briefs", "WARNING", f"select: open tasks query failed: {e}")
+
+    # Sort by score desc, then name asc for stability within tiers
+    ranked = sorted(scores.values(), key=lambda x: (-x["score"], x["name"].lower()))
+    
+    # Round-robin: pick a sliding window so all entities get refreshed over time
+    # Cycle number (~5 min per cycle) determines the offset into the ranked list
+    cycle_num = int(datetime.now().timestamp() // 300)
+    offset = (cycle_num * max_entities) % len(ranked) if ranked else 0
+    selected = ranked[offset:offset + max_entities]
+    # Wrap around if we hit the end of the list
+    if len(selected) < max_entities and ranked:
+        selected.extend(ranked[:max_entities - len(selected)])
+    return selected
 
 
 async def refresh_entity_brief(entity_name: str, entity_type: str) -> bool:
@@ -277,7 +290,16 @@ Current state for "{entity_name}" ({entity_type}):
 - {conv_str or 'No recent conversations'}
 {('- ' + del_str) if del_str else ''}
 
-Write a brief update for Danny answering "what's happening with {entity_name}?". Start with the open task count. List top items naturally. Mention relationships or pending items if notable. Keep it under 400 characters — concise but human. Output ONLY the update — no labels, no JSON, no markdown."""
+Write a brief update for Danny answering "what's happening with {entity_name}?".
+
+**Always** mention these three things:
+1. How many open tasks (even if 0 — say "nothing open" not "zero tasks")
+2. Key relationships or connections (FC Madras BELONGS_TO Ashraya, etc.)
+3. When it was last discussed ("Discussed 19h ago about volunteer roster", etc.)
+
+Start with open task count. List top items. Then relationships. Then last discussion.
+Never say "clean slate" or "no known data" — if nothing's open, say "Nothing open on {entity_name}" and mention relationships/discussions.
+Keep it under 400 characters — concise but human. Output ONLY the update — no labels, no JSON, no markdown."""
 
         res = await generate_content_with_fallback(
             prompt=brief_prompt,
