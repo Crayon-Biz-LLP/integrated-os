@@ -19,12 +19,13 @@
 -- ──────────────────────────────────────────────────────────────────
 -- Helper function: match a graph_node label to an existing domain row
 -- ──────────────────────────────────────────────────────────────────
-CREATE OR REPLACE FUNCTION resolve_domain_id(
+DROP FUNCTION IF EXISTS resolve_domain_id(text, text);
+CREATE FUNCTION resolve_domain_id(
     p_label TEXT,
     p_type TEXT
-) RETURNS UUID AS $$
+) RETURNS BIGINT AS $$
 DECLARE
-    v_id UUID;
+    v_id BIGINT;
 BEGIN
     IF p_type = 'person' THEN
         -- Try exact match first
@@ -75,7 +76,7 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION sync_domain_row_from_graph_node()
 RETURNS TRIGGER AS $$
 DECLARE
-    v_domain_id UUID;
+    v_domain_id BIGINT;
     v_exists BOOLEAN;
 BEGIN
     -- Skip if not an entity type that has a domain table
@@ -86,11 +87,11 @@ BEGIN
     -- Skip if db_record_id is already set AND valid
     IF NEW.db_record_id IS NOT NULL THEN
         IF NEW.type = 'person' THEN
-            SELECT EXISTS(SELECT 1 FROM people WHERE id = NEW.db_record_id::uuid) INTO v_exists;
+            SELECT EXISTS(SELECT 1 FROM people WHERE id = NEW.db_record_id::bigint) INTO v_exists;
         ELSIF NEW.type = 'project' THEN
-            SELECT EXISTS(SELECT 1 FROM projects WHERE id = NEW.db_record_id::uuid) INTO v_exists;
+            SELECT EXISTS(SELECT 1 FROM projects WHERE id = NEW.db_record_id::bigint) INTO v_exists;
         ELSIF NEW.type = 'organization' THEN
-            SELECT EXISTS(SELECT 1 FROM organizations WHERE id = NEW.db_record_id::uuid) INTO v_exists;
+            SELECT EXISTS(SELECT 1 FROM organizations WHERE id = NEW.db_record_id::bigint) INTO v_exists;
         END IF;
         IF v_exists THEN
             RETURN NEW;  -- Domain row already exists, nothing to do
@@ -144,7 +145,7 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION archive_domain_row_on_graph_node_remove()
 RETURNS TRIGGER AS $$
 DECLARE
-    v_domain_id UUID;
+    v_domain_id BIGINT;
 BEGIN
     IF OLD.type NOT IN ('person', 'project', 'organization') THEN
         RETURN OLD;
@@ -152,7 +153,7 @@ BEGIN
 
     -- Find the domain row: by db_record_id, by graph_node_id, or by label
     IF OLD.db_record_id IS NOT NULL THEN
-        v_domain_id := OLD.db_record_id::uuid;
+        v_domain_id := OLD.db_record_id::bigint;
     ELSE
         -- Use graph_node_id back-link on domain tables
         IF OLD.type = 'person' THEN
@@ -187,8 +188,8 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION migrate_domain_on_type_change()
 RETURNS TRIGGER AS $$
 DECLARE
-    v_old_domain_id UUID;
-    v_new_domain_id UUID;
+    v_old_domain_id BIGINT;
+    v_new_domain_id BIGINT;
 BEGIN
     IF OLD.type NOT IN ('person', 'project', 'organization') AND
        NEW.type NOT IN ('person', 'project', 'organization') THEN
@@ -201,7 +202,7 @@ BEGIN
     -- Step 1: Archive the old domain row
     IF OLD.type IN ('person', 'project', 'organization') THEN
         IF OLD.db_record_id IS NOT NULL THEN
-            v_old_domain_id := OLD.db_record_id::uuid;
+            v_old_domain_id := OLD.db_record_id::bigint;
         ELSE
             v_old_domain_id := resolve_domain_id(OLD.label, OLD.type);
         END IF;
@@ -222,11 +223,11 @@ BEGIN
         IF NEW.db_record_id IS NOT NULL THEN
             -- Check if valid
             IF NEW.type = 'person' THEN
-                SELECT EXISTS(SELECT 1 FROM people WHERE id = NEW.db_record_id::uuid AND is_current = true) INTO v_new_domain_id;
+                SELECT EXISTS(SELECT 1 FROM people WHERE id = NEW.db_record_id::bigint AND is_current = true) INTO v_new_domain_id;
             ELSIF NEW.type = 'project' THEN
-                SELECT EXISTS(SELECT 1 FROM projects WHERE id = NEW.db_record_id::uuid AND is_current = true) INTO v_new_domain_id;
+                SELECT EXISTS(SELECT 1 FROM projects WHERE id = NEW.db_record_id::bigint AND is_current = true) INTO v_new_domain_id;
             ELSIF NEW.type = 'organization' THEN
-                SELECT EXISTS(SELECT 1 FROM organizations WHERE id = NEW.db_record_id::uuid AND is_active = true) INTO v_new_domain_id;
+                SELECT EXISTS(SELECT 1 FROM organizations WHERE id = NEW.db_record_id::bigint AND is_active = true) INTO v_new_domain_id;
             END IF;
             IF v_new_domain_id IS NOT NULL THEN
                 RETURN NEW;  -- Already has a valid domain row
