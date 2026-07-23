@@ -1161,18 +1161,86 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
                 return {"success": False, "message": "Live node not found"}
             label = live_res.data['label']
             old_type = live_res.data.get('type')
+            node_id = pending_id
             
-            # --- Handle people table change type (set deleted_at instead of text marker) ---
+            # --- Archive old domain row if type changed away from it ---
             if old_type == 'person' and new_type != 'person':
                 p_id = live_res.data.get('db_record_id')
                 if p_id:
                     supabase.table('people').update({
                         'deleted_at': 'now()',
-                        'strategic_weight': 0
+                        'strategic_weight': 0,
+                        'graph_node_id': None
                     }).eq('id', p_id).execute()
+            elif old_type == 'organization' and new_type != 'organization':
+                o_id = live_res.data.get('db_record_id')
+                if o_id:
+                    supabase.table('organizations').update({
+                        'is_active': False,
+                        'graph_node_id': None
+                    }).eq('id', o_id).execute()
+            elif old_type == 'project' and new_type != 'project':
+                pr_id = live_res.data.get('db_record_id')
+                if pr_id:
+                    supabase.table('projects').update({
+                        'is_current': False,
+                        'status': 'archived'
+                    }).eq('id', pr_id).execute()
             
             supabase.table('graph_nodes').update({'type': new_type}).eq('id', pending_id).execute()
             supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
+            
+            # --- Create new domain row if type changed to a grounded type ---
+            new_domain_id = None
+            if new_type == 'person':
+                existing = maybe_single_safe(supabase.table('people').select('id').ilike('name', label).eq('is_current', True).is_('deleted_at','null'))
+                if existing and existing.data:
+                    new_domain_id = str(existing.data['id'])
+                else:
+                    try:
+                        ins = supabase.table('people').insert({
+                            'name': label, 'source': 'graph_type_change',
+                            'strategic_weight': 5, 'is_current': True
+                        }).execute()
+                        if ins.data:
+                            new_domain_id = str(ins.data[0]['id'])
+                    except Exception:
+                        pass
+            elif new_type == 'organization':
+                existing = maybe_single_safe(supabase.table('organizations').select('id').ilike('name', label).eq('is_active', True))
+                if existing and existing.data:
+                    new_domain_id = str(existing.data['id'])
+                else:
+                    try:
+                        ins = supabase.table('organizations').insert({
+                            'name': label, 'is_active': True
+                        }).execute()
+                        if ins.data:
+                            new_domain_id = str(ins.data[0]['id'])
+                    except Exception:
+                        pass
+            elif new_type == 'project':
+                existing = maybe_single_safe(supabase.table('projects').select('id').ilike('name', label).eq('is_current', True))
+                if existing and existing.data:
+                    new_domain_id = str(existing.data['id'])
+                else:
+                    try:
+                        ins = supabase.table('projects').insert({
+                            'name': label, 'status': 'active',
+                            'is_active': True, 'is_current': True
+                        }).execute()
+                        if ins.data:
+                            new_domain_id = str(ins.data[0]['id'])
+                    except Exception:
+                        pass
+            
+            # Set bidirectional links between graph node and domain row
+            if new_domain_id:
+                supabase.table('graph_nodes').update({'db_record_id': new_domain_id}).eq('id', node_id).execute()
+                if new_type == 'person':
+                    supabase.table('people').update({'graph_node_id': node_id}).eq('id', new_domain_id).execute()
+                elif new_type == 'organization':
+                    supabase.table('organizations').update({'graph_node_id': node_id}).eq('id', new_domain_id).execute()
 
             # Learner feedback
             try:
@@ -1213,7 +1281,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         label = pending_res.data['label']
         old_type = pending_res.data.get('type')
         
-        # --- Handle people table change type for pending (set deleted_at instead of text marker) ---
+        # --- Handle domain table cleanup for type change ---
         if old_type == 'person' and new_type != 'person':
             live_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('label', label).eq('is_current', True))
             if live_node and live_node.data:
@@ -1221,11 +1289,85 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
                 if p_id:
                     supabase.table('people').update({
                         'deleted_at': 'now()',
-                        'strategic_weight': 0
+                        'strategic_weight': 0,
+                        'graph_node_id': None
                     }).eq('id', p_id).execute()
-
+        elif old_type == 'organization' and new_type != 'organization':
+            live_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('label', label).eq('is_current', True))
+            if live_node and live_node.data:
+                o_id = live_node.data.get('db_record_id')
+                if o_id:
+                    supabase.table('organizations').update({
+                        'is_active': False,
+                        'graph_node_id': None
+                    }).eq('id', o_id).execute()
+        elif old_type == 'project' and new_type != 'project':
+            live_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('label', label).eq('is_current', True))
+            if live_node and live_node.data:
+                pr_id = live_node.data.get('db_record_id')
+                if pr_id:
+                    supabase.table('projects').update({
+                        'is_current': False,
+                        'status': 'archived'
+                    }).eq('id', pr_id).execute()
+        
         supabase.table('pending_nodes').update({'node_type': new_type}).eq('id', pending_id_int).execute()
         supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
+        
+        # --- Create new domain row if type changed to a grounded type ---
+        new_domain_id = None
+        if new_type in ('person', 'organization', 'project'):
+            live_node = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', label).eq('is_current', True))
+            node_id = str(live_node.data['id']) if live_node and live_node.data else None
+            if node_id:
+                if new_type == 'person':
+                    existing = maybe_single_safe(supabase.table('people').select('id').ilike('name', label).eq('is_current', True).is_('deleted_at','null'))
+                    if existing and existing.data:
+                        new_domain_id = str(existing.data['id'])
+                    else:
+                        try:
+                            ins = supabase.table('people').insert({
+                                'name': label, 'source': 'graph_type_change',
+                                'strategic_weight': 5, 'is_current': True
+                            }).execute()
+                            if ins.data:
+                                new_domain_id = str(ins.data[0]['id'])
+                        except Exception:
+                            pass
+                elif new_type == 'organization':
+                    existing = maybe_single_safe(supabase.table('organizations').select('id').ilike('name', label).eq('is_active', True))
+                    if existing and existing.data:
+                        new_domain_id = str(existing.data['id'])
+                    else:
+                        try:
+                            ins = supabase.table('organizations').insert({
+                                'name': label, 'is_active': True
+                            }).execute()
+                            if ins.data:
+                                new_domain_id = str(ins.data[0]['id'])
+                        except Exception:
+                            pass
+                elif new_type == 'project':
+                    existing = maybe_single_safe(supabase.table('projects').select('id').ilike('name', label).eq('is_current', True))
+                    if existing and existing.data:
+                        new_domain_id = str(existing.data['id'])
+                    else:
+                        try:
+                            ins = supabase.table('projects').insert({
+                                'name': label, 'status': 'active',
+                                'is_active': True, 'is_current': True
+                            }).execute()
+                            if ins.data:
+                                new_domain_id = str(ins.data[0]['id'])
+                        except Exception:
+                            pass
+                
+                if new_domain_id:
+                    supabase.table('graph_nodes').update({'db_record_id': new_domain_id}).eq('id', node_id).execute()
+                    if new_type == 'person':
+                        supabase.table('people').update({'graph_node_id': node_id}).eq('id', new_domain_id).execute()
+                    elif new_type == 'organization':
+                        supabase.table('organizations').update({'graph_node_id': node_id}).eq('id', new_domain_id).execute()
 
         # Learner feedback
         try:
