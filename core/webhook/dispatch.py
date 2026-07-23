@@ -774,193 +774,6 @@ async def _build_active_context(resolved_entity: str, current_thread_id: str, ch
         return None
 
 
-async def _build_entity_connections(query: str) -> str | None:
-    """Option B: Deterministically find verified connections between entities
-    mentioned in the query. Scans graph edges, memories, canonical pages,
-    tasks, emails, WhatsApp, and people table for co-occurrence evidence.
-
-    Returns a formatted ENTITY CONNECTIONS section or None if <2 entities found.
-    """
-    try:
-        query_lower = query.lower()
-
-        # 1. Fetch active person/org/project nodes from graph
-        nodes_res = await asyncio.to_thread(
-            lambda: supabase.table('graph_nodes')
-                .select('label, id, type')
-                .in_('type', ['person', 'organization', 'project'])
-                .eq('is_current', True)
-                .execute()
-        )
-        if not nodes_res.data:
-            return None
-
-        # Sort by label length descending so multi-word labels match before single words
-        sorted_nodes = sorted(nodes_res.data, key=lambda n: len(n.get('label', '') or ''), reverse=True)
-
-        found = []
-        matched_positions = set()
-
-        for node in sorted_nodes:
-            label = node.get('label', '')
-            if not label:
-                continue
-            label_lower = label.lower()
-            idx = query_lower.find(label_lower)
-            if idx != -1:
-                # Ensure this position isn't already consumed by a longer label
-                if not any(mi <= idx < mi + len(label_lower) for mi in matched_positions):
-                    found.append({'label': label, 'id': node.get('id'), 'type': node.get('type')})
-                    matched_positions.update(range(idx, idx + len(label_lower)))
-                    if len(found) >= 5:
-                        break
-
-        if len(found) < 2:
-            return None
-
-        entity_names = [e['label'] for e in found]
-        entity_ids = [e['id'] for e in found]
-
-        # 2. For each pair, collect evidence from all sources
-        connection_lines = []
-
-        for i in range(len(entity_names)):
-            for j in range(i + 1, len(entity_names)):
-                e1, e2 = entity_names[i], entity_names[j]
-                id1, id2 = entity_ids[i], entity_ids[j]
-                evidence = []
-
-                # A. Graph edge check
-                try:
-                    edge_res = await asyncio.to_thread(
-                        lambda: supabase.table('graph_edges')
-                            .select('relationship')
-                            .or_(f'and(source_node_id.eq.{id1},target_node_id.eq.{id2}),and(source_node_id.eq.{id2},target_node_id.eq.{id1})')
-                            .eq('is_current', True)
-                            .limit(3)
-                            .execute()
-                    )
-                    if edge_res.data:
-                        rels = [e['relationship'] for e in edge_res.data]
-                        evidence.append(f"graph edge ({', '.join(rels)})")
-                except Exception:
-                    pass
-
-                # B. Memory co-occurrence
-                try:
-                    mem_res = await asyncio.to_thread(
-                        lambda: supabase.table('memories')
-                            .select('id')
-                            .eq('is_current', True)
-                            .ilike('content', f'%{e1}%')
-                            .ilike('content', f'%{e2}%')
-                            .limit(3)
-                            .execute()
-                    )
-                    if mem_res.data:
-                        evidence.append(f"memory (x{len(mem_res.data)})")
-                except Exception:
-                    pass
-
-                # C. Canonical page co-occurrence
-                try:
-                    cp_res = await asyncio.to_thread(
-                        lambda: supabase.table('canonical_pages')
-                            .select('title')
-                            .eq('is_current', True)
-                            .ilike('content', f'%{e1}%')
-                            .ilike('content', f'%{e2}%')
-                            .limit(2)
-                            .execute()
-                    )
-                    if cp_res.data:
-                        titles = [p['title'] for p in cp_res.data]
-                        evidence.append(f"canonical page ({', '.join(titles)})")
-                except Exception:
-                    pass
-
-                # D. Task co-occurrence (both entities in same task title)
-                try:
-                    task_res = await asyncio.to_thread(
-                        lambda: supabase.table('tasks')
-                            .select('id')
-                            .eq('is_current', True)
-                            .ilike('title', f'%{e1}%')
-                            .ilike('title', f'%{e2}%')
-                            .limit(3)
-                            .execute()
-                    )
-                    if task_res.data:
-                        evidence.append(f"task (x{len(task_res.data)})")
-                except Exception:
-                    pass
-
-                # E. Email co-occurrence
-                try:
-                    now_iso = datetime.now(timezone.utc).isoformat()
-                    email_res = await asyncio.to_thread(
-                        lambda: supabase.table('messages')
-                            .select('id')
-                            .eq('channel', 'email')
-                            .ilike('body', f'%{e1}%')
-                            .ilike('body', f'%{e2}%')
-                            .or_(f'expires_at.is.null,expires_at.gte.{now_iso}')
-                            .limit(2)
-                            .execute()
-                    )
-                    if email_res.data:
-                        evidence.append(f"email (x{len(email_res.data)})")
-                except Exception:
-                    pass
-
-                # F. WhatsApp co-occurrence
-                try:
-                    w_res = await asyncio.to_thread(
-                        lambda: supabase.table('messages')
-                            .select('id')
-                            .eq('channel', 'whatsapp')
-                            .ilike('body', f'%{e1}%')
-                            .ilike('body', f'%{e2}%')
-                            .limit(2)
-                            .execute()
-                    )
-                    if w_res.data:
-                        evidence.append(f"whatsapp (x{len(w_res.data)})")
-                except Exception:
-                    pass
-
-                # G. People table linkage (person has org_name matching other entity)
-                try:
-                    people_res = await asyncio.to_thread(
-                        lambda: supabase.table('people')
-                            .select('name, organization_name')
-                            .eq('is_current', True)
-                            .ilike('name', f'%{e1}%')
-                            .execute()
-                    )
-                    if people_res.data:
-                        for p in people_res.data:
-                            org_name = p.get('organization_name', '') or ''
-                            if org_name.lower() == e2.lower():
-                                evidence.append(f"people table ({p['name']} \u2192 {org_name})")
-                except Exception:
-                    pass
-
-                if evidence:
-                    evidence_str = "; ".join(evidence)
-                    connection_lines.append(f"  \u2022 {e1} \u2194 {e2}: {evidence_str}")
-
-        if not connection_lines:
-            return None
-
-        header = "\u2500 ENTITY CONNECTIONS \u2500 Verified links found in your records:"
-        return header + "\n" + "\n".join(connection_lines)
-
-    except Exception as e:
-        audit_log_sync("webhook", "WARNING", f"Entity connections failed: {e}")
-        return None
-
-
 class SharedQueryContext:
     """Caches expensive results (embedding, tasks, people) within one interrogate_brain call.
     Prevents redundant DB/API roundtrips when multiple context sections need the same data."""
@@ -1358,18 +1171,13 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _p2_active_context = asyncio.create_task(safe_fetch(_fetch_active_context(), None))
         _phase2_tasks.append(_p2_active_context)
         
-        # ── Entity connections (Option B) — extract entities from query and find links ──
-        _p2_entity_connections = asyncio.create_task(safe_fetch(
-            _build_entity_connections(query), None))
-        _phase2_tasks.append(_p2_entity_connections)
-        
         # ── AWAIT ALL pending tasks ──
         # Phase 1a (lightweight, started before anaphora) + Phase 1b (heavy, started
         # after anaphora with correct flags) + Phase 2 (entity-dependent).
         # Wall-clock time = max(anaphora + phase1b + phase2, phase1a + phase1b + phase2)
         _all_results = await asyncio.gather(*_phase1a_tasks, *_phase1b_tasks, *_phase2_tasks)
         
-        # Unpack: Phase 1a = 7 tasks, Phase 1b = 6 tasks, Phase 2 = 7 tasks
+        # Unpack: Phase 1a = 7 tasks, Phase 1b = 6 tasks, Phase 2 = 6 tasks
         _p1a_count = len(_phase1a_tasks)
         _p1b_count = len(_phase1b_tasks)
         _r1 = _all_results[:_p1a_count]
@@ -1420,9 +1228,6 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _ri += 1
         active_context = _r2[_ri]
         _ri += 1
-        entity_connections_context = _r2[_ri]
-        _ri += 1
-
         available_sources = []
         all_context = []
         
@@ -1492,10 +1297,6 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         if active_context and active_context != "None":
             all_context.append(f"{_source_tag('active_context')} ACTIVE CONVERSATION CONTEXT {_HIST_TAG}:\n{active_context}")
             available_sources.append("active conversations")
-        if entity_connections_context and entity_connections_context != "None":
-            all_context.append(f"{_source_tag('entity_connections')} {entity_connections_context}")
-            available_sources.append("entity connections")
-
         if not all_context:
             _last_reply = "\U0001f50d *I don't have any relevant data to answer that.*\n\n_Try rephrasing._"
             await send_telegram(chat_id, _last_reply)
