@@ -1387,19 +1387,17 @@ def _is_orphaned_person_role(role) -> bool:
 
 def _fetch_paginated(table: str, select: str, in_filter_col: str = None, in_filter_val: list = None) -> list:
     """Paginated fetch with optional IN filter."""
-    return fetch_all_paginated(table, select, in_filter_col=in_filter_col, in_filter_val=in_filter_val)
-
-
-def sync_people_to_graph_nodes():
+    return fetch_all_paginated(table, select, in_filter_col=in_filter_col, in_filter_val=in_filter_val)def sync_people_to_graph_nodes():
     """Reverse sync: ensure every people table row has a graph_nodes entry.
     Creates graph_nodes for orphan people records (e.g. legacy imports, direct inserts).
-    Skips entries marked [DELETED], [CHANGED TO ORGANIZATION], or [MERGED INTO]."""
+    Skips entries marked [DELETED], [CHANGED TO ORGANIZATION], or [MERGED INTO].
+    Also skips entries where is_current=False or deleted_at IS NOT NULL."""
     print("\n👤 Reverse sync: people table → graph_nodes...")
-    all_people = _fetch_paginated("people", "id, name, role")
+    all_people = _fetch_paginated("people", "id, name, role, is_current, deleted_at")
     if not all_people:
         print("No people found.")
         return
-
+    
     person_nodes = _fetch_paginated("graph_nodes", "id, label, db_record_id", in_filter_col="type", in_filter_val=["person"])
     existing_labels = set()
     existing_db_ids = set()
@@ -1407,7 +1405,7 @@ def sync_people_to_graph_nodes():
         existing_labels.add(n["label"].strip().lower())
         if n.get("db_record_id"):
             existing_db_ids.add(str(n["db_record_id"]))
-
+    
     created = 0
     skipped = 0
     for p in all_people:
@@ -1420,6 +1418,13 @@ def sync_people_to_graph_nodes():
             skipped += 1
             continue
         if _is_orphaned_person_role(p.get("role")):
+            skipped += 1
+            continue
+        # Skip deleted or non-current people
+        if p.get('deleted_at'):
+            skipped += 1
+            continue
+        if p.get('is_current') is False:
             skipped += 1
             continue
         if pid in existing_db_ids or name.lower() in existing_labels:

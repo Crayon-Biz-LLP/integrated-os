@@ -234,9 +234,12 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
             
         # 5. DB lookup for grounded types — exact guard pattern (not order-dependent)
         # 5a: People table — skip if role marks deletion/org-change/merge
-        #         or if deleted_at is set (new canonical approach)
+        #         or if deleted_at is set, or if the linked graph_node is no longer current
+        #         (e.g. merged into another entity). This last check is critical:
+        #         without it, merged entities keep reappearing because the people row
+        #         stays active even after the graph_node is merged/deleted.
         try:
-            db_res = maybe_single_safe(supabase.table('people').select('id, name, role, deleted_at').ilike('name', label).eq('is_current', True))
+            db_res = maybe_single_safe(supabase.table('people').select('id, name, role, deleted_at, graph_node_id').ilike('name', label).eq('is_current', True))
             if db_res and db_res.data:
                 role = str(db_res.data.get('role') or '')
                 is_deleted = False
@@ -244,6 +247,37 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
                     is_deleted = True
                 if db_res.data.get('deleted_at'):
                     is_deleted = True
+                # Check if this person's linked graph_node is still current
+                # If the graph_node was merged or deleted (hard delete), the people
+                # row is orphaned and should not be used for entity resolution.
+                gn_id = db_res.data.get('graph_node_id')
+                if gn_id:
+                    try:
+                        gn_check = maybe_single_safe(
+                            supabase.table('graph_nodes').select('is_current').eq('id', gn_id)
+                        )
+                        if not gn_check or not gn_check.data:
+                            # Graph node was hard-deleted from DB — people row orphaned
+                            is_deleted = True
+                        elif not gn_check.data.get('is_current'):
+                            # Graph node was merged into another entity — orphaned
+                            is_deleted = True
+                    except Exception:
+                        pass
+                # Fallback: if graph_node_id was null (never backfilled), check by label
+                if not is_deleted:
+                    try:
+                        non_current = supabase.table('graph_nodes').select('id, canonical_id')\
+                            .ilike('label', db_res.data['name'])\
+                            .eq('type', 'person')\
+                            .eq('is_current', False)\
+                            .not_.is_('canonical_id', 'null')\
+                            .limit(1).execute()
+                        if non_current and non_current.data:
+                            # This person was merged — treat as deleted
+                            is_deleted = True
+                    except Exception:
+                        pass
                 if not is_deleted:
                     result["label"] = db_res.data["name"]
                     result["node_type"] = "person"
@@ -252,27 +286,51 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
         except Exception:
             pass
 
-        # 5b: Organizations table
+        # 5b: Organizations table — skip if deactivated, or if linked graph_node no longer current
         try:
-            db_res = maybe_single_safe(supabase.table('organizations').select('id, name').ilike('name', label))
+            db_res = maybe_single_safe(supabase.table('organizations').select('id, name, is_active, graph_node_id').ilike('name', label))
             if db_res and db_res.data:
-                result["label"] = db_res.data["name"]
-                result["node_type"] = "organization"
-                result["confidence"] = 0.9
-                return result
+                is_deleted = False
+                if db_res.data.get('is_active') is False:
+                    is_deleted = True
+                gn_id = db_res.data.get('graph_node_id')
+                if gn_id:
+                    try:
+                        gn_check = maybe_single_safe(
+                            supabase.table('graph_nodes').select('is_current').eq('id', gn_id)
+                        )
+                        if not gn_check or not gn_check.data:
+                            # Graph node was hard-deleted — org row orphaned
+                            is_deleted = True
+                        elif not gn_check.data.get('is_current'):
+                            # Graph node was merged — org row orphaned
+                            is_deleted = True
+                    except Exception:
+                        pass
+                if not is_deleted:
+                    result["label"] = db_res.data["name"]
+                    result["node_type"] = "organization"
+                    result["confidence"] = 0.9
+                    return result
         except Exception:
             pass
 
-        # 5c: Projects table
+        # 5c: Projects table — skip if archived or not current
         try:
-            db_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', label).eq('is_current', True))
+            db_res = maybe_single_safe(supabase.table('projects').select('id, name, is_current, status').ilike('name', label).eq('is_current', True))
             if db_res and db_res.data:
-                result["label"] = db_res.data["name"]
-                result["node_type"] = "project"
-                result["confidence"] = 0.9
-                return result
+                is_deleted = False
+                if db_res.data.get('status') == 'archived':
+                    is_deleted = True
+                if not is_deleted:
+                    result["label"] = db_res.data["name"]
+                    result["node_type"] = "project"
+                    result["confidence"] = 0.9
+                    return result
         except Exception:
             pass
+
+
 
     # 6. NOISE_LABELS check
     if label.lower() in NOISE_LABELS:
