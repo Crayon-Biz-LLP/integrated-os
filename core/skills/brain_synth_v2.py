@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from core.services.db import get_supabase
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.llm.constants import CLASSIFICATION_MODEL
+from core.llm.constants import INTERACTIVE_MODEL
 from core.llm.embedding import get_embedding
 
 supabase = get_supabase()
@@ -477,8 +477,8 @@ FRAGMENTS (Old & New):
                     response = await generate_content_with_fallback(
                         prompt=per_prompt,
                         workload=WorkloadProfile.SYNTHESIS,
-                        primary_model=CLASSIFICATION_MODEL,
-                        config={'response_mime_type': 'text/plain'}
+                        primary_model=INTERACTIVE_MODEL,
+                        config={'response_mime_type': 'text/plain', 'thinking_level': 'medium'}
                     )
                     if response and response.text:
                         return entity_name, response.text.strip()

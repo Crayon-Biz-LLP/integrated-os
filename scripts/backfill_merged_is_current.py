@@ -9,7 +9,8 @@ This script finds all graph_nodes with canonical_id set and marks them
 is_current=False, so the brief selection and Live tab see only
 un-merged entities.
 """
-import os, sys
+import os
+import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 _env = os.path.join(os.path.dirname(__file__), '..', '.env')

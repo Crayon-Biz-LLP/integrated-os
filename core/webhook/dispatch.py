@@ -8,6 +8,7 @@ from core.pulse.context import context_provider
 from core.lib.conversation import get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
 from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_BY_KEYWORD
+from core.llm.constants import INTERACTIVE_MODEL
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.actions import capture_response
@@ -161,7 +162,8 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
             async for token in stream_with_fallback(
                 prompt=prompt,
                 workload=WorkloadProfile.INTERACTIVE,
-                primary_model=CLASSIFICATION_MODEL,
+                primary_model=INTERACTIVE_MODEL,
+                config={'thinking_level': 'medium'},
             ):
                 brief_text += token
                 await adapter.send_chunk(token)
@@ -805,6 +807,21 @@ class SharedQueryContext:
         return self._people
 
 
+_SIGN_OFF_PATTERNS = re.compile(
+    r'^.*\b(?:Query logged|Entity lookup logged|Entity connection lookup logged|Rest well|Connection lookup logged|Search logged|Note logged|Task logged)\b.*$',
+    re.IGNORECASE | re.MULTILINE
+)
+
+def _strip_sign_offs(text: str) -> str:
+    """Remove standalone sign-off/log lines from LLM responses.
+    These are meta-commentary lines the LLM adds (e.g. "Query logged.")
+    that are not part of the actual answer. Stripped line-by-line.
+    Only removes lines that ARE the sign-off — never modifies content lines."""
+    cleaned = _SIGN_OFF_PATTERNS.sub('', text)
+    # Clean up leftover blank lines from removed lines
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+    return cleaned
+
 async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None, classify_context: str = "", anaphora_future: asyncio.Task = None) -> str | None:
     search_task = None
     _last_reply = None
@@ -1343,7 +1360,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             async for token in stream_with_fallback(
                 prompt=stream_prompt,
                 workload=WorkloadProfile.INTERACTIVE,
-                primary_model=CLASSIFICATION_MODEL,
+                primary_model=INTERACTIVE_MODEL,
+                config={'thinking_level': 'medium'},
             ):
                 answer += token
                 await adapter.send_chunk(token)
@@ -1369,6 +1387,18 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             else:
                 await adapter.send_complete()
             final_reply = f"{header}\n\n{answer.strip()}"
+            
+            # Strip LLM sign-off/log lines from the response
+            # (e.g. "Query logged.", "Entity lookup logged.", "Rest well", etc.)
+            # This is a deterministic safety net — prompt rules are the primary defense.
+            cleaned_reply = _strip_sign_offs(final_reply)
+            if cleaned_reply and cleaned_reply != final_reply:
+                final_reply = cleaned_reply
+                # Update the Telegram message to remove the sign-off line too
+                try:
+                    await adapter.flush_text(final_reply)
+                except Exception:
+                    pass  # Best-effort — logging already has clean version
         
         _last_reply = final_reply
         

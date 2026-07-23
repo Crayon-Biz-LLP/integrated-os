@@ -9,7 +9,6 @@ from core.lib.telemetry import emit_observation
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
 from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
 from core.actions import capture_session_id, capture_response
-import asyncio
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
 from core.webhook.classify import classify_intent, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
@@ -444,7 +443,7 @@ async def process_webhook(update: dict):
     
     # Lazy imports — heavy modules loaded only in the function that uses them.
     # Cuts ~1-2s off Vercel cold starts by deferring dispatch, commands, and multimodal imports.
-    from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, resolve_anaphora, handle_clarification
+    from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_clarification
     from core.webhook.commands import handle_command, handle_undo_command
     from core.webhook.multimodal import process_multimodal_content
     

@@ -1387,7 +1387,10 @@ def _is_orphaned_person_role(role) -> bool:
 
 def _fetch_paginated(table: str, select: str, in_filter_col: str = None, in_filter_val: list = None) -> list:
     """Paginated fetch with optional IN filter."""
-    return fetch_all_paginated(table, select, in_filter_col=in_filter_col, in_filter_val=in_filter_val)def sync_people_to_graph_nodes():
+    return fetch_all_paginated(table, select, in_filter_col=in_filter_col, in_filter_val=in_filter_val)
+
+
+def sync_people_to_graph_nodes():
     """Reverse sync: ensure every people table row has a graph_nodes entry.
     Creates graph_nodes for orphan people records (e.g. legacy imports, direct inserts).
     Skips entries marked [DELETED], [CHANGED TO ORGANIZATION], or [MERGED INTO].
