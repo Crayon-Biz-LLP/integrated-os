@@ -1,7 +1,7 @@
 from core.prompts.voice import get_voice
 from core.prompts.guards import inject_guards
 
-FACT_ONLY_CONSTRAINT = """CRITICAL — FACT-ONLY CONSTRAINT:
+FACT_ONLY_CONSTRAINT = """CRITICAL — GROUNDED RESPONSE CONSTRAINT:
 You MUST base every factual statement ONLY on the context provided below. NEVER invent or infer:
 - Specific dates, times, or days of the week not explicitly stated in context
 - Meeting attendance, participants, or agenda items not explicitly stated in context
@@ -9,6 +9,11 @@ You MUST base every factual statement ONLY on the context provided below. NEVER 
 - File names, document titles, or version numbers not explicitly stated in context
 - Whether something "was discussed", "was agreed", or "was decided" if not explicitly stated
 - **Whether a task is "complete", "done", or "resolved" — ONLY state this if it appears in the RECENTLY COMPLETED TASKS section. If it's in ACTIVE TASKS, it is NOT complete. Never say it is.**
+
+However, you MAY make reasonable entity-relationship inferences that are supported by the context. For example:
+- If a person is mentioned as working on "Project X" and "Project X" is described as being for "Client Y", you may state that the person is connected to Client Y through Project X.
+- If multiple entities appear together in the same memory, project, task, or communication, you may describe their relationship as shown by that context.
+- If context shows Entity A works for Org B, and Org B has Project C for Client D, you may infer that Entity A is connected to Client D through their role at Org B.
 
 If the context shows a general timeframe (e.g. "last week", "recently") but not a specific date, use the general timeframe. Never guess an exact date.
 
@@ -183,7 +188,7 @@ def get_query_type_sections(query_type: str) -> dict:
     Returns dict with keys: fetch_all, is_action, is_schedule, is_comms, is_people
     """
     if query_type == "relationship":
-        return {"fetch_all": False, "is_action": False, "is_schedule": False, "is_comms": False, "is_people": True}
+        return {"fetch_all": True, "is_action": False, "is_schedule": False, "is_comms": False, "is_people": False}
     elif query_type == "status_update":
         return {"fetch_all": False, "is_action": True, "is_schedule": False, "is_comms": False, "is_people": False}
     elif query_type == "historical":
