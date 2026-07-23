@@ -1517,7 +1517,13 @@ async def graph_node_manual_merge_route(request: Request):
                     }).eq('id', s_people_id).execute()
             
             # Canonicalise and rewire live edges
-            supabase.table('graph_nodes').update({'canonical_id': winner_id}).eq('id', loser_id).execute()
+            # BUG FIX: Set is_current=False on the loser so it stops appearing in
+            # the Live tab and all is_current=True queries. Previously only
+            # canonical_id was set, causing merged entities to remain visible.
+            supabase.table('graph_nodes').update({
+                'canonical_id': winner_id,
+                'is_current': False
+            }).eq('id', loser_id).execute()
             
             # Repoint pending edges referencing the merged source label
             supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', source_label).execute()
@@ -1630,7 +1636,12 @@ async def graph_node_manual_merge_route(request: Request):
                         }).eq('id', s_pid).execute()
                         
                 # Update as merged alias instead of deleting
-                supabase.table('graph_nodes').update({'canonical_id': target_id}).eq('id', s_live_id).execute()
+                # BUG FIX: Set is_current=False on the loser so it stops appearing
+                # in the Live tab was still is_current=True after a merge.
+                supabase.table('graph_nodes').update({
+                    'canonical_id': target_id,
+                    'is_current': False
+                }).eq('id', s_live_id).execute()
             else:
                 # If target is not a live node, we can't set canonical_id yet. We just delete the live source to prevent orphans, 
                 # but ideally we merge it into the new live target later.
