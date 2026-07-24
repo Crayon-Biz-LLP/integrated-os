@@ -2,6 +2,7 @@ import os
 import json
 import re
 import uuid
+import asyncio
 from datetime import datetime, timezone, timedelta
 from core.lib.time_utils import now_ist, IST_TIMEZONE
 from core.lib.audit_logger import audit_log_sync, trace_id_var
@@ -25,7 +26,7 @@ from core.lib.clarification_state import (
     get_active_clarification, get_active_session, set_clarification, set_session_state,
     resolve_clarification, clear_session
 )
-from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_clarification
+from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_clarification, resolve_anaphora
 from core.webhook.commands import handle_command, handle_undo_command
 from core.webhook.multimodal import process_multimodal_content
 
@@ -1297,6 +1298,12 @@ async def process_webhook(update: dict):
         thread_summary = get_thread_summary(session_id)
         classify_context_text = format_classify_context(history, thread_summary=thread_summary, active_anchor=active_anchor)
 
+        # Start anaphora resolution NOW — it doesn't depend on classify result,
+        # so it runs concurrently with classify + context assembly (~5s saved).
+        _anaphora_task = asyncio.create_task(
+            resolve_anaphora(text, active_anchor, classify_context_text, session_id)
+        )
+
         # Bare URL short-circuit: bypass LLM classification entirely
         stripped = text.strip()
         if re.match(r'^https?://\S+$', stripped):
@@ -1410,7 +1417,7 @@ async def process_webhook(update: dict):
         
         if confidence >= CONFIDENCE_HIGH:
             print(f"[HANDLER_DEBUG] Routing: intent={intent}, confidence={confidence}, text={text!r}", flush=True)
-            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
+            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_task=_anaphora_task)
         elif intent == 'CLARIFICATION_NEEDED':
             await handle_clarification(
                 text,
@@ -1420,7 +1427,7 @@ async def process_webhook(update: dict):
                 receipt=receipt
             )
         elif confidence >= CONFIDENCE_LOW:
-            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor)
+            await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_task=_anaphora_task)
         else:
             await handle_clarification(
                 text,

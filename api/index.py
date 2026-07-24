@@ -6,6 +6,7 @@ import httpx
 import json
 import uuid
 import asyncio
+import concurrent.futures
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -43,6 +44,14 @@ from core.services.db import get_supabase, maybe_single_safe
 
 
 app = FastAPI(title="Integrated-OS")
+
+# ponytail: Vercel Lambda 2 vCPU → default pool = min(32, 6) = 6 threads.
+# interrogate_brain fires 17+ sync Supabase calls via asyncio.to_thread().
+# Bump to 16 so I/O waits don't queue behind each other.
+@app.on_event("startup")
+async def _upgrade_thread_pool():
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=16))
 
 # CORS setup for future dashboard scalability
 app.add_middleware(

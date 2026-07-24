@@ -1,6 +1,7 @@
 from core.llm import get_embedding
 import json
 import asyncio
+import re
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import age_tag, IST_TIMEZONE, now_ist
@@ -19,7 +20,54 @@ from core.lib.decision_audit import log_decision, DecisionStage, set_decision_ch
 from core.actions import validate_factual_claims
 from core.lib.graph_rules import normalize_label
 from core.lib.constants import BOT_SENDERS
-import re
+
+
+async def resolve_anaphora(query: str, active_anchor: dict = None, classify_context: str = "", session_id: str = None):
+    """Resolve anaphora — extract entity, query_type, and rewritten query.
+    
+    Standalone function so it can be started as a task in handler.py BEFORE
+    classify_intent() runs, saving ~5s on every QUERY intent.
+    
+    Returns: (entity, query_type, resolved_query_text)
+    """
+    anchor_context = ""
+    if active_anchor:
+        parts = [f"Active context: {active_anchor.get('name', '')}"]
+        if active_anchor.get('type'):
+            parts.append(f"Type: {active_anchor['type']}")
+        if active_anchor.get('last_action'):
+            parts.append(f"Last activity: {active_anchor['last_action']}")
+        if active_anchor.get('last_summary_snippet'):
+            parts.append(f"Recent context: {active_anchor['last_summary_snippet'][:200]}")
+        anchor_context = "\n".join(parts)
+    thread_summary = ""
+    if session_id:
+        thread_summary = get_thread_summary(session_id)
+    if thread_summary:
+        anchor_context += f"\nEarlier in conversation: {thread_summary[:500]}"
+    
+    resolve_prompt = new_anaphora_prompt(anchor_context, classify_context, query)
+    
+    resolve_response = await generate_content_with_fallback(
+        prompt=resolve_prompt,
+        workload=WorkloadProfile.INTERACTIVE,
+        primary_model=CLASSIFICATION_MODEL,
+        config={'response_mime_type': 'application/json'}
+    )
+    entity, query_type, resolved_query_text = None, "general", None
+    if resolve_response and resolve_response.text:
+        try:
+            data = json.loads(resolve_response.text.strip())
+            resolved_query_text = data.get("resolved_query", "").strip()
+            ent = data.get("primary_entity", "").strip()
+            if ent and ent.lower() != "none":
+                entity = ent
+            qt = data.get("query_type", "").strip().lower()
+            if qt in ("relationship", "status_update", "historical", "schedule", "people"):
+                query_type = qt
+        except json.JSONDecodeError:
+            pass
+    return entity, query_type, resolved_query_text
 
 
 def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:
@@ -387,7 +435,7 @@ async def handle_role_update(text: str, chat_id: int, classification: dict, sour
         await send_telegram(chat_id, "I encountered an error updating the role. Please try again.")
 
 
-async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None, active_anchor: dict = None):
+async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None, active_anchor: dict = None, anaphora_task: asyncio.Task = None):
     cid = get_decision_chain_id()
     if not cid:
         cid = set_decision_chain_id()
@@ -438,7 +486,7 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
                 classify_ctx = ""
         reply = await interrogate_brain(text, chat_id, session_id=session_id, 
             conversation_history=history_text, active_anchor=active_anchor,
-            classify_context=classify_ctx)
+            classify_context=classify_ctx, anaphora_task=anaphora_task)
         if contains_hidden:
             from core.actions.planner import plan_actions
             from core.actions.executor import execute_planned_actions
@@ -759,7 +807,7 @@ class SharedQueryContext:
         return self._people
 
 
-async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None, classify_context: str = "") -> str | None:
+async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None, classify_context: str = "", anaphora_task: asyncio.Task = None) -> str | None:
     search_task = None
     _last_reply = None
     # 'Searching your vault...' message is now dispatched from handler.py
@@ -792,51 +840,11 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         # This prevents tasks like memories (15s phrase node searches) from
         # running unnecessarily on relationship/people queries.
         
-        # Anaphora resolution — with TRUNCATED context (classify_context, not full history)
-        async def _resolve_anaphora():
-            anchor_context = ""
-            if active_anchor:
-                parts = [f"Active context: {active_anchor.get('name', '')}"]
-                if active_anchor.get('type'):
-                    parts.append(f"Type: {active_anchor['type']}")
-                if active_anchor.get('last_action'):
-                    parts.append(f"Last activity: {active_anchor['last_action']}")
-                if active_anchor.get('last_summary_snippet'):
-                    parts.append(f"Recent context: {active_anchor['last_summary_snippet'][:200]}")
-                anchor_context = "\n".join(parts)
-            thread_summary = ""
-            if session_id:
-                thread_summary = get_thread_summary(session_id)
-            if thread_summary:
-                anchor_context += f"\nEarlier in conversation: {thread_summary[:500]}"
-            
-            # Use classify_context (truncated to last exchange + thread summary)
-            # instead of full conversation_history (saves ~14s on long threads)
-            resolve_prompt = new_anaphora_prompt(anchor_context, classify_context, query)
-            
-            resolve_response = await generate_content_with_fallback(
-                prompt=resolve_prompt,
-                workload=WorkloadProfile.INTERACTIVE,
-                primary_model=CLASSIFICATION_MODEL,
-                config={'response_mime_type': 'application/json'}
-            )
-            entity, query_type, resolved_query_text = None, "general", None
-            if resolve_response and resolve_response.text:
-                try:
-                    data = json.loads(resolve_response.text.strip())
-                    resolved_query_text = data.get("resolved_query", "").strip()
-                    ent = data.get("primary_entity", "").strip()
-                    if ent and ent.lower() != "none":
-                        entity = ent
-                    qt = data.get("query_type", "").strip().lower()
-                    if qt in ("relationship", "status_update", "historical", "schedule", "people"):
-                        query_type = qt
-                except json.JSONDecodeError:
-                    pass
-            return entity, query_type, resolved_query_text
-        
-        # Start anaphora and embedding immediately (they run in background)
-        _anaphora_future = asyncio.create_task(_resolve_anaphora())
+        # Anaphora: use pre-started task from handler.py if available,
+        # otherwise create one here (backward compat for ?query shortcut, tests)
+        _anaphora_future = anaphora_task or asyncio.create_task(
+            resolve_anaphora(query, active_anchor, classify_context, session_id)
+        )
         _embedding_future = asyncio.create_task(_shared.get_embedding())
         
         # Phase 1a: lightweight tasks (<1s each) that are fine to start before entity resolution
