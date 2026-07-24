@@ -103,8 +103,11 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
     orgs = orgs_res.data or []
     org_lines = "\n".join([f"  - {o['name']} (ID: {o['id']})" for o in orgs]) if orgs else "  - (none)"
     
-    projects_all_res = supabase.table("projects").select("id, name, organization_id, organizations(name)").eq("is_current", True).neq("status", "archived").execute()
-    projects_all = projects_all_res.data or []
+    try:
+        projects_all_res = supabase.table("projects").select("id, name, organization_id, organizations(name)").eq("is_current", True).neq("status", "archived").execute()
+        projects_all = projects_all_res.data or []
+    except Exception:
+        projects_all = []
     project_lines = []
     for p in projects_all:
         org_name = p.get('organizations', {}).get('name', 'INBOX') if p.get('organizations') else 'INBOX'
