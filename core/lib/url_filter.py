@@ -107,7 +107,6 @@ def check_and_quarantine_url(
     try:
         supabase.table('resources').insert({
             "url": url,
-            "source": source,
         }).execute()
         audit_log_sync("url_filter", "INFO", f"Inserted resource: {url[:80]}")
         return URLQuarantineResult(
