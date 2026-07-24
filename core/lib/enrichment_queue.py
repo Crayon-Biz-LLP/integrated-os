@@ -289,10 +289,16 @@ async def _process_note_enrichment(
                             )
 
                     if updates:
-                        supabase.table('memories').update({'metadata': current_meta}).eq('id', memory_id).eq('is_current', True).execute()
+                        col_updates = {'metadata': current_meta}
+                        # Also update actual columns so queries on organization_id/project_id work
+                        if 'organization_id' in updates:
+                            col_updates['organization_id'] = updates['organization_id']
+                        if 'project_id' in updates:
+                            col_updates['project_id'] = updates['project_id']
+                        supabase.table('memories').update(col_updates).eq('id', memory_id).eq('is_current', True).execute()
                         audit_log_sync(
                             "enrichment_queue", "INFO",
-                            f"Backfilled note {memory_id} metadata: {updates}"
+                            f"Backfilled note {memory_id}: columns + metadata: {updates}"
                         )
             except Exception as fb_err:
                 audit_log_sync(

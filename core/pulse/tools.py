@@ -252,6 +252,11 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
             "is_current": True,
             "version": 1,
         }
+        # Write resolved IDs to actual columns (same pattern as create_task_direct)
+        if organization_id:
+            insert_data["organization_id"] = organization_id
+        if project_id:
+            insert_data["project_id"] = project_id
 
         # Build metadata with all available entity context
         metadata = {}
@@ -263,6 +268,11 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
             metadata["project_name"] = project_name
         if organization_name:
             metadata["organization_name"] = organization_name
+        # Store person entities from resolution (no column on memories, so metadata is the path)
+        if entity_resolution.person_ids:
+            metadata["person_ids"] = entity_resolution.person_ids
+        if entity_resolution.person_names:
+            metadata["person_names"] = entity_resolution.person_names
 
         # ── Layer 3: Thread provenance for retroactive linking ──
         if session_id:
