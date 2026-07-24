@@ -153,7 +153,7 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     try:
         # Fetch all known entities
         gn_res = supabase.table('graph_nodes') \
-            .select('label, type, id') \
+            .select('label, type, id, db_record_id') \
             .in_('type', ['person', 'organization', 'project', 'place',
                           'event', 'animal', 'emotional_state']) \
             .neq('epistemic_status', 'hypothetical') \
@@ -194,11 +194,17 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     for node in graph_nodes:
         norm_label = _normalize(node['label'])
         if norm_label in text_ngrams:
+            # For project-type nodes, use db_record_id (projects table integer PK)
+            # instead of node['id'] (graph_nodes UUID PK) — memories.project_id is bigint
+            if node['type'] == 'project' and node.get('db_record_id'):
+                db_id_val = str(node['db_record_id'])
+            else:
+                db_id_val = node['id']
             _add(DetectedEntity(
                 label=node['label'],
                 type=node['type'],
                 source='db_lookup',
-                db_id=node['id'],
+                db_id=db_id_val,
                 is_new=False,
             ))
 
