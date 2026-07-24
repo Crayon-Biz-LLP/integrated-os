@@ -194,9 +194,11 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     for node in graph_nodes:
         norm_label = _normalize(node['label'])
         if norm_label in text_ngrams:
-            # For project-type nodes, use db_record_id (projects table integer PK)
-            # instead of node['id'] (graph_nodes UUID PK) — memories.project_id is bigint
-            if node['type'] == 'project' and node.get('db_record_id'):
+            # Use db_record_id (domain table PK) instead of node['id']
+            # (graph_nodes UUID) — memories.organization_id/project_id FK to
+            # domain tables, not graph_nodes. All three types have
+            # db_record_id set via create_graph_node_with_db_record.
+            if node['type'] in ('organization', 'project', 'person') and node.get('db_record_id'):
                 db_id_val = str(node['db_record_id'])
             else:
                 db_id_val = node['id']
