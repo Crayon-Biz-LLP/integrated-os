@@ -288,7 +288,50 @@ async def execute_planned_actions(
                 await extract_and_link_entities(text, str(memory_id), 'memory')
         except Exception as e:
             audit_log_sync("executor", "WARNING", f"Failed to save completion history: {e}")
-            
+
+    # ── Guard B (Gap B fix): Preserve original message as memory for TASK intents with informational weight ──
+    # When the classifier returns TASK for a mixed message (informational + actionable),
+    # the task title only captures the action. The rich relationship context
+    # (people, orgs, dependencies) is lost. This guard saves the original text
+    # as a memory whenever the entity detector finds ≥2 context-bearing entities
+    # (person, organization, project) — indicating informational density worth preserving.
+    if intent == "TASK" and text and not has_closures:
+        try:
+            from core.lib.entity_detector import detect_entities
+            from core.llm import get_embedding
+            from core.retrieval.pipeline import schedule_index_memory
+            from core.lib.time_utils import compute_expires_at
+            from datetime import datetime, timezone
+            from core.pulse.entity_extractor import extract_and_link_entities
+
+            # Gate: count context-bearing entity types only (person, org, project)
+            # Emotional states and other types are too noisy for this guard.
+            entities = detect_entities(text)
+            entity_count = sum(1 for e in entities
+                              if e.type in ('person', 'organization', 'project'))
+
+            if entity_count >= 2:
+                embedding = (await get_embedding(text)).vector
+                embed_valid = bool(embedding and any(embedding))
+                mem_res = supabase.table("memories").insert({
+                    "content": text,
+                    "memory_type": "note",
+                    "embedding": embedding if embed_valid else None,
+                    "embedding_status": "success" if embed_valid else "failed",
+                    "source": source or "executor",
+                    "metadata": {"intent": "TASK_CONTEXT", "entity": resolved_entity},
+                    "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat()),
+                }).execute()
+                memory_id = mem_res.data[0]['id'] if mem_res.data else None
+                if memory_id:
+                    schedule_index_memory(memory_id, text, "note", "executor")
+                    await extract_and_link_entities(text, str(memory_id), 'memory')
+                audit_log_sync("executor", "INFO",
+                    f"Guard B: Saved original TASK message as memory (memory_id={memory_id}, "
+                    f"entities={entity_count}) for {text[:60]}...")
+        except Exception as e:
+            audit_log_sync("executor", "WARNING", f"Guard B: Failed to save TASK context note: {e}")
+
     from core.services.google_service import delete_calendar_event
     
     sync_failed = False

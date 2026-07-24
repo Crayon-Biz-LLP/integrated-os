@@ -145,6 +145,18 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 - `core/webhook/classify.py` — Gap C: schedule query pre-filter
 - `core/pulse/graph.py` — Gap D: improved inference failure logging
 
+## Session Anchored Summary (Jul 24, 2026 — Part 66: Entity Detection FK Bridge Fix)
+
+### Progress Done This Session
+- **Entity Detection FK Bridge Fix** (`core/lib/entity_detector.py:194-208`): Extended `db_record_id` usage from project-only to organization and person types. The graph-first architecture established `db_record_id` as the bridge between canonical graph_nodes and domain table FKs. But `detect_entities` was only using it for project-type nodes, causing FK violations when org/person entities were detected — graph_nodes UUID was inserted into `memories.organization_id` which FK-references `organizations.id`.
+- **Root Cause**: `detect_entities` returned `graph_nodes.id` (UUID) for org/person types, but `memories.organization_id` FK references `organizations.id` and `memories.project_id` FK references `projects.id`. The bridge existed but was only used for projects.
+- **Fix**: All three entity types (organization, project, person) now use `db_record_id` to return the correct domain table ID, honoring FK constraints.
+- **Marutham DB cleanup verified**: No artifacts remaining from earlier failed attempts (already cleaned in previous session).
+- **Ruff check**: Clean on modified file.
+
+### Key Files (Part 66)
+- `core/lib/entity_detector.py` — Extended db_record_id to org/person types (5 lines changed)
+
 ## Session Anchored Summary (Jul 20-21, 2026 — Part 62: Hardened Thread Layer — Person Routing, Awareness Layer & Auto-Archive)
 
 ### Progress Done This Session

@@ -48,6 +48,18 @@ _PERSON_CONTEXT_WORDS = {
     'discussed', 'interviewed', 'contacted', 'assigned',
 }
 
+# Words that signal a following capitalized name is an organization reference
+# Mirrors _PERSON_CONTEXT_WORDS pattern. Catches patterns like:
+#   "new client Marutham" → "client" before "Marutham"
+#   "our vendor Acme"    → "vendor" before "Acme"
+#   "the company Quanta" → "company" before "Quanta"
+_ORG_CONTEXT_WORDS = {
+    'client', 'company', 'startup', 'start-up', 'agency', 'firm',
+    'vendor', 'partner', 'organization', 'organisation', 'business',
+    'enterprise', 'outfit', 'shop', 'studio', 'group', 'corporation',
+    'corp', 'inc', 'llc', 'ltd', 'limited',
+}
+
 # Known emotional state words
 _EMOTIONAL_STATES = {
     'stressed', 'excited', 'overwhelmed', 'anxious', 'worried',
@@ -327,6 +339,32 @@ def detect_entities(text: str) -> List[DetectedEntity]:
                 is_new=True,
                 confidence=0.9,
             ))
+
+    # ── Pattern D: Organization detection via capitalized names in context ──
+    # Same mechanism as Pattern B but with _ORG_CONTEXT_WORDS.
+    # Runs AFTER Pattern B/C so person detections are already in _seen_labels
+    # and won't be re-caught as orgs.
+    # Catches unregistered organizations introduced by context words like:
+    #   "A new client Marutham..."        → "client" → organization
+    #   "The company is headed by..."     → "company" → organization (verb intervening OK)
+    #   "They signed with vendor Acme..." → "vendor" → organization
+    caps_phrases = _find_capitalized_phrases(text)
+    for phrase, start, end in caps_phrases:
+        if phrase.lower() in seen_labels:
+            continue
+        # Check if preceded by an organization context word
+        before = text[max(0, start - 25):start].strip().lower()
+        ctx_words = before.split()
+        if ctx_words and ctx_words[-1] in _ORG_CONTEXT_WORDS:
+            _add(DetectedEntity(
+                label=phrase,
+                type='organization',
+                source='pattern_match',
+                is_new=True,
+                confidence=0.8,
+            ))
+            audit_log_sync("entity_detector", "INFO",
+                f"Pattern D: Proposed organization '{phrase}' via context")
 
     return entities
 
