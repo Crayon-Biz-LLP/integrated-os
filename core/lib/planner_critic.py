@@ -189,7 +189,7 @@ async def deliberate(
                 "project": 0.08,
                 "default": 0.05,
             }
-            if label in ("TASK", "PROJECT_UPDATE", "approve", "create"):
+            if label in ("TASK", "approve", "create"):
                 entity_overlap = _entity_bonus_map.get(_entity_type, _entity_bonus_map["default"])
             else:
                 entity_overlap = _entity_bonus_map["default"]

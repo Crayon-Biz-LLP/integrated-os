@@ -301,7 +301,7 @@ async def execute_planned_actions(
     intercepted_tasks = []
     
     # Intercept tasks extracted from NOTE intents for user approval
-    if intent == "NOTE":
+    if intent in ("NOTE", "TASK"):
         for action in valid_actions:
             if action.operation in ("create_task", "create_event"):
                 intercepted_tasks.append(action)

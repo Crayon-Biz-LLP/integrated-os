@@ -451,7 +451,6 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         'QUERY': 'interrogate_brain',
         'COMPLETION': 'plan_actions',
         'NOTE': 'plan_actions',
-        'PROJECT_UPDATE': 'plan_actions',
         'DELEGATE': 'handle_delegate',
         'DECLARE_PRACTICE': 'handle_declare_practice',
         'ROLE_UPDATE': 'handle_role_update',
@@ -495,7 +494,7 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         if reply:
             capture_response(reply)
 
-    elif intent in ('TASK', 'COMPLETION', 'NOTE', 'PROJECT_UPDATE'):
+    elif intent in ('TASK', 'COMPLETION', 'NOTE'):
         from core.actions.planner import plan_actions
         from core.actions.executor import execute_planned_actions
         actions = await plan_actions(text, title, entity, active_anchor, intent=intent)
