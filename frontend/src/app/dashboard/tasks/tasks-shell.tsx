@@ -1,19 +1,18 @@
 'use client';
 
 import { useState, useMemo, useCallback } from 'react';
-import type { Task, TaskFilters as TaskFiltersType, Project, TaskStats } from '@/lib/tasks/types';
+import type { Task, TaskFilters as TaskFiltersType, TaskStats } from '@/lib/tasks/types';
 import { markTaskDone } from '@/lib/tasks/api';
 import { TasksStats } from '@/components/tasks/tasks-stats';
 import { TasksFilters } from '@/components/tasks/tasks-filters';
 import { TasksTable } from '@/components/tasks/tasks-table';
 import { TaskDetailSheet } from '@/components/tasks/task-detail-sheet';
-import { ChangeProjectDialog } from '@/components/tasks/change-project-dialog';
 
 const defaultFilters: TaskFiltersType = {
   search: '',
   status: 'all',
   priority: 'all',
-  projectId: 'all',
+  orgId: 'all',
   dueWindow: 'all',
 };
 
@@ -42,7 +41,7 @@ function filterTasks(tasks: Task[], filters: TaskFiltersType): Task[] {
     }
     if (filters.status && filters.status !== "all" && task.status !== filters.status) return false;
     if (filters.priority && filters.priority !== "all" && task.priority !== filters.priority) return false;
-    if (filters.projectId && filters.projectId !== "all" && String(task.project_id) !== filters.projectId) return false;
+    if (filters.orgId && filters.orgId !== "all" && String(task.organization_id) !== filters.orgId) return false;
     if (filters.dueWindow && filters.dueWindow !== "all" && !matchDueWindow(task, filters.dueWindow)) return false;
     return true;
   });
@@ -51,18 +50,15 @@ function filterTasks(tasks: Task[], filters: TaskFiltersType): Task[] {
 export function TasksShell({
   initialTasks,
   initialStats,
-  projects,
 }: {
   initialTasks: Task[];
   initialStats: TaskStats;
-  projects: Project[];
 }) {
   const [tasks, setTasks] = useState(initialTasks);
   const [doneTaskIds, setDoneTaskIds] = useState<Set<number>>(new Set());
   const [filters, setFilters] = useState<TaskFiltersType>(defaultFilters);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [detailSheetOpen, setDetailSheetOpen] = useState(false);
-  const [changeProjectDialogOpen, setChangeProjectDialogOpen] = useState(false);
 
   const visibleTasks = useMemo(
     () => filterTasks(tasks.filter((t) => !doneTaskIds.has(t.id)), filters),
@@ -72,22 +68,6 @@ export function TasksShell({
   const handleTaskClick = useCallback((task: Task) => {
     setSelectedTask(task);
     setDetailSheetOpen(true);
-  }, []);
-
-  const handleChangeProjectClick = useCallback((task: Task) => {
-    setSelectedTask(task);
-    setDetailSheetOpen(false);
-    setChangeProjectDialogOpen(true);
-  }, []);
-
-  const handleDetailChangeProjectClick = useCallback(() => {
-    setDetailSheetOpen(false);
-    setChangeProjectDialogOpen(true);
-  }, []);
-
-  const handleProjectUpdated = useCallback((updatedTask: Task) => {
-    setSelectedTask(updatedTask);
-    setTasks((prev) => prev.map((t) => (t.id === updatedTask.id ? updatedTask : t)));
   }, []);
 
   const handleTaskDone = useCallback(async (task: Task) => {
@@ -113,14 +93,13 @@ export function TasksShell({
       <TasksStats stats={initialStats} loading={false} />
 
       <div className="mt-6">
-        <TasksFilters filters={filters} onFiltersChange={setFilters} projects={projects} />
+        <TasksFilters filters={filters} onFiltersChange={setFilters} />
       </div>
 
       <div className="mt-4">
         <TasksTable
           tasks={visibleTasks}
           onTaskClick={handleTaskClick}
-          onChangeProjectClick={handleChangeProjectClick}
           onTaskDone={handleTaskDone}
         />
       </div>
@@ -129,14 +108,6 @@ export function TasksShell({
         task={selectedTask}
         open={detailSheetOpen}
         onOpenChange={setDetailSheetOpen}
-        onChangeProjectClick={handleDetailChangeProjectClick}
-      />
-
-      <ChangeProjectDialog
-        task={selectedTask}
-        open={changeProjectDialogOpen}
-        onOpenChange={setChangeProjectDialogOpen}
-        onSuccess={handleProjectUpdated}
       />
     </div>
   );

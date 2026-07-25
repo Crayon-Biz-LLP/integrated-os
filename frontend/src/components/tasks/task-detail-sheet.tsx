@@ -10,14 +10,11 @@ import {
 } from '@/components/ui/sheet';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { Button } from '@/components/ui/button';
-import { FolderOpen } from 'lucide-react';
 
 interface TaskDetailSheetProps {
   task: Task | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onChangeProjectClick: () => void;
 }
 
 const statusVariants: Record<string, 'default' | 'secondary' | 'outline' | 'destructive'> = {
@@ -51,7 +48,7 @@ function formatDateTime(dateStr: string | null): string {
   });
 }
 
-export function TaskDetailSheet({ task, open, onOpenChange, onChangeProjectClick }: TaskDetailSheetProps) {
+export function TaskDetailSheet({ task, open, onOpenChange }: TaskDetailSheetProps) {
   if (!task) return null;
 
   return (
@@ -81,11 +78,6 @@ export function TaskDetailSheet({ task, open, onOpenChange, onChangeProjectClick
               <span className={`text-sm text-foreground ${priorityColors[task.priority]}`}>
                 {task.priority}
               </span>
-            </div>
-
-            <div>
-              <p className="section-label mb-1">Project</p>
-              <span className="text-sm text-foreground">{task.project_name}</span>
             </div>
 
             <div>
@@ -122,18 +114,6 @@ export function TaskDetailSheet({ task, open, onOpenChange, onChangeProjectClick
           )}
 
           <Separator />
-
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onChangeProjectClick}
-              className="gap-2"
-            >
-              <FolderOpen className="h-4 w-4" />
-              Change Project
-            </Button>
-          </div>
         </div>
       </SheetContent>
     </Sheet>

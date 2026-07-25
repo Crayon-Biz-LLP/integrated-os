@@ -117,9 +117,9 @@ export function RecentTasks() {
                   <span className="text-xs text-muted-foreground">
                     {formatDate(getDueDate(task))}
                   </span>
-                  {task.project_name && (
+                  {task.organization_name && (
                     <Badge variant="outline" className="text-[10px]">
-                      {task.project_name}
+                      {task.organization_name}
                     </Badge>
                   )}
                 </div>

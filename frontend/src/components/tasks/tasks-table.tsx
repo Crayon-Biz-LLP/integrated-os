@@ -11,13 +11,12 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { MoreHorizontal } from 'lucide-react';
+
 import { Button } from '@/components/ui/button';
 
 interface TasksTableProps {
   tasks: Task[];
   onTaskClick: (task: Task) => void;
-  onChangeProjectClick: (task: Task) => void;
   onTaskDone?: (task: Task) => Promise<void>;
 }
 
@@ -76,7 +75,7 @@ function isOverdue(task: Task): boolean {
   return due < today;
 }
 
-export function TasksTable({ tasks, onTaskClick, onChangeProjectClick, onTaskDone }: TasksTableProps) {
+export function TasksTable({ tasks, onTaskClick, onTaskDone }: TasksTableProps) {
   return (
     <div className="card-premium overflow-hidden">
       <Table>
@@ -85,7 +84,6 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick, onTaskDon
             <TableHead className="section-label py-3 px-4 text-left w-[35%]">Task</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Status</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Priority</TableHead>
-            <TableHead className="section-label py-3 px-4 text-left">Project</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Org</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Due</TableHead>
             <TableHead className="section-label py-3 px-4 text-left">Actions</TableHead>
@@ -121,9 +119,6 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick, onTaskDon
                   </span>
                 </TableCell>
                 <TableCell>
-                  <span className="text-sm text-muted-foreground/70">{task.project_name}</span>
-                </TableCell>
-                <TableCell>
                   <span className="text-sm text-muted-foreground/70">{task.organization_name || '-'}</span>
                 </TableCell>
                 <TableCell>
@@ -151,16 +146,6 @@ export function TasksTable({ tasks, onTaskClick, onChangeProjectClick, onTaskDon
                         ✓ Done
                       </Button>
                     ) : null}
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onChangeProjectClick(task);
-                      }}
-                    >
-                      <MoreHorizontal className="h-4 w-4" />
-                    </Button>
                   </div>
                 </TableCell>
               </TableRow>

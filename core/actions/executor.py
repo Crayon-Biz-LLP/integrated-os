@@ -1,11 +1,63 @@
 import uuid
 import hashlib
-from typing import List, Optional
+from typing import List, Optional, Dict
 from core.actions.models import Action
 from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 from core.lib.state_machines import guard_require_valid_transition
 from core.webhook.telegram import send_telegram
+
+
+# ── Real-time org detection for NOTE and TASK paths ──
+
+async def _detect_new_orgs_and_create_pending(text: str, chat_id: int, cached_entities: List = None) -> List[Dict]:
+    """Run lightweight entity detection for new orgs.
+    
+    If Pattern D detects new orgs (is_new=True, type='organization'),
+    creates pending_nodes and returns info for workflow inclusion.
+    
+    Accepts optional cached_entities from Guard B to avoid duplicate
+    detect_entities() calls. When cached_entities is provided, skips
+    the DB roundtrip (saves ~200-800ms on Vercel).
+    
+    Returns: [{label, pending_id}] for each new or previously-pending org.
+    """
+    supabase = get_supabase()
+    
+    if cached_entities is not None:
+        entities = cached_entities
+    else:
+        from core.lib.entity_detector import detect_entities
+        entities = detect_entities(text)
+    new_orgs = [e for e in entities if e.type == 'organization' and e.is_new]
+    if not new_orgs:
+        return []
+    
+    created = []
+    for org in new_orgs:
+        # Check if already pending
+        existing = supabase.table('pending_nodes') \
+            .select('id') \
+            .ilike('label', org.label) \
+            .limit(1) \
+            .execute()
+        if existing and existing.data:
+            created.append({'label': org.label, 'pending_id': existing.data[0]['id']})
+            continue
+        # Create new pending_node
+        res = supabase.table('pending_nodes').insert({
+            'label': org.label,
+            'type': 'organization',
+            'source_text': text[:200],
+            'status': 'pending',
+            'confidence': 0.8,
+        }).execute()
+        if res.data:
+            created.append({'label': org.label, 'pending_id': res.data[0]['id']})
+            audit_log_sync("executor", "INFO",
+                f"Real-time org detection: created pending_node {res.data[0]['id']} for '{org.label}'")
+    
+    return created
 
 
 # ── Guard 3: Executor data-loss prevention ──
@@ -295,6 +347,10 @@ async def execute_planned_actions(
     # (people, orgs, dependencies) is lost. This guard saves the original text
     # as a memory whenever the entity detector finds ≥2 context-bearing entities
     # (person, organization, project) — indicating informational density worth preserving.
+    #
+    # Also caches the entities result for _detect_new_orgs_and_create_pending to reuse,
+    # avoiding a duplicate ~200-800ms detect_entities() call later in the same request.
+    _cached_entities = None
     if intent == "TASK" and text and not has_closures:
         try:
             from core.lib.entity_detector import detect_entities
@@ -307,6 +363,7 @@ async def execute_planned_actions(
             # Gate: count context-bearing entity types only (person, org, project)
             # Emotional states and other types are too noisy for this guard.
             entities = detect_entities(text)
+            _cached_entities = entities  # Cache for reuse downstream
             entity_count = sum(1 for e in entities
                               if e.type in ('person', 'organization', 'project'))
 
@@ -361,15 +418,27 @@ async def execute_planned_actions(
                 "title": act.params.get("title") or act.human_label or "New Task",
                 "reminder_at": act.params.get("time") or act.params.get("reminder_at")
             }
-            if act.params.get("project_name"):
-                sig["project_name"] = act.params["project_name"]
             if act.params.get("organization_name"):
                 sig["organization_name"] = act.params["organization_name"]
             signals.append(sig)
             
+        # ── Detect new orgs from the full text and add to workflow ──
+        new_orgs = []
+        if text:
+            try:
+                new_orgs = await _detect_new_orgs_and_create_pending(text, chat_id, cached_entities=_cached_entities)
+            except Exception as e:
+                audit_log_sync("executor", "WARNING", f"TASK real-time org detection failed (non-critical): {e}")
+        
         w_id = str(uuid.uuid4())
         
         try:
+            # Build payload with org info so check_and_resume_workflow can auto-approve them
+            payload = {'signals': signals}
+            if new_orgs:
+                payload['new_orgs'] = new_orgs
+                payload['original_text'] = text
+            
             # Clear old active workflows for this thread to prevent duplicates
             supabase.table('conversation_workflows').update({'status': 'cancelled'}).eq('thread_id', session_id).eq('status', 'active').execute()
             
@@ -380,14 +449,20 @@ async def execute_planned_actions(
                 'workflow_type': 'batch',
                 'status': 'active',
                 'awaiting_user_input': True,
-                'payload': {'signals': signals}
+                'payload': payload,
             }).execute()
             
             msg_lines = ["📋 I found these items:"]
-            for i, sig in enumerate(signals):
+            item_num = 1
+            if new_orgs:
+                for org_info in new_orgs:
+                    msg_lines.append(f"  {item_num}. 🏢 New client: {org_info['label']}")
+                    item_num += 1
+            for sig in signals:
                 icon = "📅" if sig["type"] == "deadline" else "📝"
                 title = sig["title"]
-                msg_lines.append(f"  {i+1}. {icon} {title}")
+                msg_lines.append(f"  {item_num}. {icon} {title}")
+                item_num += 1
             msg_lines.append("\nWant me to handle them?")
             
             if not suppress_telegram:
@@ -490,20 +565,18 @@ async def execute_planned_actions(
                 # Compute dedup_key from title to prevent duplicate webhook submissions
                 dedup_key = hashlib.md5(title.encode()).hexdigest()[:16] if title else None
                 result = await create_task_direct(
-                    title=title,
-                    dedup_key=dedup_key,
-                    project_id=action.params.get("project_id") or action.project_id,
-                    organization_id=action.params.get("organization_id") or action.organization_id,
-                    project_name=action.params.get("project_name"),
-                    organization_name=action.params.get("organization_name"),
-                    reminder_at=reminder_at,
-                    priority=priority,
-                    duration_mins=duration,
-                    recurrence=recurrence,
-                    deadline=deadline,
-                    direction=direction,
-                    committed_to=committed_to,
-                )
+                        title=title,
+                        dedup_key=dedup_key,
+                        organization_id=action.params.get("organization_id") or action.organization_id,
+                        organization_name=action.params.get("organization_name"),
+                        reminder_at=reminder_at,
+                        priority=priority,
+                        duration_mins=duration,
+                        recurrence=recurrence,
+                        deadline=deadline,
+                        direction=direction,
+                        committed_to=committed_to,
+                    )
                 if result.get("action") == "created":
                     created_labels.append(action.human_label or title)
                     # Track for rollback
@@ -533,16 +606,13 @@ async def execute_planned_actions(
                 # Guard 2c: Fall back to resolved_entity if planner didn't provide organization_name
                 note_org_name = action.params.get("organization_name") or resolved_entity
                 result = await create_note_direct(
-                    content=content,
-                    source=source,
-                    project_id=action.params.get("project_id") or action.project_id,
-                    organization_id=action.params.get("organization_id") or action.organization_id,
-                    project_name=action.params.get("project_name"),
-                    organization_name=note_org_name,
-                    # Gap 6: Pass thread provenance for retroactive entity linking
-                    session_id=session_id,
-                    active_anchor=active_anchor,
-                )
+                        content=content,
+                        source=source,
+                        organization_id=action.params.get("organization_id") or action.organization_id,
+                        organization_name=note_org_name,
+                        session_id=session_id,
+                        active_anchor=active_anchor,
+                    )
                 if result.get("action") == "filed":
                     created_labels.append(action.human_label or "Note created")
                     if result.get("memory_id"):
@@ -564,13 +634,12 @@ async def execute_planned_actions(
             try:
                 from core.pulse.tools import create_task_direct
                 result = await create_task_direct(
-                    title=title,
-                    reminder_at=event_time,
-                    duration_mins=duration,
-                    priority="important",
-                    project_name=action.params.get("project_name"),
-                    organization_name=action.params.get("organization_name"),
-                )
+                        title=title,
+                        reminder_at=event_time,
+                        duration_mins=duration,
+                        priority="important",
+                        organization_name=action.params.get("organization_name"),
+                    )
                 if result.get("action") == "created":
                     created_labels.append(action.human_label or title)
                     if result.get("task_id"):
@@ -617,6 +686,20 @@ async def execute_planned_actions(
             error_details = "\\n".join(failed_tasks)
             await send_telegram(chat_id, f"⚠️ **Partial Sync Failure**\\nSome actions failed. {rollback_msg}\
 \\nDetails: {error_details}")
+    
+    # ── Gap 1: After NOTE creation, check for new orgs in real-time ──
+    if intent == "NOTE" and created_labels and text:
+        try:
+            new_orgs = await _detect_new_orgs_and_create_pending(text, chat_id, cached_entities=_cached_entities)
+            if new_orgs and not suppress_telegram:
+                org_lines = ["🏢 *New organization detected:*"]
+                for org_info in new_orgs:
+                    org_lines.append(
+                        f"  • {org_info['label']} — reply `g{org_info['pending_id']} yes` to approve"
+                    )
+                await send_telegram(chat_id, "\n".join(org_lines))
+        except Exception as e:
+            audit_log_sync("executor", "WARNING", f"NOTE real-time org detection failed (non-critical): {e}")
     
     # Send success messages for creations
     if created_labels and not suppress_telegram:

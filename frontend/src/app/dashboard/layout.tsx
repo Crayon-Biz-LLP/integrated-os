@@ -7,7 +7,6 @@ import Link from 'next/link';
 import {
    Cpu,
    CheckSquare,
-   FolderOpen,
    Mail,
    MessageSquare,
    Brain,
@@ -19,7 +18,6 @@ import {
      Menu,
      House,
      Scale,
-     Target,
      BarChart3,
    } from 'lucide-react';
 import { createBrowserClient } from '@supabase/ssr';
@@ -36,7 +34,7 @@ const navItems = [
    { href: '/dashboard', label: 'Home', icon: House },
    { href: '/dashboard/tasks', label: 'Tasks', icon: CheckSquare },
    { href: '/dashboard/decisions', label: 'Decisions', icon: Scale },
-   { href: '/dashboard/projects', label: 'Projects', icon: FolderOpen },
+   { href: '/dashboard/organizations', label: 'Organizations', icon: Users },
    { href: '/dashboard/emails', label: 'Emails', icon: Mail },
    { href: '/dashboard/messages', label: 'Messages', icon: MessageSquare },
    { href: '/dashboard/memories', label: 'Memories', icon: Brain },
@@ -54,7 +52,7 @@ const routeTitles: Record<string, string> = {
    '/dashboard': 'Command Center',
    '/dashboard/tasks': 'Tasks',
    '/dashboard/decisions': 'Decisions',
-   '/dashboard/projects': 'Projects',
+   '/dashboard/organizations': 'Organizations',
    '/dashboard/emails': 'Emails',
    '/dashboard/messages': 'Messages',
    '/dashboard/memories': 'Memories',

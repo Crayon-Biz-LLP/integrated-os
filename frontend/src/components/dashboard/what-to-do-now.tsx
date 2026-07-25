@@ -82,7 +82,7 @@ export function WhatToDoNow({
                   <p className="text-sm font-medium text-destructive">{task.title}</p>
                   <p className="text-xs text-muted-foreground mt-1">
                     {formatDate(getDueDate(task))}
-                    {task.project_name && ` • ${task.project_name}`}
+                    {task.organization_name && ` • ${task.organization_name}`}
                   </p>
                 </div>
                 <Button 
@@ -111,7 +111,7 @@ export function WhatToDoNow({
                 <div className="flex-1">
                   <p className="text-sm font-medium">{task.title}</p>
                   <p className="text-xs text-muted-foreground mt-1">
-                    {task.project_name && `${task.project_name} • `}
+                    {task.organization_name && `${task.organization_name} • `}
                     {task.priority && <span className="capitalize">{task.priority}</span>}
                   </p>
                 </div>

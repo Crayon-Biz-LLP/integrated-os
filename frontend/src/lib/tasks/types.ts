@@ -3,8 +3,6 @@ export interface Task {
   title: string;
   status: string;
   priority: string;
-  project_id: number | null;
-  project_name: string;
   organization_id?: string | null;
   organization_name?: string | null;
   estimated_minutes: number | null;
@@ -17,19 +15,11 @@ export interface Task {
   recurrence: string | null;
 }
 
-export interface Project {
-  id: number;
-  name: string;
-  organization_id?: string | null;
-  is_active: boolean;
-  status: string;
-}
-
 export interface TaskFilters {
   search?: string;
   status?: string;
   priority?: string;
-  projectId?: string;
+  orgId?: string;
   dueWindow?: string;
 }
 

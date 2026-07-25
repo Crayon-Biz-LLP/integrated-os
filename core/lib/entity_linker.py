@@ -23,8 +23,6 @@ class EntityResolution:
     """Result of deterministic entity resolution."""
     organization_id: Optional[str] = None
     organization_name: Optional[str] = None
-    project_id: Optional[str] = None
-    project_name: Optional[str] = None
     person_ids: List[str] = field(default_factory=list)
     person_names: List[str] = field(default_factory=list)
     source: str = "deterministic"
@@ -47,11 +45,10 @@ def resolve_entities(
         write_signal_on_miss: If True, write to project_creation_signals on failure
 
     Returns:
-        EntityResolution with resolved IDs (may be None if no match found)
+        EntityResolution with resolved IDs (may be None if no match found).
+        Project matching is intentionally skipped — tasks are assigned to orgs directly.
     """
-    supabase = get_supabase()
-
-    # Run deterministic detection
+    # Run deterministic detection (supabase client not needed here — no project lookup required)
     entities = detect_entities(text)
 
     result = EntityResolution(source="deterministic", confidence=1.0)
@@ -67,39 +64,18 @@ def resolve_entities(
                 reason_parts.append("org_ambiguous")
                 result.organization_id = None
 
-        elif e.type == 'project' and e.db_id:
-            if not result.project_id:
-                result.project_id = e.db_id
-                result.project_name = e.label
-                reason_parts.append(f"proj: {e.label}")
-
         elif e.type == 'person' and e.db_id:
             result.person_ids.append(e.db_id)
             result.person_names.append(e.label)
             reason_parts.append(f"person: {e.label}")
 
-    # Infer project's org if project found but no org yet
-    if result.project_id and not result.organization_id:
-        try:
-            proj_res = supabase.table('projects') \
-                .select('organization_id') \
-                .eq('id', int(result.project_id)) \
-                .limit(1).execute()
-            if proj_res.data and proj_res.data[0].get('organization_id'):
-                result.organization_id = proj_res.data[0]['organization_id']
-                # Also get org name
-                org_res = supabase.table('organizations') \
-                    .select('name') \
-                    .eq('id', result.organization_id) \
-                    .limit(1).execute()
-                if org_res.data:
-                    result.organization_name = org_res.data[0]['name']
-                reason_parts.append("org_inferred_from_proj")
-        except Exception:
-            pass
+    # Note: Project matching is intentionally removed.
+    # Tasks are assigned to orgs directly, not to projects.
+    # Projects caused cross-org name collisions (e.g. "Digital Marketing"
+    # under FC Madras matched for a Marutham task).
 
     # Write miss signal if nothing found
-    if not result.organization_id and not result.project_id and write_signal_on_miss:
+    if not result.organization_id and write_signal_on_miss:
         _write_miss_signal(text, planner_org_name, planner_proj_name)
         result.source = "miss"
         result.confidence = 0.0
@@ -113,7 +89,7 @@ def _write_miss_signal(
     planner_org_name: str = None,
     planner_proj_name: str = None,
 ) -> None:
-    """Write a project_creation_signal when entity resolution misses entirely."""
+    """Write a signal when entity resolution finds nothing."""
     try:
         supabase = get_supabase()
         signal_data = {

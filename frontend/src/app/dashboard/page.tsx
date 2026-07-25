@@ -13,10 +13,9 @@ export default async function DashboardPage() {
     supabase
       .from("tasks")
       .select(`
-        id, title, status, priority, project_id, estimated_minutes,
+        id, title, status, priority, estimated_minutes,
         is_revenue_critical, deadline, created_at, completed_at,
-        reminder_at, duration_mins, recurrence, organization_id,
-        projects ( id, name, organization_id )
+        reminder_at, duration_mins, recurrence, organization_id
       `)
       .eq("is_current", true)
       .filter("status", "not.in", "(done,cancelled)")
@@ -60,17 +59,13 @@ export default async function DashboardPage() {
   }
 
   function mapOpenTask(t: any): Task {
-    const proj = Array.isArray(t.projects) ? t.projects[0] : t.projects;
-    const org_id = t.organization_id || proj?.organization_id;
     return {
       id: t.id,
       title: t.title,
       status: t.status ?? "todo",
       priority: t.priority ?? "medium",
-      project_id: t.project_id,
-      project_name: proj?.name ?? "General",
-      organization_id: org_id ?? null,
-      organization_name: org_id ? orgNames[org_id] : null,
+      organization_id: t.organization_id ?? null,
+      organization_name: t.organization_id ? orgNames[t.organization_id] : null,
       estimated_minutes: t.estimated_minutes,
       is_revenue_critical: t.is_revenue_critical ?? false,
       deadline: t.deadline,

@@ -12,50 +12,25 @@ from core.lib.state_machines import guard_require_valid_transition
 
 supabase = get_supabase()
 
-def _resolve_project_and_org_id(project_name: str = None, organization_name: str = None):
-    """Resolve names to (project_id, organization_id)."""
-    if not project_name and not organization_name:
-        return None, None
-        
-    from core.services.db import fetch_active_projects, get_supabase
+
+def _resolve_org_id(organization_name: str = None):
+    """Resolve organization name to ID. No project resolution — tasks go to orgs directly."""
+    if not organization_name:
+        return None
+    from core.services.db import get_supabase
     supabase = get_supabase()
-    
-    project_id = None
-    org_id = None
-    
-    if project_name:
-        projects = fetch_active_projects()
-        for p in projects:
-            if p['name'].lower() == project_name.lower():
-                project_id = p['id']
-                break
-                
-    if organization_name and not org_id:
-        try:
-            org_res = supabase.table('organizations').select('id').ilike('name', organization_name).limit(1).execute()
-            if org_res.data:
-                org_id = org_res.data[0]['id']
-        except Exception:
-            pass
-            
-    # Also log to project_creation_signals if organization missing
-    from core.features import is_org_routing_enabled
-    if is_org_routing_enabled() and project_name and not project_id and not org_id:
-        try:
-            supabase.table('project_creation_signals').insert({
-                "project_name": f"{project_name} [unknown_org={organization_name}]" if organization_name else project_name,
-                "source": "tools_resolver"
-            }).execute()
-        except Exception:
-            pass
-            
-    return project_id, org_id
+    try:
+        org_res = supabase.table('organizations').select('id').ilike('name', organization_name).limit(1).execute()
+        if org_res.data:
+            return org_res.data[0]['id']
+    except Exception:
+        pass
+    return None
+
 
 async def create_task_direct(
     title: str, 
-    project_id: str = None, 
     organization_id: str = None,
-    project_name: str = None,
     organization_name: str = None,
     reminder_at: str = None, 
     priority: str = "important",
@@ -65,12 +40,14 @@ async def create_task_direct(
     direction: str = "inbound",
     committed_to: str = None,
     dedup_key: str = None,
+    # Legacy params kept for backward compat — no longer used
+    project_id: str = None,
+    project_name: str = None,
 ) -> dict:
     """Direct task creation — no process_single_dump dependency.
 
-    Inserts directly into tasks table with minimal dedup check.
-    Resolves project_name/organization_name to IDs via DB lookup
-    when project_id/organization_id are not already provided.
+    Tasks are assigned to orgs directly (no projects).
+    Resolves organization_name to ID via DB lookup when not already provided.
     Uses entity_linker for deterministic entity resolution BEFORE creation.
     Returns {"action": "created"|"skipped"|"error", "task_id": id, "reason": str}.
     """
@@ -87,9 +64,7 @@ async def create_task_direct(
                 audit_log_sync("tools", "INFO", f"Direct create skipped (dedup): {title}")
                 return {"action": "skipped", "task_id": exist.data[0]['id']}
 
-        # NEW: Run deterministic entity resolution BEFORE resolving names
-        # This uses n-gram matching against known orgs/projects/people
-        # resolve_entities is sync — no await needed
+        # Run deterministic entity resolution before resolving names
         from core.lib.entity_linker import resolve_entities
         entity_resolution = resolve_entities(
             text=title,
@@ -102,20 +77,14 @@ async def create_task_direct(
         if entity_resolution.organization_id:
             organization_id = entity_resolution.organization_id
             organization_name = entity_resolution.organization_name
-        if entity_resolution.project_id:
-            project_id = entity_resolution.project_id
-            project_name = entity_resolution.project_name
 
-        # Resolve name→ID if IDs not provided but names are
-        if (not project_id or not organization_id) and (project_name or organization_name):
-            
-            resolved_proj, resolved_org = _resolve_project_and_org_id(project_name, organization_name)
-            if not project_id:
-                project_id = resolved_proj
-            if not organization_id:
+        # Resolve org name→ID if not already provided
+        if not organization_id and organization_name:
+            resolved_org = _resolve_org_id(organization_name)
+            if resolved_org:
                 organization_id = resolved_org
 
-        resolved_project_id = project_id
+        # Projects are intentionally removed. Tasks are assigned to orgs directly.
         resolved_org_id = organization_id
 
         insert_data = {
@@ -127,8 +96,6 @@ async def create_task_direct(
             "duration_mins": duration_mins,
             "estimated_minutes": duration_mins,
         }
-        if resolved_project_id:
-            insert_data["project_id"] = resolved_project_id
         if resolved_org_id:
             insert_data["organization_id"] = resolved_org_id
         if reminder_at:
@@ -151,17 +118,15 @@ async def create_task_direct(
         # Calendar sync if reminder_at is set
         if reminder_at:
             try:
-                # Use module-level imports (sync_to_calendar, format_rfc3339 already imported at top)
                 from core.services.google_service import check_conflict
                 formatted = format_rfc3339(reminder_at)
 
-                # Conflict check before creating event
                 try:
                     conflict_title = check_conflict(reminder_at)
                     if conflict_title:
                         audit_log_sync("tools", "INFO", f"Calendar conflict detected for '{title}': overlaps with '{conflict_title}'")
                 except Exception:
-                    pass  # Non-blocking — proceed with sync even if conflict check fails
+                    pass
 
                 e_id = sync_to_calendar(title, formatted, duration_mins=duration_mins, priority=priority, recurrence=recurrence)
                 if e_id:
@@ -169,29 +134,27 @@ async def create_task_direct(
             except Exception as cal_e:
                 audit_log_sync("tools", "WARNING", f"Calendar sync failed for task {task_id}: {cal_e}")
 
-        # Google Tasks sync (uses module-level sync_to_google, get_tasks_service)
+        # Google Tasks sync
         try:
             sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=deadline or reminder_at)
         except Exception as gt_e:
             audit_log_sync("tools", "WARNING", f"Google Tasks sync failed: {gt_e}")
 
-        # Enrichment: queue graph edges + entity extraction (survives Vercel cold kills)
-        # Pass both project_id AND org_id so enrichment can create task→org edges
+        # Enrichment: queue graph edges + entity extraction
         from core.lib.enrichment_queue import enqueue_enrichment
         enqueue_enrichment(
             job_type="task_graph",
             target_type="task",
             target_id=task_id,
             content=title,
-            related_id=resolved_project_id,
-            related_org_id=resolved_org_id,  # NEW: pass org_id for task→org edge
+            related_id=None,  # Projects retired — tasks live under orgs
+            related_org_id=resolved_org_id,
         )
 
         accumulate_action(ActionResult(action_type="task_create", status="executed", entity_id=task_id, human_label=title))
         return {"action": "created", "task_id": task_id}
     except Exception as e:
         audit_log_sync("tools", "ERROR", f"create_task_direct failed: {e}")
-        # Write to DLQ so it can be retried
         try:
             from core.lib.audit_logger import write_dlq
             write_dlq("tasks", str(task_id) if task_id else "unknown", title, str(e))
@@ -200,11 +163,21 @@ async def create_task_direct(
         return {"action": "error", "reason": str(e)}
 
 
-async def create_note_direct(content: str, source: str = "executor", project_id: str = None, organization_id: str = None, project_name: str = None, organization_name: str = None, session_id: str = None, active_anchor: dict = None) -> dict:
+async def create_note_direct(
+    content: str,
+    source: str = "executor",
+    organization_id: str = None,
+    organization_name: str = None,
+    session_id: str = None,
+    active_anchor: dict = None,
+    # Legacy params kept for backward compat — no longer used
+    project_id: str = None,
+    project_name: str = None,
+) -> dict:
     """Direct note creation — no process_single_dump dependency.
 
-    Inserts directly into memories table.
-    Uses entity_linker for deterministic entity resolution (n-gram matching).
+    Notes are assigned to orgs directly (no projects).
+    Uses entity_linker for deterministic entity resolution.
     Falls back to planner's name→ID resolution if entity_linker misses.
     Stores thread provenance (session_id, active_anchor) in metadata for
     retroactive linking.
@@ -212,9 +185,7 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
     """
     memory_id = None
     try:
-        # ── Layer 1: Deterministic entity resolution (n-gram matching) ──
-        # Same pattern as create_task_direct — uses entity_linker's n-gram matching
-        # against known orgs/projects/people BEFORE name lookup.
+        # ── Layer 1: Deterministic entity resolution ──
         from core.lib.entity_linker import resolve_entities
         entity_resolution = resolve_entities(
             text=content,
@@ -227,24 +198,19 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
         if entity_resolution.organization_id:
             organization_id = entity_resolution.organization_id
             organization_name = entity_resolution.organization_name
-        if entity_resolution.project_id:
-            project_id = entity_resolution.project_id
-            project_name = entity_resolution.project_name
 
         audit_log_sync("tools", "INFO",
             f"create_note_direct entity resolution: org={organization_name or '(none)'} "
-            f"proj={project_name or '(none)'} source={entity_resolution.source}")
+            f"source={entity_resolution.source}")
 
-        # ── Layer 2: Fallback name→ID resolution (simple ILIKE lookup) ──
-        if (not project_id or not organization_id) and (project_name or organization_name):
-
-            resolved_proj, resolved_org = _resolve_project_and_org_id(project_name, organization_name)
-            if not project_id:
-                project_id = resolved_proj
-            if not organization_id:
+        # ── Layer 2: Fallback name→ID resolution ──
+        if not organization_id and organization_name:
+            resolved_org = _resolve_org_id(organization_name)
+            if resolved_org:
                 organization_id = resolved_org
 
         # ── Build insert data with entity context ──
+        # Note: project_id is intentionally not set — notes live under orgs directly
         insert_data = {
             "content": content,
             "memory_type": "note",
@@ -252,20 +218,13 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
             "is_current": True,
             "version": 1,
         }
-        # Write resolved IDs to actual columns (same pattern as create_task_direct)
         if organization_id:
             insert_data["organization_id"] = organization_id
-        if project_id:
-            insert_data["project_id"] = project_id
 
         # Build metadata with all available entity context
         metadata = {}
-        if project_id:
-            metadata["project_id"] = project_id
         if organization_id:
             metadata["organization_id"] = organization_id
-        if project_name:
-            metadata["project_name"] = project_name
         if organization_name:
             metadata["organization_name"] = organization_name
         # Store person entities from resolution (no column on memories, so metadata is the path)
@@ -285,7 +244,7 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
                 metadata["thread_entity_type"] = anchor_type
                 # If entity resolution didn't find an org but the thread anchor has one,
                 # use the thread anchor as a third-layer fallback
-                if not organization_id and not project_id:
+                if not organization_id:
                     last_org_id = active_anchor.get("last_org_id") or active_anchor.get("organization_id")
                     if last_org_id:
                         organization_id = last_org_id
@@ -311,7 +270,7 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
         except Exception:
             pass
 
-        # Schedule retrieval index via queue (survives Vercel cold kills)
+        # Schedule retrieval index via queue
         try:
             from core.retrieval.pipeline import schedule_index_memory
             loop = asyncio.get_event_loop()
@@ -322,8 +281,7 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
         except Exception:
             pass
 
-        # Enrichment: queue entity extraction + embedding (survives Vercel cold kills)
-        # Pass resolved IDs so enrichment can also backfill if needed
+        # Enrichment: queue entity extraction + embedding
         from core.lib.enrichment_queue import enqueue_enrichment
         enqueue_enrichment(
             job_type="note_enrich",
@@ -338,7 +296,6 @@ async def create_note_direct(content: str, source: str = "executor", project_id:
         return {"action": "filed", "memory_id": memory_id}
     except Exception as e:
         audit_log_sync("tools", "ERROR", f"create_note_direct failed: {e}")
-        # Write to DLQ so it can be retried
         try:
             from core.lib.audit_logger import write_dlq
             write_dlq("memories", str(memory_id) if memory_id else "unknown", content, str(e))
@@ -367,16 +324,13 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
 
         # --- RECURRING TASK: done = skip instance, cancelled = end series ---
         if td.get('recurrence') and td.get('recurrence') not in ['none', ''] and status == 'done':
-            # Skip the next instance and record an outcome, but keep the series alive
             skip_msg = ""
             if td.get('google_event_id'):
                 skip_msg = skip_recurring_instance(task_id)
             else:
                 skip_msg = "No linked calendar event — recorded as completed."
             
-            # If the series is exhausted (UNTIL date passed), we fall through to complete the master task.
             if "No upcoming instances found" not in skip_msg:
-                # Write an outcome memory
                 try:
                     result = supabase.table('memories').insert({
                         'content': f"Completed instance of recurring task: {td['title']} (Task {task_id})",
@@ -412,7 +366,6 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
         if status == 'done':
             update_payload["completed_at"] = datetime.now(timezone.utc).isoformat()
         
-        # When cancelled, always clear the recurrence so the RRULE doesn't linger
         if status == 'cancelled':
             update_payload["recurrence"] = None
         elif recurrence is not None:
@@ -423,7 +376,6 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
 
         supabase.table('tasks').update(update_payload).eq('id', task_id).execute()
 
-        # Invalidate task cache so subsequent queries don't show stale closed tasks
         if status in ['done', 'cancelled']:
             try:
                 from core.pulse.context import context_provider
@@ -437,16 +389,8 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
         return f"FAIL: Error updating task {task_id}: {e}"
 
 async def create_person(name: str, context: str = "", source: str = "tools") -> str:
-    """Create a person row + graph node + Danny KNOWS edge.
-
-    Gap 5: Replaces the missing create_person function that email_ingest.py
-    imports. Creates both the people table row AND the graph node, linked
-    via graph_node_id.
-
-    Returns a message string like "Created person: Name (ID 123)"
-    """
+    """Create a person row + graph node + Danny KNOWS edge."""
     try:
-        # Check if person already exists
         existing = maybe_single_safe(
             supabase.table('people').select('id, name').ilike('name', name).eq('is_current', True)
         )
@@ -460,7 +404,6 @@ async def create_person(name: str, context: str = "", source: str = "tools") -> 
             if normalize_person_name(p['name']) == norm_name:
                 return f"Person already exists (normalized): {p['name']} (ID {p['id']})"
 
-        # Create people row
         result = supabase.table('people').insert({
             "name": name,
             "source": context or source,
@@ -471,7 +414,6 @@ async def create_person(name: str, context: str = "", source: str = "tools") -> 
 
         people_id = result.data[0]['id']
 
-        # Create graph node via create_graph_node_with_db_record
         from core.pulse.graph import create_graph_node_with_db_record
         gn_result = await create_graph_node_with_db_record(
             label=name,
@@ -486,7 +428,6 @@ async def create_person(name: str, context: str = "", source: str = "tools") -> 
                 f"Gap 5: Created person '{name}' (people_id={people_id}) with graph node")
             return f"Created person: {name} (ID {people_id})"
         else:
-            # Graph node failed but people row was created — log and return
             audit_log_sync("tools", "WARNING",
                 f"Gap 5: Person '{name}' created (ID {people_id}) but graph node failed: {gn_result.get('message')}")
             return f"Created person (partial): {name} (ID {people_id})"
@@ -497,9 +438,7 @@ async def create_person(name: str, context: str = "", source: str = "tools") -> 
 
 
 def skip_recurring_instance(task_id: int, date_str: str = None):
-    """Skip (delete) a single occurrence of a recurring event/task.
-    If no date_str is provided, the next upcoming instance is skipped.
-    date_str format: YYYY-MM-DD (optional, defaults to next instance)."""
+    """Skip (delete) a single occurrence of a recurring event/task."""
     try:
         task_ref = maybe_single_safe(supabase.table('tasks').select('id, title, recurrence, google_event_id, metadata').eq('id', task_id))
         if not task_ref.data:
@@ -548,7 +487,6 @@ def skip_recurring_instance(task_id: int, date_str: str = None):
         instance_id = instance.get('id')
         instance_start = instance.get('start', {}).get('dateTime', 'unknown')
 
-        # T4: Store skipped instance date to prevent ghost re-creation
         try:
             existing_meta = td.get('metadata') or {}
             if isinstance(existing_meta, str):
@@ -568,4 +506,3 @@ def skip_recurring_instance(task_id: int, date_str: str = None):
         return f"Skipped instance on {instance_start} of '{td['title']}'."
     except Exception as e:
         return f"Error skipping recurring instance: {e}"
-

@@ -9,6 +9,7 @@ from core.webhook.telegram import send_telegram
 from core.lib.conversation import log_exchange, _check_topic_overlap
 from core.actions import ActionResult, accumulate_action
 from core.pulse.tools import create_task_direct
+from core.pulse.graph import process_graph_pending_decision
 
 
 async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> Tuple[bool, Optional[str]]:
@@ -129,6 +130,29 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         reply_text = "Done."
 
         if w_type == "batch":
+            # ── Auto-approve new orgs before creating tasks ──
+            # This eliminates the timing window: org exists BEFORE task is created,
+            # so create_task_direct can resolve organisation_id at creation time.
+            payload_new_orgs = payload.get("new_orgs", [])
+            approved_orgs = {}  # {label: org_db_record_id}
+            for org_info in payload_new_orgs:
+                pending_id = org_info.get("pending_id")
+                if not pending_id:
+                    continue
+                try:
+                    result = await process_graph_pending_decision(
+                        pending_id=pending_id, decision='approve'
+                    )
+                    if result.get('success'):
+                        label = org_info.get('label', 'Unknown')
+                        reply_text += f"\n🏢 Organization approved: {label}"
+                        approved_orgs[label] = True
+                        audit_log_sync("workflow", "INFO",
+                            f"Batch auto-approved org '{label}' (pending_id={pending_id})")
+                except Exception as e:
+                    audit_log_sync("workflow", "WARNING",
+                        f"Failed to auto-approve org (pending_id={pending_id}): {e}")
+
             signals_list = payload.get("signals", [])
             # Cache active tasks once for task_closure matching
             active_tasks = []
@@ -143,16 +167,18 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                 title = sig.get("task_title") or sig.get("proposed_title") or sig.get("title") or sig.get("target_task_description", "") or "New Task"
                 reminder_at = sig.get("reminder_at")
 
+                # Determine org name: workflow signal > approved org (from original text)
+                organization_name = sig.get("organization_name")
+                if not organization_name and approved_orgs:
+                    # Use the first approved org label as the org context
+                    organization_name = list(approved_orgs.keys())[0]
+
                 if sig_type in ("deadline", "calendar_event"):
-                    project_name = sig.get("project_name")
-                    organization_name = sig.get("organization_name")
-                    res = await create_task_direct(title=title, reminder_at=reminder_at, project_name=project_name, organization_name=organization_name)
+                    res = await create_task_direct(title=title, reminder_at=reminder_at, organization_name=organization_name)
                     if res.get("action") == "created":
                         reply_text += f"\n✅ Task created: {title}"
                 elif sig_type == "task_imperative":
-                    project_name = sig.get("project_name")
-                    organization_name = sig.get("organization_name")
-                    res = await create_task_direct(title=title, project_name=project_name, organization_name=organization_name)
+                    res = await create_task_direct(title=title, organization_name=organization_name)
                     if res.get("action") == "created":
                         reply_text += f"\n✅ Task created: {title}" 
                 elif sig_type == "task_closure":

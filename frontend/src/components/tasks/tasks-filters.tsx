@@ -3,15 +3,21 @@
 import { Search, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import type { TaskFilters as TaskFiltersType, Project } from '@/lib/tasks/types';
+import { useEffect, useState } from 'react';
+import type { TaskFilters as TaskFiltersType } from '@/lib/tasks/types';
+import { fetchOrganizations } from '@/lib/tasks/api';
 
 interface TasksFiltersProps {
   filters: TaskFiltersType;
   onFiltersChange: (filters: TaskFiltersType) => void;
-  projects: Project[];
 }
 
-export function TasksFilters({ filters, onFiltersChange, projects }: TasksFiltersProps) {
+export function TasksFilters({ filters, onFiltersChange }: TasksFiltersProps) {
+  const [orgs, setOrgs] = useState<{ id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    fetchOrganizations().then(setOrgs).catch(() => {});
+  }, []);
 
   const handleFilterChange = <K extends keyof TaskFiltersType>(
     key: K,
@@ -24,7 +30,7 @@ export function TasksFilters({ filters, onFiltersChange, projects }: TasksFilter
     filters.search ||
     filters.status !== 'all' ||
     filters.priority !== 'all' ||
-    filters.projectId !== 'all' ||
+    filters.orgId !== 'all' ||
     filters.dueWindow !== 'all';
 
   const clearFilters = () => {
@@ -32,7 +38,7 @@ export function TasksFilters({ filters, onFiltersChange, projects }: TasksFilter
       search: '',
       status: 'all',
       priority: 'all',
-      projectId: 'all',
+      orgId: 'all',
       dueWindow: 'all',
     });
   };
@@ -76,14 +82,14 @@ export function TasksFilters({ filters, onFiltersChange, projects }: TasksFilter
         </select>
 
         <select
-          value={filters.projectId || 'all'}
-          onChange={(e) => handleFilterChange('projectId', e.target.value)}
+          value={filters.orgId || 'all'}
+          onChange={(e) => handleFilterChange('orgId', e.target.value)}
           className="rounded-lg border border-border bg-background text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all text-foreground"
         >
-          <option value="all">All Projects</option>
-          {projects.map((p) => (
-            <option key={p.id} value={String(p.id)}>
-              {p.name}
+          <option value="all">All Organizations</option>
+          {orgs.map((org) => (
+            <option key={org.id} value={org.id}>
+              {org.name}
             </option>
           ))}
         </select>
