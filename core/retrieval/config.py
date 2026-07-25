@@ -2,7 +2,8 @@ import os
 
 
 class RetrievalConfig:
-    """Feature flags for the retrieval pipeline. All default OFF.
+    """Feature flags for the retrieval pipeline.
+    # ponytail: associative default ON — matches Vercel env, dev gets same behavior out of the box.
     
     Rollout order:
     1. indexing_enabled + historical backfill
@@ -17,7 +18,7 @@ class RetrievalConfig:
 
     @property
     def associative_enabled(self) -> bool:
-        return os.getenv("RETRIEVAL_ASSOCIATIVE_ENABLED", "false").lower() == "true"
+        return os.getenv("RETRIEVAL_ASSOCIATIVE_ENABLED", "true").lower() == "true"
 
     @property
     def associative_enabled_entity_summary(self) -> bool:
