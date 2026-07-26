@@ -7,6 +7,7 @@ import json
 import uuid
 import asyncio
 import concurrent.futures
+from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -43,15 +44,38 @@ from core.pulse.pipeline import run_full_health_check
 from core.services.db import get_supabase, maybe_single_safe
 
 
-app = FastAPI(title="Integrated-OS")
+@asynccontextmanager
+async def lifespan(app):
+    """FastAPI lifespan: initializes asyncpg pool on startup, closes on shutdown.
 
-# ponytail: Vercel Lambda 2 vCPU → default pool = min(32, 6) = 6 threads.
-# interrogate_brain fires 17+ sync Supabase calls via asyncio.to_thread().
-# Bump to 16 so I/O waits don't queue behind each other.
-@app.on_event("startup")
-async def _upgrade_thread_pool():
+    Also upgrades the thread pool from default (min(32, 6)=6) to 16 workers
+    because interrogate_brain fires 17+ sync Supabase calls via asyncio.to_thread().
+    """
+    # Startup: upgrade thread pool
     loop = asyncio.get_running_loop()
     loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=16))
+
+    # Startup: initialize asyncpg pool (hot-path reads only)
+    try:
+        from core.services.async_db import init_pool
+        await init_pool()
+        print("✅ asyncpg pool initialized successfully")
+    except Exception as e:
+        # Fail-open: if asyncpg fails, PostgREST still works
+        print(f"⚠️ asyncpg pool init failed (non-fatal): {e}")
+
+    yield
+
+    # Shutdown: close asyncpg pool
+    try:
+        from core.services.async_db import close_pool
+        await close_pool()
+        print("✅ asyncpg pool closed")
+    except Exception as e:
+        print(f"⚠️ asyncpg pool close error (non-fatal): {e}")
+
+
+app = FastAPI(title="Integrated-OS", lifespan=lifespan)
 
 # CORS setup for future dashboard scalability
 app.add_middleware(

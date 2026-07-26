@@ -1780,6 +1780,24 @@ The following skills are available to help complete tasks:
 </skill>
 </skills>
 
+## Session Anchored Summary (Jul 26, 2026 — Part 68: asyncpg + RPC Consolidation — Phase 2a/2b/2d)
+
+### Progress Done This Session
+- **Phase 2a — asyncpg Pool Wiring**: Created `core/services/async_db.py` with `init_pool()`, `close_pool()`, `async_fetch()`, `async_fetchrow()`, `async_execute()`. Registered JSONB codec via `set_type_codec`. Fixed pooler hostname format to `SUPABASE_POOLER_HOST` env var (correct format: `aws-{region}.pooler.supabase.com`). Switched DB auth from `SUPABASE_SERVICE_ROLE_KEY` (JWT) to `SUPABASE_DB_PASSWORD` (actual Postgres password) with the old key as fallback. Wired `init_pool()`/`close_pool()` into FastAPI's `@asynccontextmanager lifespan` in `api/index.py`.
+- **Phase 2b — SQL RPC Consolidation**: Created `db/70_rpc_get_associative_data.sql` — single PL/pgSQL function that replaces ~10 PostgREST calls (phrase search, subgraph edges, memory aggregation). Returns `{nodes, edges}` composite JSON payload (avoids ~1MB duplicated payload bug). Uses `websearch_to_tsquery` for safe user input handling. Created `db/71_rpc_get_memory_metadata.sql` — consolidates memory content + metadata + semantic score + recency + importance into 1 RPC call.
+- **Phase 2d — RPC Wiring in search.py**: Modified `core/retrieval/search.py`'s `associative_retrieve()` to first try the asyncpg RPC path (2 calls), falling back to original PostgREST path on any error. Fixed vector type conversion bug — `query_emb` (Python list) needs `str()` conversion for pgvector's `$N::vector(768)` parameter. Added cache-busting `BUILD_VERSION` timestamp to `infra/modal_app.py`.
+- **Latency Validation**: Benchmarked new RPCs at ~0.4s (`rpc_get_associative_data`) and ~0.15s (`rpc_get_memory_metadata`) vs old PostgREST path ~14.9s. Overall query improvement 5-24% for queries using associative retrieval. Average warm-container response time: ~29s (down from ~32s baseline).
+- **DNS + Auth Debugging**: Three-layer debugging sequence — (1) DNS failed (wrong pooler hostname), (2) Auth failed (wrong password), (3) Vector type conversion bug. All three fixed and verified.
+
+### Key Files (Part 68)
+- `core/services/async_db.py` — NEW: asyncpg connection pool with JSONB codec + pooler hostname fix
+- `core/retrieval/search.py` — Phase 2d: asyncpg RPC path with PostgREST fallback
+- `api/index.py` — FastAPI lifespan for asyncpg pool init/close
+- `infra/modal_app.py` — cache-busting BUILD_VERSION
+- `db/70_rpc_get_associative_data.sql` — NEW: consolidated phrase search + edges + memory aggregation RPC
+- `db/71_rpc_get_memory_metadata.sql` — NEW: consolidated memory metadata + semantic scores RPC
+- `product-summary/68-asyncpg-rpc-consolidation-plan.md` — Implementation plan
+
 ## How to Use
 
 When a task matches a skill's description:

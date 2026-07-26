@@ -41,6 +41,7 @@ IMPORTANT:
 """
 
 import os
+import json
 import asyncpg
 from typing import Optional
 
@@ -58,7 +59,8 @@ async def init_pool() -> asyncpg.Pool:
     """Initialize the global asyncpg connection pool.
 
     Called once on Modal container startup. Uses the Supabase
-    connection string and service role key for auth.
+    database password (SUPABASE_DB_PASSWORD) for auth, with
+    SUPABASE_SERVICE_ROLE_KEY as fallback for backward compat.
 
     Returns:
         The asyncpg connection pool.
@@ -68,37 +70,50 @@ async def init_pool() -> asyncpg.Pool:
         return _pool
 
     supabase_url = os.getenv("SUPABASE_URL")
-    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    db_password = os.getenv("SUPABASE_DB_PASSWORD") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-    if not supabase_url or not service_key:
-        raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
+    if not supabase_url or not db_password:
+        raise ValueError(
+            "SUPABASE_URL and SUPABASE_DB_PASSWORD (or SUPABASE_SERVICE_ROLE_KEY) must be set"
+        )
 
     # Convert Supabase URL to PostgreSQL connection string
-    # SUPABASE_URL is like: https://project-ref.supabase.co
-    # PostgreSQL DSN is: postgresql://postgres:password@db.project-ref.supabase.co:5432/postgres
-    dsn = _build_pg_dsn(supabase_url, service_key)
+    dsn = _build_pg_dsn(supabase_url, db_password)
 
-    _pool = await asyncpg.create_pool(dsn=dsn, **_POOL_CONFIG)
+    # Register JSONB codec so asyncpg returns Python dicts instead of strings
+    async def _init_conn(conn):
+        await conn.set_type_codec(
+            'jsonb',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+
+    _pool = await asyncpg.create_pool(dsn=dsn, init=_init_conn, **_POOL_CONFIG)
     return _pool
 
 
 def _build_pg_dsn(supabase_url: str, password: str) -> str:
-    """Convert a Supabase REST URL to a PostgreSQL PgBouncer pooler DSN.
+    """Convert a Supabase REST URL to a PostgreSQL Supavisor pooler DSN.
 
-    Supabase has three connection modes:
-      1. Direct connection:   db.{ref}.supabase.co:5432  (NOT for PgBouncer)
-      2. Transaction pooler:  {ref}.pooler.supabase.com:6543  ✓ (PgBouncer, recommended)
-      3. Session pooler:      {ref}.pooler.supabase.com:5432
+    Supabase connection modes:
+      1. Transaction pooler (recommended): aws-{region}.pooler.supabase.com:6543
+      2. Session pooler:                   aws-{region}.pooler.supabase.com:5432
+      3. Direct connection:                db.{ref}.supabase.co:5432
 
-    We use the TRANSACTION POOLER (port 6543) with statement_cache_size=0
-    to work through Supabase's PgBouncer.
+    We use the TRANSACTION POOLER (port 6543) via Supavisor.
+    The pooler hostname requires the AWS region, which varies per project.
+    Set SUPABASE_POOLER_HOST env var to override (e.g.,
+    "aws-1-ap-southeast-1.pooler.supabase.com").
 
     Handles input formats:
         https://project-ref.supabase.co
         https://project-ref.supabase.co:443
 
+    The username format for Supavisor is postgres.{project_ref}.
+
     Returns:
-        postgresql://postgres:PASSWORD@project-ref.pooler.supabase.com:6543/postgres
+        postgresql://postgres.{ref}:PASSWORD@aws-{region}.pooler.supabase.com:6543/postgres
     """
     # Extract project ref from URL
     # https://abcdefghijklm.supabase.co  →  abcdefghijklm
@@ -106,17 +121,24 @@ def _build_pg_dsn(supabase_url: str, password: str) -> str:
     if ":" in host:
         host = host.split(":")[0]
 
-    # Extract project reference (the subdomain before .supabase.co)
     if ".supabase.co" in host:
         project_ref = host.split(".")[0]
-        pg_host = f"{project_ref}.pooler.supabase.com"
-        pg_port = 6543  # Transaction pooler port
+        # Allow override via env var for region-specific pooler hostname
+        pooler_host = os.getenv("SUPABASE_POOLER_HOST")
+        if pooler_host:
+            pg_host = pooler_host
+        else:
+            # Fallback: old format (likely won't resolve without region)
+            pg_host = f"{project_ref}.pooler.supabase.com"
+        pg_port = 6543  # Transaction pooler
+        pg_user = f"postgres.{project_ref}"  # Supavisor username format
     else:
         # Fallback for custom hosts — direct connection
         pg_host = host
         pg_port = 5432
+        pg_user = "postgres"
 
-    return f"postgresql://postgres:{password}@{pg_host}:{pg_port}/postgres"
+    return f"postgresql://{pg_user}:{password}@{pg_host}:{pg_port}/postgres"
 
 
 async def get_pool() -> asyncpg.Pool:

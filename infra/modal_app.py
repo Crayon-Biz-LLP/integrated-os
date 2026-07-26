@@ -18,10 +18,14 @@ import modal
 # add_local_dir includes local source dirs in the container image
 # (api/ and core/ aren't in infra/, so we need to add them explicitly).
 # Note: during modal serve, these are copied at build time, not live-reloaded.
+# Build cache version — increment to force a fresh image build
+_BUILD_VERSION = "v3"
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install_from_requirements("requirements.txt")
     .apt_install("ffmpeg")
+    .env({"BUILD_VERSION": _BUILD_VERSION})
     .add_local_dir("./api", remote_path="/root/api")
     .add_local_dir("./core", remote_path="/root/core")
 )
