@@ -8,6 +8,8 @@ google-api-python-client==2.194.0
 google-genai==1.71.0
 python-dotenv==1.2.2
 upstash-redis==1.7.0
+modal>=1.0.0
+asyncpg==0.30.0
 pymupdf==1.28.0
 python-docx==1.1.2
 openpyxl==3.1.2

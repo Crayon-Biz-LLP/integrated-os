@@ -782,18 +782,30 @@ class SharedQueryContext:
     def __init__(self, query_text: str):
         self.query_text = query_text
         self._embedding = None
+        self._embedding_task = None
         self._active_tasks = None
         self._people = None
     
     async def get_embedding(self):
-        if self._embedding is None:
-            try:
-                emb_result = await get_embedding(self.query_text)
-                if emb_result and emb_result.vector:
-                    self._embedding = emb_result.vector
-            except Exception:
-                pass
-        return self._embedding
+        """Returns cached embedding, starting a single fetch only on first call.
+
+        Uses a task-based pattern to prevent concurrent Gemini API calls when
+        multiple callers invoke get_embedding() before the first fetch completes.
+        Subsequent callers await the same task instead of starting new API calls.
+        """
+        if self._embedding is not None:
+            return self._embedding
+        if self._embedding_task is None:
+            async def _fetch():
+                try:
+                    emb_result = await get_embedding(self.query_text)
+                    if emb_result and emb_result.vector:
+                        self._embedding = emb_result.vector
+                except Exception:
+                    pass
+                return self._embedding
+            self._embedding_task = asyncio.create_task(_fetch())
+        return await self._embedding_task
     
     async def get_active_tasks(self):
         if self._active_tasks is None:
@@ -949,6 +961,11 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Anaphora/Entity resolution failed: {e}")
 
+        # ── Await cached embedding (started in Phase 1a, almost certainly ready) ──
+        # Pass to Phase 1b sub-fetchers so they reuse it instead of calling Gemini
+        # get_embedding() separately. Saves ~1.5-2.5s on deep queries.
+        query_emb = await _shared.get_embedding()
+
         # ── PHASE 1b: Heavy context tasks (created AFTER anaphora with CORRECT flags) ──
         # These tasks are expensive (memories=15s, emails=3s, serendipity=2s) and MUST
         # use the query-type-overridden flags, not the initial keyword-derived ones.
@@ -957,11 +974,11 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         # Memories, resources — skip for relationship/people queries (graph is enough)
         _load_bg = fetch_all or start_dt is not None or (not is_schedule and not is_people)
         _p1b_memories = asyncio.create_task(safe_fetch(
-            context_provider.hydrate_memories_context(query), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
+            context_provider.hydrate_memories_context(query, precomputed_embedding=query_emb), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
         _phase1b_tasks.append(_p1b_memories)
         
         _p1b_resources = asyncio.create_task(safe_fetch(
-            context_provider.get_resources_context(query), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
+            context_provider.get_resources_context(query, precomputed_embedding=query_emb), "None") if (_load_bg) else safe_fetch(_empty_fetch("None"), "None"))
         _phase1b_tasks.append(_p1b_resources)
         
         # Serendipity (uses SharedQueryContext for tasks + people caching)
@@ -987,12 +1004,12 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         
         # Emails
         _p1b_emails = asyncio.create_task(safe_fetch(
-            context_provider.get_email_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
+            context_provider.get_email_context(query, precomputed_embedding=query_emb), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
         _phase1b_tasks.append(_p1b_emails)
         
         # WhatsApp
         _p1b_whatsapp = asyncio.create_task(safe_fetch(
-            context_provider.get_whatsapp_context(query), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
+            context_provider.get_whatsapp_context(query, precomputed_embedding=query_emb), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
         _phase1b_tasks.append(_p1b_whatsapp)
         
         # ── Entity resolution: resolve to graph node, build anchor ──

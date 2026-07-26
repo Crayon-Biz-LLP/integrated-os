@@ -548,8 +548,16 @@ class ContextProvider:
         
         return compressed_tasks, universal[:4000]
 
-    async def hydrate_memories_context(self, query_text: str, match_count: int = 5, return_raw: bool = False, recency_weight: float = 0.3):
-        """Uses pgvector to find semantically relevant memories, with recency weighting."""
+    async def hydrate_memories_context(self, query_text: str, match_count: int = 5, return_raw: bool = False, recency_weight: float = 0.3, precomputed_embedding: list = None):
+        """Uses pgvector to find semantically relevant memories, with recency weighting.
+        
+        Args:
+            precomputed_embedding: Optional pre-computed embedding vector. If provided,
+                saves ~500ms by avoiding a redundant Gemini API call. The internal memory
+                pipeline (associative_retrieve) has its own Redis cache for the embedding,
+                so this is mainly useful when the caller has already computed the embedding
+                for other purposes (e.g. SharedQueryContext in interrogate_brain).
+        """
         if not query_text:
             return [] if return_raw else "None"
             

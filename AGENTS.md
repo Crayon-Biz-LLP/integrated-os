@@ -145,6 +145,24 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 - `core/webhook/classify.py` — Gap C: schedule query pre-filter
 - `core/pulse/graph.py` — Gap D: improved inference failure logging
 
+## Session Anchored Summary (Jul 26, 2026 — Part 67: Modal Migration — Vercel → Modal for FastAPI Backend)
+
+### Progress Done This Session
+- **Modal Migration Completed**: Moved the FastAPI backend from Vercel serverless to Modal. Created `infra/modal_app.py` — wraps the existing FastAPI app from `api/index.py` with `min_containers=1` (zero cold starts), `timeout=300` (5 min vs Vercel's 60s), and `@modal.concurrent(max_inputs=10)`. All scheduled jobs (pulse engine, email ingest, call ingest, health check) remain on GHA/cron-job.org — only the web endpoint moved to Modal.
+- **New Files Created**: `infra/modal_app.py` (deployment entry point), `core/services/async_db.py` (asyncpg prep for Phase 2), `scripts/create_modal_secret.py` (helper to create Modal secrets from .env).
+- **requirements.txt Updated**: Added `modal>=1.0.0` and `asyncpg==0.30.0`.
+- **Modal Secret Created**: `rhodey-os` secret stores all env vars (Supabase, Gemini, Google, Telegram, etc.) for Modal deployment.
+- **SDK Version Adaptations**: Worked through Modal SDK 1.5.3 API changes — `scaledown_window` (was `container_idle_timeout`), `@modal.concurrent(max_inputs=N)` decorator (was `allow_concurrent_inputs=` param), `Image.add_local_dir()` for source mounting (was `modal.Mount`), `Volume.from_name()` factory.
+- **Active Backend**: All Telegram webhook traffic and cron-job.org endpoints now route to `https://danielyashwant--rhodey-os-web-endpoint.modal.run`. Vercel deployment is idle.
+- **Latency Test Results (5 queries vs old Vercel baseline)**: Schedule 28s (was 25s), People 27s (was 28s), Status Update 32-36s (was 42-43s), General 33s (was 41s). Average ~14% improvement from Modal alone. asyncpg migration (Phase 2) targets the remaining 20-30s processing time.
+- **Bug Fix Identified**: Thread active_anchor scoping issue — unqualified "What meetings do I have this week?" was being scoped to previous entity (FC Madras) instead of showing all meetings. Needs a schedule query scope fix.
+
+### Key Files (Part 67)
+- `infra/modal_app.py` — NEW: Modal deployment entry point (web endpoint only)
+- `core/services/async_db.py` — NEW: asyncpg connection pool (Phase 2 prep)
+- `scripts/create_modal_secret.py` — NEW: Modal secret creation script
+- `requirements.txt` — Added modal, asyncpg
+
 ## Session Anchored Summary (Jul 24, 2026 — Part 66: Entity Detection FK Bridge Fix)
 
 ### Progress Done This Session
