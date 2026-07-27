@@ -400,8 +400,12 @@ async def execute_planned_actions(
     execute_actions = []
     intercepted_tasks = []
     
-    # Intercept tasks extracted from NOTE intents for user approval
-    if intent in ("NOTE", "TASK"):
+    # Intercept tasks extracted from NOTE intents for user approval.
+    # TASK intents are NOT intercepted — clear commands like "Remind me to..."
+    # execute immediately without asking for confirmation.
+    # NOTE intents still get intercepted because they might contain extracted
+    # actions the user didn't explicitly intend.
+    if intent == "NOTE":
         for action in valid_actions:
             if action.operation in ("create_task", "create_event"):
                 intercepted_tasks.append(action)
