@@ -8,12 +8,18 @@ from core.lib.time_utils import now_ist, IST_TIMEZONE
 from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.telemetry import emit_observation
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
+from core.lib.query_timer import start_timer, mark, report
 from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
 from core.actions import capture_session_id, capture_response
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
 from core.webhook.classify import classify_intent, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
 from core.services.db import maybe_single_safe
+try:
+    from core.services.async_db import async_select, async_select_one
+except Exception:
+    async_select = None
+    async_select_one = None
 from core.webhook.email import process_email_pending_decision, handle_ed_command
 from core.webhook.workflows import check_and_resume_workflow
 from core.webhook.utils import process_channel_pending_decision
@@ -444,6 +450,7 @@ async def process_webhook(update: dict):
     req_trace_id = str(uuid.uuid4())[:12]
     trace_id_var.set(req_trace_id)
     set_decision_chain_id()
+    start_timer(req_trace_id)
     
     try:
         update_id = update.get('update_id')
@@ -502,13 +509,15 @@ async def process_webhook(update: dict):
             return {"message": "No message"}
 
         try:
-            core_res = supabase.table('core_config').select('key, content').execute()
             _NOISE_KEYS = {'latest_briefing', 'briefing_history', 'last_pulse_summary'}
+            core_res = supabase.table('core_config').select('key, content').execute()
             filtered = [r for r in (core_res.data or []) if r.get('key') not in _NOISE_KEYS]
             core_json = json.dumps(filtered)
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"core_config fetch failed: {e}")
             core_json = "[]"
+
+        mark(req_trace_id, "core_config")
 
         if not chat_id:
             return {"success": True}
@@ -1130,9 +1139,9 @@ async def process_webhook(update: dict):
                 .order('created_at', desc=True) \
                 .limit(1) \
                 .execute()
-            if last_msg_res.data:
-                last_msg = last_msg_res.data[0]
-                if last_msg.get('intent') == 'WAITING_FOR_NOTE':
+            last_msg_data = last_msg_res.data[0] if last_msg_res.data else None
+            last_msg = last_msg_data
+            if last_msg and last_msg.get('intent') == 'WAITING_FOR_NOTE':
                     # Check 5 min timeout
                     msg_time_str = last_msg.get('created_at', '')
                     if msg_time_str:
@@ -1166,8 +1175,9 @@ async def process_webhook(update: dict):
                     .order('created_at', desc=True) \
                     .limit(1) \
                     .execute()
-                if last_clar.data:
-                    meta = json.loads(last_clar.data[0]['content'])
+                last_clar_data = last_clar.data[0] if last_clar.data else None
+                if last_clar_data:
+                    meta = json.loads(last_clar_data['content'])
                     if isinstance(meta, dict):
                         if meta.get('confirmation') == 'task_update':
                             if await resolve_task_update_confirmation(text, chat_id, session_id, meta):
@@ -1437,10 +1447,12 @@ async def process_webhook(update: dict):
                 receipt=receipt
             )
 
+        report(req_trace_id)
         return {"success": True}
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Webhook Error: {e}")
+        report(req_trace_id)
         try:
             if chat_id:
                 await send_telegram(chat_id, "Something went wrong. Try again or report this.")

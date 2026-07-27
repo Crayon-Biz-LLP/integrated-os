@@ -17,9 +17,17 @@ from core.prompts.briefing import build_daily_brief_prompt
 from core.webhook.utils import supabase
 from core.pulse.graph import hybrid_search_graph
 from core.lib.decision_audit import log_decision, DecisionStage, set_decision_chain_id, get_decision_chain_id
+from core.lib.query_timer import mark
+from core.lib.audit_logger import trace_id_var
 from core.actions import validate_factual_claims
 from core.lib.graph_rules import normalize_label
 from core.lib.constants import BOT_SENDERS
+
+try:
+    from core.services.async_db import async_fetch, async_fetchrow
+except Exception:
+    async_fetch = None
+    async_fetchrow = None
 
 
 async def resolve_anaphora(query: str, active_anchor: dict = None, classify_context: str = "", session_id: str = None):
@@ -398,21 +406,25 @@ async def handle_role_update(text: str, chat_id: int, classification: dict, sour
         return
 
     try:
+        person = None
+        person_id = None
         res = supabase.table('people').select('id, name, role').ilike('name', f'%{person_name}%').eq('is_current', True).limit(1).execute()
         if res and res.data:
             person = res.data[0]
             person_id = person['id']
-        else:
+        if not person_id:
+            gn_data = None
             gn = supabase.table('graph_nodes').select('id, label').eq('type', 'person').ilike('label', f'%{person_name}%').eq('is_current', True).limit(1).execute()
-            if gn and gn.data:
+            gn_data = gn.data[0] if gn and gn.data else None
+            if gn_data:
                 new_people = supabase.table('people').insert({
-                    'name': gn.data[0]['label'],
+                    'name': gn_data['label'],
                     'role': f"{role_title} of {org_name}" if org_name else role_title,
                     'organization_name': org_name or None,
                     'source': 'role_update'
                 }).execute()
                 person_id = new_people.data[0]['id']
-                await send_telegram(chat_id, f"\U0001f464 Created people entry for {gn.data[0]['label']} with role: {role_title}" + (f" at {org_name}." if org_name else "."))
+                await send_telegram(chat_id, f"\U0001f464 Created people entry for {gn_data['label']} with role: {role_title}" + (f" at {org_name}." if org_name else "."))
             else:
                 await send_telegram(chat_id, f"I don't recognize '{person_name}' in the system. Please add them first.")
                 return
@@ -618,7 +630,7 @@ async def safe_fetch(coro, default=None):
         audit_log_sync("webhook", "WARNING", f"Safe fetch failed: {e}")
         return default
 
-def _build_rich_anchor(graph_node_id, name):
+async def _build_rich_anchor(graph_node_id, name):
     now_ist_value = now_ist()
     anchor = {
         "id": str(graph_node_id) if graph_node_id else None,
@@ -647,9 +659,6 @@ def _build_rich_anchor(graph_node_id, name):
             .order('created_at', desc=True) \
             .limit(1) \
             .execute()
-        # NOTE: Removed broken JSONB .contains('metadata', {"entity": name}) fallback
-        # that was causing 400 Bad Request. The ILIKE title match above is sufficient
-        # for entity-anchored task lookups.
         if task_res.data:
             t = task_res.data[0]
             anchor["last_task_id"] = str(t['id'])
@@ -690,6 +699,7 @@ async def _build_active_context(resolved_entity: str, current_thread_id: str, ch
         cutoff_24h = (now - timedelta(hours=24)).isoformat()
         
         # 1. Find recent threads (last 24h, non-archived, excluding current)
+        threads_data = None
         threads_res = supabase.table('conversation_threads') \
             .select('id, thread_type, entity_type, entity_label, summary, last_active_at') \
             .eq('chat_id', chat_id) \
@@ -699,15 +709,16 @@ async def _build_active_context(resolved_entity: str, current_thread_id: str, ch
             .order('last_active_at', desc=True) \
             .limit(5) \
             .execute()
+        threads_data = threads_res.data if threads_res.data else []
         
-        if not threads_res.data:
+        if not threads_data:
             return None
         
         entity_lower = resolved_entity.lower()
         cross_refs = []
         
         # 2. Check thread summaries first (Fix A ensures summaries exist)
-        for thread in threads_res.data:
+        for thread in threads_data:
             summary = thread.get('summary', '') or ''
             entity_label = thread.get('entity_label', '') or ''
             
@@ -721,7 +732,7 @@ async def _build_active_context(resolved_entity: str, current_thread_id: str, ch
         
         # 3. Fall back to scanning raw exchanges in the thread if no summary match
         if not cross_refs:
-            for thread in threads_res.data:
+            for thread in threads_data:
                 try:
                     ex_res = supabase.table('conversations') \
                         .select('content') \
@@ -730,7 +741,8 @@ async def _build_active_context(resolved_entity: str, current_thread_id: str, ch
                         .order('created_at', desc=True) \
                         .limit(5) \
                         .execute()
-                    for ex in ex_res.data or []:
+                    ex_data = ex_res.data if ex_res.data else []
+                    for ex in ex_data:
                         content = ex.get('content', '') or ''
                         if entity_lower in content.lower():
                             cross_refs.append({
@@ -760,7 +772,8 @@ async def _build_active_context(resolved_entity: str, current_thread_id: str, ch
         try:
             t_res = supabase.table('conversation_threads').select('entity_label, entity_type').eq('id', current_thread_id).limit(1).execute()
             if t_res.data:
-                entity_label = t_res.data[0].get('entity_label', '') or ''
+                t_row = t_res.data[0]
+                entity_label = t_row.get('entity_label', '') or ''
                 current_label = entity_label or 'General'
         except Exception:
             pass
@@ -936,6 +949,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _p1a_pending = asyncio.create_task(safe_fetch(context_provider.get_pending_decisions_context(), "None"))
         _phase1a_tasks.append(_p1a_pending)
         
+        mark(trace_id_var.get(), "phase1a_done")
         # ── AWAIT ANAPHORA (entity resolves now, while Phase 1 tasks continue in background) ──
         resolved_entity = None
         query_type = "general"
@@ -966,6 +980,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         # get_embedding() separately. Saves ~1.5-2.5s on deep queries.
         query_emb = await _shared.get_embedding()
 
+        mark(trace_id_var.get(), "anaphora_done")
         # ── PHASE 1b: Heavy context tasks (created AFTER anaphora with CORRECT flags) ──
         # These tasks are expensive (memories=15s, emails=3s, serendipity=2s) and MUST
         # use the query-type-overridden flags, not the initial keyword-derived ones.
@@ -1012,6 +1027,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             context_provider.get_whatsapp_context(query, precomputed_embedding=query_emb), "None") if (fetch_all or is_comms) else safe_fetch(_empty_fetch("None"), "None"))
         _phase1b_tasks.append(_p1b_whatsapp)
         
+        mark(trace_id_var.get(), "phase1b_done")
         # ── Entity resolution: resolve to graph node, build anchor ──
         if resolved_entity:
             try:
@@ -1034,7 +1050,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                                         ec[nid] = ec.get(nid, 0) + 1
                         chosen = max(matches, key=lambda n: ec.get(n['id'], 0))
                     
-                    active_anchor = _build_rich_anchor(chosen['id'], chosen['label'])
+                    active_anchor = await _build_rich_anchor(chosen['id'], chosen['label'])
                     
                     if session_id:
                         try:
@@ -1046,6 +1062,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             except Exception as e:
                 audit_log_sync("webhook", "WARNING", f"Anchor node lookup failed: {e}")
         
+        mark(trace_id_var.get(), "entity_done")
         # ── PHASE 2: Entity-dependent context tasks ──
         # These start NOW while Phase 1 tasks may still be completing
         search_term = active_anchor["name"] if active_anchor else query
@@ -1202,6 +1219,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _p2_active_context = asyncio.create_task(safe_fetch(_fetch_active_context(), None))
         _phase2_tasks.append(_p2_active_context)
         
+        mark(trace_id_var.get(), "phase2_done")
         # ── AWAIT ALL pending tasks ──
         # Phase 1a (lightweight, started before anaphora) + Phase 1b (heavy, started
         # after anaphora with correct flags) + Phase 2 (entity-dependent).
@@ -1370,9 +1388,11 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         )
         
         # Stream to Telegram progressively
+        mark(trace_id_var.get(), "gemini_start")
         async with TelegramStreamAdapter(chat_id) as adapter:
             await adapter.send_header(f"{header}\n\n")
             answer = ""
+            mark(trace_id_var.get(), "llm_start")
             async for token in stream_with_fallback(
                 prompt=stream_prompt,
                 workload=WorkloadProfile.INTERACTIVE,
@@ -1381,6 +1401,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                 answer += token
                 await adapter.send_chunk(token)
             
+            mark(trace_id_var.get(), "llm_end")
             # Stream complete — flush any remaining text
             if not answer.strip():
                 # GAP B: Empty LLM response → build structured fact-only fallback
@@ -1402,6 +1423,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             else:
                 await adapter.send_complete()
             final_reply = f"{header}\n\n{answer.strip()}"
+        mark(trace_id_var.get(), "gemini_done")
         
         _last_reply = final_reply
         

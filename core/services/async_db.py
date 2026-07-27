@@ -5,10 +5,12 @@ Replaces PostgREST HTTP calls (~200-500ms each) with direct SQL
 over the PostgreSQL wire protocol (~5-15ms each). On a deep query
 with 15-20 DB round-trips, this saves ~3-5s.
 
-⚠️ CRITICAL: Supabase uses PgBouncer (connection pooler) in
-transaction mode. Prepared statements are NOT supported through
-PgBouncer. We set statement_cache_size=0 to prevent the
-"prepared statement does not exist" crash.
+CONVENTIONS (Phase 2c):
+  - READ-ONLY queries only via asyncpg (SELECT, no writes).
+  - Writes (INSERT/UPDATE/DELETE) stay on PostgREST.
+  - Use async_select / async_select_one for simple column select queries.
+  - Use async_fetch / async_fetchrow for complex queries with joins.
+  - ALL calls are wrapped in try/except falling back to PostgREST.
 
 Usage:
     Get a connection from the pool:
@@ -18,6 +20,10 @@ Usage:
     Or use convenience helpers:
         rows = await async_fetch("SELECT * FROM tasks WHERE id = $1", task_id)
         row  = await async_fetchrow("SELECT * FROM tasks WHERE id = $1", task_id)
+
+    Phase 2c helpers:
+        rows = await async_select("tasks", "id, title", {"status": "todo"}, limit=5)
+        row  = await async_select_one("tasks", "id, title", {"id": 123})
 
     For write operations:
         result = await async_execute(
@@ -42,17 +48,23 @@ IMPORTANT:
 
 import os
 import json
+import asyncio
 import asyncpg
 from typing import Optional
+from core.lib.audit_logger import audit_log_sync
 
 _pool: Optional[asyncpg.Pool] = None
 _POOL_CONFIG = {
     "min_size": 1,
     "max_size": 5,
-    "statement_cache_size": 0,  # Required for PgBouncer compatibility
-    "command_timeout": 30,
+    "command_timeout": 30,  # Pool-level timeout — overridden by per-query wait_for() below
     "max_inactive_connection_lifetime": 300.0,  # 5 min before closing idle conns
 }
+
+# Per-query timeout: if asyncpg fails/times out, fail FAST (5s) and fall back to PostgREST.
+# The old 30s command_timeout meant every failed asyncpg call added 30s of latency
+# before the caller's PostgREST fallback kicked in, EXPLAINING the latency regression.
+_ASYNCPG_TIMEOUT = 5.0  # seconds per query
 
 
 async def init_pool() -> asyncpg.Pool:
@@ -94,26 +106,23 @@ async def init_pool() -> asyncpg.Pool:
 
 
 def _build_pg_dsn(supabase_url: str, password: str) -> str:
-    """Convert a Supabase REST URL to a PostgreSQL Supavisor pooler DSN.
+    """Convert a Supabase REST URL to a PostgreSQL direct DSN.
 
     Supabase connection modes:
-      1. Transaction pooler (recommended): aws-{region}.pooler.supabase.com:6543
-      2. Session pooler:                   aws-{region}.pooler.supabase.com:5432
-      3. Direct connection:                db.{ref}.supabase.co:5432
+      1. Direct connection (default):     db.{ref}.supabase.co:5432
+      2. Transaction pooler:              aws-{region}.pooler.supabase.com:6543
+      3. Session pooler:                  aws-{region}.pooler.supabase.com:5432
 
-    We use the TRANSACTION POOLER (port 6543) via Supavisor.
-    The pooler hostname requires the AWS region, which varies per project.
-    Set SUPABASE_POOLER_HOST env var to override (e.g.,
-    "aws-1-ap-southeast-1.pooler.supabase.com").
+    We use DIRECT CONNECTION (port 5432) to avoid Supavisor pooler overhead.
+    IPv6 is supported (confirmed via DNS AAAA records).
+    Set SUPABASE_USE_POOLER=1 env var to switch back to transaction pooler.
 
     Handles input formats:
         https://project-ref.supabase.co
         https://project-ref.supabase.co:443
 
-    The username format for Supavisor is postgres.{project_ref}.
-
     Returns:
-        postgresql://postgres.{ref}:PASSWORD@aws-{region}.pooler.supabase.com:6543/postgres
+        postgresql://postgres:PASSWORD@db.{ref}.supabase.co:5432/postgres
     """
     # Extract project ref from URL
     # https://abcdefghijklm.supabase.co  →  abcdefghijklm
@@ -123,15 +132,22 @@ def _build_pg_dsn(supabase_url: str, password: str) -> str:
 
     if ".supabase.co" in host:
         project_ref = host.split(".")[0]
-        # Allow override via env var for region-specific pooler hostname
-        pooler_host = os.getenv("SUPABASE_POOLER_HOST")
-        if pooler_host:
-            pg_host = pooler_host
+
+        # Allow override to pooler via env var
+        use_pooler = os.getenv("SUPABASE_USE_POOLER", "").lower() in ("1", "true", "yes")
+        if use_pooler:
+            pooler_host = os.getenv("SUPABASE_POOLER_HOST")
+            if pooler_host:
+                pg_host = pooler_host
+            else:
+                pg_host = f"{project_ref}.pooler.supabase.com"
+            pg_port = 6543  # Transaction pooler
+            pg_user = f"postgres.{project_ref}"
         else:
-            # Fallback: old format (likely won't resolve without region)
-            pg_host = f"{project_ref}.pooler.supabase.com"
-        pg_port = 6543  # Transaction pooler
-        pg_user = f"postgres.{project_ref}"  # Supavisor username format
+            # Direct connection — IPv6 compatible
+            pg_host = f"db.{project_ref}.supabase.co"
+            pg_port = 5432
+            pg_user = "postgres"
     else:
         # Fallback for custom hosts — direct connection
         pg_host = host
@@ -166,37 +182,132 @@ async def close_pool():
         _pool = None
 
 
-# ── Convenience Helpers ──────────────────────────────────────────
+# ── Phase 2c: High-Level SELECT Helpers ──────────────────────────
+# These wrap async_fetch with simple SQL generation for common
+# read patterns. Column names are hardcoded at call sites (safe).
+# Values are parameterized ($1, $2) — no SQL injection risk.
+
+
+async def async_select(
+    table: str,
+    columns: str,
+    where: Optional[dict] = None,
+    order_by: str = None,
+    limit: int = None,
+) -> list:
+    """Simple SELECT via asyncpg. Returns list of dict-like Records.
+
+    Args:
+        table: Table name (e.g. 'core_config', 'conversations').
+        columns: Column list (e.g. 'key, content', 'id, label').
+        where: Equality filters as {column: value} dict.
+               Use None for IS NULL checks.
+        order_by: Optional ORDER BY clause (e.g. 'created_at DESC').
+        limit: Optional LIMIT.
+
+    Returns:
+        List of asyncpg Record objects (empty list on error).
+
+    Example:
+        rows = await async_select(
+            "pending_nodes", "id, label",
+            where={"status": "pending", "node_type": "person"},
+            limit=10,
+        )
+    """
+    sql = f"SELECT {columns} FROM {table}"
+    params = []
+    if where:
+        clauses = []
+        for col, val in where.items():
+            if val is None:
+                clauses.append(f"{col} IS NULL")
+            else:
+                clauses.append(f"{col} = ${len(params) + 1}")
+                params.append(val)
+        sql += " WHERE " + " AND ".join(clauses)
+    if order_by:
+        sql += f" ORDER BY {order_by}"
+    if limit:
+        sql += f" LIMIT {limit}"
+    return await _safe_fetch(sql, *params)
+
+
+async def async_select_one(
+    table: str,
+    columns: str,
+    where: Optional[dict] = None,
+    order_by: str = None,
+) -> Optional[dict]:
+    """Fetch a single row via asyncpg. Returns None if no match.
+
+    Args:
+        table: Table name.
+        columns: Column list.
+        where: Equality filters.
+        order_by: Optional ORDER BY.
+
+    Returns:
+        Single dict-like Record, or None.
+    """
+    rows = await async_select(table, columns, where=where, order_by=order_by, limit=1)
+    return rows[0] if rows else None
+
+
+async def _safe_fetch(query: str, *args) -> list:
+    """Internal fetch with safety. Returns empty list on any error."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await asyncio.wait_for(conn.fetch(query, *args), timeout=_ASYNCPG_TIMEOUT)
+    except asyncio.TimeoutError:
+        audit_log_sync("asyncpg", "WARNING",
+            f"_safe_fetch timed out after {_ASYNCPG_TIMEOUT}s, falling back to PostgREST")
+    except Exception as e:
+        audit_log_sync("asyncpg", "WARNING",
+            f"_safe_fetch failed, falling back to PostgREST: {type(e).__name__}: {e}")
+    return []
+
+
+# ── Low-Level Convenience Helpers ────────────────────────────────
 
 
 async def async_fetch(query: str, *args) -> list:
     """Fetch multiple rows from the database.
 
-    Args:
-        query: SQL query with $1, $2, ... placeholders.
-        *args: Values for placeholders.
-
-    Returns:
-        List of asyncpg Record objects (dict-like).
+    Wraps the query with a 5s per-query timeout via asyncio.wait_for.
+    On timeout/error, logs and returns [] so caller falls back to PostgREST.
     """
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        return await conn.fetch(query, *args)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await asyncio.wait_for(conn.fetch(query, *args), timeout=_ASYNCPG_TIMEOUT)
+    except asyncio.TimeoutError:
+        audit_log_sync("asyncpg", "WARNING",
+            f"async_fetch timed out after {_ASYNCPG_TIMEOUT}s, falling back to PostgREST")
+    except Exception as e:
+        audit_log_sync("asyncpg", "WARNING",
+            f"async_fetch failed, falling back to PostgREST: {type(e).__name__}: {e}")
+    return []
 
 
 async def async_fetchrow(query: str, *args) -> Optional[asyncpg.Record]:
     """Fetch a single row from the database.
 
-    Args:
-        query: SQL query with $1, $2, ... placeholders.
-        *args: Values for placeholders.
-
-    Returns:
-        A single asyncpg Record or None if no rows match.
+    Wraps the query with a 5s per-query timeout via asyncio.wait_for.
+    On timeout/error, logs and returns None so caller falls back to PostgREST.
     """
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        return await conn.fetchrow(query, *args)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await asyncio.wait_for(conn.fetchrow(query, *args), timeout=_ASYNCPG_TIMEOUT)
+    except asyncio.TimeoutError:
+        audit_log_sync("asyncpg", "WARNING",
+            f"async_fetchrow timed out after {_ASYNCPG_TIMEOUT}s, falling back to PostgREST")
+    except Exception as e:
+        audit_log_sync("asyncpg", "WARNING",
+            f"async_fetchrow failed, falling back to PostgREST: {type(e).__name__}: {e}")
+    return None
 
 
 async def async_execute(query: str, *args) -> str:
@@ -224,6 +335,3 @@ async def async_executemany(query: str, args_list: list) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.executemany(query, args_list)
-
-
-

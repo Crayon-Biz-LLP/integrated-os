@@ -1,4 +1,3 @@
-import json
 import hashlib
 from core.lib.redis_cache import cache_get, cache_set
 
@@ -14,7 +13,6 @@ from core.retrieval.normalizer import expand_shorthand, is_noise_phrase
 from core.retrieval.ppr import build_adjacency_from_edges, personalized_pagerank, normalize_scores
 from core.retrieval.ranking import rank_memories
 from core.retrieval.schema import ExplainableBundle, ScoredMemory
-from core.services.async_db import async_fetchrow, async_fetch
 
 _MAX_SUPPORTING_PASSAGES = 5
 
@@ -98,147 +96,7 @@ async def associative_retrieve(
     debug["lex_phrases"] = "[REDACTED]"
 
     # ──────────────────────────────────────────────────
-    # Phase 2d: Try consolidated asyncpg RPC path
-    # ══════════════════════════════════════════════════
-
-    try:
-        tsquery = _build_tsquery(list(lex_phrases) + list(llm_phrases))
-        if not tsquery:
-            return ExplainableBundle(query=query, items=[], latency_ms=int((time.time() - start) * 1000))
-
-        row = await async_fetchrow(
-            "SELECT nodes, edges FROM rpc_get_associative_data($1, $2)",
-            tsquery, 30
-        )
-
-        nodes_raw = row["nodes"] if row else []
-        edges_raw = row["edges"] if row else []
-        nodes_data = nodes_raw if isinstance(nodes_raw, list) else json.loads(nodes_raw) if nodes_raw else []
-        edges_data = edges_raw if isinstance(edges_raw, list) else json.loads(edges_raw) if edges_raw else []
-
-        if not nodes_data or not edges_data:
-            return ExplainableBundle(query=query, items=[], latency_ms=int((time.time() - start) * 1000))
-
-        # Build phrase_node format expected by recognition filter
-        # ⚠️ RPC returns node IDs as strings (from ::text cast in SQL),
-        # but PPR expects int keys. Convert explicitly.
-        phrase_nodes = []
-        for n in nodes_data:
-            nid = n.get("id")
-            if nid is None:
-                continue
-            phrase_nodes.append({
-                "id": int(nid),
-                "normalized_text": n.get("normalized_text", ""),
-                "display_text": n.get("display_text", ""),
-                "node_type": n.get("node_type", ""),
-                "similarity": float(n.get("rank", 0.5)),
-                "passage_ids": n.get("passage_ids", []),
-                "memory_ids": n.get("memory_ids", []),
-            })
-
-        # 3. Recognition filter
-        filtered_nodes = _recognition_filter(phrase_nodes, query_phrases)
-        debug["filtered_nodes"] = len(filtered_nodes)
-
-        if not filtered_nodes:
-            return ExplainableBundle(query=query, items=[], latency_ms=int((time.time() - start) * 1000))
-
-        # 4. PPR on edges from RPC
-        seed_nodes = {n["id"]: n["similarity"] for n in filtered_nodes}
-        ppr_edges = [(e["from"], e["to"], e.get("weight", 1.0)) for e in edges_data]
-
-        adjacency = build_adjacency_from_edges(ppr_edges)
-        ppr_raw = personalized_pagerank(adjacency, seed_nodes)
-        ppr_norm = normalize_scores(ppr_raw)
-        debug["ppr_nodes"] = len(ppr_norm)
-
-        # 5. Aggregate PPR to memory scores using nodes' embedded memory_ids
-        memory_scores = {}
-        for n in filtered_nodes:
-            node_score = ppr_norm.get(n["id"], 0)
-            for mid in n.get("memory_ids", []):
-                if mid not in memory_scores or node_score > memory_scores[mid]:
-                    memory_scores[mid] = node_score
-        debug["memory_candidates"] = len(memory_scores)
-
-        if not memory_scores:
-            return ExplainableBundle(query=query, items=[], latency_ms=int((time.time() - start) * 1000))
-
-        # 6. Fetch memory metadata via rpc_get_memory_metadata
-        # The RPC handles expiry filtering internally
-        # ⚠️ query_emb is a Python list but pgvector expects a string like
-        # '[0.034, 0.064, ...]'. Convert via str() before passing to asyncpg.
-        memory_ids = list(memory_scores.keys())
-        query_emb_str = str(list(query_emb)) if query_emb else None
-        meta_rows = await async_fetch(
-            "SELECT * FROM rpc_get_memory_metadata($1, $2::vector(768))",
-            memory_ids, query_emb_str
-        )
-
-        # Build boost dicts from tabular results
-        now = datetime.now(timezone.utc)
-        recency_boost: Dict[int, float] = {}
-        importance_boost: Dict[int, float] = {}
-        project_boost: Dict[int, float] = {}
-        semantic_scores: Dict[int, float] = {}
-        specificity_boost: Dict[int, float] = {}
-
-        for r in meta_rows:
-            mid = r["memory_id"]
-            if r.get("created_at"):
-                created = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
-                days_old = max(0, (now - created).total_seconds() / 86400.0)
-                recency_boost[mid] = max(0.0, 1.0 - days_old / 90.0)
-            else:
-                recency_boost[mid] = 0.0
-            importance_boost[mid] = r.get("importance_score", 0.5)
-            project_boost[mid] = 1.0 if active_project_id and r.get("project_id") == active_project_id else 0.0
-            semantic_scores[mid] = r.get("semantic_score", 0.0)
-            specificity_boost[mid] = r.get("specificity_score", 0.5)
-
-        # Person boost still uses separate helper (not in RPC)
-        person_boost: Dict[int, float] = {}
-        if active_person_id:
-            person_boost = await asyncio.to_thread(_compute_person_boost, memory_ids, active_person_id)
-
-        # 7. Blended ranking
-        ranked = rank_memories(
-            memory_scores=memory_scores,
-            ppr_scores=memory_scores,
-            semantic_scores=semantic_scores,
-            specificity_boost=specificity_boost,
-            recency_boost=recency_boost,
-            importance_boost=importance_boost,
-            project_boost=project_boost,
-            person_boost=person_boost,
-        )
-
-        top_memories = ranked[:top_k]
-
-        # 8. Bundle assembly
-        def assemble_b():
-            return _assemble_bundles(top_memories, ppr_norm, list(seed_nodes.keys()))
-        items = await asyncio.to_thread(assemble_b)
-
-        latency = int((time.time() - start) * 1000)
-
-        return ExplainableBundle(
-            query=query,
-            items=items,
-            total_candidates=len(ranked),
-            latency_ms=latency,
-            debug_trace=debug if config.debug_explanations else None,
-            blended=(retrieval_mode == "blended"),
-        )
-
-    except Exception as e:
-        from core.lib.audit_logger import audit_log_sync
-        audit_log_sync("retrieval", "WARNING",
-                       f"asyncpg RPC path failed, falling back to PostgREST: {e}")
-
-    # ──────────────────────────────────────────────────
-    # Fallback: Original PostgREST path
+    # Original PostgREST path (falls back to legacy if RPC unavailable)
     # ──────────────────────────────────────────────────
 
     def fetch_lex_candidates():

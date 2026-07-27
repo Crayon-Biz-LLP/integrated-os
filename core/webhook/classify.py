@@ -10,6 +10,10 @@ from core.lib.rate_limiter import SlidingWindowLimiter
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.llm.constants import SAFE_HOLD_CLASSIFICATION, CLASSIFICATION_MODEL
+try:
+    from core.services.async_db import async_fetch
+except Exception:
+    async_fetch = None
 
 supabase = get_supabase()
 
@@ -163,14 +167,23 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     except Exception:
         pass  # Fail-open: if corrections module is unavailable, skip silently
 
-    # --- C3: Fetch entity labels from graph (fail-open, Redis-cached) ---
+            # --- C3: Fetch entity labels from graph (fail-open, Redis-cached, asyncpg) ---
     entities_str = ''
     mentioned_entities_str = ''
     try:
         node_data = cache_get('rhodey:entities:graph_nodes')
         if node_data is None:
-            node_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'project', 'organization']).eq('is_current', True).order('updated_at', desc=True).nullslast().limit(30).execute()
-            node_data = node_res.data if node_res and node_res.data else []
+            if async_fetch:
+                try:
+                    node_rows = await async_fetch(
+                        "SELECT label, type FROM graph_nodes WHERE type IN ('person', 'project', 'organization') AND is_current = TRUE ORDER BY updated_at DESC NULLS LAST LIMIT 30"
+                    )
+                    node_data = [dict(r) for r in node_rows] if node_rows else None
+                except Exception:
+                    pass
+            if node_data is None:
+                node_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'project', 'organization']).eq('is_current', True).order('updated_at', desc=True).nullslast().limit(30).execute()
+                node_data = node_res.data if node_res and node_res.data else []
             cache_set('rhodey:entities:graph_nodes', node_data, ttl=300)
         if node_data:
             people = [n['label'] for n in node_data if n['type'] == 'person'][:8]
