@@ -21,7 +21,7 @@ All four tiers are always active. A single `interrogate_brain()` call touches ev
 
 **What it does:**
 
-1. **Intent classification** (`classify.py`) — Every incoming Telegram message is classified by Gemini Flash Lite into one of 11 intents: `TASK`, `NOTE`, `COMPLETION`, `PROJECT_UPDATE`, `QUERY`, `DAILY_BRIEF`, `DELEGATE`, `DECLARE_PRACTICE`, `ROLE_UPDATE`, `NOISE`, or `CLARIFICATION_NEEDED`. The classifier has explicit heuristics (URLs → TASK, schedule ranges → QUERY, "good morning" → DAILY_BRIEF). Supports `secondary_actions` array for multi-intent messages.
+1. **Intent classification** (`classify.py`) — Every incoming Telegram message is classified by Gemini Flash Lite into one of 10 intents: `TASK`, `NOTE`, `COMPLETION`, `QUERY`, `DAILY_BRIEF`, `DELEGATE`, `DECLARE_PRACTICE`, `ROLE_UPDATE`, `NOISE`, or `CLARIFICATION_NEEDED`. (PROJECT_UPDATE was removed — its rich context flows to NOTE.) The classifier has explicit heuristics (URLs → TASK, schedule ranges → QUERY, "good morning" → DAILY_BRIEF). Supports `secondary_actions` array for multi-intent messages.
 
 2. **Unified Action Planner** (`planner.py` + `executor.py`) — All task/note/completion operations route through a single typed Action pipeline:
    - `plan_actions()`: Single LLM call resolves user intent into typed `Action` objects (create_task, close_task, reschedule, cancel_recurring, etc.) using a multi-source candidate pool (active tasks + recurring tasks + 14-day calendar window)

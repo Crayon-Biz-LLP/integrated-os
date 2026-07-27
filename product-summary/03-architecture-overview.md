@@ -39,15 +39,15 @@ Integrated-OS operates as 5 vertical pipeline layers atop a shared infrastructur
 ║              INFRASTRUCTURE (Cross-Cutting)                   ║
 ║  Database (Supabase/PostgREST) │ Google Calendar/Tasks       ║
 ║  Gmail/Outlook │ Telegram │ FCM Push                         ║
-║  GitHub Actions │ cron-job.org │ Vercel                      ║
+║  GitHub Actions │ cron-job.org │ Modal (backend)             ║
 ║  Upstash Redis (cache)                                      ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
 ## System Components
 
-### API Layer (Vercel Serverless Function)
-A single Python FastAPI application (`api/index.py`) handles all HTTP traffic. Routes serve Telegram webhooks, the Pulse briefing engine, frontend API proxying, health checks, and diagnostic endpoints. All routes are rewritten to this single function via `vercel.json` `rewrites`. The webhook is wrapped in `asyncio.wait_for(timeout=55)` to intercept Vercel's 60s hard kill and return cleanly with a "still thinking" placeholder.
+### API Layer (Modal Serverless Function)
+A single Python FastAPI application (`api/index.py` deployed via `infra/modal_app.py`) handles all HTTP traffic on Modal. Routes serve Telegram webhooks, the Pulse briefing engine, frontend API proxying, health checks, and diagnostic endpoints. The webhook has a 295s timeout (vs Vercel's 60s limit under the old deployment).
 
 ### Webhook Handler (`core/webhook/`)
 The primary entry point for real-time data. Processes Telegram updates through a pipeline: dedup → auth → multimodal dispatch → shortcode resolution → clarification handling → intent classification → routing. URL quarantine at ingress (`url_filter.py`) routes bare URLs directly to resources table with no LLM call.
@@ -87,7 +87,7 @@ Telegram Message / Web UI / Flutter App
     → url_filter.py (URL quarantine at ingress)
     → classifier (Gemini Flash Lite — intent + entity)
     → Route by Intent:
-        TASK/COMPLETION/NOTE/PROJECT_UPDATE → plan_actions()
+        TASK/COMPLETION/NOTE → plan_actions()
             → execute_planned_actions()
             → create_task_direct / create_note_direct (with entity resolution BEFORE creation)
             → enrichment_queue (graph edges, entities, embeddings — survives Vercel cold kills)
@@ -128,7 +128,7 @@ Scheduled Pulse (via GitHub Actions/cron-job.org)
 | Push | Firebase Cloud Messaging (FCM) |
 | Auth | HMAC-SHA256 + API Key + PULSE_SECRET + Supabase Service Role |
 | CI/CD | GitHub Actions (8+ workflows) + cron-job.org |
-| Hosting | Vercel (serverless functions + static export) |
+| Hosting | Modal (serverless functions) + Vercel (frontend static export) |
 | Document Extraction | PyMuPDF (PDF), python-docx (DOCX), openpyxl (XLSX), python-pptx (PPTX) |
 | Data Visualization | PixiJS v8 WebGL (NeuralDisc), D3.js (graph) |
 | UI Framework | shadcn/ui + Radix UI + Tailwind v4 |

@@ -3,7 +3,7 @@
 ## Backend (Python/FastAPI)
 
 ### Entry Point
-A single serverless function at `api/index.py` handles all HTTP traffic via Vercel `rewrites`. Routes serve Telegram webhooks, the Pulse briefing engine, frontend API proxying, health checks, diagnostic endpoints, web chat, and deploy hooks.
+A single FastAPI application at `api/index.py` handles all HTTP traffic, deployed via `infra/modal_app.py` on Modal (previously Vercel). Routes serve Telegram webhooks, the Pulse briefing engine, frontend API proxying, health checks, diagnostic endpoints, web chat, and deploy hooks.
 
 ### Module Architecture
 
@@ -103,7 +103,7 @@ core/
 
 ### Key Design Decisions
 
-- **Serverless**: Runs as a single Vercel serverless function with 60s timeout; wrapped in `asyncio.wait_for(55)` for clean timeout recovery
+- **Serverless**: Runs as a Modal serverless function with 300s timeout (upgraded from Vercel's 60s limit)
 - **Action Planner (unified)**: Single typed Action pipeline replaces legacy 3-headed architecture (Webhook + Quick Process cron + Pulse Engine sorter)
 - **Enrichment queue**: `pending_enrichment_jobs` with atomic claim → survives Vercel cold kills (replaced fire-and-forget `asyncio.create_task`)
 - **Parallel context assembly**: `asyncio.gather` in briefing.py and dispatch.py for independent DB/LLM queries

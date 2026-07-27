@@ -1,7 +1,7 @@
 # WhatsApp Ingest
 
 ## Overview
-Ingests WhatsApp messages as a new input channel, separate from the email pipeline. Uses Android's notification listener (via MacroDroid) to capture messages and forward them to a Vercel endpoint for Gemini classification and approval routing.
+Ingests WhatsApp messages as a new input channel, separate from the email pipeline. Uses Android's notification listener (via MacroDroid) to capture messages and forward them to a Modal endpoint for Gemini classification and approval routing.
 
 ## Data Flow
 ```
@@ -9,7 +9,7 @@ WhatsApp notification on Android phone
        ↓
 MacroDroid trigger (reads sender + text)
        ↓
-HTTP POST → POST /api/whatsapp-ingest (Vercel Python)
+HTTP POST → POST /api/whatsapp-ingest (Modal Python)
   Header: X-Ingest-Secret: <shared key>
   Body: { sender, phone, text, received_at }
        ↓
@@ -81,7 +81,7 @@ Prefixed shortcodes (`w{id}`) route directly to `messages` via `core/webhook/wha
 ## Environment Variables
 | Variable | Purpose |
 |----------|---------|
-| `WHATSAPP_INGEST_SECRET` | Shared secret between MacroDroid and Vercel |
+| `WHATSAPP_INGEST_SECRET` | Shared secret between MacroDroid and Modal |
 
 ## Code Files
 | File | Purpose |

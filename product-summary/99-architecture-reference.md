@@ -86,7 +86,7 @@
 | Task creation ("buy groceries", "setup meeting") | `TASK` | ✅ Got it / 📋 Added / ✅ Created |
 | Notes/ideas/MoMs | `NOTE` | 🧠 Captured / 📝 Noted |
 | Task management ("close tasks", "cancel") | `COMPLETION` | ✅ Closed / ✅ Done 🎯 |
-| Project updates | `PROJECT_UPDATE` | 🔄 Updated |
+
 | Role attributions ("[name] is [role]") | `ROLE_UPDATE` | 👤 Updated |
 | Daily briefing ("good morning", "what's my day?") | `DAILY_BRIEF` | 🧠 Briefing... |
 | URLs | Intercepted at ingress → `resources` table (no LLM call) | N/A |

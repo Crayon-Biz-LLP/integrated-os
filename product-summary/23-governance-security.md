@@ -137,7 +137,7 @@ A non-negotiable rule: NEVER delete database records without explicit user appro
 
 ### Secrets Management
 
-Required environment variables (stored in GitHub Secrets for CI, Vercel Environment Variables for deployment):
+Required environment variables (stored in GitHub Secrets for CI, Modal secret `rhodey-os` for deployment):
 ```
 SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID

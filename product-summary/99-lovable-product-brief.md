@@ -27,7 +27,7 @@ The system operates as a triangular engine:
 - **Not a chatbot**: The app does NOT show a transcript of past conversations. It shows a structured briefing of what matters right now
 - **Not a dashboard**: There are no decorative charts, no empty state placeholders, no widget grids. Every pixel serves awareness or action
 - **Hyper-personalized**: The system knows the user's strategic season, their relationships, their projects, their habits
-- **Zero infrastructure cost**: Runs on free tiers of Vercel, Supabase, GitHub Actions, and Gemini API
+- **Zero infrastructure cost**: Runs on free tiers of Modal, Supabase, GitHub Actions, and Gemini API
 - **Self-healing**: 313+ error guards, zombie recovery, dead letter queues, triple LLM fallback chain
 
 ---
@@ -95,7 +95,7 @@ Think of Rhodey as a physical desk, not a chat log. Rhodey's voice is center, pr
 
 | Layer | Technology |
 |-------|-----------|
-| Backend API | Python FastAPI on Vercel (serverless) |
+| Backend API | Python FastAPI on Modal (serverless) |
 | Database | Supabase (PostgreSQL + pgvector) |
 | AI | Gemini 3 Flash, Gemini Flash Lite, Gemini Embedding 2 |
 | Knowledge Graph | Custom graph_edges + graph_nodes tables |
@@ -574,7 +574,7 @@ Every API request must include an `X-API-Key` header. The API key is configured 
 
 ### Retry Logic
 
-The API client has built-in retry logic for 429 (rate limit) and 5xx errors. Up to 3 attempts with jittered backoff. Mute endpoints use 15-second timeout. The send-message endpoint uses 30-second timeout (because it includes LLM processing on Vercel serverless).
+The API client has built-in retry logic for 429 (rate limit) and 5xx errors. Up to 3 attempts with jittered backoff. Mute endpoints use 15-second timeout. The send-message endpoint uses 30-second timeout (because it includes LLM processing on serverless).
 
 ### Pull-to-Refresh
 

@@ -16,7 +16,7 @@ This is not a SaaS product or a generic productivity app. It is a bespoke, hyper
 | Autonomous runs per week | 210+ |
 | LLM providers | 3 (Gemini, Gemma, OpenRouter) |
 | Frontend components | 88+ |
-| Infrastructure cost | $0 (free tiers) |
+| Infrastructure cost | $0 (free tiers on Modal) |
 
 ## The Architecture (5 Layers + Infrastructure)
 
