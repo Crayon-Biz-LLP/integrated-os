@@ -107,7 +107,7 @@ daily_convs = (conv_count.count / 90) if conv_count.count else 30
 
 # Estimate: each webhook call is ~30-45s on Vercel, ~15-25s on Modal
 # Plus background tasks
-print(f"\nTraffic Profile:")
+print("\nTraffic Profile:")
 print(f"  Daily Telegram updates (webhook calls): ~{daily_updates:.0f}")
 print(f"  Daily conversation exchanges: ~{daily_convs:.0f}")
 print(f"  Daily bot responses: ~{response_count.count / 90:.0f}")
@@ -119,7 +119,7 @@ decision_runs = 48 * 30   # every 30 min
 pulse_runs = 6 * 22       # weekdays only
 roundup_runs = 2 * 30     # 2x daily
 
-print(f"\nBackground Tasks (monthly):")
+print("\nBackground Tasks (monthly):")
 print(f"  Sentinel (every 5 min): ~{sentinel_runs} runs")
 print(f"  Decision Pulse (every 30 min): ~{decision_runs} runs")
 print(f"  Pulse engine (6x weekday): ~{pulse_runs} runs")
@@ -134,7 +134,7 @@ bg_roundup_sec = roundup_runs * 15
 total_webhook_sec = webhook_sec
 total_bg_sec = bg_pulse_sec + bg_sentinel_sec + bg_decision_sec + bg_roundup_sec
 
-print(f"\nCompute Seconds (monthly):")
+print("\nCompute Seconds (monthly):")
 print(f"  Webhook processing: ~{total_webhook_sec:,}s ({total_webhook_sec/3600:.1f} hrs)")
 print(f"  Background tasks: ~{total_bg_sec:,}s ({total_bg_sec/3600:.1f} hrs)")
 print(f"  Total: ~{total_webhook_sec + total_bg_sec:,}s ({(total_webhook_sec + total_bg_sec)/3600:.1f} hrs)")
@@ -160,23 +160,23 @@ monthly_data_gb = (daily_updates * 30 * 20 * 1024) / (1024**3)  # ~20KB per webh
 if monthly_data_gb < 1:
     monthly_data_gb = 1  # very small
 
-print(f"\n--- MODAL COST ---")
-print(f"Warm container (FastAPI, min_containers=1):")
+print("\n--- MODAL COST ---")
+print("Warm container (FastAPI, min_containers=1):")
 print(f"  CPU (0.125 phys cores): ${warm_cpu_cost:.2f}/mo")
 print(f"  RAM (0.5 GiB): ${warm_ram_cost:.2f}/mo")
 print(f"  Subtotal: ${warm_total:.2f}/mo")
-print(f"")
-print(f"Background tasks (scale-to-zero):")
+print("")
+print("Background tasks (scale-to-zero):")
 print(f"  CPU: ${bg_cpu_cost:.2f}/mo")
 print(f"  RAM: ${bg_ram_cost:.2f}/mo")
 print(f"  Subtotal: ${bg_total:.2f}/mo")
-print(f"")
+print("")
 print(f"Network (est. ~{monthly_data_gb:.1f} GB/mo): $0.00 (within free tier)")
-print(f"")
+print("")
 print(f"GRAND TOTAL: ${warm_total + bg_total:.2f}/month")
-print(f"MODAL FREE CREDIT: $30.00/month")
+print("MODAL FREE CREDIT: $30.00/month")
 print(f"REMAINING CREDIT: ${30 - (warm_total + bg_total):.2f}/month")
-print(f"YOU PAY: $0.00 (well within free tier)")
-print(f"")
-print(f"Vercel cost savings: Vercel Hobby = $0/mo (stays free for frontend)")
-print(f"Net change to your wallet: $0.00/month")
+print("YOU PAY: $0.00 (well within free tier)")
+print("")
+print("Vercel cost savings: Vercel Hobby = $0/mo (stays free for frontend)")
+print("Net change to your wallet: $0.00/month")

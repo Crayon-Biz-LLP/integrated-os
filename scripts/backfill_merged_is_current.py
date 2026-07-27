@@ -22,7 +22,7 @@ if os.path.exists(_env):
                 k, v = line.split('=', 1)
                 os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'").strip())
 
-from core.services.db import get_supabase
+from core.services.db import get_supabase  # noqa: E402
 
 s = get_supabase()
 

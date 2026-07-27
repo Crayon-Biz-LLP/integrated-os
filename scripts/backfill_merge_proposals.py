@@ -12,21 +12,27 @@ def main():
     for pid in STUCK_IDS:
         res = supabase.table('pending_nodes').select('*').eq('id', pid).single().execute()
         if not res.data:
-            print(f"  SKIP id={pid}: not found"); skipped += 1; continue
+            print(f"  SKIP id={pid}: not found")
+            skipped += 1
+            continue
         row = res.data
         label = row.get('label', '')
         node_type = row.get('node_type', row.get('type', 'person'))
         if not label:
-            print(f"  SKIP id={pid}: no label"); skipped += 1; continue
+            print(f"  SKIP id={pid}: no label")
+            skipped += 1
+            continue
         existing = supabase.table('merge_proposals').select('id').eq('origin_table', 'pending_nodes').eq('origin_id', pid).limit(1).execute()
         if existing.data:
             print(f"  SKIP id={pid}: merge_proposals row already exists (id={existing.data[0]['id']})")
-            skipped += 1; continue
+            skipped += 1
+            continue
         candidates = find_similar_node(label, node_type)
         candidate = candidates[0] if candidates else None
         if not candidate or not candidate.get('id'):
             print(f"  SKIP id={pid} ('{label}'): no similar node found")
-            skipped += 1; continue
+            skipped += 1
+            continue
         target_node_id = candidate['id']
         target_label = candidate.get('label', target_node_id)
         supabase.table('merge_proposals').insert({
