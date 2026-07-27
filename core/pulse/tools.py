@@ -134,9 +134,11 @@ async def create_task_direct(
             except Exception as cal_e:
                 audit_log_sync("tools", "WARNING", f"Calendar sync failed for task {task_id}: {cal_e}")
 
-        # Google Tasks sync
+        # Google Tasks sync — persist returned ID for downstream completion sync
         try:
-            sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=deadline or reminder_at)
+            g_task_id = sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=deadline or reminder_at)
+            if g_task_id:
+                supabase.table('tasks').update({'google_task_id': g_task_id}).eq('id', task_id).execute()
         except Exception as gt_e:
             audit_log_sync("tools", "WARNING", f"Google Tasks sync failed: {gt_e}")
 

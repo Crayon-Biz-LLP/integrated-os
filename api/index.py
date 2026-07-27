@@ -6,7 +6,6 @@ import httpx
 import json
 import uuid
 import asyncio
-import concurrent.futures
 from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
@@ -51,10 +50,6 @@ async def lifespan(app):
     Also upgrades the thread pool from default (min(32, 6)=6) to 16 workers
     because interrogate_brain fires 17+ sync Supabase calls via asyncio.to_thread().
     """
-    # Startup: upgrade thread pool
-    loop = asyncio.get_running_loop()
-    loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=16))
-
     # Startup: initialize asyncpg pool (hot-path reads only)
     try:
         from core.services.async_db import init_pool
@@ -97,10 +92,10 @@ async def webhook_route(request: Request):
     trace_id_var.set(f"tg_{update.get('update_id', uuid.uuid4().hex[:8])}")
     begin_action_context()
     try:
-        await asyncio.wait_for(process_webhook(update), timeout=55)
+        await asyncio.wait_for(process_webhook(update), timeout=295)
         return {"success": True}
     except asyncio.TimeoutError:
-        print("Webhook processing timed out (>55s). Vercel may kill at 60s.")
+        print("Webhook processing timed out (>295s). Modal may kill at 300s.")
         return {"success": True, "message": "Processing started"}
     except Exception as e:
         print(f"Webhook error: {e}")

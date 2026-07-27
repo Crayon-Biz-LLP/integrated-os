@@ -26,20 +26,12 @@ from core.services.db import get_supabase
 class DetectedEntity:
     """A single entity detected in text."""
     label: str
-    type: str  # person, organization, project, place, event, animal, emotional_state
+    type: str  # person, organization, place, event, animal, emotional_state
     source: str  # 'db_lookup' or 'pattern_match'
     db_id: Optional[str] = None  # ID from DB if found in Phase 1
     is_new: bool = False  # True if not found in DB (pattern-matched)
     confidence: float = 1.0
 
-
-# Words stripped from project label candidates
-_PROJECT_NOISE_WORDS = {
-    'project', 'website', 'web', 'app', 'application', 'platform',
-    'page', 'site', 'service', 'system', 'product',
-    'tool', 'task', 'note', 'portal', 'dashboard', 'panel',
-    'hub', 'suite', 'manager', 'management', 'tracker',
-}
 
 # Words that signal a following capitalized name is a person reference
 _PERSON_CONTEXT_WORDS = {
@@ -166,7 +158,7 @@ def detect_entities(text: str) -> List[DetectedEntity]:
         # Fetch all known entities
         gn_res = supabase.table('graph_nodes') \
             .select('label, type, id, db_record_id') \
-            .in_('type', ['person', 'organization', 'project', 'place',
+            .in_('type', ['person', 'organization', 'place',
                           'event', 'animal', 'emotional_state']) \
             .neq('epistemic_status', 'hypothetical') \
             .eq('is_current', True) \
@@ -175,12 +167,6 @@ def detect_entities(text: str) -> List[DetectedEntity]:
 
         orgs_res = supabase.table('organizations').select('id, name').execute()
         orgs = orgs_res.data or []
-
-        projs_res = supabase.table('projects') \
-            .select('id, name, organization_id') \
-            .eq('is_current', True) \
-            .execute()
-        projs = projs_res.data or []
 
         people_res = supabase.table('people') \
             .select('id, name') \
@@ -192,7 +178,6 @@ def detect_entities(text: str) -> List[DetectedEntity]:
         audit_log_sync("entity_detector", "WARNING", f"Phase 1 DB fetch failed: {e}")
         graph_nodes = []
         orgs = []
-        projs = []
         people = []
 
     # Build n-gram index from text
@@ -210,7 +195,7 @@ def detect_entities(text: str) -> List[DetectedEntity]:
             # (graph_nodes UUID) — memories.organization_id/project_id FK to
             # domain tables, not graph_nodes. All three types have
             # db_record_id set via create_graph_node_with_db_record.
-            if node['type'] in ('organization', 'project', 'person') and node.get('db_record_id'):
+            if node['type'] in ('organization', 'person') and node.get('db_record_id'):
                 db_id_val = str(node['db_record_id'])
             else:
                 db_id_val = node['id']
@@ -234,18 +219,6 @@ def detect_entities(text: str) -> List[DetectedEntity]:
                 is_new=False,
             ))
 
-    # Match projects by name
-    for proj in projs:
-        norm_name = _normalize(proj['name'])
-        if norm_name in text_ngrams:
-            _add(DetectedEntity(
-                label=proj['name'],
-                type='project',
-                source='db_lookup',
-                db_id=str(proj['id']),
-                is_new=False,
-            ))
-
     # Match people by name
     for p in people:
         norm_name = _normalize(p['name'])
@@ -261,54 +234,6 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     # ════════════════════════════════════════════════════════════════════════
     # Phase 2: Pattern Match — detect unregistered entities
     # ════════════════════════════════════════════════════════════════════════
-
-    text_lower = text.lower()
-
-    # ── Pattern A: "[Known Org] [Descriptor] project/app/platform" ──
-    # Produces combined labels like "FC Madras Website" from "FC Madras website project".
-    # The noise word set includes terms like "project", "website", "app", "platform" that
-    # often appear after a project's descriptive name. We use them as delimiters to find
-    # the actual project descriptor.
-    #
-    # Two cases:
-    #   1. "FC Madras Compliance project"  → between=" Compliance"  → descriptor="Compliance"  → "FC Madras Compliance"
-    #   2. "FC Madras website project"     → between="" (website IS the descriptor)
-    #                                       → descriptor="Website" → "FC Madras Website"
-    org_labels = [e.label for e in entities if e.type == 'organization']
-    for org_label in org_labels:
-        org_lower = org_label.lower()
-        org_idx = text_lower.find(org_lower)
-        if org_idx < 0:
-            continue
-        after_org = text[org_idx + len(org_label):]
-        # Look for a noise word after the org
-        for noise_word in sorted(_PROJECT_NOISE_WORDS, key=len, reverse=True):
-            noise_match = re.search(
-                r'\b' + re.escape(noise_word) + r'\b',
-                after_org, re.IGNORECASE
-            )
-            if noise_match:
-                between = after_org[:noise_match.start()].strip()
-                if between:
-                    # Case 1: text between org and noise word IS the descriptor
-                    descriptor = between.title().strip()
-                else:
-                    # Case 2: noise word itself IS the descriptor (e.g. "FC Madras website")
-                    descriptor = noise_word.title().strip()
-                project_label = f"{org_label} {descriptor}"
-                project_key = project_label.lower()
-                if project_key not in seen_labels:
-                    _add(DetectedEntity(
-                        label=project_label,
-                        type='project',
-                        source='pattern_match',
-                        is_new=True,
-                        confidence=0.9,
-                    ))
-                    audit_log_sync("entity_detector", "INFO",
-                        f"Pattern A: Proposed project '{project_label}' from "
-                        f"'{org_label}' + '{descriptor}'")
-                break  # Only use first noise word found
 
     # ── Pattern B: Person detection via capitalized names in context ──
     caps_phrases = _find_capitalized_phrases(text)

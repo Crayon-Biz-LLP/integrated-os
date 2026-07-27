@@ -1054,9 +1054,12 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
                     
                     if session_id:
                         try:
-                            supabase.table('conversation_threads').update({
-                                'active_anchor': active_anchor
-                            }).eq('id', session_id).execute()
+                            # Fix 4: Only persist active_anchor on entity threads, not general
+                            _anchor_thread = supabase.table('conversation_threads').select('thread_type').eq('id', session_id).limit(1).execute()
+                            if _anchor_thread.data and _anchor_thread.data[0].get('thread_type') != 'general':
+                                supabase.table('conversation_threads').update({
+                                    'active_anchor': active_anchor
+                                }).eq('id', session_id).execute()
                         except Exception as persist_e:
                             audit_log_sync("webhook", "WARNING", f"Failed to persist active_anchor: {persist_e}")
             except Exception as e:
@@ -1453,9 +1456,12 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
 
             if active_anchor:
                 try:
-                    supabase.table('conversation_threads').update({
-                        'active_anchor': active_anchor
-                    }).eq('id', session_id).execute()
+                    # Fix 4: Only persist active_anchor on entity threads, not general
+                    _anchor_thread_end = supabase.table('conversation_threads').select('thread_type').eq('id', session_id).limit(1).execute()
+                    if _anchor_thread_end.data and _anchor_thread_end.data[0].get('thread_type') != 'general':
+                        supabase.table('conversation_threads').update({
+                            'active_anchor': active_anchor
+                        }).eq('id', session_id).execute()
                 except Exception as persist_e:
                     audit_log_sync("webhook", "WARNING", f"Failed to persist end-of-query anchor: {persist_e}")
             _persist_chain_id(session_id)

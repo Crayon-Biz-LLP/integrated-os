@@ -184,7 +184,7 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
             }).execute()
             memory_id = mem_result.data[0]['id']
             schedule_index_memory(memory_id, mem_content, "relationship_note", "whatsapp")
-            extract_and_link_entities(mem_content, str(memory_id), 'memory')
+            await extract_and_link_entities(mem_content, str(memory_id), 'memory')
         print(f"[fyi] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "fyi", "classification": final_class}
 

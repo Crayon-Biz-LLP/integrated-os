@@ -95,40 +95,51 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
 
 
 def _entity_is_primary_topic(text: str, entity_name: str) -> bool:
-    """K2: Check if entity_name is the primary subject of text, not a side mention.
+    """Check if entity_name is the primary subject of text, not a side mention.
     
-    Heuristic: if entity name is a large proportion of the content, or appears
-    at the start of the message, it's likely the primary topic.
-    A side mention ('talked to X about Y') should not reroute the thread.
+    Uses word-boundary matching to find the entity name in the text, then
+    checks side-mention patterns. The old heuristic (≥25% overlap, ≥2 mentions)
+    was too restrictive — it blocked single-word entities (Qhord, Ashraya, etc.)
+    in natural-language queries like "Tell me about what's happening with Qhord".
+    
+    Returns True if:
+    - Entity name appears as a standalone word in the text (respecting boundaries)
+    - AND no side-mention pattern matches (e.g., "talked to X from Entity")
+    
+    Returns False if:
+    - Text or entity_name is empty
+    - Entity name is absent from the text
+    - A side-mention pattern fires
     """
     if not text or not entity_name:
         return False
     norm_text = text.lower().strip()
     norm_entity = entity_name.lower().strip()
     
-    # Direct match: text IS the entity or starts with it
-    if norm_text == norm_entity or norm_text.startswith(norm_entity + " "):
-        return True
+    # Word-boundary check: does entity appear as a standalone word?
+    # Escapes regex special chars and uses \b to respect word boundaries
+    # This correctly handles:
+    #   - "Qhord" in "Tell me about Qhord" → matches
+    #   - "Qhord" in "Qhord?" → matches (? is non-word, \b fires)
+    #   - "Qhord" in "Qhording" → does NOT match (no boundary between d and i)
+    #   - "Acc" in "accounts" → does NOT match (no boundary after cc)
+    pattern = r'\b' + re.escape(norm_entity) + r'\b'
+    if not re.search(pattern, norm_text):
+        return False
     
-    # Entity name appears as a large proportion of text (>25% of words)
-    text_words = set(norm_text.split())
-    entity_words = norm_entity.split()
-    if entity_words and len(text_words) > 1:
-        overlap = sum(1 for w in entity_words if w in text_words)
-        if overlap / len(text_words) >= 0.25:
-            return True
-    
-    # Check for common side-mention patterns
+    # Side-mention pattern check: if entity appears in a clear side-mention
+    # pattern, it's likely not the primary topic.
+    # Only unambiguous patterns are included — "from" and "at" alone are
+    # too aggressive ("What's happening at Ashraya?", "from Qhord").
     side_patterns = [
-        r'\b(?:talked to|spoke with|met with|had lunch with|from|at|works at)\s+' + re.escape(norm_entity),
-        r'\b' + re.escape(norm_entity) + r'\s+(?:is|was|said|mentioned|confirmed)',
+        r'\b(?:talked to|spoke with|met with|had lunch with|works at)\s+' + re.escape(norm_entity),
     ]
     for pat in side_patterns:
         if re.search(pat, norm_text):
-            return False  # It's a side mention
+            return False  # Side mention — don't reroute
     
-    # If entity appears multiple times, it's likely the topic
-    return norm_text.count(norm_entity) >= 2
+    # Entity appears as a word and no side pattern matched → it's the primary topic
+    return True
 
 
 def _fetch_entity_candidates(text: str, chat_id: int) -> list:
@@ -532,9 +543,13 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
                 from core.lib.audit_logger import audit_log_sync
                 audit_log_sync("routing", "WARNING", f"Entity resolution failed in thread routing: {inner_e}")
 
-        # 4. Last active non-archived thread (if previous bot turn ended with question)
+        # 4. Resume most recent thread (broadened from just "prior bot question")
+        # If the most recent thread had activity within the last 30 minutes,
+        # resume it — even if the bot didn't end with a question mark.
+        # This prevents filler responses ("yes", "ok", "thanks") from breaking
+        # thread continuity after entity-scoped interactions.
         last_thread = supabase.table('conversation_threads') \
-            .select('id, active_anchor') \
+            .select('id, active_anchor, last_active_at') \
             .eq('chat_id', chat_id) \
             .is_('archived_at', 'null') \
             .order('last_active_at', desc=True) \
@@ -543,27 +558,48 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
             
         if last_thread.data:
             thread_id = last_thread.data[0]['id']
+            last_active = last_thread.data[0].get('last_active_at')
+            
+            # Check if thread was active recently (within 30 minutes)
+            resume_recent = False
+            if last_active:
+                try:
+                    last_active_dt = datetime.fromisoformat(str(last_active).replace('Z', '+00:00'))
+                    minutes_ago = (datetime.now(timezone.utc) - last_active_dt).total_seconds() / 60
+                    if minutes_ago <= 30:
+                        resume_recent = True
+                except Exception:
+                    pass
+            
+            # Also check if previous bot turn ended with a question (original logic)
             last_msg = supabase.table('conversations') \
                 .select('role, content') \
                 .eq('thread_id', thread_id) \
                 .order('created_at', desc=True) \
                 .limit(1) \
                 .execute()
-                
+            bot_asked_question = False
             if last_msg.data and last_msg.data[0]['role'] == 'bot':
                 content = last_msg.data[0]['content']
                 if content.strip().endswith('?') or 'clarification' in content.lower() or 'ready to add that to your calendar' in content.lower():
-                    _touch_thread(thread_id)
-                    from core.lib.audit_logger import audit_log_sync
-                    audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via prior_bot_question")
-                    return thread_id, last_thread.data[0].get('active_anchor')
+                    bot_asked_question = True
+            
+            if resume_recent or bot_asked_question:
+                _touch_thread(thread_id)
+                from core.lib.audit_logger import audit_log_sync
+                audit_log_sync("routing", "INFO",
+                    f"Routed to thread {thread_id} via recent_activity "
+                    f"(recent={resume_recent}, question={bot_asked_question})")
+                return thread_id, last_thread.data[0].get('active_anchor')
 
-        # 5. Else general
+        # 5. Else general (deterministic: most recently active first)
         general = supabase.table('conversation_threads') \
             .select('id, active_anchor') \
             .eq('chat_id', chat_id) \
             .eq('thread_type', 'general') \
             .is_('archived_at', 'null') \
+            .order('last_active_at', desc=True) \
+            .limit(1) \
             .execute()
             
         if general.data:

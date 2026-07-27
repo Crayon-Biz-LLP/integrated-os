@@ -575,6 +575,31 @@ Context:
         except Exception as arc_err:
             audit_log_sync("sentinel", "WARNING", f"Thread archive error (non-critical): {arc_err}")
 
+        # --- PIGGYBACK: H2 Auto-archive stale general threads ---
+        # Archive general threads inactive for >14 days. General threads
+        # accumulate as throwaway conversations and are only needed for short-term
+        # filler message continuity (the 30-min window). After 14 days, they're dead weight.
+        # This keeps the active thread count manageable for priority 4 routing.
+        try:
+            fourteen_days_ago = (now - timedelta(days=14)).isoformat()
+            stale_general_res = supabase.table('conversation_threads') \
+                .select('id') \
+                .eq('thread_type', 'general') \
+                .lt('last_active_at', fourteen_days_ago) \
+                .is_('archived_at', 'null') \
+                .limit(50) \
+                .execute()
+            if stale_general_res.data:
+                stale_general_ids = [t['id'] for t in stale_general_res.data]
+                supabase.table('conversation_threads') \
+                    .update({'archived_at': now.isoformat()}) \
+                    .in_('id', stale_general_ids) \
+                    .execute()
+                audit_log_sync("sentinel", "INFO",
+                    f"thread archive: {len(stale_general_ids)} stale general thread(s) archived (>14d inactive)")
+        except Exception as arc_gen_err:
+            audit_log_sync("sentinel", "WARNING", f"General thread archive error (non-critical): {arc_gen_err}")
+
         # --- PIGGYBACK: P6 Enrichment Queue Consumer ---
         # Processes pending task_graph and note_enrich jobs that were queued
         # during create_task_direct / create_note_direct. Runs every sentinel cycle

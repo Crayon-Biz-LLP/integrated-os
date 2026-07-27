@@ -106,6 +106,32 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
 
     # --- END OF GUARD 1 ---
 
+    # --- REMINDER PRE-FILTER: "Remind me to X" → TASK deterministically ---
+    # Messages asking to create reminders are always TASK, never COMPLETION or NOTE.
+    # Common patterns: "Remind me to...", "Remind me that...", "Set a reminder for...",
+    # "Set reminder to...", "Remind Danny to..." (if forwarded).
+    # This saves an LLM call and prevents the COMPLETION misclassification that occurred
+    # when "Remind me to purchase the Ashraya domain on 10th August" was classified
+    # as COMPLETION — the LLM saw "purchase" and wrongfully interpreted it as a closure.
+    _reminder_pattern = re.compile(
+        r"\b[Re]+mind\s+(me|danny)\s+(to|about|that)"
+        r"|\bset\s+(a\s+|the\s+)?reminder\s+(for|to)"
+        r"|\bremind\s+(me|us)\s+about",
+        re.IGNORECASE
+    )
+    if _reminder_pattern.search(text.strip()):
+        audit_log_sync("classify", "INFO", f"Reminder pre-filter: 'remind me' → TASK ({text[:60]}...)")
+        return {
+            "intent": "TASK",
+            "confidence": 1.0,
+            "entity": "INBOX",
+            "title": text[:80],
+            "receipt": "Reminder added.",
+            "possible_intents": [],
+            "reasoning": "Deterministic pre-filter: 'Remind me' pattern → TASK",
+            "contains_hidden_action": False,
+        }
+
     # --- GAP C: Schedule/calendar query pattern → QUERY deterministically ---
     # Questions about meetings, schedules, calendars are always QUERY.
     # This saves an LLM call and prevents misclassification as TASK/NOTE.

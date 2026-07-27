@@ -178,7 +178,7 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                     if res.get("action") == "created":
                         reply_text += f"\n✅ Task created: {title}"
                 elif sig_type == "task_imperative":
-                    res = await create_task_direct(title=title, organization_name=organization_name)
+                    res = await create_task_direct(title=title, reminder_at=reminder_at, organization_name=organization_name)
                     if res.get("action") == "created":
                         reply_text += f"\n✅ Task created: {title}" 
                 elif sig_type == "task_closure":

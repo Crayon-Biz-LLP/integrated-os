@@ -141,7 +141,7 @@ async def ingest(
             if mem_res.data:
                 memory_id = mem_res.data[0]['id']
                 schedule_index_memory(memory_id, mem_content, "relationship_note", source)
-                extract_and_link_entities(mem_content, str(memory_id), 'memory')
+                await extract_and_link_entities(mem_content, str(memory_id), 'memory')
 
         return {"status": "filed", "action": "note", "message_id": message_id}
 
