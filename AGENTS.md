@@ -1,7 +1,7 @@
 # Integrated-OS Agent Guide
 
 ## Project Overview
-FastAPI-based executive command system deployed as Vercel serverless functions (Python 3.11, matches CI). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
+FastAPI-based executive command system deployed on Modal (Python 3.11+). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 
 ## Codebase Discovery Workflow
 
