@@ -36,7 +36,7 @@
        ▼
 [core/webhook/handler.py] ── classify ──► [Gemini Flash Lite]
        │
-       ├──► TASK / NOTE / COMPLETION / PROJECT_UPDATE ──► [plan_actions()]
+       ├──► TASK / NOTE / COMPLETION ──► [plan_actions()]
        │                                                         │
        │                                                 [Action Planner]
        │                                                         │
