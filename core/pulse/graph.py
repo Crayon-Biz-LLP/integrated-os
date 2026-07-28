@@ -28,7 +28,6 @@ def is_valid_uuid(val: str) -> bool:
 
 
 TYPE_TO_DANNY_EDGE = {
-    'project': 'OWNS',
     'person': 'KNOWS',
     'organization': 'MEMBER_OF',
     'place': 'RELATES_TO',
@@ -45,12 +44,12 @@ async def create_graph_node_with_db_record(
     source_tag: str = "pending_approval",
     force: bool = False
 ) -> dict:
-    """Create a people/projects table row + graph_nodes entry + Danny edge.
-    
-    Three modes:
+    """Create a domain table row + graph_nodes entry + Danny edge.
+
+    Two modes:
     - Person: creates people row → graph_nodes with people_id → Danny KNOWS edge
-    - Project: creates projects row → graph_nodes with project_id → Danny OWNS edge
-    - Other (org, concept, etc.): graph_nodes only, no DB table
+    - Organization: creates organizations row → graph_nodes with org_id → Danny MEMBER_OF edge
+    - Other (event, place, etc.): graph_nodes only, no domain table
     """
     try:
         label = label.strip()
@@ -69,106 +68,7 @@ async def create_graph_node_with_db_record(
                                    f"Merge proposed — review in Decisions UI.",
                         "merge_candidate_id": top["id"]}
 
-        if node_type == 'project':
-            # ── Resolve org from source_text BEFORE creating the row ──
-            matched_org_id = None
-            matched_org_name = None
-            if source_text and source_text.strip() not in ("", "batch"):
-                orgs_res = supabase.table('organizations').select('id, name').execute()
-                for o in (orgs_res.data or []):
-                    oname = o['name'].strip()
-                    oid = o['id']
-                    if oname.lower() in NOISE_LABELS:
-                        continue
-                    source_lower = source_text.lower()
-                    if f" {oname.lower()} " in f" {source_lower} ":
-                        matched_org_id = oid
-                        matched_org_name = oname
-                        break
-                    canonical = resolve_alias(oname)
-                    if canonical != oname and f" {canonical.lower()} " in f" {source_lower} ":
-                        matched_org_id = oid
-                        matched_org_name = oname
-                        break
-                    if len(oname) >= 6 and oname.lower() in source_lower:
-                        matched_org_id = oid
-                        matched_org_name = oname
-                        break
-
-            existing = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', label).eq('is_current', True))
-            if existing and existing.data:
-                project_id = existing.data['id']
-                audit_log_sync("pulse", "INFO", f"Reusing existing project '{label}' (ID {project_id})")
-                # If reusing, still backfill org_id if missing and we have it
-                if matched_org_id:
-                    supabase.table('projects').update({'organization_id': str(matched_org_id)}).eq('id', project_id).execute()
-            else:
-                insert_data = {
-                    "name": label,
-                    "status": "active",
-                    "context": context or "from graph_approval",
-                    "is_active": True,
-                }
-                if matched_org_id:
-                    insert_data["organization_id"] = str(matched_org_id)
-                result = supabase.table('projects').insert(insert_data).execute()
-                if not result or not result.data:
-                    raise Exception("Supabase insert returned no data for projects")
-                project_id = result.data[0]['id']
-
-            node_data = {
-                "label": label,
-                "type": "project",
-                "epistemic_status": "asserted",
-                "normalized_label": normalize_label(label),
-                "db_record_id": str(project_id),
-                "metadata": {
-                    "source": source_tag,
-                    "project_id": str(project_id),
-                    "memory_id": source_text,
-                }
-            }
-            supabase.table("graph_nodes").upsert(
-                node_data,
-                on_conflict="normalized_label, type"
-            ).execute()
-
-            # Post-creation hook: Create BELONGS_TO pending edge (graph track)
-            if matched_org_name:
-                res = insert_pending_edge(
-                    label,
-                    matched_org_name,
-                    "BELONGS_TO",
-                    {
-                        "source_text": f"post_creation_hook:{source_text[:50]}",
-                        "source_table": "graph_nodes",
-                        "source_type": "project",
-                        "target_type": "organization"
-                    }
-                )
-                audit_log_sync("pulse", "INFO", f"Post-creation hook: Proposed {label} BELONGS_TO {matched_org_name} (status: {res.get('status')})")
-            else:
-                audit_log_sync("pulse", "INFO", f"Post-creation hook: No confident org match found for project {label} in source text.")
-
-            await _ensure_danny_edge(label, node_type)
-
-            # Bridge C: Backfill existing notes/tasks that mention this project
-            await _backfill_existing_content_for_entity(
-                label=label, node_type='project', db_record_id=str(project_id)
-            )
-
-            inferred = []
-            if source_text and source_text.strip() not in ("", "batch"):
-                inferred = await _infer_additional_edges(label, node_type, source_text)
-
-            return {
-                "success": True, "action": "approved",
-                "message": f"Approved project '{label}'",
-                "inferred_edges": inferred,
-                "project_id": project_id
-            }
-
-        elif node_type == 'person':
+        if node_type == 'person':
             norm_name = normalize_person_name(label)
             existing_resp = supabase.table('people').select('id, name').eq('is_current', True).execute()
             existing_people = existing_resp.data if existing_resp else []
@@ -363,10 +263,7 @@ async def _backfill_existing_content_for_entity(
         entity_id_field = None
         id_value = None
 
-        if node_type == 'project':
-            entity_id_field = 'project_id'
-            id_value = db_record_id
-        elif node_type == 'organization':
+        if node_type == 'organization':
             entity_id_field = 'organization_id'
             id_value = db_record_id
         elif node_type == 'person':
@@ -405,9 +302,7 @@ async def _backfill_existing_content_for_entity(
                         continue
 
                     current_meta[entity_id_field] = str(id_value)
-                    if node_type == 'project':
-                        current_meta['project_name'] = label
-                    elif node_type == 'organization':
+                    if node_type == 'organization':
                         current_meta['organization_name'] = label
 
                     try:
@@ -454,13 +349,6 @@ async def _backfill_existing_content_for_entity(
                         if existing_org:
                             continue  # Don't overwrite different org
                         update_data['organization_id'] = id_value
-                    elif entity_id_field == 'project_id':
-                        existing_proj = task.get('project_id')
-                        if existing_proj and str(existing_proj) == str(id_value):
-                            continue
-                        if existing_proj:
-                            continue
-                        update_data['project_id'] = id_value
 
                     if update_data:
                         try:

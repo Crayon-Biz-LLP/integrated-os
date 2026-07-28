@@ -385,7 +385,7 @@ async def build_briefing(supabase) -> BriefingResponse:
     async def _get_tasks():
         try:
             res = supabase.table("tasks")\
-                .select("id, title, status, priority, deadline, created_at, completed_at, updated_at")\
+                .select("id, title, status, priority, deadline, reminder_at, created_at, completed_at, updated_at")\
                 .eq("is_current", True)\
                 .in_("status", ["todo"])\
                 .order("created_at", desc=True)\
@@ -522,6 +522,29 @@ async def build_briefing(supabase) -> BriefingResponse:
             return []
 
     tasks_fut = _get_tasks()
+
+    # ── Horizon guard: filter far-future tasks ──
+    async def _filter_horizon(tasks_raw: list[dict]) -> list[dict]:
+        """Remove tasks with deadline/reminder more than 2 days out."""
+        horizon_cutoff = datetime.now(IST) + timedelta(days=2)
+        filtered = []
+        for t in tasks_raw:
+            deadline = t.get('deadline')
+            reminder = t.get('reminder_at')
+            future_date = None
+            if deadline:
+                dt = _parse_dt(deadline)
+                if dt and dt > horizon_cutoff:
+                    future_date = dt
+            if reminder and not future_date:
+                dt = _parse_dt(reminder)
+                if dt and dt > horizon_cutoff:
+                    future_date = dt
+            if future_date:
+                continue  # Skip tasks more than 2 days in the future
+            filtered.append(t)
+        return filtered
+
     events_fut = _get_events()
     gnodes_fut = _get_graph_nodes()
     gedges_fut = _get_graph_edges()
@@ -538,6 +561,9 @@ async def build_briefing(supabase) -> BriefingResponse:
             traces_msgs_fut, traces_tasks_fut,
         )
     )
+
+    # ── Apply horizon guard to tasks ──
+    tasks = await _filter_horizon(tasks)
 
     # ── Assemble sections ────────────────────────────────────────────────
     greeting = _greeting()

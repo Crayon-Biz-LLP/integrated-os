@@ -594,6 +594,129 @@ async def update_task_status(request: Request, task_id: int):
         print(f"Update task status error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# --- ALIAS MANAGEMENT ---
+@app.get("/api/aliases")
+async def list_aliases_route(request: Request):
+    """List all person aliases."""
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+        result = supabase.table('person_aliases') \
+            .select('id, alias, canonical_name, resolution_count, last_resolved_at, created_at') \
+            .order('alias', desc=False) \
+            .execute()
+        return {"aliases": result.data or []}
+    except Exception as e:
+        print(f"List aliases error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/aliases")
+async def create_alias_route(request: Request):
+    """Create a new person alias (alias -> canonical_name)."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        alias = (body.get('alias') or '').strip()
+        canonical_name = (body.get('canonical_name') or '').strip()
+
+        if not alias or not canonical_name:
+            raise HTTPException(status_code=400, detail="alias and canonical_name required")
+        if alias.lower() == canonical_name.lower():
+            raise HTTPException(status_code=400, detail="alias and canonical_name must be different")
+
+        supabase = get_supabase()
+
+        # Check for existing alias
+        existing = supabase.table('person_aliases') \
+            .select('id') \
+            .ilike('alias', alias) \
+            .maybe_single() \
+            .execute()
+        if existing and existing.data:
+            return {"success": False, "message": f"Alias '{alias}' already exists. Use PUT to update."}
+
+        result = supabase.table('person_aliases').insert({
+            'alias': alias,
+            'canonical_name': canonical_name,
+            'resolution_count': 0,
+        }).execute()
+
+        if result and result.data:
+            # Invalidate the alias cache in graph_rules so the new alias takes effect immediately
+            import sys as _sys
+            _sys.modules.get('core.lib.graph_rules', object())._alias_cache = None
+            return {"success": True, "alias": result.data[0]}
+        return {"success": False, "message": "Failed to create alias"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Create alias error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/aliases/{alias_id}")
+async def update_alias_route(alias_id: int, request: Request):
+    """Update an existing person alias."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        alias = (body.get('alias') or '').strip()
+        canonical_name = (body.get('canonical_name') or '').strip()
+
+        if not alias or not canonical_name:
+            raise HTTPException(status_code=400, detail="alias and canonical_name required")
+
+        supabase = get_supabase()
+
+        # Check alias exists
+        existing = supabase.table('person_aliases').select('id').eq('id', alias_id).maybe_single().execute()
+        if not existing or not existing.data:
+            raise HTTPException(status_code=404, detail="Alias not found")
+
+        supabase.table('person_aliases').update({
+            'alias': alias,
+            'canonical_name': canonical_name,
+        }).eq('id', alias_id).execute()
+
+        # Invalidate cache
+        import sys as _sys
+        _sys.modules.get('core.lib.graph_rules', object())._alias_cache = None
+
+        return {"success": True, "message": f"Alias updated: '{alias}' -> '{canonical_name}'"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Update alias error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/api/aliases/{alias_id}")
+async def delete_alias_route(alias_id: int, request: Request):
+    """Delete a person alias by ID."""
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+        
+        existing = supabase.table('person_aliases').select('id, alias').eq('id', alias_id).maybe_single().execute()
+        if not existing or not existing.data:
+            raise HTTPException(status_code=404, detail="Alias not found")
+
+        alias = existing.data['alias']
+        supabase.table('person_aliases').delete().eq('id', alias_id).execute()
+
+        # Invalidate cache
+        import sys as _sys
+        _sys.modules.get('core.lib.graph_rules', object())._alias_cache = None
+
+        return {"success": True, "message": f"Deleted alias '{alias}'"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Delete alias error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # --- EMAIL PENDING TASK DECISIONS (approve/reject from frontend) ---
 @app.post("/api/email-action")
 async def email_action_route(request: Request):

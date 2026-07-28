@@ -1281,8 +1281,35 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         active_context = _r2[_ri]
         _ri += 1
 
+        # ── Alias context: inject known aliases (e.g. Yashwant Daniel → Danny) ──
+        alias_context = "None"
+        try:
+            a_res = supabase.table('person_aliases').select('alias, canonical_name').execute()
+            if a_res and a_res.data:
+                alias_lines = []
+                for a in a_res.data:
+                    alias = (a.get('alias') or '').strip()
+                    canonical = (a.get('canonical_name') or '').strip()
+                    if alias and canonical and alias.lower() != canonical.lower():
+                        alias_lines.append(f"  '{alias}' = '{canonical}'")
+                if alias_lines:
+                    alias_context = (
+                        "ENTITY ALIASES — these names refer to the SAME person/entity. Treat them as identical:\n"
+                        + "\n".join(alias_lines)
+                        + "\n\nIMPORTANT: Do NOT list aliased names as separate people/entities. "
+                        "For example, if 'Yashwant Daniel' is aliased to 'Danny' and you're talking to Danny, "
+                        "never say 'Yashwant Daniel' is a separate family member — they are the same person."
+                    )
+        except Exception as e:
+            audit_log_sync("webhook", "WARNING", f"Alias context fetch failed: {e}")
+
         available_sources = []
         all_context = []
+
+        # ── Include alias context in the prompt early ──
+        if alias_context and alias_context != "None":
+            all_context.append(f"[source:aliases] {alias_context}")
+            available_sources.append("aliases")
         
         # ── Context Assembly with Source Tags ──
         # Layer 1+2: Every section is tagged with [source:name] so the LLM

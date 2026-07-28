@@ -457,9 +457,7 @@ async def process_callback_query(callback_query: dict):
                     if pending_item and pending_item.data:
                         ptype = pending_item.data.get('type')
                         label = pending_item.data.get('label')
-                        if ptype == 'project':
-                            result = await process_graph_pending_decision(sc_int, 'approve')
-                        elif ptype == 'person':
+                        if ptype == 'person':
                             supabase.table('pending_nodes').update({'status': 'awaiting_details'}).eq('id', sc_int).execute()
                             keyboard = [
                                 [{"text": "⏭️ Skip", "callback_data": f"persontag_skip_g{sc_int}"}],
@@ -765,9 +763,7 @@ async def process_webhook(update: dict):
                 if pending_item and pending_item.data:
                     ptype = pending_item.data.get('type')
                     label = pending_item.data.get('label')
-                    if ptype == 'project':
-                        result = await process_graph_pending_decision(pending_id=int(_sc), decision='approve')
-                    elif ptype == 'person':
+                    if ptype == 'person':
                         supabase.table('pending_nodes').update({'status': 'awaiting_details'}).eq('id', int(_sc)).execute()
                         set_clarification(
                             chat_id, int(_sc),
@@ -824,11 +820,7 @@ async def process_webhook(update: dict):
                     return {"success": True}
                 ptype = pending_item.data.get('type')
                 label = pending_item.data.get('label')
-                if ptype == 'project':
-                    result = await process_graph_pending_decision(
-                        pending_id=_sc, decision='approve', context=_value.strip()
-                    )
-                elif ptype == 'person':
+                if ptype == 'person':
                     result = await process_graph_pending_decision(
                         pending_id=_sc, decision='approve', context=_value.strip()
                     )

@@ -6,11 +6,11 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const { status } = await req.json();
+  const { is_active } = await req.json();
 
-  if (!status || !["active", "archived"].includes(status)) {
+  if (typeof is_active !== "boolean") {
     return NextResponse.json(
-      { error: "Invalid status. Must be 'active' or 'archived'" },
+      { error: "is_active (boolean) required" },
       { status: 400 }
     );
   }
@@ -18,13 +18,10 @@ export async function PATCH(
   const supabase = await createServerSupabaseClient();
 
   const { data, error } = await supabase
-    .from("projects")
-    .update({
-      status,
-      is_active: status === "active",
-    })
-    .eq("id", Number(id))
-    .select("*")
+    .from("organizations")
+    .update({ is_active })
+    .eq("id", id)
+    .select("id, name, is_active, created_at")
     .single();
 
   if (error) {

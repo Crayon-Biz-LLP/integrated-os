@@ -1,24 +1,22 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
-interface ProjectRow {
-  id: number;
-  status: string;
+interface OrgRow {
+  id: string;
   is_active: boolean;
 }
 
 interface TaskRow {
   id: number;
-  project_id: number | null;
+  organization_id: string | null;
 }
 
 export async function GET() {
   const supabase = await createServerSupabaseClient();
 
-  const { data: projects, error } = await supabase
-    .from("projects")
-    .select("id, status, is_active")
-    .eq("is_current", true)
+  const { data: orgs, error } = await supabase
+    .from("organizations")
+    .select("id, is_active")
     .limit(500);
 
   if (error) {
@@ -27,43 +25,37 @@ export async function GET() {
 
   const { data: tasks, error: tasksError } = await supabase
     .from("tasks")
-    .select("id, project_id")
+    .select("id, organization_id")
     .eq("is_current", true)
     .in("status", ["todo", "in_progress", "blocked"])
+    .not("organization_id", "is", null)
     .limit(500);
 
   if (tasksError) {
     return NextResponse.json({ error: tasksError.message }, { status: 500 });
   }
 
-  const projectsList = (projects ?? []) as ProjectRow[];
+  const orgsList = (orgs ?? []) as OrgRow[];
   const tasksList = (tasks ?? []) as TaskRow[];
 
-  const totalActive = projectsList.filter(
-    (p) => p.is_active === true && p.status === "active"
-  ).length;
-
-  const totalArchived = projectsList.filter(
-    (p) => p.status === "archived"
-  ).length;
+  const totalActive = orgsList.filter((o) => o.is_active === true).length;
+  const totalInactive = orgsList.filter((o) => o.is_active === false).length;
 
   const totalOpenTasks = tasksList.length;
 
-  const activeProjectIds = new Set(
-    projectsList
-      .filter((p) => p.is_active === true && p.status === "active")
-      .map((p) => p.id)
+  const activeOrgIds = new Set(
+    orgsList.filter((o) => o.is_active === true).map((o) => o.id)
   );
 
-  const idleProjects = Array.from(activeProjectIds).filter((id) => {
-    const count = tasksList.filter((t) => t.project_id === id).length;
+  const idleOrgs = Array.from(activeOrgIds).filter((id) => {
+    const count = tasksList.filter((t) => t.organization_id === id).length;
     return count === 0;
   }).length;
 
   return NextResponse.json({
     totalActive,
-    totalArchived,
+    totalInactive,
     totalOpenTasks,
-    idleProjects,
+    idleOrgs,
   });
 }

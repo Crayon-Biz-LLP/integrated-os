@@ -473,6 +473,18 @@ class ContextProvider:
             else:
                 formatted = f"[INBOX >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
             
+            # Horizon guard: skip non-urgent tasks with reminder_at > 2 days out
+            if not is_urgent and not is_due_soon and reminder:
+                try:
+                    clean_reminder = str(reminder).replace(' ', 'T').replace('Z', '+00:00')
+                    reminder_dt = datetime.fromisoformat(clean_reminder)
+                    if reminder_dt.tzinfo is None:
+                        reminder_dt = reminder_dt.replace(tzinfo=timezone.utc)
+                    if reminder_dt > now + timedelta(days=2):
+                        continue
+                except Exception:
+                    pass  # Fail-open: include task if we can't parse reminder
+
             if is_urgent or is_due_soon:
                 always_include.append(formatted)
             else:

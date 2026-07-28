@@ -28,8 +28,8 @@ export async function GET(
       reminder_at,
       deadline,
       created_at,
-      project_id,
-      projects (
+      organization_id,
+      organizations (
         name
       )
     `)
@@ -61,8 +61,8 @@ export async function GET(
       reminder_at: t.reminder_at,
       deadline: t.deadline,
       created_at: t.created_at,
-      project_id: t.project_id,
-      project_name: t.projects?.name || null,
+      organization_id: t.organization_id,
+      organization_name: t.organizations?.name || null,
     }))
     .sort((a: any, b: any) => {
       const priorityDiff = (priorityOrder[a.priority] || 6) - (priorityOrder[b.priority] || 6);

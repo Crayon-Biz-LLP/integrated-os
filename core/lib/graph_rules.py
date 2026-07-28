@@ -10,26 +10,19 @@ supabase = get_supabase()
 
 GROUNDED_TYPES = {
     'person':       ('people',        'name'),
-    'project':      ('projects',      'name'),
     'organization': ('organizations', 'name'),
 }
 
 VALID_EDGE_MATRIX = {
     ('organization', 'organization'): ['INTRODUCED', 'CLIENT_OF', 'PARENT_OF'],
     ('person',       'organization'): ['WORKS_AT', 'CLIENT_OF', 'VENDOR_TO', 'MEMBER_OF', 'SERVES_AT'],
-    ('person',       'project'):      ['WORKS_ON', 'LEADS'],
     ('person',       'person'):       ['MET_WITH', 'SPOUSE_OF', 'FAMILY_OF', 'FRIEND_OF', 'KNOWS', 'DISCUSSED_WITH', 'MENTORS'],
     ('person',       'event'):        ['ATTENDED', 'INVOLVES'],
-    ('task',         'project'):      ['BELONGS_TO'],
     ('task',         'task'):         ['BLOCKS', 'DEPENDS_ON'],
     ('task',         'person'):       ['INVOLVES', 'RELATES_TO', 'ASSIGNED_TO'],
     ('task',         'organization'): ['BELONGS_TO'],
-    ('event',        'project'):      ['PART_OF'],
     ('event',        'person'):       ['INVOLVES'],
-    ('project',      'project'):      ['DEPENDS_ON'],
-    ('project',      'organization'): ['BELONGS_TO'],
     ('memory',       'person'):       ['MENTIONS'],
-    ('memory',       'project'):      ['MENTIONS'],
     ('memory',       'organization'): ['MENTIONS'],
     ('memory',       'event'):        ['MENTIONS'],
     
@@ -49,10 +42,6 @@ RELATIONSHIP_ALIASES = {
         "EMPLOYEE_OF": "MEMBER_OF",
         "EMPLOYEE": "MEMBER_OF",
     },
-    ("person", "project"): {
-        "LEAD": "LEADS",
-        "CONTRIBUTES_TO": "WORKS_ON",
-    },
     ("person", "person"): {
         "MEETS_WITH": "MET_WITH",
         "DISCUSSES": "DISCUSSED_WITH",
@@ -60,12 +49,6 @@ RELATIONSHIP_ALIASES = {
     },
     ("person", "event"): {
         "ATTENDS": "ATTENDED",
-    },
-    ("task", "project"): {
-        "PART_OF": "BELONGS_TO",
-    },
-    ("project", "organization"): {
-        "PART_OF": "BELONGS_TO",
     },
 }
 
@@ -315,20 +298,7 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
         except Exception:
             pass
 
-        # 5c: Projects table — skip if archived or not current
-        try:
-            db_res = maybe_single_safe(supabase.table('projects').select('id, name, is_current, status').ilike('name', label).eq('is_current', True))
-            if db_res and db_res.data:
-                is_deleted = False
-                if db_res.data.get('status') == 'archived':
-                    is_deleted = True
-                if not is_deleted:
-                    result["label"] = db_res.data["name"]
-                    result["node_type"] = "project"
-                    result["confidence"] = 0.9
-                    return result
-        except Exception:
-            pass
+        # 5c: (removed — project type eliminated; projects mapped as organizations)
 
 
 
@@ -574,14 +544,7 @@ def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "
                 }).eq('id', src_domain_id).execute()
             except Exception as e:
                 audit_log_sync("pulse", "WARNING", f"Failed to clean up org row on merge: {e}")
-    elif src_type == 'project' and src_db_id:
-        try:
-            supabase.table('projects').update({
-                'is_current': False,
-                'status': 'archived'
-            }).eq('id', src_db_id).execute()
-        except Exception as e:
-            audit_log_sync("pulse", "WARNING", f"Failed to clean up project row on merge: {e}")
+    # Project type removed — projects are now mapped as organizations
 
     audit_log_sync("pulse", "INFO", f"Merged node {src_node['label']} into {tgt_node['label']} ({provenance})")
     
@@ -869,7 +832,6 @@ def insert_pending_edge(source_label: str, target_label: str, relationship: str,
     return {"status": "unknown"}
 
 TYPE_TO_DANNY_EDGE = {
-    "project": "OWNS",
     "person": "KNOWS",
     "organization": "WORKS_WITH",
     "place": "VISITED",

@@ -21,7 +21,7 @@ export async function GET(
     .select(
       "id, title, status, priority, reminder_at, deadline, created_at, is_revenue_critical"
     )
-    .eq("project_id", Number(id))
+    .eq("organization_id", id)
     .eq("is_current", true)
     .in("status", ["todo", "in_progress", "blocked"])
     .order("created_at", { ascending: false })

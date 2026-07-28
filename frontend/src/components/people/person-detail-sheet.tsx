@@ -7,10 +7,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Person, PersonTask } from '@/lib/people/types';
-import { fetchPersonTasks, updatePerson } from '@/lib/people/api';
+import { Person, PersonTask, PersonAlias } from '@/lib/people/types';
+import { fetchPersonTasks, updatePerson, fetchAliasesForPerson, createAlias, deleteAlias } from '@/lib/people/api';
 import { stripMarkdown } from '@/lib/utils/strip-markdown';
-import { Loader2, Save } from 'lucide-react';
+import { Loader2, Save, Plus, X, Tag } from 'lucide-react';
 
 interface PersonDetailSheetProps {
   person: Person | null;
@@ -27,6 +27,12 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
 
+  // Alias state
+  const [aliases, setAliases] = useState<PersonAlias[]>([]);
+  const [aliasesLoading, setAliasesLoading] = useState(false);
+  const [newAlias, setNewAlias] = useState('');
+  const [addingAlias, setAddingAlias] = useState(false);
+
   useEffect(() => {
     if (!person) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -37,9 +43,13 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
     setHasChanges(false);
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setTasks([]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAliases([]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setNewAlias('');
 
-    // Load tasks lazily when sheet opens
     if (open) {
+      // Load tasks
       setTasksLoading(true);
       fetchPersonTasks(person.id, person.name)
         .then((data) => {
@@ -47,6 +57,15 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
           setTasksLoading(false);
         })
         .catch(() => setTasksLoading(false));
+
+      // Load aliases for this person
+      setAliasesLoading(true);
+      fetchAliasesForPerson(person.name)
+        .then((data) => {
+          setAliases(data);
+          setAliasesLoading(false);
+        })
+        .catch(() => setAliasesLoading(false));
     }
   }, [person, open]);
 
@@ -163,6 +182,109 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
             )}
           </div>
 
+          {/* Aliases Section */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium text-muted-foreground">
+                Aliases
+                {!aliasesLoading && aliases.length > 0 && (
+                  <span className="ml-2 text-xs">({aliases.length})</span>
+                )}
+              </h3>
+            </div>
+
+            {aliasesLoading && (
+              <div className="flex items-center justify-center py-4">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            )}
+
+            {!aliasesLoading && aliases.length === 0 && (
+              <p className="text-sm text-muted-foreground">No aliases — add nicknames or alternate names</p>
+            )}
+
+            {!aliasesLoading && aliases.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {aliases.map((alias) => (
+                  <div
+                    key={alias.id}
+                    className="group flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/5 border border-primary/10 text-sm text-foreground"
+                  >
+                    <Tag className="h-3 w-3 text-muted-foreground" />
+                    <span>{alias.alias}</span>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const result = await deleteAlias(alias.id);
+                          if (result.success) {
+                            setAliases((prev) => prev.filter((a) => a.id !== alias.id));
+                          }
+                        } catch (err) {
+                          console.error('Failed to delete alias:', err);
+                        }
+                      }}
+                      className="ml-0.5 p-0.5 rounded-full opacity-0 group-hover:opacity-100 hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-all"
+                      aria-label={`Delete alias ${alias.alias}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add alias input */}
+            <div className="flex items-center gap-2">
+              <Input
+                value={newAlias}
+                onChange={(e) => setNewAlias(e.target.value)}
+                placeholder="e.g. Nickname, short name..."
+                className="flex-1 h-9 text-sm"
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter' && newAlias.trim() && !addingAlias) {
+                    setAddingAlias(true);
+                    try {
+                      const result = await createAlias(newAlias.trim(), person.name);
+                      if (result.success && result.alias) {
+                        setAliases((prev) => [...prev, result.alias!]);
+                        setNewAlias('');
+                      }
+                    } catch (err) {
+                      console.error('Failed to add alias:', err);
+                    } finally {
+                      setAddingAlias(false);
+                    }
+                  }
+                }}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!newAlias.trim() || addingAlias}
+                onClick={async () => {
+                  setAddingAlias(true);
+                  try {
+                    const result = await createAlias(newAlias.trim(), person.name);
+                    if (result.success && result.alias) {
+                      setAliases((prev) => [...prev, result.alias!]);
+                      setNewAlias('');
+                    }
+                  } catch (err) {
+                    console.error('Failed to add alias:', err);
+                  } finally {
+                    setAddingAlias(false);
+                  }
+                }}
+              >
+                {addingAlias ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+
           {/* Active Tasks Section */}
           <div className="space-y-3">
             <h3 className="text-sm font-medium text-muted-foreground">
@@ -192,8 +314,8 @@ export function PersonDetailSheet({ person, open, onOpenChange, onPersonUpdated 
                       <span className={getPriorityBadgeClass(task.priority)}>
                         {task.priority}
                       </span>
-                      {task.project_name && (
-                        <span className="text-xs text-muted-foreground">{task.project_name}</span>
+                      {task.organization_name && (
+                        <span className="text-xs text-muted-foreground">{task.organization_name}</span>
                       )}
                       {getDueDate(task) && (
                         <span className="text-xs text-muted-foreground/60 font-mono ml-auto">

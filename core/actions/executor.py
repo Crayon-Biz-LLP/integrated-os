@@ -44,6 +44,30 @@ async def _detect_new_orgs_and_create_pending(text: str, chat_id: int, cached_en
         if existing and existing.data:
             created.append({'label': org.label, 'pending_id': existing.data[0]['id']})
             continue
+
+        # Check if already an approved graph node
+        existing_gn = supabase.table('graph_nodes') \
+            .select('id') \
+            .ilike('label', org.label) \
+            .eq('type', 'organization') \
+            .eq('is_current', True) \
+            .limit(1) \
+            .execute()
+        if existing_gn and existing_gn.data:
+            audit_log_sync("executor", "INFO", f"Skipped pending_node for '{org.label}' — already exists as graph node")
+            continue
+
+        # Check if already in organizations table
+        existing_org = supabase.table('organizations') \
+            .select('id') \
+            .ilike('name', org.label) \
+            .eq('is_active', True) \
+            .limit(1) \
+            .execute()
+        if existing_org and existing_org.data:
+            audit_log_sync("executor", "INFO", f"Skipped pending_node for '{org.label}' — already exists in organizations table")
+            continue
+
         # Create new pending_node
         res = supabase.table('pending_nodes').insert({
             'label': org.label,

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
+from core.lib.graph_rules import resolve_alias
 
 supabase = get_supabase()
 
@@ -229,13 +230,15 @@ async def hybrid_search_graph(query: str, node_id: str = None) -> str:
 
             labeled_map = []
             for edge in edges_res.data:
-                src_label = label_map.get(str(edge['source_node_id']), "Unknown")
-                tgt_label = label_map.get(str(edge['target_node_id']), "Unknown")
+                src_label = resolve_alias(label_map.get(str(edge['source_node_id']), "Unknown"))
+                tgt_label = resolve_alias(label_map.get(str(edge['target_node_id']), "Unknown"))
 
                 if edge['source_node_id'] == primary_id:
-                    labeled_map.append(f"[{primary_node['label']}] -> [{edge['relationship']}] -> [{tgt_label}]")
+                    primary_resolved = resolve_alias(primary_node['label'])
+                    labeled_map.append(f"[{primary_resolved}] -> [{edge['relationship']}] -> [{tgt_label}]")
                 elif edge['target_node_id'] == primary_id:
-                    labeled_map.append(f"[{src_label}] -> [{edge['relationship']}] -> [{primary_node['label']}]")
+                    primary_resolved = resolve_alias(primary_node['label'])
+                    labeled_map.append(f"[{src_label}] -> [{edge['relationship']}] -> [{primary_resolved}]")
 
             return "\n".join(labeled_map)
 

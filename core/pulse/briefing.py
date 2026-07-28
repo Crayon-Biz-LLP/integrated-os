@@ -46,6 +46,7 @@ from core.pulse.resources import batch_enrich_resources
 from core.pulse.cluster_discovery import discover_new_clusters
 from core.prompts.briefing import build_pulse_briefing_prompt, build_pulse_system_instruction
 from core.pulse.calendar import get_calendar_context
+from core.lib.pattern_extractor import build_transparency_report
 
 # ──────────────────────────────────────────
 # CONSTANTS
@@ -786,8 +787,32 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         except Exception as e:
             audit_log_sync("pulse", "WARNING", f"Delta briefing history error: {e}")
 
+        # ── New inputs (recent inbound messages) ──
         new_inputs_text = "None"
         new_input_summary = "None"
+        try:
+            inputs_cutoff = (now - timedelta(hours=24)).isoformat()
+            dumps_res = supabase.table('raw_dumps') \
+                .select('id, content, message_type, created_at') \
+                .eq('direction', 'incoming') \
+                .gte('created_at', inputs_cutoff) \
+                .order('created_at', desc=True) \
+                .limit(20) \
+                .execute()
+            new_dumps = dumps_res.data or []
+            if new_dumps:
+                new_lines = []
+                for d in new_dumps:
+                    content = (d.get('content') or '').strip()
+                    msg_type = d.get('message_type', 'note')
+                    if content:
+                        preview = content[:100].replace('\n', ' ')
+                        new_lines.append(f"- [{msg_type}] {preview}")
+                if new_lines:
+                    new_inputs_text = "\n".join(new_lines)
+                    new_input_summary = f"{len(new_dumps)} new {'messages' if len(new_dumps) != 1 else 'message'} since last briefing"
+        except Exception as e:
+            audit_log_sync("pulse", "WARNING", f"New inputs fetch failed: {e}")
 
         current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
 
@@ -934,6 +959,16 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # Inject formatting for readability
         briefing_text = re.sub(r'(?<!\n)\n(?=🚀|🏠|⛪|💡|✅|📅|🔴|🟡|⚪|⏳|🛡️)', r'\n\n', briefing_text)
         briefing_text = re.sub(r'\[ID:\d+\]', '', briefing_text)
+
+        # ── Sunday transparency report (must run before Telegram send) ──
+        if now.weekday() == 6:
+            try:
+                transparency_report = await build_transparency_report()
+                if transparency_report:
+                    briefing_text += f"\n\n{transparency_report}"
+                    audit_log_sync("pulse", "INFO", "📊 Appended Sunday transparency report to briefing")
+            except Exception as e:
+                audit_log_sync("pulse", "WARNING", f"Transparency report failed: {e}")
 
         # ═══════════════════════════════════════
         # WRITE PHASE (all side effects happen here)
