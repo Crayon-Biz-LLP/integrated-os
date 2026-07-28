@@ -1,66 +1,27 @@
-# 10. Task-to-Project Assignment & People Linking
+# 10. Task-to-Organization Assignment & People Linking
 
-## The 7-Stage Project Assignment Cascade
+## The Organization Assignment Cascade
 
-When the Pulse AI generates a new task with a `project_name`, the engine must resolve it to a `project_id` in the database. Projects are NOT auto-created from task references — if no match is found, the task falls through to the inbox.
+When the Pulse AI generates a new task with an `organization_name`, the engine resolves it via the Action Planner (`core/actions/planner.py`). The `projects` table was decommissioned — task routing now uses the `organizations` table with graph-node fallback.
 
-The resolution happens through a 7-stage cascading fallback:
+The resolution flow:
 
-### Stage 1: Exact Name Match
+### Step 1: Planner extracts org context
 ```python
-ai_target = task.get('project_name', '').lower().strip()
-matched = next((p for p in legacy_projects 
-               if p.get('name', '').lower() == ai_target), None)
+candidate_words = set()
+if c.get("organization_name"):
+    candidate_words.extend(c["organization_name"].lower().split())
 ```
-Fastest path — direct string match against active project names.
+The planner prompt instructs Gemini to classify tasks under known orgs (SOLVSTRAT, QHORD, ASHRAYA, PERSONAL, CRAYON). Unknown entity names suggested by the user for task context are treated as project/client names under the parent org.
 
-### Stage 2: Keyword Match
+### Step 2: Org ID resolution (`tools.py`)
 ```python
-for p in legacy_projects:
-    kws = [k.lower() for k in (p.get('keywords') or [])]
-    if any(kw in ai_target or ai_target in kw for kw in kws):
-        matched = p; break
+org_res = supabase.table('organizations').select('id').ilike('name', organization_name).limit(1).execute()
 ```
-Matches against project keyword lists (e.g., project "Qhord" has keywords ["GTM", "product", "pricing"]).
+The `organizations` table is the single source of truth. `organization_id` is stamped on the task row. No `project_id` column exists on tasks anymore.
 
-### Stage 3: Description Match
-```python
-for p in legacy_projects:
-    desc = (p.get('description') or '').lower()
-    if ai_target in desc:
-        matched = p; break
-```
-Searches project descriptions for the project name.
-
-### Stage 4: Substring Match
-```python
-matched = next((p for p in legacy_projects 
-               if ai_target in p.get('name','').lower() 
-               or p.get('name','').lower() in ai_target), None)
-```
-Checks if either string is a substring of the other.
-
-### Stage 5: Graph Node Match
-```python
-# Search graph_nodes for projects matching the target
-gn_match = next(... from graph_node_projects ...)
-```
-Queries the knowledge graph for project-type nodes whose labels match.
-
-### Stage 6: Fuzzy Word Match
-```python
-name_match = next((p for p in legacy_projects 
-                  if any(word in p.get('name','').lower() 
-                  for word in ai_target.split())), None)
-```
-Splits the target into words and checks if any word appears in project names.
-
-### Stage 7: Solvstrat/Inbox Fallback
-```python
-# If work context hints detected, fall back to root Solvstrat project
-# Otherwise, use actual_inbox_id (resolved from graph_nodes or legacy_projects)
-```
-As a last resort, the task goes to Solvstrat (if work-context) or the generic Inbox. A task is NEVEr left without a project — it always lands somewhere.
+### Step 3: Graph node linking
+Task nodes get `BELONGS_TO` edges to the resolved organization's graph node. Project-type graph nodes still exist for client projects under an org but are discovered via the graph, not via a separate `projects` table.
 
 ## People Linking via Knowledge Graph
 
@@ -69,15 +30,15 @@ When a task is created in the Pulse Engine path (Path 2), `write_graph_edges_for
 ### Task Graph Node
 ```python
 {"label": task_title, "type": "task", "metadata": 
- {"source": "tasks_table", "task_id": task_id, "project_id": project_id}}
+ {"source": "tasks_table", "task_id": task_id, "organization_id": org_id}}
 ```
 
 ### BELONGS_TO Edge
 ```python
-{"source_node_id": task_node_id, "target_node_id": project_node_id,
+{"source_node_id": task_node_id, "target_node_id": org_node_id,
  "relationship": "BELONGS_TO", "weight": 1.0}
 ```
-Links the task to its project in the knowledge graph.
+Links the task to its organization's graph node in the knowledge graph. Project-level BELONGS_TO edges are created when the entity linker resolves a specific project name under the org.
 
 ### INVOLVES Edges (People)
 ```python
@@ -89,10 +50,9 @@ Auto-links tasks to people when their names appear in the task text. This enable
 
 ## The Graph Node Gap
 
-**Important**: Graph edges for tasks are ONLY created in the Pulse Engine path (Path 2). The Quick Process inline path (Path 1) does NOT create graph edges. This means:
-- Tasks created via inline Telegram processing get Google Calendar + Tasks sync but NO graph edges
-- The next `backfill_graph.py` CI run will add the missing edges via `backfill_orphaned_tasks()`
-- This is intentional — graph edge creation is async to keep the inline path fast
+**Important**: Graph edges for tasks are ONLY created in the Pulse Engine path. Tasks created via Quick Command or inline Telegram processing get sync but NO graph edges until the next backfill run.
+- The Action Planner path always creates graph edges
+- `backfill_graph.py` adds missing edges via `backfill_orphaned_tasks()` on each Pulse cycle
 
 ## People Graph Node Discovery
 

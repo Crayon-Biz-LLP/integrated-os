@@ -908,7 +908,7 @@ This enables natural-language note capture without special syntax.
 
 ---
 
-### [COMPLETED] T-PHASE11-002: sync_projects_to_graph_nodes()
+### [COMPLETED] T-PHASE11-002: sync_projects_to_graph_nodes() *(removed Phase 2)*
 **Files**: `core/skills/backfill_graph.py`
 **Change**: New sync function that creates `type='project'` graph nodes for all `projects` table rows without existing graph_node. Does NOT delete wrong-type nodes (label collision with orgs). Wired into `__main__`.
 **Deploy safe**: YES — additive.

@@ -83,17 +83,17 @@ This is the productivity equivalent of Timehop/Facebook Memories — but for you
 
 ## Drift Detection
 
-The `detect_drift()` RPC (wrapped in `temporal_lineage.py:179-197`) monitors project update frequency:
+The `detect_drift()` RPC (wrapped in `temporal_lineage.py:11-33`) monitors entity update frequency. Called with `org_name` from the briefing:
 
 ```python
-def detect_drift(project_name: str, hours_window: int = 48) -> dict:
+def detect_drift(entity_name: str, hours_window: int = 48) -> dict:
     result = supabase.rpc("detect_drift", {
-        "project_name": project_name,
+        "project_name": entity_name,  # RPC param name legacy — accepts org name
         "hours_window": hours_window
     }).execute()
 ```
 
-If a project has been updated 3+ times in 48 hours, the briefing prompt flags it as a potential bottleneck, allowing the AI to call attention to churn or indecision.
+If an entity has been updated 3+ times in 48 hours, the briefing prompt flags it as a potential bottleneck, allowing the AI to call attention to churn or indecision.
 
 ## Stale Task Detection
 

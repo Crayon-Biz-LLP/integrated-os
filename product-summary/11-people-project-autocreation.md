@@ -1,65 +1,29 @@
 # 11. People & Project Auto-Creation
 
-## Project Auto-Creation (AI-Gated)
+## Project Auto-Creation (AI-Gated — Decommissioned)
 
-Projects are NOT auto-created when a task references a non-existent project. They are only created when the AI explicitly adds them to the `new_projects` array in its JSON output.
+**The `projects` table and its write pipeline were decommissioned in Phase 2 (July 2026).** Projects are no longer created via a `new_projects` JSON array. Instead, project-type graph nodes are created on-demand through entity linking and the Pulse AI prompt.
+
+### Current Behavior
+
+Projects (work streams like "Equisoft", "Armour Cyber") are now represented as `type='project'` graph nodes under parent organizations. They are created through two paths:
+
+1. **Entity extraction**: When the entity linker finds a new project name in task/note content, it creates a `type='project'` graph node with a `BELONGS_TO` edge to the parent org node.
+2. **Backfill sync**: `backfill_graph.py` discovers project-type nodes from existing memory patterns and syncs them to the graph.
 
 ### The AI Prompt Rule
 
-The Pulse prompt strictly constrains project creation by domain:
+The Pulse prompt constrains project creation by domain:
 
-> **SOLVSTRAT**: Auto-create new projects for completely unknown client names mentioned (e.g., a company hiring Solvstrat for tech work). Set `organization_name: "SOLVSTRAT"`, `parent_project_name: "Solvstrat"`.
+> **SOLVSTRAT**: Auto-create project graph nodes for completely unknown client names mentioned. Set `organization_name: "SOLVSTRAT"`.
 
-> **OTHER DOMAINS** (QHORD, ASHRAYA, PERSONAL, CRAYON): ONLY create a new project if Danny explicitly says "create a project", "start a new project", or gives a clear commanding instruction. Otherwise, route the work as a task under the existing parent project. Do NOT auto-create projects for one-off tasks or casual mentions.
+> **OTHER DOMAINS** (QHORD, ASHRAYA, PERSONAL, CRAYON): ONLY create a project graph node if Danny explicitly instructs. Otherwise, route the work as a task under the existing parent org.
 
-This means client engagements like "Equisoft" or "Armour Cyber" are auto-created as projects under Solvstrat. But one-off tasks like "Trust account ReKYC" or "Follow up with the bank" are NOT created as projects — they go as tasks under their parent domain (Ashraya).
-
-### The Processing Pipeline
-
-When the AI outputs `new_projects`, the write phase (engine.py:1039-1132) processes each entry:
-
-```python
-for p in ai_data['new_projects']:
-    name = p.get('name', '').strip()
-    
-    # 1. VALIDATE ORG TAG
-    tag = p.get('organization_name', 'SOLVSTRAT')
-    if tag not in ['SOLVSTRAT', 'QHORD', 'PERSONAL', 'CRAYON', 'ASHRAYA']:
-        continue
-    
-    # 2. DEDUP: fuzzy substring match against graph_nodes + projects table
-    already_exists = any(
-        name.lower() in existing_name.lower() or existing_name.lower() in name.lower()
-        for existing_name in all_existing_project_names
-    )
-    
-    # 3. REQUIRE DESCRIPTION
-    if not p.get('description'):
-        continue
-    
-    # 4. RESOLVE PARENT PROJECT
-    parent_id = None
-    if p.get('parent_project_name'):
-        parent = match against legacy_projects
-        parent_id = parent['id'] if parent else None
-    
-    # 5. INSERT
-    supabase.table('projects').insert({...}).execute()
-    
-    # 6. CREATE/UPGRADE GRAPH NODE
-    checks if matching graph node exists:
-        - If exists AND not type 'project': upgrade to 'project'
-        - If exists AND is 'project': update metadata
-        - If none: create new graph_node (type='project', metadata with project_id, organization_name)
-```
+Client engagements are auto-created as project nodes under Solvstrat. One-off tasks go under their parent org without a project node.
 
 ### Deduplication Strategy
 
-Fuzzy substring matching against two sources:
-1. `graph_nodes` (type='project') — covers projects created via other paths
-2. `legacy_projects` — projects table
-
-A project named "Qhord" would match against existing "Qhord GTM Strategy" or "Qhord Sales" — preventing duplicates.
+Project graph node dedup uses fuzzy substring matching against `graph_nodes` (type='project') only — the `projects` table is no longer consulted.
 
 ## People Auto-Creation (4 Paths)
 
@@ -136,12 +100,9 @@ Strips titles + parentheticals to enable cross-path dedup:
   3. If no existing node: creates `type='organization'` with `db_record_id`, `metadata.source = 'sync:organizations'`.
   4. **Verification:** Post-sync count of organization-type graph nodes with `db_record_id` must be ≥ total `organizations` rows minus known label-collision exceptions (same name used as both org and project).
 
-### Table → Graph (Projects)
-- **`sync_projects_to_graph_nodes()`:** Iterates all `projects` rows. For each:
-  1. Checks for existing graph node via `db_record_id`.
-  2. If no existing node: creates `type='project'` with `db_record_id`, `metadata.source = 'sync:projects'`.
-  3. Does NOT delete wrong-type nodes (projects and organizations share labels like "Ashraya", "Solvstrat", "Qhord" — both need to coexist as different graph nodes, but `unique_label` constraint prevents this).
-  4. **Verification:** Post-sync count of project-type graph nodes with `db_record_id` should cover all unique project names.
+### Table → Graph (Projects) — Decommissioned
+
+**`sync_projects_to_graph_nodes()` was removed in Phase 2.** The `projects` table is no longer the source of truth for project graph nodes. Project-type nodes are now created through entity extraction or the backfill's pattern-discovery path. Any remaining `projects` table rows exist only for backward compatibility in test fixtures.
 
 ### Label Resolution Logic (`core/lib/graph_rules.py`)
 
@@ -176,16 +137,16 @@ The system prevents reappearing deleted graph nodes via three independent layers
 | Domain Table | Rows | Matching graph_nodes (via db_record_id) | Gap Reason |
 |---|---|---|---|
 | `people` | 135 | 105 person-type nodes | 30 orphans (marked `[DELETED]`) |
-| `organizations` | 33 | 29 org-type nodes | 4 label collisions (same name as project node) |
-| `projects` | 16 | 22 project-type nodes | 6 extras from entity extraction without matching `projects` row |
+| `organizations` | 33 | 29 org-type nodes | 4 label collisions (same name used for both org and project-type nodes) |
+| `graph_nodes` (project-type) | ~22 | N/A | Created via entity extraction and backfill — not synchronized to a relational table |
 
-**Label collisions** (same name used for both org + project): Ashraya, Solvstrat, Qhord, PERSONAL. These have `type='project'` graph nodes but also exist as organizations. The sync correctly skips them — both need to coexist but the `unique_label` constraint prevents duplicate labels. This is an accepted data model limitation.
+**Label collisions** (same name used for both org + project-type nodes): Ashraya, Solvstrat, Qhord, PERSONAL. Both node types coexist as different graph nodes sharing the same label. This is an accepted data model limitation enforced by the `unique_label` constraint — when a collision occurs, the org sync creates the org-type node and the project-type node is manually resolved.
 
 ### Guard Integration
 
 The auto-creation paths now interact with guards:
 
-- **Project creation (Pulse AI Batch):** When the AI creates a new project via `new_projects`, it inserts into both `projects` table AND `graph_nodes`. This path bypasses Guard 2 because it originates from the AI's structured output (not LLM extraction). The `projects` table entry ensures future extractions of the same project name will be grounded.
+- **Project creation (entity extraction):** When the entity linker discovers a new project name, it creates a `type='project'` graph node directly — no `projects` table insert. The node flows through the standard HITL pending approval path (`pending_graph_nodes`). Entity grounding guards (`has_structural_anchor()`) ensure only clearly identifiable project references trigger creation.
 - **Person creation (all 4 paths):** When a new person is created from any path, they enter the `people` table. Future extractions matching this name will be grounded by Guard 3 (`has_structural_anchor()`) and routed to pending with `status='pending'` instead of `status='flagged'`.
 - **Backfill orphaned tasks:** Creates task nodes directly in `graph_nodes` (tasks are structural entities, not extraction entities). Uses `upsert` to avoid duplicates. Transitional edges tagged with `source='transitional'` for the task node cleanup script to manage.
 - **Orphaned role markers:** When a people row is manually marked `[DELETED]` or auto-marked `[CHANGED TO ORGANIZATION]`, both the sync function AND `resolve_canonical_label()` refuse to recreate its graph node. The only way to revive a deleted person is to clear the role suffix manually.

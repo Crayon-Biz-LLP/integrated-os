@@ -22,7 +22,7 @@ Gmail API (last 48h, inbox/Ashraya labels)
     │   │   → write relationship_note memory if has_memory_value
     │   └─ "actionable": requires response
     │       → add_person_from_email() for sender
-    │       → fuzzy match linked_project_name against projects table
+    │       → resolve linked org via Action Planner / graph nodes
     │       → insert messages with duplicate guard
     │       → generate email_draft if needs_draft=true
     │

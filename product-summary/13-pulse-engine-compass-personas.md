@@ -99,7 +99,7 @@ Tasks untouched (no update to `updated_at`) for 7+ days are surfaced in the AI c
 
 ## Drift Detection
 
-The `detect_drift()` RPC checks if a project has been updated 3+ times in the last 48 hours. If so, the briefing prompt flags it as a potential bottleneck, allowing the AI to call attention to churn.
+The `detect_drift()` RPC checks if an organization or project has been updated 3+ times in the last 48 hours. The briefing calls `detect_drift(org_name)` for each active org and flags excessive update frequency as a potential bottleneck.
 
 ## Revenue-Critical Bolding
 

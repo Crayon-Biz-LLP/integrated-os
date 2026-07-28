@@ -324,17 +324,17 @@ UAT validation: **22/22 scenarios passing** against LIVE_DB (S1-S22 in `tests/ua
 
 ### SPEC-010: Graph Node Sync — Three-Way Table→Graph Bridge [COMPLETED]
 
-**What**: Add sync_organizations_to_graph_nodes() and sync_projects_to_graph_nodes() to `backfill_graph.py`, fix sync_people_to_graph_nodes() to skip orphaned [DELETED] entries, harden `resolve_canonical_label()` with exact guard pattern.
+**What**: Add sync_organizations_to_graph_nodes() and ~~sync_projects_to_graph_nodes()~~ *(removed later)* to `backfill_graph.py`, fix sync_people_to_graph_nodes() to skip orphaned [DELETED] entries, harden `resolve_canonical_label()` with exact guard pattern.
 
 **Why**: Three concrete bugs:
 1. Deleted graph nodes (Andrej Karpathy, Boys, Broadleaf, CPA, etc.) kept reappearing because the backfill's entity extraction re-extracted them and `resolve_canonical_label()` had no guard against deleted provenance.
 2. Wrong-type graph nodes (organizations created as `type='person'` by entity extraction) were never corrected — Ashraya Chennai Central, Amico, Armour, Auditor were all person-type when they should have been organization-type.
-3. Organizations and projects tables had no sync functions — only the `people` table had a table→graph path.
+3. Organizations and projects tables had no sync functions — only the `people` table had a table→graph path. *(The projects sync was later removed when the projects table was decommissioned in Phase 2.)*
 
 **Acceptance Criteria**:
 - `sync_people_to_graph_nodes()` skips people rows where `role` contains `[DELETED]`, `[CHANGED TO ORGANIZATION]`, `[MERGED INTO` — no graph node created for orphaned people.
 - `sync_organizations_to_graph_nodes()` deletes wrong-type graph nodes (person → organization) and recreates with correct type. Cascading edge deletion is accepted.
-- `sync_projects_to_graph_nodes()` creates project-type graph nodes for all projects rows without one.
+- ~~`sync_projects_to_graph_nodes()`~~ *(removed Phase 2 — projects table decommissioned)*
 - `resolve_canonical_label()` checks `pending_graph_nodes` rejected entries AND `people.role` suffix markers before returning any match.
 - New shared `normalize_label()` helper in `core/lib/graph_rules.py` used by all sync functions.
 - Post-sync verification assertions in `__main__` prevent silent drift.
