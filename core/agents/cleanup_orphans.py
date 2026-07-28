@@ -37,22 +37,22 @@ def cleanup_orphan_graph_edges(dry_run: bool = False):
 
 def cleanup_orphan_tasks(dry_run: bool = False):
     audit_log_sync("cleanup_orphans", "INFO", "Starting orphan task cleanup...")
-    all_tasks = supabase.table("tasks").select("id, project_id, title").eq('is_current', True).execute()
+    all_tasks = supabase.table("tasks").select("id, organization_id, title").eq('is_current', True).execute()
     orphans = 0
     for task in all_tasks.data or []:
-        pid = task.get("project_id")
-        if not pid:
+        oid = task.get("organization_id")
+        if not oid:
             continue
-        proj = supabase.table("projects").select("id").eq("id", pid).execute()
-        if not proj.data:
+        org = supabase.table("organizations").select("id").eq("id", oid).execute()
+        if not org.data:
             orphans += 1
             if not dry_run:
                 supabase.table("tasks").update({
-                    "project_id": None,
+                    "organization_id": None,
                     "is_current": True
                 }).eq("id", task["id"]).execute()
                 audit_log_sync("cleanup_orphans", "INFO",
-                              f"Unlinked task {task['id']} ('{task['title']}') from missing project {pid}")
+                              f"Unlinked task {task['id']} ('{task['title']}') from missing organization {oid}")
     if orphans:
         msg = f"Unlinked {orphans} orphan tasks from missing organizations."
         audit_log_sync("cleanup_orphans", "INFO", msg)

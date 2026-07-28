@@ -15,7 +15,6 @@ class NewProject(BaseModel):
     context: Optional[str] = "work"
     description: Optional[str] = None
     keywords: Optional[List[str]] = Field(default_factory=list)
-    parent_project_name: Optional[str] = None
 
 
 class NewPerson(BaseModel):
@@ -29,7 +28,6 @@ class ResourceItem(BaseModel):
     title: Optional[str] = None
     summary: Optional[str] = None
     cluster_name: Optional[str] = None
-    project_name: Optional[str] = None
     strategic_note: Optional[str] = None
 
 
@@ -40,7 +38,6 @@ class LogEntry(BaseModel):
 
 class NewTask(BaseModel):
     title: str
-    project_name: Optional[str] = None
     priority: Optional[str] = None
     estimated_duration: Optional[int] = 15
     reminder_at: Optional[str] = None

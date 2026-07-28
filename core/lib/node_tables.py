@@ -6,6 +6,7 @@ Abstraction layer for pending_nodes and merge_proposals tables.
 """
 
 from typing import Optional
+from datetime import datetime, timezone
 from core.services.db import get_supabase, maybe_single_safe
 from core.lib.audit_logger import audit_log_sync
 
@@ -59,7 +60,7 @@ def update_pending_node_status(
     try:
         update = {"status": status}
         if resolved_at:
-            update["resolved_at"] = "now()"
+            update["resolved_at"] = datetime.now(timezone.utc).isoformat()
         supabase.table("pending_nodes").update(update).eq("id", node_id).execute()
         return True
     except Exception as e:
@@ -143,7 +144,7 @@ def resolve_merge_proposal(
     try:
         supabase.table("merge_proposals").update({
             "status": status,
-            "resolved_at": "now()",
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", proposal_id).execute()
         return True
     except Exception as e:

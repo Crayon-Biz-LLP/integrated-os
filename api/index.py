@@ -210,7 +210,7 @@ async def get_tasks_route(request: Request, status: str = None, limit: int = 50,
     try:
         supabase = get_supabase()
         query = supabase.table('tasks')\
-            .select('id, title, status, priority, deadline, created_at, project_id, direction, committed_to, recurrence')\
+            .select('id, title, status, priority, deadline, created_at, organization_id, direction, committed_to, recurrence')\
             .eq('is_current', True)
         
         if status:
@@ -568,12 +568,12 @@ async def update_task_status(request: Request, task_id: int):
         supabase.table('tasks').update(update_data).eq('id', task_id).execute()
 
         if new_status == 'done':
-            proj_name = None
-            proj_id = task.get('project_id')
-            if proj_id:
-                proj_lookup = maybe_single_safe(supabase.table('projects').select('name').eq('id', proj_id))
-                proj_name = proj_lookup.data['name'] if proj_lookup.data else None
-            await write_outcome_memory(task_title, proj_name)
+            org_name = None
+            org_id = task.get('organization_id')
+            if org_id:
+                org_lookup = maybe_single_safe(supabase.table('organizations').select('name').eq('id', org_id))
+                org_name = org_lookup.data['name'] if org_lookup.data else None
+            await write_outcome_memory(task_title, org_name)
 
         # Invalidate task caches so interrogate_brain() doesn't return stale active tasks
         try:

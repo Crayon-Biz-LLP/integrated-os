@@ -158,7 +158,7 @@ _SWEEP_TABLES = [
     ('raw_dumps', 'content', 'id'),
     ('messages', 'body', 'id'),
     ('resources', 'url', 'id'),
-    ('project_creation_signals', 'project_name', 'id'),
+    ('org_creation_signals', 'org_name', 'id'),
     ('canonical_pages', 'title', 'id'),
     ('audit_logs', 'message', 'id'),
     ('decisions', 'title', 'id'),
@@ -1684,7 +1684,7 @@ def layer4_presentation_tests():
 
     # SP2: Project creation signals consumer
     async def sp2():
-        signals = supabase.table('project_creation_signals') \
+        signals = supabase.table('org_creation_signals') \
             .select('id').eq('status', 'pending').limit(5).execute()
         assert_true(True, "SP2", f"Signal queue check: {len(signals.data or [])} pending signal(s)", "")
 

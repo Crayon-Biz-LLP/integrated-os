@@ -68,10 +68,10 @@ TASKS_STATUSES = {
 }
 
 TASKS_TRANSITIONS = {
-    "todo":         {"in_progress", "done", "cancelled", "blocked"},
+    "todo":         {"in_progress", "done", "cancelled", "blocked", "todo"},  # todo→todo for metadata-only updates (reschedule)
     "in_progress":  {"todo", "done", "cancelled", "blocked"},
-    "done":         set(),  # terminal (recurring: skip instance; cancelled ends series)
-    "cancelled":    set(),  # terminal
+    "done":         {"todo"},  # terminal normally; todo allowed for batch rollback
+    "cancelled":    {"todo"},  # terminal normally; todo allowed for batch rollback
     "blocked":      {"todo", "in_progress", "cancelled"},
 }
 
@@ -426,7 +426,7 @@ def guard_is_valid_transition(table: str, current: str, next_status: str) -> boo
 
     Example:
         guard_is_valid_transition("tasks", "todo", "done") -> True
-        guard_is_valid_transition("tasks", "done", "todo") -> False
+        guard_is_valid_transition("tasks", "done", "todo") -> True  # rollback
     """
     map = {
         "raw_dumps": RAW_DUMPS_TRANSITIONS,

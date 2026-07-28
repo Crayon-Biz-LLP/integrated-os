@@ -1,6 +1,7 @@
 from core.services.db import get_supabase, maybe_single_safe
 import difflib
 import re
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from core.lib.audit_logger import audit_log_sync
 
@@ -83,7 +84,7 @@ def resolve_alias(label: str) -> str:
             count = res.data.get("resolution_count", 0) if res and res.data else 0
             supabase.table("person_aliases").update({
                 "resolution_count": count + 1,
-                "last_resolved_at": "now()"
+                "last_resolved_at": datetime.now(timezone.utc).isoformat()
             }).eq("alias", lookup).execute()
         except Exception as e:
             audit_log_sync("graph_pipeline", "WARNING", f"Alias write-back failed for '{lookup}': {e}")
@@ -519,7 +520,7 @@ def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "
         if src_domain_id:
             try:
                 supabase.table('people').update({
-                    'deleted_at': 'now()',
+                    'deleted_at': datetime.now(timezone.utc).isoformat(),
                     'is_current': False,
                     'strategic_weight': 0,
                     'graph_node_id': None

@@ -525,19 +525,88 @@ async def execute_planned_actions(
                     if upd:
                         supabase.table('tasks').update(upd).eq('id', int(action.target_id)).execute()
                         closed_ids.append(action.target_id)
+                        # Sync metadata changes to Google Tasks/Calendar
+                        try:
+                            from core.services.google_service import sync_to_google, get_tasks_service
+                            task_meta = supabase.table('tasks').select('title, google_task_id, google_event_id').eq('id', int(action.target_id)).limit(1).execute()
+                            if task_meta.data:
+                                td = task_meta.data[0]
+                                g_id = td.get('google_task_id')
+                                if g_id:
+                                    sync_to_google(get_tasks_service(), title=td['title'], task_id=g_id,
+                                                    priority=upd.get('priority'), due_at=upd.get('deadline'))
+                                e_id = td.get('google_event_id')
+                                if e_id and upd.get('deadline'):
+                                    from core.services.google_service import sync_to_calendar
+                                    sync_to_calendar(td['title'], upd['deadline'], event_id=e_id,
+                                                      priority='important')
+                        except Exception as sync_e:
+                            audit_log_sync("executor", "WARNING", f"Google sync for metadata update failed: {sync_e}")
                 except Exception as e:
                     sync_failed = True
                     failed_tasks.append(f"Task {action.target_id} metadata: {e}")
                 continue
 
             if action.operation == "modify_recurring":
-                status_to_set = "todo"
-                reminder_at = action.params.get("new_reminder_at")
-                recurrence = action.params.get("new_rrule")
+                # Dedicated modify_recurring handler — does NOT go through update_task_status
+                # because update_task_status treats None reminder_at as "delete calendar event."
+                # Modifying a recurring task's schedule should update the event, not delete it.
+                new_rrule = action.params.get("new_rrule")
+                new_reminder = action.params.get("new_reminder_at")
+                try:
+                    from core.services.google_service import sync_to_calendar
+                    task_ref = supabase.table('tasks').select('*').eq('id', int(action.target_id)).limit(1).execute()
+                    if task_ref.data:
+                        td = task_ref.data[0]
+                        e_id = td.get('google_event_id')
+                        upd = {"recurrence": new_rrule}
+                        if new_reminder:
+                            from core.services.google_service import format_rfc3339
+                            upd["reminder_at"] = format_rfc3339(new_reminder)
+                        supabase.table('tasks').update(upd).eq('id', int(action.target_id)).execute()
+                        # Sync to calendar — update existing event, don't delete
+                        e_id = sync_to_calendar(td['title'], upd.get('reminder_at') or td.get('reminder_at'),
+                                                  event_id=e_id, duration_mins=td.get('duration_mins', 15),
+                                                  recurrence=new_rrule)
+                        if e_id:
+                            supabase.table('tasks').update({'google_event_id': e_id}).eq('id', int(action.target_id)).execute()
+                        closed_ids.append(action.target_id)
+                    else:
+                        sync_failed = True
+                        failed_tasks.append(f"Task {action.target_id}: modify_recurring — task not found")
+                except Exception as e:
+                    sync_failed = True
+                    failed_tasks.append(f"Task {action.target_id} modify_recurring: {e}")
+                continue
             elif action.operation == "reschedule":
-                status_to_set = "todo"
-                reminder_at = action.params.get("new_reminder_at")
-                recurrence = None
+                # Dedicated reschedule handler — bypasses the state machine guard for
+                # metadata-only updates. Rescheduling (changing reminder_at) is not a
+                # status change — the task stays in its current state (todo, blocked, etc.).
+                # The state machine was only designed for status transitions, not metadata.
+                new_reminder = action.params.get("new_reminder_at")
+                try:
+                    if new_reminder:
+                        from core.services.google_service import format_rfc3339, sync_to_calendar
+                        formatted = format_rfc3339(new_reminder)
+                        task_ref = supabase.table('tasks').select('*').eq('id', int(action.target_id)).limit(1).execute()
+                        if task_ref.data:
+                            td = task_ref.data[0]
+                            supabase.table('tasks').update({'reminder_at': formatted}).eq('id', int(action.target_id)).execute()
+                            e_id = td.get('google_event_id')
+                            if e_id:
+                                sync_to_calendar(td['title'], formatted, event_id=e_id,
+                                                  duration_mins=td.get('duration_mins', 15))
+                            closed_ids.append(action.target_id)
+                        else:
+                            sync_failed = True
+                            failed_tasks.append(f"Task {action.target_id}: reschedule — task not found")
+                    else:
+                        # No new time provided — just acknowledge
+                        closed_ids.append(action.target_id)
+                except Exception as e:
+                    sync_failed = True
+                    failed_tasks.append(f"Task {action.target_id} reschedule: {e}")
+                continue
             elif action.operation == "cancel_recurring":
                 status_to_set = "cancelled"
                 reminder_at = None
@@ -590,8 +659,11 @@ async def execute_planned_actions(
 
             try:
                 from core.pulse.tools import create_task_direct
-                # Compute dedup_key from title to prevent duplicate webhook submissions
-                dedup_key = hashlib.md5(title.encode()).hexdigest()[:16] if title else None
+                # Compute dedup_key from title + org scope to prevent duplicate webhook submissions
+                # Case-insensitive + scoped by organization to avoid cross-org collisions
+                dedup_org_id = action.params.get("organization_id") or action.organization_id or ""
+                dedup_raw = f"{title.lower().strip()}:{dedup_org_id}"
+                dedup_key = hashlib.md5(dedup_raw.encode()).hexdigest()[:16] if title else None
                 result = await create_task_direct(
                         title=title,
                         dedup_key=dedup_key,
@@ -656,13 +728,18 @@ async def execute_planned_actions(
                 
         elif action.operation == "create_event":
             title = action.params.get("title") or action.human_label or text or "New Event"
-            event_time = action.params.get("time") or ""
+            event_time = action.params.get("time") or action.params.get("reminder_at") or ""
+            # Compute dedup_key scoped by org to prevent duplicate event creation
+            dedup_org_id = action.params.get("organization_id") or action.organization_id or ""
+            event_dedup_raw = f"{title.lower().strip()}:{dedup_org_id}:event"
+            event_dedup_key = hashlib.md5(event_dedup_raw.encode()).hexdigest()[:16] if title else None
             duration = action.params.get("duration_mins", 30)
 
             try:
                 from core.pulse.tools import create_task_direct
                 result = await create_task_direct(
                         title=title,
+                        dedup_key=event_dedup_key,
                         reminder_at=event_time,
                         duration_mins=duration,
                         priority="important",

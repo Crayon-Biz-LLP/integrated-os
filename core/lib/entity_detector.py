@@ -301,11 +301,12 @@ def resolve_org_and_project(text: str
     """Convenience: returns (organization_id, project_id, reason).
 
     Thin wrapper around detect_entities for callers that only need
-    org/project ID resolution (replaces entity_resolver.resolve_entities_from_text).
+    org ID resolution (replaces entity_resolver.resolve_entities_from_text).
+    Note: project_id is always None (projects table decommissioned) —
+    returned for backward compat with existing callers.
     """
     entities = detect_entities(text)
     org_id = None
-    proj_id = None
     reason_parts = []
 
     for e in entities:
@@ -317,4 +318,4 @@ def resolve_org_and_project(text: str
                 reason_parts.append("org_ambiguous")
                 org_id = None
     reason = " | ".join(reason_parts) if reason_parts else "no_matches"
-    return org_id, proj_id, reason
+    return org_id, None, reason

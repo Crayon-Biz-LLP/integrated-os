@@ -149,14 +149,15 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
             except Exception:
                 pass
         # Fire a push notification so the app gets the response instantly
-        # (fire-and-forget — don't block the Telegram send on this)
+        # AWAITED, not fire-and-forget — Modal suspends containers after response,
+        # killing background tasks before Firebase receives the request.
         try:
             from core.services.push_notification import send_push_notification
-            asyncio.create_task(send_push_notification(
+            await send_push_notification(
                 title="Rhodey",
                 body=message_text[:120] + ("\u2026" if len(message_text) > 120 else ""),
                 data={"type": "briefing"},
-            ))
+            )
         except Exception:
             pass
 

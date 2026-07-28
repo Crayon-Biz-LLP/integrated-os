@@ -11,7 +11,7 @@ from core.lib.graph_rules import normalize_label
 # Must respect FK order: tasks/projects first → organizations/graph_nodes last.
 
 _SWEEP_ORDER = [
-    ('project_creation_signals', 'project_name', 'project_creation_signals'),
+    ('org_creation_signals', 'org_name', 'org_creation_signals'),
     ('tasks', 'title', 'tasks'),
     ('memories', 'content', 'memories'),
     ('projects', 'name', 'projects'),
@@ -55,7 +55,7 @@ _sweep_sim_test_rows()
 # ── Per-table cleanup predicates ──────────────────────────────────────────
 
 _CLEANUP_PREDICATES = {
-    'project_creation_signals': ('project_name', '[SIM_TEST]%'),
+    'org_creation_signals': ('org_name', '[SIM_TEST]%'),
     'tasks':                   ('title', '[SIM_TEST]%'),
     'memories':                ('content', '[SIM_TEST]%'),
     'graph_nodes':             ('label', '[SIM_TEST]%'),

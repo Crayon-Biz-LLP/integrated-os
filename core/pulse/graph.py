@@ -27,9 +27,10 @@ def is_valid_uuid(val: str) -> bool:
         return False
 
 
+
 TYPE_TO_DANNY_EDGE = {
     'person': 'KNOWS',
-    'organization': 'MEMBER_OF',
+    'organization': 'WORKS_WITH',
     'place': 'RELATES_TO',
     'event': 'ATTENDED',
     'emotional_state': 'FEELS',
@@ -330,7 +331,7 @@ async def _backfill_existing_content_for_entity(
         # ── Backfill open tasks that mention this entity label ──
         try:
             task_res = supabase.table('tasks') \
-                .select('id, organization_id, project_id, title') \
+                .select('id, organization_id, title') \
                 .eq('is_current', True) \
                 .not_.in_('status', ['done', 'cancelled']) \
                 .ilike('title', f'%{label_lower}%') \
@@ -849,7 +850,7 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
         audit_log_sync("pulse", "ERROR", f"Error processing edge decision: {e}")
         return {"success": False, "action": "error", "message": str(e)}
 
-async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: int = None, task_description: str = None, people_cache=None, organization_id: str = None):
+async def write_graph_edges_for_task(task_id: int, task_title: str, task_description: str = None, people_cache=None, organization_id: str = None):
     """
     Add-on: Writes graph edges after a task is created.
     Non-blocking. If this fails, the task is already saved — no rollback needed.
@@ -863,7 +864,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
             "metadata": {
                 "source": "tasks_table",
                 "task_id": task_id,
-                "project_id": project_id
+
             }
         }, on_conflict="normalized_label, type").execute()
 

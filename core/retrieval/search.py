@@ -232,8 +232,8 @@ async def _extract_query_entities(query: str) -> List[str]:
     Returns empty list if no known entities found (caller falls back to lexical).
     """
     try:
-        from core.pulse.entity_resolver import resolve_entities_from_text
-        org_id, proj_id, reason = resolve_entities_from_text(query)
+        from core.lib.entity_detector import resolve_org_and_project
+        org_id, proj_id, reason = resolve_org_and_project(query)
         if "no_matches" in reason:
             return []
         # Return entity labels from the resolved IDs
@@ -243,10 +243,7 @@ async def _extract_query_entities(query: str) -> List[str]:
             org = supabase.table('organizations').select('name').eq('id', org_id).maybe_single().execute()
             if org and org.data:
                 labels.append(org.data['name'])
-        if proj_id:
-            proj = supabase.table('projects').select('name').eq('id', proj_id).eq('is_current', True).maybe_single().execute()
-            if proj and proj.data:
-                labels.append(proj.data['name'])
+        # Projects table decommissioned — orgs are the primary entity
         return labels
     except Exception:
         return []
@@ -446,7 +443,7 @@ def _fetch_memory_metadata_boosts(memory_ids: List[int], active_project_id: Opti
         
     try:
         res = supabase.table("memories") \
-            .select("id, created_at, importance_score, project_id") \
+            .select("id, created_at, importance_score") \
             .in_("id", memory_ids) \
             .execute()
             
@@ -466,8 +463,7 @@ def _fetch_memory_metadata_boosts(memory_ids: List[int], active_project_id: Opti
                 
             importance[mid] = (row.get("importance_score", 5) or 5) / 10.0
             
-            if active_project_id and row.get("project_id") == active_project_id:
-                project[mid] = 1.0
+            # project_id boost removed — projects table decommissioned
                 
     except Exception as e:
         from core.lib.audit_logger import audit_log_sync

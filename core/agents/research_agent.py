@@ -3,6 +3,7 @@ import os
 import json
 import asyncio
 import httpx
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 from core.services.db import get_supabase
@@ -93,7 +94,7 @@ Web Search Results:
 
                 supabase.table('agent_queue').update({
                     "status": "completed",
-                    "completed_at": "now()"
+                    "completed_at": datetime.now(timezone.utc).isoformat()
                 }).eq('id', task_id).execute()
 
                 print(f"Completed: {task_text[:30]}...")

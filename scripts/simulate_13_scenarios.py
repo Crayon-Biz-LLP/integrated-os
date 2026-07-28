@@ -64,8 +64,8 @@ def test_s1_unknown_org_create_project():
     no_project_created = not rows.data
     assert_true(no_project_created, "S1", "No orphan project row created in DB", f"Orphan project row found: {rows.data}")
 
-    # Confirm a signal was written (signal project_name includes [unknown_org=...] suffix)
-    sig = supabase.table('project_creation_signals').select('id').ilike('project_name', f"%{PREFIX} S1%").execute()
+    # Confirm a signal was written (signal org_name includes [unknown_org=...] suffix)
+    sig = supabase.table('org_creation_signals').select('id').ilike('org_name', f"%{PREFIX} S1%").execute()
     signal_written = bool(sig.data)
     assert_true(signal_written, "S1", "project_creation_signal written for unknown org", "No signal written")
     if sig.data:
@@ -400,19 +400,19 @@ def test_s11_signal_queue_lifecycle():
     print("\n--- S11: Signal queue lifecycle ---")
     # Write a signal directly
     sig_name = f"{PREFIX} S11 Signal Test Project"
-    res = supabase.table('project_creation_signals').insert({
-        "project_name": sig_name,
+    res = supabase.table('org_creation_signals').insert({
+        "org_name": sig_name,
         "source": "sim13_s11"
     }).execute()
     if not res.data:
-        fail("S11", "Could not write to project_creation_signals")
+        fail("S11", "Could not write to org_creation_signals")
         return
     sig_id = res.data[0]['id']
     created_signal_ids.append(sig_id)
     ok("S11", f"Signal written with ID {sig_id}")
 
     # Confirm it stays staged (no consumer has deleted it)
-    check = maybe_single_safe(supabase.table('project_creation_signals').select('id').eq('id', sig_id))
+    check = maybe_single_safe(supabase.table('org_creation_signals').select('id').eq('id', sig_id))
     still_there = bool(check.data)
     assert_true(still_there, "S11",
                 "Signal still staged (no consumer ran — expected for future pulse feature)",
@@ -572,7 +572,7 @@ def cleanup():
 
     for sid in created_signal_ids:
         try:
-            supabase.table('project_creation_signals').delete().eq('id', sid).execute()
+            supabase.table('org_creation_signals').delete().eq('id', sid).execute()
             print(f"  Deleted signal {sid}")
         except Exception as e:
             errors.append(f"Signal {sid}: {e}")

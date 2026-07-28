@@ -13,15 +13,13 @@ from core.retrieval.config import config as retrieval_config
 supabase = get_supabase()
 
 
-async def write_outcome_memory(task_title: str, project_name: str = None):
+async def write_outcome_memory(task_title: str):
     """
     Writes a type:outcome memory when a task is completed.
     Non-blocking. Mirrors the same pattern as reflection writes in AAR.
     """
     try:
         label = f"Completed: {task_title}"
-        if project_name:
-            label += f" on {project_name}"
 
         embedding = (await get_embedding(label)).vector
         status = 'success' if embedding and any(embedding) else 'failed'
@@ -46,15 +44,6 @@ async def get_recent_memories_for_briefing(tasks: list, max_memories: int = 5) -
     Uses task titles to query match_memories RPC for relevant past insights.
     """
     if not tasks:
-        return ""
-
-    # Collect unique project contexts
-    project_ids = list(set([
-        t.get('project_id') for t in tasks
-        if t.get('project_id') and t.get('status') not in ['done', 'cancelled']
-    ]))
-
-    if not project_ids:
         return ""
 
     # Build query from task titles

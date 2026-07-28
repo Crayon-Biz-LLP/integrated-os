@@ -227,9 +227,9 @@ def build_pulse_system_instruction(
     {routing_logic}
 
     DRIFT DETECTION (Temporal Lineage):
-    - Check if active projects have been updated 3+ times in 48 hours.
-    - If DRIFT detected, add: "DRIFT ALERT: Project '{{name}}' changed {{count}} times in 48h. Bottleneck?"
-    - Use detect_drift(project_name) to check (returns update_count).
+    - Check if active organizations have been updated 3+ times in 48 hours.
+    - If DRIFT detected, add: "DRIFT ALERT: Organization '{{name}}' changed {{count}} times in 48h. Bottleneck?"
+    - Use detect_drift(org_name) to check (returns update_count).
 
     SERENDIPITY PROTOCOL:
     - Under the "SERENDIPITY FINDS" context, you have been given a sample of multi-hop connections.

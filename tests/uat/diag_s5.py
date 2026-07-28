@@ -130,7 +130,7 @@ def cleanup_uat_rows():
         ('resources', 'url'),
         ('audit_logs', 'message'),
         ('conversations', 'query'),
-        ('project_creation_signals', 'project_name'),
+        ('org_creation_signals', 'org_name'),
     ]:
         _delete_ilike(tbl, col, f'{PREFIX}%')
 

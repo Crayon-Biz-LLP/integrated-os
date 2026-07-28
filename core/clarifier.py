@@ -214,7 +214,7 @@ def handle_response(shortcode: str, answer: str) -> dict:
     update = {
         "answer": answer,
         "response_type": response_type,
-        "resolved_at": "now()"
+        "resolved_at": datetime.now(timezone.utc).isoformat()
     }
     if context:
         update["context"] = context

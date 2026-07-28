@@ -508,9 +508,9 @@ Context:
             audit_log_sync("sentinel", "WARNING", f"Auto-cancel error (non-critical): {ac_err}")
 
         # --- PIGGYBACK: P5 DLQ Consumer ---
-        # --- PIGGYBACK: Consume project_creation_signals ---
+        # --- PIGGYBACK: Consume org_creation_signals ---
         try:
-            signals_res = supabase.table('project_creation_signals') \
+            signals_res = supabase.table('org_creation_signals') \
                 .select('*') \
                 .is_('status', 'pending') \
                 .limit(10) \
@@ -518,22 +518,22 @@ Context:
             if signals_res and signals_res.data:
                 signal_items = []
                 for sig in signals_res.data:
-                    project_name = sig.get('project_name', 'Unknown')
+                    org_name = sig.get('org_name', 'Unknown')
                     source = sig.get('source', 'unknown')
-                    signal_items.append(f"  • {project_name} (source: {source})")
+                    signal_items.append(f"  • {org_name} (source: {source})")
                     
                     # Mark as resolved so we don't alert again
-                    supabase.table('project_creation_signals') \
+                    supabase.table('org_creation_signals') \
                         .update({'status': 'notified'}) \
                         .eq('id', sig['id']) \
                         .execute()
                 
                 if signal_items:
-                    alert_msg = "⚠️ *Unknown Organization Signals*\n\nProjects were attempted with orgs that don't exist in the `organizations` table. Approve the org first via Decisions, or check the name.\n" + "\n".join(signal_items)
+                    alert_msg = "⚠️ *Unknown Organization Signals*\n\nTasks were attempted with orgs that don't exist in the `organizations` table. Approve the org first via Decisions, or check the name.\n" + "\n".join(signal_items)
                     await send_telegram(int(telegram_chat_id), alert_msg)
-                    audit_log_sync("sentinel", "INFO", f"project_creation_signals: alerted {len(signal_items)} unknown org(s)")
+                    audit_log_sync("sentinel", "INFO", f"org_creation_signals: alerted {len(signal_items)} unknown org(s)")
         except Exception as sig_err:
-            audit_log_sync("sentinel", "WARNING", f"Project creation signals consumer error (non-critical): {sig_err}")
+            audit_log_sync("sentinel", "WARNING", f"Org creation signals consumer error (non-critical): {sig_err}")
 
         # --- PIGGYBACK: P5 DLQ Consumer ---
         try:
@@ -619,6 +619,23 @@ Context:
                     audit_log_sync("sentinel", "INFO", f"enrichment queue: processed {processed} job(s)")
         except Exception as enrich_err:
             audit_log_sync("sentinel", "WARNING", f"Enrichment queue consumer error (non-critical): {enrich_err}")
+
+        # --- PIGGYBACK: Zombie recovery (reset stuck processing dumps >10min) ---
+        try:
+            from core.services.db import zombie_recovery
+            last_zombie_sweep = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'sentinel') \
+                .ilike('message', '%zombie recovery%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_zombie_sweep.data:
+                recovered = zombie_recovery()
+                if recovered > 0:
+                    audit_log_sync("sentinel", "INFO", f"zombie recovery: {recovered} stuck dump(s) reset to pending")
+        except Exception as z_err:
+            audit_log_sync("sentinel", "WARNING", f"Zombie recovery error (non-critical): {z_err}")
 
         # Memory sweep, index queue, and retry-failed-runs deferred to maintenance.py (daily mode)
 

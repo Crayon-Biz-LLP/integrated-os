@@ -60,21 +60,11 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         from core.pulse.tools import create_note_direct
 
         # Pass active_anchor context for org routing (N:/Note: shortcuts)
-        project_name = None
         organization_id = None
         if active_anchor:
             organization_id = active_anchor.get("last_org_id")
-            if active_anchor.get("last_project_id"):
-                try:
-                    proj_res = supabase.table('projects').select('organization_id, name').eq('id', active_anchor["last_project_id"]).limit(1).execute()
-                    if proj_res.data:
-                        project_name = proj_res.data[0].get('name')
-                        if not organization_id:
-                            organization_id = proj_res.data[0].get('organization_id')
-                except Exception:
-                    pass
 
-        await create_note_direct(content=text, source=source or "telegram", project_name=project_name, organization_id=organization_id)
+        await create_note_direct(content=text, source=source or "telegram", organization_id=organization_id)
 
         final = receipt or "\u2705"
         await send_telegram(chat_id, final)
@@ -1361,10 +1351,14 @@ async def process_webhook(update: dict):
         _anaphora_task = asyncio.create_task(
             resolve_anaphora(text, active_anchor, classify_context_text, session_id)
         )
+        # Guard: cancel anaphora_task on any early return before route_by_intent consumes it.
+        # Prevents abandoned Gemini calls that burn API quota on Modal cold starts.
+        # route_by_intent receives the task and consumes it (awaits) — all other paths must cancel.
 
         # Bare URL short-circuit: bypass LLM classification entirely
         stripped = text.strip()
         if re.match(r'^https?://\S+$', stripped):
+            _anaphora_task.cancel()
             audit_log_sync("webhook", "INFO", f"Bare URL short-circuit — routing to NOTE: {stripped[:50]}...")
             await handle_confident_note(stripped, chat_id, "Repository link logged for the project vault.", source="telegram")
             return {"success": True}
@@ -1442,9 +1436,11 @@ async def process_webhook(update: dict):
         sender = "user"
 
         if text.startswith('/') or text in ['Urgent', 'Brief', 'Season Context', 'Vault', 'Library', 'Status']:
+            _anaphora_task.cancel()
             return await handle_command(text, chat_id)
 
         if text.startswith('N:') or text.startswith('Note:'):
+            _anaphora_task.cancel()
             note_content = text[2:].strip() if text.startswith('N:') else text[5:].strip()
             if note_content:
                 receipt = "Note vaulted."
@@ -1452,6 +1448,7 @@ async def process_webhook(update: dict):
             return {"success": True}
 
         if re.match(r'^undo\s+(n(?:ote)?|t(?:ask)?|d(?:elete)?)\s*$', text.strip(), re.IGNORECASE):
+            _anaphora_task.cancel()
             return await handle_undo_command(text, chat_id)
 
         receipt = classification.get('receipt')
@@ -1465,6 +1462,7 @@ async def process_webhook(update: dict):
             if first_word in UPDATE_TRIGGER_WORDS:
                 matched = check_task_overlap_for_update(text)
                 if matched:
+                    _anaphora_task.cancel()
                     audit_log_sync("webhook", "INFO", f"Task update overlap detected — asking: {text[:50]}...")
                     await ask_task_update_confirmation(text, classification, chat_id, session_id, matched)
                     return {"success": True}
@@ -1477,6 +1475,7 @@ async def process_webhook(update: dict):
             print(f"[HANDLER_DEBUG] Routing: intent={intent}, confidence={confidence}, text={text!r}", flush=True)
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_task=_anaphora_task)
         elif intent == 'CLARIFICATION_NEEDED':
+            _anaphora_task.cancel()
             await handle_clarification(
                 text,
                 classification.get('clarification_question', 'Could you provide more details?'),
@@ -1487,6 +1486,7 @@ async def process_webhook(update: dict):
         elif confidence >= CONFIDENCE_LOW:
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_task=_anaphora_task)
         else:
+            _anaphora_task.cancel()
             await handle_clarification(
                 text,
                 classification.get('clarification_question', 'Could you provide more details?'),

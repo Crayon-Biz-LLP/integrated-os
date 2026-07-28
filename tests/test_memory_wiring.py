@@ -19,7 +19,7 @@ class TestMemoryWiring:
         mock_supabase.table.return_value.insert.return_value.execute.return_value = mock_result
 
         # 2. Execute
-        await write_outcome_memory(task_title="Test Task", project_name="Test Project")
+        await write_outcome_memory(task_title="Test Task")
 
         # 3. Verify
         # Ensure insert was called

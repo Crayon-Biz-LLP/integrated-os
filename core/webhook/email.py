@@ -102,9 +102,10 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
             import os
             
             chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
-            actions = await plan_actions(text=title, intent="TASK", entity=resolved_entity)
+            original_text = row.get('message_text') or row.get('body') or title
+            actions = await plan_actions(text=original_text, title=title, intent="TASK", entity=resolved_entity)
             if actions:
-                await execute_planned_actions(actions, chat_id, text=title, source="email", entity=resolved_entity)
+                await execute_planned_actions(actions, chat_id, text=original_text, source="email", entity=resolved_entity)
         except Exception as plan_err:
             audit_log_sync("webhook", "ERROR", f"Failed to plan/execute email approval: {plan_err}")
             return {

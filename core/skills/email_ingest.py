@@ -364,7 +364,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
             body = raw_plain[:10000]
 
         if any(p in sender_email.lower() for p in NOREPLY_PATTERNS):
-            classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
+            classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_organization_name": None}
         else:
             try:
                 # We only pass the first 1500 chars to Gemini for classification to save tokens
@@ -465,7 +465,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
                 classification=classification_for_ingest,
                 summary=classification_data.get('summary', '')[:1000],
                 suggested_title=suggested_task,                    suggested_project=None,
-                linked_person_id=linked_person_id,                    linked_project_id=None,
+                linked_person_id=linked_person_id,
                 is_human_sender=is_human,
                 has_memory_value=classification_data.get('has_memory_value', False),
                 needs_draft=classification_data.get('needs_draft', False),

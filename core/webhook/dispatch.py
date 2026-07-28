@@ -78,21 +78,10 @@ async def resolve_anaphora(query: str, active_anchor: dict = None, classify_cont
     return entity, query_type, resolved_query_text
 
 
-def _format_task_line(title: str, project_name: str, priority: str = None, suffix: str = "", organization_name: str = None) -> str:
-    """Format a task line with consistent [Project] bracket.
-    Strips the project name from the end of the title if already embedded
-    to avoid duplication like 'Qhord [Qhord]'."""
-    title = title.rstrip()
-    if project_name and title.lower().endswith(project_name.lower()):
-        title = title[:-len(project_name)].rstrip()
-        
-    from core.features import is_org_routing_enabled
-    if is_org_routing_enabled() and organization_name:
-        loc = f"{organization_name} \u00b7 {project_name}" if project_name and project_name != "INBOX" else organization_name
-        line = f"{title} [{loc}]"
-    else:
-        line = f"{title} [{project_name}]"
-        
+def _format_task_line(title: str, organization_name: str = None, priority: str = None, suffix: str = "") -> str:
+    """Format a task line with consistent [Org] bracket."""
+    loc = organization_name or "INBOX"
+    line = f"{title} [{loc}]"
     if priority:
         line += f" ({priority})"
     if suffix:
@@ -127,8 +116,8 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
             completed_raw_data,
         ) = await asyncio.gather(
             safe_fetch(context_provider.get_calendar_events(target)),
-            safe_fetch(context_provider.hydrate_tasks_context(text), (None, None)),
-            safe_fetch(asyncio.to_thread(lambda: supabase.table('tasks').select('title, project_id, organization_id, priority').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).not_.is_('reminder_at', None).lt('reminder_at', now.isoformat()).execute().data or []), []),
+            safe_fetch(context_provider.hydrate_tasks_context(text), ""),
+            safe_fetch(asyncio.to_thread(lambda: supabase.table('tasks').select('title, organization_id, priority').eq('is_current', True).not_.in_('status', ['done', 'cancelled']).not_.is_('reminder_at', None).lt('reminder_at', now.isoformat()).execute().data or []), []),
             safe_fetch(context_provider.get_recently_completed_tasks(), []),
         )
 
@@ -149,7 +138,9 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
 
         # ── Process tasks ──
         if compressed_tasks_data:
-            compressed_tasks, _ = compressed_tasks_data
+            compressed_tasks = compressed_tasks_data
+        else:
+            compressed_tasks = ""
             active_tasks_list = compressed_tasks.split(" | ") if compressed_tasks else []
 
         # ── Fetch orgs for overdue and completed tasks ──
@@ -162,7 +153,7 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
                 for t in overdue_res_data:
                     org_id = t.get('organization_id')
                     o_name = org_map_for_brief.get(org_id) if org_id else None
-                    overdue_tasks.append(_format_task_line(t.get('title', ''), None, t.get('priority'), organization_name=o_name))
+                    overdue_tasks.append(_format_task_line(t.get('title', ''), organization_name=o_name, priority=t.get('priority')))
 
         # ── Process recently completed ──
         completed_raw = completed_raw_data or []
@@ -170,7 +161,7 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
             for t in completed_raw:
                 org_id = t.get('organization_id')
                 o_name = org_map_for_brief.get(org_id) if org_id else None
-                recently_completed.append(_format_task_line(t.get('title', ''), None, organization_name=o_name))
+                recently_completed.append(_format_task_line(t.get('title', ''), organization_name=o_name))
 
         def fmt_list(items):
             if not items:
@@ -493,6 +484,13 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
             capture_response(reply)
 
     elif intent in ('TASK', 'COMPLETION', 'NOTE'):
+        # Check if classifier was uncertain — ask user for disambiguation instead of silently defaulting
+        possible_intents = classification.get('possible_intents') if classification else None
+        confidence = classification.get('confidence', 0) if classification else 0
+        if possible_intents and len(possible_intents) >= 2 and confidence < 0.6 and session_id and chat_id:
+            deliberation = classification.get('deliberation')
+            await ask_intent_disambiguation(text, possible_intents, chat_id, session_id, deliberation)
+            return
         from core.actions.planner import plan_actions
         from core.actions.executor import execute_planned_actions
         actions = await plan_actions(text, title, entity, active_anchor, intent=intent)
@@ -624,7 +622,6 @@ async def _build_rich_anchor(graph_node_id, name):
         "type": "entity",
         "last_action": None,
         "last_task_id": None,
-        "last_project_id": None,
         "last_org_id": None,
         "last_summary_snippet": None,
         "last_mentioned_at": now_ist_value.isoformat()
@@ -637,7 +634,7 @@ async def _build_rich_anchor(graph_node_id, name):
         pass
     try:
         task_res = supabase.table('tasks') \
-            .select('id, title, project_id, organization_id, status') \
+            .select('id, title, organization_id, status') \
             .eq('is_current', True) \
             .neq('status', 'done') \
             .neq('status', 'cancelled') \
@@ -649,8 +646,6 @@ async def _build_rich_anchor(graph_node_id, name):
             t = task_res.data[0]
             anchor["last_task_id"] = str(t['id'])
             anchor["last_action"] = t.get('status', '')
-            if t.get('project_id'):
-                anchor["last_project_id"] = str(t['project_id'])
             if t.get('organization_id'):
                 anchor["last_org_id"] = str(t['organization_id'])
     except Exception:
@@ -959,9 +954,9 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             audit_log_sync("webhook", "WARNING", f"Anaphora/Entity resolution failed: {e}")
 
         # ── Await cached embedding (started in Phase 1a, almost certainly ready) ──
-        # Pass to Phase 1b sub-fetchers so they reuse it instead of calling Gemini
-        # get_embedding() separately. Saves ~1.5-2.5s on deep queries.
-        query_emb = await _shared.get_embedding()
+        # Consume the pre-started _embedding_future instead of calling get_embedding()
+        # again. The task was created at line ~867 and is almost certainly done.
+        query_emb = await _embedding_future
 
         mark(trace_id_var.get(), "anaphora_done")
         # ── PHASE 1b: Heavy context tasks (created AFTER anaphora with CORRECT flags) ──
@@ -1061,7 +1056,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _phase2_tasks.append(_p2_tactical)
         
         _p2_tasks = asyncio.create_task(safe_fetch(
-            context_provider.hydrate_tasks_context(query, entity_name=_entity_for_tasks), ("", "")) if (fetch_all or is_action or is_schedule or is_people) else safe_fetch(_empty_fetch(("", "")), ("", "")))
+            context_provider.hydrate_tasks_context(query, entity_name=_entity_for_tasks), "") if (fetch_all or is_action or is_schedule or is_people) else safe_fetch(_empty_fetch(""), ""))
         _phase2_tasks.append(_p2_tasks)
         
         async def _fetch_canonical():
@@ -1093,7 +1088,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         # Returns "None" when embedding isn't available (first query, backfill not run yet).
         async def _fetch_past_conversations():
             try:
-                query_emb = await _shared.get_embedding()
+                query_emb = await _embedding_future
                 if not query_emb or not session_id:
                     return "None"
                 # Fetch last 2 exchange IDs for dedup (Watchout A)
@@ -1228,7 +1223,22 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _ri += 1
         temporal_context = _r1[_ri]
         _ri += 1
-        projects_context = "None"  # Projects table decommissioned — use orgs instead
+        projects_context = "None"
+        try:
+            org_fetch = await asyncio.to_thread(
+                lambda: supabase.table('organizations').select('name, description').eq('is_active', True).execute()
+            )
+            if org_fetch.data:
+                org_lines = []
+                for o in org_fetch.data:
+                    name = o.get('name', '').strip()
+                    desc = o.get('description', '').strip()
+                    if name:
+                        org_lines.append(f"  • {name}" + (f" — {desc[:120]}" if desc else ""))
+                if org_lines:
+                    projects_context = "\n".join(org_lines)
+        except Exception as ctx_e:
+            audit_log_sync("webhook", "WARNING", f"Org context fetch failed: {ctx_e}")
         _ri += 1
         practices_context = _r1[_ri]
         _ri += 1

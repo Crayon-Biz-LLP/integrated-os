@@ -25,9 +25,7 @@ class CreateTaskParams:
     Name fields are fallbacks when the planner can't resolve exact IDs.
     """
     title: str
-    project_name: Optional[str] = None
     organization_name: Optional[str] = None
-    project_id: Optional[str] = None
     organization_id: Optional[str] = None
     deadline: Optional[str] = None
     reminder_at: Optional[str] = None
@@ -42,8 +40,6 @@ class CreateTaskParams:
 class CreateNoteParams:
     """Typed parameters for create_note operations."""
     content: str
-    project_name: Optional[str] = None
-    project_id: Optional[str] = None
     organization_id: Optional[str] = None
 
 
@@ -62,5 +58,4 @@ class Action:
     params: dict = field(default_factory=dict)
     confidence: float = 1.0
     human_label: str = ""
-    project_id: Optional[str] = None
     organization_id: Optional[str] = None

@@ -2,7 +2,7 @@
 import os
 import sys
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,7 +40,7 @@ def cleanup_raw_dumps():
     supabase = get_supabase()
     
     # Calculate cutoff date (90 days ago)
-    cutoff = (datetime.now() - timedelta(days=90)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     
     # Delete old raw_dumps
     result = supabase.table("raw_dumps").delete().lt("created_at", cutoff).execute()

@@ -113,8 +113,19 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
         if c.get("organization_name"):
             candidate_words.extend(c["organization_name"].lower().split())
             
-        if any(w in candidate_words for w in search_words if len(w) > 3):
+        if any(w in candidate_words for w in search_words if len(w) >= 3):
             filtered_candidates.append(c)
+    
+    # Secondary fallback: if lexical filter found nothing for non-COMPLETION intents,
+    # do substring matching against full title. Catches messages like "Fix the API bug"
+    # where ALL words are ≤3 chars and the primary filter yielded zero candidates.
+    if not filtered_candidates and intent != "COMPLETION":
+        text_lower = text.lower()
+        for c in candidates:
+            title_lower = c["title"].lower()
+            # Check if any content-bearing word from text appears as substring in title
+            if any(w in title_lower for w in search_words if len(w) >= 2 and w not in ('a', 'an', 'the', 'to', 'in', 'on', 'at', 'of', 'for', 'by', 'is', 'it', 'my', 'be')):
+                filtered_candidates.append(c)
     
     # GAP A: No lexical matches for COMPLETION → deterministic redirect to create_note
     # If the classifier returned COMPLETION but NO open task's title shares even

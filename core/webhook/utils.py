@@ -72,13 +72,15 @@ async def process_channel_pending_decision(channel: str, pending_id: int, decisi
             pass
         
         try:
+            original_text = msg.get('body') or title
             actions = await plan_actions(
-                text=title,
+                text=original_text,
+                title=title,
                 intent="TASK",
                 entity=resolved_entity,
             )
             if actions:
-                await execute_planned_actions(actions, chat_id, text=title, source=channel, entity=resolved_entity)
+                await execute_planned_actions(actions, chat_id, text=original_text, source=channel, entity=resolved_entity)
             action_msg = "approved and processed"
         except Exception as plan_err:
             audit_log_sync("webhook", "ERROR", f"Failed to plan/execute {channel} approval: {plan_err}")

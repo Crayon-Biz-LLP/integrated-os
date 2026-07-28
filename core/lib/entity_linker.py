@@ -42,7 +42,7 @@ def resolve_entities(
         text: Raw user message text
         planner_org_name: Ignored (kept for backward compat)
         planner_proj_name: Ignored (kept for backward compat)
-        write_signal_on_miss: If True, write to project_creation_signals on failure
+        write_signal_on_miss: If True, write to org_creation_signals on failure
 
     Returns:
         EntityResolution with resolved IDs (may be None if no match found).
@@ -89,18 +89,22 @@ def _write_miss_signal(
     planner_org_name: str = None,
     planner_proj_name: str = None,
 ) -> None:
-    """Write a signal when entity resolution finds nothing."""
+    """Write a signal when entity resolution explicitly tried to resolve an org but found nothing.
+
+    Only fires when the planner explicitly specified an org name (planner_org_name is set).
+    Generic tasks like "Buy groceries" that naturally have no org context do NOT trigger a signal.
+    This prevents org_creation_signals from being spammed with conversational noise.
+    """
+    if not planner_org_name:
+        return  # Silent skip: no explicit org resolution attempt — not a real miss
     try:
         supabase = get_supabase()
         signal_data = {
-            "project_name": f"[unresolved] {planner_proj_name or text[:50]}",
+            "org_name": f"[unresolved_org={planner_org_name}] {planner_proj_name or text[:50]}",
             "source": "entity_linker",
         }
-        if planner_org_name:
-            signal_data["project_name"] = \
-                f"[unresolved_org={planner_org_name}] {planner_proj_name or text[:50]}"
 
-        supabase.table('project_creation_signals').insert(signal_data).execute()
+        supabase.table('org_creation_signals').insert(signal_data).execute()
         audit_log_sync("entity_linker", "INFO",
                        f"Written miss signal: org={planner_org_name}, text={text[:80]}")
     except Exception as e:

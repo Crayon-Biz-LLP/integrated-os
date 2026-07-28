@@ -139,7 +139,7 @@ Return ONLY valid JSON, NO markdown, NO explanation:
   "suggested_task": "verb-first task or null",
   "needs_draft": true or false,
   "linked_person_name": "full name if identifiable, else null",
-  "linked_project_name": "project or ministry name if mentioned, else null",
+  "linked_organization_name": "organization or ministry name if mentioned, else null",
   "is_human_sender": true or false,
   "has_memory_value": true or false
 }}"""

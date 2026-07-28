@@ -779,16 +779,16 @@ class TestEntityResolution:
         assert result.organization_id is None, "Should not find unknown org"
         assert result.source == "miss"
         assert result.confidence == 0.0
-        # Signal should have been written to project_creation_signals
-        signals = supabase.table("project_creation_signals") \
-            .select("id, project_name") \
-            .ilike("project_name", "%[SIM_TEST] UnknownCorp%") \
+        # Signal should have been written to org_creation_signals
+        signals = supabase.table("org_creation_signals") \
+            .select("id, org_name") \
+            .ilike("org_name", "%[SIM_TEST] UnknownCorp%") \
             .execute()
         assert len(signals.data) >= 1, "Miss signal should be written"
         # Clean up the signal
         for s in signals.data or []:
             try:
-                supabase.table("project_creation_signals").delete().eq("id", s["id"]).execute()
+                supabase.table("org_creation_signals").delete().eq("id", s["id"]).execute()
             except Exception:
                 pass
 

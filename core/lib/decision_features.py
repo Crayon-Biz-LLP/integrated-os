@@ -15,22 +15,22 @@ from datetime import datetime, timezone, timedelta
 from core.services.db import get_supabase
 
 
-def _project_lifecycle(project_name: str) -> str:
+def _entity_lifecycle(entity_name: str) -> str:
     """
-    Detect the engagement lifecycle phase for a project.
+    Detect the engagement lifecycle phase for an organization/entity.
     
     Queries recent task activity and decision history to classify
-    a project as one of:
+    an entity as one of:
     - active: tasks created in the last 30 days
     - winding_down: no new tasks in 30+ days, decision activity >30 days old
     - cold: no tasks or decisions ever recorded
-    - unknown: project name not found in graph_nodes
+    - unknown: entity name not found in graph_nodes
     
     This lets the pattern learner distinguish "rejected Equisoft when active"
-    from "rejected Equisoft when winding down" — same project, different
+    from "rejected Equisoft when winding down" — same entity, different
     lifecycle phase, different feature hash.
     """
-    if not project_name or len(project_name) <= 1:
+    if not entity_name or len(entity_name) <= 1:
         return "unknown"
     
     try:
@@ -38,15 +38,15 @@ def _project_lifecycle(project_name: str) -> str:
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist_offset)
         
-        # First, check if project exists in graph_nodes
-        node = supabase.table('graph_nodes').select('id').eq('type', 'organization').ilike('label', project_name).eq('is_current', True).limit(1).execute()
+        # First, check if entity exists in graph_nodes as an organization
+        node = supabase.table('graph_nodes').select('id').eq('type', 'organization').ilike('label', entity_name).eq('is_current', True).limit(1).execute()
         if not node.data:
             return "unknown"
         
-        # Check for tasks created in the last 30 days for this project
+        # Check for tasks created in the last 30 days mentioning this entity
         thirty_days_ago = (now - timedelta(days=30)).isoformat()
         recent_tasks = supabase.table('tasks').select('id')\
-            .ilike('title', f'%{project_name}%')\
+            .ilike('title', f'%{entity_name}%')\
             .eq('is_current', True)\
             .gte('created_at', thirty_days_ago)\
             .limit(1)\
@@ -55,9 +55,9 @@ def _project_lifecycle(project_name: str) -> str:
         if recent_tasks.data:
             return "active"
         
-        # No active tasks — check if there were ever any tasks for this project
+        # No active tasks — check if there were ever any tasks for this entity
         any_tasks = supabase.table('tasks').select('id')\
-            .ilike('title', f'%{project_name}%')\
+            .ilike('title', f'%{entity_name}%')\
             .eq('is_current', True)\
             .limit(1)\
             .execute()
@@ -242,7 +242,7 @@ def build_decision_features(msg: dict, channel: str = "", rejection_context: str
     
     # Project lifecycle — differentiates active from winding_down phases
     if _project_name and len(_project_name) > 1:
-        features["project_lifecycle"] = _project_lifecycle(_project_name)
+        features["project_lifecycle"] = _entity_lifecycle(_project_name)
     
     return features
 

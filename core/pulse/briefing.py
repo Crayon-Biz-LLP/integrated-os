@@ -24,7 +24,7 @@ from core.lib.redis_cache import acquire_lock, release_lock
 from core.decisions import record_decision
 from core.pulse.models import PulseOutput
 from core.pulse.llm import supabase
-from core.pulse.utils import format_error, get_project_name
+from core.pulse.utils import format_error
 from core.pulse.memory import (
     write_outcome_memory,
     detect_temporal_patterns, serendipity_engine, adaptive_briefing_learner,
@@ -276,7 +276,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         try:
             completed_from_google = await asyncio.to_thread(sync_completed_tasks_from_google, supabase, tasks_service)
             for title, proj_name in (completed_from_google or []):
-                await write_outcome_memory(title, proj_name)
+                await write_outcome_memory(title)
         except Exception as e:
             error("pulse", f"Google tasks sync failed, continuing pulse: {e}", format_error(e))
 
@@ -314,7 +314,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
 
         # ── Fetch tasks ──
         active_tasks_res = supabase.table('tasks').select(
-            'id, title, project_id, organization_id, priority, created_at, reminder_at, google_event_id, direction, committed_to'
+            'id, title, organization_id, priority, created_at, reminder_at, google_event_id, direction, committed_to'
         ).eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
         active_tasks = active_tasks_res.data or []
 
@@ -335,8 +335,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # Fetch core_config
         core_res = supabase.table('core_config').select('key, content').execute()
         core = core_res.data or []
-
-        projects = []
 
         # ── Time & Day Intelligence (CPU-only, no IO — compute before parallel phase 1) ──
         ist_offset = timezone(timedelta(hours=5, minutes=30))
@@ -379,16 +377,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # Independent DB/LLM queries that can run simultaneously
         # ═══════════════════════════════════════
         (
-            legacy_projects,
             people,
             orgs_list,
             dependency_context,
             temporal_context,
             centrality_context,
             calendar_context,
-            (compressed_tasks_final, universal_task_map),
+            compressed_tasks_final,
         ) = await asyncio.gather(
-            context_provider.get_projects(),
             context_provider.get_people(),
             context_provider.get_organizations(),
             check_task_dependencies(active_tasks),
@@ -398,7 +394,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             context_provider.hydrate_tasks_context(f"Briefing for {briefing_mode}"),
         )
         org_map = {o['id']: o['name'] for o in orgs_list}
-        audit_log_sync("pulse", "INFO", f"📦 Phase 1 context fetched in parallel ({len(legacy_projects)} projects, {len(people)} people, {len(orgs_list)} orgs)")
+        audit_log_sync("pulse", "INFO", f"📦 Phase 1 context fetched in parallel ({len(people)} people, {len(orgs_list)} orgs)")
 
         # ── Priority decay ──
         try:
@@ -445,8 +441,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 except Exception as e:
                     audit_log_sync("pulse", "WARNING", f"Horizon guard date parse failed for '{t.get('title')}': {e}")
 
-            project = next((p for p in legacy_projects if p.get('id') == t.get('project_id')), None)
-            o_id = t.get('organization_id') or (project.get('organization_id') if project else None)
+            o_id = t.get('organization_id')
             o_name = org_map.get(o_id, 'INBOX')
 
             personal_orgs = ['Personal', 'Ashraya', 'Ashraya Chennai', 'Chennai North', 'Chennai Central', 'Chennai India']
@@ -470,14 +465,15 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             # If they fail the org check, they don't get included — even if urgent
             filtered_tasks.append(t)
 
+        # ── Build universal task map (ID matching only — built from filtered tasks) ──
+        universal_task_map = " | ".join([f"[ID:{t['id']}] {t['title']}" for t in filtered_tasks])[:4000]
+
         # ── Context compression ──
         compressed_tasks_list = []
         for t in filtered_tasks:
-            project = next((p for p in legacy_projects if p.get('id') == t.get('project_id')), None)
-            p_name = project.get('name') if project else "General"
-            o_id = t.get('organization_id') or (project.get('organization_id') if project else None)
+            o_id = t.get('organization_id')
             o_name = org_map.get(o_id, 'INBOX')
-            loc = f"{o_name} · {p_name}" if p_name != "General" else o_name
+            loc = o_name
             dir_str = ""
             if t.get('direction') == 'waiting_on':
                 dir_str = f" [WAITING ON: {t.get('committed_to', 'someone')}]"
@@ -509,7 +505,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 audit_log_sync("pulse", "WARNING", f"Nag logic date parse failed for '{t.get('title')}': {e}")
 
         sevendays_ago = (now - timedelta(days=7)).isoformat()
-        stale_tasks = [t for t in active_tasks if t.get('status') == 'todo' and t.get('created_at', '') < sevendays_ago and t.get('title') not in overdue_tasks]
+        stale_tasks = [t for t in filtered_tasks if t.get('status') == 'todo' and t.get('created_at', '') < sevendays_ago and t.get('title') not in overdue_tasks]
         stale_tasks = sorted(stale_tasks, key=lambda t: t.get('created_at', ''))[:5]
 
         stale_context = None
@@ -525,22 +521,23 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             stale_context = "\n".join(stale_lines)
 
         drift_alerts = []
-        for proj in (legacy_projects or []):
-            proj_name = get_project_name(proj)
+        for org in (orgs_list or []):
+            org_name = org.get('name', '')
+            if not org_name:
+                continue
             try:
-                drift = detect_drift(proj_name, hours_window=48)
+                drift = detect_drift(org_name, hours_window=48)
                 if drift and drift.get('update_count', 0) >= 3:
-                    drift_alerts.append(f"⚠️ DRIFT ALERT: Project '{proj_name}' changed {drift['update_count']} times in 48h. Bottleneck?")
+                    drift_alerts.append(f"⚠️ DRIFT ALERT: '{org_name}' changed {drift['update_count']} times in 48h. Bottleneck?")
             except Exception as e:
-                audit_log_sync("pulse", "WARNING", f"Drift detection failed for {proj_name}: {e}")
+                audit_log_sync("pulse", "WARNING", f"Drift detection failed for {org_name}: {e}")
 
         drift_context = "\n".join(drift_alerts) if drift_alerts else "None"
 
-        # ── Hindsight (depends on people + graph_projects from Phase 1) ──
+        # ── Hindsight ──
         thirty_days_ago = (now - timedelta(days=30)).isoformat()
         hindsight_context = "None"
-        task_inputs = []
-        graph_node_projects = []
+        task_inputs = [t.get('title', '') for t in filtered_tasks if t.get('title')]
         all_entity_terms = [p['name'] for p in people]
 
         # ── Resource & memory queries (parallel phase 2) ──
@@ -572,33 +569,30 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         phase2_tasks = []
         
         # Graph task context
-        if people and active_tasks:
-            phase2_tasks.append(fetch_graph_task_context(people, active_tasks))
+        if people and filtered_tasks:
+            phase2_tasks.append(fetch_graph_task_context(people, filtered_tasks))
         else:
             phase2_tasks.append(asyncio.sleep(0, result=""))
         
         # Hindsight memories
-        phase2_tasks.append(retrieve_hindsight_memories(task_inputs, active_tasks, entity_terms=all_entity_terms))
+        phase2_tasks.append(retrieve_hindsight_memories(task_inputs, filtered_tasks, entity_terms=all_entity_terms))
         
         # Cross-referenced memories
-        phase2_tasks.append(context_provider.get_cross_referenced_context(mem_query, task_inputs, people, graph_node_projects, match_count=5))
+        phase2_tasks.append(context_provider.get_cross_referenced_context(mem_query, task_inputs, people, orgs=orgs_list, match_count=5))
         
         # Social graph / communication patterns
         phase2_tasks.append(analyze_communication_patterns(people))
         
         # Serendipity engine
-        phase2_tasks.append(serendipity_engine(active_tasks, people, recent_lib_data, pattern_context=weekly_patterns_str or None))
+        phase2_tasks.append(serendipity_engine(filtered_tasks, people, recent_lib_data, pattern_context=weekly_patterns_str or None))
         
         # Master page / canonical synthesis
-        relevant_project_names = list(set([
-            t.get('title', '').strip() for t in filtered_tasks
-            if t.get('title', '').strip()
-        ] + [
-            p.get('name', '').strip() for p in projects
-            if p.get('name', '').strip()
+        relevant_org_names = list(set([
+            o.get('name', '').strip() for o in orgs_list
+            if o.get('name', '').strip()
         ]))
         phase2_tasks.append(context_provider.get_master_page_context(
-            project_names=relevant_project_names[:5],
+            entity_names=relevant_org_names[:5],
             match_count=3
         ))
         
@@ -797,7 +791,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         practices_context = ""
         if is_pre_monday or (day == 1 and hour < 11):
             try:
-                practice_results = await detect_practices(active_tasks, people)
+                practice_results = await detect_practices()
                 if practice_results:
                     audit_log_sync("pulse", "INFO", f"📊 Detected {len(practice_results)} practice(s)")
                     edge_count = await build_practice_edges(practice_results)

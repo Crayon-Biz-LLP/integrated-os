@@ -14,7 +14,7 @@ def _approx_tokens(text: str) -> int:
 
 def _touch_thread(thread_id: str):
     try:
-        get_supabase().table('conversation_threads').update({'last_active_at': 'now()'}).eq('id', thread_id).execute()
+        get_supabase().table('conversation_threads').update({'last_active_at': datetime.now(timezone.utc).isoformat()}).eq('id', thread_id).execute()
     except Exception as e:
         from core.lib.audit_logger import audit_log_sync
         audit_log_sync("conversation", "WARNING", f"Failed to touch thread {thread_id}: {e}")
@@ -41,8 +41,8 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
     resolver_reason = ""
 
     try:
-        from core.pulse.entity_resolver import resolve_entities_from_text
-        org_id, proj_id, resolver_reason = resolve_entities_from_text(text)
+        from core.lib.entity_detector import resolve_org_and_project
+        org_id, proj_id, resolver_reason = resolve_org_and_project(text)
         if org_id:
             r = supabase.table('organizations').select('name').eq('id', org_id).execute()
             if r.data:
@@ -148,8 +148,8 @@ def _fetch_entity_candidates(text: str, chat_id: int) -> list:
     
     # 1. Try deterministic n-gram resolver (orgs + projects)
     try:
-        from core.pulse.entity_resolver import resolve_entities_from_text
-        org_id, proj_id, reason = resolve_entities_from_text(text)
+        from core.lib.entity_detector import resolve_org_and_project
+        org_id, proj_id, reason = resolve_org_and_project(text)
         
         candidates.extend(_resolve_entity_to_candidates(chat_id, 'organization', org_id, "deterministic", text))
 

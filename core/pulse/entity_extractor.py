@@ -44,7 +44,7 @@ async def extract_and_link_entities(
     # URL FILTER: Do not extract entities from text containing URLs
     if is_url_text(text):
         audit_log_sync("pulse", "INFO", "Skipped entity extraction: text contains URL")
-        return [], []
+        return []
 
     # ════════════════════════════════════════════
     # Phase 1: Deterministic entity detection
@@ -88,7 +88,7 @@ async def extract_and_link_entities(
             )
 
     if not nodes and not edges:
-        return [], []
+        return []
 
     insert_extracted_entities(
         nodes=nodes, edges=edges,

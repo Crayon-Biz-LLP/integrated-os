@@ -274,7 +274,7 @@ async def ingest_outlook_messages(limit=25):
             to_header = normalized.get("to_header", "")
             cc_header = normalized.get("cc_header", "")
             if any(p in sender_email.lower() for p in NOREPLY_PATTERNS):
-                classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_project_name": None}
+                classification_data = {"classification": "ignored", "summary": "No-reply sender", "suggested_task": None, "needs_draft": False, "linked_person_name": None, "linked_organization_name": None}
             else:
                 try:
                     classification_data = await classify_email(sender, subject, body, to_header, cc_header)
@@ -317,7 +317,7 @@ async def ingest_outlook_messages(limit=25):
                 "classification": classification,
                 "processing_status": "completed" if classification != "error" else "failed",
                 "linked_person_id": None,
-                "linked_project_id": None,
+
                 "metadata": {
                     "body_summary": body[:2000]
                 },
@@ -391,7 +391,7 @@ async def ingest_outlook_messages(limit=25):
                     suggested_title=suggested_task,
                     suggested_project=None,
                     linked_person_id=linked_person_id,
-                    linked_project_id=None,
+
                     is_human_sender=is_human,
                     has_memory_value=classification_data.get('has_memory_value', False),
                     needs_draft=classification_data.get('needs_draft', False),

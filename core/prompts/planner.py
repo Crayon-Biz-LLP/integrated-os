@@ -12,7 +12,6 @@ def build_planner_prompt(
     entity: str,
     candidate_lines: str,
     org_lines: str,
-    project_lines: str,
     active_anchor: dict = None,
 ) -> str:
     """Build the action planner prompt.
@@ -25,8 +24,7 @@ def build_planner_prompt(
         entity: Classifier entity tag
         candidate_lines: Formatted string of candidate tasks/events
         org_lines: Formatted string of available organizations
-        project_lines: Formatted string of available projects
-        active_anchor: Thread's active entity context (name, type, last_project_id, etc.)
+        active_anchor: Thread's active entity context (name, type, etc.)
     """
     # Guard 2: Render active_anchor context so the LLM sees the thread's
     # actual entity (e.g., "FC Madras") rather than just the classifier's
@@ -36,14 +34,11 @@ def build_planner_prompt(
         anchor_name = active_anchor.get('name', '')
         anchor_type = active_anchor.get('type', '')
         anchor_org_id = active_anchor.get('last_org_id')
-        anchor_project_id = active_anchor.get('last_project_id')
         parts = []
         if anchor_name:
             parts.append(f"Entity: {anchor_name}")
         if anchor_type:
             parts.append(f"Type: {anchor_type}")
-        if anchor_project_id:
-            parts.append(f"Last project ID: {anchor_project_id}")
         if anchor_org_id:
             parts.append(f"Organization ID: {anchor_org_id}")
         if parts:
@@ -74,9 +69,6 @@ Candidates:
 Available Organizations:
 {org_lines}
 
-Available Projects:
-{project_lines}
-
 Rules:
 - close_task: marks a normal Task as done.
 - suppress_instance: skips the next occurrence of a recurring Task.
@@ -85,8 +77,8 @@ Rules:
 - reschedule: changes the time of a non-recurring Task (`params.new_reminder_at`).
 - update_metadata: changes priority or deadline of a Task (`params.new_priority`, `params.new_deadline`).
 - delete_event: removes an external Event.
-- create_task: creates a new task. Requires `params.title`. For ID resolution, include `params.project_id` or `params.organization_id` from the lists above. Optional: `params.project_name`, `params.deadline`, `params.priority`, `params.reminder_at`, `params.rrule`, `params.direction`, `params.committed_to`, `params.duration_mins`.
-- create_note: saves information to memory. Requires `params.content`. Optional: `params.project_name`, `params.project_id`, `params.organization_name`, `params.organization_id`.
+- create_task: creates a new task. Requires `params.title`. For ID resolution, include `params.organization_id` from the lists above. Optional: `params.deadline`, `params.priority`, `params.reminder_at`, `params.rrule`, `params.direction`, `params.committed_to`, `params.duration_mins`.
+- create_note: saves information to memory. Requires `params.content`. Optional: `params.organization_name`, `params.organization_id`.
 - IMPORTANT: For create_note, do NOT summarize or rewrite the user's content. The original text from document extraction (PyMuPDF) is authoritative and must be preserved verbatim. Your params.content should pass through the key information without losing detail. If the content is already well-structured (meeting notes, action items, decisions), preserve the full structure.
 - create_event: schedules a calendar event. Requires `params.title`, `params.time`. Optional: `params.duration_mins`.
 - query_info: fetches information from the brain to answer the user's question. Requires `params.query`.
@@ -96,5 +88,5 @@ Rules:
 - If the user uses words like "all", "meetings", or "tasks" (plural), return a separate action for EVERY matching candidate.
 - IMPORTANT EXPLICIT INTENTS: If the Classifier intent is NOTE, you MUST output a create_note action. If the Classifier intent is TASK, you MUST output a create_task action. If the Classifier intent is COMPLETION, you MUST output a close_task action for the matching task ID. Do not require an explicit user command in these cases.
 - For mixed or informational content (status updates, team changes, finance mentions, decisions, meeting fallout): If the classifier intent is NOTE, ALWAYS route as create_note — do NOT split into multiple tasks. If the classifier intent is TASK, create the task but include informational context in params.content.
-- Never make up or hallucinate details not in the user's message. Every field in params (title, project_name, reminder_at, priority, etc.) must be directly derived from the user's text. Do not infer, guess, or fill in defaults that the user did not provide.
+- Never make up or hallucinate details not in the user's message. Every field in params (title, reminder_at, priority, deadline, etc.) must be directly derived from the user's text. Do not infer, guess, or fill in defaults that the user did not provide.
 - Return empty array or no_op if nothing matches."""

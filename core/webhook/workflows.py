@@ -10,6 +10,55 @@ from core.lib.conversation import log_exchange, _check_topic_overlap
 from core.actions import ActionResult, accumulate_action
 from core.pulse.tools import create_task_direct
 from core.pulse.graph import process_graph_pending_decision
+import re
+
+# ── Deterministic bypass for simple workflow replies ──
+# Resolves "yes" / "no" / "sure" / "stop" in <1ms without an LLM call.
+# Falls through to LLM only for ambiguous replies.
+
+CONFIRM_PHRASES = frozenset({
+    "yes", "y", "yeah", "yep", "sure", "ok", "okay", "k", "go ahead",
+    "do it", "confirm", "proceed",
+})
+
+DECLINE_PHRASES = frozenset({
+    "no", "n", "nope", "nah", "not now", "stop", "cancel", "never mind",
+    "forget it", "dismiss", "reject", "decline", "skip", "ignore",
+})
+
+NEGATION_WORDS = frozenset({"not", "no", "never", "don\'t", "doesn\'t", "won\'t", "can\'t"})
+
+
+def get_deterministic_decision(text: str) -> str | None:
+    """Resolve simple confirm/decline replies without an LLM call.
+
+    Returns 'confirm', 'decline', or None if the reply is ambiguous.
+    Uses exact phrase match + short-phrase heuristics.
+    """
+    cleaned = re.sub(r'[^\w\s]', '', text.lower()).strip()
+    if not cleaned:
+        return None
+
+    if cleaned in CONFIRM_PHRASES:
+        return 'confirm'
+    if cleaned in DECLINE_PHRASES:
+        return 'decline'
+
+    # Short phrases (≤4 words): check for confirmation/negation patterns
+    words = cleaned.split()
+    if len(words) <= 4:
+        has_negation = any(w in NEGATION_WORDS for w in words)
+        has_confirm = any(w in CONFIRM_PHRASES for w in words)
+        has_decline = any(w in DECLINE_PHRASES for w in words)
+
+        # "yes do it" or "sure go ahead"
+        if has_confirm and not has_negation and not has_decline:
+            return 'confirm'
+        # "no thanks" or "not now"
+        if has_decline or has_negation:
+            return 'decline'
+
+    return None
 
 
 async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> Tuple[bool, Optional[str]]:
@@ -72,17 +121,24 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
             f"Workflow {w_id} bypassed: message entities don't match workflow payload — falling through")
         return False, None
 
-    # 1+2: Decision determination — always through LLM (deterministic bypass removed)
-    from core.prompts.workflow import build_workflow_resume_prompt
-    prompt = build_workflow_resume_prompt(w_type, payload, text)
-    try:
-        analysis_res = await generate_content_with_fallback(
-            prompt=prompt,
-            workload=WorkloadProfile.INTERACTIVE,
-            primary_model=CLASSIFICATION_MODEL,
-            config={'response_mime_type': 'application/json'}
-        )
-        raw = analysis_res.parse_json()
+    # 1: Deterministic bypass — resolve simple yes/no/sure/stop without an LLM call
+    decision = get_deterministic_decision(text)
+
+    # 2: LLM fallback — only for ambiguous or complex replies
+    if not decision:
+        from core.prompts.workflow import build_workflow_resume_prompt
+        prompt = build_workflow_resume_prompt(w_type, payload, text)
+        try:
+            analysis_res = await generate_content_with_fallback(
+                prompt=prompt,
+                workload=WorkloadProfile.INTERACTIVE,
+                primary_model=CLASSIFICATION_MODEL,
+                config={'response_mime_type': 'application/json'}
+            )
+            raw = analysis_res.parse_json()
+        except Exception as e:
+            audit_log_sync("workflow", "ERROR", f"LLM eval failed falling open: {e}")
+            return False, None
         
         if w_type == "batch":
             signal_decisions = raw.get("decisions", [])
@@ -91,9 +147,6 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
             decision = "confirm" if any(sd.get("decision") == "confirm" for sd in signal_decisions) else "decline"
         else:
             decision = raw.get("decision", "unrelated")
-    except Exception as e:
-        audit_log_sync("workflow", "ERROR", f"LLM eval failed falling open: {e}")
-        return False, None
             
     # 3. Handle Decision
     if decision == "unrelated":

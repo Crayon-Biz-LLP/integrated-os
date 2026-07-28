@@ -36,19 +36,19 @@ def get_max_timestamp(records, date_fields):
                     max_ts = ts
     return max_ts
 
-def filter_fragments_by_project_strict(results, project_name):
+def filter_fragments_by_org_strict(results, org_name):
     """Filter RPC results using AND logic (all words >2 chars must match)."""
     if not results:
         return []
-    project_words = [w for w in project_name.lower().split() if len(w) > 2]
-    if not project_words:
+    org_words = [w for w in org_name.lower().split() if len(w) > 2]
+    if not org_words:
         return results
     filtered = []
     for r in results:
         meta = r.get('metadata') or {}
         entity = (meta.get('entity') or '').lower() if isinstance(meta, dict) else ''
         content = (r.get('content') or r.get('title') or r.get('message_text') or r.get('body_summary') or '').lower()
-        if all(w in entity or w in content for w in project_words):
+        if all(w in entity or w in content for w in org_words):
             filtered.append(r)
     return filtered
 
@@ -114,28 +114,19 @@ async def fetch_entity_graph_edges(entity_name: str, max_edges=20):
         print(f"Graph context error for {entity_name}: {e}")
         return []
 
-async def synth_entity(entity_id, entity_name, org_name, org_context, is_org=False, project_ids=None):
+async def synth_entity(entity_id, entity_name, org_name, org_context):
     async with entity_sem:
         print(f"  Gathering fragments for {entity_name}...")
         
         # Fetch existing page first to get last_synth_at
         try:
-            if is_org:
-                existing = await asyncio.to_thread(
-                    lambda: supabase.table('canonical_pages') \
-                    .select('id, content, last_synth_at') \
-                    .eq('organization_id', entity_id) \
-                    .eq('is_current', True) \
-                    .limit(1).execute()
-                )
-            else:
-                existing = await asyncio.to_thread(
-                    lambda: supabase.table('canonical_pages') \
-                    .select('id, content, last_synth_at') \
-                    .eq('title', entity_name) \
-                    .eq('is_current', True) \
-                    .limit(1).execute()
-                )
+            existing = await asyncio.to_thread(
+                lambda: supabase.table('canonical_pages') \
+                .select('id, content, last_synth_at') \
+                .eq('organization_id', entity_id) \
+                .eq('is_current', True) \
+                .limit(1).execute()
+            )
             existing_content = existing.data[0]["content"] if existing.data else None
             existing_id = existing.data[0]["id"] if existing.data else None
             last_synth_at = parse_iso(existing.data[0]["last_synth_at"]) if existing.data and existing.data[0].get("last_synth_at") else datetime.min.replace(tzinfo=timezone.utc)
@@ -174,50 +165,26 @@ async def synth_entity(entity_id, entity_name, org_name, org_context, is_org=Fal
             mem = [m.metadata for m in res.matched_items]
             
             org_memories = []
-            if is_org:
-                org_mem_res = await asyncio.to_thread(
-                    lambda: supabase.table('memories') \
-                    .select('content, created_at') \
-                    .eq('organization_id', entity_id) \
-                    .order('created_at', desc=True) \
-                    .limit(20).execute()
-                )
-                if org_mem_res and org_mem_res.data:
-                    org_memories = org_mem_res.data
+            org_mem_res = await asyncio.to_thread(
+                lambda: supabase.table('memories') \
+                .select('content, created_at') \
+                .eq('organization_id', entity_id) \
+                .order('created_at', desc=True) \
+                .limit(20).execute()
+            )
+            if org_mem_res and org_mem_res.data:
+                org_memories = org_mem_res.data
             
             all_mem = (mem or []) + org_memories
             if all_mem:
-                if not is_org:
-                    all_mem = filter_fragments_by_project_strict(all_mem, entity_name)
+                all_mem = filter_fragments_by_org_strict(all_mem, entity_name)
                 for f in all_mem:
                     ts = parse_iso(f.get('created_at'))
                     add_fragment("memory", f.get('content', ''), ts)
         except Exception as e:
             print(f"  [Error] Memories failed for {entity_name}: {e}")
 
-        # 2. Tasks
-        try:
-            if is_org:
-                if project_ids:
-                    tasks_res = await asyncio.to_thread(
-                        lambda: supabase.table('tasks').select('title, status, created_at, updated_at') \
-                        .eq('is_current', True).in_('project_id', project_ids).execute()
-                    )
-                else:
-                    tasks_res = type('obj', (object,), {'data': []})()
-            else:
-                tasks_res = await asyncio.to_thread(
-                    lambda: supabase.table('tasks').select('title, status, created_at, updated_at') \
-                    .eq('is_current', True).eq('project_id', entity_id).execute()
-                )
-            if tasks_res.data:
-                for t in tasks_res.data:
-                    ts = parse_iso(t.get('updated_at') or t.get('created_at'))
-                    add_fragment("task", f"({t['status'].upper()}) {t['title']}", ts)
-        except Exception as e:
-            print(f"  [Error] Tasks failed for {entity_name}: {e}")
-
-        # 3. Resources (with project_id filter fallback)
+        # 3. Resources
         if entity_embedding:
             try:
                 resources_res = await asyncio.to_thread(
@@ -229,10 +196,7 @@ async def synth_entity(entity_id, entity_name, org_name, org_context, is_org=Fal
                 )
                 if resources_res.data:
                     for r in resources_res.data:
-                        if not is_org:
-                            filtered = filter_fragments_by_project_strict([r], entity_name)
-                        else:
-                            filtered = [r]
+                        filtered = filter_fragments_by_org_strict([r], entity_name)
                         if filtered:
                             ts = parse_iso(r.get('enriched_at') or r.get('created_at'))
                             add_fragment("resource", f"{r['title']} — {r.get('summary', '')}", ts)
@@ -250,7 +214,7 @@ async def synth_entity(entity_id, entity_name, org_name, org_context, is_org=Fal
                     }).execute()
                 )
                 if dumps_res.data:
-                    filtered_dumps = filter_fragments_by_project_strict(dumps_res.data, entity_name)
+                    filtered_dumps = filter_fragments_by_org_strict(dumps_res.data, entity_name)
                     for d in filtered_dumps:
                         ts = parse_iso(d.get('created_at'))
                         add_fragment("dump", d.get('content', ''), ts)
@@ -268,7 +232,7 @@ async def synth_entity(entity_id, entity_name, org_name, org_context, is_org=Fal
                     }).execute()
                 )
                 if emails_res.data:
-                    filtered_emails = filter_fragments_by_project_strict(emails_res.data, entity_name)
+                    filtered_emails = filter_fragments_by_org_strict(emails_res.data, entity_name)
                     for m in filtered_emails:
                         ts = parse_iso(m.get('received_at'))
                         add_fragment("email", f"{m.get('subject', '')} — {m.get('body_summary', '')}", ts)
@@ -286,7 +250,7 @@ async def synth_entity(entity_id, entity_name, org_name, org_context, is_org=Fal
                     }).execute()
                 )
                 if wa_res.data:
-                    filtered_wa = filter_fragments_by_project_strict(wa_res.data, entity_name)
+                    filtered_wa = filter_fragments_by_org_strict(wa_res.data, entity_name)
                     for m in filtered_wa:
                         ts = parse_iso(m.get('received_at'))
                         add_fragment("whatsapp", m.get('message_text', ''), ts)
@@ -305,27 +269,24 @@ async def synth_entity(entity_id, entity_name, org_name, org_context, is_org=Fal
         except Exception as e:
             print(f"  [Error] Graph edges failed for {entity_name}: {e}")
 
-        # Parent/Child Tasks (Removed legacy logic)
-        is_parent = is_org
-
-        # Incremental skip logic
-        if existing_id and newest_timestamp <= last_synth_at and not is_parent:
+        # Incremental skip logic — always synthesis for org parents
+        if existing_id and newest_timestamp <= last_synth_at and len(all_fragments) <= MIN_FRAGMENT_THRESHOLD:
             print(f"  Skipping {entity_name} — no new changes since last synthesis ({last_synth_at.isoformat()}).")
             return None
 
-        if len(all_fragments) < MIN_FRAGMENT_THRESHOLD and not is_parent:
+        if len(all_fragments) < MIN_FRAGMENT_THRESHOLD:
             print(f"  Skipping {entity_name} — below fragment threshold ({len(all_fragments)}).")
-            # If it has an existing page but fell below threshold, it gets archived in the main loop
-            return {"entity": entity_name, "existing_id": existing_id, "archive": True}
+            if existing_id:
+                return {"entity": entity_name, "existing_id": existing_id, "archive": True}
+            return None
 
         print(f"  Ready to synthesize {entity_name} ({len(all_fragments)} fragments).")
         return {
             "entity": entity_name,
-            "project_id": entity_id if not is_org else None,
-            "org_id": entity_id if is_org else None,
+            "org_id": entity_id,
             "org_name": org_name,
             "org_context": org_context,
-            "is_parent": is_parent,
+            "is_parent": True,
             "existing_page": existing_content or "No existing page — create from scratch.",
             "new_fragments": all_fragments,
             "fragment_count": len(all_fragments),
@@ -336,36 +297,14 @@ async def synth_entity(entity_id, entity_name, org_name, org_context, is_org=Fal
 
 async def run_batch_sweep_v2():
     try:
-        active_res = supabase.table('projects') \
-            .select('id, name, organization_id') \
-            .eq('is_active', True) \
-            .eq('status', 'active') \
-            .eq('is_current', True) \
-            .execute()
-            
         orgs_res = supabase.table('organizations').select('id, name, description').eq('is_active', True).execute()
-        org_map = {str(o['id']): o for o in orgs_res.data} if orgs_res.data else {}
-            
-        project_entities = []
-        for p in active_res.data:
-            org_id = str(p.get('organization_id'))
-            if org_id in org_map:
-                project_entities.append((p['id'], p.get('name') or p.get('title', ''), org_map[org_id]['name'], org_map[org_id].get('description', '')))
 
-        org_entities = []
-        for org in orgs_res.data:
-            org_project_ids = [p['id'] for p in active_res.data if str(p.get('organization_id')) == str(org['id'])]
-            if org_project_ids:
-                org_entities.append((org['id'], org['name'], org.get('description', ''), org_project_ids))
-
-        print(f"Gathering fragments for {len(project_entities)} projects and {len(org_entities)} orgs (Phase 2 Parallel)...")
+        print(f"Gathering fragments for {len(orgs_res.data)} organizations...")
         
         # Stage 1-3: Gather, filter, incremental check (Parallel)
         tasks = []
-        for pid, name, org_n, org_c in project_entities:
-            tasks.append(synth_entity(pid, name, org_n, org_c, is_org=False))
-        for oid, name, desc, pids in org_entities:
-            tasks.append(synth_entity(oid, name, name, desc, is_org=True, project_ids=pids))
+        for org in orgs_res.data:
+            tasks.append(synth_entity(org['id'], org['name'], org['name'], org.get('description', '')))
         gathered_payloads = await asyncio.gather(*tasks)
         
         # Filter out skips
@@ -504,7 +443,6 @@ FRAGMENTS (Old & New):
             if not payload_entry:
                 continue
 
-            project_id = payload_entry.get('project_id')
             organization_id = payload_entry.get('org_id')
             existing_id = payload_entry.get('existing_id')
             
@@ -566,9 +504,8 @@ FRAGMENTS (Old & New):
                     print(f"Master Page Updated: {entity_name} (v{old_version + 1}, {payload_entry['fragment_count']} fragments)")
                 else:
                     insert_res = await asyncio.to_thread(
-                        lambda en=entity_name, pid=project_id, oid=organization_id, m=markdown, e=embedding, ts=now_iso, sc=payload_entry['fragment_count'], eid=graph_node_uuid: supabase.table('canonical_pages').insert({
+                        lambda en=entity_name, oid=organization_id, m=markdown, e=embedding, ts=now_iso, sc=payload_entry['fragment_count'], eid=graph_node_uuid: supabase.table('canonical_pages').insert({
                             "title": en,
-                            "project_id": pid,
                             "organization_id": oid,
                             "content": m,
                             "embedding": e,

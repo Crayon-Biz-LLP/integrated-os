@@ -185,7 +185,7 @@ async def _process_task_graph_enrichment(
 
         # 1. Write graph edges — now includes task→org BELONGS_TO
         await write_graph_edges_for_task(
-            task_id=target_id, task_title=content, project_id=related_id or "",
+            task_id=target_id, task_title=content,
             organization_id=related_org_id
         )
 

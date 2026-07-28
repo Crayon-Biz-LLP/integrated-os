@@ -34,7 +34,7 @@ def detect_completion_patterns() -> dict:
     try:
         # 1. Completion velocity by day-of-week
         completed_res = supabase.table('tasks') \
-            .select('id, title, completed_at, project_id, priority, organization_id, direction, committed_to') \
+            .select('id, title, completed_at, priority, organization_id, direction, committed_to') \
             .eq('is_current', True) \
             .eq('status', 'done') \
             .gte('completed_at', thirty_days_ago) \
@@ -46,7 +46,6 @@ def detect_completion_patterns() -> dict:
 
         day_counts = {}
         hour_counts = {}
-        project_completions = {}
         delegation_completed = 0
         delegation_total = 0
         priority_counts = {}
@@ -64,13 +63,6 @@ def detect_completion_patterns() -> dict:
                     hour_counts[time_bucket] = hour_counts.get(time_bucket, 0) + 1
                 except Exception:
                     pass
-
-            # Project clustering
-            pid = c.get('project_id')
-            if pid:
-                if pid not in project_completions:
-                    project_completions[pid] = 0
-                project_completions[pid] += 1
 
             # Priority distribution
             pri = c.get('priority', 'important')

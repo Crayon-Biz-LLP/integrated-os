@@ -21,7 +21,6 @@ def record_decision(
     entity_type: str = None,
     entity_id: str = None,
     organization_id: int = None,
-    project_id: int = None,
     confidence: float = 1.0,
     source: str = "manual",
     source_ref: str = None,
@@ -50,8 +49,6 @@ def record_decision(
         data["entity_id"] = entity_id
     if organization_id:
         data["organization_id"] = organization_id
-    if project_id:
-        data["project_id"] = project_id
     if source_ref:
         data["source_ref"] = source_ref
     if expires_at:
@@ -122,7 +119,6 @@ def get_active_decisions(
     decision_type: str = None,
     entity_type: str = None,
     entity_id: str = None,
-    project_id: int = None,
     limit: int = 20,
 ) -> list:
     """Fetch active decisions, optionally filtered."""
@@ -135,8 +131,6 @@ def get_active_decisions(
             query = query.eq("entity_type", entity_type)
         if entity_id:
             query = query.eq("entity_id", entity_id)
-        if project_id:
-            query = query.eq("project_id", project_id)
         res = query.order("decided_at", desc=True).limit(limit).execute()
         return res.data or []
     except Exception as e:

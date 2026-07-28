@@ -76,17 +76,6 @@ class ContextProvider:
             return 0.0
         return dot / (norm_a * norm_b)
 
-    async def get_projects(self):
-        cached = self.caches['projects'].get()
-        if cached is not None:
-            return cached
-            
-        res = supabase.table('projects').select('*').eq('status', 'active').eq('is_current', True).execute()
-        projects = res.data or []
-        self.caches['projects'].set(projects)
-        
-        return projects
-
     async def get_organizations(self):
         cached = self.caches['organizations'].get()
         if cached is not None:
@@ -103,7 +92,7 @@ class ContextProvider:
             return cached
             
         res = supabase.table('tasks')\
-            .select('id, title, project_id, organization_id, priority, created_at, reminder_at, status, direction, committed_to')\
+            .select('id, title, organization_id, priority, created_at, reminder_at, status, direction, committed_to')\
             .eq('is_current', True)\
             .not_.in_('status', ['done', 'cancelled'])\
             .execute()
@@ -171,7 +160,7 @@ class ContextProvider:
             
         since_utc = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         res = supabase.table('tasks') \
-            .select('title, project_id, organization_id, updated_at') \
+            .select('title, organization_id, updated_at') \
             .eq('is_current', True) \
             .eq('status', 'done') \
             .gte('updated_at', since_utc) \
@@ -386,56 +375,28 @@ class ContextProvider:
                         When provided, only tasks related to this entity are returned.
         """
         from core.features import is_org_routing_enabled
-        tasks, projects, orgs = await asyncio.gather(
+        tasks, orgs = await asyncio.gather(
             self.get_active_tasks(),
-            self.get_projects(),
             self.get_organizations() if is_org_routing_enabled() else asyncio.sleep(0, result=[]),
         )
-        proj_map = {p['id']: p for p in projects}
         org_map = {o['id']: o['name'] for o in (orgs or [])}
         
         # Entity-aware task filtering — when a specific entity is resolved (e.g. "Ashraya"),
-        # only show tasks that belong to that entity. Prevents hallucinated task lists
-        # where the LLM sees all system-wide tasks and assumes they're all related.
+        # only show tasks that belong to that entity.
         if entity_name:
             entity_lower = entity_name.lower().strip()
             
-            # Build set of project IDs that belong to this entity
-            entity_project_ids = set()
             entity_org_ids = set()
-            for p in projects:
-                p_name = p.get('name', '').lower()
-                if entity_lower in p_name:
-                    entity_project_ids.add(p['id'])
-                    if p.get('organization_id'):
-                        entity_org_ids.add(p['organization_id'])
-            
-            # Find orgs whose names match the entity
             for oid, oname in org_map.items():
                 if entity_lower in oname.lower():
                     entity_org_ids.add(oid)
-                    # Add all projects under this org
-                    for p in projects:
-                        if p.get('organization_id') == oid:
-                            entity_project_ids.add(p['id'])
             
             filtered = []
             for t in tasks:
                 t_title = t.get('title', '').lower()
-                t_proj = t.get('project_id')
                 t_org = t.get('organization_id')
-                
-                # Include if: title mentions entity, OR project belongs to entity, OR org matches entity
-                if (entity_lower in t_title or
-                    t_proj in entity_project_ids or
-                    t_org in entity_org_ids):
+                if entity_lower in t_title or t_org in entity_org_ids:
                     filtered.append(t)
-                    continue
-                # Also check if the task's project's org matches (when task has no direct org)
-                if t_proj and t_proj in proj_map:
-                    p_org = proj_map[t_proj].get('organization_id')
-                    if p_org and p_org in entity_org_ids:
-                        filtered.append(t)
             
             tasks = filtered
         
@@ -458,19 +419,14 @@ class ContextProvider:
                 elif reminder < tomorrow_iso:
                     is_due_soon = True # due today
             
-            p_data = proj_map.get(t.get('project_id'))
-            p_name = p_data['name'] if p_data else "General"
-            
             if is_org_routing_enabled():
-                o_id = t.get('organization_id') or (p_data.get('organization_id') if p_data else None)
+                o_id = t.get('organization_id')
                 o_name = org_map.get(o_id, 'INBOX')
-                if p_name != "General":
-                    loc = f"{o_name} · {p_name}"
-                else:
-                    loc = o_name
+                loc = o_name
                 formatted = f"[{loc}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
             else:
-                formatted = f"[INBOX >> {p_name}] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
+                o_name = ""
+                formatted = f"[INBOX] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
             
             # Horizon guard: skip non-urgent tasks with reminder_at > 2 days out
             if not is_urgent and not is_due_soon and reminder:
@@ -554,10 +510,7 @@ class ContextProvider:
         if remaining > 0:
             compressed_tasks += f" | ...and {remaining} more tasks in /library"
             
-        # Also return a universal map for ID matching
-        universal = " | ".join([f"[ID:{t['id']}] {t['title']}" for t in tasks])
-        
-        return compressed_tasks, universal[:4000]
+        return compressed_tasks
 
     async def hydrate_memories_context(self, query_text: str, match_count: int = 5, return_raw: bool = False, recency_weight: float = 0.3, precomputed_embedding: list = None):
         """Uses pgvector to find semantically relevant memories, with recency weighting.
@@ -636,7 +589,7 @@ class ContextProvider:
             audit_log_sync('context', 'WARNING', f'Pending decisions hydration failed: {e}')
             return "None"
 
-    async def get_cross_referenced_context(self, query_text: str, task_inputs: list, people: list, projects: list, match_count: int = 5):
+    async def get_cross_referenced_context(self, query_text: str, task_inputs: list, people: list, orgs: list = None, match_count: int = 5):
         """
         Runs hybrid pgvector search and graph edge search in parallel,
         and cross-references memories with graph connections.
@@ -645,16 +598,15 @@ class ContextProvider:
         
         # 1. Fetch raw memories and graph context in parallel
         memories_task = self.hydrate_memories_context(query_text, match_count=match_count, return_raw=True, recency_weight=0.3)
-        graph_task = fetch_hybrid_graph_context(people, projects, task_inputs)
+        graph_task = fetch_hybrid_graph_context(people, orgs or [], task_inputs)
         
         memories, graph_context = await asyncio.gather(memories_task, graph_task)
         
         if not memories and not graph_context:
             return "None"
             
-        # 2. Extract entity names from people and projects
+        # 2. Extract entity names from people
         entity_terms = set(p.get('name', '').lower() for p in people if p.get('name'))
-        entity_terms.update(p.get('name', '').lower() for p in projects if p.get('name'))
         
         # 3. Format and cross-reference
         lines = []
@@ -683,22 +635,21 @@ class ContextProvider:
             
         return "\n\n".join(result_blocks)
 
-    async def get_master_page_context(self, project_names: list = None, match_count: int = 3) -> str:
+    async def get_master_page_context(self, entity_names: list = None, match_count: int = 3) -> str:
         """
-        Fetch canonical master pages for relevant projects.
-        Uses ilike matching to find pages whose titles contain any project name.
+        Fetch canonical master pages for relevant entities.
+        Uses ilike matching to find pages whose titles contain any entity name.
         Returns a formatted context string for the pulse briefing.
         """
-        if not project_names:
+        if not entity_names:
             return ""
         try:
             seen_titles = set()
             collected = []
-            for name in project_names[:10]:
+            for name in entity_names[:10]:
                 raw = name.strip()
                 if not raw:
                     continue
-                # Escape LIKE wildcards so project names like "100% Review" match literally
                 sanitized = raw.replace('%', r'\%').replace('_', r'\_')
                 res = supabase.table('canonical_pages') \
                     .select('title, content, last_synth_at, source_count') \

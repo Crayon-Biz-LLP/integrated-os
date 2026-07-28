@@ -1,5 +1,6 @@
 import asyncio
 from typing import Optional, Dict
+from datetime import datetime, timezone
 from core.services.db import get_supabase
 from core.retrieval.schema import PhraseNode, RetrievalEdge, AliasEdge, PassagePhraseLink
 from core.retrieval.normalizer import classify_node_type
@@ -25,7 +26,7 @@ async def upsert_phrase_node(node: PhraseNode) -> Optional[int]:
             node_id = existing.data["id"]
             supabase.table("retrieval_phrase_nodes") \
                 .update({
-                    "last_seen_at": "now()",
+                    "last_seen_at": datetime.now(timezone.utc).isoformat(),
                     "display_text": node.display_text,
                 }) \
                 .eq("id", node_id) \

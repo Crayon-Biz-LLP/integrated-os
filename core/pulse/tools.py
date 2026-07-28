@@ -40,9 +40,7 @@ async def create_task_direct(
     direction: str = "inbound",
     committed_to: str = None,
     dedup_key: str = None,
-    # Legacy params kept for backward compat — no longer used
-    project_id: str = None,
-    project_name: str = None,
+    project_name: str = None,  # Kept for backward compat — no longer used
 ) -> dict:
     """Direct task creation — no process_single_dump dependency.
 
@@ -172,9 +170,7 @@ async def create_note_direct(
     organization_name: str = None,
     session_id: str = None,
     active_anchor: dict = None,
-    # Legacy params kept for backward compat — no longer used
-    project_id: str = None,
-    project_name: str = None,
+    project_name: str = None,  # Kept for backward compat — no longer used
 ) -> dict:
     """Direct note creation — no process_single_dump dependency.
 
