@@ -59,7 +59,6 @@ class ContextProvider:
     def __init__(self):
         self.caches = {
             'tasks': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:tasks"),
-            'projects': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:projects"),
             'people': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:people"),
             'calendar': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:calendar"),
             'recent_tasks': SimpleCache(ttl_seconds=300, redis_key="rhodey:cache:recent_tasks"),
@@ -148,7 +147,7 @@ class ContextProvider:
         
         res = supabase.table('graph_nodes') \
             .select('id, label, type, normalized_label') \
-            .in_('type', ['person', 'organization', 'project']) \
+            .in_('type', ['person', 'organization']) \
             .eq('is_current', True) \
             .execute()
         nodes = res.data or []

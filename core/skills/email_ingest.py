@@ -431,14 +431,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
                 if not linked_person_id:
                     linked_person_id = sender_id
 
-            linked_project_id = None
-            linked_project_name = classification_data.get('linked_project_name')
-            if linked_project_name:
-                project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', linked_project_name).eq('is_current', True))
-                if not getattr(project_res, 'data', None):
-                    project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').eq('is_current', True))
-                if getattr(project_res, 'data', None):
-                    linked_project_id = project_res.data['id']
+
 
             suggested_task = classification_data.get('suggested_task')
             dedup_decision = None  # None = normal, 'skipped', 'merged'
@@ -471,10 +464,8 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
                 source='gmail',
                 classification=classification_for_ingest,
                 summary=classification_data.get('summary', '')[:1000],
-                suggested_title=suggested_task,
-                suggested_project=linked_project_name,
-                linked_person_id=linked_person_id,
-                linked_project_id=linked_project_id,
+                suggested_title=suggested_task,                    suggested_project=None,
+                linked_person_id=linked_person_id,                    linked_project_id=None,
                 is_human_sender=is_human,
                 has_memory_value=classification_data.get('has_memory_value', False),
                 needs_draft=classification_data.get('needs_draft', False),

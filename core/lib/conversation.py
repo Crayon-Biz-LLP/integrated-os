@@ -47,10 +47,6 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
             r = supabase.table('organizations').select('name').eq('id', org_id).execute()
             if r.data:
                 entity_names.add(r.data[0]['name'].lower())
-        if proj_id:
-            r = supabase.table('projects').select('name').eq('id', proj_id).execute()
-            if r.data:
-                entity_names.add(r.data[0]['name'].lower())
     except Exception:
         resolver_reason = "resolver_error"
 
@@ -66,7 +62,7 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
 
     # Build enriched payload text: raw values + canonical names from ID fields
     payload_text_parts = [str(v) for v in payload.values()]
-    for id_field, table in [('project_id', 'projects'), ('organization_id', 'organizations')]:
+    for id_field, table in [('organization_id', 'organizations')]:
         val = payload.get(id_field)
         if val and isinstance(val, str) and len(val) == 36:
             try:
@@ -156,7 +152,7 @@ def _fetch_entity_candidates(text: str, chat_id: int) -> list:
         org_id, proj_id, reason = resolve_entities_from_text(text)
         
         candidates.extend(_resolve_entity_to_candidates(chat_id, 'organization', org_id, "deterministic", text))
-        candidates.extend(_resolve_entity_to_candidates(chat_id, 'project', proj_id, "deterministic", text))
+
     except Exception:
         pass
     
@@ -291,10 +287,7 @@ def _resolve_entity_to_candidates(chat_id: int, entity_type: str, entity_id, sou
         r = maybe_single_safe(supabase.table('organizations').select('name').eq('id', entity_id))
         if r.data:
             entity_name = r.data.get('name', '')
-    elif entity_type == 'project':
-        r = maybe_single_safe(supabase.table('projects').select('name').eq('id', entity_id))
-        if r.data:
-            entity_name = r.data.get('name', '')
+
     
     # Primary topic check — filter out side mentions
     if entity_name and text and not _entity_is_primary_topic(text, entity_name):
@@ -312,7 +305,7 @@ def _resolve_entity_to_candidates(chat_id: int, entity_type: str, entity_id, sou
         .limit(1) \
         .execute()
     
-    base_score = 90 if entity_type == 'project' else 80
+    base_score = 80
     
     if thread.data and thread.data[0].get('id'):
         t = thread.data[0]
@@ -360,24 +353,21 @@ def _llm_entity_disambiguation(text: str, chat_id: int) -> list:
     """
     supabase = get_supabase()
     
-    # Fetch known org and project names
+    # Fetch known org names
     orgs = supabase.table('organizations').select('id, name').execute().data or []
-    projs = supabase.table('projects').select('id, name').eq('status', 'active').eq('is_current', True).execute().data or []
     
-    if not orgs and not projs:
+    if not orgs:
         return []
     
     known_orgs = [o['name'] for o in orgs]
-    known_projs = [p['name'] for p in projs]
     
     prompt = f"""Given this message: "{text}"
 
 Known organizations: {', '.join(known_orgs) if known_orgs else 'none'}
-Known projects: {', '.join(known_projs) if known_projs else 'none'}
 
-Does the message refer to any of these entities as its PRIMARY topic?
-If yes, respond with: ORGANIZATION|project_name or PROJECT|project_name
-If the entity is only a side mention (e.g., "talked to X from Y"), respond with: NONE
+Does the message refer to any of these organizations as its PRIMARY topic?
+If yes, respond with: ORGANIZATION|organization_name
+If the organization is only a side mention (e.g., "talked to X from Y"), respond with: NONE
 If no entity matches, respond with: NONE
 
 Response (one line only):"""
@@ -420,44 +410,6 @@ Response (one line only):"""
                         'entity_type': 'organization',
                         'entity_id': str(o['id']),
                         'score': 65,
-                        'source': 'llm',
-                        'is_new': True
-                    })
-                break
-                
-    elif result.startswith("PROJECT|"):
-        name = result.split("|", 1)[1].strip()
-        for p in projs:
-            if p['name'].lower() == name.lower():
-                thread = supabase.table('conversation_threads') \
-                    .select('id, active_anchor') \
-                    .eq('chat_id', chat_id) \
-                    .eq('thread_type', 'entity') \
-                    .eq('entity_type', 'project') \
-                    .eq('entity_id', str(p['id'])) \
-                    .is_('archived_at', 'null') \
-                    .order('last_active_at', desc=True) \
-                    .limit(1) \
-                    .execute()
-                if thread.data:
-                    candidates.append({
-                        'thread_id': thread.data[0]['id'],
-                        'active_anchor': thread.data[0].get('active_anchor'),
-                        'entity_name': p['name'],
-                        'entity_type': 'project',
-                        'entity_id': str(p['id']),
-                        'score': 90,
-                        'source': 'llm',
-                        'is_new': False
-                    })
-                else:
-                    candidates.append({
-                        'thread_id': None,
-                        'active_anchor': None,
-                        'entity_name': p['name'],
-                        'entity_type': 'project',
-                        'entity_id': str(p['id']),
-                        'score': 70,
                         'source': 'llm',
                         'is_new': True
                     })

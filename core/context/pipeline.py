@@ -29,7 +29,7 @@ async def execute_context_strategy(
     try:
         nodes_res = supabase.table('graph_nodes')\
             .select('label, type')\
-            .in_('type', ['person', 'organization', 'project'])\
+            .in_('type', ['person', 'organization'])\
             .eq('is_current', True)\
             .execute()
         for n in (nodes_res.data or []):

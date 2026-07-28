@@ -39,7 +39,7 @@ def _project_lifecycle(project_name: str) -> str:
         now = datetime.now(ist_offset)
         
         # First, check if project exists in graph_nodes
-        node = supabase.table('graph_nodes').select('id').eq('type', 'project').ilike('label', project_name).eq('is_current', True).limit(1).execute()
+        node = supabase.table('graph_nodes').select('id').eq('type', 'organization').ilike('label', project_name).eq('is_current', True).limit(1).execute()
         if not node.data:
             return "unknown"
         
@@ -113,7 +113,7 @@ def _infer_rejection_reason(msg: dict) -> str:
         try:
             supabase = get_supabase()
             project_check = supabase.table('graph_nodes').select('id')\
-                .eq('type', 'project')\
+                .eq('type', 'organization')\
                 .ilike('label', project)\
                 .eq('is_current', True)\
                 .limit(1)\

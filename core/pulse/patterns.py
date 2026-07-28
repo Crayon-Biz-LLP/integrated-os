@@ -9,7 +9,7 @@ Runs weekly (Sunday) via sentinel piggyback. Mines:
 """
 
 from datetime import datetime, timezone, timedelta
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import get_supabase
 from core.lib.audit_logger import audit_log_sync
 
 supabase = get_supabase()
@@ -80,15 +80,7 @@ def detect_completion_patterns() -> dict:
         result['time_of_day'] = hour_counts
         result['priority_shifts'] = priority_counts
 
-        # 2. Project completion clusters (projects with 3+ completions)
-        for pid, count in project_completions.items():
-            if count >= 3:
-                proj_res = maybe_single_safe(supabase.table('projects').select('name').eq('id', pid))
-                if proj_res and proj_res.data:
-                    result['project_clusters'].append({
-                        'project': proj_res.data['name'],
-                        'completions': count,
-                    })
+
 
         # 3. Delegation success rate
         waiting_tasks = supabase.table('tasks') \
@@ -124,11 +116,7 @@ def detect_completion_patterns() -> dict:
                 "Consider following up."
             )
 
-        if result['project_clusters']:
-            top_project = max(result['project_clusters'], key=lambda x: x['completions'])
-            result['insights'].append(
-                f"🔥 Hot project: {top_project['project']} ({top_project['completions']} completions in 30d)."
-            )
+
 
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Pattern detection error: {e}")
@@ -151,9 +139,7 @@ def format_patterns_for_serendipity(patterns: dict) -> str:
     """Format pattern data for the serendipity engine to consume."""
     parts = []
 
-    # Project clusters suggest cross-domain connections
-    for pc in patterns.get('project_clusters', [])[:3]:
-        parts.append(f"active_project:{pc['project']}")
+
 
     # Velocity patterns
     velocity = patterns.get('velocity_by_day', {})

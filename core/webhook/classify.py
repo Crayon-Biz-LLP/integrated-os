@@ -202,24 +202,21 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
             if async_fetch:
                 try:
                     node_rows = await async_fetch(
-                        "SELECT label, type FROM graph_nodes WHERE type IN ('person', 'project', 'organization') AND is_current = TRUE ORDER BY updated_at DESC NULLS LAST LIMIT 30"
+                        "SELECT label, type FROM graph_nodes WHERE type IN ('person', 'organization') AND is_current = TRUE ORDER BY updated_at DESC NULLS LAST LIMIT 30"
                     )
                     node_data = [dict(r) for r in node_rows] if node_rows else None
                 except Exception:
                     pass
             if node_data is None:
-                node_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'project', 'organization']).eq('is_current', True).order('updated_at', desc=True).nullslast().limit(30).execute()
+                node_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'organization']).eq('is_current', True).order('updated_at', desc=True).nullslast().limit(30).execute()
                 node_data = node_res.data if node_res and node_res.data else []
             cache_set('rhodey:entities:graph_nodes', node_data, ttl=300)
         if node_data:
             people = [n['label'] for n in node_data if n['type'] == 'person'][:8]
-            projects = [n['label'] for n in node_data if n['type'] == 'project'][:8]
             orgs = [n['label'] for n in node_data if n['type'] == 'organization'][:8]
             entity_lines = []
             if people:
                 entity_lines.append(f"People: {', '.join(people)}")
-            if projects:
-                entity_lines.append(f"Projects: {', '.join(projects)}")
             if orgs:
                 entity_lines.append(f"Organizations: {', '.join(orgs)}")
             entities_str = '\n'.join(entity_lines)

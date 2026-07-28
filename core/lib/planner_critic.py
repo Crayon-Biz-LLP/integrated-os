@@ -47,7 +47,7 @@ async def _extract_entities_from_text(text: str) -> list[str]:
     try:
         supabase = get_supabase()
         node_res = supabase.table('graph_nodes').select('label').in_(
-            'type', ['person', 'organization', 'project']
+            'type', ['person', 'organization']
         ).neq('epistemic_status', 'hypothetical').eq('is_current', True).execute()
         known_labels = [n['label'] for n in (node_res.data or [])]
     except Exception:
@@ -101,7 +101,7 @@ def _resolve_entity_type(entity_words: list[str]) -> str:
         seen_types = set()
         for n in (res.data or []):
             ntype = n.get('type', '')
-            if ntype in ('person', 'organization', 'project'):
+            if ntype in ('person', 'organization'):
                 seen_types.add(ntype)
         # Return highest-priority type
         if 'person' in seen_types:

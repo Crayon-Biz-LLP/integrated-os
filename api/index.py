@@ -1285,7 +1285,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         new_type = body.get('type')
         scope = body.get('scope', 'pending')
         
-        if not new_type or new_type not in ['person', 'project', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']:
+        if not new_type or new_type not in ['person', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']:
             raise HTTPException(status_code=400, detail="valid type required")
             
         from core.services.db import get_supabase, maybe_single_safe
@@ -1315,13 +1315,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
                         'is_active': False,
                         'graph_node_id': None
                     }).eq('id', o_id).execute()
-            elif old_type == 'project' and new_type != 'project':
-                pr_id = live_res.data.get('db_record_id')
-                if pr_id:
-                    supabase.table('projects').update({
-                        'is_current': False,
-                        'status': 'archived'
-                    }).eq('id', pr_id).execute()
+
             
             supabase.table('graph_nodes').update({'type': new_type}).eq('id', pending_id).execute()
             supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
@@ -1355,21 +1349,6 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
                             new_domain_id = str(ins.data[0]['id'])
                     except Exception:
                         pass
-            elif new_type == 'project':
-                existing = maybe_single_safe(supabase.table('projects').select('id').ilike('name', label).eq('is_current', True))
-                if existing and existing.data:
-                    new_domain_id = str(existing.data['id'])
-                else:
-                    try:
-                        ins = supabase.table('projects').insert({
-                            'name': label, 'status': 'active',
-                            'is_active': True, 'is_current': True
-                        }).execute()
-                        if ins.data:
-                            new_domain_id = str(ins.data[0]['id'])
-                    except Exception:
-                        pass
-            
             # Set bidirectional links between graph node and domain row
             if new_domain_id:
                 supabase.table('graph_nodes').update({'db_record_id': new_domain_id}).eq('id', node_id).execute()
@@ -1437,22 +1416,14 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
                         'is_active': False,
                         'graph_node_id': None
                     }).eq('id', o_id).execute()
-        elif old_type == 'project' and new_type != 'project':
-            live_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('label', label).eq('is_current', True))
-            if live_node and live_node.data:
-                pr_id = live_node.data.get('db_record_id')
-                if pr_id:
-                    supabase.table('projects').update({
-                        'is_current': False,
-                        'status': 'archived'
-                    }).eq('id', pr_id).execute()
+
         
         supabase.table('pending_nodes').update({'node_type': new_type}).eq('id', pending_id_int).execute()
         supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
         
         # --- Create new domain row if type changed to a grounded type ---
         new_domain_id = None
-        if new_type in ('person', 'organization', 'project'):
+        if new_type in ('person', 'organization'):
             live_node = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', label).eq('is_current', True))
             node_id = str(live_node.data['id']) if live_node and live_node.data else None
             if node_id:
@@ -1483,21 +1454,6 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
                                 new_domain_id = str(ins.data[0]['id'])
                         except Exception:
                             pass
-                elif new_type == 'project':
-                    existing = maybe_single_safe(supabase.table('projects').select('id').ilike('name', label).eq('is_current', True))
-                    if existing and existing.data:
-                        new_domain_id = str(existing.data['id'])
-                    else:
-                        try:
-                            ins = supabase.table('projects').insert({
-                                'name': label, 'status': 'active',
-                                'is_active': True, 'is_current': True
-                            }).execute()
-                            if ins.data:
-                                new_domain_id = str(ins.data[0]['id'])
-                        except Exception:
-                            pass
-                
                 if new_domain_id:
                     supabase.table('graph_nodes').update({'db_record_id': new_domain_id}).eq('id', node_id).execute()
                     if new_type == 'person':
@@ -2361,7 +2317,7 @@ async def graph_nodes_live_route(request: Request):
         supabase = get_supabase()
         
         # Bring key nodes and conceptual/structural entities (exclude system tasks/memories)
-        entity_types = ['person', 'project', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']
+        entity_types = ['person', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']
         res = supabase.table('graph_nodes') \
             .select('id, label, type, created_at') \
             .in_('type', entity_types) \

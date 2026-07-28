@@ -42,11 +42,11 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
             audit_log_sync("planner", "WARNING", f"Invalid task ID in close text: '{task_id_str}'")
     
     # 1. Fetch active tasks (todo/in_progress)
-    tasks_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
+    tasks_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, organizations(name)").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
     open_tasks = tasks_res.data or []
     
     # 2. Fetch recurring tasks (even if done, because done means skip instance)
-    recurring_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, projects(name), organizations(name)").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
+    recurring_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, organizations(name)").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
     recurring_tasks = [t for t in (recurring_res.data or []) if t["status"] != "cancelled"]
     
     # 3. Fetch upcoming calendar events
@@ -74,7 +74,6 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
                 task_google_event_ids.add(gid)
             
             next_occ = base_id_to_time.get(gid) if gid else None
-            proj_name = t.get("projects", {}).get("name") if t.get("projects") else None
             org_name = t.get("organizations", {}).get("name") if t.get("organizations") else None
             
             candidates.append({
@@ -84,7 +83,6 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
                 "status": t["status"], 
                 "recurrence": t.get("recurrence"),
                 "next_occurrence": next_occ,
-                "project_name": proj_name,
                 "organization_name": org_name
             })
             
@@ -98,21 +96,10 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
             seen_events.add(e["id"])
             candidates.append({"type": "event", "id": e["id"], "title": e["title"], "time": e["time"]})
             
-    # 4. Fetch organizations and projects for LLM resolution
+    # 4. Fetch organizations for LLM resolution
     orgs_res = supabase.table("organizations").select("id, name").execute()
     orgs = orgs_res.data or []
     org_lines = "\n".join([f"  - {o['name']} (ID: {o['id']})" for o in orgs]) if orgs else "  - (none)"
-    
-    try:
-        projects_all_res = supabase.table("projects").select("id, name, organization_id, organizations(name)").eq("is_current", True).neq("status", "archived").execute()
-        projects_all = projects_all_res.data or []
-    except Exception:
-        projects_all = []
-    project_lines = []
-    for p in projects_all:
-        org_name = p.get('organizations', {}).get('name', 'INBOX') if p.get('organizations') else 'INBOX'
-        project_lines.append(f"  - {p['name']} (ID: {p['id']}, org: {org_name})")
-    project_lines_str = "\n".join(project_lines) if project_lines else "  - (none)"
     
 
     # Pre-filter lexically to save tokens
@@ -123,8 +110,6 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
     filtered_candidates = []
     for c in candidates:
         candidate_words = c["title"].lower().split()
-        if c.get("project_name"):
-            candidate_words.extend(c["project_name"].lower().split())
         if c.get("organization_name"):
             candidate_words.extend(c["organization_name"].lower().split())
             
@@ -157,12 +142,8 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
         if c["type"] == "task":
             rec_str = "recurring" if c.get('recurrence') else "one-off"
             next_str = f", next: {c['next_occurrence']}" if c.get('next_occurrence') else ""
-            org_proj = []
-            if c.get("organization_name"):
-                org_proj.append(f"org: {c['organization_name']}")
-            if c.get("project_name"):
-                org_proj.append(f"proj: {c['project_name']}")
-            ctx_str = f" [{', '.join(org_proj)}]" if org_proj else ""
+            org_context = c.get("organization_name", "")
+            ctx_str = f" [{org_context}]" if org_context else ""
             
             candidate_lines.append(f"Task ID {c['id']}: {c['title']}{ctx_str} (status: {c['status']}, {rec_str}{next_str})")
         else:
@@ -181,7 +162,7 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
         entity=entity,
         candidate_lines=candidate_lines_str,
         org_lines=org_lines,
-        project_lines=project_lines_str,
+
         active_anchor=active_anchor,
     )
 

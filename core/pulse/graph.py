@@ -827,22 +827,10 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             )
 
             # ── Edge approval backfill: Keep DB rows in sync with graph ──
-            # When a BELONGS_TO edge for a project is approved, backfill
-            # projects.organization_id. When a WORKS_AT edge for a person
-            # is approved, backfill people.organization_name.
+            # When a WORKS_AT edge for a person is approved, backfill
+            # people.organization_name.
             try:
-                if rel == "BELONGS_TO" and pe.get('source_type') == 'project':
-                    # Backfill projects.organization_id
-                    proj_res = supabase.table('projects').select('id, organization_id').ilike('name', s_label).eq('is_current', True).limit(1).execute()
-                    if proj_res and proj_res.data:
-                        proj = proj_res.data[0]
-                        if not proj.get('organization_id'):
-                            t_node_res = supabase.table('graph_nodes').select('db_record_id').eq('id', t_id).limit(1).execute()
-                            if t_node_res and t_node_res.data and t_node_res.data[0].get('db_record_id'):
-                                supabase.table('projects').update({'organization_id': t_node_res.data[0]['db_record_id']}).eq('id', proj['id']).execute()
-                                audit_log_sync("pulse", "INFO", f"Backfill: Set projects.organization_id for '{s_label}' via BELONGS_TO approval")
-
-                elif rel == "WORKS_AT" and pe.get('source_type') == 'person':
+                if rel == "WORKS_AT" and pe.get('source_type') == 'person':
                     # Backfill people.organization_name
                     person_res = supabase.table('people').select('id, organization_name').ilike('name', s_label).eq('is_current', True).limit(1).execute()
                     if person_res and person_res.data:
@@ -879,29 +867,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, project_id: 
             }
         }, on_conflict="normalized_label, type").execute()
 
-        if project_id:
-            proj_node = supabase.table('graph_nodes') \
-                .select('id, label') \
-                .eq('type', 'project') \
-                .filter('metadata->>project_id', 'eq', str(project_id)) \
-                .maybe_single() \
-                .execute()
-
-            if proj_node and proj_node.data:
-                from core.lib.graph_rules import insert_pending_edge
-                insert_pending_edge(
-                    task_title,
-                    proj_node.data.get('label', str(project_id)),
-                    "WORKS_ON",
-                    {
-                        "source_text": f"tasks:{task_id}",
-                        "source_table": "task_engine",
-                        "source_type": "task",
-                        "target_type": "project"
-                    }
-                )
-
-        # NEW: Task→Organization BELONGS_TO edge
+        # Task→Organization BELONGS_TO edge
         if organization_id:
             org_node = supabase.table('graph_nodes') \
                 .select('id, label') \

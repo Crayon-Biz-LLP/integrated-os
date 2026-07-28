@@ -190,7 +190,7 @@ async def _process_task_graph_enrichment(
         )
 
         # 2. Entity extraction — CONSUME return values to backfill org_id
-        org_candidates, proj_candidates = await extract_and_link_entities(
+        org_candidates = await extract_and_link_entities(
             content, target_id, "task"
         )
 
@@ -240,7 +240,7 @@ async def _process_note_enrichment(
         from core.llm import get_embedding
 
         # 1. Entity extraction — CONSUME return values (org_candidates, proj_candidates)
-        org_candidates, proj_candidates = await extract_and_link_entities(
+        org_candidates = await extract_and_link_entities(
             content, memory_id, "memory"
         )
 
@@ -260,45 +260,16 @@ async def _process_note_enrichment(
                         except Exception:
                             current_meta = {}
                     existing_org = current_meta.get('organization_id')
-                    existing_proj = current_meta.get('project_id')
 
-                    # Only backfill if not already set
-                    updates = {}
                     if not existing_org:
                         current_meta['organization_id'] = found_org_id
-                        updates['organization_id'] = found_org_id
+                        supabase.table('memories').update({
+                            'metadata': current_meta,
+                            'organization_id': found_org_id,
+                        }).eq('id', memory_id).eq('is_current', True).execute()
                         audit_log_sync(
                             "enrichment_queue", "INFO",
                             f"Backfilled organization_id={found_org_id} for note {memory_id} from entity extraction"
-                        )
-
-                    if proj_candidates and not existing_proj:
-                        found_proj = proj_candidates[0] if isinstance(proj_candidates[0], dict) else {'id': proj_candidates[0]}
-                        found_proj_id = found_proj.get('id') if isinstance(found_proj, dict) else found_proj
-                        if found_proj_id:
-                            current_meta['project_id'] = found_proj_id
-                            updates['project_id'] = found_proj_id
-                            # Also backfill project's org_id if we found it
-                            proj_org_id = found_proj.get('org_id') if isinstance(found_proj, dict) else None
-                            if proj_org_id and not existing_org and not existing_org:
-                                current_meta['organization_id'] = proj_org_id
-                                updates['organization_id'] = proj_org_id
-                            audit_log_sync(
-                                "enrichment_queue", "INFO",
-                                f"Backfilled project_id={found_proj_id} for note {memory_id} from entity extraction"
-                            )
-
-                    if updates:
-                        col_updates = {'metadata': current_meta}
-                        # Also update actual columns so queries on organization_id/project_id work
-                        if 'organization_id' in updates:
-                            col_updates['organization_id'] = updates['organization_id']
-                        if 'project_id' in updates:
-                            col_updates['project_id'] = updates['project_id']
-                        supabase.table('memories').update(col_updates).eq('id', memory_id).eq('is_current', True).execute()
-                        audit_log_sync(
-                            "enrichment_queue", "INFO",
-                            f"Backfilled note {memory_id}: columns + metadata: {updates}"
                         )
             except Exception as fb_err:
                 audit_log_sync(

@@ -15,18 +15,6 @@ def get_supabase() -> Client:
 
 
 
-def fetch_active_projects() -> list:
-    supabase = get_supabase()
-    try:
-        res = supabase.table('projects').select('id, name, organization_id').eq('status', 'active').eq('is_current', True).execute()
-        return res.data or []
-    except Exception as e:
-        from core.lib.audit_logger import audit_log_sync
-        audit_log_sync("db", "WARNING", f"Failed to fetch projects: {e}")
-        return []
-
-
-
 def maybe_single_safe(builder):
     """Execute a builder chain with .limit(1).maybe_single() guard.
 

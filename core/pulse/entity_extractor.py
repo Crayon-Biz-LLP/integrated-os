@@ -39,7 +39,7 @@ async def extract_and_link_entities(
       Given text + list of confirmed entities, extract edges between them.
 
     source_type: 'task', 'memory', or 'raw_dump'
-    Returns: (org_candidates, proj_candidates) for upstream backfill.
+    Returns: org_candidates list for upstream backfill.
     """
     # URL FILTER: Do not extract entities from text containing URLs
     if is_url_text(text):
@@ -102,7 +102,6 @@ async def extract_and_link_entities(
 
     # Look up canonical IDs for upstream backfill
     org_candidates = []
-    proj_candidates = []
     for n in nodes:
         label = n.get("label", "").strip()
         ntype = n.get("type", "")
@@ -118,20 +117,5 @@ async def extract_and_link_entities(
                     org_candidates.append(res.data['id'])
             except Exception:
                 pass
-        elif ntype == "project":
-            try:
-                res = maybe_single_safe(
-                    supabase.table('projects')
-                    .select('id, organization_id')
-                    .ilike('name', label)
-                    .eq('is_current', True)
-                )
-                if res and res.data:
-                    proj_candidates.append({
-                        'id': res.data['id'],
-                        'org_id': res.data.get('organization_id'),
-                    })
-            except Exception:
-                pass
 
-    return org_candidates, proj_candidates
+    return org_candidates

@@ -1,4 +1,4 @@
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import get_supabase
 
 from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
@@ -109,12 +109,7 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                         audit_log_sync("pulse", "ERROR", f"Failed to mark task {task_id} as done: {e}")
 
                     # 🧠 Collect for outcome memory — caller will fire as background tasks
-                    proj_name = None
-                    proj_id = task.get('project_id')
-                    if proj_id:
-                        proj_lookup = maybe_single_safe(supabase_client.table('projects').select('name').eq('id', proj_id))
-                        proj_name = proj_lookup.data['name'] if proj_lookup.data else None
-                    completed.append((title, proj_name))
+                    completed.append((title, None))
 
                     print(f"✅ Synced from Google: '{title}' (ID: {task_id})")
                     synced_count += 1

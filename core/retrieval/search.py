@@ -349,7 +349,7 @@ def _recognition_filter(candidates: List[dict], query_phrases: List[str]) -> Lis
             filtered.append(c)
             continue
 
-        if c.get("node_type") in ("person", "project", "organization") and len(text) >= 3:
+        if c.get("node_type") in ("person", "organization") and len(text) >= 3:
             filtered.append(c)
             continue
 

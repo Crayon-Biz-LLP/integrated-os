@@ -358,14 +358,7 @@ async def ingest_outlook_messages(limit=25):
                     if getattr(person_res, 'data', None):
                         linked_person_id = person_res.data['id']
                 
-                linked_project_id = None
-                linked_project_name = classification_data.get("linked_project_name")
-                if linked_project_name:
-                    project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', linked_project_name).eq('is_current', True))
-                    if not getattr(project_res, 'data', None):
-                        project_res = maybe_single_safe(supabase.table('projects').select('id, name').ilike('name', f'%{linked_project_name}%').eq('is_current', True))
-                    if getattr(project_res, 'data', None):
-                        linked_project_id = project_res.data['id']
+
                 
                 suggested_task = classification_data.get("suggested_task")
                 is_human = classification_data.get("is_human_sender", False)
@@ -396,9 +389,9 @@ async def ingest_outlook_messages(limit=25):
                     classification=classification_for_ingest,
                     summary=classification_data.get('summary', '')[:1000],
                     suggested_title=suggested_task,
-                    suggested_project=linked_project_name,
+                    suggested_project=None,
                     linked_person_id=linked_person_id,
-                    linked_project_id=linked_project_id,
+                    linked_project_id=None,
                     is_human_sender=is_human,
                     has_memory_value=classification_data.get('has_memory_value', False),
                     needs_draft=classification_data.get('needs_draft', False),

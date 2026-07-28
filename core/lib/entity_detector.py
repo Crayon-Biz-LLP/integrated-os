@@ -316,27 +316,5 @@ def resolve_org_and_project(text: str
             elif e.db_id != org_id:
                 reason_parts.append("org_ambiguous")
                 org_id = None
-        elif e.type == 'project' and e.db_id:
-            if not proj_id:
-                proj_id = int(e.db_id)
-                reason_parts.append(f"proj_exact_match({e.label})")
-            elif int(e.db_id) != proj_id:
-                reason_parts.append("proj_ambiguous")
-
-    # Infer project's org if project found but no org yet
-    if proj_id and not org_id:
-        try:
-            supabase = get_supabase()
-            proj_res = supabase.table('projects') \
-                .select('organization_id') \
-                .eq('id', proj_id) \
-                .limit(1) \
-                .execute()
-            if proj_res.data and proj_res.data[0].get('organization_id'):
-                org_id = proj_res.data[0]['organization_id']
-                reason_parts.append("org_inferred_from_proj")
-        except Exception:
-            pass
-
     reason = " | ".join(reason_parts) if reason_parts else "no_matches"
     return org_id, proj_id, reason

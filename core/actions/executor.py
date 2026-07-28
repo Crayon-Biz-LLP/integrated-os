@@ -389,7 +389,7 @@ async def execute_planned_actions(
             entities = detect_entities(text)
             _cached_entities = entities  # Cache for reuse downstream
             entity_count = sum(1 for e in entities
-                              if e.type in ('person', 'organization', 'project'))
+                              if e.type in ('person', 'organization'))
 
             if entity_count >= 2:
                 embedding = (await get_embedding(text)).vector

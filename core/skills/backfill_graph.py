@@ -156,7 +156,7 @@ def fetch_known_entities() -> set:
     return {
         row["label"].lower()
         for row in (nodes or [])
-        if row["type"] in ("person", "organization", "project")
+        if row["type"] in ("person", "organization")
     }
 
 def dump_contains_known_entity(content: str, known_entities: set) -> bool:
@@ -335,13 +335,6 @@ def extract_graph_elements(text: str, memory_id: str, known_entities: set = None
     print(f"    Extracted {len(nodes)} nodes (deterministic), {len(edges)} edges (LLM) from memory {memory_id}")
     return {"nodes": nodes, "edges": edges}
 
-def is_real_project(label: str) -> bool:
-    try:
-        result = supabase.table('projects').select('id').ilike('name', label.strip()).eq('is_current', True).execute()
-        return len(result.data) > 0
-    except Exception:
-        return False
-
 def get_or_create_node(label: str, node_type: str, graph_entities: dict, created_nodes: dict, memory_id: str = None) -> str:
     """
     Get or create a graph node with proper type handling.
@@ -357,11 +350,6 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
     from core.clarifier import evaluate_node
     evaluate_node({"label": label, "type": node_type})
     
-    # GUARD 2: Entity Grounding for projects
-    if node_type == 'project' and not is_real_project(label):
-        audit_log_sync("backfill_graph", "WARNING", f"Skipped ungrounded project node: {label}")
-        return None
-
     # Check if already in graph_entities (DB cache)
     if label in graph_entities:
         node_id = graph_entities[label]["id"]
@@ -1165,7 +1153,7 @@ def backfill_orphaned_node_edges():
     fixed_count = 0
     
     type_to_rel = {
-        "project": "OWNS",
+
         "person": "KNOWS",
         "concept": "INTERESTED_IN",
         "organization": "WORKS_WITH",
@@ -1256,60 +1244,6 @@ def backfill_orphaned_node_edges():
 
     print(f"✅ Fixed {fixed_count} isolated/AUTHORED-only nodes.")
 
-
-def sync_project_nodes_to_projects_table():
-    """Sync project-type graph nodes to projects table via legacy_id.
-    For each project node missing legacy_id, match by label to projects table.
-    One-time backfill for existing orphan data, then runs incrementally."""
-    print("\n🏗️ Project node sync: Linking graph projects to projects table...")
-    nodes = fetch_all_paginated("graph_nodes", "id, label, metadata", in_filter_col="type", in_filter_val=["project"])
-    if not nodes:
-        print("No project nodes found.")
-        return
-
-    all_projects = fetch_all_paginated("projects", "id, name, status")
-    name_to_id = {p["name"].strip().lower(): p["id"] for p in all_projects}
-
-    synced = 0
-    for n in nodes:
-        meta = _normalize_meta(n.get("metadata"))
-        if meta.get("legacy_id"):
-            continue
-        label_lower = n["label"].strip().lower()
-        legacy_id = name_to_id.get(label_lower)
-        if legacy_id:
-            meta["legacy_id"] = legacy_id
-            try:
-                supabase.table("graph_nodes").update({"metadata": meta}).eq("id", n["id"]).execute()
-                synced += 1
-            except Exception as e:
-                audit_log_sync("backfill_graph", "WARNING", f"Failed to sync project node {n['id']}: {e}")
-
-    print(f"Synced {synced} project nodes to projects table.")
-
-    # Add project rename/delete handling
-    for p in all_projects:
-        # Check for renamed projects
-        if p['name'] != p.get('original_name', p['name']):
-            try:
-                supabase.table('graph_nodes').update({
-                    "label": p['name']
-                }).eq('type', 'project').filter('metadata->>legacy_id', 'eq', str(p['id'])).execute()
-            except Exception as e:
-                audit_log_sync("backfill_graph", "WARNING", f"Failed to rename project node {p['id']}: {e}")
-        
-        # Check for deleted projects
-        if p['status'] in ['archived', 'cancelled']:
-            try:
-                supabase.table('graph_nodes').update({
-                    "archived": True,
-                    "metadata": {
-                        "archived_reason": "project_deleted",
-                        "archived_at": "now()"
-                    }
-                }).eq('type', 'project').filter('metadata->>legacy_id', 'eq', str(p['id'])).execute()
-            except Exception as e:
-                audit_log_sync("backfill_graph", "WARNING", f"Failed to archive deleted project node {p['id']}: {e}")
 
 
 def sync_person_nodes_to_people_table():
@@ -1614,7 +1548,7 @@ def sync_organizations_to_graph_nodes():
     print(f"Reverse sync complete: {created} graph nodes created, {deleted_wrong} wrong-type nodes deleted, {skipped} skipped.")
 
 
-def sync_projects_to_graph_nodes():
+def _sync_projects_disabled():  # Projects decommissioned
     """Reverse sync: ensure every projects table row has a graph_nodes entry.
     Creates project-type graph nodes with db_record_id → projects.id."""
     print("\n📁 Reverse sync: projects table → graph_nodes...")
@@ -1804,14 +1738,13 @@ if __name__ == "__main__":
     run_backfill()
     
     # Run graph→table sync
-    sync_project_nodes_to_projects_table()
+
     sync_person_nodes_to_people_table()
     sync_people_to_graph_nodes()
     
     # Run table→graph sync (reverse direction)
     sync_person_org_edges()
     sync_organizations_to_graph_nodes()
-    sync_projects_to_graph_nodes()
     
     # Verification
     org_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "organization").not_.is_("db_record_id", "null").eq('is_current', True).execute()

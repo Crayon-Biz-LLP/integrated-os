@@ -152,39 +152,25 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
             compressed_tasks, _ = compressed_tasks_data
             active_tasks_list = compressed_tasks.split(" | ") if compressed_tasks else []
 
-        # ── Fetch projects + orgs ONCE, share between overdue and completed ──
-        projects_for_brief = None
+        # ── Fetch orgs for overdue and completed tasks ──
         org_map_for_brief = {}
-        if overdue_res_data:
-            from core.features import is_org_routing_enabled
-            projects_for_brief = await context_provider.get_projects()
-            proj_map = {p['id']: p['name'] for p in (projects_for_brief or [])}
-            if is_org_routing_enabled():
-                orgs = await context_provider.get_organizations()
-                org_map_for_brief = {o['id']: o['name'] for o in orgs}
+        if overdue_res_data or completed_raw_data:
+            orgs = await context_provider.get_organizations()
+            org_map_for_brief = {o['id']: o['name'] for o in orgs} if orgs else {}
 
-            for t in overdue_res_data:
-                pn = proj_map.get(t.get('project_id'), 'INBOX')
-                org_id = t.get('organization_id')
-                o_name = org_map_for_brief.get(org_id) if org_id else None
-                overdue_tasks.append(_format_task_line(t.get('title', ''), pn, t.get('priority'), organization_name=o_name))
+            if overdue_res_data:
+                for t in overdue_res_data:
+                    org_id = t.get('organization_id')
+                    o_name = org_map_for_brief.get(org_id) if org_id else None
+                    overdue_tasks.append(_format_task_line(t.get('title', ''), None, t.get('priority'), organization_name=o_name))
 
-        # ── Process recently completed (reuses projects + orgs from above) ──
+        # ── Process recently completed ──
         completed_raw = completed_raw_data or []
         if completed_raw:
-            from core.features import is_org_routing_enabled
-            if projects_for_brief is None:
-                projects_for_brief = await context_provider.get_projects()
-            proj_map = {p['id']: p['name'] for p in (projects_for_brief or [])}
-            if is_org_routing_enabled() and not org_map_for_brief:
-                orgs = await context_provider.get_organizations()
-                org_map_for_brief = {o['id']: o['name'] for o in orgs}
-
             for t in completed_raw:
-                pn = proj_map.get(t.get('project_id'), 'INBOX')
                 org_id = t.get('organization_id')
                 o_name = org_map_for_brief.get(org_id) if org_id else None
-                recently_completed.append(_format_task_line(t.get('title', ''), pn, organization_name=o_name))
+                recently_completed.append(_format_task_line(t.get('title', ''), None, organization_name=o_name))
 
         def fmt_list(items):
             if not items:
@@ -925,20 +911,17 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _phase1a_tasks.append(_p1a_temporal)
         
         # Projects
-        async def _fetch_projects():
+        async def _fetch_orgs():
             try:
-                res = supabase.table('projects').select('name, status, organization_id, organizations(name)').eq('is_current', True).neq('status', 'archived').order('name').execute()
-                if res.data:
-                    lines = []
-                    for p in res.data:
-                        org_name = p.get('organizations', {}).get('name', 'INBOX') if p.get('organizations') else 'INBOX'
-                        lines.append(f"- [{org_name}] {p.get('name')} ({p.get('status')})")
+                orgs = await context_provider.get_organizations()
+                if orgs:
+                    lines = [f"- {o.get('name')}" for o in orgs]
                     return "\n".join(lines)
             except Exception:
                 pass
             return "None"
-        _p1a_projects = asyncio.create_task(safe_fetch(_fetch_projects(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
-        _phase1a_tasks.append(_p1a_projects)
+        _p1a_orgs = asyncio.create_task(safe_fetch(_fetch_orgs(), "None") if (fetch_all or is_action) else safe_fetch(_empty_fetch("None"), "None"))
+        _phase1a_tasks.append(_p1a_orgs)
         
         # Practices
         _p1a_practices = asyncio.create_task(safe_fetch(
@@ -1245,7 +1228,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _ri += 1
         temporal_context = _r1[_ri]
         _ri += 1
-        projects_context = _r1[_ri]
+        projects_context = "None"  # Projects table decommissioned — use orgs instead
         _ri += 1
         practices_context = _r1[_ri]
         _ri += 1
@@ -1369,8 +1352,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
             all_context.append(f"{_source_tag('canonical')} CANONICAL KNOWLEDGE {_HIST_TAG}:\n{canonical_context}")
             available_sources.append("canonical knowledge")
         if projects_context != "None":
-            all_context.append(f"{_source_tag('projects')} ACTIVE PROJECTS:\n{projects_context}")
-            available_sources.append("active projects")
+            all_context.append(f"{_source_tag('orgs')} ORGANIZATIONS:\n{projects_context}")
+            available_sources.append("active organizations")
         if conversation_context != "None":
             all_context.append(f"{_source_tag('past_conversations')} PAST CONVERSATIONS {_HIST_TAG}:\n{conversation_context}")
             available_sources.append("past conversations")

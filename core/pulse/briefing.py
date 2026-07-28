@@ -336,29 +336,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         core_res = supabase.table('core_config').select('key, content').execute()
         core = core_res.data or []
 
-        # Fetch graph projects
-        graph_projects_res = supabase.table('graph_nodes').select('id', 'label', 'metadata').eq('type', 'project').eq('is_current', True).execute()
-        graph_projects = graph_projects_res.data or []
-
         projects = []
-        for gp in graph_projects:
-            raw_meta = gp.get('metadata')
-            if isinstance(raw_meta, str):
-                try:
-                    metadata = json.loads(raw_meta)
-                except Exception:
-                    metadata = {}
-            elif isinstance(raw_meta, dict):
-                metadata = raw_meta
-            else:
-                metadata = {}
-            projects.append({
-                'id': gp['id'],
-                'name': gp['label'],
-                'organization_name': metadata.get('organization_name', 'INBOX'),
-                'description': metadata.get('description', ''),
-                'legacy_id': metadata.get('legacy_id')
-            })
 
         # ── Time & Day Intelligence (CPU-only, no IO — compute before parallel phase 1) ──
         ist_offset = timezone(timedelta(hours=5, minutes=30))
@@ -562,9 +540,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         thirty_days_ago = (now - timedelta(days=30)).isoformat()
         hindsight_context = "None"
         task_inputs = []
-        graph_node_projects = graph_projects
-
-        all_entity_terms = [p['name'] for p in people] + [p['label'] for p in graph_node_projects]
+        graph_node_projects = []
+        all_entity_terms = [p['name'] for p in people]
 
         # ── Resource & memory queries (parallel phase 2) ──
         recent_lib_res = supabase.table('resources') \
