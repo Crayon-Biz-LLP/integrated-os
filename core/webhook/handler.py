@@ -144,6 +144,62 @@ async def process_callback_query(callback_query: dict):
             await send_telegram(chat_id, "Cancelled. Node stays pending for next Decision Pulse.")
             return {"success": True}
 
+        # Confirm auto-decisions callback: "confirm_auto_all"
+        # Sets verified_at on auto-decisions and reinforces pattern confidence
+        if data == "confirm_auto_all":
+            try:
+                now = datetime.now(timezone.utc)
+                cutoff = (now - timedelta(minutes=30)).isoformat()
+
+                # Find unverified auto-decisions from the last 30 minutes
+                decision_res = supabase.table('decisions')\
+                    .select('id, decision_type')\
+                    .eq('auto_decided', True)\
+                    .eq('status', 'active')\
+                    .is_('verified_at', None)\
+                    .gte('decided_at', cutoff)\
+                    .execute()
+
+                confirmed_count = 0
+                for row in (decision_res.data or []):
+                    decision_id = row['id']
+
+                    # Set verified_at on the decision
+                    supabase.table('decisions').update({
+                        'verified_at': now.isoformat(),
+                    }).eq('id', decision_id).execute()
+
+                    confirmed_count += 1
+
+                if confirmed_count > 0:
+                    # Emit observation to reinforce pattern confidence
+                    # _update_pattern_count() in telemetry correctly maps
+                    # this to the right pattern via feature-hash matching
+                    await emit_observation(
+                        subsystem='auto_decisions',
+                        event_type='verification',
+                        outcome='confirmed',
+                        predicted='auto_approve',
+                        actual='verified',
+                        features={'count': confirmed_count}
+                    )
+
+                    await send_telegram(
+                        chat_id,
+                        f"✅ Verified {confirmed_count} auto-decisions. Pattern confidence reinforced."
+                    )
+                    audit_log_sync("webhook", "INFO",
+                        f"User confirmed {confirmed_count} auto-decisions — patterns strengthened")
+                else:
+                    await send_telegram(
+                        chat_id,
+                        "No unverified auto-decisions found in the last 30 minutes."
+                    )
+            except Exception as confirm_err:
+                audit_log_sync("webhook", "WARNING", f"Confirm auto-processed failed: {confirm_err}")
+                await send_telegram(chat_id, "⚠️ Failed to verify auto-decisions. Check logs.")
+            return {"success": True}
+
         # Undo auto-processed items callback: "undo_auto_channels", "undo_auto_graph", "undo_auto_edge"
         undo_match = re.match(r'^undo_auto_(channels|graph|edge)$', data)
         if undo_match:

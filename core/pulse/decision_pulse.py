@@ -418,6 +418,10 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                     {"text": "❌ Reject All Edges", "callback_data": "reject_all_edges"}
                 ])
             if auto_total > 0:
+                # Confirm button — sets verified_at and reinforces pattern confidence
+                keyboard.append([
+                    {"text": f"✅ Looks good — confirm {auto_total} auto-decisions", "callback_data": "confirm_auto_all"}
+                ])
                 undo_row = []
                 if auto_approved_ids:
                     undo_row.append({"text": f"↩️ Undo {len(auto_approved_ids)} channel", "callback_data": "undo_auto_channels"})

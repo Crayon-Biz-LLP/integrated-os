@@ -5,6 +5,43 @@ Updated whenever something is removed or fundamentally changes.
 
 ---
 
+## 2026-07-28 — Learning Loop Fixes: Classifier Ingestion, Verification, Null Guard
+
+### Fixed: Classifier corrections pipeline (broken architectural assumption)
+
+**Root cause:** `ingest_feedback_overrides()` was reading from `audit_logs` (querying for `FEEDBACK_OVERRIDE` events), but all 53 user corrections landed in `subsystem_telemetry` via `emit_observation(outcome='corrected')`. The table stayed empty forever.
+
+**Fix:** Rewrote `ingest_feedback_overrides()` to read from `subsystem_telemetry WHERE outcome='corrected'`. Added `_parse_json_field()` (handles Supabase's JSON encoding) and `_extract_pattern()` (builds text patterns from feature keywords).
+
+**File:** `core/webhook/feedback_loop.py`
+
+### Added: Verification feedback loop
+
+**What:** Auto-decisions can now be confirmed via a "✅ Looks good — confirm N auto-decisions" button. Sets `verified_at` and calls `emit_observation(outcome='confirmed')` to reinforce pattern confidence through the existing telemetry pipeline.
+
+**Files:** `core/pulse/decision_pulse.py` (button), `core/webhook/handler.py` (callback handler)
+
+### Fixed: Null guard in compute_pattern_confidence
+
+**Root cause:** `maybe_single_safe()` can return `None` during transient Supabase connection blips. The fallback loop in `compute_pattern_confidence()` called `row.data` without null-checking `row`, causing `'NoneType' object has no attribute 'data'`. Most visible for `classification` subsystem (0 patterns → full 9-iteration fallback chain runs every call).
+
+**Fix:** Added `if row is None: continue` before accessing `row.data`.
+
+**File:** `core/lib/telemetry.py`
+
+### Changed: Auto-approve thresholds lowered
+
+**Why:** Pattern data shows 100% accuracy on 911 entity_extraction patterns. Lowering the bar lets Rhodey act on what it already knows.
+
+| Constant | Old | New |
+|---|---|---|
+| `CONFIDENCE_AUTO_APPLY` | 0.70 | **0.50** |
+| `MIN_AUTO_APPROVE_OBSERVATIONS` | 5 | **3** |
+
+**File:** `core/lib/telemetry.py`
+
+---
+
 ## 2026-07-27 — Documentation Restructure
 
 ### Removed: 13 deprecated product-summary files

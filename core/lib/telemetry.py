@@ -21,9 +21,9 @@ from core.lib.audit_logger import audit_log_sync
 MIN_PATTERN_OBSERVATIONS = 3
 
 # Minimum observations before auto-apply is allowed (grace period to prevent
-# sparse early-edge-case steering). Patterns need 5 observations before
+# sparse early-edge-case steering). Patterns need 3 observations before
 # Rhodey acts on them autonomously, regardless of confidence.
-MIN_AUTO_APPROVE_OBSERVATIONS = 5
+MIN_AUTO_APPROVE_OBSERVATIONS = 3
 
 # Maximum error rate (corrected/total) before auto-approve is demoted to suggest.
 # If >50% of observations were corrected, the pattern is not reliable enough
@@ -31,8 +31,10 @@ MIN_AUTO_APPROVE_OBSERVATIONS = 5
 MAX_ERROR_RATE = 0.50
 
 # Confidence thresholds for recommendations
-# Lowered from 0.90 to 0.70: Rhodey acts sooner on patterns and learns from corrections
-CONFIDENCE_AUTO_APPLY = 0.70
+# Lowered from 0.90 to 0.70, then from 0.70 to 0.50: Rhodey acts sooner on patterns
+# and learns from corrections. This is safe because every auto-decision is reversible
+# via the Telegram undo buttons and the Decisions web UI.
+CONFIDENCE_AUTO_APPLY = 0.50
 CONFIDENCE_SUGGEST = 0.50
 CONFIDENCE_REVIEW = 0.0
 
@@ -441,6 +443,11 @@ async def compute_pattern_confidence(
                 .eq("subsystem", subsystem)
                 .eq("feature_hash", feature_hash)
             )
+            # Transient guard: maybe_single_safe can return None if the
+            # Supabase client hits a connection blip. Skip this fallback
+            # iteration instead of crashing.
+            if row is None:
+                continue
             if row.data and row.data["total_count"] >= MIN_PATTERN_OBSERVATIONS:
                 best_match = row.data
                 if i == 0:

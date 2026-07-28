@@ -1,14 +1,18 @@
 """
 Classifier Feedback Loop (C1)
 
-Reads FEEDBACK_OVERRIDE events from audit_logs and populates
+Reads corrected observations from subsystem_telemetry and populates
 classifier_corrections table. Corrections are injected into the
 classify_intent prompt as LEARNED CORRECTIONS.
 
-Fail-open: if audit_logs query fails or returns garbage, skip entirely.
+This was previously reading from audit_logs (FEEDBACK_OVERRIDE format),
+but all actual corrections go through emit_observation() → subsystem_telemetry.
+Switched source to subsystem_telemetry WHERE outcome='corrected'.
+
+Fail-open: if query fails or returns garbage, skip entirely.
 Max 50 rules. Oldest-first eviction when full.
 """
-import re
+import json
 from datetime import datetime, timezone, timedelta
 
 from core.services.db import get_supabase
@@ -18,30 +22,69 @@ supabase = get_supabase()
 
 MAX_CORRECTIONS = 50
 
-# Pattern to parse FEEDBACK_OVERRIDE log messages
-# Format: FEEDBACK_OVERRIDE: user corrected 'OLD' → 'NEW' | text='TEXT'
-OVERRIDE_PATTERN = re.compile(
-    r"FEEDBACK_OVERRIDE: user corrected '(\w+)' → '(\w+)'\s*\|\s*text='(.{0,80})'"
-)
+# Filler words excluded from text pattern extraction
+_FILLER = {
+    'the', 'this', 'that', 'with', 'from', 'have', 'been', 'will',
+    'were', 'they', 'their', 'about', 'would', 'could', 'should',
+    'just', 'also', 'into', 'your', 'what', 'when', 'then', 'than',
+    'true', 'false', 'none', 'null',
+}
 
 
-def _extract_pattern(text: str) -> str:
-    """Extract a simplified keyword pattern from raw text for matching.
+def _parse_json_field(value) -> str | None:
+    """Parse a JSON-stored field back to a plain string.
 
-    Takes the first 3 meaningful words (>3 chars, not filler) as the pattern.
-    This gives a fuzzy but stable matching key.
+    subsystem_telemetry stores predicted/actual via json.dumps(),
+    so a simple string like 'TASK' is stored as '\"TASK\"'.
+    This handles both cases: JSON-encoded strings and raw values.
     """
-    filler = {'the', 'this', 'that', 'with', 'from', 'have', 'been', 'will',
-              'were', 'they', 'their', 'about', 'would', 'could', 'should',
-              'just', 'also', 'into', 'your', 'what', 'when', 'then', 'than'}
-    words = [w.lower().strip('.,!?;:\'"') for w in text.split()
-             if len(w) > 3 and w.lower() not in filler]
-    # Take first 3 meaningful words
-    return ' '.join(words[:3]) if words else text[:30].lower().strip()
+    if value is None:
+        return None
+    if isinstance(value, str):
+        # Strip JSON quotes if present
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, str):
+                return parsed
+            return str(parsed)
+        except (json.JSONDecodeError, TypeError):
+            return value
+    return str(value)
+
+
+def _extract_pattern(features: dict, predicted: str, actual: str) -> str:
+    """Build a text pattern from the features dict plus predicted/actual values.
+
+    Takes meaningful feature values (strings >2 chars, not filler) as keywords.
+    Falls back to predicted→actual if no useful feature values found.
+    """
+    # Collect meaningful feature values
+    keywords = []
+    if isinstance(features, dict):
+        for k, v in features.items():
+            if isinstance(v, str) and len(v) > 2 and v.lower() not in _FILLER:
+                keywords.append(v.lower())
+            elif isinstance(v, bool):
+                pass  # Skip booleans — too generic
+            elif isinstance(v, (int, float)):
+                pass  # Skip numbers — not useful as text pattern
+
+    # Take first 3 meaningful keywords
+    pattern = ' '.join(keywords[:3]) if keywords else ''
+
+    # Fallback: use predicted→actual as the pattern
+    if not pattern or len(pattern) < 5:
+        pattern = f"{predicted}→{actual}" if predicted and actual else (predicted or actual or '')
+
+    return pattern.lower().strip()
 
 
 def ingest_feedback_overrides() -> int:
-    """Read FEEDBACK_OVERRIDE events from audit_logs and upsert into classifier_corrections.
+    """Read corrected observations from subsystem_telemetry and upsert into classifier_corrections.
+
+    Reads WHERE outcome='corrected', extracts predicted→actual as old→new intent
+    mapping, and upserts into classifier_corrections so the classify_intent prompt
+    can inject LEARNED CORRECTIONS.
 
     Returns the number of new/updated corrections.
     """
@@ -49,12 +92,11 @@ def ingest_feedback_overrides() -> int:
         return 0
 
     try:
-        # Fetch recent FEEDBACK_OVERRIDE events (last 7 days)
+        # Fetch recent corrections (last 7 days) from subsystem_telemetry
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-        res = supabase.table('audit_logs') \
-            .select('message') \
-            .eq('service', 'webhook') \
-            .ilike('message', '%FEEDBACK_OVERRIDE%') \
+        res = supabase.table('subsystem_telemetry') \
+            .select('subsystem, event_type, features, predicted, actual, outcome') \
+            .eq('outcome', 'corrected') \
             .gte('created_at', cutoff) \
             .order('created_at', desc=True) \
             .limit(100) \
@@ -65,18 +107,21 @@ def ingest_feedback_overrides() -> int:
 
         corrections = []
         for row in res.data:
-            msg = row.get('message', '')
-            match = OVERRIDE_PATTERN.search(msg)
-            if not match:
+            predicted = _parse_json_field(row.get('predicted'))
+            actual = _parse_json_field(row.get('actual'))
+            features = row.get('features', {})
+
+            if not predicted or not actual or predicted == actual:
                 continue
-            old_intent, new_intent, raw_text = match.groups()
-            pattern = _extract_pattern(raw_text)
-            if not pattern or len(pattern) < 5:
+
+            text_pattern = _extract_pattern(features, predicted, actual)
+            if not text_pattern or len(text_pattern) < 3:
                 continue
+
             corrections.append({
-                'text_pattern': pattern,
-                'old_intent': old_intent.upper(),
-                'new_intent': new_intent.upper(),
+                'text_pattern': text_pattern,
+                'old_intent': str(predicted).upper(),
+                'new_intent': str(actual).upper(),
             })
 
         if not corrections:
