@@ -224,7 +224,7 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
     .filter(item => {
       if (filterType === 'all') return true;
       if (filterType === 'other') {
-        return !['person', 'project', 'organization', 'concept'].includes(item.type);
+        return !['person', 'organization', 'concept'].includes(item.type);
       }
       return item.type === filterType;
     })
@@ -241,7 +241,7 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
           >
             <option value="all">All Types</option>
             <option value="person">People</option>
-            <option value="project">Projects</option>
+
             <option value="organization">Organizations</option>
             <option value="concept">Concepts</option>
             <option value="other">Others (Places, Events, etc.)</option>
@@ -348,7 +348,7 @@ export function EntityTableList({ items: initialItems, rejectedItems = [] }: { i
                       autoFocus
                     >
                       <option value="person">person</option>
-                      <option value="project">project</option>
+
                       <option value="organization">organization</option>
                       <option value="concept">concept</option>
                       <option value="place">place</option>

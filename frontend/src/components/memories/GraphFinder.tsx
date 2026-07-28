@@ -25,7 +25,7 @@ interface GraphFinderProps {
   onToggleGraphLinked?: () => void;
 }
 
-type TabType = 'all' | 'people' | 'organizations' | 'projects' | 'concepts' | 'clusters' | 'tasks';
+type TabType = 'all' | 'people' | 'organizations' | 'concepts' | 'clusters' | 'tasks';
 
 function relativeTime(dateStr: string | null): string {
   if (!dateStr) return '';
@@ -53,7 +53,7 @@ function stripMetadata(text: string | null): string {
 const TYPE_COLOUR: Record<string, string> = {
   person:          '#3b82f6',
   organization:    '#14b8a6',
-  project:         '#8b5cf6',
+
   cluster:         '#a855f7',
   task:            '#f59e0b',
   concept:         '#71717a',
@@ -64,7 +64,7 @@ function typeColor(type: string | undefined): string {
   switch (type) {
     case 'person': return 'bg-teal-500/20 text-teal-300 border-teal-700/40';
     case 'organization': return 'bg-purple-500/20 text-purple-300 border-purple-700/40';
-    case 'project': return 'bg-blue-500/20 text-blue-300 border-blue-700/40';
+
     case 'place': return 'bg-amber-500/20 text-amber-300 border-amber-700/40';
     case 'cluster': return 'bg-pink-500/20 text-pink-300 border-pink-700/40';
     default: return 'bg-zinc-700/40 text-zinc-400 border-zinc-600/40';
@@ -240,11 +240,11 @@ export default function GraphFinder({
 
   // Derived stats
   const typeCounts = useMemo(() => {
-    const counts = { person: 0, organization: 0, project: 0, concept: 0, other: 0 };
+    const counts = { person: 0, organization: 0, concept: 0, other: 0 };
     allNodes.forEach(n => {
       if (n.type === 'person') counts.person++;
       else if (n.type === 'organization') counts.organization++;
-      else if (n.type === 'project') counts.project++;
+
       else if (n.type === 'concept' || n.type === 'emotional_state') counts.concept++;
       else counts.other++;
     });
@@ -268,7 +268,7 @@ export default function GraphFinder({
       return ep.entities.some(e => {
         if (activeTab === 'people') return e.type === 'person';
         if (activeTab === 'organizations') return e.type === 'organization';
-        if (activeTab === 'projects') return e.type === 'project';
+
         if (activeTab === 'concepts') return e.type === 'concept' || e.type === 'emotional_state';
         if (activeTab === 'clusters') return e.type === 'cluster';
         if (activeTab === 'tasks') return e.type === 'task';
@@ -311,7 +311,7 @@ export default function GraphFinder({
           <div className="flex items-center gap-2 text-[9px] text-zinc-500 uppercase tracking-widest font-semibold">
             <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500/80"></span>{typeCounts.person}</span>
             <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-teal-500/80"></span>{typeCounts.organization}</span>
-            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-purple-500/80"></span>{typeCounts.project}</span>
+
             <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-zinc-500/80"></span>{typeCounts.concept}</span>
           </div>
           <button 
@@ -323,7 +323,7 @@ export default function GraphFinder({
         </div>
 
         <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-hide">
-          {(['all', 'people', 'organizations', 'projects', 'concepts', 'clusters', 'tasks'] as TabType[]).map(tab => {
+          {(['all', 'people', 'organizations', 'concepts', 'clusters', 'tasks'] as TabType[]).map(tab => {
             const isActive = activeTab === tab;
             const isFilteredInGraph = showEntityExplorer && graphLinked && isActive && tab !== 'all';
             return (
@@ -335,7 +335,7 @@ export default function GraphFinder({
                     if (tab === 'all') onFilterByType(null);
                     else if (tab === 'people') onFilterByType('person');
                     else if (tab === 'organizations') onFilterByType('organization');
-                    else if (tab === 'projects') onFilterByType('project');
+
                     else if (tab === 'concepts') onFilterByType('concept');
                     else if (tab === 'clusters') onFilterByType('cluster');
                     else if (tab === 'tasks') onFilterByType('task');
@@ -405,7 +405,7 @@ export default function GraphFinder({
                     if (activeTab === 'all') return true;
                     if (activeTab === 'people') return n.type === 'person';
                     if (activeTab === 'organizations') return n.type === 'organization';
-                    if (activeTab === 'projects') return n.type === 'project';
+
                     if (activeTab === 'concepts') return n.type === 'concept' || n.type === 'emotional_state';
                     if (activeTab === 'clusters') return n.type === 'cluster';
                     if (activeTab === 'tasks') return n.type === 'task';

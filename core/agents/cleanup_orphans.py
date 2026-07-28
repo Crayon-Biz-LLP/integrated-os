@@ -54,7 +54,7 @@ def cleanup_orphan_tasks(dry_run: bool = False):
                 audit_log_sync("cleanup_orphans", "INFO",
                               f"Unlinked task {task['id']} ('{task['title']}') from missing project {pid}")
     if orphans:
-        msg = f"Unlinked {orphans} orphan tasks from missing projects."
+        msg = f"Unlinked {orphans} orphan tasks from missing organizations."
         audit_log_sync("cleanup_orphans", "INFO", msg)
         print(f"  {msg}")
     else:

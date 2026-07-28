@@ -28,9 +28,9 @@ export function DecisionsShell({
   initialRejectedNodes?: GraphPendingNode[];
   initialAutoDecisions?: AutoDecisionItem[];
 }) {
-  const entityNodes = initialGraphNodes.filter(n => ["person", "project", "organization"].includes(n.type));
-  const rejectedEntityNodes = (initialRejectedNodes || []).filter(n => ["person", "project", "organization"].includes(n.type));
-  const otherNodes = initialGraphNodes.filter(n => !["person", "project", "organization"].includes(n.type));
+  const entityNodes = initialGraphNodes.filter(n => ["person", "organization"].includes(n.type));
+  const rejectedEntityNodes = (initialRejectedNodes || []).filter(n => ["person", "organization"].includes(n.type));
+  const otherNodes = initialGraphNodes.filter(n => !["person", "organization"].includes(n.type));
 
   return (
     <div className="p-4 md:p-6">

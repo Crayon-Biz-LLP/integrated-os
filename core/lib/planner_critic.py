@@ -77,7 +77,7 @@ def _resolve_entity_type(entity_words: list[str]) -> str:
     (person/organization/project) for each entity word, returning the
     most influential type.
     
-    Priority: person > organization > project > default
+    Priority: person > organization > default
     
     Args:
         entity_words: List of entity label strings found in text
@@ -108,8 +108,6 @@ def _resolve_entity_type(entity_words: list[str]) -> str:
             return 'person'
         if 'organization' in seen_types:
             return 'organization'
-        if 'project' in seen_types:
-            return 'project'
     except Exception:
         pass
     return "default"
@@ -186,7 +184,7 @@ async def deliberate(
             _entity_bonus_map = {
                 "person": 0.15,
                 "organization": 0.10,
-                "project": 0.08,
+    
                 "default": 0.05,
             }
             if label in ("TASK", "approve", "create"):

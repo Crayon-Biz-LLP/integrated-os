@@ -86,9 +86,8 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
   useEffect(() => {
     setItems(initialItems);
     
-    // Proactive merge check for non-project nodes
-    const toCheck = initialItems.filter(i => i.type !== 'project');
-    Promise.all(toCheck.map(async (item) => {
+    // Proactive merge check for all nodes
+    Promise.all(initialItems.map(async (item) => {
       try {
         const matches = await checkSimilarGraphNodes(item.label, item.type);
         if (matches && matches.length > 0) {
@@ -214,7 +213,7 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                       autoFocus
                     >
                       <option value="person">person</option>
-                      <option value="project">project</option>
+
                       <option value="organization">organization</option>
                       <option value="concept">concept</option>
                       <option value="place">place</option>

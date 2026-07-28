@@ -1186,7 +1186,7 @@ async def analyze_communication_patterns(people: list) -> str:
         return ""
 
 async def fetch_hybrid_graph_context(people: list, graph_node_projects: list, task_inputs: list) -> str:
-    """Hybrid graph search using entity terms from people+projects, filtering by task_inputs."""
+    """Hybrid graph search using entity terms from people+organizations, filtering by task_inputs."""
     try:
         entity_terms = [p['name'] for p in people if p.get('name')] + [p.get('name') for p in graph_node_projects if p.get('name')]
 
