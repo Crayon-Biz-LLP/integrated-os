@@ -19,7 +19,6 @@ class _InboxScreenState extends State<InboxScreen> {
 
   /// Count of unverified auto-decisions — fetched on load
   int _autoDecisionCount = 0;
-  bool _autoDecisionsLoading = false;
 
   @override
   void initState() {
@@ -79,7 +78,6 @@ class _InboxScreenState extends State<InboxScreen> {
   }
 
   Future<void> _loadAutoDecisionCount() async {
-    setState(() => _autoDecisionsLoading = true);
     final result = await _api.get('/api/auto-decisions',
         query: {'status': 'unverified', 'limit': '1'});
     if (!mounted) return;
@@ -87,7 +85,6 @@ class _InboxScreenState extends State<InboxScreen> {
       final count = (result.data as Map)['count'] as int? ?? 0;
       setState(() => _autoDecisionCount = count);
     }
-    if (mounted) setState(() => _autoDecisionsLoading = false);
   }
 
   DecisionType _sourceToType(String source) {

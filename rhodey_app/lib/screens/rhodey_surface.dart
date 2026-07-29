@@ -1,11 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'package:flutter_tts/flutter_tts.dart';import 'package:image_picker/image_picker.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
 import '../services/notification_service.dart';
@@ -369,17 +367,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     });
   }
 
-  // ── Decision actions ──────────────────────────────────────────────────────
-
-
-
-  void _dismissMomentAfterDelay() {
-    _momentTimer?.cancel();
-    _momentTimer = Timer(const Duration(seconds: 2), () {
-      _hideResponseMoment();
-    });
-  }
-
   // ── Voice ─────────────────────────────────────────────────────────────────
 
   Future<void> _initSpeech() async {
@@ -511,134 +498,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       default:
         break;
     }
-  }
-
-  // ── Attachment picker ──────────────────────────────────────────────────────
-
-  void _showAttachmentSheet() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: _surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 36, height: 4,
-                decoration: BoxDecoration(
-                  color: _border.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Add attachment',
-                style: TextStyle(fontFamily: "PlusJakartaSans", 
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: _primaryText,
-                ),
-              ),
-              const SizedBox(height: 16),
-              _attachmentTile(Icons.camera_alt_outlined, 'Camera', () {
-                Navigator.pop(ctx);
-                _pickFromCamera();
-              }),
-              _attachmentTile(Icons.photo_outlined, 'Gallery', () {
-                Navigator.pop(ctx);
-                _pickFromGallery();
-              }),
-              _attachmentTile(Icons.description_outlined, 'Document', () {
-                Navigator.pop(ctx);
-                _pickDocument();
-              }),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _attachmentTile(IconData icon, String label, VoidCallback onTap) {
-    return ListTile(
-      leading: Icon(icon, color: _mutedText, size: 22),
-      title: Text(
-        label,
-        style: TextStyle(fontFamily: "PlusJakartaSans", 
-          color: _primaryText,
-          fontSize: 14,
-        ),
-      ),
-      onTap: onTap,
-    );
-  }
-
-  Future<void> _pickFromCamera() async {
-    final picker = ImagePicker();
-    final file = await picker.pickImage(source: ImageSource.camera);
-    if (file != null) {
-      await _uploadFile(file.path);
-    }
-  }
-
-  Future<void> _pickFromGallery() async {
-    final picker = ImagePicker();
-    final file = await picker.pickImage(source: ImageSource.gallery);
-    if (file != null) {
-      await _uploadFile(file.path);
-    }
-  }
-
-  Future<void> _pickDocument() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['pdf', 'docx', 'txt', 'jpg', 'jpeg', 'png', 'mp3', 'ogg', 'wav', 'mp4'],
-    );
-    if (result != null && result.files.single.path != null) {
-      await _uploadFile(result.files.single.path!);
-    }
-  }
-
-  Future<void> _uploadFile(String filePath) async {
-    if (!File(filePath).existsSync()) return;
-
-    _showResponseMoment('Uploading...');
-
-    // Add to conversation feed
-    _addConversationEntry('user', '📎 File attached');
-
-    final result = await _api.sendMultimodal(filePath);
-    if (!mounted) return;
-
-    if (result.success && result.data is Map) {
-      final data = result.data as Map<String, dynamic>;
-      final responseText = data['response'] as String? ?? 'Got it.';
-      final briefingMap = data['briefing_update'] as Map<String, dynamic>?;
-      if (briefingMap != null) {
-        setState(() {
-          _briefing = BriefingResponse.fromJson(briefingMap);
-        });
-      } else {
-        _fetchBriefing();
-      }
-      // Add response to conversation feed
-      _addConversationEntry('assistant', responseText);
-      // Speak response aloud
-      _tts.stop();
-      _tts.speak(responseText);
-      _showResponseMoment('✅');
-    } else {
-      final errorText = result.error ?? 'Upload failed';
-      _addConversationEntry('assistant', errorText, isError: true);
-      _showResponseMoment('⚠️');
-    }
-
-    _dismissMomentAfterDelay();
   }
 
   // ── Menu ──────────────────────────────────────────────────────────────────
@@ -1056,22 +915,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         ),
       ],
     );
-  }
-
-  /// Add an entry to the conversation feed, capping at 50 to prevent unbounded growth.
-  void _addConversationEntry(String role, String text, {bool isError = false}) {
-    setState(() {
-      _conversation.add({
-        'role': role,
-        'text': text,
-        if (isError) 'status': 'error',
-      });
-      // Keep last 50 entries to prevent unbounded memory growth
-      if (_conversation.length > 50) {
-        _conversation.removeRange(0, _conversation.length - 50);
-      }
-    });
-    _scrollToBottom();
   }
 
   /// Show confirmation dialog before clearing the conversation.

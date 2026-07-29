@@ -104,6 +104,7 @@ class UpdateService {
     }
     _checkInProgress = true;
     try {
+      // ignore: use_build_context_synchronously — context.mounted guards in _doCheck
       await _doCheck(context, showFeedback: showFeedback);
     } finally {
       _checkInProgress = false;
@@ -111,6 +112,9 @@ class UpdateService {
   }
 
   Future<void> _doCheck(BuildContext context, {bool showFeedback = false}) async {
+    // Capture ScaffoldMessenger before any async gaps for _showSnack calls.
+    final messenger = ScaffoldMessenger.of(context);
+
     // 0. If this is a manual check (showFeedback=true), clear any persisted dismissal
     //    so the user sees the dialog again even for a previously-dismissed version.
     if (showFeedback) {
@@ -124,8 +128,8 @@ class UpdateService {
       info = await PackageInfo.fromPlatform();
     } catch (e) {
       debugPrint('[Update] Could not read package info: $e');
-      if (showFeedback && context.mounted) {
-        _showSnack(context, 'Could not check app version', isError: true);
+      if (showFeedback) {
+        _showSnack('Could not check app version', isError: true, messenger: messenger);
       }
       return;
     }
@@ -151,8 +155,8 @@ class UpdateService {
           .timeout(const Duration(seconds: 10));
       if (resp.statusCode != 200) {
         debugPrint('[Update] Server returned ${resp.statusCode}');
-        if (showFeedback && context.mounted) {
-          _showSnack(context, 'Update check failed (server ${resp.statusCode})', isError: true);
+        if (showFeedback) {
+          _showSnack('Update check failed (server ${resp.statusCode})', isError: true, messenger: messenger);
         }
         return;
       }
@@ -160,8 +164,8 @@ class UpdateService {
           Map<String, dynamic>.from(jsonDecode(resp.body) as Map));
     } catch (e) {
       debugPrint('[Update] Failed to check for updates: $e');
-      if (showFeedback && context.mounted) {
-        _showSnack(context, 'Could not reach update server', isError: true);
+      if (showFeedback) {
+        _showSnack('Could not reach update server', isError: true, messenger: messenger);
       }
       return;
     }
@@ -171,8 +175,8 @@ class UpdateService {
 
     if (!remote.found || remote.downloadUrl == null) {
       debugPrint('[Update] No update found on server');
-      if (showFeedback && context.mounted) {
-        _showSnack(context, 'No update info available yet — push a build first');
+      if (showFeedback) {
+        _showSnack('No update info available yet — push a build first', messenger: messenger);
       }
       return;
     }
@@ -184,8 +188,8 @@ class UpdateService {
       if (dismissedCode != 0) {
         await prefs.remove(_kDismissedVersionKey);
       }
-      if (showFeedback && context.mounted) {
-        _showSnack(context, '✓ Rhodey is up to date');
+      if (showFeedback) {
+        _showSnack('✓ Rhodey is up to date', isError: false, messenger: messenger);
       }
       return;
     }
@@ -229,8 +233,8 @@ class UpdateService {
   Future<void> checkNow(BuildContext context) =>
       check(context, showFeedback: true);
 
-  void _showSnack(BuildContext context, String message, {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
+  void _showSnack(String message, {bool isError = false, required ScaffoldMessengerState messenger}) {
+    messenger.showSnackBar(
       SnackBar(
         content: Text(message, style: const TextStyle(fontSize: 13)),
         backgroundColor: isError ? const Color(0xFFEF5350) : const Color(0xFFDFCCA7),
