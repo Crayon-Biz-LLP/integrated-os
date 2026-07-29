@@ -14,12 +14,16 @@ class BriefingItem {
   final String? decisionType;
   // "graph_node", "graph_edge", "email", "whatsapp", "call", "merge", "channel"
 
+  /// Pulse intelligence: true if pulse flagged this as overdue/stale
+  final bool isStale;
+
   const BriefingItem({
     required this.icon,
     required this.text,
     required this.status,
     this.decisionId,
     this.decisionType,
+    this.isStale = false,
   });
 
   factory BriefingItem.fromJson(Map<String, dynamic> json) {
@@ -29,6 +33,7 @@ class BriefingItem {
       status: json['status'] as String? ?? 'note',
       decisionId: json['decision_id'] as String?,
       decisionType: json['decision_type'] as String?,
+      isStale: json['is_stale'] as bool? ?? false,
     );
   }
 
@@ -42,6 +47,7 @@ class BriefingItem {
         'status': status,
         'decision_id': decisionId,
         'decision_type': decisionType,
+        'is_stale': isStale,
       };
 }
 
@@ -114,6 +120,13 @@ class BriefingResponse {
   final List<TraceItem> traces;
   final String? latestResponse; // Most recent bot response text
 
+  // Pulse intelligence fields
+  final String? contextBar;      // "Closing the loop — clear banking before sign-off"
+  final String? voiceLine;       // Rhodey's voice line (1-2 sentences)
+  final String? pulseMode;       // "morning", "afternoon", "weekend", etc.
+  final List<String> insights;   // ["🔴 2 stale tasks", "📦 3 vaulted"]
+  final int vaultedCount;        // Tasks hidden by pulse vault
+
   const BriefingResponse({
     required this.greeting,
     this.nextEvent,
@@ -121,11 +134,17 @@ class BriefingResponse {
     this.pendingCount = 0,
     this.traces = const [],
     this.latestResponse,
+    this.contextBar,
+    this.voiceLine,
+    this.pulseMode,
+    this.insights = const [],
+    this.vaultedCount = 0,
   });
 
   factory BriefingResponse.fromJson(Map<String, dynamic> json) {
     final rawSections = json['sections'] as List<dynamic>? ?? [];
     final rawTraces = json['traces'] as List<dynamic>? ?? [];
+    final rawInsights = json['insights'] as List<dynamic>? ?? [];
     return BriefingResponse(
       greeting: json['greeting'] as String? ?? 'Hey.',
       nextEvent: json['next_event'] as String?,
@@ -137,6 +156,11 @@ class BriefingResponse {
           .map((e) => TraceItem.fromJson(e as Map<String, dynamic>))
           .toList(),
       latestResponse: json['latest_response'] as String?,
+      contextBar: json['context_bar'] as String?,
+      voiceLine: json['voice_line'] as String?,
+      pulseMode: json['pulse_mode'] as String?,
+      insights: rawInsights.whereType<String>().toList(),
+      vaultedCount: json['vaulted_count'] as int? ?? 0,
     );
   }
 
@@ -153,5 +177,10 @@ class BriefingResponse {
         'pending_count': pendingCount,
         'traces': traces.map((e) => e.toJson()).toList(),
         'latest_response': latestResponse,
+        'context_bar': contextBar,
+        'voice_line': voiceLine,
+        'pulse_mode': pulseMode,
+        'insights': insights,
+        'vaulted_count': vaultedCount,
       };
 }

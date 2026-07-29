@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
-
 /// Rhodey Surface Theme — Editorial Premium
 ///
 /// Design principles:
@@ -9,6 +7,9 @@ import 'package:google_fonts/google_fonts.dart';
 ///   - Typography-first: serif greeting, clean sans body
 ///   - One material language, no glassmorphism base
 ///   - Restrained spacing, crisp borders
+///
+/// Fonts are bundled in APK assets/fonts/ — zero network overhead.
+/// Font families: InstrumentSerif, PlusJakartaSans, JetBrainsMono.
 class AppTheme {
   AppTheme._();
 
@@ -39,8 +40,10 @@ class AppTheme {
 
   // ── Typography (Google Fonts — not compile-time const) ──
 
-  /// Editorial serif greeting (Instrument Serif, large, italic, light)
-  static TextStyle get greetingStyle => GoogleFonts.instrumentSerif(
+  /// Editorial serif greeting (InstrumentSerif, large, italic, light)
+  /// Fonts bundled in APK — zero network overhead.
+  static TextStyle get greetingStyle => const TextStyle(
+        fontFamily: 'InstrumentSerif',
         fontSize: 30,
         fontWeight: FontWeight.w300,
         fontStyle: FontStyle.italic,
@@ -49,7 +52,8 @@ class AppTheme {
       );
 
   /// Sub-greeting / paragraph (smaller, muted, regular)
-  static TextStyle get subGreetingStyle => GoogleFonts.plusJakartaSans(
+  static TextStyle get subGreetingStyle => const TextStyle(
+        fontFamily: 'PlusJakartaSans',
         fontSize: 13,
         fontWeight: FontWeight.w300,
         color: textSecondary,
@@ -57,7 +61,8 @@ class AppTheme {
       );
 
   /// Section title (9px mono, uppercase, wide tracking)
-  static TextStyle get sectionTitleStyle => GoogleFonts.jetBrainsMono(
+  static TextStyle get sectionTitleStyle => const TextStyle(
+        fontFamily: 'JetBrainsMono',
         fontSize: 9,
         fontWeight: FontWeight.w400,
         color: textTertiary,
@@ -66,7 +71,8 @@ class AppTheme {
       );
 
   /// Item body text (13px, light, clean)
-  static TextStyle get bodyStyle => GoogleFonts.plusJakartaSans(
+  static TextStyle get bodyStyle => const TextStyle(
+        fontFamily: 'PlusJakartaSans',
         fontSize: 13,
         fontWeight: FontWeight.w300,
         color: textPrimary,
@@ -74,7 +80,8 @@ class AppTheme {
       );
 
   /// Muted body (secondary info)
-  static TextStyle get bodyMuted => GoogleFonts.plusJakartaSans(
+  static TextStyle get bodyMuted => const TextStyle(
+        fontFamily: 'PlusJakartaSans',
         fontSize: 13,
         fontWeight: FontWeight.w300,
         color: textSecondary,
@@ -82,7 +89,8 @@ class AppTheme {
       );
 
   /// Action chip label (10px, medium)
-  static TextStyle get chipStyle => GoogleFonts.plusJakartaSans(
+  static TextStyle get chipStyle => const TextStyle(
+        fontFamily: 'PlusJakartaSans',
         fontSize: 10,
         fontWeight: FontWeight.w500,
         color: textPrimary,
@@ -90,7 +98,8 @@ class AppTheme {
       );
 
   /// Dock label (10px)
-  static TextStyle get dockStyle => GoogleFonts.plusJakartaSans(
+  static TextStyle get dockStyle => const TextStyle(
+        fontFamily: 'PlusJakartaSans',
         fontSize: 10,
         fontWeight: FontWeight.w400,
         color: textSecondary,
@@ -98,7 +107,8 @@ class AppTheme {
       );
 
   /// Segmented control label (9px mono, uppercase)
-  static TextStyle get segmentStyle => GoogleFonts.jetBrainsMono(
+  static TextStyle get segmentStyle => const TextStyle(
+        fontFamily: 'JetBrainsMono',
         fontSize: 9,
         fontWeight: FontWeight.w500,
         letterSpacing: 1.5,
@@ -106,7 +116,8 @@ class AppTheme {
       );
 
   /// Proactive card headline (12px)
-  static TextStyle get proactiveStyle => GoogleFonts.plusJakartaSans(
+  static TextStyle get proactiveStyle => const TextStyle(
+        fontFamily: 'PlusJakartaSans',
         fontSize: 12,
         fontWeight: FontWeight.w400,
         color: textPrimary,
@@ -114,7 +125,8 @@ class AppTheme {
       );
 
   /// Presence label (12px, medium)
-  static TextStyle get presenceStyle => GoogleFonts.plusJakartaSans(
+  static TextStyle get presenceStyle => const TextStyle(
+        fontFamily: 'PlusJakartaSans',
         fontSize: 12,
         fontWeight: FontWeight.w500,
         color: textSecondary,
@@ -122,7 +134,8 @@ class AppTheme {
       );
 
   /// Empty state hint (11px, italic)
-  static TextStyle get hintStyle => GoogleFonts.plusJakartaSans(
+  static TextStyle get hintStyle => const TextStyle(
+        fontFamily: 'PlusJakartaSans',
         fontSize: 11,
         fontStyle: FontStyle.italic,
         fontWeight: FontWeight.w300,
@@ -228,7 +241,8 @@ class AppTheme {
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
-        titleTextStyle: GoogleFonts.plusJakartaSans(
+        titleTextStyle: const TextStyle(
+          fontFamily: 'PlusJakartaSans',
           fontSize: 15,
           fontWeight: FontWeight.w500,
           color: textPrimary,
@@ -264,7 +278,8 @@ class AppTheme {
           borderRadius: BorderRadius.circular(10),
           borderSide: const BorderSide(color: champagne),
         ),
-        hintStyle: GoogleFonts.plusJakartaSans(
+        hintStyle: const TextStyle(
+          fontFamily: 'PlusJakartaSans',
           fontSize: 13,
           fontWeight: FontWeight.w300,
           color: textTertiary,

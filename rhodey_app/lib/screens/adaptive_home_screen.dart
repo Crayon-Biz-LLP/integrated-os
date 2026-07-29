@@ -81,6 +81,12 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   Timer? _pollTimer;
   final _seenMessageIds = <String>{};
 
+  // Push-driven delivery: replaces aggressive 5s polling.
+  // FCM push → onPushReceived → _pollForUpdates() → messages appear.
+  // 60s backup poll only runs when a message is pending (response expected).
+  static const _backupPollInterval = Duration(seconds: 60);
+  bool _awaitingResponse = false;
+
   // ── Voice ──
   VoiceState _voiceState = VoiceState.idle;
   String? _transcribedText;
@@ -93,13 +99,21 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   void initState() {
     super.initState();
     _loadNowCards();
-    _loadHistory();
+    // Conversation starts empty — no history fetch.
+    // The home screen is a clean companion, not an archive browser.
+    // Messages appear as you send/receive them in the current session.
+    _loadingHistory = false;
     _initSpeech();
     _tts.setLanguage("en-US");
     _tts.setSpeechRate(0.5);
 
     // Register push notification tap handler for navigation
     NotificationService.onNotificationOpened = _handlePushNotificationTap;
+
+    // Push-driven delivery: when a push arrives (new message, briefing, etc.),
+    // fetch new messages immediately instead of polling every 5 seconds.
+    // This replaces the aggressive polling that was draining the battery.
+    NotificationService.onPushReceived = _handlePushReceived;
 
     // Cold-start: check if app was launched via notification tap
     final pendingData = NotificationService.pendingOpenData;
@@ -117,6 +131,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     // Unregister notification tap handler
     if (NotificationService.onNotificationOpened == _handlePushNotificationTap) {
       NotificationService.onNotificationOpened = null;
+    }
+    if (NotificationService.onPushReceived == _handlePushReceived) {
+      NotificationService.onPushReceived = null;
     }
     _pollTimer?.cancel();
     _textController.dispose();
@@ -399,13 +416,30 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     return null;
   }
 
-  void _startPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(
-        const Duration(seconds: 5), (_) => _pollForUpdates());
+  /// Called when an FCM push arrives (new message, briefing, decision).
+  /// Triggers a message fetch immediately — no need to wait for the next poll cycle.
+  void _handlePushReceived(Map<String, dynamic> data) {
+    debugPrint('[PushDelivery] Push received: type=${data['type']}');
+    _pollForUpdates();
   }
 
-  void _stopPolling() {
+  /// Starts a backup poll timer at a low frequency (60s).
+  /// Only active when a response is expected — stops automatically once Rhodey replies.
+  /// Primary delivery is via FCM push -> _handlePushReceived.
+  void _startBackupPoll() {
+    _awaitingResponse = true;
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(_backupPollInterval, (_) {
+      if (!_awaitingResponse) {
+        _stopBackupPoll();
+        return;
+      }
+      _pollForUpdates();
+    });
+  }
+
+  void _stopBackupPoll() {
+    _awaitingResponse = false;
     _pollTimer?.cancel();
     _pollTimer = null;
   }
@@ -470,7 +504,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     });
     _textController.clear();
     _scrollToBottom();
-    _startPolling();
+    // Start backup polling (60s) — primary delivery is via FCM push.
+    // Push arrives -> _handlePushReceived -> _pollForUpdates() -> messages appear.
+    _startBackupPoll();
 
     _api.sendMessage(text.trim()).then((result) {
       if (!mounted) return;
@@ -485,6 +521,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
           responseText = 'Got it. Processing...';
         }
 
+        // Response is already in the API body — Rhodey's reply appears instantly.
         Future.delayed(const Duration(milliseconds: 400), () {
           if (!mounted) return;
           _addRhodeyResponse(responseText);
@@ -492,6 +529,17 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         });
       } else {
         _updateMessage(id, sendStatus: SendStatus.failed);
+        // Show a visible toast for failed sends (S3#9)
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Failed to send message. Check your connection.',
+                  style: TextStyle(fontSize: 12)),
+              backgroundColor: AppTheme.red,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
       }
     });
   }
@@ -514,7 +562,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   }
 
   void _addRhodeyResponse(String text) {
-    _stopPolling();
+    _stopBackupPoll();
     final id = 'r${++_msgCounter}';
     setState(() {
       _messages.add(ChatMessage(
@@ -1170,7 +1218,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   }
 
   void _retryMessage(String id) {
-    _startPolling();
+    _startBackupPoll();
     final idx = _messages.indexWhere((m) => m.id == id);
     if (idx == -1) return;
     final text = _messages[idx].text;

@@ -25,6 +25,7 @@ class BriefingItem(TypedDict):
     status: str  # "urgent", "active", "pending", "done", "note"
     decision_id: str | None       # Pending item ID (for decision actions)
     decision_type: str | None     # "graph_node", "graph_edge", "email", "whatsapp", "call", "merge"
+    is_stale: bool | None         # True if pulse flagged this as overdue/stale
 
 class BriefingSection(TypedDict):
     id: str
@@ -43,6 +44,12 @@ class BriefingResponse(TypedDict):
     pending_count: int
     traces: list[TraceItem]  # For the Traces view
     latest_response: str | None  # Most recent bot response text
+    # Pulse intelligence (from app_intelligence table)
+    context_bar: str | None         # "Closing the loop — clear banking before sign-off"
+    voice_line: str | None          # Rhodey's voice line (1-2 sentences)
+    pulse_mode: str | None          # "morning", "afternoon", "closing_loop", "weekend", etc.
+    insights: list[str]             # ["Banking is the main blocker", "2 tasks waiting on others"]
+    vaulted_count: int              # Tasks hidden behind the pulse vault
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -93,6 +100,8 @@ def _parse_dt(raw: str) -> datetime | None:
 def _build_briefing_section(
     tasks: list[dict],
     events: list[dict],
+    stale_task_names: set[str] | None = None,
+    overdue_task_names: set[str] | None = None,
 ) -> BriefingSection:
     """Build the morning/evening section: calendar + tasks."""
     items: list[BriefingItem] = []
@@ -118,16 +127,19 @@ def _build_briefing_section(
             icon="🔴" if is_within_30m else "📅",
             text=f"{title} at {time_str}",
             status="urgent" if is_within_30m else "active",
+            is_stale=False,
         ))
 
     # — Tasks sorted by urgency —
     task_items: list[BriefingItem] = []
+    stale_or_overdue = (stale_task_names or set()) | (overdue_task_names or set())
     for t in tasks:
         title = t.get("title", "").strip()
         if not title or title.startswith("http"):
             continue
         deadline_raw = t.get("deadline")
         is_active = t.get("status") in ("todo", None)
+        is_stale = title.lower().strip() in stale_or_overdue
 
         if deadline_raw:
             dl = _parse_dt(deadline_raw)
@@ -137,6 +149,7 @@ def _build_briefing_section(
                         icon="⚠️",
                         text=f"Overdue: {title}",
                         status="urgent",
+                        is_stale=is_stale,
                     ))
                 elif dl < now + timedelta(hours=24):
                     time_left = int((dl - now).total_seconds() / 3600)
@@ -144,6 +157,7 @@ def _build_briefing_section(
                         icon="⏰",
                         text=f"{title} — due in {time_left}h",
                         status="urgent",
+                        is_stale=is_stale,
                     ))
                 else:
                     date_str = f"{dl.day:02d}/{dl.month:02d}"
@@ -151,12 +165,14 @@ def _build_briefing_section(
                         icon="📝",
                         text=f"{title} — due {date_str}",
                         status="active",
+                        is_stale=is_stale,
                     ))
             elif is_active:
                 task_items.append(BriefingItem(
                     icon="📝",
                     text=title,
                     status="active",
+                    is_stale=is_stale,
                 ))
         elif is_active:
             task_items.append(BriefingItem(
@@ -587,8 +603,65 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     sections: list[BriefingSection] = []
 
-    # 1. Briefing block
-    briefing_section = _build_briefing_section(tasks, events)
+    # ── Read latest pulse intelligence (from app_intelligence table) ──
+    stale_task_names: set[str] = set()
+    overdue_task_names: set[str] = set()
+    pulse_mode = None
+    insight_text = ""
+    vaulted_count = 0
+    voice_line = None
+    try:
+        ai_res = supabase.table("app_intelligence")\
+            .select("voice_line, pulse_mode, nag_list, stale_list, overdue_list, vaulted_count, context, insights")\
+            .order("created_at", desc=True)\
+            .limit(1)\
+            .execute()
+        if ai_res.data:
+            row = ai_res.data[0]
+            voice_line = row.get("voice_line") or None
+            pulse_mode = row.get("pulse_mode", "")
+            insight_text = row.get("context", "")
+            vaulted_count = row.get("vaulted_count") or 0
+            raw_overdue = row.get("overdue_list") or []
+            raw_stale = row.get("stale_list") or []
+            if raw_overdue:
+                overdue_task_names = set(t.lower().strip() for t in raw_overdue if isinstance(t, str))
+            if raw_stale:
+                stale_task_names = set(t.lower().strip() for t in raw_stale if isinstance(t, str))
+    except Exception as e:
+        print(f"[Briefing] App intelligence error (table may not exist yet): {e}")
+
+    # ── Fallback: read from raw_dumps metadata if app_intelligence returned empty ──
+    if not voice_line and not insight_text:
+        try:
+            fb_res = supabase.table("raw_dumps")\
+                .select("metadata")\
+                .eq("source", "pulse_engine")\
+                .eq("message_type", "pulse_briefing")\
+                .eq("status", "completed")\
+                .order("created_at", desc=True)\
+                .limit(1)\
+                .execute()
+            if fb_res.data:
+                meta = fb_res.data[0].get("metadata") or {}
+                pulse_mode = pulse_mode or meta.get("briefing_mode", "")
+                insight_text = insight_text or meta.get("insight", "")
+                vaulted_count = vaulted_count or (meta.get("vaulted_count") or 0)
+                raw_overdue_fb = meta.get("overdue_tasks", []) or []
+                raw_stale_fb = meta.get("stale_tasks", []) or []
+                if not overdue_task_names and raw_overdue_fb:
+                    overdue_task_names = set(t.lower().strip() for t in raw_overdue_fb if isinstance(t, str))
+                if not stale_task_names and raw_stale_fb:
+                    stale_task_names = set(t.lower().strip() for t in raw_stale_fb if isinstance(t, str))
+        except Exception as e:
+            print(f"[Briefing] Fallback pulse read error: {e}")
+
+    # 1. Briefing block (with pulse intelligence)
+    briefing_section = _build_briefing_section(
+        tasks, events,
+        stale_task_names=stale_task_names,
+        overdue_task_names=overdue_task_names,
+    )
     sections.append(briefing_section)
 
     # 2. Decisions block (conditional — omitted if empty)
@@ -631,6 +704,38 @@ async def build_briefing(supabase) -> BriefingResponse:
     # 5. Traces block (for Traces view — pairs inputs with outcomes)
     traces = _build_traces(traces_msgs, traces_tasks)
 
+    # ── Build pulse insights ──
+    insights_list: list[str] = []
+    if overdue_task_names:
+        insights_list.append(f"🔴 {len(overdue_task_names)} stale task{'s' if len(overdue_task_names) != 1 else ''} — needs attention")
+    if vaulted_count > 0:
+        insights_list.append(f"📦 {vaulted_count} item{'s' if vaulted_count != 1 else ''} vaulted behind the pulse")
+    if pulse_mode:
+        mode = pulse_mode.lower()
+        # Map actual pulse mode strings to insights labels
+        if 'morning' in mode:
+            insights_list.insert(0, '☀️ Morning focus — move the needle today')
+        elif 'afternoon' in mode:
+            insights_list.insert(0, '🌤️ Afternoon check — keep building')
+        elif 'closing' in mode or 'sign off' in mode:
+            insights_list.insert(0, '🌇 Closing the loop — wrap up before sign-off')
+        elif 'weekend' in mode or 'chores' in mode:
+            insights_list.insert(0, '🌿 Weekend mode — rest and recharge')
+        elif 'pre-monday' in mode:
+            insights_list.insert(0, '📈 Pre-Monday — loading the board')
+        elif 'intel' in mode or 'vaulted' in mode:
+            insights_list.insert(0, '🌙 Intel: Vaulted — secure the board')
+
+    # Build context bar from pulse insight
+    context_bar = None
+    if insight_text:
+        clean = insight_text.strip().rstrip('.')
+        if overdue_task_names:
+            clean += f" · {len(overdue_task_names)} stale"
+        if vaulted_count:
+            clean += f" · {vaulted_count} vaulted"
+        context_bar = clean[:120]
+
     return BriefingResponse(
         greeting=greeting_line,
         next_event=next_event,
@@ -638,4 +743,9 @@ async def build_briefing(supabase) -> BriefingResponse:
         pending_count=pending_count,
         traces=traces,
         latest_response=latest_response,
+        context_bar=context_bar,
+        voice_line=voice_line,
+        pulse_mode=pulse_mode,
+        insights=insights_list,
+        vaulted_count=vaulted_count,
     )

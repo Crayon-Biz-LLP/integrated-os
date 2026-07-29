@@ -7,7 +7,7 @@ from core.llm.config import WorkloadProfile
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.webhook.telegram import send_telegram
 from core.lib.conversation import log_exchange, _check_topic_overlap
-from core.actions import ActionResult, accumulate_action
+from core.models import ActionResult, accumulate_action
 from core.pulse.tools import create_task_direct
 from core.pulse.graph import process_graph_pending_decision
 import re

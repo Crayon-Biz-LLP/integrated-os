@@ -3,15 +3,15 @@
 #  build_apk.sh — Build release APK with auto-versioning
 # ─────────────────────────────────────────────────────────────────────────────
 #  Usage:
-#    ./build_apk.sh              # Build with auto-version from git
-#    ./build_apk.sh --release    # Same (default)
-#    ./build_apk.sh --debug      # Debug APK (skips signing)
+#    ./build_apk.sh              # Build release APK (default)
+#    ./build_apk.sh --debug      # Debug APK
 #
 #  Versioning:
 #    versionName = 1.0.1        (from pubspec.yaml base)
 #    versionCode = git commit count  (always increments, never manual)
 #
-#  The resulting APK is at: build/app/outputs/flutter-apk/app-release.apk
+#  Resulting APK:
+#    build/app/outputs/flutter-apk/app-release.apk
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -55,7 +55,7 @@ fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Building Rhodey APK"
 echo "  Mode:        $MODE"
-echo "  Version:     $VERSION_NAME ($BUILD_NUMBER)"
+echo "  Version:     v$VERSION_NAME (build $BUILD_NUMBER)"
 echo "  Output:      build/app/outputs/flutter-apk/app-${APK_SUFFIX}.apk"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -64,6 +64,15 @@ flutter build apk $FLUTTER_MODE \
   --build-name="$VERSION_NAME" \
   --build-number="$BUILD_NUMBER"
 
+APK_PATH="build/app/outputs/flutter-apk/app-${APK_SUFFIX}.apk"
+APK_SIZE=$(du -h "$APK_PATH" | cut -f1)
+
 echo ""
-echo "✅ Done! Version $VERSION_NAME (build $BUILD_NUMBER)"
-echo "   APK: build/app/outputs/flutter-apk/app-${APK_SUFFIX}.apk"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  ✅ Build complete!"
+echo "  Version:     v$VERSION_NAME (build $BUILD_NUMBER)"
+echo "  APK:         $APK_PATH"
+echo "  Size:        $APK_SIZE"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "  Share via WhatsApp or transfer to your phone to install."

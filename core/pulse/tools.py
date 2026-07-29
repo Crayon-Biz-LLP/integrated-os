@@ -7,7 +7,7 @@ from core.retrieval.pipeline import schedule_index_memory
 from core.services.db import get_supabase, maybe_single_safe
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
-from core.actions import ActionResult, accumulate_action
+from core.models import ActionResult, accumulate_action
 from core.lib.state_machines import guard_require_valid_transition
 
 supabase = get_supabase()

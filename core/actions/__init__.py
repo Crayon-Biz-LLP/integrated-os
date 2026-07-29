@@ -1,22 +1,9 @@
 import contextvars
 import re
 import re as _re
-from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Optional
 
-ActionType = Literal["task_create", "task_update", "calendar_create", "memory_save", 
-                     "workflow_propose", "draft_create", "reminder_set", "none"]
-ActionStatus = Literal["executed", "queued", "proposed", "failed", "not_attempted"]
-
-@dataclass
-class ActionResult:
-    action_type: ActionType = "none"
-    status: ActionStatus = "not_attempted"
-    entity_id: Optional[str | int] = None
-    human_label: Optional[str] = None
-    evidence: dict = field(default_factory=dict)
-
-_action_results: contextvars.ContextVar[list[ActionResult]] = contextvars.ContextVar('action_results', default=[])
+from core.models import ActionType, ActionStatus as ActionStatus, ActionResult, _action_results, accumulate_action as accumulate_action  # noqa: PLC0414 — re-exported for backward compat
 _captured_response: contextvars.ContextVar[str | None] = contextvars.ContextVar('captured_response', default=None)
 _captured_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar('captured_session_id', default=None)
 
@@ -45,11 +32,6 @@ def capture_response(text: str):
 def get_captured_response() -> str | None:
     """Retrieve the last captured response after webhook processing."""
     return _captured_response.get()
-
-def accumulate_action(result: ActionResult):
-    lst = _action_results.get()
-    lst.append(result)
-    _action_results.set(lst)
 
 def snapshot_action_context() -> list[ActionResult]:
     return list(_action_results.get())

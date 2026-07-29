@@ -7,6 +7,7 @@ enum DecisionType {
   email,
   whatsapp,
   call,
+  merge,
 }
 
 class DecisionItem {
@@ -20,6 +21,10 @@ class DecisionItem {
   final DateTime createdAt;
   final Map<String, dynamic> metadata;
 
+  /// The raw node_type from the API (e.g. "person", "organization", "concept") —
+  /// used to determine whether to show the context sheet for person approvals.
+  final String? nodeType;
+
   const DecisionItem({
     required this.id,
     required this.type,
@@ -30,6 +35,7 @@ class DecisionItem {
     this.contextLabel,
     required this.createdAt,
     this.metadata = const {},
+    this.nodeType,
   });
 
   String get urgencyIcon {
@@ -57,6 +63,14 @@ class DecisionItem {
         return '💬';
       case DecisionType.call:
         return '📞';
+      case DecisionType.merge:
+        return '🔀';
     }
   }
+
+  /// Whether this item is a person node that needs context input on approve.
+  bool get needsPersonContext => type == DecisionType.person && nodeType == 'person';
+
+  /// Whether this item is a merge proposal.
+  bool get isMergeProposal => type == DecisionType.merge;
 }

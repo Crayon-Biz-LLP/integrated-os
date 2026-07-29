@@ -98,7 +98,8 @@ class ApiService {
   }
 
   /// GET with retry.
-  Future<ApiResult<dynamic>> _get(String path,
+  /// Public so that screens (e.g. Inbox) can fetch arbitrary endpoints.
+  Future<ApiResult<dynamic>> get(String path,
       {Map<String, String>? query}) async {
     final uri = query != null
         ? _uri(path).replace(queryParameters: query)
@@ -231,7 +232,7 @@ class ApiService {
     int limit = 50,
     int offset = 0,
   }) async {
-    final result = await _get('/api/messages',
+    final result = await get('/api/messages',
         query: {
           'limit': limit.toString(),
           'offset': offset.toString(),
@@ -251,7 +252,7 @@ class ApiService {
   /// Fetches today's calendar events from /api/calendar-events?date=today.
   Future<ApiResult<List<CalendarEventItem>>> getCalendarEvents() async {
     final result =
-        await _get('/api/calendar-events', query: {'date': 'today'});
+        await get('/api/calendar-events', query: {'date': 'today'});
     if (result.success && result.data is Map) {
       final events = (result.data as Map)['events'] as List? ?? [];
       final items = events.map((e) {
@@ -317,7 +318,7 @@ class ApiService {
     if (status != null) {
       query['status'] = status;
     }
-    final result = await _get('/api/tasks', query: query);
+    final result = await get('/api/tasks', query: query);
     if (result.success && result.data is Map) {
       final tasks = (result.data as Map)['tasks'] as List? ?? [];
       return ApiResult.ok(List<Map<String, dynamic>>.from(tasks));
@@ -329,7 +330,7 @@ class ApiService {
 
   /// Fetches recent raw dumps from /api/captures.
   Future<ApiResult<List<Map<String, dynamic>>>> getCaptures({int limit = 50}) async {
-    final result = await _get('/api/captures', query: {
+    final result = await get('/api/captures', query: {
       'limit': limit.toString(),
       'offset': '0',
     });
@@ -360,6 +361,20 @@ class ApiService {
     });
   }
 
+  /// Approve a person node with role/relationship context.
+  /// Sends [context] separately — does NOT overwrite the node label.
+  Future<ApiResult<dynamic>> approveGraphNodeWithContext(
+      int pendingId, {String? context}) async {
+    final body = <String, dynamic>{
+      'id': pendingId,
+      'action': 'approve',
+    };
+    if (context != null && context.isNotEmpty) {
+      body['context'] = context;
+    }
+    return post('/api/graph-node-action', body: body);
+  }
+
   /// Reject a pending graph node.
   Future<ApiResult<dynamic>> rejectGraphNode(int pendingId) async {
     return post('/api/graph-node-action', body: {
@@ -373,6 +388,31 @@ class ApiService {
     return post('/api/graph-edge-action', body: {
       'id': pendingId,
       'action': 'approve',
+    });
+  }
+
+  /// Approve an edge with a corrected relationship label.
+  Future<ApiResult<dynamic>> approveGraphEdgeWithRelation(
+      int pendingId, String newRelationship) async {
+    return post('/api/graph-edge-action', body: {
+      'id': pendingId,
+      'action': 'approve',
+      'new_rel': newRelationship,
+    });
+  }
+
+  /// Accept or reject a merge proposal via /api/graph-merge-action.
+  Future<ApiResult<dynamic>> acceptMerge(int pendingId) async {
+    return post('/api/graph-merge-action', body: {
+      'id': pendingId,
+      'action': 'accept',
+    });
+  }
+
+  Future<ApiResult<dynamic>> rejectMerge(int pendingId) async {
+    return post('/api/graph-merge-action', body: {
+      'id': pendingId,
+      'action': 'reject',
     });
   }
 
@@ -441,7 +481,7 @@ class ApiService {
 
   /// Fetches pending graph nodes from /api/pending-graph-nodes.
   Future<ApiResult<List<PendingDecision>>> fetchPendingGraphNodes() async {
-    final result = await _get('/api/pending-graph-nodes');
+    final result = await get('/api/pending-graph-nodes');
     if (!result.success || result.data is! Map) {
       return ApiResult.ok([]);
     }
@@ -484,7 +524,7 @@ class ApiService {
 
   /// Fetches pending graph edges from /api/pending-graph-edges.
   Future<ApiResult<List<PendingDecision>>> fetchPendingGraphEdges() async {
-    final result = await _get('/api/pending-graph-edges');
+    final result = await get('/api/pending-graph-edges');
     if (!result.success || result.data is! Map) {
       return ApiResult.ok([]);
     }
@@ -570,7 +610,7 @@ class ApiService {
 
   /// Fetches the structured briefing from /api/briefing.
   Future<BriefingResponse> getBriefing() async {
-    final result = await _get('/api/briefing');
+    final result = await get('/api/briefing');
     if (result.success && result.data is Map) {
       return BriefingResponse.fromJson(result.data as Map<String, dynamic>);
     }

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import '../models/today_data.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
@@ -306,7 +305,7 @@ class _TodayScreenState extends State<TodayScreen> {
               ),
               const SizedBox(height: 16),
               Text(title,
-                style: GoogleFonts.plusJakartaSans(
+                style: const TextStyle(fontFamily: 'PlusJakartaSans', 
                   fontSize: 18, fontWeight: FontWeight.w500,
                   color: AppTheme.textPrimary, height: 1.3,
                 ),
@@ -392,14 +391,14 @@ class _TodayScreenState extends State<TodayScreen> {
         SizedBox(
           width: 80,
           child: Text(label,
-            style: GoogleFonts.plusJakartaSans(
+            style: const TextStyle(fontFamily: 'PlusJakartaSans', 
               fontSize: 11, color: AppTheme.textTertiary, fontWeight: FontWeight.w400,
             ),
           ),
         ),
         Expanded(
           child: Text(value,
-            style: GoogleFonts.plusJakartaSans(
+            style: const TextStyle(fontFamily: 'PlusJakartaSans', 
               fontSize: 12, color: AppTheme.textSecondary, height: 1.4,
             ),
           ),

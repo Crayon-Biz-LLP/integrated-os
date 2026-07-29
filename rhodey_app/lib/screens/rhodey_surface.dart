@@ -4,9 +4,7 @@ import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'package:flutter_tts/flutter_tts.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:flutter_tts/flutter_tts.dart';import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
@@ -65,7 +63,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
   // ── State ──
   bool _isListening = false;
-  bool _isTyping = false;
   String? _sessionId; // For thread continuity across messages
   String _tracesSearchQuery = ''; // Client-side search for Traces view
 
@@ -261,6 +258,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     if (text.trim().isEmpty) return;
 
     _textController.clear();
+    _typeFocus.unfocus();
 
     // Add user message to conversation feed immediately
     setState(() {
@@ -486,8 +484,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   /// This replaces the old 10s HTTP polling — the backend rings FCM's
   /// doorbell via ``send_silent_push({"type": "briefing_refresh"})`` when
   /// new data is available, so the app only fetches when something changes.
-  void _onPushReceived() {
-    debugPrint('[Surface] FCM push — fetching fresh briefing');
+  void _onPushReceived(Map<String, dynamic> data) {
+    debugPrint('[Surface] FCM push — fetching fresh briefing (type=${data['type']})');
     _fetchBriefing();
   }
 
@@ -540,7 +538,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
               const SizedBox(height: 16),
               Text(
                 'Add attachment',
-                style: GoogleFonts.plusJakartaSans(
+                style: TextStyle(fontFamily: "PlusJakartaSans", 
                   fontSize: 13,
                   fontWeight: FontWeight.w500,
                   color: _primaryText,
@@ -571,7 +569,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       leading: Icon(icon, color: _mutedText, size: 22),
       title: Text(
         label,
-        style: GoogleFonts.plusJakartaSans(
+        style: TextStyle(fontFamily: "PlusJakartaSans", 
           color: _primaryText,
           fontSize: 14,
         ),
@@ -653,21 +651,6 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
   @override
   Widget build(BuildContext context) {
-    if (_isTyping) {
-      return Scaffold(
-        backgroundColor: _bg,
-        body: SafeArea(
-          child: Column(
-            children: [
-              _buildPresenceStrip(),
-              Expanded(child: _buildContent()),
-              _buildTypeBar(),
-            ],
-          ),
-        ),
-      );
-    }
-
     return Scaffold(
       backgroundColor: _bg,
       body: SafeArea(
@@ -677,7 +660,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
               children: [
                 _buildPresenceStrip(),
                 Expanded(child: _buildContent()),
-                _buildBottomDock(),
+                _buildInputBar(),
               ],
             ),
             // Full-screen recording overlay
@@ -731,7 +714,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                     const SizedBox(width: 8),
                     Text(
                       'ALMOST THERE',
-                      style: GoogleFonts.jetBrainsMono(
+                      style: TextStyle(fontFamily: "JetBrainsMono", 
                         fontSize: 9,
                         fontWeight: FontWeight.w500,
                         color: _amber,
@@ -744,7 +727,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                 const SizedBox(height: 10),
                 Text(
                   'Tap the menu \u2630 \u2192 Settings to connect this app to your Rhodey backend.',
-                  style: GoogleFonts.plusJakartaSans(
+                  style: TextStyle(fontFamily: "PlusJakartaSans", 
                     fontSize: 13,
                     color: _primaryText,
                     height: 1.4,
@@ -757,7 +740,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         ],
         Text(
           "Hey, I'm your companion.",
-          style: GoogleFonts.instrumentSerif(
+          style: TextStyle(fontFamily: "InstrumentSerif", 
             fontSize: 28,
             fontWeight: FontWeight.w300,
             fontStyle: FontStyle.italic,
@@ -768,7 +751,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         const SizedBox(height: 24),
         Text(
           "To start, just speak or type\nwhatever's on your mind.",
-          style: GoogleFonts.plusJakartaSans(
+          style: TextStyle(fontFamily: "PlusJakartaSans", 
             fontSize: 13,
             fontWeight: FontWeight.w300,
             color: _mutedText,
@@ -792,7 +775,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         Text(
           '(nothing yet — your surface\nwill fill as we talk)',
           textAlign: TextAlign.center,
-          style: GoogleFonts.plusJakartaSans(
+          style: TextStyle(fontFamily: "PlusJakartaSans", 
             fontSize: 11,
             fontStyle: FontStyle.italic,
             fontWeight: FontWeight.w300,
@@ -813,7 +796,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
               },
               child: Text(
                 'Retry',
-                style: GoogleFonts.plusJakartaSans(
+                style: TextStyle(fontFamily: "PlusJakartaSans", 
                     fontSize: 12, color: _champagne),
               ),
             ),
@@ -838,7 +821,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           ),
           child: Text(
             label,
-            style: GoogleFonts.plusJakartaSans(
+            style: TextStyle(fontFamily: "PlusJakartaSans", 
               color: _mutedText,
               fontSize: 13,
             ),
@@ -878,7 +861,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           const SizedBox(width: 8),
           Text(
             'Rhodey',
-            style: GoogleFonts.plusJakartaSans(
+            style: TextStyle(fontFamily: "PlusJakartaSans", 
               color: _mutedText,
               fontSize: 12,
               fontWeight: FontWeight.w500,
@@ -901,7 +884,22 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       children: [
         // Editorial greeting (always at top)
         _buildEditorialGreeting(),
-        const SizedBox(height: 20),
+        const SizedBox(height: 12),
+
+        // Rhodey's voice line (personal, from LLM pulse generation)
+        if (_briefing.voiceLine != null && _briefing.voiceLine!.isNotEmpty) ...[
+          _buildVoiceLine(),
+          const SizedBox(height: 12),
+        ],
+
+        // Pulse context bar (fallback intelligence when no voice line)
+        if (_briefing.contextBar != null && _briefing.contextBar!.isNotEmpty &&
+            (_briefing.voiceLine == null || _briefing.voiceLine!.isEmpty)) ...[
+          _buildPulseContextBar(),
+          const SizedBox(height: 12),
+        ],
+
+        const SizedBox(height: 8),
 
         // Conversation feed (right after greeting)
         if (_conversation.isNotEmpty) ...[
@@ -934,7 +932,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             children: [
               Text(
                 'CONVERSATION',
-                style: GoogleFonts.jetBrainsMono(
+                style: TextStyle(fontFamily: "JetBrainsMono", 
                   fontSize: 9,
                   fontWeight: FontWeight.w400,
                   color: _tertiaryText,
@@ -947,7 +945,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                 onTap: () => _confirmClearConversation(),
                 child: Text(
                   'Clear',
-                  style: GoogleFonts.plusJakartaSans(
+                  style: TextStyle(fontFamily: "PlusJakartaSans", 
                     fontSize: 10,
                     fontWeight: FontWeight.w400,
                     color: _mutedText,
@@ -1017,7 +1015,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                               children: [
                                 Text(
                                   isUser ? 'YOU' : 'RHODEY',
-                                  style: GoogleFonts.jetBrainsMono(
+                                  style: TextStyle(fontFamily: "JetBrainsMono", 
                                     fontSize: 8,
                                     fontWeight: FontWeight.w400,
                                     color: isUser
@@ -1039,7 +1037,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                             const SizedBox(height: 5),
                             Text(
                               text,
-                              style: GoogleFonts.plusJakartaSans(
+                              style: TextStyle(fontFamily: "PlusJakartaSans", 
                                 color: isError ? _red : _primaryText,
                                 fontSize: 12,
                                 fontWeight: FontWeight.w300,
@@ -1088,7 +1086,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         ),
         title: Text(
           'Clear conversation?',
-          style: GoogleFonts.plusJakartaSans(
+          style: TextStyle(fontFamily: "PlusJakartaSans", 
             color: _primaryText,
             fontSize: 16,
             fontWeight: FontWeight.w500,
@@ -1096,7 +1094,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         ),
         content: Text(
           'This clears the conversation log shown here. The full history is still available in the app on next restart.',
-          style: GoogleFonts.plusJakartaSans(
+          style: TextStyle(fontFamily: "PlusJakartaSans", 
             color: _mutedText,
             fontSize: 13,
             height: 1.4,
@@ -1107,7 +1105,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             onPressed: () => Navigator.pop(ctx, false),
             child: Text(
               'Cancel',
-              style: GoogleFonts.plusJakartaSans(
+              style: TextStyle(fontFamily: "PlusJakartaSans", 
                 color: _mutedText,
                 fontSize: 13,
               ),
@@ -1117,7 +1115,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             onPressed: () => Navigator.pop(ctx, true),
             child: Text(
               'Clear',
-              style: GoogleFonts.plusJakartaSans(
+              style: TextStyle(fontFamily: "PlusJakartaSans", 
                 color: _red,
                 fontSize: 13,
                 fontWeight: FontWeight.w500,
@@ -1175,7 +1173,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
               Expanded(
                 child: Text(
                   headline,
-                  style: GoogleFonts.instrumentSerif(
+                  style: TextStyle(fontFamily: "InstrumentSerif", 
                     fontSize: 30,
                     fontWeight: FontWeight.w300,
                     fontStyle: FontStyle.italic,
@@ -1190,7 +1188,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             const SizedBox(height: 6),
             Text(
               subtext,
-              style: GoogleFonts.plusJakartaSans(
+              style: TextStyle(fontFamily: "PlusJakartaSans", 
                 fontSize: 13,
                 fontWeight: FontWeight.w300,
                 color: _mutedText,
@@ -1216,7 +1214,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                     const SizedBox(width: 4),
                     Text(
                       '$eventCount event${eventCount == 1 ? '' : 's'} today',
-                      style: GoogleFonts.plusJakartaSans(
+                      style: TextStyle(fontFamily: "PlusJakartaSans", 
                         fontSize: 11,
                         color: _mutedText,
                         fontWeight: FontWeight.w300,
@@ -1239,7 +1237,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                     const SizedBox(width: 4),
                     Text(
                       '$taskCount item${taskCount == 1 ? '' : 's'} to review',
-                      style: GoogleFonts.plusJakartaSans(
+                      style: TextStyle(fontFamily: "PlusJakartaSans", 
                         fontSize: 11,
                         color: _mutedText,
                         fontWeight: FontWeight.w300,
@@ -1283,7 +1281,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   ),
                   child: Text(
                     'HORIZON',
-                    style: GoogleFonts.jetBrainsMono(
+                    style: TextStyle(fontFamily: "JetBrainsMono", 
                       fontSize: 9,
                       fontWeight: FontWeight.w500,
                       letterSpacing: 1.5,
@@ -1308,7 +1306,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   ),
                   child: Text(
                     'TRACES',
-                    style: GoogleFonts.jetBrainsMono(
+                    style: TextStyle(fontFamily: "JetBrainsMono", 
                       fontSize: 9,
                       fontWeight: FontWeight.w500,
                       letterSpacing: 1.5,
@@ -1343,6 +1341,18 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         for (final section in _briefing.sections) ...[
           _buildSection(section),
           const SizedBox(height: 4),
+        ],
+
+        // Pulse insights section (intelligence from latest briefing)
+        if (_briefing.insights.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          _buildInsightsSection(),
+        ],
+
+        // Vaulted count (tasks hidden by pulse vault)
+        if (_briefing.vaultedCount > 0) ...[
+          const SizedBox(height: 8),
+          _buildVaultedCard(),
         ],
       ],
     );
@@ -1390,7 +1400,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                       const SizedBox(width: 4),
                       Text(
                         'RHODEY',
-                        style: GoogleFonts.jetBrainsMono(
+                        style: TextStyle(fontFamily: "JetBrainsMono", 
                           fontSize: 8,
                           fontWeight: FontWeight.w400,
                           color: _accentGold,
@@ -1403,7 +1413,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   const SizedBox(height: 6),
                   Text(
                     text,
-                    style: GoogleFonts.plusJakartaSans(
+                    style: TextStyle(fontFamily: "PlusJakartaSans", 
                       color: _primaryText,
                       fontSize: 12,
                       fontWeight: FontWeight.w300,
@@ -1414,6 +1424,265 @@ class _RhodeySurfaceState extends State<RhodeySurface>
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  // ── Rhodey's voice line ───────────────────────────────────────────────────
+
+  Widget _buildVoiceLine() {
+    final voice = _briefing.voiceLine ?? '';
+    if (voice.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              _accentGold.withValues(alpha: 0.04),
+              _surface,
+            ],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _accentGold.withValues(alpha: 0.1)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Decorative quote mark
+            Padding(
+              padding: const EdgeInsets.only(top: 1, right: 10),
+              child: Text(
+                '\u201c',
+                style: TextStyle(fontFamily: "InstrumentSerif", 
+                  fontSize: 22,
+                  fontWeight: FontWeight.w300,
+                  color: _accentGold.withValues(alpha: 0.5),
+                  height: 1.0,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    voice,
+                    style: TextStyle(fontFamily: "InstrumentSerif", 
+                      fontSize: 15,
+                      fontWeight: FontWeight.w300,
+                      fontStyle: FontStyle.italic,
+                      color: _champagne,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 1,
+                        decoration: BoxDecoration(
+                          color: _accentGold.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'RHODEY',
+                        style: TextStyle(fontFamily: "JetBrainsMono", 
+                          fontSize: 8,
+                          fontWeight: FontWeight.w400,
+                          color: _accentGold.withValues(alpha: 0.4),
+                          letterSpacing: 1.5,
+                          height: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Pulse context bar (intelligence from latest briefing) ──────────────────
+
+  Widget _buildPulseContextBar() {
+    final bar = _briefing.contextBar ?? '';
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              _accentGold.withValues(alpha: 0.08),
+              _surface,
+            ],
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+          ),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: _accentGold.withValues(alpha: 0.2)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 2,
+              height: 32,
+              decoration: BoxDecoration(
+                color: _accentGold,
+                borderRadius: BorderRadius.circular(1),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                bar,
+                style: TextStyle(fontFamily: "PlusJakartaSans", 
+                  color: _champagne,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w300,
+                  height: 1.5,
+                ),
+              ),
+            ),
+            if (_briefing.pulseMode != null && _briefing.pulseMode!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: _accentGold.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    _briefing.pulseMode!.split(' ').first,
+                    style: TextStyle(fontFamily: "JetBrainsMono", 
+                      fontSize: 7,
+                      fontWeight: FontWeight.w500,
+                      color: _accentGold,
+                      letterSpacing: 0.5,
+                      height: 1.2,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Pulse insights section ────────────────────────────────────────────────
+
+  Widget _buildInsightsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 6),
+          child: Row(
+            children: [
+              Container(
+                width: 3,
+                height: 12,
+                decoration: BoxDecoration(
+                  color: _accentGold,
+                  borderRadius: BorderRadius.circular(1),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'INSIGHTS',
+                style: TextStyle(fontFamily: "JetBrainsMono", 
+                  fontSize: 9,
+                  fontWeight: FontWeight.w400,
+                  color: _accentGold,
+                  letterSpacing: 2.0,
+                  height: 1.3,
+                ),
+              ),
+            ],
+          ),
+        ),
+        ...(_briefing.insights.map((insight) => Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: _surface,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: _border.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    insight,
+                    style: TextStyle(fontFamily: "PlusJakartaSans", 
+                      color: _mutedText,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w300,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ))),
+      ],
+    );
+  }
+
+  // ── Vaulted count card ────────────────────────────────────────────────────
+
+  Widget _buildVaultedCard() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const TodayScreen()),
+          ),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: _surface.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _border.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                const Text('📦', style: TextStyle(fontSize: 12)),
+                const SizedBox(width: 8),
+                Text(
+                  '${_briefing.vaultedCount} more in vault',
+                  style: TextStyle(fontFamily: "PlusJakartaSans", 
+                    color: _mutedText,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w300,
+                    height: 1.4,
+                  ),
+                ),
+                const Spacer(),
+                Icon(Icons.chevron_right, color: _tertiaryText, size: 16),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1459,7 +1728,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                 const SizedBox(width: 10),
                 Text(
                   'SUGGESTION',
-                  style: GoogleFonts.jetBrainsMono(
+                  style: TextStyle(fontFamily: "JetBrainsMono", 
                     fontSize: 9,
                     fontWeight: FontWeight.w400,
                     color: _champagne,
@@ -1472,7 +1741,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             const SizedBox(height: 12),
             Text(
               '${urgentItem.icon} ${urgentItem.text}',
-              style: GoogleFonts.plusJakartaSans(
+              style: TextStyle(fontFamily: "PlusJakartaSans", 
                 fontSize: 12,
                 fontWeight: FontWeight.w400,
                 color: _primaryText,
@@ -1502,7 +1771,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 6),
           child: Text(
             section.title.toUpperCase(),
-            style: GoogleFonts.jetBrainsMono(
+            style: TextStyle(fontFamily: "JetBrainsMono", 
               fontSize: 9,
               fontWeight: FontWeight.w400,
               color: _tertiaryText,
@@ -1513,7 +1782,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
         ),
         // Summarized prose for non-decision sections with 3+ items
         if (!isDecisions && items.length >= 3)
-          _buildSummarizedSection(items)
+          _buildSummarizedSection(section)
         else
           ...items.map((item) => _buildBriefingItem(item, isDecisions)),
       ],
@@ -1521,7 +1790,8 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   }
 
   /// Render section items as a single prose paragraph instead of individual cards.
-  Widget _buildSummarizedSection(List<BriefingItem> items) {
+  Widget _buildSummarizedSection(BriefingSection section) {
+    final items = section.items;
     // Count items by urgency
     final urgent = items.where((i) => i.isUrgent).toList();
     final regular = items.where((i) => !i.isUrgent).toList();
@@ -1548,37 +1818,47 @@ class _RhodeySurfaceState extends State<RhodeySurface>
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: _surface.withValues(alpha: 0.5),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: _border.withValues(alpha: 0.4)),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: 3,
-              height: 28,
-              decoration: BoxDecoration(
-                color: _champagne.withValues(alpha: 0.6),
-                borderRadius: BorderRadius.circular(2),
-              ),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const TodayScreen()),
+          ),
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: _surface.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _border.withValues(alpha: 0.4)),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                summary,
-                style: GoogleFonts.plusJakartaSans(
-                  color: _mutedText,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w300,
-                  height: 1.5,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 3,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: _champagne.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
-              ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    summary,
+                    style: TextStyle(fontFamily: "PlusJakartaSans", 
+                      color: _mutedText,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w300,
+                      height: 1.5,
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -1587,40 +1867,83 @@ class _RhodeySurfaceState extends State<RhodeySurface>
   Widget _buildBriefingItem(BriefingItem item, bool isDecision) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: _surface.withValues(alpha: item.isUrgent ? 0.6 : 0.4),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
           borderRadius: BorderRadius.circular(10),
-          border: item.isUrgent
-              ? Border.all(color: _red.withValues(alpha: 0.15))
-              : null,
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 1, right: 10),
-              child: Text(item.icon, style: const TextStyle(fontSize: 14)),
-            ),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    item.text,
-                    style: GoogleFonts.plusJakartaSans(
-                      color: item.isUrgent ? _red : _primaryText,
-                      fontSize: 13,
-                      fontWeight:
-                          item.isUrgent ? FontWeight.w400 : FontWeight.w300,
-                      height: 1.4,
-                    ),
+          onTap: isDecision
+              ? () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const InboxScreen()),
+                  )
+              : () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const TodayScreen()),
                   ),
-                ],
-              ),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: _surface.withValues(alpha: item.isUrgent ? 0.6 : 0.4),
+              borderRadius: BorderRadius.circular(10),
+              border: item.isUrgent
+                  ? Border.all(color: _red.withValues(alpha: 0.15))
+                  : null,
+            ),              child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 1, right: 10),
+                  child: Text(item.icon, style: const TextStyle(fontSize: 14)),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              item.text,
+                              style: TextStyle(fontFamily: "PlusJakartaSans", 
+                                color: item.isUrgent ? _red : _primaryText,
+                                fontSize: 13,
+                                fontWeight:
+                                    item.isUrgent ? FontWeight.w400 : FontWeight.w300,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                          // Pulse stale badge
+                          if (item.isStale) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: _red.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(color: _red.withValues(alpha: 0.3)),
+                              ),
+                              child: Text(
+                                'stale',
+                                style: TextStyle(fontFamily: "JetBrainsMono", 
+                                  fontSize: 7,
+                                  fontWeight: FontWeight.w500,
+                                  color: _red,
+                                  letterSpacing: 0.5,
+                                  height: 1.2,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -1649,7 +1972,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
           child: Text(
             'No activity yet.\nSpeak or type to get started.',
             textAlign: TextAlign.center,
-            style: GoogleFonts.plusJakartaSans(
+            style: TextStyle(fontFamily: "PlusJakartaSans", 
               fontSize: 11,
               fontStyle: FontStyle.italic,
               fontWeight: FontWeight.w300,
@@ -1675,14 +1998,14 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             ),
             child: TextField(
               onChanged: (v) => setState(() => _tracesSearchQuery = v),
-              style: GoogleFonts.plusJakartaSans(
+              style: TextStyle(fontFamily: "PlusJakartaSans", 
                 color: _primaryText,
                 fontSize: 12,
                 fontWeight: FontWeight.w300,
               ),
               decoration: InputDecoration(
                 hintText: 'Search conversations...',
-                hintStyle: GoogleFonts.plusJakartaSans(
+                hintStyle: TextStyle(fontFamily: "PlusJakartaSans", 
                   color: _tertiaryText,
                   fontSize: 12,
                   fontWeight: FontWeight.w300,
@@ -1707,7 +2030,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: Text(
               '${traces.length} result${traces.length == 1 ? '' : 's'}',
-              style: GoogleFonts.plusJakartaSans(
+              style: TextStyle(fontFamily: "PlusJakartaSans", 
                 fontSize: 10,
                 color: _tertiaryText,
                 height: 1.3,
@@ -1719,7 +2042,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
             child: Text(
               'YOUR RECENT ACTIVITY',
-              style: GoogleFonts.jetBrainsMono(
+              style: TextStyle(fontFamily: "JetBrainsMono", 
                 fontSize: 9,
                 fontWeight: FontWeight.w400,
                 color: _tertiaryText,
@@ -1734,7 +2057,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
             child: Text(
               'No results for "$_tracesSearchQuery"',
-              style: GoogleFonts.plusJakartaSans(
+              style: TextStyle(fontFamily: "PlusJakartaSans", 
                 fontSize: 11,
                 fontStyle: FontStyle.italic,
                 color: _tertiaryText,
@@ -1763,7 +2086,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
             // Time label
             Text(
               trace.time,
-              style: GoogleFonts.jetBrainsMono(
+              style: TextStyle(fontFamily: "JetBrainsMono", 
                 fontSize: 9,
                 fontWeight: FontWeight.w400,
                 color: _tertiaryText,
@@ -1783,7 +2106,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   Expanded(
                     child: Text(
                       trace.input,
-                      style: GoogleFonts.plusJakartaSans(
+                      style: TextStyle(fontFamily: "PlusJakartaSans", 
                         fontSize: 11,
                         fontStyle: FontStyle.italic,
                         fontWeight: FontWeight.w300,
@@ -1811,7 +2134,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                 Expanded(
                   child: Text(
                     trace.resolution,
-                    style: GoogleFonts.plusJakartaSans(
+                    style: TextStyle(fontFamily: "PlusJakartaSans", 
                       fontSize: 12,
                       fontWeight: FontWeight.w300,
                       color: _primaryText,
@@ -1873,7 +2196,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                       ? const _ProcessingWave()
                       : Text(
                           _momentText ?? '',
-                          style: GoogleFonts.plusJakartaSans(
+                          style: TextStyle(fontFamily: "PlusJakartaSans", 
                             color: _primaryText,
                             fontSize: 13,
                             height: 1.4,
@@ -1921,7 +2244,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   const SizedBox(width: 8),
                   Text(
                     'Rhodey',
-                    style: GoogleFonts.plusJakartaSans(
+                    style: TextStyle(fontFamily: "PlusJakartaSans", 
                       color: _mutedText,
                       fontSize: 12,
                       fontWeight: FontWeight.w500,
@@ -1930,7 +2253,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                   const SizedBox(width: 8),
                   Text(
                     'RECORDING',
-                    style: GoogleFonts.jetBrainsMono(
+                    style: TextStyle(fontFamily: "JetBrainsMono", 
                       fontSize: 9,
                       fontWeight: FontWeight.w400,
                       letterSpacing: 2.0,
@@ -1957,7 +2280,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                       textAlign: TextAlign.center,
                       maxLines: 4,
                       overflow: TextOverflow.ellipsis,
-                      style: GoogleFonts.instrumentSerif(
+                      style: TextStyle(fontFamily: "InstrumentSerif", 
                         fontSize: 26,
                         fontWeight: FontWeight.w300,
                         fontStyle: FontStyle.italic,
@@ -1981,7 +2304,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                     ),
                     child: Text(
                       _formatDuration(_voiceDuration),
-                      style: GoogleFonts.jetBrainsMono(
+                      style: TextStyle(fontFamily: "JetBrainsMono", 
                         fontSize: 14,
                         fontWeight: FontWeight.w400,
                         color: _tertiaryText,
@@ -2008,7 +2331,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
                       const SizedBox(height: 12),
                       Text(
                         'Tap anywhere to stop',
-                        style: GoogleFonts.plusJakartaSans(
+                        style: TextStyle(fontFamily: "PlusJakartaSans", 
                           fontSize: 12,
                           color: _mutedText,
                           fontWeight: FontWeight.w400,
@@ -2025,12 +2348,13 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     );
   }
 
-  // ── Bottom dock ───────────────────────────────────────────────────────────
+  // ── Unified input bar ─────────────────────────────────────────────────────
 
-  Widget _buildBottomDock() {
+  Widget _buildInputBar() {
+    final showSend = _textController.text.trim().isNotEmpty;
+
     return Container(
-      height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.fromLTRB(4, 6, 8, 10),
       decoration: BoxDecoration(
         color: _surface,
         border: Border(
@@ -2039,66 +2363,77 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       ),
       child: Row(
         children: [
-          // Menu (left)
+          // Menu
           Material(
             color: Colors.transparent,
             child: InkWell(
               borderRadius: BorderRadius.circular(8),
               onTap: _openMenu,
               child: Container(
-                padding: const EdgeInsets.all(10),
-                child: Stack(
-                  children: [
-                    Icon(Icons.menu, color: _mutedText, size: 20),
-                    if (_briefing.pendingCount > 0)
-                      Positioned(
-                        right: 4,
-                        top: 4,
-                        child: Container(
-                          width: 7,
-                          height: 7,
-                          decoration: const BoxDecoration(
-                            color: _amber,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                      ),
-                  ],
+                padding: const EdgeInsets.all(8),
+                child: Icon(Icons.menu, color: _mutedText, size: 20),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          // Text field
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: _cardBg,
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: _border),
+              ),
+              child: TextField(
+                controller: _textController,
+                focusNode: _typeFocus,
+                onChanged: (_) => setState(() {}),
+                onSubmitted: (v) => _sendMessage(v),
+                style: TextStyle(fontFamily: 'PlusJakartaSans', 
+                  color: _primaryText,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w300,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'Message Rhodey...',
+                  hintStyle: TextStyle(fontFamily: 'PlusJakartaSans', 
+                    color: _tertiaryText,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w300,
+                  ),
+                  border: InputBorder.none,
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
                 ),
               ),
             ),
           ),
-
-          // + Attachment (left-center)
+          const SizedBox(width: 4),
+          // Mic / Send
           Material(
             color: Colors.transparent,
             child: InkWell(
-              borderRadius: BorderRadius.circular(8),
-              onTap: _showAttachmentSheet,
+              borderRadius: BorderRadius.circular(20),
+              onTap: () {
+                if (showSend) {
+                  _sendMessage(_textController.text);
+                } else {
+                  _onMicTap();
+                }
+              },
               child: Container(
-                padding: const EdgeInsets.all(10),
-                child: Icon(Icons.add, color: _mutedText, size: 20),
-              ),
-            ),
-          ),
-
-          const Spacer(),
-
-          // Primary: Tap to speak (or live recording bar when listening)
-          _buildSpeakButton(),
-
-          const Spacer(),
-
-          // Keyboard (right)
-          Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(8),
-              onTap: () => setState(() => _isTyping = true),
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                child: Icon(Icons.keyboard_outlined,
-                    color: _mutedText, size: 20),
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: _accentGold.withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  showSend ? Icons.send_rounded : Icons.mic,
+                  color: _accentGold,
+                  size: 18,
+                ),
               ),
             ),
           ),
@@ -2107,195 +2442,10 @@ class _RhodeySurfaceState extends State<RhodeySurface>
     );
   }
 
-  /// Speak button.
-  Widget _buildSpeakButton() {
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(20),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: _onMicTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: _border),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '\uD83C\uDFA4  Speak',
-                style: GoogleFonts.plusJakartaSans(
-                  color: _mutedText,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   String _formatDuration(int seconds) {
     final m = (seconds ~/ 60).toString().padLeft(2, '0');
     final s = (seconds % 60).toString().padLeft(2, '0');
     return '$m:$s';
-  }
-
-  // ── Type bar ──────────────────────────────────────────────────────────────
-
-  Widget _buildTypeBar() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
-      decoration: BoxDecoration(
-        color: _surface,
-        border: Border(
-          top: BorderSide(color: _border.withValues(alpha: 0.5)),
-        ),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Command suggestion chips
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    _suggestionChip('📅  Today', () {
-                      _sendMessage('/today');
-                      setState(() => _isTyping = false);
-                    }),
-                    const SizedBox(width: 6),
-                    _suggestionChip('🧠  Ask', () {
-                      setState(() => _isTyping = false);
-                      // Open text field with ? prefix hint
-                      _textController.text = '?';
-                      _typeFocus.requestFocus();
-                    }),
-                    const SizedBox(width: 6),
-                    _suggestionChip('📝  Note', () {
-                      _sendMessage('/note');
-                      setState(() => _isTyping = false);
-                    }),
-                    const SizedBox(width: 6),
-                    _suggestionChip('❓  Why', () {
-                      _sendMessage('/why');
-                      setState(() => _isTyping = false);
-                    }),
-                    const SizedBox(width: 6),
-                    _suggestionChip('⚡  Quick', () {
-                      _sendMessage('Quick note: ');
-                      setState(() => _isTyping = false);
-                    }),
-                  ],
-                ),
-              ),
-            ),
-            Row(
-              children: [
-                Expanded(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: _bg,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: _border),
-                    ),
-                    child: TextField(
-                      controller: _textController,
-                      focusNode: _typeFocus,
-                      autofocus: true,
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (value) {
-                        if (value.trim().isEmpty) return;
-                        _sendMessage(value.trim());
-                        setState(() => _isTyping = false);
-                      },
-                      decoration: const InputDecoration(
-                        hintText: 'Type a message...',
-                        border: InputBorder.none,
-                        contentPadding:
-                            EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                        isDense: true,
-                      ),
-                      style: GoogleFonts.plusJakartaSans(
-                          color: _primaryText, fontSize: 14),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Material(
-                  color: _surface,
-                  borderRadius: BorderRadius.circular(10),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(10),
-                    onTap: () {
-                      final value = _textController.text.trim();
-                      if (value.isEmpty) return;
-                      _sendMessage(value);
-                      setState(() => _isTyping = false);
-                    },
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      alignment: Alignment.center,
-                      child: Icon(Icons.arrow_upward,
-                          color: _champagne, size: 18),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () {
-                      setState(() => _isTyping = false);
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      child: Icon(Icons.close, color: _mutedText, size: 18),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _suggestionChip(String label, VoidCallback onTap) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: _border),
-            color: _cardBg,
-          ),
-          child: Text(
-            label,
-            style: GoogleFonts.plusJakartaSans(
-              color: _mutedText,
-              fontSize: 12,
-              fontWeight: FontWeight.w400,
-            ),
-          ),
-        ),
-      ),
-    );
   }
 
   // ── Skeleton Loading ──────────────────────────────────────────────────────

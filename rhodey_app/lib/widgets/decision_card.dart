@@ -142,6 +142,8 @@ class DecisionCard extends StatelessWidget {
         return 'WHATSAPP';
       case DecisionType.call:
         return 'CALL';
+      case DecisionType.merge:
+        return 'MERGE PROPOSAL';
     }
   }
 }

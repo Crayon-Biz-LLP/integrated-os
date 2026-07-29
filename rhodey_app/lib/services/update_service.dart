@@ -40,6 +40,7 @@ class _AppVersionResponse {
 /// On "Update Now", downloads the APK to internal storage and launches
 /// the system package installer via OpenFilex.
 const _kDismissedVersionKey = 'update_dismissed_version';
+const _kLastCheckTimestampKey = 'update_last_check_ms';
 
 /// In-app update checker.
 ///
@@ -50,10 +51,15 @@ const _kDismissedVersionKey = 'update_dismissed_version';
 ///
 /// Dismissed versions persist to SharedPreferences so "Later" survives
 /// app restarts — you won't see the same version nagged again.
+///
+/// **Rate-limited**: checks at most once per 24 hours (silent checks only).
+/// Manual checks (showFeedback=true) always bypass the rate limit.
 class UpdateService {
   UpdateService._();
   static final UpdateService _instance = UpdateService._();
   factory UpdateService() => _instance;
+
+  static const _rateLimitHours = 24;
 
   /// Tracks whether an update dialog has been shown this session.
   /// Prevents the dialog from appearing on every app resume after "Later".
@@ -68,10 +74,27 @@ class UpdateService {
   ///
   /// [showFeedback] controls whether to surface non-update outcomes
   /// (errors, up-to-date) via snackbar. Set false for silent cold-start checks.
+  ///
+  /// **Rate-limiting for silent checks**: skips the HTTP call if the last check
+  /// was less than 24 hours ago. This avoids a network call on every app open
+  /// and every foreground transition.
   Future<void> check(BuildContext context, {bool showFeedback = false}) async {
     // Guard: if we've already shown the dialog this session, skip silently
     if (_dialogShownThisSession && !showFeedback) {
       return;
+    }
+
+    // Guard: rate-limit silent checks to once per 24h
+    if (!showFeedback) {
+      final prefs = await SharedPreferences.getInstance();
+      final lastCheckMs = prefs.getInt(_kLastCheckTimestampKey) ?? 0;
+      if (lastCheckMs > 0) {
+        final elapsedH = (DateTime.now().millisecondsSinceEpoch - lastCheckMs) / 3600000;
+        if (elapsedH < _rateLimitHours) {
+          debugPrint('[Update] ⏭️ Last check ${elapsedH.toStringAsFixed(1)}h ago — within ${_rateLimitHours}h rate limit');
+          return;
+        }
+      }
     }
 
     // Guard: prevent concurrent checks from the two startup call sites
@@ -142,6 +165,9 @@ class UpdateService {
       }
       return;
     }
+
+    // Record last check timestamp (for rate limiting)
+    await prefs.setInt(_kLastCheckTimestampKey, DateTime.now().millisecondsSinceEpoch);
 
     if (!remote.found || remote.downloadUrl == null) {
       debugPrint('[Update] No update found on server');

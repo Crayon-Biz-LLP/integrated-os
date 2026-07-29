@@ -16,6 +16,7 @@ from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.webhook.telegram import send_telegram
 from core.services.push_notification import send_push_notification
+from core.services.push_notification import send_silent_push
 from core.services.google_service import get_tasks_service
 from core.lib.audit_logger import info, warning, error, audit_log_sync
 from core.lib.temporal_lineage import detect_drift
@@ -58,6 +59,25 @@ _BRIEFING_HISTORY_LIMIT = 3
 # ──────────────────────────────────────────
 # HELPER FUNCTIONS
 # ──────────────────────────────────────────
+
+def _extract_insight(text: str) -> str:
+    """Extract the first meaningful narrative paragraph from briefing text.
+
+    Skips the first line (which is usually the briefing mode like
+    "Closing the loop: Sign off.") and returns the next non-empty paragraph.
+    """
+    if not text:
+        return ""
+    lines = text.split('\n')
+    # Skip first line (briefing mode), find first non-empty narrative paragraph
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stripped and not stripped.startswith(('🚀', '🏠', '⛪', '💡', '🛡️', '-', '•', '🔴', '🟡', '✅', '📅', '⏰', '⚠️', '📝', '⚪', '+', '🔄', '📍', '🆕')):
+            # Return first ~80 chars of the narrative paragraph
+            return stripped[:120]
+    # Fallback: return first line
+    return lines[0][:120] if lines else ''
+
 
 def _store_briefing_to_history(briefing_text: str):
     """Store a condensed summary of this briefing in memories for future context."""
@@ -963,6 +983,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                     body=f"📡 {briefing_text[:80].strip()}...",
                     data={"type": "briefing"},
                 )
+                # Silent data-only push for Flutter background refresh
+                await send_silent_push({"type": "briefing_refresh"})
             except Exception as e:
                 audit_log_sync("pulse", "WARNING", f"Push notification failed: {e}")
 
@@ -983,10 +1005,98 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 'metadata': {
                     'briefing_mode': briefing_mode,
                     'run_id': run_id,
+                    'insight': _extract_insight(briefing_text),
+                    'overdue_tasks': overdue_tasks,
+                    'stale_tasks': [t.get('title') for t in stale_tasks],
+                    'delta': delta_context if delta_context != "None" else '',
+                    'vaulted_count': len(active_tasks) - len(filtered_tasks),
                 }
             }).execute()
         except Exception as e:
             audit_log_sync("pulse", "WARNING", f"Failed to store raw_dump: {e}")
+
+        # ── Store app intelligence (for Flutter app) ──
+        try:
+            voice_line = ""
+            if isinstance(output, dict):
+                try:
+                    voice_line = pulse_output.voice_line.strip()
+                except Exception:
+                    pass
+            if not voice_line:
+                voice_line = _extract_insight(briefing_text)[:120]
+
+            # Map briefing_mode to a clean pulse_mode for the app
+            mode_lower = briefing_mode.lower()
+            if 'morning' in mode_lower:
+                pulse_mode_clean = 'morning'
+            elif 'afternoon' in mode_lower:
+                pulse_mode_clean = 'afternoon'
+            elif 'closing' in mode_lower or 'sign off' in mode_lower:
+                pulse_mode_clean = 'closing_loop'
+            elif 'weekend' in mode_lower or 'chores' in mode_lower:
+                pulse_mode_clean = 'weekend'
+            elif 'pre-monday' in mode_lower or 'loading' in mode_lower:
+                pulse_mode_clean = 'pre_monday'
+            elif 'intel' in mode_lower or 'vaulted' in mode_lower:
+                pulse_mode_clean = 'intel'
+            else:
+                pulse_mode_clean = 'check_in'
+
+            nag_list = overdue_tasks if overdue_tasks else []
+            stale_names = [t.get('title', '') for t in stale_tasks] if stale_tasks else []
+            vaulted_count = len(active_tasks) - len(filtered_tasks)
+
+            # Build delta snapshot as list of {id, title} pairs
+            delta_snapshot = [{"id": str(t.get('id')), "title": t.get('title')} for t in filtered_tasks]
+
+            # Build insights list
+            insights = []
+            if overdue_tasks:
+                insights.append(f"🔴 {len(overdue_tasks)} stale task{'s' if len(overdue_tasks) != 1 else ''} — needs attention")
+            if stale_names:
+                insights.append(f"⏳ {len(stale_names)} task{'s' if len(stale_names) != 1 else ''} stale >7d")
+            if vaulted_count > 0:
+                insights.append(f"📦 {vaulted_count} item{'s' if vaulted_count != 1 else ''} vaulted behind the pulse")
+
+            # Build context from voice_line + nag count
+            context_text = voice_line[:120] if voice_line else _extract_insight(briefing_text)[:120]
+
+            intelligence_run_id = run_id or f"pulse_{datetime.now(timezone.utc).isoformat()}"
+
+            # UPSERT on pulse_run_id so re-runs don't create duplicates
+            existing_intel = supabase.table('app_intelligence') \
+                .select('id') \
+                .eq('pulse_run_id', intelligence_run_id) \
+                .limit(1) \
+                .execute()
+            intel_payload = {
+                'voice_line': voice_line,
+                'pulse_mode': pulse_mode_clean,
+                'nag_list': json.dumps(nag_list),
+                'stale_list': json.dumps(stale_names),
+                'overdue_list': json.dumps(overdue_tasks if overdue_tasks else []),
+                'vaulted_count': vaulted_count,
+                'delta_snapshot': json.dumps(delta_snapshot),
+                'context': context_text,
+                'insights': json.dumps(insights),
+                'pulse_run_id': intelligence_run_id,
+                'metadata': json.dumps({
+                    'briefing_mode': briefing_mode,
+                    'send_success': send_success,
+                }),
+            }
+            if existing_intel.data:
+                supabase.table('app_intelligence') \
+                    .update(intel_payload) \
+                    .eq('pulse_run_id', intelligence_run_id) \
+                    .execute()
+            else:
+                supabase.table('app_intelligence') \
+                    .insert(intel_payload) \
+                    .execute()
+        except Exception as e:
+            audit_log_sync("pulse", "WARNING", f"Failed to store app intelligence: {e}")
 
         # ── Store daily summary ──
         try:

@@ -1,5 +1,31 @@
+import contextvars
+from dataclasses import dataclass, field
+from typing import List, Optional, Literal
+
 from pydantic import BaseModel, Field
-from typing import List, Optional
+
+
+ActionType = Literal["task_create", "task_update", "calendar_create", "memory_save", 
+                     "workflow_propose", "draft_create", "reminder_set", "none"]
+ActionStatus = Literal["executed", "queued", "proposed", "failed", "not_attempted"]
+
+
+@dataclass
+class ActionResult:
+    action_type: ActionType = "none"
+    status: ActionStatus = "not_attempted"
+    entity_id: Optional[str | int] = None
+    human_label: Optional[str] = None
+    evidence: dict = field(default_factory=dict)
+
+
+_action_results: contextvars.ContextVar[list[ActionResult]] = contextvars.ContextVar('action_results', default=[])
+
+
+def accumulate_action(result: ActionResult):
+    lst = _action_results.get()
+    lst.append(result)
+    _action_results.set(lst)
 
 
 class CompletedTask(BaseModel):

@@ -20,7 +20,11 @@ class NotificationService {
   /// Callback invoked when ANY push notification is received while the app
   /// is in the foreground. Screens can use this to trigger an immediate
   /// briefing fetch instead of waiting for the poll cycle.
-  static void Function()? onPushReceived;
+  ///
+  /// The [data] map contains the push payload (type, etc.).
+  /// Screens can use this to decide what to refresh
+  /// (e.g. type=briefing → fetch messages, type=decision → reload inbox).
+  static void Function(Map<String, dynamic> data)? onPushReceived;
 
   /// Holds notification data from cold-start (app launched via notification tap
   /// before any screen is mounted). The screen reads this in initState.
@@ -133,11 +137,10 @@ class NotificationService {
       );
     }
 
-    // Trigger refresh for both visible and silent pushes
-    // This replaces the 10s HTTP polling — the backend rings FCM's doorbell,
-    // and we only fetch the briefing when there's actually new data.
+    // Trigger refresh for both visible and silent pushes.
+    // Pass the data payload so screens can decide what to refresh.
     if (onPushReceived != null && data.isNotEmpty) {
-      onPushReceived!();
+      onPushReceived!(data);
     }
   }
 

@@ -14,10 +14,12 @@ from dataclasses import dataclass
 class PulseOutput(BaseModel):
     """Structured output from the LLM briefing call.
 
-    Only the briefing field is used. The Action Planner handles
-    all task operations (create, close, modify) on the webhook path.
+    The briefing field goes to Telegram (unchanged).
+    The voice_line field goes to the Flutter app via app_intelligence table.
+    The Action Planner handles all task operations (create, close, modify).
     """
     briefing: str = ""
+    voice_line: str = ""
 
 
 @dataclass
