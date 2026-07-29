@@ -464,19 +464,20 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             o_id = t.get('organization_id')
             o_name = org_map.get(o_id, 'INBOX')
 
-            personal_orgs = ['Personal', 'Ashraya', 'Ashraya Chennai', 'Chennai North', 'Chennai Central', 'Chennai India']
+            personal_orgs = ['Personal', 'Ashraya', 'Ashraya Chennai', 'Chennai North', 'Chennai Central', 'Ashraya India']
+            o_name_lower = o_name.lower()
 
             if is_weekend:
                 # Weekend mode: only personal/Ashraya tasks pass through
-                if not any(po in o_name for po in personal_orgs):
+                if not any(po.lower() in o_name_lower for po in personal_orgs):
                     continue
             elif hour < 19:
-                if not any(po in o_name for po in personal_orgs) or o_name == 'INBOX':
+                if not any(po.lower() in o_name_lower for po in personal_orgs) or o_name == 'INBOX':
                     pass
                 else:
                     continue
             else:
-                if any(po in o_name for po in personal_orgs):
+                if any(po.lower() in o_name_lower for po in personal_orgs):
                     pass
                 else:
                     continue

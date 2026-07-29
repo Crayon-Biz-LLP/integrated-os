@@ -8,6 +8,7 @@ import 'today_screen.dart';
 import '../models/message.dart';
 import '../services/notification_service.dart';
 import '../models/decision_item.dart';
+import '../models/briefing.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/chat_bubble.dart';
@@ -54,6 +55,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   final _api = ApiService();
   final _instrumentation = HomeInstrumentation();
 
+  // ── Pulse intelligence ──
+  BriefingResponse _briefing = BriefingResponse.empty();
+  bool _briefingLoading = true;
+
   // ── NOW zone ──
   List<_NowCard> _nowCards = [];
   bool _nowLoading = true;
@@ -98,6 +103,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   @override
   void initState() {
     super.initState();
+    _loadBriefing();
     _loadNowCards();
     // Conversation starts empty — no history fetch.
     // The home screen is a clean companion, not an archive browser.
@@ -140,6 +146,24 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     _scrollController.dispose();
     _instrumentation.log();
     super.dispose();
+  }
+
+  // ── Pulse intelligence ───────────────────────────────────────────
+
+  Future<void> _loadBriefing() async {
+    try {
+      final briefing = await _api.getBriefing();
+      if (mounted) {
+        setState(() {
+          _briefing = briefing;
+          _briefingLoading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _briefingLoading = false);
+      }
+    }
   }
 
   // ── Now zone ─────────────────────────────────────────────────
@@ -420,6 +444,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   /// Triggers a message fetch immediately — no need to wait for the next poll cycle.
   void _handlePushReceived(Map<String, dynamic> data) {
     debugPrint('[PushDelivery] Push received: type=${data['type']}');
+    final type = data['type'];
+    // Refresh pulse intelligence on briefing pushes
+    if (type == 'briefing' || type == 'briefing_refresh') {
+      _loadBriefing();
+    }
     _pollForUpdates();
   }
 
@@ -909,6 +938,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   // ── NOW zone ─────────────────────────────────────────────────
 
   Widget _buildNowZone() {
+    final voice = _briefing.voiceLine ?? '';
+    final hasVoice = voice.isNotEmpty;
+    final hasInsights = _briefing.insights.isNotEmpty;
+    final hasVaulted = _briefing.vaultedCount > 0;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
       decoration: const BoxDecoration(
@@ -920,7 +954,17 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Section header
+          // ── Rhodey voice line ──
+          if (!_briefingLoading && hasVoice)
+            _buildVoiceLine(),
+
+          // ── Pulse insights ──
+          if (!_briefingLoading && hasInsights)
+            _buildInsightsSection(),
+
+          // ── Section header ──
+          if (hasVoice || hasInsights)
+            const SizedBox(height: 8),
           Row(
             children: [
               Text(
@@ -941,7 +985,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
                     color: AppTheme.textTertiary,
                   ),
                 ),
-              // API error indicator — subtle red dot
+              // API error indicator — subtle amber dot
               if (!_nowLoading && _nowApiError)
                 const Padding(
                   padding: EdgeInsets.only(left: 4),
@@ -955,12 +999,17 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
           ),
           const SizedBox(height: 6),
 
-          // Cards
+          // ── NOW cards ──
           if (!_nowLoading && _nowCards.isEmpty)
             _buildEmptyNow()
           else if (!_nowLoading)
             ..._buildNowCards(),
 
+          // ── Vaulted card ──
+          if (!_briefingLoading && hasVaulted)
+            _buildVaultedCard(),
+
+          // ── Overflow link ──
           if (!_nowLoading && _totalPendingCount > _nowCards.length)
             _buildOverflowLink(),
         ],
@@ -1034,6 +1083,154 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  // ── Pulse intelligence widgets ─────────────────────────────────
+
+  Widget _buildVoiceLine() {
+    final voice = _briefing.voiceLine ?? '';
+    if (voice.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppTheme.accent.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: AppTheme.accent.withValues(alpha: 0.12),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Decorative quote mark
+            Padding(
+              padding: const EdgeInsets.only(top: 1, right: 8),
+              child: Text(
+                '\u201c',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w300,
+                  color: AppTheme.accent.withValues(alpha: 0.5),
+                  height: 1.0,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    voice,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w400,
+                      color: AppTheme.textPrimary,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Rhodey',
+                    style: AppTheme.caption.copyWith(
+                      color: AppTheme.accent,
+                      fontSize: 9,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInsightsSection() {
+    if (_briefing.insights.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        children: _briefing.insights.map((insight) {
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: AppTheme.accentBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: AppTheme.accent.withValues(alpha: 0.15),
+                width: 1,
+              ),
+            ),
+            child: Text(
+              insight,
+              style: AppTheme.caption.copyWith(
+                color: AppTheme.accent,
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildVaultedCard() {
+    if (_briefing.vaultedCount <= 0) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const TodayScreen()),
+          ),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppTheme.surfaceAlt,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: AppTheme.border.withValues(alpha: 0.4),
+                width: 1,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('\uD83D\uDCE6', style: TextStyle(fontSize: 11)),
+                const SizedBox(width: 6),
+                Text(
+                  '${_briefing.vaultedCount} more in vault',
+                  style: AppTheme.caption.copyWith(
+                    color: AppTheme.textSecondary,
+                    fontSize: 11,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.arrow_forward_ios,
+                  size: 8,
+                  color: AppTheme.textSecondary.withValues(alpha: 0.5),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

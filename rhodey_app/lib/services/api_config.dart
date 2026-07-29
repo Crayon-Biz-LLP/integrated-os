@@ -13,8 +13,8 @@ class ApiConfig {
   static const String _keyBaseUrl = 'api_base_url';
   static const String _keyApiKey = 'api_api_key';
 
-  /// Production backend URL.
-  static const String defaultBaseUrl = 'https://integrated-os.vercel.app';
+  /// Production backend URL (Modal).
+  static const String defaultBaseUrl = 'https://danielyashwant--rhodey-os-web-endpoint.modal.run';
 
   String _baseUrl = defaultBaseUrl;
   String _apiKey = '';
