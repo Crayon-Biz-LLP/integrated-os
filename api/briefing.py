@@ -37,6 +37,12 @@ class TraceItem(TypedDict):
     input: str              # What the user said/asked (brief)
     resolution: str         # What happened / outcome
 
+class DeltaItem(TypedDict):
+    icon: str               # Emoji: "🆕", "✅", "🔴"
+    text: str               # Human-readable description
+    time: str               # Human-readable time: "2m ago", "1h ago"
+
+
 class BriefingResponse(TypedDict):
     greeting: str
     next_event: str | None
@@ -54,6 +60,8 @@ class BriefingResponse(TypedDict):
     home_mode: str                  # "proceed" | "decide" | "sprint" | "catch_up" | "wrap"
     vaulted_urgent_count: int       # Count of vaulted urgent tasks
     vaulted_high_count: int         # Count of vaulted high-priority tasks
+    # Catch-up delta: what changed since the user was last active
+    delta_items: list[DeltaItem]    # 🆕 New tasks, ✅ done tasks, 🔴 new decisions
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -596,7 +604,105 @@ async def build_briefing(supabase) -> BriefingResponse:
     # ── Apply horizon guard to tasks ──
     tasks = await _filter_horizon(tasks)
 
-    # Now compute which of the raw tasks didn't make the cut
+    # ── Compute delta items (since last pulse) for catch_up mode ──
+    # Collect raw items with timestamps, sort globally by recency
+    delta_items: list[DeltaItem] = []
+    try:
+        # Find the last pulse timestamp (reuse ai_res result computed later)
+        # But we need it now for the delta query — read it here
+        last_pulse_at = (datetime.now(IST) - timedelta(hours=6)).isoformat()
+        ai_ts_res = supabase.table("app_intelligence") \
+            .select("created_at") \
+            .order("created_at", desc=True) \
+            .limit(1) \
+            .execute()
+        if ai_ts_res.data:
+            last_pulse_at = ai_ts_res.data[0]["created_at"]
+
+        now = datetime.now(IST)
+        raw_deltas: list[tuple[datetime, str, str]] = []  # (timestamp, icon, text)
+
+        # Tasks created since last pulse
+        new_tasks_res = supabase.table("tasks") \
+            .select("title, created_at") \
+            .eq("is_current", True) \
+            .gte("created_at", last_pulse_at) \
+            .order("created_at", desc=True) \
+            .limit(15) \
+            .execute()
+        for t in new_tasks_res.data or []:
+            title = t.get("title", "").strip()
+            if not title or title.startswith("http"):
+                continue
+            created_raw = t.get("created_at", "")
+            created_dt = _parse_dt(created_raw)
+            if created_dt is None:
+                continue
+            raw_deltas.append((created_dt, "\U0001F195", f"New: {title}"))  # 🆕
+
+        # Tasks completed since last pulse
+        done_tasks_res = supabase.table("tasks") \
+            .select("title, completed_at") \
+            .eq("is_current", True) \
+            .eq("status", "done") \
+            .gte("completed_at", last_pulse_at) \
+            .order("completed_at", desc=True) \
+            .limit(15) \
+            .execute()
+        for t in done_tasks_res.data or []:
+            title = t.get("title", "").strip()
+            if not title:
+                continue
+            done_raw = t.get("completed_at", "")
+            done_dt = _parse_dt(done_raw)
+            if done_dt is None:
+                continue
+            raw_deltas.append((done_dt, "\u2705", f"Done: {title}"))  # ✅
+
+        # New pending decisions since last pulse
+        new_edges_res = supabase.table("pending_graph_edges") \
+            .select("source_label, target_label, relationship, created_at") \
+            .gte("created_at", last_pulse_at) \
+            .order("created_at", desc=True) \
+            .limit(10) \
+            .execute()
+        for e in new_edges_res.data or []:
+            src = (e.get("source_label") or "?").strip()
+            tgt = (e.get("target_label") or "?").strip()
+            rel = (e.get("relationship") or "relates_to").strip()
+            created_raw = e.get("created_at", "")
+            created_dt = _parse_dt(created_raw)
+            if created_dt is None:
+                continue
+            raw_deltas.append((created_dt, "\U0001F517", f"New edge: {src} → {rel} → {tgt}"))  # 🔗
+
+        new_nodes_res = supabase.table("pending_nodes") \
+            .select("label, node_type, created_at") \
+            .gte("created_at", last_pulse_at) \
+            .order("created_at", desc=True) \
+            .limit(10) \
+            .execute()
+        for n in new_nodes_res.data or []:
+            label = (n.get("label") or "").strip()
+            ntype = (n.get("node_type") or "entity").strip()
+            if not label:
+                continue
+            created_raw = n.get("created_at", "")
+            created_dt = _parse_dt(created_raw)
+            if created_dt is None:
+                continue
+            raw_deltas.append((created_dt, "\U0001F464", f"New {ntype}: {label}"))  # 👤
+
+        # Sort globally by recency (newest first), then build DeltaItems
+        raw_deltas.sort(key=lambda x: x[0], reverse=True)
+        for ts, icon, text in raw_deltas[:20]:
+            time_str = _human_time(ts, now)
+            delta_items.append(DeltaItem(icon=icon, text=text, time=time_str))
+    except Exception as e:
+        print(f"[Briefing] Delta items error (non-critical): {e}")
+        delta_items = []
+
+    # ── Now compute which of the raw tasks didn't make the cut for vault segmentation ──
     filtered_ids = {str(t.get("id")) for t in tasks if t.get("id")}
     vaulted_total = len(horizon_task_ids) - len(filtered_ids)
     for t in raw_tasks_before_filter:
@@ -781,4 +887,5 @@ async def build_briefing(supabase) -> BriefingResponse:
         vaulted_urgent_count=vaulted_urgent,
         vaulted_high_count=vaulted_high,
         vaulted_count=vaulted_total,
+        delta_items=delta_items,
     )

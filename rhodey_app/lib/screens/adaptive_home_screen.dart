@@ -1243,14 +1243,78 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   // ── CATCH UP: delta items ────────────────────────────────────
 
   Widget _buildCatchUpSection() {
+    final deltas = _briefing.deltaItems;
+
+    if (deltas.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildModeHeader('Since You Were Away'),
+          const SizedBox(height: 6),
+          _buildEmptyNow('Everything is current — no changes to report.'),
+        ],
+      );
+    }
+
+    // Show up to 10 delta items, newest first (they're already ordered by the API)
+    final items = deltas.take(10).toList();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
         _buildModeHeader('Since You Were Away'),
         const SizedBox(height: 6),
-        _buildEmptyNow('Everything is current — no changes to report.'),
+        ...items.map((item) => _buildDeltaRow(item)),
       ],
+    );
+  }
+
+  Widget _buildDeltaRow(DeltaItem item) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 20,
+            child: Text(
+              item.icon,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  item.text,
+                  style: AppTheme.body.copyWith(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (item.time.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 1),
+                    child: Text(
+                      item.time,
+                      style: AppTheme.caption.copyWith(
+                        color: AppTheme.textTertiary,
+                        fontSize: 9,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 

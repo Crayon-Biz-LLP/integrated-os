@@ -112,6 +112,33 @@ class TraceItem {
       };
 }
 
+/// A catch-up delta item — what changed since the user was last active.
+class DeltaItem {
+  final String icon;   // "🆕", "✅", "🔗", "👤"
+  final String text;
+  final String time;   // "2m ago", "1h ago"
+
+  const DeltaItem({
+    required this.icon,
+    required this.text,
+    required this.time,
+  });
+
+  factory DeltaItem.fromJson(Map<String, dynamic> json) {
+    return DeltaItem(
+      icon: json['icon'] as String? ?? '📝',
+      text: json['text'] as String? ?? '',
+      time: json['time'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'icon': icon,
+        'text': text,
+        'time': time,
+      };
+}
+
 class BriefingResponse {
   final String greeting;
   final String? nextEvent;
@@ -131,6 +158,8 @@ class BriefingResponse {
   final String homeMode;         // "proceed" | "decide" | "sprint" | "catch_up" | "wrap"
   final int vaultedUrgentCount;  // Vaulted urgent tasks (shown as 🔴 count)
   final int vaultedHighCount;    // Vaulted high-priority tasks (shown as 🟡 count)
+  // Catch-up delta items
+  final List<DeltaItem> deltaItems; // What changed since last session
 
   const BriefingResponse({
     required this.greeting,
@@ -147,12 +176,14 @@ class BriefingResponse {
     this.homeMode = 'proceed',
     this.vaultedUrgentCount = 0,
     this.vaultedHighCount = 0,
+    this.deltaItems = const [],
   });
 
   factory BriefingResponse.fromJson(Map<String, dynamic> json) {
     final rawSections = json['sections'] as List<dynamic>? ?? [];
     final rawTraces = json['traces'] as List<dynamic>? ?? [];
     final rawInsights = json['insights'] as List<dynamic>? ?? [];
+    final rawDelta = json['delta_items'] as List<dynamic>? ?? [];
     return BriefingResponse(
       greeting: json['greeting'] as String? ?? 'Hey.',
       nextEvent: json['next_event'] as String?,
@@ -172,6 +203,9 @@ class BriefingResponse {
       homeMode: json['home_mode'] as String? ?? 'proceed',
       vaultedUrgentCount: json['vaulted_urgent_count'] as int? ?? 0,
       vaultedHighCount: json['vaulted_high_count'] as int? ?? 0,
+      deltaItems: rawDelta
+          .map((e) => DeltaItem.fromJson(e as Map<String, dynamic>))
+          .toList(),
     );
   }
 
@@ -196,5 +230,6 @@ class BriefingResponse {
         'home_mode': homeMode,
         'vaulted_urgent_count': vaultedUrgentCount,
         'vaulted_high_count': vaultedHighCount,
+        'delta_items': deltaItems.map((e) => e.toJson()).toList(),
       };
 }
