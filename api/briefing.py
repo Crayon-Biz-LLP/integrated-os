@@ -42,6 +42,11 @@ class DeltaItem(TypedDict):
     text: str               # Human-readable description
     time: str               # Human-readable time: "2m ago", "1h ago"
 
+class WrapItem(TypedDict):
+    icon: str               # Emoji: "✅", "📋"
+    text: str               # Task title
+    detail: str             # Detail line: completion time, org, etc.
+
 
 class BriefingResponse(TypedDict):
     greeting: str
@@ -62,6 +67,9 @@ class BriefingResponse(TypedDict):
     vaulted_high_count: int         # Count of vaulted high-priority tasks
     # Catch-up delta: what changed since the user was last active
     delta_items: list[DeltaItem]    # 🆕 New tasks, ✅ done tasks, 🔴 new decisions
+    # Wrap mode: completed today + rolling tasks
+    wrap_done_today: list[WrapItem] # ✅ Tasks completed today
+    wrap_rolling: list[WrapItem]    # 📋 Open tasks rolling to tomorrow
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -702,6 +710,62 @@ async def build_briefing(supabase) -> BriefingResponse:
         print(f"[Briefing] Delta items error (non-critical): {e}")
         delta_items = []
 
+    # ── Compute wrap data (done today + rolling) for wrap mode ──
+    wrap_done_today: list[WrapItem] = []
+    wrap_rolling: list[WrapItem] = []
+    try:
+        start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+        # Tasks completed today (since midnight IST)
+        done_today_res = supabase.table("tasks") \
+            .select("title, completed_at") \
+            .eq("is_current", True) \
+            .eq("status", "done") \
+            .gte("completed_at", start_of_today) \
+            .order("completed_at", desc=True) \
+            .limit(15) \
+            .execute()
+        for t in done_today_res.data or []:
+            title = t.get("title", "").strip()
+            if not title:
+                continue
+            done_raw = t.get("completed_at", "")
+            done_dt = _parse_dt(done_raw)
+            time_str = _human_time(done_dt, now) if done_dt else ""
+            wrap_done_today.append(WrapItem(
+                icon="\u2705",  # ✅
+                text=title,
+                detail=time_str,
+            ))
+
+        # Open tasks rolling to tomorrow (todo, priority order, max 5)
+        rolling_res = supabase.table("tasks") \
+            .select("title, priority, deadline") \
+            .eq("is_current", True) \
+            .eq("status", "todo") \
+            .order("priority", desc=True) \
+            .order("created_at", desc=True) \
+            .limit(10) \
+            .execute()
+        for t in rolling_res.data or []:
+            title = t.get("title", "").strip()
+            if not title or title.startswith("http"):
+                continue
+            priority = t.get("priority", "") or ""
+            detail = priority.capitalize() if priority else ""
+            wrap_rolling.append(WrapItem(
+                icon="\U0001F4CB",  # 📋
+                text=title,
+                detail=detail,
+            ))
+
+        wrap_done_today = wrap_done_today[:10]
+        wrap_rolling = wrap_rolling[:5]
+    except Exception as e:
+        print(f"[Briefing] Wrap data error (non-critical): {e}")
+        wrap_done_today = []
+        wrap_rolling = []
+
     # ── Now compute which of the raw tasks didn't make the cut for vault segmentation ──
     filtered_ids = {str(t.get("id")) for t in tasks if t.get("id")}
     vaulted_total = len(horizon_task_ids) - len(filtered_ids)
@@ -888,4 +952,6 @@ async def build_briefing(supabase) -> BriefingResponse:
         vaulted_high_count=vaulted_high,
         vaulted_count=vaulted_total,
         delta_items=delta_items,
+        wrap_done_today=wrap_done_today,
+        wrap_rolling=wrap_rolling,
     )

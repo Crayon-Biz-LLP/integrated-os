@@ -1321,14 +1321,111 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   // ── WRAP: done today + rolling ───────────────────────────────
 
   Widget _buildWrapSection() {
+    final doneToday = _briefing.wrapDoneToday;
+    final rolling = _briefing.wrapRolling;
+
+    final hasDone = doneToday.isNotEmpty;
+    final hasRolling = rolling.isNotEmpty;
+
+    if (!hasDone && !hasRolling) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildModeHeader('Done Today'),
+          const SizedBox(height: 6),
+          _buildEmptyNow('Clear board — nothing closed yet today.'),
+        ],
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
+        // Always show mode header when there's any content
         _buildModeHeader('Done Today'),
         const SizedBox(height: 6),
-        _buildEmptyNow('Clear board — nothing closed yet today.'),
+
+        // Done Today section
+        if (hasDone)
+          ...doneToday.take(8).map((item) => _buildWrapRow(item)),
+
+        if (hasDone && hasRolling) const SizedBox(height: 10),
+
+        // Rolling to Tomorrow section
+        if (hasRolling) _buildRollingHeader(),
+        if (hasRolling)
+          ...rolling.take(5).map((item) => _buildWrapRow(item)),
       ],
+    );
+  }
+
+  Widget _buildRollingHeader() {
+    return Row(
+      children: [
+        Text(
+          'ROLLING TO TOMORROW',
+          style: AppTheme.label.copyWith(
+            color: AppTheme.amber,
+            fontSize: 10,
+            letterSpacing: 1.2,
+          ),
+        ),
+        const SizedBox(width: 4),
+        const Icon(
+          Icons.unfold_more,
+          size: 12,
+          color: AppTheme.amber,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildWrapRow(WrapItem item) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 20,
+            child: Text(
+              item.icon,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  item.text,
+                  style: AppTheme.body.copyWith(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (item.detail.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 1),
+                    child: Text(
+                      item.detail,
+                      style: AppTheme.caption.copyWith(
+                        color: AppTheme.textTertiary,
+                        fontSize: 9,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 

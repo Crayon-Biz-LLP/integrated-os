@@ -139,6 +139,33 @@ class DeltaItem {
       };
 }
 
+/// A wrap item — completed today or rolling to tomorrow.
+class WrapItem {
+  final String icon;   // "✅", "📋"
+  final String text;   // Task title
+  final String detail; // Detail line: time ago, priority, etc.
+
+  const WrapItem({
+    required this.icon,
+    required this.text,
+    required this.detail,
+  });
+
+  factory WrapItem.fromJson(Map<String, dynamic> json) {
+    return WrapItem(
+      icon: json['icon'] as String? ?? '📝',
+      text: json['text'] as String? ?? '',
+      detail: json['detail'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'icon': icon,
+        'text': text,
+        'detail': detail,
+      };
+}
+
 class BriefingResponse {
   final String greeting;
   final String? nextEvent;
@@ -160,6 +187,9 @@ class BriefingResponse {
   final int vaultedHighCount;    // Vaulted high-priority tasks (shown as 🟡 count)
   // Catch-up delta items
   final List<DeltaItem> deltaItems; // What changed since last session
+  // Wrap mode: completed today + rolling tasks
+  final List<WrapItem> wrapDoneToday;
+  final List<WrapItem> wrapRolling;
 
   const BriefingResponse({
     required this.greeting,
@@ -177,6 +207,8 @@ class BriefingResponse {
     this.vaultedUrgentCount = 0,
     this.vaultedHighCount = 0,
     this.deltaItems = const [],
+    this.wrapDoneToday = const [],
+    this.wrapRolling = const [],
   });
 
   factory BriefingResponse.fromJson(Map<String, dynamic> json) {
@@ -184,6 +216,8 @@ class BriefingResponse {
     final rawTraces = json['traces'] as List<dynamic>? ?? [];
     final rawInsights = json['insights'] as List<dynamic>? ?? [];
     final rawDelta = json['delta_items'] as List<dynamic>? ?? [];
+    final rawDoneToday = json['wrap_done_today'] as List<dynamic>? ?? [];
+    final rawRolling = json['wrap_rolling'] as List<dynamic>? ?? [];
     return BriefingResponse(
       greeting: json['greeting'] as String? ?? 'Hey.',
       nextEvent: json['next_event'] as String?,
@@ -205,6 +239,12 @@ class BriefingResponse {
       vaultedHighCount: json['vaulted_high_count'] as int? ?? 0,
       deltaItems: rawDelta
           .map((e) => DeltaItem.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      wrapDoneToday: rawDoneToday
+          .map((e) => WrapItem.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      wrapRolling: rawRolling
+          .map((e) => WrapItem.fromJson(e as Map<String, dynamic>))
           .toList(),
     );
   }
@@ -231,5 +271,7 @@ class BriefingResponse {
         'vaulted_urgent_count': vaultedUrgentCount,
         'vaulted_high_count': vaultedHighCount,
         'delta_items': deltaItems.map((e) => e.toJson()).toList(),
+        'wrap_done_today': wrapDoneToday.map((e) => e.toJson()).toList(),
+        'wrap_rolling': wrapRolling.map((e) => e.toJson()).toList(),
       };
 }
