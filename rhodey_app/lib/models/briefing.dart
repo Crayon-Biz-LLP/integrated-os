@@ -127,6 +127,11 @@ class BriefingResponse {
   final List<String> insights;   // ["🔴 2 stale tasks", "📦 3 vaulted"]
   final int vaultedCount;        // Tasks hidden by pulse vault
 
+  // Home screen mode (drives Flutter layout)
+  final String homeMode;         // "proceed" | "decide" | "sprint" | "catch_up" | "wrap"
+  final int vaultedUrgentCount;  // Vaulted urgent tasks (shown as 🔴 count)
+  final int vaultedHighCount;    // Vaulted high-priority tasks (shown as 🟡 count)
+
   const BriefingResponse({
     required this.greeting,
     this.nextEvent,
@@ -139,6 +144,9 @@ class BriefingResponse {
     this.pulseMode,
     this.insights = const [],
     this.vaultedCount = 0,
+    this.homeMode = 'proceed',
+    this.vaultedUrgentCount = 0,
+    this.vaultedHighCount = 0,
   });
 
   factory BriefingResponse.fromJson(Map<String, dynamic> json) {
@@ -161,6 +169,9 @@ class BriefingResponse {
       pulseMode: json['pulse_mode'] as String?,
       insights: rawInsights.whereType<String>().toList(),
       vaultedCount: json['vaulted_count'] as int? ?? 0,
+      homeMode: json['home_mode'] as String? ?? 'proceed',
+      vaultedUrgentCount: json['vaulted_urgent_count'] as int? ?? 0,
+      vaultedHighCount: json['vaulted_high_count'] as int? ?? 0,
     );
   }
 
@@ -182,5 +193,8 @@ class BriefingResponse {
         'pulse_mode': pulseMode,
         'insights': insights,
         'vaulted_count': vaultedCount,
+        'home_mode': homeMode,
+        'vaulted_urgent_count': vaultedUrgentCount,
+        'vaulted_high_count': vaultedHighCount,
       };
 }

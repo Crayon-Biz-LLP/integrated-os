@@ -935,10 +935,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         if isinstance(output, dict):
             try:
                 pulse_output = PulseOutput(**output)
-                briefing_text = pulse_output.briefing or response.text or "No briefing generated."
+                briefing_text = pulse_output.briefing or ""
             except Exception:
-                # LLM returned valid JSON but missing required fields (e.g., briefing)
-                briefing_text = response.text or "No briefing generated."
+                # PulseOutput validation failed — try extracting briefing from parsed dict directly
+                briefing_text = str(output.get("briefing", "") or "")
+            if not briefing_text:
+                # LLM returned valid JSON but briefing was empty — use safe fallback
+                audit_log_sync("pulse", "WARNING", "LLM returned empty briefing field — using safe fallback")
+                briefing_text = "No actionable items to report."
         else:
             briefing_text = response.text or "No briefing generated."
 
@@ -977,17 +981,21 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 inline_keyboard=None
             )
 
-        if send_success:
-            try:
-                await send_push_notification(
-                    title="Rhodey Pulse",
-                    body=f"📡 {briefing_text[:80].strip()}...",
-                    data={"type": "briefing"},
-                )
-                # Silent data-only push for Flutter background refresh
-                await send_silent_push({"type": "briefing_refresh"})
-            except Exception as e:
-                audit_log_sync("pulse", "WARNING", f"Push notification failed: {e}")
+        # Send push notification regardless of Telegram success
+        # Decoupled from send_success so app gets notified even if Telegram fails
+        try:
+            notification_body = briefing_text[:80].strip() if briefing_text.strip() else "New pulse briefing available"
+            push_count = await send_push_notification(
+                title="Rhodey Pulse",
+                body=f"📡 {notification_body}...",
+                data={"type": "briefing"},
+            )
+            audit_log_sync("pulse", "INFO", f"📲 Push notification sent to {push_count} device(s)")
+            # Silent data-only push for Flutter background refresh
+            silent_count = await send_silent_push({"type": "briefing_refresh"})
+            audit_log_sync("pulse", "INFO", f"📲 Silent push sent to {silent_count} device(s)")
+        except Exception as e:
+            audit_log_sync("pulse", "WARNING", f"Push notification failed: {e}")
 
         # ── Store history ──
         try:
@@ -1019,6 +1027,18 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         # ── Store app intelligence (for Flutter app) ──
         try:
             voice_line = ""
+            # Extract home_mode from PulseOutput (defaults to proceed)
+            home_mode = "proceed"
+            if isinstance(output, dict):
+                try:
+                    if pulse_output.home_mode in ("proceed", "decide", "sprint", "catch_up", "wrap"):
+                        home_mode = pulse_output.home_mode
+                except Exception:
+                    # PulseOutput not available — fall back to raw parsed dict
+                    raw_home = output.get("home_mode", "proceed")
+                    if isinstance(raw_home, str) and raw_home in ("proceed", "decide", "sprint", "catch_up", "wrap"):
+                        home_mode = raw_home
+
             if isinstance(output, dict):
                 try:
                     voice_line = pulse_output.voice_line.strip()
@@ -1072,6 +1092,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 .limit(1) \
                 .execute()
             intel_payload = {
+                'home_mode': home_mode,
                 'voice_line': voice_line,
                 'pulse_mode': pulse_mode_clean,
                 'nag_list': json.dumps(nag_list),

@@ -16,10 +16,13 @@ class PulseOutput(BaseModel):
 
     The briefing field goes to Telegram (unchanged).
     The voice_line field goes to the Flutter app via app_intelligence table.
+    The home_mode field drives the Flutter home screen layout
+    (proceed|decide|sprint|catch_up|wrap).
     The Action Planner handles all task operations (create, close, modify).
     """
     briefing: str = ""
     voice_line: str = ""
+    home_mode: str = "proceed"
 
 
 @dataclass

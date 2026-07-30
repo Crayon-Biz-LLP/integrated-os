@@ -50,6 +50,10 @@ class BriefingResponse(TypedDict):
     pulse_mode: str | None          # "morning", "afternoon", "closing_loop", "weekend", etc.
     insights: list[str]             # ["Banking is the main blocker", "2 tasks waiting on others"]
     vaulted_count: int              # Tasks hidden behind the pulse vault
+    # Home screen mode (drives Flutter layout)
+    home_mode: str                  # "proceed" | "decide" | "sprint" | "catch_up" | "wrap"
+    vaulted_urgent_count: int       # Count of vaulted urgent tasks
+    vaulted_high_count: int         # Count of vaulted high-priority tasks
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -578,8 +582,31 @@ async def build_briefing(supabase) -> BriefingResponse:
         )
     )
 
+    # ── Compute vault segmentation BEFORE horizon filter ──
+    # raw_tasks is the unfiltered list, tasks will be filtered below
+    raw_tasks_before_filter = list(tasks)
+    horizon_task_ids = set()
+    vaulted_urgent = 0
+    vaulted_high = 0
+    for t in raw_tasks_before_filter:
+        tid = t.get("id")
+        if tid:
+            horizon_task_ids.add(str(tid))
+
     # ── Apply horizon guard to tasks ──
     tasks = await _filter_horizon(tasks)
+
+    # Now compute which of the raw tasks didn't make the cut
+    filtered_ids = {str(t.get("id")) for t in tasks if t.get("id")}
+    vaulted_total = len(horizon_task_ids) - len(filtered_ids)
+    for t in raw_tasks_before_filter:
+        tid = str(t.get("id"))
+        if tid not in filtered_ids:
+            p = t.get("priority", "")
+            if p == "urgent":
+                vaulted_urgent += 1
+            elif p == "high":
+                vaulted_high += 1
 
     # ── Assemble sections ────────────────────────────────────────────────
     greeting = _greeting()
@@ -610,9 +637,10 @@ async def build_briefing(supabase) -> BriefingResponse:
     insight_text = ""
     vaulted_count = 0
     voice_line = None
+    home_mode = "proceed"
     try:
         ai_res = supabase.table("app_intelligence")\
-            .select("voice_line, pulse_mode, nag_list, stale_list, overdue_list, vaulted_count, context, insights")\
+            .select("voice_line, pulse_mode, nag_list, stale_list, overdue_list, vaulted_count, context, insights, home_mode")\
             .order("created_at", desc=True)\
             .limit(1)\
             .execute()
@@ -622,6 +650,7 @@ async def build_briefing(supabase) -> BriefingResponse:
             pulse_mode = row.get("pulse_mode", "")
             insight_text = row.get("context", "")
             vaulted_count = row.get("vaulted_count") or 0
+            home_mode = row.get("home_mode") or "proceed"
             raw_overdue = row.get("overdue_list") or []
             raw_stale = row.get("stale_list") or []
             if raw_overdue:
@@ -748,4 +777,8 @@ async def build_briefing(supabase) -> BriefingResponse:
         pulse_mode=pulse_mode,
         insights=insights_list,
         vaulted_count=vaulted_count,
+        home_mode=home_mode,
+        vaulted_urgent_count=vaulted_urgent,
+        vaulted_high_count=vaulted_high,
+        vaulted_count=vaulted_total,
     )
