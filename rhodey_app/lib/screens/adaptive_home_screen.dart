@@ -863,12 +863,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     final current = _overriddenMode ?? _briefing.homeMode;
     if (newMode == current) return;
     
+    final previousMode = current;
     setState(() {
       _overriddenMode = newMode;
     });
   
-    // TODO(phase-3): Send correction signal to classifier_corrections via
-    // dedicated POST /api/home-mode-switch endpoint (not yet implemented)
+    // Fire-and-forget correction signal to train Rhodey
+    // This logs to subsystem_telemetry + classifier_corrections
+    _api.switchHomeMode(previousMode, newMode);
   }
 
   // ── Time formatting ─────────────────────────────────────────

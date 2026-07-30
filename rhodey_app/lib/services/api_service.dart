@@ -617,6 +617,17 @@ class ApiService {
     return BriefingResponse.empty();
   }
 
+  // ── Home mode switch ────────────────────────────────────────
+
+  /// Sends a mode switch correction signal to /api/home-mode-switch.
+  /// This trains Rhodey by recording the user's mode preference.
+  Future<ApiResult<dynamic>> switchHomeMode(String previousMode, String newMode) async {
+    return post('/api/home-mode-switch', body: {
+      'previous_mode': previousMode,
+      'new_mode': newMode,
+    }, maxRetries: 1);
+  }
+
   // ── Config access ────────────────────────────────────────────
 
   ApiConfig get config => _config;

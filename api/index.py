@@ -717,6 +717,56 @@ async def delete_alias_route(alias_id: int, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+# --- HOME MODE SWITCH (correction feedback for Rhodey's learning) ---
+@app.post("/api/home-mode-switch")
+async def home_mode_switch_route(request: Request):
+    """Record a user mode switch as a correction signal for Rhodey.
+
+    Called by the Flutter app when the user overrides the pulse's
+    home_mode via the mode switcher. Logs to subsystem_telemetry
+    and classifier_corrections so the LLM learns from the preference.
+
+    Body: { "previous_mode": "proceed", "new_mode": "decide" }
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        previous_mode = body.get("previous_mode", "")
+        new_mode = body.get("new_mode", "")
+
+        if not previous_mode or not new_mode:
+            raise HTTPException(status_code=400, detail="previous_mode and new_mode required")
+        if previous_mode == new_mode:
+            return {"success": True, "message": "No change — same mode"}
+
+        valid_modes = {"proceed", "decide", "sprint", "catch_up", "wrap"}
+        if previous_mode not in valid_modes or new_mode not in valid_modes:
+            raise HTTPException(status_code=400, detail=f"Invalid mode. Valid: {', '.join(sorted(valid_modes))}")
+
+        # Record as a learner observation — the sentinel's ingest_feedback_overrides()
+        # will pick this up on the next pulse and create the classifier_corrections row
+        try:
+            await emit_observation(
+                subsystem='home_mode',
+                event_type='correction',
+                features={"previous_mode": previous_mode, "new_mode": new_mode},
+                predicted=previous_mode,
+                actual=new_mode,
+                outcome='corrected',
+                source='flutter',
+            )
+        except Exception as e:
+            print(f"Home mode observation error (non-critical): {e}")
+
+        return {"success": True, "message": f"Mode switch recorded: {previous_mode} → {new_mode}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Home mode switch error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # --- EMAIL PENDING TASK DECISIONS (approve/reject from frontend) ---
 @app.post("/api/email-action")
 async def email_action_route(request: Request):
