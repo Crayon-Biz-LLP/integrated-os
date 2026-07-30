@@ -938,7 +938,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 briefing_text = pulse_output.briefing or ""
             except Exception:
                 # PulseOutput validation failed — try extracting briefing from parsed dict directly
-                briefing_text = str(output.get("briefing", "") or "")
+                raw_briefing = output.get("briefing")
+                if isinstance(raw_briefing, str):
+                    briefing_text = raw_briefing
+                elif isinstance(raw_briefing, dict):
+                    # LLM returned briefing as nested dict — extract content or use safe fallback
+                    briefing_text = raw_briefing.get("text") or raw_briefing.get("content") or "No briefing generated."
+                else:
+                    briefing_text = str(raw_briefing) if raw_briefing is not None else ""
             if not briefing_text:
                 # LLM returned valid JSON but briefing was empty — use safe fallback
                 audit_log_sync("pulse", "WARNING", "LLM returned empty briefing field — using safe fallback")

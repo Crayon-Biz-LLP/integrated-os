@@ -255,7 +255,7 @@ For a pending person node:
   "action_label": "Approve person"
 }
 ```
-If nothing needs Danny's attention, output an empty object {}.
+If nothing needs Danny's attention, output an empty object {{}}.
 
 --- HOME MODE SELECTION ---
 Your JSON output includes a `home_mode` field that controls how the app's home screen
