@@ -65,6 +65,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   bool _nowApiError = false;
   int _totalPendingCount = 0;
 
+  // Mode switcher — local override of pulse's home_mode
+  String? _overriddenMode;
+
   // Card removal animation tracking
   final Set<String> _removingCardIds = {};
 
@@ -783,6 +786,91 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     _tts.speak(text.trim());
   }
 
+  // ── Mode helpers ────────────────────────────────────────────
+
+  String _modeIcon(String mode) {
+    switch (mode) {
+      case 'proceed': return '▶';
+      case 'decide': return '📋';
+      case 'sprint': return '⏱';
+      case 'catch_up': return '🔄';
+      case 'wrap': return '✅';
+      default: return '•';
+    }
+  }
+
+  void _openModeSwitcher() {
+    final modes = ['proceed', 'decide', 'sprint', 'catch_up', 'wrap'];
+    final labels = ['Act', 'Decide', 'Sprint', 'Catch Up', 'Wrap'];
+    final current = _overriddenMode ?? _briefing.homeMode;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Not what you need?',
+                  style: TextStyle(
+                    color: AppTheme.textTertiary,
+                    fontSize: 11,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ...modes.asMap().entries.map((entry) {
+                  final i = entry.key;
+                  final mode = entry.value;
+                  final isCurrent = mode == current;
+                  return ListTile(
+                    dense: true,
+                    leading: Text(_modeIcon(mode), style: const TextStyle(fontSize: 16)),
+                    title: Text(
+                      labels[i],
+                      style: TextStyle(
+                        color: isCurrent ? AppTheme.accent : AppTheme.textPrimary,
+                        fontWeight: isCurrent ? FontWeight.w600 : FontWeight.w400,
+                        fontSize: 14,
+                      ),
+                    ),
+                    trailing: isCurrent
+                        ? const Icon(Icons.check, size: 16, color: AppTheme.accent)
+                        : null,
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _switchMode(mode);
+                    },
+                  );
+                }),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _switchMode(String newMode) {
+    // Only switch if different from current effective mode
+    final current = _overriddenMode ?? _briefing.homeMode;
+    if (newMode == current) return;
+    
+    setState(() {
+      _overriddenMode = newMode;
+    });
+  
+    // TODO(phase-3): Send correction signal to classifier_corrections via
+    // dedicated POST /api/home-mode-switch endpoint (not yet implemented)
+  }
+
   // ── Time formatting ─────────────────────────────────────────
 
   String _formattedTime() {
@@ -938,13 +1026,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   // ── NOW zone ─────────────────────────────────────────────────
 
   Widget _buildNowZone() {
+    final greeting = _briefing.greeting;
     final voice = _briefing.voiceLine ?? '';
     final hasVoice = voice.isNotEmpty;
-    final hasInsights = _briefing.insights.isNotEmpty;
-    final hasVaulted = _briefing.vaultedCount > 0;
+    final homeMode = _overriddenMode ?? _briefing.homeMode;
+    final vaultTotal = _briefing.vaultedCount;
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
       decoration: const BoxDecoration(
         border: Border(
           bottom: BorderSide(color: AppTheme.border, width: 1),
@@ -954,60 +1043,25 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
+          // ── Greeting (serif, large) ──
+          if (!_briefingLoading && greeting.isNotEmpty)
+            _buildGreeting(greeting),
+
           // ── Rhodey voice line ──
           if (!_briefingLoading && hasVoice)
             _buildVoiceLine(),
 
-          // ── Pulse insights ──
-          if (!_briefingLoading && hasInsights)
-            _buildInsightsSection(),
-
-          // ── Section header ──
-          if (hasVoice || hasInsights)
-            const SizedBox(height: 8),
-          Row(
-            children: [
-              Text(
-                'NOW',
-                style: AppTheme.label.copyWith(
-                  color: AppTheme.accent,
-                  fontSize: 10,
-                  letterSpacing: 1.2,
-                ),
-              ),
-              const SizedBox(width: 6),
-              if (_nowLoading)
-                const SizedBox(
-                  width: 10,
-                  height: 10,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 1.5,
-                    color: AppTheme.textTertiary,
-                  ),
-                ),
-              // API error indicator — subtle amber dot
-              if (!_nowLoading && _nowApiError)
-                const Padding(
-                  padding: EdgeInsets.only(left: 4),
-                  child: Icon(
-                    Icons.warning_amber_rounded,
-                    size: 12,
-                    color: AppTheme.amber,
-                  ),
-                ),
-            ],
-          ),
           const SizedBox(height: 6),
 
-          // ── NOW cards ──
-          if (!_nowLoading && _nowCards.isEmpty)
-            _buildEmptyNow()
-          else if (!_nowLoading)
-            ..._buildNowCards(),
+          // ── Mode-driven section ──
+          if (!_briefingLoading && !_nowLoading)
+            _buildModeSection(homeMode)
+          else
+            _buildEmptyNow(),
 
-          // ── Vaulted card ──
-          if (!_briefingLoading && hasVaulted)
-            _buildVaultedCard(),
+          // ── Vault stat line ──
+          if (!_briefingLoading && vaultTotal > 0)
+            _buildVaultStat(),
 
           // ── Overflow link ──
           if (!_nowLoading && _totalPendingCount > _nowCards.length)
@@ -1017,7 +1071,323 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     );
   }
 
-  Widget _buildEmptyNow() {
+  // ── Greeting ──────────────────────────────────────────────────
+
+  Widget _buildGreeting(String greeting) {
+    // Split greeting into headline + subtext at the period
+    final dotIndex = greeting.indexOf('.');
+    String headline = greeting;
+    String subtext = '';
+    if (dotIndex > 0 && dotIndex < greeting.length - 1) {
+      headline = greeting.substring(0, dotIndex + 1);
+      subtext = greeting.substring(dotIndex + 1).trim();
+      if (subtext.startsWith('.')) subtext = subtext.substring(1).trim();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            headline,
+            style: const TextStyle(
+              fontFamily: 'InstrumentSerif',
+              fontSize: 30,
+              fontWeight: FontWeight.w300,
+              color: AppTheme.textPrimary,
+              height: 1.1,
+            ),
+          ),
+          if (subtext.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                subtext,
+                style: AppTheme.subGreetingStyle,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ── Mode section (switches on homeMode) ─────────────────────────
+
+  Widget _buildModeSection(String mode) {
+    switch (mode) {
+      case 'proceed':
+        return _buildProceedSection();
+      case 'decide':
+        return _buildDecideSection();
+      case 'sprint':
+        return _buildSprintSection();
+      case 'catch_up':
+        return _buildCatchUpSection();
+      case 'wrap':
+        return _buildWrapSection();
+      default:
+        return _buildProceedSection();
+    }
+  }
+
+  // ── PROCEED: priority task cards ─────────────────────────────
+
+  Widget _buildProceedSection() {
+    // Show top 2-3 priority items from _nowCards
+    final actCards = _nowCards.take(3).toList();
+
+    if (actCards.isEmpty) {
+      return _buildEmptyNow();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildModeHeader('Act'),
+        const SizedBox(height: 6),
+        ...actCards.map((card) => Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: _NowCardWidget(
+            card: card,
+            onAction: () => _handleNowAction(card),
+            onDismiss: () => _dismissNowCard(card),
+          ),
+        )),
+      ],
+    );
+  }
+
+  // ── DECIDE: decision cards ───────────────────────────────────
+
+  Widget _buildDecideSection() {
+    // Show only decision-type cards
+    final decisionCards = _nowCards
+        .where((c) => c.type == _NowCardType.decision)
+        .take(3)
+        .toList();
+
+    if (decisionCards.isEmpty) {
+      return _buildEmptyNow();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildModeHeader('Decide'),
+        const SizedBox(height: 6),
+        ...decisionCards.map((card) => Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: _NowCardWidget(
+            card: card,
+            onAction: () => _handleNowAction(card),
+            onDismiss: () => _dismissNowCard(card),
+          ),
+        )),
+      ],
+    );
+  }
+
+  // ── SPRINT: focus tasks + radar ──────────────────────────────
+
+  Widget _buildSprintSection() {
+    // Show urgent tasks first, then high priority
+    final urgentCards = _nowCards
+        .where((c) => c.type == _NowCardType.task)
+        .take(3)
+        .toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildModeHeader('Sprint'),
+        const SizedBox(height: 6),
+        if (urgentCards.isEmpty)
+          _buildEmptyNow()
+        else
+          ...urgentCards.map((card) => Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: _NowCardWidget(
+              card: card,
+              onAction: () => _handleNowAction(card),
+              onDismiss: () => _dismissNowCard(card),
+            ),
+          )),
+        // Radar: next calendar event
+        if (_briefing.nextEvent != null && _briefing.nextEvent!.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Row(
+              children: [
+                const Icon(Icons.calendar_today, size: 10, color: AppTheme.textTertiary),
+                const SizedBox(width: 4),
+                Text(
+                  '📅 ${_briefing.nextEvent}',
+                  style: AppTheme.caption.copyWith(
+                    color: AppTheme.textTertiary,
+                    fontSize: 10,
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  // ── CATCH UP: delta items ────────────────────────────────────
+
+  Widget _buildCatchUpSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildModeHeader('Since You Were Away'),
+        const SizedBox(height: 6),
+        _buildEmptyNow('Everything is current — no changes to report.'),
+      ],
+    );
+  }
+
+  // ── WRAP: done today + rolling ───────────────────────────────
+
+  Widget _buildWrapSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildModeHeader('Done Today'),
+        const SizedBox(height: 6),
+        _buildEmptyNow('Clear board — nothing closed yet today.'),
+      ],
+    );
+  }
+
+  // ── Mode header with switcher ────────────────────────────────
+
+  Widget _buildModeHeader(String label) {
+    return GestureDetector(
+      onTap: _openModeSwitcher,
+      child: Row(
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: AppTheme.label.copyWith(
+              color: AppTheme.accent,
+              fontSize: 10,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Icon(
+            Icons.unfold_more,
+            size: 12,
+            color: AppTheme.accent.withValues(alpha: 0.5),
+          ),
+          if (_nowLoading)
+            const Padding(
+              padding: EdgeInsets.only(left: 6),
+              child: SizedBox(
+                width: 10,
+                height: 10,
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.5,
+                  color: AppTheme.textTertiary,
+                ),
+              ),
+            ),
+          if (!_nowLoading && _nowApiError)
+            const Padding(
+              padding: EdgeInsets.only(left: 4),
+              child: Icon(
+                Icons.warning_amber_rounded,
+                size: 12,
+                color: AppTheme.amber,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ── Vault stat line ──────────────────────────────────────────
+
+  Widget _buildVaultStat() {
+    final total = _briefing.vaultedCount;
+    final urgent = _briefing.vaultedUrgentCount;
+    final high = _briefing.vaultedHighCount;
+
+    if (total <= 0) return const SizedBox.shrink();
+
+    // Build segmented parts
+    final parts = <Widget>[];
+    parts.add(const Text('📦', style: TextStyle(fontSize: 10)));
+    parts.add(const SizedBox(width: 4));
+    parts.add(Text(
+      '$total vaulted',
+      style: AppTheme.caption.copyWith(
+        color: AppTheme.textTertiary,
+        fontSize: 10,
+      ),
+    ));
+
+    if (urgent > 0) {
+      parts.add(const SizedBox(width: 4));
+      parts.add(Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+        decoration: BoxDecoration(
+          color: AppTheme.red.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(3),
+        ),
+        child: Text(
+          '🔴 $urgent urgent',
+          style: AppTheme.caption.copyWith(
+            color: AppTheme.red,
+            fontSize: 9,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ));
+    }
+    if (high > 0) {
+      parts.add(const SizedBox(width: 4));
+      parts.add(Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+        decoration: BoxDecoration(
+          color: AppTheme.amber.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(3),
+        ),
+        child: Text(
+          '🟡 $high high',
+          style: AppTheme.caption.copyWith(
+            color: AppTheme.amber,
+            fontSize: 9,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ));
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: GestureDetector(
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const TodayScreen()),
+        ),
+        child: Row(
+          children: parts,
+        ),
+      ),
+    );
+  }
+
+  // ── Empty now ─────────────────────────────────────────────────
+
+  Widget _buildEmptyNow([String message = 'Nothing needs your attention right now.']) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -1031,11 +1401,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
             ),
           ),
           const SizedBox(width: 8),
-          Text(
-            'All caught up',
-            style: AppTheme.bodySmall.copyWith(
-              color: AppTheme.textTertiary,
-              fontSize: 12,
+          Flexible(
+            child: Text(
+              message,
+              style: AppTheme.bodySmall.copyWith(
+                color: AppTheme.textTertiary,
+                fontSize: 12,
+              ),
             ),
           ),
         ],
@@ -1043,27 +1415,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     );
   }
 
-  List<Widget> _buildNowCards() {
-    return _nowCards.map((card) {
-      final isRemoving = _removingCardIds.contains(card.id);
-      return AnimatedOpacity(
-        key: ValueKey(card.id),
-        opacity: isRemoving ? 0.0 : 1.0,
-        duration: const Duration(milliseconds: 300),
-        child: AnimatedSize(
-          duration: const Duration(milliseconds: 300),
-          alignment: Alignment.topCenter,
-          child: isRemoving
-              ? const SizedBox(height: 0)
-              : _NowCardWidget(
-                  card: card,
-                  onAction: () => _handleNowAction(card),
-                  onDismiss: () => _dismissNowCard(card),
-                ),
-        ),
-      );
-    }).toList();
-  }
+  // ── NOW cards (used by mode sections) ─────────────────────────
 
   Widget _buildOverflowLink() {
     return Padding(
@@ -1088,14 +1440,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     );
   }
 
-  // ── Pulse intelligence widgets ─────────────────────────────────
+  // ── Voice line ───────────────────────────────────────────────
 
   Widget _buildVoiceLine() {
     final voice = _briefing.voiceLine ?? '';
     if (voice.isEmpty) return const SizedBox.shrink();
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.only(bottom: 4),
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1149,88 +1501,6 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildInsightsSection() {
-    if (_briefing.insights.isEmpty) return const SizedBox.shrink();
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Wrap(
-        spacing: 6,
-        runSpacing: 4,
-        children: _briefing.insights.map((insight) {
-          return Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-            decoration: BoxDecoration(
-              color: AppTheme.accentBg,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: AppTheme.accent.withValues(alpha: 0.15),
-                width: 1,
-              ),
-            ),
-            child: Text(
-              insight,
-              style: AppTheme.caption.copyWith(
-                color: AppTheme.accent,
-                fontSize: 10,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          );
-        }).toList(),
-      ),
-    );
-  }
-
-  Widget _buildVaultedCard() {
-    if (_briefing.vaultedCount <= 0) return const SizedBox.shrink();
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const TodayScreen()),
-          ),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: AppTheme.surfaceAlt,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: AppTheme.border.withValues(alpha: 0.4),
-                width: 1,
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('\uD83D\uDCE6', style: TextStyle(fontSize: 11)),
-                const SizedBox(width: 6),
-                Text(
-                  '${_briefing.vaultedCount} more in vault',
-                  style: AppTheme.caption.copyWith(
-                    color: AppTheme.textSecondary,
-                    fontSize: 11,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Icon(
-                  Icons.arrow_forward_ios,
-                  size: 8,
-                  color: AppTheme.textSecondary.withValues(alpha: 0.5),
-                ),
-              ],
-            ),
-          ),
         ),
       ),
     );
