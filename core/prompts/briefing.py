@@ -198,10 +198,42 @@ NEW INPUT TAGS: {ctx.new_input_tags}
 
 {guards}
 
-NOTE: You are a briefing engine only. Your single output is the `briefing` field.
+--- HOME MODE SELECTION ---
+Your JSON output includes a `home_mode` field that controls how the app's home screen
+lays out information for Danny. Choose the mode that best fits the current context:
+
+- "proceed" (default): Normal operations. Show Act cards with priority items.
+  Use when there's a mix of tasks and decisions, and nothing is critical.
+
+- "decide": Danny has pending decisions to make. Choose when:
+  * There are 2+ pending graph nodes, edges, or channel items awaiting approval
+  * The Inbox has items that need review
+  * Decisions are the primary action item right now
+
+- "sprint": Deep focus mode. Choose when:
+  * 2+ tasks are urgent or overdue
+  * SYSTEM LOAD is OVERLOADED
+  * There's a clear priority that needs Danny's full attention
+  * A calendar event is coming up that requires preparation
+
+- "catch_up": Danny has been away. Choose when:
+  * Several new items appeared since the last briefing
+  * CROSS-SYSTEM DELTA shows significant changes
+  * It's the first briefing of the day (morning)
+  * Tasks were completed since last check-in
+
+- "wrap": End-of-day closure. Choose when:
+  * It's evening (19:00+ IST / Intel phase)
+  * Danny should transition from work to personal time
+  * There are completed tasks to acknowledge
+  * Focus should be on closing open loops
+
+Pick the SINGLE best mode. Default to "proceed" if unsure.
+
+NOTE: You are a briefing engine only. Your JSON output contains exactly
+three fields: `briefing`, `voice_line`, and `home_mode`.
 You do NOT create, complete, or modify any tasks, projects, people, resources, or clusters.
 All task operations are handled by the Action Planner on the webhook path.
-Do not generate any output arrays - only the briefing text.
 """
 
 
