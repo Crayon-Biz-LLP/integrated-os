@@ -134,12 +134,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
             final existingIdx = _focalItems.indexWhere(
               (f) => f.id == 'focal_${focal['item_id']}',
             );
+            final itemType = focal['type'] as String? ?? 'task';
+            final llmLabel = focal['action_label'] as String?;
             final newItem = _FocalItem(
               id: 'focal_${focal['item_id'] ?? focal['title']}',
               title: focal['title'] as String? ?? '',
               description: focal['reason'] as String?,
-              actionLabel: focal['action_label'] as String? ?? "I'll do it",
-              source: focal['type'] as String? ?? 'task',
+              actionLabel: _actionLabelForType(itemType, llmLabel),
+              source: itemType,
               metadata: {
                 'focal_item_id': focal['item_id'],
                 'focal_type': focal['type'],
@@ -261,6 +263,28 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       case 'whatsapp': return 'Create';
       case 'call': return 'Create';
       default: return 'View';
+    }
+  }
+
+  /// Derive the first-button label from the item's type field.
+  /// This is the authoritative source — overrides the LLM's `action_label`
+  /// to ensure the button text always makes sense for the item type.
+  String _actionLabelForType(String type, [String? llmFallback]) {
+    switch (type) {
+      case 'task':
+        return llmFallback ?? "I'll do it";
+      case 'graph_node':
+        return 'Approve';
+      case 'graph_edge':
+        return 'Review';
+      case 'email':
+        return 'Create';
+      case 'whatsapp':
+        return 'Create';
+      case 'call':
+        return 'Create';
+      default:
+        return llmFallback ?? "I'll do it";
     }
   }
 

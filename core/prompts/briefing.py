@@ -202,9 +202,12 @@ NEW INPUT TAGS: {ctx.new_input_tags}
 Your JSON output includes a `top_focal_item` field that tells the app the
 SINGLE most important thing Danny should focus on right now.
 
-Pick ONE item from the data below — either a task from ACTIVE TASKS or
-URGENT/BACKLOG, or a pending decision from the context. Only pick an item
-that Danny can actually act on. Follow these rules:
+CRITICAL: Prefer ACTIVE TASKS over pending decisions. Only pick a pending
+(graph_node / graph_edge) decision if there are ZERO actionable tasks.
+Danny uses the Inbox for decisions — the focal card is for tasks first.
+
+Pick ONE item from the data below. Only pick an item that Danny can actually
+act on. Follow these rules:
 
 1. ACTIONABLE ONLY: Never pick a task with direction="waiting_on" — Danny
    cannot act on blocked items. Never pick an item Danny has repeatedly
@@ -220,7 +223,14 @@ that Danny can actually act on. Follow these rules:
 4. REASON MATTERS: The `reason` field is shown to Danny. Make it specific:
    "DBS forms are blocking the Qhord transfer" NOT "This task is overdue."
 
-5. SET TO EMPTY if there's truly nothing worth surfacing (all is quiet).
+5. ACTION LABEL BY TYPE: The `action_label` controls what the first button
+   says. Set it based on the item type:
+   - For "task":     "I'll do it"
+   - For "graph_node": "Approve person"
+   - For "graph_edge": "Review edge"
+   - For other types: use a short verb ("View", "Create", "Review")
+
+6. SET TO EMPTY if there's truly nothing worth surfacing (all is quiet).
    The app will show an "all clear" state instead.
 
 Output format for top_focal_item:
@@ -231,7 +241,18 @@ Output format for top_focal_item:
   "title": "Fill DBS forms",
   "reason": "Blocking Qhord fund transfer — the bank is waiting on these forms.",
   "urgency": "critical",    // "critical", "important", "normal"
-  "action_label": "I'll do it now"
+  "action_label": "I'll do it"
+}
+```
+For a pending person node:
+```json
+{
+  "type": "graph_node",
+  "item_id": "456",
+  "title": "Approve: Yasir",
+  "reason": "New person to add to your network",
+  "urgency": "normal",
+  "action_label": "Approve person"
 }
 ```
 If nothing needs Danny's attention, output an empty object {}.
