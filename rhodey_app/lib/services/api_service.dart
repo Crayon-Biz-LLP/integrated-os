@@ -549,21 +549,49 @@ class ApiService {
     return ApiResult.ok(decisions);
   }
 
+  /// Fetches pending merge proposals from /api/pending-merges.
+  Future<ApiResult<List<PendingDecision>>> fetchPendingMerges() async {
+    final result = await get('/api/pending-merges');
+    if (!result.success || result.data is! Map) {
+      return ApiResult.ok([]);
+    }
+    final items = (result.data as Map)['data'] as List? ?? [];
+    final decisions = items.map((m) {
+      final mp = m as Map<String, dynamic>;
+      final sourceLabel = mp['source_label'] as String? ?? '?';
+      final targetLabel = mp['target_label'] as String? ?? '?';
+
+      return PendingDecision(
+        id: mp['id'].toString(),
+        source: 'merge',
+        title: '$sourceLabel → $targetLabel',
+        description: mp['rationale'] as String? ?? 'Merge proposed — accept to combine, reject to keep separate',
+        raw: {...mp, 'status': 'merge_proposed'},
+      );
+    }).toList();
+    return ApiResult.ok(decisions);
+  }
+
   /// Fetches ALL pending decisions from all sources.
   Future<ApiResult<List<PendingDecision>>> getPendingDecisions() async {
-    // Fire all three requests concurrently, then await.
+    // Fire all four requests concurrently, then await.
     final nodeFut = fetchPendingGraphNodes();
     final edgeFut = fetchPendingGraphEdges();
+    final mergeFut = fetchPendingMerges();
     final msgFut = getMessages(limit: 50);
 
     final nodeResult = await nodeFut;
     final edgeResult = await edgeFut;
+    final mergeResult = await mergeFut;
     final msgResult = await msgFut;
 
     final decisions = <PendingDecision>[];
 
     if (nodeResult.success) {
       decisions.addAll(nodeResult.data!);
+    }
+    if (mergeResult.success) {
+      decisions.addAll(mergeResult.data!);
     }
     if (edgeResult.success) {
       decisions.addAll(edgeResult.data!);
@@ -597,9 +625,9 @@ class ApiService {
       }
     }
 
-    // Sort: graph nodes first, then edges, then channel items
+    // Sort: merges first, then graph nodes, edges, then channel items
     decisions.sort((a, b) {
-      const order = ['graph_node', 'graph_edge', 'email', 'call', 'whatsapp'];
+      const order = ['merge', 'graph_node', 'graph_edge', 'email', 'call', 'whatsapp'];
       final ai = order.indexOf(a.source);
       final bi = order.indexOf(b.source);
       return ai.compareTo(bi);

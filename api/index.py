@@ -2474,6 +2474,26 @@ async def pending_nodes_route(request: Request):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# --- PENDING MERGE PROPOSALS (listing for Inbox tab) ---
+@app.get("/api/pending-merges")
+async def pending_merges_route(request: Request):
+    """List all pending merge proposals awaiting approval."""
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+        res = supabase.table('merge_proposals') \
+            .select('id, source_label, source_type, target_label, target_node_id, rationale, status') \
+            .eq('status', 'proposed') \
+            .order('id', desc=True) \
+            .limit(100) \
+            .execute()
+        return {"data": res.data or []}
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # --- PENDING GRAPH EDGES (listing for Inbox tab) ---
 @app.get("/api/pending-graph-edges")
 async def pending_graph_edges_route(request: Request):

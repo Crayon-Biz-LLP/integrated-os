@@ -220,9 +220,23 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
       if (mounted) {
         setState(() {
+          // Preserve the LLM-chosen briefing focal item at position 0
+          _FocalItem? briefingItem;
+          for (final f in _focalItems) {
+            if (f.metadata['from_briefing'] == true) {
+              briefingItem = f;
+              break;
+            }
+          }
           _focalItems = items;
+          if (briefingItem != null) {
+            // Re-insert the briefing item at position 0 (dedup if already in items)
+            // Note: Dart doesn't promote nullable types inside closures, so use ! within removeWhere
+            _focalItems.removeWhere((f) => f.id == briefingItem!.id);
+            _focalItems.insert(0, briefingItem);
+          }
           _focalLoading = false;
-          _instrumentation.nowCardsShown = items.length;
+          _instrumentation.nowCardsShown = _focalItems.length;
         });
       }
     } catch (_) {
@@ -258,6 +272,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   String _sourceActionLabel(String source) {
     switch (source) {
       case 'graph_node': return 'Approve';
+      case 'merge': return 'Approve';
       case 'graph_edge': return 'Review';
       case 'email': return 'Create';
       case 'whatsapp': return 'Create';
@@ -274,6 +289,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       case 'task':
         return llmFallback ?? "I'll do it";
       case 'graph_node':
+        return 'Approve';
+      case 'merge':
         return 'Approve';
       case 'graph_edge':
         return 'Review';
@@ -322,6 +339,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
           switch (source) {
             case 'graph_node':
               result = await _api.approveGraphNode(pendingId);
+              break;
+            case 'merge':
+              result = await _api.acceptMerge(pendingId);
               break;
             case 'graph_edge':
               result = await _api.approveGraphEdge(pendingId);
@@ -1108,7 +1128,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
                 // "I'll do it" — confirm and complete
                 Expanded(
                   child: _MiniButton(
-                    label: isFromBriefing ? (item.actionLabel) : 'Done',
+                    label: item.actionLabel,
                     color: AppTheme.green,
                     onTap: () => _completeFocalItem(item),
                   ),

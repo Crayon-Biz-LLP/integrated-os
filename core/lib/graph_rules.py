@@ -332,8 +332,14 @@ def find_similar_node(label: str, node_type: str, threshold: float = 0.55) -> li
         if n.get("type") != node_type:
             continue
         candidate = n.get("label", "")
-        ratio = difflib.SequenceMatcher(None, target_lower, candidate.lower().strip()).ratio()
-        if ratio >= threshold and target_lower != candidate.lower().strip():
+        candidate_lower = candidate.lower().strip()
+        ratio = difflib.SequenceMatcher(None, target_lower, candidate_lower).ratio()
+        # Substring priority boost: if one label is fully contained in the other,
+        # boost the score so longer strings with perfect prefix don't lose to
+        # shorter false positives (e.g. "kiara" in "Kiara Butler" should beat "kumar")
+        if target_lower in candidate_lower or candidate_lower in target_lower:
+            ratio += 0.3
+        if ratio >= threshold and target_lower != candidate_lower:
             matches.append({"id": n["id"], "label": candidate, "type": n["type"], "score": round(ratio, 3)})
     return sorted(matches, key=lambda x: -x["score"])
 
