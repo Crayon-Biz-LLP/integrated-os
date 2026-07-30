@@ -1,7 +1,25 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:home_widget/home_widget.dart';
 import 'api_service.dart';
+
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  final data = message.data;
+  if (data['type'] == 'briefing_refresh') {
+    if (data['headline'] != null) {
+      await HomeWidget.saveWidgetData<String>('headline', data['headline']);
+    }
+    if (data['insights_json'] != null) {
+      await HomeWidget.saveWidgetData<String>('insights_json', data['insights_json']);
+    }
+    await HomeWidget.updateWidget(
+      name: 'PulseStripWidgetProvider',
+      qualifiedAndroidName: 'com.crayon.rhodey_app.PulseStripWidgetProvider',
+    );
+  }
+}
 
 /// Service for handling push notifications via Firebase Cloud Messaging.
 ///
@@ -82,6 +100,7 @@ class NotificationService {
     // Handle foreground messages — show local notification for visible pushes,
     // trigger silent refresh for data-only pushes (FCM-driven polling replacement).
     FirebaseMessaging.onMessage.listen(_onForegroundMessage);
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
     // Handle notification tap (app opened from background)
     FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);

@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:home_widget/home_widget.dart';
 import 'theme/app_theme.dart';
 import 'screens/talk_screen.dart';
 import 'screens/dump_screen.dart';
 import 'screens/today_screen.dart';
 import 'screens/inbox_screen.dart';
-import 'screens/rhodey_surface.dart';
+import 'screens/adaptive_home_screen.dart';
+import 'screens/quick_capture_overlay.dart';
 import 'services/api_service.dart';
 import 'services/notification_service.dart';
 import 'services/update_service.dart';
@@ -13,16 +15,13 @@ import 'services/update_service.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Load persisted API config before anything renders.
   await ApiService().init();
 
-  // Render the app immediately so the user sees cached data / skeleton UI.
-  runApp(const RhodeyApp());
+  final uri = await HomeWidget.initiallyLaunchedFromHomeWidget();
+  final isCapture = uri?.host == 'capture';
 
-  // Defer Firebase + FCM to after the first frame.
-  // Previously these blocked runApp() for 1.5-5s (cold Firebase + FCM token
-  // fetch). Now the UI appears instantly with cached briefing, then Firebase
-  // and notification setup run in the background.
+  runApp(RhodeyApp(initialCapture: isCapture));
+
   WidgetsBinding.instance.addPostFrameCallback((_) async {
     try {
       await Firebase.initializeApp();
@@ -38,15 +37,18 @@ void main() async {
 }
 
 class RhodeyApp extends StatelessWidget {
-  const RhodeyApp({super.key});
+  final bool initialCapture;
+  const RhodeyApp({super.key, this.initialCapture = false});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Rhodey OS',
-      theme: AppTheme.themeData,
+      theme: AppTheme.themeData.copyWith(
+        scaffoldBackgroundColor: initialCapture ? Colors.transparent : AppTheme.background,
+      ),
       debugShowCheckedModeBanner: false,
-      home: const MainShell(),
+      home: initialCapture ? const QuickCaptureOverlay() : const MainShell(),
     );
   }
 }
@@ -79,6 +81,19 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       _hasStarted = true;
       UpdateService().check(context);
     });
+
+    HomeWidget.widgetClicked.listen((Uri? uri) {
+      if (uri?.host == 'capture') {
+        Navigator.of(context).push(PageRouteBuilder(
+          opaque: false,
+          pageBuilder: (_, __, ___) => const QuickCaptureOverlay(),
+        ));
+      } else if (uri?.host == 'inbox') {
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const InboxScreen()));
+      } else if (uri?.host == 'today') {
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const TodayScreen()));
+      }
+    });
   }
 
   @override
@@ -102,7 +117,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       return const _LegacyTabShell();
     }
 
-    return const RhodeySurface();
+    return const AdaptiveHomeScreen();
   }
 }
 

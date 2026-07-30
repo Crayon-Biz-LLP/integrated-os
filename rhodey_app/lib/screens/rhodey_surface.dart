@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
 import '../services/notification_service.dart';
 import '../models/briefing.dart';
+import '../services/widget_data_provider.dart';
 import 'menu_sheet.dart';
 import 'today_screen.dart';
 import 'inbox_screen.dart';
@@ -187,6 +188,7 @@ class _RhodeySurfaceState extends State<RhodeySurface>
       _apiConfigured = _api.config.isConfigured;
       _hasError = briefing.sections.isEmpty && briefing.traces.isEmpty;
     });
+    WidgetDataProvider().updatePulseWidget(briefing);
     // On initial load only, populate conversation from API history
     if (wasInitialLoad && !_conversationLoaded) {
       _loadFromTraces(briefing.traces);

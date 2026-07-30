@@ -11,6 +11,7 @@ import '../models/decision_item.dart';
 import '../models/briefing.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
+import '../services/widget_data_provider.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/voice_states.dart';
 import '../widgets/rich_card_content.dart';
@@ -95,6 +96,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   static const _backupPollInterval = Duration(seconds: 60);
   bool _awaitingResponse = false;
 
+  // ── Traces ──
+  String _tracesSearchQuery = '';
+
   // ── Voice ──
   VoiceState _voiceState = VoiceState.idle;
   String? _transcribedText;
@@ -161,6 +165,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
           _briefing = briefing;
           _briefingLoading = false;
         });
+        WidgetDataProvider().updatePulseWidget(briefing);
       }
     } catch (_) {
       if (mounted) {
@@ -1061,6 +1066,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
           else
             _buildEmptyNow(),
 
+          // ── Insights (Rhodey's pulse intelligence) ──
+          if (!_briefingLoading && _briefing.insights.isNotEmpty)
+            _buildInsightsSection(),
+
           // ── Vault stat line ──
           if (!_briefingLoading && vaultTotal > 0)
             _buildVaultStat(),
@@ -1139,7 +1148,12 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     // Show top 2-3 priority items from _nowCards
     final actCards = _nowCards.take(3).toList();
 
-    if (actCards.isEmpty) {
+    // Proactive card: Rhodey suggests an action when there's a next event + urgent item
+    final hasProactive = _briefing.nextEvent != null &&
+        _briefing.sections.isNotEmpty &&
+        _briefing.sections.first.items.any((i) => i.isUrgent);
+
+    if (actCards.isEmpty && !hasProactive) {
       return _buildEmptyNow();
     }
 
@@ -1149,15 +1163,94 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       children: [
         _buildModeHeader('Act'),
         const SizedBox(height: 6),
-        ...actCards.map((card) => Padding(
-          padding: const EdgeInsets.only(bottom: 4),
-          child: _NowCardWidget(
-            card: card,
-            onAction: () => _handleNowAction(card),
-            onDismiss: () => _dismissNowCard(card),
+
+        // Proactive suggestion card (above action cards)
+        if (hasProactive)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: _buildProactiveCard(),
           ),
-        )),
+
+        if (actCards.isEmpty && hasProactive)
+          _buildEmptyNow('One thing to flag — check the suggestion above.')
+        else
+          ...actCards.map((card) => Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: _NowCardWidget(
+              card: card,
+              onAction: () => _handleNowAction(card),
+              onDismiss: () => _dismissNowCard(card),
+            ),
+          )),
       ],
+    );
+  }
+
+  // ── Proactive Card ────────────────────────────────────────────
+
+  Widget _buildProactiveCard() {
+    final urgentItem = _briefing.sections.first.items.firstWhere(
+      (i) => i.isUrgent,
+      orElse: () => _briefing.sections.first.items.first,
+    );
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.accentBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: AppTheme.accent.withValues(alpha: 0.18),
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 3,
+                height: 14,
+                decoration: BoxDecoration(
+                  color: AppTheme.accent,
+                  borderRadius: BorderRadius.circular(1),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'SUGGESTION',
+                style: AppTheme.label.copyWith(
+                  color: AppTheme.accent,
+                  fontSize: 9,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '${urgentItem.icon} ${urgentItem.text}',
+            style: AppTheme.body.copyWith(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              height: 1.4,
+            ),
+          ),
+          if (_briefing.nextEvent != null && _briefing.nextEvent!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                '📅 ${_briefing.nextEvent}',
+                style: AppTheme.caption.copyWith(
+                  color: AppTheme.textTertiary,
+                  fontSize: 10,
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -1548,6 +1641,74 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     );
   }
 
+  // ── Insights section ───────────────────────────────────────────
+
+  Widget _buildInsightsSection() {
+    final insights = _briefing.insights.take(4).toList();
+    if (insights.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, bottom: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 3,
+                height: 12,
+                decoration: BoxDecoration(
+                  color: AppTheme.accent,
+                  borderRadius: BorderRadius.circular(1),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'INSIGHTS',
+                style: AppTheme.label.copyWith(
+                  color: AppTheme.accent,
+                  fontSize: 9,
+                  letterSpacing: 2.0,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          ...insights.map((insight) => Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppTheme.surfaceAlt,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: AppTheme.border.withValues(alpha: 0.4),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      insight,
+                      style: AppTheme.bodySmall.copyWith(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w300,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )),
+        ],
+      ),
+    );
+  }
+
   // ── Empty now ─────────────────────────────────────────────────
 
   Widget _buildEmptyNow([String message = 'Nothing needs your attention right now.']) {
@@ -1671,6 +1832,15 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
   // ── Conversation area ────────────────────────────────────────
 
+  List<TraceItem> get _filteredTraces {
+    if (_tracesSearchQuery.isEmpty) return _briefing.traces;
+    final q = _tracesSearchQuery.toLowerCase();
+    return _briefing.traces.where((t) =>
+      t.input.toLowerCase().contains(q) ||
+      t.resolution.toLowerCase().contains(q)
+    ).toList();
+  }
+
   Widget _buildConversationArea() {
     if (_loadingHistory) {
       return const Center(child: CircularProgressIndicator());
@@ -1680,6 +1850,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         ? _messages
         : _messages.skip(_historyCount).toList();
 
+    // Show traces preview when expanded, or history pill when collapsed
+    final hasTraces = _briefing.traces.isNotEmpty;
+    final hasHistory = _historyCount > 0;
+    final showPill = !_historyExpanded && (hasTraces || hasHistory);
+
+    final filteredTraces = _filteredTraces;
+
     return RefreshIndicator(
       onRefresh: _loadHistory,
       color: AppTheme.accent,
@@ -1687,12 +1864,46 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         controller: _scrollController,
         padding: const EdgeInsets.only(top: 4, bottom: 8),
         children: [
-          // History pill (collapsible banner)
-          if (!_historyExpanded && _historyCount > 0)
+          // Collapsed: show history pill
+          if (showPill)
             _buildHistoryPill(),
 
+          // Expanded: show Traces section
+          if (_historyExpanded && hasTraces) ...[            
+            // Search bar
+            _buildTracesSearchBar(),
+            // Trace cards (filtered)
+            if (filteredTraces.isEmpty && _tracesSearchQuery.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Text(
+                  'No results for "$_tracesSearchQuery"',
+                  style: AppTheme.caption.copyWith(
+                    color: AppTheme.textTertiary,
+                    fontSize: 11,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              )
+            else
+              ...filteredTraces.map((trace) => _buildTraceCard(trace)),
+            const SizedBox(height: 8),
+            // Results count
+            if (_tracesSearchQuery.isNotEmpty && filteredTraces.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Text(
+                  '${filteredTraces.length} result${filteredTraces.length == 1 ? '' : 's'}',
+                  style: AppTheme.caption.copyWith(
+                    color: AppTheme.textTertiary,
+                    fontSize: 10,
+                  ),
+                ),
+              ),
+          ],
+
           // Messages — rich cards for Rhodey responses, ChatBubble for everything else
-          if (displayMessages.isEmpty && !_loadingHistory)
+          if (displayMessages.isEmpty && !_loadingHistory && !_historyExpanded)
             _buildEmptyConversation()
           else
             ...displayMessages.asMap().entries.map((entry) {
@@ -1816,6 +2027,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   }
 
   Widget _buildHistoryPill() {
+    final hasTraces = _briefing.traces.isNotEmpty;
+    final label = hasTraces
+        ? 'Show earlier activity ▴'
+        : 'Show $_historyCount earlier messages ▴';
+
     return GestureDetector(
       onTap: () {
         setState(() => _historyExpanded = true);
@@ -1835,11 +2051,127 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
                 size: 14, color: AppTheme.textTertiary),
             const SizedBox(width: 6),
             Text(
-              'Show $_historyCount earlier messages ▴',
+              label,
               style: AppTheme.caption.copyWith(
                 color: AppTheme.textTertiary,
                 fontSize: 12,
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Traces ─────────────────────────────────────────────────────
+
+  Widget _buildTracesSearchBar() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppTheme.surfaceAlt,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.border),
+        ),
+        child: TextField(
+          onChanged: (v) => setState(() => _tracesSearchQuery = v),
+          style: AppTheme.body.copyWith(fontSize: 12),
+          decoration: InputDecoration(
+            hintText: 'Search conversations...',
+            hintStyle: AppTheme.caption.copyWith(
+              color: AppTheme.textTertiary,
+              fontSize: 12,
+            ),
+            prefixIcon: Icon(Icons.search, color: AppTheme.textTertiary, size: 16),
+            suffixIcon: _tracesSearchQuery.isNotEmpty
+                ? GestureDetector(
+                    onTap: () => setState(() => _tracesSearchQuery = ''),
+                    child: Icon(Icons.close, color: AppTheme.textTertiary, size: 14),
+                  )
+                : null,
+            border: InputBorder.none,
+            contentPadding: const EdgeInsets.symmetric(vertical: 8),
+            isDense: true,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTraceCard(TraceItem trace) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppTheme.surfaceAlt,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: AppTheme.border.withValues(alpha: 0.4),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Time label
+            Text(
+              trace.time,
+              style: AppTheme.caption.copyWith(
+                color: AppTheme.textTertiary,
+                fontSize: 9,
+                letterSpacing: 1.0,
+              ),
+            ),
+            const SizedBox(height: 6),
+            // Input (what the user asked)
+            if (trace.input.isNotEmpty && trace.input != '(auto)')
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.subdirectory_arrow_right,
+                        size: 12, color: AppTheme.textTertiary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        trace.input,
+                        style: AppTheme.bodySmall.copyWith(
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                          color: AppTheme.textTertiary,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            // Resolution (what happened)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '→',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.accent.withValues(alpha: 0.6),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    trace.resolution,
+                    style: AppTheme.body.copyWith(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w300,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ),

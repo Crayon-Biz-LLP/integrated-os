@@ -34,6 +34,19 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Widget Receivers -->
+        <receiver android:name=".QuickCaptureWidgetProvider" android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/quick_capture_widget_info" />
+        </receiver>
+        <receiver android:name=".PulseStripWidgetProvider" android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/pulse_strip_widget_info" />
+        </receiver>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

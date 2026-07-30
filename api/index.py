@@ -384,10 +384,38 @@ async def send_message_route(request: Request):
             briefing_update = None
         
         # Fire-and-forget silent push to refresh all phone screens instantly.
-        # This is how WhatsApp works — the backend says "hey, new data" via FCM,
-        # and the phone fetches the briefing without constant 10s polling.
         from core.services.push_notification import send_silent_push
-        asyncio.ensure_future(send_silent_push({"type": "briefing_refresh"}))
+        push_payload = {"type": "briefing_refresh"}
+        
+        if briefing_update:
+            headline = briefing_update.get('voice_line')
+            if not headline:
+                headline = briefing_update.get('context_bar')
+            if not headline:
+                headline = briefing_update.get('greeting', '')
+                
+            mode = briefing_update.get('home_mode', 'proceed')
+            insights_list = []
+            
+            if mode == 'sprint':
+                nxt = briefing_update.get('next_event')
+                if nxt:
+                    insights_list.append({"text": f"🎯 Sprinting: {nxt}", "link": "rhodey://today"})
+                v_urg = briefing_update.get('vaulted_urgent_count', 0)
+                if v_urg > 0:
+                    insights_list.append({"text": f"🔴 {v_urg} urgent", "link": "rhodey://surface"})
+            elif mode == 'decide':
+                pend = briefing_update.get('pending_count', 0)
+                if pend > 0:
+                    insights_list.append({"text": f"⚖️ {pend} pending decisions", "link": "rhodey://inbox"})
+            else:
+                for ins in briefing_update.get('insights', []):
+                    insights_list.append({"text": ins, "link": "rhodey://surface"})
+                    
+            push_payload['headline'] = headline
+            push_payload['insights_json'] = json.dumps(insights_list)
+            
+        asyncio.ensure_future(send_silent_push(push_payload))
 
         return {
             "success": True,
