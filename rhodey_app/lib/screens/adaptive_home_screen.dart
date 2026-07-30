@@ -7,7 +7,6 @@ import 'inbox_screen.dart';
 import 'today_screen.dart';
 import '../models/message.dart';
 import '../services/notification_service.dart';
-import '../models/decision_item.dart';
 import '../models/briefing.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
@@ -19,26 +18,23 @@ import '../utils/home_instrumentation.dart';
 
 // ── Types ──────────────────────────────────────────────────────
 
-enum _NowCardType { decision, task }
-
-class _NowCard {
+/// A focal item — the top-priority thing Rhodey surfaces.
+class _FocalItem {
   final String id;
-  final _NowCardType type;
   final String title;
   final String? subtitle;
   final String? description;
   final String actionLabel;
-  final DecisionType? decisionType;
+  final String? source; // "task", "graph_node", "graph_edge", "email", etc.
   final Map<String, dynamic> metadata;
 
-  const _NowCard({
+  const _FocalItem({
     required this.id,
-    required this.type,
     required this.title,
     this.subtitle,
     this.description,
     this.actionLabel = 'Action',
-    this.decisionType,
+    this.source,
     this.metadata = const {},
   });
 }
@@ -60,44 +56,23 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   BriefingResponse _briefing = BriefingResponse.empty();
   bool _briefingLoading = true;
 
-  // ── NOW zone ──
-  List<_NowCard> _nowCards = [];
-  bool _nowLoading = true;
-  bool _nowApiError = false;
-  int _totalPendingCount = 0;
-
-  // Mode switcher — local override of pulse's home_mode
-  String? _overriddenMode;
-
-  // Card removal animation tracking
-  final Set<String> _removingCardIds = {};
-
-  // Dedup: resolved card titles to filter from CONVERSATION
-  final Set<String> _resolvedCardTitles = {};
-
-  // Cached tasks for inline card Mark Done lookups
-  List<Map<String, dynamic>> _allLoadedTasks = [];
-  bool _tasksLoaded = false;
+  // ── Focal zone (Phase 2 v2: LLM-chosen top item + three-button model) ──
+  List<_FocalItem> _focalItems = [];
+  bool _focalLoading = true;
+  /// ID of the focal item currently animating to "done" state
+  String? _completingCardId;
 
   // ── CONVERSATION ──
   final _messages = <ChatMessage>[];
   final _scrollController = ScrollController();
   final _textController = TextEditingController();
-  bool _loadingHistory = true;
-  bool _historyExpanded = false;
-  int _historyCount = 0;
   int _msgCounter = 0;
   Timer? _pollTimer;
   final _seenMessageIds = <String>{};
 
   // Push-driven delivery: replaces aggressive 5s polling.
-  // FCM push → onPushReceived → _pollForUpdates() → messages appear.
-  // 60s backup poll only runs when a message is pending (response expected).
   static const _backupPollInterval = Duration(seconds: 60);
   bool _awaitingResponse = false;
-
-  // ── Traces ──
-  String _tracesSearchQuery = '';
 
   // ── Voice ──
   VoiceState _voiceState = VoiceState.idle;
@@ -111,28 +86,17 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   void initState() {
     super.initState();
     _loadBriefing();
-    _loadNowCards();
-    // Conversation starts empty — no history fetch.
-    // The home screen is a clean companion, not an archive browser.
-    // Messages appear as you send/receive them in the current session.
-    _loadingHistory = false;
+    _loadFocalItems();
     _initSpeech();
     _tts.setLanguage("en-US");
     _tts.setSpeechRate(0.5);
 
-    // Register push notification tap handler for navigation
     NotificationService.onNotificationOpened = _handlePushNotificationTap;
-
-    // Push-driven delivery: when a push arrives (new message, briefing, etc.),
-    // fetch new messages immediately instead of polling every 5 seconds.
-    // This replaces the aggressive polling that was draining the battery.
     NotificationService.onPushReceived = _handlePushReceived;
 
-    // Cold-start: check if app was launched via notification tap
     final pendingData = NotificationService.pendingOpenData;
     if (pendingData != null) {
       NotificationService.pendingOpenData = null;
-      // Use a post-frame callback so the screen is fully built before navigation
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _handlePushNotificationTap(pendingData);
       });
@@ -141,7 +105,6 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
   @override
   void dispose() {
-    // Unregister notification tap handler
     if (NotificationService.onNotificationOpened == _handlePushNotificationTap) {
       NotificationService.onNotificationOpened = null;
     }
@@ -164,6 +127,40 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         setState(() {
           _briefing = briefing;
           _briefingLoading = false;
+
+          // If briefing has an LLM-chosen top_focal_item, promote it as #1
+          final focal = briefing.topFocalItem;
+          if (focal != null && focal.isNotEmpty && focal['title'] != null) {
+            final existingIdx = _focalItems.indexWhere(
+              (f) => f.id == 'focal_${focal['item_id']}',
+            );
+            final newItem = _FocalItem(
+              id: 'focal_${focal['item_id'] ?? focal['title']}',
+              title: focal['title'] as String? ?? '',
+              description: focal['reason'] as String?,
+              actionLabel: focal['action_label'] as String? ?? "I'll do it",
+              source: focal['type'] as String? ?? 'task',
+              metadata: {
+                'focal_item_id': focal['item_id'],
+                'focal_type': focal['type'],
+                'reason': focal['reason'],
+                'urgency': focal['urgency'],
+                'from_briefing': true,
+              },
+            );
+            if (existingIdx >= 0) {
+              _focalItems[existingIdx] = newItem;
+            } else {
+              _focalItems.insert(0, newItem);
+            }
+            // Remove any duplicate from _loadFocalItems that has the same natural ID
+            final naturalId = focal['item_id']?.toString() ?? '';
+            if (naturalId.isNotEmpty) {
+              _focalItems.removeWhere((f) =>
+                f.id == naturalId && f.id != newItem.id
+              );
+            }
+          }
         });
         WidgetDataProvider().updatePulseWidget(briefing);
       }
@@ -174,75 +171,64 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     }
   }
 
-  // ── Now zone ─────────────────────────────────────────────────
+  // ── Focal items ─────────────────────────────────────────────────
 
-  Future<void> _loadNowCards() async {
-    final decResult = await _api.getPendingDecisions();
-    final taskResult = await _api.getTasks(status: 'todo');
-    if (!mounted) return;
+  Future<void> _loadFocalItems() async {
+    try {
+      final decResult = await _api.getPendingDecisions();
+      final taskResult = await _api.getTasks(status: 'todo');
+      if (!mounted) return;
 
-    final cards = <_NowCard>[];
-    int totalVisible = 0;
-    int totalDecisions = 0;
-    int urgentTaskCount = 0;
-    bool hadError = false;
+      final items = <_FocalItem>[];
 
-    // Decisions first (graph nodes, edges, channel items)
-    if (decResult.success) {
-      totalDecisions = decResult.data!.length;
-      for (final pd in decResult.data!) {
-        if (totalVisible >= 3) break;
-        cards.add(_NowCard(
-          id: pd.id,
-          type: _NowCardType.decision,
-          title: pd.title,
-          description: pd.description,
-          actionLabel: _sourceActionLabel(pd.source),
-          decisionType: _sourceToDecisionType(pd.source),
-          metadata: {
-            'source': pd.source,
-            'api_id': pd.id,
-            'pending_id': int.tryParse(pd.id),
-          },
-        ));
-        totalVisible++;
+      // Decisions first (graph nodes, edges, channel items)
+      if (decResult.success && decResult.data != null) {
+        for (final pd in decResult.data!) {
+          final source = pd.source;
+          items.add(_FocalItem(
+            id: pd.id,
+            title: pd.title,
+            description: pd.description,
+            actionLabel: _sourceActionLabel(source),
+            source: source,
+            metadata: {
+              'source': source,
+              'api_id': pd.id,
+              'pending_id': int.tryParse(pd.id),
+            },
+          ));
+        }
       }
-    } else {
-      hadError = true;
-    }
 
-    // Due/overdue tasks fill remaining slots (count all urgent, show up to 3)
-    if (taskResult.success && totalVisible < 3) {
-      for (final t in taskResult.data!) {
-        final deadline = t['deadline'] as String?;
-        if (deadline != null && _isUrgent(deadline)) {
-          urgentTaskCount++;
-          if (totalVisible >= 3) continue;
-          cards.add(_NowCard(
+      // Due/overdue tasks fill remaining slots
+      if (taskResult.success && taskResult.data != null) {
+        for (final t in taskResult.data!) {
+          final deadline = t['deadline'] as String?;
+          if (deadline == null || !_isUrgent(deadline)) continue;
+          items.add(_FocalItem(
             id: t['id'].toString(),
-            type: _NowCardType.task,
             title: t['title'] as String? ?? 'Untitled',
             subtitle: _formatDeadline(deadline),
-            description: t['project_name'] as String?,
+            source: 'task',
             actionLabel: 'Done',
             metadata: {'task_id': t['id']},
           ));
-          totalVisible++;
         }
       }
-    } else {
-      hadError = true;
-    }
 
-    if (mounted) {
-      setState(() {
-        _nowCards = cards;
-        _nowLoading = false;
-        _nowApiError = hadError;
-        // Badge: decisions + urgent tasks only (not all tasks)
-        _totalPendingCount = totalDecisions + urgentTaskCount;
-        _instrumentation.nowCardsShown = cards.length;
-      });
+      if (mounted) {
+        setState(() {
+          _focalItems = items;
+          _focalLoading = false;
+          _instrumentation.nowCardsShown = items.length;
+        });
+      }
+    } catch (_) {
+      // Network or parse error — show empty state
+    } finally {
+      if (mounted) {
+        setState(() => _focalLoading = false);
+      }
     }
   }
 
@@ -267,127 +253,148 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     }
   }
 
-  DecisionType _sourceToDecisionType(String source) {
-    switch (source) {
-      case 'email':
-        return DecisionType.email;
-      case 'whatsapp':
-        return DecisionType.whatsapp;
-      case 'call':
-        return DecisionType.call;
-      case 'graph_node':
-        return DecisionType.person;
-      case 'graph_edge':
-        return DecisionType.edge;
-      default:
-        return DecisionType.clarification;
-    }
-  }
-
   String _sourceActionLabel(String source) {
     switch (source) {
-      case 'graph_node':
-        return 'Approve';
-      case 'graph_edge':
-        return 'Review';
-      case 'email':
-        return 'Create';
-      case 'whatsapp':
-        return 'Create';
-      case 'call':
-        return 'Create';
-      default:
-        return 'View';
+      case 'graph_node': return 'Approve';
+      case 'graph_edge': return 'Review';
+      case 'email': return 'Create';
+      case 'whatsapp': return 'Create';
+      case 'call': return 'Create';
+      default: return 'View';
     }
   }
 
-  // ── Handle NOW card actions ──────────────────────────────────
+  // ── Focal card action + promotion ─────────────────────────
 
-  /// Removes a card with fade-out animation, then refreshes.
-  Future<void> _removeNowCardAnimated(String cardId, {bool resolved = false}) async {
-    // Start fade-out
-    setState(() => _removingCardIds.add(cardId));
-    // Wait for animation to complete
-    await Future.delayed(const Duration(milliseconds: 350));
+  /// Complete the current focal card via /api/focal-action, then promote next.
+  Future<void> _completeFocalItem(_FocalItem item) async {
+    // 1. Start done animation (green flash, 300ms)
+    setState(() => _completingCardId = item.id);
+    await Future.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
-    // Actually remove
+
+    // 2. Execute via /api/focal-action (Phase 2 v2 unified endpoint)
+    final fromBriefing = item.metadata['from_briefing'] == true;
+    if (fromBriefing && item.metadata['focal_item_id'] != null) {
+      // LLM-chosen item from briefing — use unified endpoint
+      await _api.focalAction(
+        action: 'done',
+        itemType: item.metadata['focal_type'] as String? ?? item.source ?? 'task',
+        itemId: item.metadata['focal_item_id'].toString(),
+        title: item.title,
+      );
+    } else {
+      // Legacy fallback: direct API calls
+      if (item.source == 'task') {
+        final taskId = item.metadata['task_id'];
+        if (taskId != null) {
+          await _api.updateTaskStatus(taskId as int, 'done');
+        }
+      } else {
+        final source = item.metadata['source'] as String?;
+        final pendingId = item.metadata['pending_id'] as int?;
+        if (source != null && pendingId != null) {
+          ApiResult<dynamic>? result;
+          switch (source) {
+            case 'graph_node':
+              result = await _api.approveGraphNode(pendingId);
+              break;
+            case 'graph_edge':
+              result = await _api.approveGraphEdge(pendingId);
+              break;
+            case 'email':
+              result = await _api.approveEmail(pendingId);
+              break;
+            case 'whatsapp':
+              result = await _api.approveWhatsApp(pendingId);
+              break;
+            case 'call':
+              result = await _api.approveCall(pendingId);
+              break;
+          }
+          if (result != null && !result.success && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(result.error ?? 'Action failed', style: const TextStyle(fontSize: 12)),
+                backgroundColor: AppTheme.red,
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+        }
+      }
+    }
+    _instrumentation.homeActionsCompleted++;
+    if (!mounted) return;
+
+    // 3. Remove completed item — the next item promotes immediately
     setState(() {
-      _nowCards.removeWhere((c) => c.id == cardId);
-      _removingCardIds.remove(cardId);
+      _focalItems.removeWhere((c) => c.id == item.id);
+      _completingCardId = null;
+    });
+
+    // 4. If no items remain, show "all clear" from Rhodey
+    if (_focalItems.isEmpty && mounted) {
+      _addRhodeyResponse(
+        "All clear for now, Danny. You have some deep work time before your next sync — I'll keep tracking the board.",
+      );
+    }
+
+    // 5. Background refresh for fresh counts (deferred 2s to avoid flicker)
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) _loadFocalItems();
     });
   }
 
-  Future<void> _handleNowAction(_NowCard card) async {
-    if (card.type == _NowCardType.task) {
-      final taskId = card.metadata['task_id'];
-      if (taskId != null) {
-        await _api.updateTaskStatus(taskId as int, 'done');
-        _instrumentation.homeActionsCompleted++;      _addResolvedTitle(card.title);
-          await _removeNowCardAnimated(card.id, resolved: true);
-        _loadNowCards(); // refresh counts
-      }
-      return;
-    }
-
-    // ── Inline decision action ──
-    final source = card.metadata['source'] as String?;
-    final pendingId = card.metadata['pending_id'] as int?;
-    if (source == null || pendingId == null) return;
-
-    ApiResult<dynamic>? result;
-    switch (source) {
-      case 'graph_node':
-        result = await _api.approveGraphNode(pendingId);
-        break;
-      case 'graph_edge':
-        result = await _api.approveGraphEdge(pendingId);
-        break;
-      case 'email':
-        result = await _api.approveEmail(pendingId);
-        break;
-      case 'whatsapp':
-        result = await _api.approveWhatsApp(pendingId);
-        break;
-      case 'call':
-        result = await _api.approveCall(pendingId);
-        break;
-    }
-
-    if (!mounted) return;
-
-    if (result != null && result.success) {
-      _instrumentation.homeActionsCompleted++;
-      _addResolvedTitle(card.title);
-      await _removeNowCardAnimated(card.id, resolved: true);
-      _loadNowCards(); // refresh counts
-    } else if (result != null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              result.error ?? 'Action failed',
-              style: const TextStyle(fontSize: 12),
-            ),
-            backgroundColor: AppTheme.red,
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _dismissNowCard(_NowCard card) async {
+  /// Skip/dismiss the current focal item — snooze (no learning signal).
+  Future<void> _snoozeFocalItem(_FocalItem item) async {
     _instrumentation.itemsDismissed++;
-    await _removeNowCardAnimated(card.id);
-  }
 
-  /// Track a resolved card title for dedup, capped at 50 entries.
-  void _addResolvedTitle(String title) {
-    _resolvedCardTitles.add(title.toLowerCase());
-    if (_resolvedCardTitles.length > 50) {
-      _resolvedCardTitles.clear();
+    // Send snooze signal to API (no learning — just dismisses until next pulse)
+    final fromBriefing = item.metadata['from_briefing'] == true;
+    if (fromBriefing && item.metadata['focal_item_id'] != null) {
+      await _api.focalAction(
+        action: 'snooze',
+        itemType: item.metadata['focal_type'] as String? ?? item.source ?? 'task',
+        itemId: item.metadata['focal_item_id'].toString(),
+        title: item.title,
+      );
+    }
+
+    setState(() {
+      _focalItems.removeWhere((c) => c.id == item.id);
+    });
+    if (_focalItems.isEmpty && mounted) {
+      _addRhodeyResponse(
+        "Noted. I'll bring it back if it's still relevant next time.",
+      );
     }
   }
+
+  /// Correct the focal item — sends correction signal to learning loop.
+  Future<void> _correctFocalItem(_FocalItem item) async {
+    final fromBriefing = item.metadata['from_briefing'] == true;
+    if (fromBriefing && item.metadata['focal_item_id'] != null) {
+      await _api.focalAction(
+        action: 'correct',
+        itemType: item.metadata['focal_type'] as String? ?? item.source ?? 'task',
+        itemId: item.metadata['focal_item_id'].toString(),
+        title: item.title,
+        reason: item.metadata['reason'] as String? ?? '',
+      );
+    }
+
+    setState(() {
+      _focalItems.removeWhere((c) => c.id == item.id);
+    });
+    if (_focalItems.isEmpty && mounted) {
+      _addRhodeyResponse(
+        "Got it — I've noted that wasn't the right priority. I'll adjust.",
+      );
+    }
+  }
+
+
 
   // ── Conversation ─────────────────────────────────────────────
 
@@ -400,8 +407,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         final content = m['content'] as String? ?? '';
         if (content.isEmpty) continue;
         final direction = m['direction'] as String? ?? '';
-        final role =
-            direction == 'inbound' ? MessageRole.user : MessageRole.rhodey;
+        final role = direction == 'inbound' ? MessageRole.user : MessageRole.rhodey;
         final createdAt = m['created_at'] as String? ?? '';
         final ts = createdAt.isNotEmpty
             ? (DateTime.tryParse(createdAt) ?? DateTime.now())
@@ -415,62 +421,22 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         ));
       }
     }
-    _historyCount = _messages.length;
-    if (mounted) {
-      setState(() => _loadingHistory = false);
-    }
-    // Pre-load tasks for inline card Mark Done lookups
-    if (!_tasksLoaded) {
-      _loadTasksForCards();
-    }
   }
 
-  /// Load tasks for inline card lookups (Mark Done button).
-  Future<void> _loadTasksForCards() async {
-    final result = await _api.getTasks();
-    if (result.success && mounted) {
-      setState(() {
-        _allLoadedTasks = result.data!;
-        _tasksLoaded = true;
-      });
-    }
-  }
-
-  /// Find a task by title (case-insensitive) for inline Mark Done.
-  int? _findTaskIdByTitle(String title) {
-    final lowerTitle = title.toLowerCase().trim();
-    for (final t in _allLoadedTasks) {
-      final taskTitle = (t['title'] as String? ?? '').toLowerCase().trim();
-      if (taskTitle == lowerTitle || taskTitle.contains(lowerTitle) || lowerTitle.contains(taskTitle)) {
-        return t['id'] as int?;
-      }
-    }
-    return null;
-  }
-
-  /// Called when an FCM push arrives (new message, briefing, decision).
-  /// Triggers a message fetch immediately — no need to wait for the next poll cycle.
   void _handlePushReceived(Map<String, dynamic> data) {
     debugPrint('[PushDelivery] Push received: type=${data['type']}');
     final type = data['type'];
-    // Refresh pulse intelligence on briefing pushes
     if (type == 'briefing' || type == 'briefing_refresh') {
       _loadBriefing();
     }
     _pollForUpdates();
   }
 
-  /// Starts a backup poll timer at a low frequency (60s).
-  /// Only active when a response is expected — stops automatically once Rhodey replies.
-  /// Primary delivery is via FCM push -> _handlePushReceived.
   void _startBackupPoll() {
     _awaitingResponse = true;
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(_backupPollInterval, (_) {
-      if (!_awaitingResponse) {
-        _stopBackupPoll();
-        return;
-      }
+      if (!_awaitingResponse) { _stopBackupPoll(); return; }
       _pollForUpdates();
     });
   }
@@ -491,22 +457,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       final content = m['content'] as String? ?? '';
       if (content.isEmpty) continue;
 
-      // Dedup: skip messages whose content matches a recently-resolved NOW card
-      final contentLower = content.toLowerCase();
-      bool isDuplicate = false;
-      for (final resolvedTitle in _resolvedCardTitles) {
-        if (contentLower.contains(resolvedTitle)) {
-          isDuplicate = true;
-          _instrumentation.dedupSuppressions++;
-          debugPrint('[Dedup] Suppressed CONVERSATION message matching "$resolvedTitle"');
-          break;
-        }
-      }
-      if (isDuplicate) continue;
-
       final direction = m['direction'] as String? ?? '';
-      final role =
-          direction == 'inbound' ? MessageRole.user : MessageRole.rhodey;
+      final role = direction == 'inbound' ? MessageRole.user : MessageRole.rhodey;
       final createdAt = m['created_at'] as String? ?? '';
       final ts = createdAt.isNotEmpty
           ? (DateTime.tryParse(createdAt) ?? DateTime.now())
@@ -518,9 +470,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         timestamp: ts,
         sendStatus: role == MessageRole.user ? SendStatus.sent : null,
       );
-      setState(() {
-        _messages.add(msg);
-      });
+      setState(() { _messages.add(msg); });
       _scrollToBottom();
     }
   }
@@ -529,20 +479,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     if (text.trim().isEmpty) return;
     final id = 'u${++_msgCounter}';
     final msg = ChatMessage(
-      id: id,
-      role: MessageRole.user,
-      text: text.trim(),
-      timestamp: DateTime.now(),
-      sendStatus: SendStatus.pending,
+      id: id, role: MessageRole.user, text: text.trim(),
+      timestamp: DateTime.now(), sendStatus: SendStatus.pending,
     );
 
-    setState(() {
-      _messages.add(msg);
-    });
+    setState(() { _messages.add(msg); });
     _textController.clear();
     _scrollToBottom();
-    // Start backup polling (60s) — primary delivery is via FCM push.
-    // Push arrives -> _handlePushReceived -> _pollForUpdates() -> messages appear.
     _startBackupPoll();
 
     _api.sendMessage(text.trim()).then((result) {
@@ -551,14 +494,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         _updateMessage(id, sendStatus: SendStatus.sent);
         String responseText;
         if (result.data is Map) {
-          final serverResponse =
-              (result.data as Map)['response'] as String?;
-          responseText = serverResponse ?? 'Got it. Processing...';
+          responseText = (result.data as Map)['response'] as String? ?? 'Got it. Processing...';
         } else {
           responseText = 'Got it. Processing...';
         }
-
-        // Response is already in the API body — Rhodey's reply appears instantly.
         Future.delayed(const Duration(milliseconds: 400), () {
           if (!mounted) return;
           _addRhodeyResponse(responseText);
@@ -566,7 +505,6 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         });
       } else {
         _updateMessage(id, sendStatus: SendStatus.failed);
-        // Show a visible toast for failed sends (S3#9)
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -581,8 +519,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     });
   }
 
-  void _updateMessage(String id,
-      {String? text, SendStatus? sendStatus}) {
+  void _updateMessage(String id, {String? text, SendStatus? sendStatus}) {
     setState(() {
       final idx = _messages.indexWhere((m) => m.id == id);
       if (idx == -1) return;
@@ -603,16 +540,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     final id = 'r${++_msgCounter}';
     setState(() {
       _messages.add(ChatMessage(
-        id: id,
-        role: MessageRole.rhodey,
-        text: text,
-        timestamp: DateTime.now(),
+        id: id, role: MessageRole.rhodey, text: text, timestamp: DateTime.now(),
       ));
     });
-    // Load tasks for inline card lookups if we haven't yet
-    if (!_tasksLoaded) {
-      _loadTasksForCards();
-    }
     _scrollToBottom();
     _tts.speak(text);
   }
@@ -625,41 +555,22 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         if (!mounted) return;
         debugPrint('[Voice] Error: ${error.errorMsg}');
         if (error.errorMsg == 'error_speech_timeout') {
-          setState(() {
-            _voiceState = VoiceState.idle;
-            _voiceError = null;
-          });
+          setState(() { _voiceState = VoiceState.idle; _voiceError = null; });
           return;
         }
-        setState(() {
-          _voiceState = VoiceState.error;
-          _voiceError = error.errorMsg;
-        });
+        setState(() { _voiceState = VoiceState.error; _voiceError = error.errorMsg; });
       },
-      onStatus: (status) {
-        debugPrint('[Voice] Status: $status');
-      },
+      onStatus: (status) { debugPrint('[Voice] Status: $status'); },
     );
     if (!_speechAvailable && mounted) {
-      setState(() {
-        _voiceState = VoiceState.error;
-        _voiceError = 'Speech recognition not available';
-      });
+      setState(() { _voiceState = VoiceState.error; _voiceError = 'Speech recognition not available'; });
     }
   }
 
   void _toggleVoice() {
-    if (_voiceState == VoiceState.idle) {
-      _startListening();
-    } else if (_voiceState == VoiceState.listening) {
-      _stopListening();
-    } else {
-      setState(() {
-        _voiceState = VoiceState.idle;
-        _transcribedText = null;
-        _voiceError = null;
-      });
-    }
+    if (_voiceState == VoiceState.idle) { _startListening(); }
+    else if (_voiceState == VoiceState.listening) { _stopListening(); }
+    else { setState(() { _voiceState = VoiceState.idle; _transcribedText = null; _voiceError = null; }); }
   }
 
   Future<void> _startListening() async {
@@ -667,30 +578,19 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     if (!_speechAvailable) {
       _speechAvailable = await _speech.initialize();
       if (!_speechAvailable) {
-        if (mounted) {
-          setState(() {
-            _voiceState = VoiceState.error;
-            _voiceError = 'Speech recognition not available';
-          });
-        }
+        if (mounted) { setState(() { _voiceState = VoiceState.error; _voiceError = 'Speech recognition not available'; }); }
         return;
       }
     }
-
     setState(() => _voiceState = VoiceState.listening);
-
     await _speech.listen(
       onResult: (result) {
         if (!mounted) return;
         final text = result.recognizedWords;
-        if (text.isNotEmpty) {
-          _transcribedText = text;
-        }
+        if (text.isNotEmpty) { _transcribedText = text; }
         if (result.finalResult) {
           final words = result.recognizedWords;
-          if (words.isNotEmpty) {
-            _sendMessage(words);
-          }
+          if (words.isNotEmpty) { _sendMessage(words); }
           setState(() => _voiceState = VoiceState.idle);
           _transcribedText = null;
         }
@@ -713,17 +613,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       _transcribedText = null;
       return;
     }
-    setState(() {
-      _voiceState = VoiceState.idle;
-      _transcribedText = null;
-    });
+    setState(() { _voiceState = VoiceState.idle; _transcribedText = null; });
   }
 
   void _retryVoice() {
-    setState(() {
-      _voiceState = VoiceState.idle;
-      _transcribedText = null;
-    });
+    setState(() { _voiceState = VoiceState.idle; _transcribedText = null; });
     Future.delayed(const Duration(milliseconds: 300), () {
       if (!mounted) return;
       _startListening();
@@ -739,36 +633,27 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
   void _openInbox() {
     _instrumentation.inboxBadgeTaps++;
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const InboxScreen()),
-    );
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const InboxScreen()));
   }
 
-  /// Handle push notification tap — navigate to the appropriate screen.
   void _handlePushNotificationTap(Map<String, dynamic> data) {
     final type = data['type'];
     debugPrint('[PushNav] Notification type=$type data=$data');
-
     switch (type) {
       case 'decision':
       case 'delegation':
         _openInbox();
         break;
       case 'nudge':
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const TodayScreen()),
-        );
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const TodayScreen()));
         break;
       case 'briefing':
       default:
-        // Stay on the home screen — briefing context is already in CONVERSATION
         break;
     }
   }
 
-  // ── Scroll ───────────────────────────────────────────────────
+  // ── Scroll & TTS ─────────────────────────────────────────────
 
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 100), () {
@@ -782,125 +667,41 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     });
   }
 
-  // ── TTS on tap ──────────────────────────────────────────────
-
-  /// Speak a message text aloud via TTS. Stops any in-progress speech first.
   void _speakMessage(String text) {
     if (text.trim().isEmpty) return;
     _tts.stop();
     _tts.speak(text.trim());
   }
 
-  // ── Mode helpers ────────────────────────────────────────────
+  // ── Pulse mode helpers ──────────────────────────────────────
 
-  String _modeIcon(String mode) {
-    switch (mode) {
-      case 'proceed': return '▶';
-      case 'decide': return '📋';
-      case 'sprint': return '⏱';
-      case 'catch_up': return '🔄';
-      case 'wrap': return '✅';
-      default: return '•';
+  String _pulseLabel() {
+    final mode = _briefing.pulseMode ?? '';
+    switch (mode.toLowerCase()) {
+      case 'morning': return 'MORNING';
+      case 'afternoon': return 'AFTERNOON';
+      case 'closing_loop': return 'CLOSING';
+      case 'weekend': return 'WEEKEND';
+      case 'pre_monday': return 'PRE-MONDAY';
+      case 'intel': return 'INTEL';
+      default: return '';
     }
   }
 
-  void _openModeSwitcher() {
-    final modes = ['proceed', 'decide', 'sprint', 'catch_up', 'wrap'];
-    final labels = ['Act', 'Decide', 'Sprint', 'Catch Up', 'Wrap'];
-    final current = _overriddenMode ?? _briefing.homeMode;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppTheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'Not what you need?',
-                  style: TextStyle(
-                    color: AppTheme.textTertiary,
-                    fontSize: 11,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                ...modes.asMap().entries.map((entry) {
-                  final i = entry.key;
-                  final mode = entry.value;
-                  final isCurrent = mode == current;
-                  return ListTile(
-                    dense: true,
-                    leading: Text(_modeIcon(mode), style: const TextStyle(fontSize: 16)),
-                    title: Text(
-                      labels[i],
-                      style: TextStyle(
-                        color: isCurrent ? AppTheme.accent : AppTheme.textPrimary,
-                        fontWeight: isCurrent ? FontWeight.w600 : FontWeight.w400,
-                        fontSize: 14,
-                      ),
-                    ),
-                    trailing: isCurrent
-                        ? const Icon(Icons.check, size: 16, color: AppTheme.accent)
-                        : null,
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      _switchMode(mode);
-                    },
-                  );
-                }),
-              ],
-            ),
-          ),
-        );
-      },
-    );
+  Color _pulseColor() {
+    final mode = _briefing.pulseMode ?? '';
+    switch (mode.toLowerCase()) {
+      case 'morning': return AppTheme.accent;
+      case 'afternoon': return AppTheme.amber;
+      case 'closing_loop': return AppTheme.red;
+      case 'intel': return AppTheme.textTertiary;
+      default: return AppTheme.accent;
+    }
   }
 
-  void _switchMode(String newMode) {
-    // Only switch if different from current effective mode
-    final current = _overriddenMode ?? _briefing.homeMode;
-    if (newMode == current) return;
-    
-    final previousMode = current;
-    setState(() {
-      _overriddenMode = newMode;
-    });
-  
-    // Fire-and-forget correction signal to train Rhodey
-    // This logs to subsystem_telemetry + classifier_corrections
-    _api.switchHomeMode(previousMode, newMode);
-  }
-
-  // ── Time formatting ─────────────────────────────────────────
-
-  String _formattedTime() {
-    final now = DateTime.now();
-    final h = now.hour > 12 ? now.hour - 12 : (now.hour == 0 ? 12 : now.hour);
-    final m = now.minute.toString().padLeft(2, '0');
-    final ampm = now.hour >= 12 ? 'PM' : 'AM';
-    return '$h:$m $ampm';
-  }
-
-  String _formattedDate() {
-    final now = DateTime.now();
-    final months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    final days = [
-      'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'
-    ];
-    return '${days[now.weekday % 7]}, ${months[now.month - 1]} ${now.day}';
-  }
-
-  // ── Build ────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  // BUILD
+  // ═══════════════════════════════════════════════════════════
 
   @override
   Widget build(BuildContext context) {
@@ -909,12 +710,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            _buildHeader(),
-            _buildNowZone(),
-            _buildDivider('CONVERSATION'),
+            _buildAmbientHeader(),
+            _buildFocalArea(),
             Expanded(child: _buildConversationArea()),
-            if (_voiceState == VoiceState.listening ||
-                _voiceState == VoiceState.error)
+            if (_voiceState == VoiceState.listening || _voiceState == VoiceState.error)
               VoiceStateMachine(
                 state: _voiceState,
                 transcribedText: _transcribedText,
@@ -929,19 +728,21 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     );
   }
 
-  // ── Header ──────────────────────────────────────────────────
+  // ── Ambient Header ─────────────────────────────────────────
 
-  Widget _buildHeader() {
+  Widget _buildAmbientHeader() {
+    final pulseLabel = _pulseLabel();
+    final pulseColor = _pulseColor();
+    final vaultTotal = _briefing.vaultedCount;
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: const BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: AppTheme.border, width: 1),
-        ),
+        border: Border(bottom: BorderSide(color: AppTheme.border, width: 1)),
       ),
       child: Row(
         children: [
-          // Menu button
+          // Menu
           Material(
             color: Colors.transparent,
             child: InkWell(
@@ -949,572 +750,412 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
               onTap: _showMenu,
               child: Container(
                 padding: const EdgeInsets.all(8),
-                child: const Icon(
-                  Icons.menu,
-                  color: AppTheme.textSecondary,
-                  size: 22,
-                ),
+                child: const Icon(Icons.menu, color: AppTheme.textSecondary, size: 22),
               ),
             ),
           ),
 
           const SizedBox(width: 8),
 
-          // Date + time
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                _formattedDate(),
-                style: AppTheme.caption.copyWith(
-                  color: AppTheme.textTertiary,
-                  fontSize: 10,
-                  letterSpacing: 0.3,
-                ),
-              ),
-              Text(
-                _formattedTime(),
-                style: AppTheme.body.copyWith(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13,
-                ),
-              ),
-            ],
+          // Rhodey dot + pulse mode
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: pulseColor,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'Rhodey${pulseLabel.isNotEmpty ? ' · $pulseLabel' : ''}',
+            style: AppTheme.body.copyWith(
+              fontWeight: FontWeight.w600,
+              fontSize: 13,
+              letterSpacing: 0.3,
+            ),
           ),
 
           const Spacer(),
 
-          // Inbox badge
-          if (_totalPendingCount > 0)
+          // Vault badge
+          if (vaultTotal > 0)
             Material(
               color: Colors.transparent,
               child: InkWell(
                 borderRadius: BorderRadius.circular(10),
-                onTap: _openInbox,
+                onTap: () {
+                  _addRhodeyResponse('📦 $vaultTotal items vaulted behind the pulse. Want me to pull any forward?');
+                },
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: AppTheme.accentBg,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: AppTheme.accent.withValues(alpha: 0.3),
-                      width: 1,
-                    ),
+                    color: AppTheme.surfaceAlt,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: AppTheme.border, width: 1),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(
-                        Icons.inbox_outlined,
-                        size: 14,
-                        color: AppTheme.accent,
-                      ),
-                      const SizedBox(width: 4),
+                      const Text('📦', style: TextStyle(fontSize: 10)),
+                      const SizedBox(width: 3),
                       Text(
-                        '$_totalPendingCount',
+                        '$vaultTotal',
                         style: AppTheme.caption.copyWith(
-                          color: AppTheme.accent,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 12,
+                          color: AppTheme.textTertiary,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
-          ),
+            ),
         ],
       ),
     );
   }
 
-  // ── NOW zone ─────────────────────────────────────────────────
+  // ── Focal Area (Chief's Stage) ─────────────────────────────
 
-  Widget _buildNowZone() {
-    final greeting = _briefing.greeting;
-    final voice = _briefing.voiceLine ?? '';
-    final hasVoice = voice.isNotEmpty;
-    final homeMode = _overriddenMode ?? _briefing.homeMode;
-    final vaultTotal = _briefing.vaultedCount;
+  Widget _buildFocalArea() {
+    if (_briefingLoading || _focalLoading) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        child: const Center(child: SizedBox(
+          width: 14, height: 14,
+          child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.textTertiary),
+        )),
+      );
+    }
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
       decoration: const BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: AppTheme.border, width: 1),
-        ),
+        border: Border(bottom: BorderSide(color: AppTheme.border, width: 1)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // ── Greeting (serif, large) ──
-          if (!_briefingLoading && greeting.isNotEmpty)
-            _buildGreeting(greeting),
+          // Rhodey's voice line as greeting
+          _buildRhodeyStage(),
 
-          // ── Rhodey voice line ──
-          if (!_briefingLoading && hasVoice)
-            _buildVoiceLine(),
+          // Focal card (Top-1 item)
+          if (_focalItems.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: _buildFocalCard(_focalItems.first),
+            ),
 
-          const SizedBox(height: 6),
+          // Decision digest
+          if (!_briefingLoading && _briefing.pendingCount > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: _buildDecisionDigest(),
+            ),
 
-          // ── Mode-driven section ──
-          if (!_briefingLoading && !_nowLoading)
-            _buildModeSection(homeMode)
-          else
-            _buildEmptyNow(),
+          // All-clear state
+          if (_focalItems.isEmpty && !_focalLoading)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: _buildAllClear(),
+            ),
 
-          // ── Insights (Rhodey's pulse intelligence) ──
-          if (!_briefingLoading && _briefing.insights.isNotEmpty)
-            _buildInsightsSection(),
+          // Sunday weekly transparency report
+          if (_briefing.transparencyReport != null && _briefing.transparencyReport!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: _buildTransparencyReport(),
+            ),
 
-          // ── Vault stat line ──
-          if (!_briefingLoading && vaultTotal > 0)
-            _buildVaultStat(),
-
-          // ── Overflow link ──
-          if (!_nowLoading && _totalPendingCount > _nowCards.length)
-            _buildOverflowLink(),
+          // Quick-reply chips
+          if (_focalItems.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: _buildQuickReplyChips(),
+            ),
         ],
       ),
     );
   }
 
-  // ── Greeting ──────────────────────────────────────────────────
+  // ── Rhodey's Stage ─────────────────────────────────────────
 
-  Widget _buildGreeting(String greeting) {
-    // Split greeting into headline + subtext at the period
-    final dotIndex = greeting.indexOf('.');
-    String headline = greeting;
-    String subtext = '';
-    if (dotIndex > 0 && dotIndex < greeting.length - 1) {
-      headline = greeting.substring(0, dotIndex + 1);
-      subtext = greeting.substring(dotIndex + 1).trim();
-      if (subtext.startsWith('.')) subtext = subtext.substring(1).trim();
+  Widget _buildRhodeyStage() {
+    final voice = _briefing.voiceLine ?? '';
+    final greeting = _briefing.greeting;
+
+    String rhodeySays;
+    if (voice.isNotEmpty) {
+      rhodeySays = voice;
+    } else if (greeting.isNotEmpty) {
+      rhodeySays = greeting;
+    } else {
+      final h = DateTime.now().hour;
+      final prefix = h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
+      rhodeySays = 'Good $prefix, Danny.';
     }
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.only(bottom: 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            headline,
-            style: const TextStyle(
-              fontFamily: 'InstrumentSerif',
-              fontSize: 30,
-              fontWeight: FontWeight.w300,
-              color: AppTheme.textPrimary,
-              height: 1.1,
-            ),
-          ),
-          if (subtext.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Text(
-                subtext,
-                style: AppTheme.subGreetingStyle,
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  // ── Mode section (switches on homeMode) ─────────────────────────
-
-  Widget _buildModeSection(String mode) {
-    switch (mode) {
-      case 'proceed':
-        return _buildProceedSection();
-      case 'decide':
-        return _buildDecideSection();
-      case 'sprint':
-        return _buildSprintSection();
-      case 'catch_up':
-        return _buildCatchUpSection();
-      case 'wrap':
-        return _buildWrapSection();
-      default:
-        return _buildProceedSection();
-    }
-  }
-
-  // ── PROCEED: priority task cards ─────────────────────────────
-
-  Widget _buildProceedSection() {
-    // Show top 2-3 priority items from _nowCards
-    final actCards = _nowCards.take(3).toList();
-
-    // Proactive card: Rhodey suggests an action when there's a next event + urgent item
-    final hasProactive = _briefing.nextEvent != null &&
-        _briefing.sections.isNotEmpty &&
-        _briefing.sections.first.items.any((i) => i.isUrgent);
-
-    if (actCards.isEmpty && !hasProactive) {
-      return _buildEmptyNow();
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _buildModeHeader('Act'),
-        const SizedBox(height: 6),
-
-        // Proactive suggestion card (above action cards)
-        if (hasProactive)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: _buildProactiveCard(),
-          ),
-
-        if (actCards.isEmpty && hasProactive)
-          _buildEmptyNow('One thing to flag — check the suggestion above.')
-        else
-          ...actCards.map((card) => Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: _NowCardWidget(
-              card: card,
-              onAction: () => _handleNowAction(card),
-              onDismiss: () => _dismissNowCard(card),
-            ),
-          )),
-      ],
-    );
-  }
-
-  // ── Proactive Card ────────────────────────────────────────────
-
-  Widget _buildProactiveCard() {
-    final urgentItem = _briefing.sections.first.items.firstWhere(
-      (i) => i.isUrgent,
-      orElse: () => _briefing.sections.first.items.first,
-    );
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppTheme.accentBg,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: AppTheme.accent.withValues(alpha: 0.18),
-          width: 1,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 3,
-                height: 14,
-                decoration: BoxDecoration(
-                  color: AppTheme.accent,
-                  borderRadius: BorderRadius.circular(1),
+              Padding(
+                padding: const EdgeInsets.only(top: 2, right: 6),
+                child: Text(
+                  '\u201c',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w300,
+                    color: AppTheme.accent.withValues(alpha: 0.4),
+                    height: 1.0,
+                  ),
                 ),
               ),
-              const SizedBox(width: 8),
-              Text(
-                'SUGGESTION',
-                style: AppTheme.label.copyWith(
-                  color: AppTheme.accent,
-                  fontSize: 9,
-                  letterSpacing: 1.5,
+              Expanded(
+                child: Text(
+                  rhodeySays,
+                  style: const TextStyle(
+                    fontFamily: 'InstrumentSerif',
+                    fontSize: 22,
+                    fontWeight: FontWeight.w300,
+                    color: AppTheme.textPrimary,
+                    height: 1.25,
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          Text(
-            '${urgentItem.icon} ${urgentItem.text}',
-            style: AppTheme.body.copyWith(
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-              height: 1.4,
-            ),
-          ),
-          if (_briefing.nextEvent != null && _briefing.nextEvent!.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                '📅 ${_briefing.nextEvent}',
-                style: AppTheme.caption.copyWith(
-                  color: AppTheme.textTertiary,
-                  fontSize: 10,
-                ),
+          Padding(
+            padding: const EdgeInsets.only(left: 28, top: 2),
+            child: Text(
+              'Rhodey',
+              style: AppTheme.caption.copyWith(
+                color: AppTheme.accent,
+                fontSize: 9,
+                letterSpacing: 0.5,
               ),
             ),
+          ),
         ],
       ),
     );
   }
 
-  // ── DECIDE: decision cards ───────────────────────────────────
+  // ── Focal Card (Phase 2 v2: three-button model with LLM reason) ──
 
-  Widget _buildDecideSection() {
-    // Show only decision-type cards
-    final decisionCards = _nowCards
-        .where((c) => c.type == _NowCardType.decision)
-        .take(3)
-        .toList();
+  Widget _buildFocalCard(_FocalItem item) {
+    final isCompleting = _completingCardId == item.id;
+    final isFromBriefing = item.metadata['from_briefing'] == true;
+    final focalReason = item.metadata['reason'] as String?;
+    final urgency = item.metadata['urgency'] as String?;
 
-    if (decisionCards.isEmpty) {
-      return _buildEmptyNow();
+    // Urgency color
+    Color urgencyColor;
+    switch (urgency) {
+      case 'critical':
+        urgencyColor = AppTheme.red;
+        break;
+      case 'important':
+        urgencyColor = AppTheme.amber;
+        break;
+      default:
+        urgencyColor = AppTheme.accent;
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _buildModeHeader('Decide'),
-        const SizedBox(height: 6),
-        ...decisionCards.map((card) => Padding(
-          padding: const EdgeInsets.only(bottom: 4),
-          child: _NowCardWidget(
-            card: card,
-            onAction: () => _handleNowAction(card),
-            onDismiss: () => _dismissNowCard(card),
+    return AnimatedOpacity(
+      opacity: isCompleting ? 0.0 : 1.0,
+      duration: const Duration(milliseconds: 350),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 350),
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: isCompleting ? AppTheme.green.withValues(alpha: 0.08) : AppTheme.accentBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isCompleting
+                ? AppTheme.green.withValues(alpha: 0.3)
+                : urgencyColor.withValues(alpha: 0.18),
+            width: 1,
           ),
-        )),
-      ],
-    );
-  }
-
-  // ── SPRINT: focus tasks + radar ──────────────────────────────
-
-  Widget _buildSprintSection() {
-    // Show urgent tasks first, then high priority
-    final urgentCards = _nowCards
-        .where((c) => c.type == _NowCardType.task)
-        .take(3)
-        .toList();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _buildModeHeader('Sprint'),
-        const SizedBox(height: 6),
-        if (urgentCards.isEmpty)
-          _buildEmptyNow()
-        else
-          ...urgentCards.map((card) => Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: _NowCardWidget(
-              card: card,
-              onAction: () => _handleNowAction(card),
-              onDismiss: () => _dismissNowCard(card),
-            ),
-          )),
-        // Radar: next calendar event
-        if (_briefing.nextEvent != null && _briefing.nextEvent!.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Row(
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
               children: [
-                const Icon(Icons.calendar_today, size: 10, color: AppTheme.textTertiary),
-                const SizedBox(width: 4),
+                Container(
+                  width: 3,
+                  height: 14,
+                  decoration: BoxDecoration(
+                    color: isCompleting ? AppTheme.green : urgencyColor,
+                    borderRadius: BorderRadius.circular(1),
+                  ),
+                ),
+                const SizedBox(width: 8),
                 Text(
+                  isCompleting ? 'DONE' : 'FOCUS',
+                  style: AppTheme.label.copyWith(
+                    color: isCompleting ? AppTheme.green : urgencyColor,
+                    fontSize: 9,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                if (isFromBriefing && !isCompleting)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 6),
+                    child: Text(
+                      'RHODEY',
+                      style: AppTheme.caption.copyWith(
+                        color: AppTheme.textTertiary,
+                        fontSize: 7,
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            // Title
+            Text(
+              item.title,
+              style: AppTheme.body.copyWith(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                height: 1.3,
+              ),
+            ),
+
+            // LLM reason — the "why" behind this choice
+            if (focalReason != null && focalReason.isNotEmpty && !isCompleting)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  focalReason,
+                  style: AppTheme.bodySmall.copyWith(
+                    color: AppTheme.textSecondary,
+                    fontSize: 11,
+                    height: 1.4,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
+
+            // Deadline subtitle (legacy)
+            if (item.subtitle != null && item.subtitle!.isNotEmpty && focalReason == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  item.subtitle!,
+                  style: AppTheme.caption.copyWith(
+                    color: AppTheme.textTertiary,
+                    fontSize: 10,
+                  ),
+                ),
+              ),
+
+            // Next event (contextual)
+            if (_briefing.nextEvent != null && _briefing.nextEvent!.isNotEmpty && !isFromBriefing)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
                   '📅 ${_briefing.nextEvent}',
                   style: AppTheme.caption.copyWith(
                     color: AppTheme.textTertiary,
                     fontSize: 10,
                   ),
                 ),
+              ),
+
+            const SizedBox(height: 12),
+
+            // Three-button model
+            Row(
+              children: [
+                // "I'll do it" — confirm and complete
+                Expanded(
+                  child: _MiniButton(
+                    label: isFromBriefing ? (item.actionLabel) : 'Done',
+                    color: AppTheme.green,
+                    onTap: () => _completeFocalItem(item),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                // "Not now" — snooze (no learning signal)
+                Expanded(
+                  child: _MiniButton(
+                    label: 'Not now',
+                    color: AppTheme.amber,
+                    onTap: () => _snoozeFocalItem(item),
+                  ),
+                ),
+                // "Not right" — correction signal (only for LLM-chosen items)
+                if (isFromBriefing) ...[
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: _MiniButton(
+                      label: 'Not right',
+                      color: AppTheme.red,
+                      onTap: () => _correctFocalItem(item),
+                    ),
+                  ),
+                ],
               ],
             ),
-          ),
-      ],
+          ],
+        ),
+      ),
     );
   }
 
-  // ── CATCH UP: delta items ────────────────────────────────────
+  // ── Decision Digest ─────────────────────────────────────────
 
-  Widget _buildCatchUpSection() {
-    final deltas = _briefing.deltaItems;
+  Widget _buildDecisionDigest() {
+    final count = _briefing.pendingCount;
 
-    if (deltas.isEmpty) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildModeHeader('Since You Were Away'),
-          const SizedBox(height: 6),
-          _buildEmptyNow('Everything is current — no changes to report.'),
-        ],
-      );
-    }
-
-    // Show up to 10 delta items, newest first (they're already ordered by the API)
-    final items = deltas.take(10).toList();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _buildModeHeader('Since You Were Away'),
-        const SizedBox(height: 6),
-        ...items.map((item) => _buildDeltaRow(item)),
-      ],
-    );
-  }
-
-  Widget _buildDeltaRow(DeltaItem item) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+      decoration: BoxDecoration(
+        color: AppTheme.green.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: AppTheme.green.withValues(alpha: 0.15),
+          width: 1,
+        ),
+      ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: 20,
+          const Icon(Icons.check_circle_outline, size: 14, color: AppTheme.green),
+          const SizedBox(width: 8),
+          Expanded(
             child: Text(
-              item.icon,
-              style: const TextStyle(fontSize: 12),
+              '$count item${count != 1 ? 's' : ''} in Inbox awaiting your decision.',
+              style: AppTheme.bodySmall.copyWith(
+                fontSize: 11,
+                color: AppTheme.textSecondary,
+                height: 1.3,
+              ),
             ),
           ),
           const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  item.text,
-                  style: AppTheme.body.copyWith(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (item.time.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 1),
-                    child: Text(
-                      item.time,
-                      style: AppTheme.caption.copyWith(
-                        color: AppTheme.textTertiary,
-                        fontSize: 9,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ── WRAP: done today + rolling ───────────────────────────────
-
-  Widget _buildWrapSection() {
-    final doneToday = _briefing.wrapDoneToday;
-    final rolling = _briefing.wrapRolling;
-
-    final hasDone = doneToday.isNotEmpty;
-    final hasRolling = rolling.isNotEmpty;
-
-    if (!hasDone && !hasRolling) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildModeHeader('Done Today'),
-          const SizedBox(height: 6),
-          _buildEmptyNow('Clear board — nothing closed yet today.'),
-        ],
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        // Always show mode header when there's any content
-        _buildModeHeader('Done Today'),
-        const SizedBox(height: 6),
-
-        // Done Today section
-        if (hasDone)
-          ...doneToday.take(8).map((item) => _buildWrapRow(item)),
-
-        if (hasDone && hasRolling) const SizedBox(height: 10),
-
-        // Rolling to Tomorrow section
-        if (hasRolling) _buildRollingHeader(),
-        if (hasRolling)
-          ...rolling.take(5).map((item) => _buildWrapRow(item)),
-      ],
-    );
-  }
-
-  Widget _buildRollingHeader() {
-    return Row(
-      children: [
-        Text(
-          'ROLLING TO TOMORROW',
-          style: AppTheme.label.copyWith(
-            color: AppTheme.amber,
-            fontSize: 10,
-            letterSpacing: 1.2,
-          ),
-        ),
-        const SizedBox(width: 4),
-        const Icon(
-          Icons.unfold_more,
-          size: 12,
-          color: AppTheme.amber,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildWrapRow(WrapItem item) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 20,
+          GestureDetector(
+            onTap: _openInbox,
             child: Text(
-              item.icon,
-              style: const TextStyle(fontSize: 12),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  item.text,
-                  style: AppTheme.body.copyWith(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (item.detail.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 1),
-                    child: Text(
-                      item.detail,
-                      style: AppTheme.caption.copyWith(
-                        color: AppTheme.textTertiary,
-                        fontSize: 9,
-                      ),
-                    ),
-                  ),
-              ],
+              'View',
+              style: AppTheme.caption.copyWith(
+                color: AppTheme.accent,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
         ],
@@ -1522,196 +1163,80 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     );
   }
 
-  // ── Mode header with switcher ────────────────────────────────
+  // ── Transparency Report ──────────────────────────────────
 
-  Widget _buildModeHeader(String label) {
-    return GestureDetector(
-      onTap: _openModeSwitcher,
-      child: Row(
-        children: [
-          Text(
-            label.toUpperCase(),
-            style: AppTheme.label.copyWith(
-              color: AppTheme.accent,
-              fontSize: 10,
-              letterSpacing: 1.2,
-            ),
-          ),
-          const SizedBox(width: 4),
-          Icon(
-            Icons.unfold_more,
-            size: 12,
-            color: AppTheme.accent.withValues(alpha: 0.5),
-          ),
-          if (_nowLoading)
-            const Padding(
-              padding: EdgeInsets.only(left: 6),
-              child: SizedBox(
-                width: 10,
-                height: 10,
-                child: CircularProgressIndicator(
-                  strokeWidth: 1.5,
-                  color: AppTheme.textTertiary,
-                ),
-              ),
-            ),
-          if (!_nowLoading && _nowApiError)
-            const Padding(
-              padding: EdgeInsets.only(left: 4),
-              child: Icon(
-                Icons.warning_amber_rounded,
-                size: 12,
-                color: AppTheme.amber,
-              ),
-            ),
-        ],
+  Widget _buildTransparencyReport() {
+    final report = _briefing.transparencyReport ?? '';
+    if (report.isEmpty) return const SizedBox.shrink();
+
+    // Simplify for app display: extract the first few lines
+    final lines = report.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    final displayLines = lines.length > 8 ? lines.take(8).toList() : lines;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceAlt,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.border, width: 1),
       ),
-    );
-  }
-
-  // ── Vault stat line ──────────────────────────────────────────
-
-  Widget _buildVaultStat() {
-    final total = _briefing.vaultedCount;
-    final urgent = _briefing.vaultedUrgentCount;
-    final high = _briefing.vaultedHighCount;
-
-    if (total <= 0) return const SizedBox.shrink();
-
-    // Build segmented parts
-    final parts = <Widget>[];
-    parts.add(const Text('📦', style: TextStyle(fontSize: 10)));
-    parts.add(const SizedBox(width: 4));
-    parts.add(Text(
-      '$total vaulted',
-      style: AppTheme.caption.copyWith(
-        color: AppTheme.textTertiary,
-        fontSize: 10,
-      ),
-    ));
-
-    if (urgent > 0) {
-      parts.add(const SizedBox(width: 4));
-      parts.add(Container(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-        decoration: BoxDecoration(
-          color: AppTheme.red.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(3),
-        ),
-        child: Text(
-          '🔴 $urgent urgent',
-          style: AppTheme.caption.copyWith(
-            color: AppTheme.red,
-            fontSize: 9,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ));
-    }
-    if (high > 0) {
-      parts.add(const SizedBox(width: 4));
-      parts.add(Container(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-        decoration: BoxDecoration(
-          color: AppTheme.amber.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(3),
-        ),
-        child: Text(
-          '🟡 $high high',
-          style: AppTheme.caption.copyWith(
-            color: AppTheme.amber,
-            fontSize: 9,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ));
-    }
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: GestureDetector(
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const TodayScreen()),
-        ),
-        child: Row(
-          children: parts,
-        ),
-      ),
-    );
-  }
-
-  // ── Insights section ───────────────────────────────────────────
-
-  Widget _buildInsightsSection() {
-    final insights = _briefing.insights.take(4).toList();
-    if (insights.isEmpty) return const SizedBox.shrink();
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 6, bottom: 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           Row(
             children: [
-              Container(
-                width: 3,
-                height: 12,
-                decoration: BoxDecoration(
-                  color: AppTheme.accent,
-                  borderRadius: BorderRadius.circular(1),
-                ),
-              ),
+              const Text('🧠', style: TextStyle(fontSize: 14)),
               const SizedBox(width: 6),
               Text(
-                'INSIGHTS',
+                "What I Learned This Week",
                 style: AppTheme.label.copyWith(
-                  color: AppTheme.accent,
-                  fontSize: 9,
-                  letterSpacing: 2.0,
+                  fontSize: 11,
+                  letterSpacing: 0.5,
+                  color: AppTheme.textPrimary,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 6),
-          ...insights.map((insight) => Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: AppTheme.surfaceAlt,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: AppTheme.border.withValues(alpha: 0.4),
-                  width: 1,
+          const SizedBox(height: 8),
+          for (final line in displayLines) ...[
+            Padding(
+              padding: const EdgeInsets.only(bottom: 3),
+              child: Text(
+                line,
+                style: AppTheme.caption.copyWith(
+                  fontSize: 10,
+                  color: AppTheme.textSecondary,
+                  height: 1.4,
                 ),
               ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Text(
-                      insight,
-                      style: AppTheme.bodySmall.copyWith(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w300,
-                        height: 1.4,
-                      ),
-                    ),
+            ),
+          ],
+          if (lines.length > 8)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: GestureDetector(
+                onTap: () {
+                  _addRhodeyResponse(report);
+                },
+                child: Text(
+                  '+ See full report',
+                  style: AppTheme.caption.copyWith(
+                    color: AppTheme.accent,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w500,
                   ),
-                ],
+                ),
               ),
             ),
-          )),
         ],
       ),
     );
   }
 
-  // ── Empty now ─────────────────────────────────────────────────
+  // ── All Clear ──────────────────────────────────────────────
 
-  Widget _buildEmptyNow([String message = 'Nothing needs your attention right now.']) {
+  Widget _buildAllClear() {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -1719,18 +1244,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
           Container(
             width: 6,
             height: 6,
-            decoration: const BoxDecoration(
-              color: AppTheme.green,
-              shape: BoxShape.circle,
-            ),
+            decoration: const BoxDecoration(color: AppTheme.green, shape: BoxShape.circle),
           ),
           const SizedBox(width: 8),
-          Flexible(
+          const Flexible(
             child: Text(
-              message,
-              style: AppTheme.bodySmall.copyWith(
-                color: AppTheme.textTertiary,
+              'Nothing needs your attention right now.',
+              style: TextStyle(
                 fontSize: 12,
+                color: AppTheme.textTertiary,
+                fontWeight: FontWeight.w300,
               ),
             ),
           ),
@@ -1739,123 +1262,85 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     );
   }
 
-  // ── NOW cards (used by mode sections) ─────────────────────────
+  // ── Quick-Reply Chips ──────────────────────────────────────
 
-  Widget _buildOverflowLink() {
-    return Padding(
-      padding: const EdgeInsets.only(top: 4, bottom: 2),
-      child: GestureDetector(
-        onTap: _openInbox,
-        child: Row(
-          children: [
-            const Icon(Icons.arrow_forward_ios,
-                size: 8, color: AppTheme.accent),
-            const SizedBox(width: 4),
-            Text(
-              '+${_totalPendingCount - _nowCards.length} more in Inbox',
+  Widget _buildQuickReplyChips() {
+    // Show chips matching the three-button model
+    final chips = <String>[
+      "I'll do it",
+      'Not now',
+      'Not right',
+    ];
+
+    return Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      children: chips.map((chip) {
+        Color chipColor;
+        Color chipBg;
+        switch (chip) {
+          case "I'll do it":
+            chipColor = AppTheme.green;
+            chipBg = AppTheme.green.withValues(alpha: 0.08);
+            break;
+          case 'Not now':
+            chipColor = AppTheme.amber;
+            chipBg = AppTheme.amber.withValues(alpha: 0.08);
+            break;
+          case 'Not right':
+            chipColor = AppTheme.red;
+            chipBg = AppTheme.red.withValues(alpha: 0.08);
+            break;
+          default:
+            chipColor = AppTheme.textSecondary;
+            chipBg = AppTheme.surfaceAlt;
+        }
+
+        return GestureDetector(
+          onTap: () {
+            if (_focalItems.isEmpty) return;
+            switch (chip) {
+              case "I'll do it":
+                _completeFocalItem(_focalItems.first);
+                break;
+              case 'Not now':
+                _snoozeFocalItem(_focalItems.first);
+                break;
+              case 'Not right':
+                _correctFocalItem(_focalItems.first);
+                break;
+            }
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: chipBg,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: chipColor.withValues(alpha: 0.25),
+                width: 1,
+              ),
+            ),
+            child: Text(
+              chip,
               style: AppTheme.caption.copyWith(
-                color: AppTheme.accent,
+                color: chipColor,
                 fontSize: 11,
+                fontWeight: FontWeight.w500,
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── Voice line ───────────────────────────────────────────────
-
-  Widget _buildVoiceLine() {
-    final voice = _briefing.voiceLine ?? '';
-    if (voice.isEmpty) return const SizedBox.shrink();
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: AppTheme.accent.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: AppTheme.accent.withValues(alpha: 0.12),
-            width: 1,
           ),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Decorative quote mark
-            Padding(
-              padding: const EdgeInsets.only(top: 1, right: 8),
-              child: Text(
-                '\u201c',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w300,
-                  color: AppTheme.accent.withValues(alpha: 0.5),
-                  height: 1.0,
-                ),
-              ),
-            ),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    voice,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w400,
-                      color: AppTheme.textPrimary,
-                      height: 1.4,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Rhodey',
-                    style: AppTheme.caption.copyWith(
-                      color: AppTheme.accent,
-                      fontSize: 9,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+        );
+      }).toList(),
     );
   }
 
   // ── Conversation area ────────────────────────────────────────
 
-  List<TraceItem> get _filteredTraces {
-    if (_tracesSearchQuery.isEmpty) return _briefing.traces;
-    final q = _tracesSearchQuery.toLowerCase();
-    return _briefing.traces.where((t) =>
-      t.input.toLowerCase().contains(q) ||
-      t.resolution.toLowerCase().contains(q)
-    ).toList();
-  }
-
   Widget _buildConversationArea() {
-    if (_loadingHistory) {
-      return const Center(child: CircularProgressIndicator());
+    if (_messages.isEmpty) {
+      return _buildEmptyConversation();
     }
-
-    final displayMessages = _historyExpanded
-        ? _messages
-        : _messages.skip(_historyCount).toList();
-
-    // Show traces preview when expanded, or history pill when collapsed
-    final hasTraces = _briefing.traces.isNotEmpty;
-    final hasHistory = _historyCount > 0;
-    final showPill = !_historyExpanded && (hasTraces || hasHistory);
-
-    final filteredTraces = _filteredTraces;
 
     return RefreshIndicator(
       onRefresh: _loadHistory,
@@ -1864,76 +1349,55 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         controller: _scrollController,
         padding: const EdgeInsets.only(top: 4, bottom: 8),
         children: [
-          // Collapsed: show history pill
-          if (showPill)
-            _buildHistoryPill(),
-
-          // Expanded: show Traces section
-          if (_historyExpanded && hasTraces) ...[            
-            // Search bar
-            _buildTracesSearchBar(),
-            // Trace cards (filtered)
-            if (filteredTraces.isEmpty && _tracesSearchQuery.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                child: Text(
-                  'No results for "$_tracesSearchQuery"',
-                  style: AppTheme.caption.copyWith(
-                    color: AppTheme.textTertiary,
-                    fontSize: 11,
-                    fontStyle: FontStyle.italic,
-                  ),
-                ),
-              )
-            else
-              ...filteredTraces.map((trace) => _buildTraceCard(trace)),
-            const SizedBox(height: 8),
-            // Results count
-            if (_tracesSearchQuery.isNotEmpty && filteredTraces.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Text(
-                  '${filteredTraces.length} result${filteredTraces.length == 1 ? '' : 's'}',
-                  style: AppTheme.caption.copyWith(
-                    color: AppTheme.textTertiary,
-                    fontSize: 10,
-                  ),
-                ),
+          // History pill
+          GestureDetector(
+            onTap: _loadHistory,
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppTheme.surfaceAlt,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: AppTheme.border, width: 1),
               ),
-          ],
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.history, size: 14, color: AppTheme.textTertiary),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Show earlier activity',
+                    style: AppTheme.caption.copyWith(
+                      color: AppTheme.textTertiary,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
 
-          // Messages — rich cards for Rhodey responses, ChatBubble for everything else
-          if (displayMessages.isEmpty && !_loadingHistory && !_historyExpanded)
-            _buildEmptyConversation()
-          else
-            ...displayMessages.asMap().entries.map((entry) {
-              final index = entry.key;
-              final msg = entry.value;
+          // Messages
+          ..._messages.asMap().entries.map((entry) {
+            final index = entry.key;
+            final msg = entry.value;
 
-              // Check if this is a Rhodey message that should render as a rich card
-              if (msg.role == MessageRole.rhodey && !msg.isRhodeyTyping) {
-                final cardData = parseMessageToCardData(msg.text);
-                if (cardData != null) {
-                  return _buildRichCard(msg, cardData);
-                }
+            if (msg.role == MessageRole.rhodey && !msg.isRhodeyTyping) {
+              final cardData = parseMessageToCardData(msg.text);
+              if (cardData != null) {
+                return _buildRichCard(msg, cardData);
               }
+            }
 
-              // Fall back to normal ChatBubble — provide onTap for TTS on Rhodey messages
-              final isGroupStart = index == 0 ||
-                  displayMessages[index - 1].role != msg.role;
-              return ChatBubble(
-                message: msg,
-                isGroupStart: isGroupStart,
-                onRetry: msg.isFailed
-                    ? () => _retryMessage(msg.id)
-                    : null,
-                onTap: !msg.isUser && msg.text.isNotEmpty
-                    ? () => _speakMessage(msg.text)
-                    : null,
-              );
-            }),
+            final isGroupStart = index == 0 || _messages[index - 1].role != msg.role;
+            return ChatBubble(
+              message: msg,
+              isGroupStart: isGroupStart,
+              onRetry: msg.isFailed ? () => _retryMessage(msg.id) : null,
+              onTap: !msg.isUser && msg.text.isNotEmpty ? () => _speakMessage(msg.text) : null,
+            );
+          }),
 
-          // Spacer so last message doesn't hide behind input bar
           const SizedBox(height: 16),
         ],
       ),
@@ -1941,63 +1405,60 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   }
 
   Widget _buildEmptyConversation() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 32),
-      child: Column(
-        children: [
-          const Icon(Icons.chat_bubble_outline,
-              size: 28, color: AppTheme.textMuted),
-          const SizedBox(height: 12),
-          Text(
-            'Capture a thought, task, or idea',
-            style: AppTheme.body.copyWith(
-              color: AppTheme.textTertiary,
-              fontSize: 14,
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.chat_bubble_outline, size: 28, color: AppTheme.textMuted),
+            const SizedBox(height: 12),
+            const Text(
+              'Speak or type to get started',
+              style: TextStyle(
+                fontSize: 14,
+                color: AppTheme.textTertiary,
+                fontWeight: FontWeight.w300,
+              ),
+              textAlign: TextAlign.center,
             ),
-            textAlign: TextAlign.center,
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  /// Build a rich card for a Rhodey message that matches a card pattern.
+  /// Find a task ID from a card title by fetching open tasks.
+  Future<int?> _findTaskIdForCard(String title) async {
+    final result = await _api.getTasks(status: 'todo');
+    if (!result.success || result.data == null) return null;
+    final lower = title.toLowerCase().trim();
+    for (final t in result.data!) {
+      final taskTitle = (t['title'] as String? ?? '').toLowerCase().trim();
+      if (taskTitle == lower || taskTitle.contains(lower) || lower.contains(taskTitle)) {
+        return t['id'] as int?;
+      }
+    }
+    return null;
+  }
+
   Widget _buildRichCard(ChatMessage msg, CardData cardData) {
     VoidCallback? onMarkDone;
-    VoidCallback? onUndo;
-
     if (cardData.type == CardType.task) {
       onMarkDone = () async {
-        final taskId = _findTaskIdByTitle(cardData.title);
-        if (taskId != null) {
+        _instrumentation.homeActionsCompleted++;
+        final taskId = await _findTaskIdForCard(cardData.title);
+        if (taskId != null && mounted) {
           await _api.updateTaskStatus(taskId, 'done');
-          _instrumentation.homeActionsCompleted++;
-          _addResolvedTitle(cardData.title);
-        } else {
-          // Refresh tasks and try again
-          await _loadTasksForCards();
-          final retryId = _findTaskIdByTitle(cardData.title);
-          if (retryId != null) {
-            await _api.updateTaskStatus(retryId, 'done');
-            _instrumentation.homeActionsCompleted++;
-            _addResolvedTitle(cardData.title);
-          } else if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: const Text('Could not find task. Open Inbox to complete.',
-                    style: TextStyle(fontSize: 12)),
-                backgroundColor: AppTheme.amber,
-                duration: const Duration(seconds: 2),
-              ),
-            );
-          }
+        } else if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Task already completed or not found.', style: TextStyle(fontSize: 12)),
+              backgroundColor: AppTheme.amber,
+              duration: Duration(seconds: 2),
+            ),
+          );
         }
-      };
-    }
-
-    if (cardData.type == CardType.approval) {
-      onUndo = () {
-        _openInbox();
       };
     }
 
@@ -2007,18 +1468,15 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Rhodey label (matches ChatBubble's group-start style)
           Padding(
             padding: const EdgeInsets.only(left: 16, bottom: 4),
             child: Text('Rhodey', style: AppTheme.caption.copyWith(
-              color: AppTheme.accent,
-              letterSpacing: 0.3,
+              color: AppTheme.accent, letterSpacing: 0.3,
             )),
           ),
           RichCardContent(
             cardData: cardData,
             onMarkDone: onMarkDone,
-            onUndo: onUndo,
             onTap: () => _speakMessage(msg.text),
           ),
         ],
@@ -2026,391 +1484,83 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     );
   }
 
-  Widget _buildHistoryPill() {
-    final hasTraces = _briefing.traces.isNotEmpty;
-    final label = hasTraces
-        ? 'Show earlier activity ▴'
-        : 'Show $_historyCount earlier messages ▴';
-
-    return GestureDetector(
-      onTap: () {
-        setState(() => _historyExpanded = true);
-      },
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: AppTheme.surfaceAlt,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppTheme.border, width: 1),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.history,
-                size: 14, color: AppTheme.textTertiary),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: AppTheme.caption.copyWith(
-                color: AppTheme.textTertiary,
-                fontSize: 12,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── Traces ─────────────────────────────────────────────────────
-
-  Widget _buildTracesSearchBar() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Container(
-        decoration: BoxDecoration(
-          color: AppTheme.surfaceAlt,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: AppTheme.border),
-        ),
-        child: TextField(
-          onChanged: (v) => setState(() => _tracesSearchQuery = v),
-          style: AppTheme.body.copyWith(fontSize: 12),
-          decoration: InputDecoration(
-            hintText: 'Search conversations...',
-            hintStyle: AppTheme.caption.copyWith(
-              color: AppTheme.textTertiary,
-              fontSize: 12,
-            ),
-            prefixIcon: Icon(Icons.search, color: AppTheme.textTertiary, size: 16),
-            suffixIcon: _tracesSearchQuery.isNotEmpty
-                ? GestureDetector(
-                    onTap: () => setState(() => _tracesSearchQuery = ''),
-                    child: Icon(Icons.close, color: AppTheme.textTertiary, size: 14),
-                  )
-                : null,
-            border: InputBorder.none,
-            contentPadding: const EdgeInsets.symmetric(vertical: 8),
-            isDense: true,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTraceCard(TraceItem trace) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: AppTheme.surfaceAlt,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: AppTheme.border.withValues(alpha: 0.4),
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Time label
-            Text(
-              trace.time,
-              style: AppTheme.caption.copyWith(
-                color: AppTheme.textTertiary,
-                fontSize: 9,
-                letterSpacing: 1.0,
-              ),
-            ),
-            const SizedBox(height: 6),
-            // Input (what the user asked)
-            if (trace.input.isNotEmpty && trace.input != '(auto)')
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(Icons.subdirectory_arrow_right,
-                        size: 12, color: AppTheme.textTertiary),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        trace.input,
-                        style: AppTheme.bodySmall.copyWith(
-                          fontSize: 11,
-                          fontStyle: FontStyle.italic,
-                          color: AppTheme.textTertiary,
-                          height: 1.4,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            // Resolution (what happened)
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '→',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: AppTheme.accent.withValues(alpha: 0.6),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    trace.resolution,
-                    style: AppTheme.body.copyWith(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w300,
-                      height: 1.4,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   void _retryMessage(String id) {
-    _startBackupPoll();
     final idx = _messages.indexWhere((m) => m.id == id);
     if (idx == -1) return;
     final text = _messages[idx].text;
-
-    _api.sendMessage(text).then((result) {
-      if (!mounted) return;
-      if (result.success) {
-        String responseText;
-        if (result.data is Map) {
-          final serverResponse =
-              (result.data as Map)['response'] as String?;
-          responseText = serverResponse ?? 'Got it. Processing...';
-        } else {
-          responseText = 'Got it. Processing...';
-        }
-        Future.delayed(const Duration(milliseconds: 400), () {
-          if (!mounted) return;
-          _addRhodeyResponse(responseText);
-          _updateMessage(id, sendStatus: SendStatus.resolved);
-        });
-      } else {
-        _updateMessage(id, sendStatus: SendStatus.failed);
-      }
+    setState(() {
+      _messages.removeAt(idx);
     });
+    _sendMessage(text);
   }
 
-  // ── Input bar ────────────────────────────────────────────────
+  // ── Input bar ──────────────────────────────────────────────
 
   Widget _buildInputBar() {
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: const BoxDecoration(
-        border: Border(
-          top: BorderSide(color: AppTheme.border, width: 1),
-        ),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Row(
-          children: [
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: AppTheme.surfaceAlt,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: _voiceState == VoiceState.listening
-                        ? AppTheme.accent
-                        : AppTheme.border,
-                    width: 1,
-                  ),
-                ),
-                child: TextField(
-                  controller: _textController,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: _sendMessage,
-                  decoration: const InputDecoration(
-                    hintText: 'Type a message — or tap the mic',
-                    border: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 12),
-                    isDense: true,
-                  ),
-                  style: AppTheme.body,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Material(
-              color: _voiceState == VoiceState.listening
-                  ? AppTheme.red
-                  : AppTheme.accent,
-              borderRadius: BorderRadius.circular(18),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(18),
-                onTap: _toggleVoice,
-                child: Container(
-                  width: 64,
-                  height: 64,
-                  alignment: Alignment.center,
-                  child: Icon(
-                    _voiceState == VoiceState.listening
-                        ? Icons.stop
-                        : Icons.mic,
-                    color: Colors.white,
-                    size: 28,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── Divider ──────────────────────────────────────────────────
-
-  Widget _buildDivider(String label) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Row(
-        children: [
-          Text(
-            label,
-            style: AppTheme.label.copyWith(
-              color: AppTheme.textMuted,
-              fontSize: 9,
-              letterSpacing: 1.2,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Container(
-              height: 1,
-              color: AppTheme.border.withValues(alpha: 0.5),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── NowCardWidget ──────────────────────────────────────────────
-
-class _NowCardWidget extends StatelessWidget {
-  final _NowCard card;
-  final VoidCallback onAction;
-  final VoidCallback onDismiss;
-
-  const _NowCardWidget({
-    required this.card,
-    required this.onAction,
-    required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isDecision = card.type == _NowCardType.decision;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: isDecision ? AppTheme.accentBg : AppTheme.surfaceAlt,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: isDecision
-              ? AppTheme.accent.withValues(alpha: 0.2)
-              : AppTheme.border,
-          width: 1,
-        ),
+        border: Border(top: BorderSide(color: AppTheme.border, width: 1)),
       ),
       child: Row(
         children: [
-          // Icon
-          Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              color: isDecision
-                  ? AppTheme.accent.withValues(alpha: 0.15)
-                  : AppTheme.amberBg,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Center(
-              child: Text(
-                isDecision ? _decisionIcon() : '📋',
-                style: const TextStyle(fontSize: 14),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-
-          // Content
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  card.title,
-                  style: AppTheme.body.copyWith(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (card.subtitle != null)
-                  Text(
-                    card.subtitle!,
-                    style: AppTheme.caption.copyWith(
-                      color: AppTheme.amber,
-                      fontSize: 10,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-
-          // Action button
-          if (isDecision)
-            _TinyButton(
-              label: card.actionLabel,
-              color: AppTheme.accent,
-              onTap: onAction,
-            )
-          else
-            _TinyButton(
-              label: 'Done',
-              color: AppTheme.green,
-              onTap: onAction,
-            ),
-
-          const SizedBox(width: 4),
-
-          // Dismiss
+          // Voice button
           Material(
             color: Colors.transparent,
             child: InkWell(
-              borderRadius: BorderRadius.circular(6),
-              onTap: onDismiss,
-              child: const Padding(
-                padding: EdgeInsets.all(4),
+              borderRadius: BorderRadius.circular(20),
+              onTap: _toggleVoice,
+              child: Container(
+                padding: const EdgeInsets.all(8),
                 child: Icon(
-                  Icons.close,
-                  size: 14,
-                  color: AppTheme.textMuted,
+                  _voiceState == VoiceState.listening ? Icons.mic : Icons.mic_none,
+                  color: _voiceState == VoiceState.listening ? AppTheme.accent : AppTheme.textTertiary,
+                  size: 20,
                 ),
+              ),
+            ),
+          ),
+
+          const SizedBox(width: 4),
+
+          // Text field
+          Expanded(
+            child: TextField(
+              controller: _textController,
+              style: AppTheme.body.copyWith(fontSize: 14),
+              decoration: InputDecoration(
+                hintText: 'Ask Rhodey...',
+                hintStyle: AppTheme.caption.copyWith(
+                  color: AppTheme.textTertiary,
+                  fontSize: 14,
+                ),
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                isDense: true,
+              ),
+              textInputAction: TextInputAction.send,
+              onSubmitted: (text) {
+                if (text.trim().isNotEmpty) {
+                  _sendMessage(text.trim());
+                }
+              },
+            ),
+          ),
+
+          // Send button
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () {
+                final text = _textController.text;
+                if (text.trim().isNotEmpty) {
+                  _sendMessage(text.trim());
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                child: const Icon(Icons.arrow_upward, color: AppTheme.accent, size: 20),
               ),
             ),
           ),
@@ -2418,31 +1568,16 @@ class _NowCardWidget extends StatelessWidget {
       ),
     );
   }
-
-  String _decisionIcon() {
-    switch (card.decisionType) {
-      case DecisionType.person:
-        return '👤';
-      case DecisionType.edge:
-        return '🔗';
-      case DecisionType.email:
-        return '📧';
-      case DecisionType.whatsapp:
-        return '💬';
-      case DecisionType.call:
-        return '📞';
-      default:
-        return '📌';
-    }
-  }
 }
 
-class _TinyButton extends StatelessWidget {
+// ── Mini Button Widget ─────────────────────────────────────────
+
+class _MiniButton extends StatelessWidget {
   final String label;
   final Color color;
   final VoidCallback onTap;
 
-  const _TinyButton({
+  const _MiniButton({
     required this.label,
     required this.color,
     required this.onTap,
@@ -2450,25 +1585,21 @@ class _TinyButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(6),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(
-              color: color.withValues(alpha: 0.4),
-              width: 1,
-            ),
-          ),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.25), width: 1),
+        ),
+        child: Center(
           child: Text(
             label,
             style: AppTheme.caption.copyWith(
               color: color,
-              fontSize: 10,
+              fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
           ),

@@ -65,6 +65,10 @@ class BriefingResponse(TypedDict):
     home_mode: str                  # "proceed" | "decide" | "sprint" | "catch_up" | "wrap"
     vaulted_urgent_count: int       # Count of vaulted urgent tasks
     vaulted_high_count: int         # Count of vaulted high-priority tasks
+    # Phase 2 v2: LLM-chosen top focal item (replaces scoring formula)
+    top_focal_item: dict | None     # {type, item_id, title, reason, urgency, action_label} or None
+    # Sunday weekly learning report ("What I Learned This Week")
+    transparency_report: str | None    # Formatted markdown string or None
     # Catch-up delta: what changed since the user was last active
     delta_items: list[DeltaItem]    # 🆕 New tasks, ✅ done tasks, 🔴 new decisions
     # Wrap mode: completed today + rolling tasks
@@ -413,8 +417,83 @@ def _build_traces(
 
 # ── Main builder ─────────────────────────────────────────────────────────────
 
+async def _auto_approve_pending_items(supabase) -> int:
+    """Run pattern-confidence auto-approval on pending graph edges and nodes.
+
+    Called at the start of every build_briefing() so the pending_count and
+    decision digest always reflect what's LEFT after auto-approval — not
+    everything that was ever created.
+
+    Returns the number of items auto-approved.
+    """
+    auto_count = 0
+    try:
+        from core.lib.telemetry import compute_pattern_confidence
+        from core.pulse.graph import process_pending_edge_decision, process_graph_pending_decision
+    except ImportError as e:
+        print(f"[Briefing] Auto-approval imports failed (non-fatal): {e}")
+        return 0
+
+    # ── Auto-approve high-confidence graph edges ──
+    try:
+        pending_res = supabase.table("pending_graph_edges") \
+            .select("id, source_label, target_label, relationship, source_type, target_type") \
+            .eq("status", "pending") \
+            .limit(20) \
+            .execute()
+        for row in (pending_res.data or []):
+            features = {
+                "relationship": row["relationship"],
+                "source_type": row.get("source_type"),
+                "target_type": row.get("target_type"),
+            }
+            try:
+                pr = await compute_pattern_confidence(features, "entity_extraction")
+                if pr.get("recommendation") in ("approve", "auto_approve"):
+                    await process_pending_edge_decision(row["id"], "approve", auto_decided=True)
+                    auto_count += 1
+                    print(f"[Briefing] Auto-approved edge {row['id']} ({row['relationship']}) — {pr.get('rule', 'N/A')}")
+            except Exception as row_err:
+                print(f"[Briefing] Edge auto-approval error (row {row.get('id')}): {row_err}")
+                continue
+    except Exception as e:
+        print(f"[Briefing] Edge auto-approval query error (non-fatal): {e}")
+
+    # ── Auto-approve high-confidence graph nodes ──
+    try:
+        node_res = supabase.table("pending_nodes") \
+            .select("id, label, type:node_type, source_text") \
+            .eq("status", "pending") \
+            .limit(20) \
+            .execute()
+        for row in (node_res.data or []):
+            features = {
+                "node_type": row["type"],
+                "has_context": bool(row.get("source_text")),
+            }
+            try:
+                pr = await compute_pattern_confidence(features, "entity_extraction")
+                if pr.get("recommendation") in ("approve", "auto_approve"):
+                    await process_graph_pending_decision(row["id"], "approve", auto_decided=True)
+                    auto_count += 1
+                    print(f"[Briefing] Auto-approved node {row['id']} ({row['label']}) — {pr.get('rule', 'N/A')}")
+            except Exception as row_err:
+                print(f"[Briefing] Node auto-approval error (row {row.get('id')}): {row_err}")
+                continue
+    except Exception as e:
+        print(f"[Briefing] Node auto-approval query error (non-fatal): {e}")
+
+    return auto_count
+
+
 async def build_briefing(supabase) -> BriefingResponse:
     """Assemble the full briefing from Supabase data. All errors caught per-source."""
+    # ── Auto-approve high-confidence items before reading pending state ──
+    try:
+        await _auto_approve_pending_items(supabase)
+    except Exception as e:
+        print(f"[Briefing] Auto-approval failed (non-fatal): {e}")
+
     # ── Gather data in parallel ──────────────────────────────────────────
     import asyncio
 
@@ -810,28 +889,67 @@ async def build_briefing(supabase) -> BriefingResponse:
     home_mode = "proceed"
     try:
         ai_res = supabase.table("app_intelligence")\
-            .select("voice_line, pulse_mode, nag_list, stale_list, overdue_list, vaulted_count, context, insights, home_mode")\
+            .select("created_at, voice_line, pulse_mode, nag_list, stale_list, overdue_list, vaulted_count, context, insights, home_mode, top_focal_item, transparency_report")\
             .order("created_at", desc=True)\
             .limit(1)\
             .execute()
         if ai_res.data:
             row = ai_res.data[0]
-            voice_line = row.get("voice_line") or None
-            pulse_mode = row.get("pulse_mode", "")
-            insight_text = row.get("context", "")
-            vaulted_count = row.get("vaulted_count") or 0
-            home_mode = row.get("home_mode") or "proceed"
-            raw_overdue = row.get("overdue_list") or []
-            raw_stale = row.get("stale_list") or []
-            if raw_overdue:
-                overdue_task_names = set(t.lower().strip() for t in raw_overdue if isinstance(t, str))
-            if raw_stale:
-                stale_task_names = set(t.lower().strip() for t in raw_stale if isinstance(t, str))
+            # ── Recency guard: if pulse is > 6 hours old, treat as stale ──
+            created_raw = row.get("created_at", "")
+            created_dt = _parse_dt(created_raw)
+            pulse_age_hours = 99.0
+            if created_dt is not None:
+                pulse_age_hours = (datetime.now(IST) - created_dt).total_seconds() / 3600.0
+            
+            if pulse_age_hours <= 6.0:
+                voice_line = row.get("voice_line") or None
+                pulse_mode = row.get("pulse_mode", "")
+                insight_text = row.get("context", "")
+                vaulted_count = row.get("vaulted_count") or 0
+                home_mode = row.get("home_mode") or "proceed"
+                raw_focal = row.get("top_focal_item")
+                if raw_focal:
+                    if isinstance(raw_focal, str):
+                        try:
+                            top_focal_item = json.loads(raw_focal)
+                        except Exception:
+                            top_focal_item = None
+                    elif isinstance(raw_focal, dict):
+                        top_focal_item = raw_focal
+                    else:
+                        top_focal_item = None
+                else:
+                    top_focal_item = None
+
+                # Read weekly transparency report
+                transparency_report = row.get("transparency_report") or None
+                if isinstance(transparency_report, str):
+                    transparency_report = transparency_report.strip() or None
+                else:
+                    transparency_report = None
+                        try:
+                            top_focal_item = json.loads(raw_focal)
+                        except Exception:
+                            top_focal_item = None
+                    elif isinstance(raw_focal, dict):
+                        top_focal_item = raw_focal
+                    else:
+                        top_focal_item = None
+                else:
+                    top_focal_item = None
+                raw_overdue = row.get("overdue_list") or []
+                raw_stale = row.get("stale_list") or []
+                if raw_overdue:
+                    overdue_task_names = set(t.lower().strip() for t in raw_overdue if isinstance(t, str))
+                if raw_stale:
+                    stale_task_names = set(t.lower().strip() for t in raw_stale if isinstance(t, str))
     except Exception as e:
         print(f"[Briefing] App intelligence error (table may not exist yet): {e}")
 
-    # ── Fallback: read from raw_dumps metadata if app_intelligence returned empty ──
+    # ── Fallback: generate real-time micro-context if pulse is stale or missing ──
     if not voice_line and not insight_text:
+        # Try raw_dumps as secondary source first
         try:
             fb_res = supabase.table("raw_dumps")\
                 .select("metadata")\
@@ -854,6 +972,23 @@ async def build_briefing(supabase) -> BriefingResponse:
                     stale_task_names = set(t.lower().strip() for t in raw_stale_fb if isinstance(t, str))
         except Exception as e:
             print(f"[Briefing] Fallback pulse read error: {e}")
+        
+        # ── If still empty, generate real-time micro-context ──
+        if not voice_line:
+            h = datetime.now(IST).hour
+            if h < 12:
+                pulse_mode = pulse_mode or "morning"
+            elif h < 17:
+                pulse_mode = pulse_mode or "afternoon"
+            elif h < 19:
+                pulse_mode = pulse_mode or "closing_loop"
+            else:
+                pulse_mode = pulse_mode or "intel"
+            home_mode = "proceed"
+            event_count = len(events)
+            task_count = len(tasks)
+            greeting_prefix = "morning" if h < 12 else "afternoon" if h < 17 else "evening"
+            voice_line = f"Good {greeting_prefix}! Assembly in progress. You have {event_count} event{'s' if event_count != 1 else ''} coming up and {task_count} task{'s' if task_count != 1 else ''} on the board."
 
     # 1. Briefing block (with pulse intelligence)
     briefing_section = _build_briefing_section(
@@ -948,6 +1083,8 @@ async def build_briefing(supabase) -> BriefingResponse:
         insights=insights_list,
         vaulted_count=vaulted_count,
         home_mode=home_mode,
+        top_focal_item=top_focal_item,
+        transparency_report=transparency_report,
         vaulted_urgent_count=vaulted_urgent,
         vaulted_high_count=vaulted_high,
         vaulted_count=vaulted_total,

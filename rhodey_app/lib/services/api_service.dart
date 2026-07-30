@@ -628,6 +628,26 @@ class ApiService {
     }, maxRetries: 1);
   }
 
+  // ── Focal item action (Phase 2 v2: done/snooze/correct) ──
+
+  /// Send a focal item action to /api/focal-action.
+  /// [action] is "done", "snooze", or "correct".
+  Future<ApiResult<dynamic>> focalAction({
+    required String action,
+    required String itemType,
+    required String itemId,
+    String title = '',
+    String reason = '',
+  }) async {
+    return post('/api/focal-action', body: {
+      'action': action,
+      'item_type': itemType,
+      'item_id': itemId,
+      'title': title,
+      'reason': reason,
+    }, maxRetries: 1);
+  }
+
   // ── Config access ────────────────────────────────────────────
 
   ApiConfig get config => _config;

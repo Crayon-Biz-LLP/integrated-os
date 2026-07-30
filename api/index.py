@@ -541,6 +541,82 @@ async def get_calendar_events(request: Request, date: str = None, start: str = N
         print(f"Calendar events error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# --- SHARED TASK COMPLETION LOGIC (used by both PATCH and focal-action) ---
+async def _complete_task(task_id: int, new_status: str = "done") -> dict:
+    """Core task completion logic: handles recurring, Google sync, outcome memory, caches.
+
+    Returns a dict with 'success' and 'message' keys. On success also includes 'task'.
+    This is the shared implementation used by both PATCH /api/tasks/{id}/status
+    and POST /api/focal-action (done action).
+    """
+    supabase = get_supabase()
+
+    task_res = supabase.table('tasks').select('*').eq('id', task_id).eq('is_current', True).single().execute()
+    if not task_res.data:
+        return {"success": False, "message": "Task not found"}
+
+    task = task_res.data
+    current_status = task.get('status')
+    if current_status == new_status:
+        return {"success": True, "task": task, "message": f"Task already {current_status}"}
+    if current_status == 'cancelled':
+        return {"success": False, "message": "Task was cancelled — cannot change status"}
+
+    # --- RECURRING TASK: done = skip instance, cancelled = end series ---
+    if task.get('recurrence') not in [None, '', 'none'] and new_status == 'done':
+        skip_msg = ""
+        if task.get('google_event_id'):
+            skip_msg = skip_recurring_instance(task_id)
+        else:
+            skip_msg = "No linked calendar event."
+        await write_outcome_memory(task.get('title', 'Untitled Task'))
+        return {"success": True, "task": task, "message": f"Marked this week's instance done. {skip_msg} Series continues."}
+
+    g_id = task.get('google_task_id')
+    e_id = task.get('google_event_id')
+    task_title = task.get('title', 'Untitled Task')
+
+    if e_id and new_status in ['done', 'cancelled']:
+        try:
+            delete_calendar_event(e_id)
+        except Exception as e:
+            print(f"Calendar event delete failed (non-critical): {e}")
+
+    if g_id and new_status in ['done', 'cancelled']:
+        try:
+            tasks_service = get_tasks_service()
+            sync_to_google(tasks_service, title=task_title, task_id=g_id, status=new_status)
+        except Exception as e:
+            print(f"Google Tasks sync failed (non-critical): {e}")
+
+    update_data = {'status': new_status}
+    if new_status == 'done':
+        update_data['completed_at'] = datetime.now().isoformat()
+
+    supabase.table('tasks').update(update_data).eq('id', task_id).execute()
+
+    if new_status == 'done':
+        org_name = None
+        org_id = task.get('organization_id')
+        if org_id:
+            org_lookup = maybe_single_safe(supabase.table('organizations').select('name').eq('id', org_id))
+            org_name = org_lookup.data['name'] if org_lookup.data else None
+        await write_outcome_memory(task_title, org_name)
+
+    # Invalidate task caches
+    try:
+        from core.pulse.context import context_provider
+        context_provider.caches['tasks'].invalidate()
+        context_provider.caches['recent_tasks'].invalidate()
+    except Exception:
+        pass
+
+    new_task_res = supabase.table('tasks').select('*').eq('supersedes_id', task_id).eq('is_current', True).single().execute()
+    new_task = new_task_res.data if new_task_res.data else task
+
+    return {"success": True, "task": new_task}
+
+
 # --- UPDATE TASK STATUS (Mark Done) ---
 @app.patch("/api/tasks/{task_id}/status")
 async def update_task_status(request: Request, task_id: int):
@@ -548,74 +624,10 @@ async def update_task_status(request: Request, task_id: int):
     try:
         body = await request.json()
         new_status = body.get('status', 'done')
-
-        supabase = get_supabase()
-
-        task_res = supabase.table('tasks').select('*').eq('id', task_id).eq('is_current', True).single().execute()
-        if not task_res.data:
-            raise HTTPException(status_code=404, detail="Task not found")
-
-        task = task_res.data
-        current_status = task.get('status')
-        if current_status == new_status:
-            return {"success": True, "task": task, "message": f"Task already {current_status}"}
-        if current_status == 'cancelled':
-            return {"success": False, "message": "Task was cancelled — cannot change status"}
-
-        # --- RECURRING TASK: done = skip instance, cancelled = end series ---
-        if task.get('recurrence') not in [None, '', 'none'] and new_status == 'done':
-            skip_msg = ""
-            if task.get('google_event_id'):
-                skip_msg = skip_recurring_instance(task_id)
-            else:
-                skip_msg = "No linked calendar event."
-            await write_outcome_memory(task.get('title', 'Untitled Task'))
-            return {"success": True, "task": task, "message": f"Marked this week's instance done. {skip_msg} Series continues."}
-
-        g_id = task.get('google_task_id')
-        e_id = task.get('google_event_id')
-        task_title = task.get('title', 'Untitled Task')
-
-        if e_id and new_status in ['done', 'cancelled']:
-            try:
-                delete_calendar_event(e_id)
-            except Exception as e:
-                print(f"Calendar event delete failed (non-critical): {e}")
-
-        if g_id and new_status in ['done', 'cancelled']:
-            try:
-                tasks_service = get_tasks_service()
-                sync_to_google(tasks_service, title=task_title, task_id=g_id, status=new_status)
-            except Exception as e:
-                print(f"Google Tasks sync failed (non-critical): {e}")
-
-        update_data = {'status': new_status}
-        if new_status == 'done':
-            update_data['completed_at'] = datetime.now().isoformat()
-
-        supabase.table('tasks').update(update_data).eq('id', task_id).execute()
-
-        if new_status == 'done':
-            org_name = None
-            org_id = task.get('organization_id')
-            if org_id:
-                org_lookup = maybe_single_safe(supabase.table('organizations').select('name').eq('id', org_id))
-                org_name = org_lookup.data['name'] if org_lookup.data else None
-            await write_outcome_memory(task_title, org_name)
-
-        # Invalidate task caches so interrogate_brain() doesn't return stale active tasks
-        try:
-            from core.pulse.context import context_provider
-            context_provider.caches['tasks'].invalidate()
-            context_provider.caches['recent_tasks'].invalidate()
-        except Exception:
-            pass
-
-        new_task_res = supabase.table('tasks').select('*').eq('supersedes_id', task_id).eq('is_current', True).single().execute()
-        new_task = new_task_res.data if new_task_res.data else task
-
-        return {"success": True, "task": new_task}
-
+        result = await _complete_task(task_id, new_status)
+        if not result['success']:
+            raise HTTPException(status_code=400 if 'cannot' in result.get('message', '') else 404, detail=result['message'])
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -742,6 +754,98 @@ async def delete_alias_route(alias_id: int, request: Request):
         raise
     except Exception as e:
         print(f"Delete alias error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- FOCAL ITEM ACTION (Phase 2 v2: done/snooze/correct) ---
+@app.post("/api/focal-action")
+async def focal_action_route(request: Request):
+    """Handle the three-button focal card actions.
+
+    Body: {
+        "action": "done",       // "done", "snooze", "correct"
+        "item_type": "task",    // "task", "graph_node", "graph_edge"
+        "item_id": "123",       // Task ID or pending item ID
+        "title": "Fill DBS forms",
+        "reason": "Blocking Qhord"   // Original LLM reason (for learning)
+    }
+
+    - "done":    Marks the task/decision as completed
+    - "snooze":  No-op (item will come back on next pulse)
+    - "correct": Sends correction signal to learning loop
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        action = body.get("action", "")
+        item_type = body.get("item_type", "")
+        item_id = body.get("item_id", "")
+        title = body.get("title", "")
+        reason = body.get("reason", "")
+
+        if not action or not item_type or not item_id:
+            raise HTTPException(status_code=400, detail="action, item_type, and item_id required")
+
+        if action == "done":
+            if item_type == "task":
+                # Use the shared _complete_task() which handles Google sync, outcome memory, etc.
+                result = await _complete_task(int(item_id), "done")
+                return result
+            elif item_type in ("graph_node", "graph_edge"):
+                from core.pulse.graph import process_pending_edge_decision, process_graph_pending_decision
+                from core.services.db import get_supabase
+                supabase = get_supabase()
+                if item_type == "graph_edge":
+                    await process_pending_edge_decision(int(item_id), "approve", auto_decided=False)
+                else:
+                    await process_graph_pending_decision(int(item_id), "approve", auto_decided=False)
+                return {"success": True, "message": f"Approved {item_type}"}
+            return {"success": True, "message": "Action completed"}
+
+        elif action == "snooze":
+            # Snooze: no learning signal, item comes back on next pulse
+            return {"success": True, "message": "Dismissed until next pulse"}
+
+        elif action == "correct":
+            # Correction: emit observation for learning loop
+            try:
+                await emit_observation(
+                    subsystem='focal_selection',
+                    event_type='correction',
+                    features={
+                        "item_type": item_type,
+                        "item_id": item_id,
+                        "title": title,
+                        "reason": reason,
+                    },
+                    predicted=item_type,
+                    actual='rejected',
+                    outcome='corrected',
+                    source='flutter',
+                )
+                try:
+                    await record_decision(
+                        decision_type="focal_selection_correction",
+                        title=f"User corrected focal selection: '{title}'",
+                        context=f"User tapped 'Not right' on focal item. LLM reason: {reason[:200] if reason else 'N/A'}",
+                        entity_type=item_type,
+                        entity_id=str(item_id),
+                        confidence=1.0,
+                        source="flutter",
+                        auto_decided=False,
+                    )
+                except Exception as dec_err:
+                    print(f"Focal correction decision record error: {dec_err}")
+            except Exception as e:
+                print(f"Focal correction observation error (non-fatal): {e}")
+            return {"success": True, "message": "Correction recorded — Rhodey will learn from this."}
+
+        raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Focal action error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

@@ -198,6 +198,44 @@ NEW INPUT TAGS: {ctx.new_input_tags}
 
 {guards}
 
+--- TOP FOCAL ITEM SELECTION ---
+Your JSON output includes a `top_focal_item` field that tells the app the
+SINGLE most important thing Danny should focus on right now.
+
+Pick ONE item from the data below — either a task from ACTIVE TASKS or
+URGENT/BACKLOG, or a pending decision from the context. Only pick an item
+that Danny can actually act on. Follow these rules:
+
+1. ACTIONABLE ONLY: Never pick a task with direction="waiting_on" — Danny
+   cannot act on blocked items. Never pick an item Danny has repeatedly
+   dismissed (conversation history shows this).
+
+2. IMPORTANCE OVER URGENCY: An overdue but trivial task (e.g. "Clean cobwebs")
+   is LESS important than a strategic task with no deadline (e.g. "Meet Arani
+   on Phase 2"). Use your judgment, not just deadline.
+
+3. INVISIBLE BLOCKERS: If Danny keeps ignoring an overdue task, it might be
+   blocked or deprioritized — don't keep surfacing it. Pick something fresh.
+
+4. REASON MATTERS: The `reason` field is shown to Danny. Make it specific:
+   "DBS forms are blocking the Qhord transfer" NOT "This task is overdue."
+
+5. SET TO EMPTY if there's truly nothing worth surfacing (all is quiet).
+   The app will show an "all clear" state instead.
+
+Output format for top_focal_item:
+```json
+{
+  "type": "task",           // "task", "graph_node", "graph_edge", or other
+  "item_id": "123",         // task ID or pending item ID from the data
+  "title": "Fill DBS forms",
+  "reason": "Blocking Qhord fund transfer — the bank is waiting on these forms.",
+  "urgency": "critical",    // "critical", "important", "normal"
+  "action_label": "I'll do it now"
+}
+```
+If nothing needs Danny's attention, output an empty object {}.
+
 --- HOME MODE SELECTION ---
 Your JSON output includes a `home_mode` field that controls how the app's home screen
 lays out information for Danny. Choose the mode that best fits the current context:
@@ -230,11 +268,9 @@ lays out information for Danny. Choose the mode that best fits the current conte
 
 Pick the SINGLE best mode. Default to "proceed" if unsure.
 
-NOTE: You are a briefing engine only. Your JSON output contains exactly
-three fields: `briefing`, `voice_line`, and `home_mode`.
+NOTE: You are a briefing engine only. Your JSON output contains exactlyfour fields: `briefing`, `voice_line`, `home_mode`, and `top_focal_item`.
 You do NOT create, complete, or modify any tasks, projects, people, resources, or clusters.
-All task operations are handled by the Action Planner on the webhook path.
-"""
+All task operations are handled by the Action Planner on the webhook path."""
 
 
 def build_pulse_system_instruction(

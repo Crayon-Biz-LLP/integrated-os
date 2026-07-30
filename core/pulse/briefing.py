@@ -957,11 +957,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         briefing_text = re.sub(r'\[ID:\d+\]', '', briefing_text)
 
         # ── Sunday transparency report (must run before Telegram send) ──
+        # Save pre-report briefing for voice_line extraction (report text could confuse _extract_insight)
+        pre_report_briefing = briefing_text
+        transparency_report_text = ""
         if now.weekday() == 6:
             try:
-                transparency_report = await build_transparency_report()
-                if transparency_report:
-                    briefing_text += f"\n\n{transparency_report}"
+                transparency_report_text = await build_transparency_report()
+                if transparency_report_text:
+                    briefing_text += f"\n\n{transparency_report_text}"
                     audit_log_sync("pulse", "INFO", "📊 Appended Sunday transparency report to briefing")
             except Exception as e:
                 audit_log_sync("pulse", "WARNING", f"Transparency report failed: {e}")
@@ -1039,13 +1042,25 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                     if isinstance(raw_home, str) and raw_home in ("proceed", "decide", "sprint", "catch_up", "wrap"):
                         home_mode = raw_home
 
+            # Extract top_focal_item from PulseOutput
+            top_focal_item = {}
+            if isinstance(output, dict):
+                try:
+                    raw_item = pulse_output.top_focal_item
+                    if raw_item and isinstance(raw_item, dict) and raw_item.get("title"):
+                        top_focal_item = raw_item
+                except Exception:
+                    raw_item = output.get("top_focal_item", {})
+                    if isinstance(raw_item, dict) and raw_item.get("title"):
+                        top_focal_item = raw_item
+
             if isinstance(output, dict):
                 try:
                     voice_line = pulse_output.voice_line.strip()
                 except Exception:
                     pass
             if not voice_line:
-                voice_line = _extract_insight(briefing_text)[:120]
+                voice_line = _extract_insight(pre_report_briefing)[:120]
 
             # Map briefing_mode to a clean pulse_mode for the app
             mode_lower = briefing_mode.lower()
@@ -1081,7 +1096,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 insights.append(f"📦 {vaulted_count} item{'s' if vaulted_count != 1 else ''} vaulted behind the pulse")
 
             # Build context from voice_line + nag count
-            context_text = voice_line[:120] if voice_line else _extract_insight(briefing_text)[:120]
+            context_text = voice_line[:120] if voice_line else _extract_insight(pre_report_briefing)[:120]
 
             intelligence_run_id = run_id or f"pulse_{datetime.now(timezone.utc).isoformat()}"
 
@@ -1102,6 +1117,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 'delta_snapshot': json.dumps(delta_snapshot),
                 'context': context_text,
                 'insights': json.dumps(insights),
+                'top_focal_item': json.dumps(top_focal_item) if top_focal_item else None,
+                'transparency_report': transparency_report_text if transparency_report_text else None,
                 'pulse_run_id': intelligence_run_id,
                 'metadata': json.dumps({
                     'briefing_mode': briefing_mode,

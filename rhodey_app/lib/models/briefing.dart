@@ -181,6 +181,12 @@ class BriefingResponse {
   final List<String> insights;   // ["🔴 2 stale tasks", "📦 3 vaulted"]
   final int vaultedCount;        // Tasks hidden by pulse vault
 
+  // Phase 2 v2: LLM-chosen top focal item
+  final Map<String, dynamic>? topFocalItem;
+
+  // Sunday weekly learning report ("What I Learned This Week")
+  final String? transparencyReport;
+
   // Home screen mode (drives Flutter layout)
   final String homeMode;         // "proceed" | "decide" | "sprint" | "catch_up" | "wrap"
   final int vaultedUrgentCount;  // Vaulted urgent tasks (shown as 🔴 count)
@@ -203,6 +209,8 @@ class BriefingResponse {
     this.pulseMode,
     this.insights = const [],
     this.vaultedCount = 0,
+    this.topFocalItem,
+    this.transparencyReport,
     this.homeMode = 'proceed',
     this.vaultedUrgentCount = 0,
     this.vaultedHighCount = 0,
@@ -234,6 +242,10 @@ class BriefingResponse {
       pulseMode: json['pulse_mode'] as String?,
       insights: rawInsights.whereType<String>().toList(),
       vaultedCount: json['vaulted_count'] as int? ?? 0,
+      topFocalItem: json['top_focal_item'] != null
+          ? Map<String, dynamic>.from(json['top_focal_item'] as Map)
+          : null,
+      transparencyReport: json['transparency_report'] as String?,
       homeMode: json['home_mode'] as String? ?? 'proceed',
       vaultedUrgentCount: json['vaulted_urgent_count'] as int? ?? 0,
       vaultedHighCount: json['vaulted_high_count'] as int? ?? 0,
@@ -253,6 +265,7 @@ class BriefingResponse {
   static BriefingResponse empty() => const BriefingResponse(
         greeting: 'Hey.',
         sections: [],
+        topFocalItem: null,
       );
 
   Map<String, dynamic> toJson() => {
@@ -267,6 +280,8 @@ class BriefingResponse {
         'pulse_mode': pulseMode,
         'insights': insights,
         'vaulted_count': vaultedCount,
+        'top_focal_item': topFocalItem,
+        'transparency_report': transparencyReport,
         'home_mode': homeMode,
         'vaulted_urgent_count': vaultedUrgentCount,
         'vaulted_high_count': vaultedHighCount,

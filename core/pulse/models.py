@@ -18,11 +18,14 @@ class PulseOutput(BaseModel):
     The voice_line field goes to the Flutter app via app_intelligence table.
     The home_mode field drives the Flutter home screen layout
     (proceed|decide|sprint|catch_up|wrap).
+    The top_focal_item field is the single most important item for the app's
+    focal card — picked by the LLM using full context, not a formula.
     The Action Planner handles all task operations (create, close, modify).
     """
     briefing: str = ""
     voice_line: str = ""
     home_mode: str = "proceed"
+    top_focal_item: dict = {}
 
 
 @dataclass
