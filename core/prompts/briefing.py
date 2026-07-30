@@ -235,25 +235,25 @@ act on. Follow these rules:
 
 Output format for top_focal_item:
 ```json
-{
+{{
   "type": "task",           // "task", "graph_node", "graph_edge", or other
   "item_id": "123",         // task ID or pending item ID from the data
   "title": "Fill DBS forms",
   "reason": "Blocking Qhord fund transfer — the bank is waiting on these forms.",
   "urgency": "critical",    // "critical", "important", "normal"
   "action_label": "I'll do it"
-}
+}}
 ```
 For a pending person node:
 ```json
-{
+{{
   "type": "graph_node",
   "item_id": "456",
   "title": "Approve: Yasir",
   "reason": "New person to add to your network",
   "urgency": "normal",
   "action_label": "Approve person"
-}
+}}
 ```
 If nothing needs Danny's attention, output an empty object {{}}.
 
