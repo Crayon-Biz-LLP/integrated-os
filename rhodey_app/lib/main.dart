@@ -8,7 +8,9 @@ import 'screens/adaptive_home_screen.dart';
 import 'screens/quick_capture_overlay.dart';
 import 'services/api_service.dart';
 import 'services/notification_service.dart';
+import 'services/share_service.dart';
 import 'services/update_service.dart';
+import 'utils/route_observer.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,6 +33,11 @@ void main() async {
     } catch (e) {
       debugPrint('[FCM] Init failed (non-fatal): $e');
     }
+    try {
+      await ShareService().init();
+    } catch (e) {
+      debugPrint('[Share] Init failed (non-fatal): $e');
+    }
   });
 }
 
@@ -46,6 +53,7 @@ class RhodeyApp extends StatelessWidget {
         scaffoldBackgroundColor: initialCapture ? Colors.transparent : AppTheme.background,
       ),
       debugShowCheckedModeBanner: false,
+      navigatorObservers: [routeObserver],
       home: initialCapture ? const QuickCaptureOverlay() : const MainShell(),
     );
   }

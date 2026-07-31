@@ -10,7 +10,7 @@ class TodayScreen extends StatefulWidget {
   State<TodayScreen> createState() => _TodayScreenState();
 }
 
-class _TodayScreenState extends State<TodayScreen> {
+class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
   final _api = ApiService();
   List<CalendarEventItem> _events = [];
   List<Map<String, dynamic>> _tasks = [];
@@ -21,7 +21,23 @@ class _TodayScreenState extends State<TodayScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadAll();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// Refresh today's data when the app returns to foreground — events, tasks
+  /// and captures may have changed while backgrounded.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _loadAll();
+    }
   }
 
   Future<void> _loadAll() async {

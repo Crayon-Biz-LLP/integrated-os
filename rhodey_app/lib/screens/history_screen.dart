@@ -19,7 +19,7 @@ class HistoryScreen extends StatefulWidget {
   State<HistoryScreen> createState() => _HistoryScreenState();
 }
 
-class _HistoryScreenState extends State<HistoryScreen> {
+class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserver {
   final _api = ApiService();
   final _scrollController = ScrollController();
   List<ChatMessage> _messages = [];
@@ -36,17 +36,28 @@ class _HistoryScreenState extends State<HistoryScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadHistory();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scrollController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadHistory() async {
-    setState(() => _loading = true);
+  /// Refresh when the app returns to foreground — new messages may have
+  /// arrived while backgrounded. Silent: no full-screen spinner flash.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _loadHistory(silent: true);
+    }
+  }
+
+  Future<void> _loadHistory({bool silent = false}) async {
+    if (!silent) setState(() => _loading = true);
     final result = await _api.getConversationHistory(limit: 60);
     if (!mounted) return;
 

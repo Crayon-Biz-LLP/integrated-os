@@ -102,6 +102,12 @@ jobs:
           OUTLOOK_REFRESH_TOKEN: ${{ secrets.OUTLOOK_REFRESH_TOKEN }}
           OUTLOOK_TENANT_ID: ${{ secrets.OUTLOOK_TENANT_ID }}
           OUTLOOK_SCOPES: ${{ secrets.OUTLOOK_SCOPES }}
+          # App delivery + concurrency safety + LLM fallback (must be present
+          # or pushes silently skip and the Redis lock fails open)
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: python -m core.pulse_cli
 
   notify_failure:

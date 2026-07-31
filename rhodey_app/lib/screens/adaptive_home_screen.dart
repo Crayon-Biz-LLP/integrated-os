@@ -9,7 +9,9 @@ import '../models/message.dart';
 import '../services/notification_service.dart';
 import '../models/briefing.dart';
 import '../services/api_service.dart';
+import '../services/share_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/route_observer.dart';
 import '../services/widget_data_provider.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/voice_states.dart';
@@ -48,9 +50,15 @@ class AdaptiveHomeScreen extends StatefulWidget {
   State<AdaptiveHomeScreen> createState() => _AdaptiveHomeScreenState();
 }
 
-class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
+class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
+    with RouteAware, WidgetsBindingObserver {
   final _api = ApiService();
   final _instrumentation = HomeInstrumentation();
+
+  /// Set true after the first post-frame callback — prevents the lifecycle's
+  /// initial `resumed` event (fires at app launch) from duplicating the
+  /// initState load. Only genuine background→foreground transitions refresh.
+  bool _hasStarted = false;
 
   // ── Pulse intelligence ──
   BriefingResponse _briefing = BriefingResponse.empty();
@@ -61,6 +69,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   bool _focalLoading = true;
   /// ID of the focal item currently animating to "done" state
   String? _completingCardId;
+
+  /// Live count of pending Inbox decisions — sourced from getPendingDecisions()
+  /// (the same data the Inbox screen reads), refreshed whenever focal items
+  /// reload. The decision digest uses this instead of the stale briefing
+  /// snapshot so the count tracks actions in real time (fixes the count
+  /// staying non-zero after the Inbox is emptied).
+  int _pendingDecisionCount = 0;
 
   // ── CONVERSATION ──
   final _messages = <ChatMessage>[];
@@ -97,8 +112,40 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   final FlutterTts _tts = FlutterTts();
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Subscribe so didPopNext fires when any pushed screen (Inbox via menu /
+    // home widget, Today, etc.) pops and we regain focus — the live pending
+    // count must reflect decisions made there, from ANY push path.
+    final route = ModalRoute.of(context);
+    if (route != null) routeObserver.subscribe(this, route);
+  }
+
+  /// Regained focus after a pushed screen popped. Refresh live data so the
+  /// decision digest and focal board reflect decisions made there.
+  @override
+  void didPopNext() {
+    _loadFocalItems();
+  }
+
+  /// App returned to foreground. FCM `onMessage` only fires in the foreground,
+  /// so a pulse briefing that ran while the app was backgrounded would leave
+  /// home stale (yesterday's voice line, old focal board) until pull-to-refresh.
+  /// Refresh the pulse intelligence + focal board on every genuine resume.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _hasStarted) {
+      _refreshHome();
+    }
+  }
+
+  @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _hasStarted = true;
+    });
     _loadBriefing();
     _loadFocalItems();
     _initSpeech();
@@ -107,6 +154,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
     NotificationService.onNotificationOpened = _handlePushNotificationTap;
     NotificationService.onPushReceived = _handlePushReceived;
+    ShareService.onShared = _handleSharedText;
 
     final pendingData = NotificationService.pendingOpenData;
     if (pendingData != null) {
@@ -115,15 +163,28 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         _handlePushNotificationTap(pendingData);
       });
     }
+    // A link shared into Rhodey at cold start (before this screen mounted).
+    final pendingShare = ShareService.pendingSharedText;
+    if (pendingShare != null) {
+      ShareService.pendingSharedText = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _handleSharedText(pendingShare);
+      });
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    routeObserver.unsubscribe(this);
     if (NotificationService.onNotificationOpened == _handlePushNotificationTap) {
       NotificationService.onNotificationOpened = null;
     }
     if (NotificationService.onPushReceived == _handlePushReceived) {
       NotificationService.onPushReceived = null;
+    }
+    if (ShareService.onShared == _handleSharedText) {
+      ShareService.onShared = null;
     }
     _pollTimer?.cancel();
     _sendTimeout?.cancel();
@@ -201,6 +262,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
       // Decisions first (graph nodes, edges, channel items)
       if (decResult.success && decResult.data != null) {
+        // Live pending count for the decision digest — same source the Inbox
+        // screen reads, so the digest drops as items are actioned.
+        _pendingDecisionCount = decResult.data!.length;
         for (final pd in decResult.data!) {
           final source = pd.source;
           items.add(_FocalItem(
@@ -562,6 +626,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         "Noted. I'll keep it off your board for a while — it'll resurface if it's still relevant.",
       );
     }
+    // Refresh the live pending count so the digest drops with the deferral.
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) _loadFocalItems();
+    });
   }
 
   /// True when the /api/focal-action response actually reports success.
@@ -624,6 +692,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         "Rejected — I'll leave that one off the board and adjust my judgment.",
       );
     }
+    // Refresh the live pending count so the digest drops with the rejection.
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) _loadFocalItems();
+    });
   }
 
   /// "Not right" — persists the same deferral AND sends a correction signal
@@ -678,6 +750,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         "Got it — I've noted that wasn't the right priority. I'll adjust.",
       );
     }
+    // Refresh the live pending count so the digest drops with the correction.
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) _loadFocalItems();
+    });
   }
 
 
@@ -1194,16 +1270,36 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
   /// IDLE: Rhodey's welcome + deliberately clean middle + the single focal
   /// card pinned just above the input bar. Zero decision fatigue.
+  /// Pull-to-refresh reloads the pulse intelligence + focal board.
   Widget _buildIdleState() {
-    return Column(
-      key: const ValueKey('idle'),
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _buildWelcomeBanner(),
-        const Spacer(),
-        _buildFocalArea(),
-      ],
+    return RefreshIndicator(
+      onRefresh: _refreshHome,
+      color: AppTheme.accent,
+      // AlwaysScrollableScrollPhysics keeps the pull gesture alive even when
+      // the content is shorter than the viewport (the idle state's norm).
+      child: LayoutBuilder(
+        builder: (context, constraints) => SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Column(
+              key: const ValueKey('idle'),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildWelcomeBanner(),
+                const Spacer(),
+                _buildFocalArea(),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
+  }
+
+  /// Home pull-to-refresh: reload the pulse intelligence and the focal board.
+  Future<void> _refreshHome() async {
+    await Future.wait([_loadBriefing(), _loadFocalItems()]);
   }
 
   /// CONVERSATION: compact focus bar pinned at top + the chat stream.
@@ -1401,6 +1497,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
   void _openInbox() {
     _instrumentation.inboxBadgeTaps++;
+    // The Inbox is always pushed as a route above home, so RouteAware's
+    // didPopNext() fires on return and refreshes the live pending count +
+    // focal board — no explicit refresh needed here (avoids double fetch).
     Navigator.push(context, MaterialPageRoute(builder: (_) => const InboxScreen()));
   }
 
@@ -1416,9 +1515,29 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         Navigator.push(context, MaterialPageRoute(builder: (_) => const TodayScreen()));
         break;
       case 'briefing':
+        // Mirror Telegram: tapping the pulse notification opens the
+        // conversation, where the full briefing lives as a BRIEFING card.
+        // Force the history load and always land on the newest message — a
+        // second tap in the same session must still show the fresh briefing
+        // even if the user had scrolled up.
+        if (!_conversationOpen) setState(() => _conversationOpen = true);
+        _loadHistory(force: true).then((_) {
+          if (mounted) _scrollToBottom();
+        });
+        break;
       default:
         break;
     }
+  }
+
+  /// A URL/text shared into Rhodey from another app (browser → Share sheet).
+  /// Mirrors the Telegram save-link flow: forward it to Rhodey as a message —
+  /// the backend's url_filter auto-saves bare URLs into `resources`. Sending
+  /// enters the conversation state so the shared item + Rhodey's ack are
+  /// visible in the thread.
+  void _handleSharedText(String text) {
+    if (text.trim().isEmpty) return;
+    _sendMessage(text.trim());
   }
 
   // ── Scroll & TTS ─────────────────────────────────────────────
@@ -1633,7 +1752,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
             ),
 
           // Decision digest
-          if (!_briefingLoading && _briefing.pendingCount > 0)
+          if (!_focalLoading && _pendingDecisionCount > 0)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: _buildDecisionDigest(),
@@ -1833,7 +1952,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   // ── Decision Digest ─────────────────────────────────────────
 
   Widget _buildDecisionDigest() {
-    final count = _briefing.pendingCount;
+    final count = _pendingDecisionCount;
 
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),

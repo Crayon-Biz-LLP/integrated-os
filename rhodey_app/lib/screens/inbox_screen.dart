@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/decision_item.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/route_observer.dart';
 import '../widgets/decision_card.dart';
 
 class InboxScreen extends StatefulWidget {
@@ -11,7 +12,8 @@ class InboxScreen extends StatefulWidget {
   State<InboxScreen> createState() => _InboxScreenState();
 }
 
-class _InboxScreenState extends State<InboxScreen> {
+class _InboxScreenState extends State<InboxScreen>
+    with RouteAware, WidgetsBindingObserver {
   final _api = ApiService();
   List<DecisionItem> _items = [];
   bool _loading = true;
@@ -23,12 +25,48 @@ class _InboxScreenState extends State<InboxScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadDecisions();
     _loadAutoDecisionCount();
   }
 
-  Future<void> _loadDecisions() async {
-    setState(() => _loading = true);
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route != null) routeObserver.subscribe(this, route);
+  }
+
+  @override
+  void dispose() {
+    routeObserver.unsubscribe(this);
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// Refresh when a route pushed on top of the Inbox pops (e.g. an item was
+  /// actioned from the home focal card while the Inbox sat in the stack).
+  @override
+  void didPopNext() {
+    _refreshSilently();
+  }
+
+  /// Refresh when the app returns to foreground — items may have been
+  /// actioned from the home focal card, another device, or Telegram.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshSilently();
+    }
+  }
+
+  void _refreshSilently() {
+    _loadDecisions(silent: true);
+    _loadAutoDecisionCount();
+  }
+
+  Future<void> _loadDecisions({bool silent = false}) async {
+    if (!silent) setState(() => _loading = true);
     final result = await _api.getPendingDecisions();
     if (!mounted) return;
 
@@ -71,6 +109,9 @@ class _InboxScreenState extends State<InboxScreen> {
 
     if (mounted) {
       setState(() {
+        // Silent refreshes keep the last-known-good list on failure so the
+        // badge never flickers away; the full spinner only shows on first load.
+        if (silent && !result.success && _items.isNotEmpty) return;
         _items = items;
         _loading = false;
       });

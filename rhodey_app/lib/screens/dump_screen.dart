@@ -11,7 +11,7 @@ class DumpScreen extends StatefulWidget {
   State<DumpScreen> createState() => _DumpScreenState();
 }
 
-class _DumpScreenState extends State<DumpScreen> {
+class _DumpScreenState extends State<DumpScreen> with WidgetsBindingObserver {
   final _textController = TextEditingController();
   final _api = ApiService();
   VoiceState _voiceState = VoiceState.idle;
@@ -22,7 +22,17 @@ class _DumpScreenState extends State<DumpScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadCaptures();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Refresh captures when the app returns to foreground — a capture sent
+    // from another device (Telegram, web) while backgrounded should appear.
+    if (state == AppLifecycleState.resumed) {
+      _loadCaptures();
+    }
   }
 
   /// Fetch real captures from /api/captures.
@@ -106,6 +116,7 @@ class _DumpScreenState extends State<DumpScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _textController.dispose();
     super.dispose();
   }
