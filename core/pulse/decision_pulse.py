@@ -127,12 +127,14 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
             audit_log_sync("decision_pulse", "WARNING", f"Pattern prune failed (non-blocking): {prune_err}")
 
         # ── Auto-approve high-confidence graph nodes before display ──
-        pending_graph = supabase.table('pending_nodes')\
+        pending_graph_q = supabase.table('pending_nodes')\
             .select('id, label, type:node_type, source_text')\
-            .eq('status', 'pending')\
-            .order('created_at', desc=False)\
-            .limit(5)\
-            .execute()
+            .eq('status', 'pending')
+        try:
+            pending_graph_q = pending_graph_q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+        except Exception:
+            pass  # Column not yet migrated — fall back to unfiltered
+        pending_graph = pending_graph_q.order('created_at', desc=False).limit(5).execute()
 
         graph_items = pending_graph.data or []
 
@@ -148,12 +150,14 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
         graph_items = [r for r in graph_items if r['id'] not in auto_approved_graph_ids]
 
         # ── Auto-approve high-confidence graph edges ──
-        pending_edges_res = supabase.table('pending_graph_edges')\
+        pending_edges_q = supabase.table('pending_graph_edges')\
             .select('id, source_label, target_label, relationship, source_type, target_type')\
-            .eq('status', 'pending')\
-            .order('created_at', desc=False)\
-            .limit(5)\
-            .execute()
+            .eq('status', 'pending')
+        try:
+            pending_edges_q = pending_edges_q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+        except Exception:
+            pass  # Column not yet migrated — fall back to unfiltered
+        pending_edges_res = pending_edges_q.order('created_at', desc=False).limit(5).execute()
 
         pending_edges = pending_edges_res.data or []
 

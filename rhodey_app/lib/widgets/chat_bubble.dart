@@ -7,6 +7,7 @@ class ChatBubble extends StatelessWidget {
   final bool isGroupStart;
   final VoidCallback? onRetry;
   final VoidCallback? onTap;
+  final ValueChanged<String>? onQuickReply;
 
   const ChatBubble({
     super.key,
@@ -14,6 +15,7 @@ class ChatBubble extends StatelessWidget {
     this.isGroupStart = true,
     this.onRetry,
     this.onTap,
+    this.onQuickReply,
   });
 
   @override
@@ -78,7 +80,9 @@ class ChatBubble extends StatelessWidget {
                     borderRadius: BorderRadius.circular(8),
                     child: InkWell(
                       borderRadius: BorderRadius.circular(8),
-                      onTap: () {},
+                      onTap: onQuickReply == null
+                          ? null
+                          : () => onQuickReply!(reply),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(

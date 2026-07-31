@@ -2,6 +2,12 @@
 
 An AI-powered Personal Operating System — an Executive Command Center for one person's life, work, and ministry.
 
+## ⭐ Vision & Mindset (Read First)
+
+| File | What It Covers |
+|------|---------------|
+| [00-vision-and-mindset.md](00-vision-and-mindset.md) | **The North Star.** Canonical vision & mindset — Chief of Staff, not chatbot; when-to-show-what intelligence; the learning loop; decision evaluation criteria; anti-patterns. **Read before any product work.** |
+
 ## Core Architecture
 
 | File | What It Covers |

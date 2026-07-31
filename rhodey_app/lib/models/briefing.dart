@@ -191,6 +191,8 @@ class BriefingResponse {
   final String homeMode;         // "proceed" | "decide" | "sprint" | "catch_up" | "wrap"
   final int vaultedUrgentCount;  // Vaulted urgent tasks (shown as 🔴 count)
   final int vaultedHighCount;    // Vaulted high-priority tasks (shown as 🟡 count)
+  /// Vaulted items with title, priority, deadline — for vault badge context.
+  final List<Map<String, String>> vaultedItems;
   // Catch-up delta items
   final List<DeltaItem> deltaItems; // What changed since last session
   // Wrap mode: completed today + rolling tasks
@@ -214,6 +216,7 @@ class BriefingResponse {
     this.homeMode = 'proceed',
     this.vaultedUrgentCount = 0,
     this.vaultedHighCount = 0,
+    this.vaultedItems = const [],
     this.deltaItems = const [],
     this.wrapDoneToday = const [],
     this.wrapRolling = const [],
@@ -249,6 +252,7 @@ class BriefingResponse {
       homeMode: json['home_mode'] as String? ?? 'proceed',
       vaultedUrgentCount: json['vaulted_urgent_count'] as int? ?? 0,
       vaultedHighCount: json['vaulted_high_count'] as int? ?? 0,
+      vaultedItems: _parseVaultedItems(json['vaulted_items'] as List? ?? []),
       deltaItems: rawDelta
           .map((e) => DeltaItem.fromJson(e as Map<String, dynamic>))
           .toList(),
@@ -259,6 +263,19 @@ class BriefingResponse {
           .map((e) => WrapItem.fromJson(e as Map<String, dynamic>))
           .toList(),
     );
+  }
+
+  /// Parse vaulted_items from JSON list.
+  static List<Map<String, String>> _parseVaultedItems(List raw) {
+    return raw.map((e) {
+      final m = e as Map<String, dynamic>;
+      return {
+        'id': (m['id']?.toString() ?? ''),
+        'title': (m['title'] as String? ?? ''),
+        'priority': (m['priority'] as String? ?? 'medium'),
+        'deadline': (m['deadline'] as String? ?? ''),
+      };
+    }).toList();
   }
 
   /// Empty briefing (e.g. on error or initial load)
@@ -285,6 +302,7 @@ class BriefingResponse {
         'home_mode': homeMode,
         'vaulted_urgent_count': vaultedUrgentCount,
         'vaulted_high_count': vaultedHighCount,
+        'vaulted_items': vaultedItems,
         'delta_items': deltaItems.map((e) => e.toJson()).toList(),
         'wrap_done_today': wrapDoneToday.map((e) => e.toJson()).toList(),
         'wrap_rolling': wrapRolling.map((e) => e.toJson()).toList(),

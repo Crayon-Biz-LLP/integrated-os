@@ -160,15 +160,15 @@ class _TodayScreenState extends State<TodayScreen> {
                                       borderRadius: BorderRadius.circular(14),
                                       side: const BorderSide(color: AppTheme.border),
                                     ),
-                                    title: Text('Dismiss task?',
+                                    title: Text('Cancel task?',
                                       style: const TextStyle(color: AppTheme.textPrimary, fontSize: 16)),
                                     content: Text('$title will be cancelled.',
                                       style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
                                     actions: [
                                       TextButton(onPressed: () => Navigator.pop(ctx, false),
-                                        child: const Text('Cancel', style: TextStyle(color: AppTheme.textTertiary))),
+                                        child: const Text('Keep task', style: TextStyle(color: AppTheme.textTertiary))),
                                       TextButton(onPressed: () => Navigator.pop(ctx, true),
-                                        child: const Text('Dismiss', style: TextStyle(color: AppTheme.red))),
+                                        child: const Text('Cancel task', style: TextStyle(color: AppTheme.red))),
                                     ],
                                   ),
                                 );
@@ -369,7 +369,7 @@ class _TodayScreenState extends State<TodayScreen> {
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           alignment: Alignment.center,
-                          child: const Text('Dismiss',
+                          child: const Text('Cancel task',
                             style: TextStyle(color: AppTheme.red, fontWeight: FontWeight.w500, fontSize: 13)),
                         ),
                       ),

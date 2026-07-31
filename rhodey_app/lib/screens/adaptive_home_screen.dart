@@ -74,6 +74,20 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   static const _backupPollInterval = Duration(seconds: 60);
   bool _awaitingResponse = false;
 
+  /// Timeout guard for slow send-message calls.
+  Timer? _sendTimeout;
+  /// Guards against duplicate history loads.
+  bool _historyLoaded = false;
+  /// Guards against double-tap on the task icon while the ledger is posting.
+  bool _taskTapping = false;
+
+  // ── Two-state layout (idle ⇄ conversation) ──
+  bool _conversationOpen = false;
+  /// Active (todo) task count — shown on the task icon badge.
+  int _activeTaskCount = 0;
+  /// Debounce timer for push notifications — coalesces rapid pushes.
+  Timer? _pushDebounce;
+
   // ── Voice ──
   VoiceState _voiceState = VoiceState.idle;
   String? _transcribedText;
@@ -112,6 +126,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       NotificationService.onPushReceived = null;
     }
     _pollTimer?.cancel();
+    _sendTimeout?.cancel();
+    _pushDebounce?.cancel();
     _textController.dispose();
     _scrollController.dispose();
     _instrumentation.log();
@@ -204,13 +220,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
       // Due/overdue tasks fill remaining slots
       if (taskResult.success && taskResult.data != null) {
+        _activeTaskCount = taskResult.data!.length;
         for (final t in taskResult.data!) {
           final deadline = t['deadline'] as String?;
           if (deadline == null || !_isUrgent(deadline)) continue;
           items.add(_FocalItem(
             id: t['id'].toString(),
             title: t['title'] as String? ?? 'Untitled',
-            subtitle: _formatDeadline(deadline),
+            subtitle: _formatTaskContext(t),
             source: 'task',
             actionLabel: 'Done',
             metadata: {'task_id': t['id']},
@@ -220,20 +237,20 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
       if (mounted) {
         setState(() {
-          // Preserve the LLM-chosen briefing focal item at position 0
-          _FocalItem? briefingItem;
+          // Preserve items that were deliberately surfaced: the LLM-chosen
+          // briefing item AND any task the user manually promoted to focus.
+          // Everything else rebuilds from live pending/task data.
+          final preserved = <_FocalItem>[];
           for (final f in _focalItems) {
-            if (f.metadata['from_briefing'] == true) {
-              briefingItem = f;
-              break;
+            if (f.metadata['from_briefing'] == true ||
+                f.metadata['promoted'] == true) {
+              preserved.add(f);
             }
           }
           _focalItems = items;
-          if (briefingItem != null) {
-            // Re-insert the briefing item at position 0 (dedup if already in items)
-            // Note: Dart doesn't promote nullable types inside closures, so use ! within removeWhere
-            _focalItems.removeWhere((f) => f.id == briefingItem!.id);
-            _focalItems.insert(0, briefingItem);
+          for (final p in preserved.reversed) {
+            _focalItems.removeWhere((f) => f.id == p.id);
+            _focalItems.insert(0, p);
           }
           _focalLoading = false;
           _instrumentation.nowCardsShown = _focalItems.length;
@@ -269,6 +286,63 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     }
   }
 
+  /// The chief-of-staff context line for a promoted task: when it was added,
+  /// which org it belongs to, its deadline status, and a snippet of the
+  /// original message note — so the focal card reads like a person handing
+  /// over a file, not a bare title.
+  String _formatTaskContext(Map<String, dynamic> task) {
+    final parts = <String>[];
+    final created = task['created_at'] as String?;
+    if (created != null && created.isNotEmpty) {
+      parts.add('Added ${_formatCreated(created)}');
+    }
+    final org = task['organization_name'] as String?;
+    if (org != null && org.trim().isNotEmpty) parts.add(org.trim());
+    final deadline = task['deadline'] as String?;
+    if (deadline != null && deadline.isNotEmpty) {
+      final dl = _formatDeadline(deadline);
+      if (dl.isNotEmpty) parts.add(dl);
+    }
+    final notes = task['notes'] as String?;
+    if (notes != null && notes.trim().isNotEmpty) {
+      // De-dup: the note is the original message and the title is usually
+      // extracted FROM it — only suppress near-identical echoes (e.g. title
+      // 'Fill DBS forms' + note 'Fill DBS forms'), never notes that carry
+      // real extra context ('Fill DBS forms, then call Timmy...').
+      final title = (task['title'] as String? ?? '').trim().toLowerCase();
+      final noteClean = notes.trim().toLowerCase();
+      final isEcho = title.isNotEmpty &&
+          (noteClean == title ||
+              (noteClean.contains(title) &&
+                  (noteClean.length - title.length) < 10));
+      if (!isEcho) {
+        final snippet = _shortenNotes(notes);
+        if (snippet.isNotEmpty) parts.add(snippet);
+      }
+    }
+    return parts.join(' · ');
+  }
+
+  /// Clip a task note to a single ~80-char line for the focal card.
+  String _shortenNotes(String notes) {
+    final clean = notes.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (clean.length <= 80) return clean;
+    return '${clean.substring(0, 77)}…';
+  }
+
+  String _formatCreated(String created) {
+    try {
+      final parsed = DateTime.parse(created).toLocal();
+      final diff = DateTime.now().difference(parsed);
+      if (diff.inDays < 1) return 'today';
+      if (diff.inDays == 1) return 'yesterday';
+      if (diff.inDays < 7) return '${diff.inDays}d ago';
+      return '${diff.inDays ~/ 7}w ago';
+    } catch (_) {
+      return '';
+    }
+  }
+
   String _sourceActionLabel(String source) {
     switch (source) {
       case 'graph_node': return 'Approve';
@@ -279,6 +353,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       case 'call': return 'Create';
       default: return 'View';
     }
+  }
+
+  /// True for graph items (node/edge/merge) where the third button should be
+  /// a permanent "Reject" — mirroring the Inbox. Tasks keep "Not right".
+  bool _isGraphType(_FocalItem item) {
+    final t = (item.metadata['focal_type'] as String?) ?? item.source ?? '';
+    return t == 'graph_node' || t == 'graph_edge' || t == 'merge';
   }
 
   /// Derive the first-button label from the item's type field.
@@ -315,10 +396,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     if (!mounted) return;
 
     // 2. Execute via /api/focal-action (Phase 2 v2 unified endpoint)
+    ApiResult<dynamic>? result;
     final fromBriefing = item.metadata['from_briefing'] == true;
     if (fromBriefing && item.metadata['focal_item_id'] != null) {
       // LLM-chosen item from briefing — use unified endpoint
-      await _api.focalAction(
+      result = await _api.focalAction(
         action: 'done',
         itemType: item.metadata['focal_type'] as String? ?? item.source ?? 'task',
         itemId: item.metadata['focal_item_id'].toString(),
@@ -329,13 +411,12 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       if (item.source == 'task') {
         final taskId = item.metadata['task_id'];
         if (taskId != null) {
-          await _api.updateTaskStatus(taskId as int, 'done');
+          result = await _api.updateTaskStatus(taskId as int, 'done');
         }
       } else {
         final source = item.metadata['source'] as String?;
         final pendingId = item.metadata['pending_id'] as int?;
         if (source != null && pendingId != null) {
-          ApiResult<dynamic>? result;
           switch (source) {
             case 'graph_node':
               result = await _api.approveGraphNode(pendingId);
@@ -356,17 +437,34 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
               result = await _api.approveCall(pendingId);
               break;
           }
-          if (result != null && !result.success && mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(result.error ?? 'Action failed', style: const TextStyle(fontSize: 12)),
-                backgroundColor: AppTheme.red,
-                duration: const Duration(seconds: 2),
-              ),
-            );
-          }
         }
       }
+    }
+
+    // 2b. Honest completion — the backend must confirm before the card is
+    // removed. A failed 'done' (HTTP 200 + {"success": false}), or an item
+    // with no server-side id to act on (null result), keeps the card on the
+    // board and tells Danny — never a silent false confirmation.
+    if (result == null || !_focalActionOk(result)) {
+      if (mounted) {
+        setState(() => _completingCardId = null);
+        final data = result?.data;
+        final serverMsg =
+            (data is Map && data['message'] is String) ? data['message'] as String : null;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                result == null
+                    ? "I couldn't complete that item — it may need a refresh."
+                    : (serverMsg ?? result.error ?? "Couldn't complete that — it's still pending."),
+                style: const TextStyle(fontSize: 12)),
+            // Amber for the unactionable case, red for a real failed action.
+            backgroundColor: result == null ? AppTheme.amber : AppTheme.red,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
     }
     _instrumentation.homeActionsCompleted++;
     if (!mounted) return;
@@ -390,19 +488,70 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     });
   }
 
-  /// Skip/dismiss the current focal item — snooze (no learning signal).
+  /// Resolve the (itemType, itemId) pair for ANY focal item so the unified
+  /// /api/focal-action endpoint can persist the decision server-side.
+  /// Works for briefing items, legacy pending-node/edge/merge items, and tasks.
+  (String, String)? _focalActionArgs(_FocalItem item) {
+    final m = item.metadata;
+    final focalType = m['focal_type'] as String?;
+    final focalId = m['focal_item_id'];
+    if (focalType != null && focalId != null) {
+      return (focalType, focalId.toString());
+    }
+    final pendingId = m['pending_id'];
+    if (pendingId != null) {
+      return (item.source ?? 'graph_node', pendingId.toString());
+    }
+    final taskId = m['task_id'];
+    if (taskId != null) {
+      return ('task', taskId.toString());
+    }
+    return null;
+  }
+
+  /// Skip/dismiss the current focal item — persists a real deferral on the
+  /// server (snoozed_until) for ALL item types, so "Not now" never silently
+  /// resurrects on the next load. No learning signal (defer ≠ reject).
   Future<void> _snoozeFocalItem(_FocalItem item) async {
     _instrumentation.itemsDismissed++;
 
-    // Send snooze signal to API (no learning — just dismisses until next pulse)
-    final fromBriefing = item.metadata['from_briefing'] == true;
-    if (fromBriefing && item.metadata['focal_item_id'] != null) {
-      await _api.focalAction(
-        action: 'snooze',
-        itemType: item.metadata['focal_type'] as String? ?? item.source ?? 'task',
-        itemId: item.metadata['focal_item_id'].toString(),
-        title: item.title,
-      );
+    final args = _focalActionArgs(item);
+    if (args == null) {
+      // No server-side id to defer — don't pretend the card is dismissed.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text("I couldn't defer that item — it will resurface.",
+                style: TextStyle(fontSize: 12)),
+            backgroundColor: AppTheme.amber,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+
+    final result = await _api.focalAction(
+      action: 'snooze',
+      itemType: args.$1,
+      itemId: args.$2,
+      title: item.title,
+    );
+    final persisted = _focalActionOk(result);
+
+    if (!persisted) {
+      // Deferral wasn't persisted server-side — don't pretend it was.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text("Couldn't defer that item — it will resurface. Please try again.",
+                style: TextStyle(fontSize: 12)),
+            backgroundColor: AppTheme.red,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
     }
 
     setState(() {
@@ -410,22 +559,115 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     });
     if (_focalItems.isEmpty && mounted) {
       _addRhodeyResponse(
-        "Noted. I'll bring it back if it's still relevant next time.",
+        "Noted. I'll keep it off your board for a while — it'll resurface if it's still relevant.",
       );
     }
   }
 
-  /// Correct the focal item — sends correction signal to learning loop.
-  Future<void> _correctFocalItem(_FocalItem item) async {
-    final fromBriefing = item.metadata['from_briefing'] == true;
-    if (fromBriefing && item.metadata['focal_item_id'] != null) {
-      await _api.focalAction(
-        action: 'correct',
-        itemType: item.metadata['focal_type'] as String? ?? item.source ?? 'task',
-        itemId: item.metadata['focal_item_id'].toString(),
-        title: item.title,
-        reason: item.metadata['reason'] as String? ?? '',
+  /// True when the /api/focal-action response actually reports success.
+  /// The backend returns HTTP 200 with {"success": false} on business
+  /// failures (deferral failed, merge proposal not found), and ApiService.post
+  /// treats any 200 as ApiResult.success — so the body flag is the only
+  /// trustworthy signal. Without this, a failed reject/snooze/correct would
+  /// silently remove the card.
+  bool _focalActionOk(ApiResult<dynamic> result) {
+    if (!result.success) return false;
+    final data = result.data;
+    if (data is Map) return data['success'] != false;
+    return true;
+  }
+
+  /// "Reject" — permanent rejection for graph nodes/edges/merges, mirroring
+  /// the Inbox's Reject. Routes through the unified /api/focal-action
+  /// (reject) so the learning loop records the decision server-side.
+  /// Tasks have no reject semantics — they keep "Not right".
+  Future<void> _rejectFocalItem(_FocalItem item) async {
+    final args = _focalActionArgs(item);
+    if (args == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("I couldn't reject that item — it may resurface.",
+                style: TextStyle(fontSize: 12)),
+            backgroundColor: AppTheme.red,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+
+    final result = await _api.focalAction(
+      action: 'reject',
+      itemType: args.$1,
+      itemId: args.$2,
+      title: item.title,
+    );
+    if (!_focalActionOk(result) && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.error ?? "Couldn't reject that item — it may resurface.",
+              style: const TextStyle(fontSize: 12)),
+          backgroundColor: AppTheme.red,
+          duration: const Duration(seconds: 2),
+        ),
       );
+      return;
+    }
+    if (!mounted) return;
+
+    setState(() {
+      _focalItems.removeWhere((c) => c.id == item.id);
+    });
+    if (_focalItems.isEmpty && mounted) {
+      _addRhodeyResponse(
+        "Rejected — I'll leave that one off the board and adjust my judgment.",
+      );
+    }
+  }
+
+  /// "Not right" — persists the same deferral AND sends a correction signal
+  /// to the learning loop, for ALL focal item types.
+  Future<void> _correctFocalItem(_FocalItem item) async {
+    final args = _focalActionArgs(item);
+    if (args == null) {
+      // No server-side id to defer — don't pretend the card is dismissed.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text("I couldn't defer that item — it may resurface.",
+                style: TextStyle(fontSize: 12)),
+            backgroundColor: AppTheme.amber,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+
+    final result = await _api.focalAction(
+      action: 'correct',
+      itemType: args.$1,
+      itemId: args.$2,
+      title: item.title,
+      reason: item.metadata['reason'] as String? ?? '',
+    );
+    final persisted = _focalActionOk(result);
+
+    if (!persisted) {
+      // Correction may still have been recorded, but the deferral failed —
+      // don't pretend the card is gone if it will resurface.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text("I noted that, but couldn't defer the item — it may resurface.",
+                style: TextStyle(fontSize: 12)),
+            backgroundColor: AppTheme.amber,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
     }
 
     setState(() {
@@ -442,16 +684,34 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
   // ── Conversation ─────────────────────────────────────────────
 
-  Future<void> _loadHistory() async {
-    final result = await _api.getMessages(limit: 30);
+  Future<void> _loadHistory({bool force = false}) async {
+    if (_historyLoaded && !force) return;
+    // First-ever load (pill tap / task-icon backfill) should land on the
+    // newest message — subsequent force-refreshes keep the user's position.
+    final isInitialBackfill = !_historyLoaded;
+    _historyLoaded = true;
+    // Unified with the History screen: both read /api/conversation-history
+    // (the merged user↔Rhodey thread) instead of the raw_dumps noise stream,
+    // so home backfill and History tell the same story.
+    final result = await _api.getConversationHistory(limit: 30);
     if (!mounted) return;
 
     if (result.success && result.data!.isNotEmpty) {
-      for (final m in result.data!) {
+      // API returns messages newest-first — reverse to oldest-first
+      // so they display in correct chat order (oldest at top).
+      for (final m in result.data!.reversed) {
+        final id = m['id'].toString();
+        if (_seenMessageIds.contains(id)) continue;
+        _seenMessageIds.add(id);
         final content = m['content'] as String? ?? '';
         if (content.isEmpty) continue;
-        final direction = m['direction'] as String? ?? '';
-        final role = direction == 'inbound' ? MessageRole.user : MessageRole.rhodey;
+        final roleField = m['role'] as String? ?? 'bot';
+        final role = roleField == 'user' ? MessageRole.user : MessageRole.rhodey;
+
+        // Mirror the poll's guard: skip server-side copies of a message the
+        // user just sent optimistically (its local echo is already on screen).
+        if (role == MessageRole.user && _hasLocalEcho(content)) continue;
+
         final createdAt = m['created_at'] as String? ?? '';
         final ts = createdAt.isNotEmpty
             ? (DateTime.tryParse(createdAt) ?? DateTime.now())
@@ -461,19 +721,34 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
           role: role,
           text: content,
           timestamp: ts,
+          intent: m['intent'] as String?,
           sendStatus: role == MessageRole.user ? SendStatus.sent : null,
         ));
       }
+      // Sort-safe merge: history may arrive around a ledger echo already on
+      // screen — timestamps are the single source of truth for thread order.
+      _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      if (mounted) setState(() {});
+      // reverse:true pins the viewport to the bottom by construction, so the
+      // backfill (older rows above) can't push the ledger out of view. The
+      // extra nudge below is harmless belt-and-suspenders for the first load.
+      if (isInitialBackfill) _scrollToBottom();
     }
   }
 
   void _handlePushReceived(Map<String, dynamic> data) {
     debugPrint('[PushDelivery] Push received: type=${data['type']}');
-    final type = data['type'];
-    if (type == 'briefing' || type == 'briefing_refresh') {
-      _loadBriefing();
-    }
-    _pollForUpdates();
+    // Debounce: coalesce rapid pushes (e.g. from vault tap + poll collision)
+    // into a single refresh. The last push in a 2-second window wins.
+    _pushDebounce?.cancel();
+    _pushDebounce = Timer(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      final type = data['type'];
+      if (type == 'briefing' || type == 'briefing_refresh') {
+        _loadBriefing();
+      }
+      _pollForUpdates();
+    });
   }
 
   void _startBackupPoll() {
@@ -492,17 +767,24 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   }
 
   Future<void> _pollForUpdates() async {
-    final result = await _api.getMessages(limit: 5);
+    final result = await _api.getConversationHistory(limit: 5);
     if (!mounted || !result.success) return;
-    for (final m in result.data!) {
+    // API returns messages newest-first — reverse to oldest-first
+    // so new messages append at the end (bottom of chat).
+    for (final m in result.data!.reversed) {
       final id = m['id'].toString();
       if (_seenMessageIds.contains(id)) continue;
       _seenMessageIds.add(id);
       final content = m['content'] as String? ?? '';
       if (content.isEmpty) continue;
 
-      final direction = m['direction'] as String? ?? '';
-      final role = direction == 'inbound' ? MessageRole.user : MessageRole.rhodey;
+      final roleField = m['role'] as String? ?? 'bot';
+      final role = roleField == 'user' ? MessageRole.user : MessageRole.rhodey;
+
+      // Guard: skip server-side copies of a message the user just sent
+      // optimistically (its local echo is already on screen).
+      if (role == MessageRole.user && _hasLocalEcho(content)) continue;
+
       final createdAt = m['created_at'] as String? ?? '';
       final ts = createdAt.isNotEmpty
           ? (DateTime.tryParse(createdAt) ?? DateTime.now())
@@ -512,6 +794,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         role: role,
         text: content,
         timestamp: ts,
+        intent: m['intent'] as String?,
         sendStatus: role == MessageRole.user ? SendStatus.sent : null,
       );
       setState(() { _messages.add(msg); });
@@ -519,12 +802,33 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     }
   }
 
+  /// True if a locally-added user message with the same text exists within
+  /// the last 90 seconds. Prevents the backup poll from duplicating the
+  /// optimistic echo that _sendMessage already placed on screen.
+  bool _hasLocalEcho(String content) {
+    final now = DateTime.now();
+    final normalized = content.trim();
+    for (final m in _messages) {
+      if (m.role == MessageRole.user &&
+          m.text.trim() == normalized &&
+          now.difference(m.timestamp).inSeconds < 90) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void _sendMessage(String text) {
     if (text.trim().isEmpty) return;
+    // Sending a message enters the conversation state (welcome hides).
+    if (!_conversationOpen) setState(() => _conversationOpen = true);
     final id = 'u${++_msgCounter}';
+
+    // Start as 'sent' immediately (optimistic) — avoids a pending spinner
+    // flicker while the API call is in flight.
     final msg = ChatMessage(
       id: id, role: MessageRole.user, text: text.trim(),
-      timestamp: DateTime.now(), sendStatus: SendStatus.pending,
+      timestamp: DateTime.now(), sendStatus: SendStatus.sent,
     );
 
     setState(() { _messages.add(msg); });
@@ -532,10 +836,19 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     _scrollToBottom();
     _startBackupPoll();
 
+    // Timeout guard: if the API takes > 45s, flag as failed
+    _sendTimeout?.cancel();
+    _sendTimeout = Timer(const Duration(seconds: 45), () {
+      if (!mounted) return;
+      _updateMessage(id, sendStatus: SendStatus.failed);
+      _stopBackupPoll();
+    });
+
     _api.sendMessage(text.trim()).then((result) {
+      _sendTimeout?.cancel();
       if (!mounted) return;
       if (result.success) {
-        _updateMessage(id, sendStatus: SendStatus.sent);
+        _updateMessage(id, sendStatus: SendStatus.resolved);
         String responseText;
         if (result.data is Map) {
           responseText = (result.data as Map)['response'] as String? ?? 'Got it. Processing...';
@@ -545,7 +858,6 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         Future.delayed(const Duration(milliseconds: 400), () {
           if (!mounted) return;
           _addRhodeyResponse(responseText);
-          _updateMessage(id, sendStatus: SendStatus.resolved);
         });
       } else {
         _updateMessage(id, sendStatus: SendStatus.failed);
@@ -574,6 +886,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         text: text ?? _messages[idx].text,
         timestamp: _messages[idx].timestamp,
         quickReplies: _messages[idx].quickReplies,
+        taskList: _messages[idx].taskList,
+        intent: _messages[idx].intent,
         sendStatus: sendStatus ?? _messages[idx].sendStatus,
       );
     });
@@ -590,6 +904,416 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     _scrollToBottom();
     _tts.speak(text);
   }
+
+  // ── Task ledger (task icon → conversation) ────────────────
+
+  /// Task icon tap: enter the conversation state and post Rhodey's ledger —
+  /// the active task list as a chat message. Tapping a row promotes it.
+  Future<void> _handleTaskIconTap() async {
+    if (_taskTapping) return;
+    _taskTapping = true;
+
+    // Enter conversation state (welcome hides; card pins to top).
+    if (!_conversationOpen) setState(() => _conversationOpen = true);
+
+    // Post the ledger FIRST for instant feedback, then bring the full thread
+    // in behind it — the sort-safe merge keeps the ledger at the bottom.
+    await _postTaskLedger();
+    _loadHistory();
+
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (mounted) _taskTapping = false;
+    });
+  }
+
+  /// Post the task ledger as a Rhodey chat message (type == taskList).
+  /// Re-tapping the task icon refreshes the ledger in place — it never stacks
+  /// duplicate ledger messages.
+  Future<void> _postTaskLedger() async {
+    final result = await _api.getTasks(includeSnoozed: true);
+    if (!mounted) return;
+    if (!result.success || result.data == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Couldn't load your board right now — check your connection.",
+              style: TextStyle(fontSize: 12)),
+          backgroundColor: AppTheme.red,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final tasks = result.data!;
+    final active = tasks.where((t) => !_isSnoozedTask(t)).toList();
+    final snoozed = tasks.where((t) => _isSnoozedTask(t)).toList();
+
+    final id = 'tl${++_msgCounter}';
+    setState(() {
+      // Keep the header badge live right after a ledger tap — we already
+      // have fresh data here, no need to wait for the next refresh.
+      _activeTaskCount = active.length;
+      _messages.removeWhere((m) => m.type == MessageType.taskList);
+      _messages.add(ChatMessage(
+        id: id,
+        role: MessageRole.rhodey,
+        type: MessageType.taskList,
+        text: 'Here\'s your board right now — ${active.length} active'
+            '${snoozed.isNotEmpty ? ', ${snoozed.length} snoozed' : ''}. Tap any task to put it in focus.',
+        taskList: tasks,
+        timestamp: DateTime.now(),
+      ));
+    });
+    _scrollToBottom();
+  }
+
+  /// Tapping a task row in the ledger promotes it to the focus card.
+  /// If the task was snoozed, promoting also pulls it forward (clears the
+  /// deferral) — the ledger acts, it doesn't just display. The "pulled
+  /// forward" confirmation is only shown when the server confirms it, so we
+  /// never assert a state that didn't happen.
+  Future<void> _promoteToFocus(Map<String, dynamic> task) async {
+    final taskId = task['id'];
+    if (taskId == null) return;
+    final wasSnoozed = _isSnoozedTask(task);
+    final item = _FocalItem(
+      id: taskId.toString(),
+      title: task['title'] as String? ?? 'Untitled',
+      subtitle: _formatTaskContext(task),
+      source: 'task',
+      actionLabel: "I'll do it",
+      metadata: {'task_id': taskId, 'promoted': true},
+    );
+    // Pulling a snoozed task into focus clears its deferral server-side.
+    var pulledForward = false;
+    if (wasSnoozed && taskId is int) {
+      final result = await _api.vaultAction(action: 'pull_forward', taskId: taskId);
+      pulledForward = result.success;
+    }
+    if (!mounted) return;
+    setState(() {
+      _focalItems.removeWhere((f) => f.id == item.id);
+      _focalItems.insert(0, item);
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            wasSnoozed && pulledForward
+                ? '"${item.title}" pulled forward — in focus.'
+                : (wasSnoozed
+                    ? '"${item.title}" is in focus — I couldn\'t clear its deferral.'
+                    : '"${item.title}" is now the focus.'),
+            style: const TextStyle(fontSize: 12),
+          ),
+          backgroundColor: wasSnoozed && !pulledForward ? AppTheme.amber : AppTheme.accent,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  /// A task is snoozed only while its deferral is still in the future — an
+  /// expired deferral is back in the active queue (matches the backend's
+  /// snoozed_until.lt.now semantics).
+  bool _isSnoozedTask(Map<String, dynamic> t) {
+    final until = t['snoozed_until'];
+    if (until == null || until.toString().isEmpty) return false;
+    final dt = DateTime.tryParse(until.toString());
+    return dt != null && dt.isAfter(DateTime.now());
+  }
+
+  /// Render a taskList message (Rhodey's ledger) in the conversation.
+  Widget _buildTaskListMessage(ChatMessage msg) {
+    final tasks = msg.taskList ?? [];
+    if (tasks.isEmpty) return const SizedBox.shrink();
+
+    final active = tasks.where((t) => !_isSnoozedTask(t)).toList();
+    final snoozed = tasks.where((t) => _isSnoozedTask(t)).toList();
+
+    int prioRank(Map<String, dynamic> t) {
+      switch (t['priority']) {
+        case 'urgent':
+          return 0;
+        case 'high':
+          return 1;
+        default:
+          return 2;
+      }
+    }
+    // Urgent first, then high, then the rest — matches the web UI's feel.
+    // Snoozed items also sort by priority for a uniform ledger.
+    active.sort((a, b) => prioRank(a).compareTo(prioRank(b)));
+    snoozed.sort((a, b) => prioRank(a).compareTo(prioRank(b)));
+
+    Widget row(Map<String, dynamic> t, {bool dim = false}) {
+      final title = t['title'] as String? ?? 'Untitled';
+      final deadline = t['deadline'] as String?;
+      final priority = t['priority'] as String? ?? 'medium';
+
+      Color pColor;
+      switch (priority) {
+        case 'urgent':
+          pColor = AppTheme.red;
+          break;
+        case 'high':
+          pColor = AppTheme.amber;
+          break;
+        default:
+          pColor = AppTheme.textTertiary;
+      }
+
+      // Mark the currently-focused task so the ledger visibly responds to a tap.
+      final isCurrentFocus = !dim &&
+          _focalItems.isNotEmpty &&
+          _focalItems.first.id == t['id'].toString();
+
+      return GestureDetector(
+        onTap: () => _promoteToFocus(t),
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: isCurrentFocus
+                ? AppTheme.accent.withValues(alpha: 0.06)
+                : (dim ? AppTheme.surfaceAlt.withValues(alpha: 0.5) : AppTheme.surfaceAlt),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isCurrentFocus
+                  ? AppTheme.accent.withValues(alpha: 0.35)
+                  : AppTheme.border,
+              width: 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 3,
+                height: 26,
+                decoration: BoxDecoration(
+                  color: dim ? AppTheme.textTertiary : pColor,
+                  borderRadius: BorderRadius.circular(1),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: AppTheme.body.copyWith(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w500,
+                        color: dim ? AppTheme.textTertiary : AppTheme.textPrimary,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (deadline != null && deadline.isNotEmpty)
+                      Text(
+                        dim ? 'Snoozed · ${_formatDeadline(deadline)}' : _formatDeadline(deadline),
+                        style: AppTheme.caption.copyWith(
+                          color: dim ? AppTheme.textTertiary : AppTheme.textSecondary,
+                          fontSize: 9,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (isCurrentFocus)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accent.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    'in focus',
+                    style: AppTheme.caption.copyWith(color: AppTheme.accent, fontSize: 8),
+                  ),
+                )
+              else if (dim)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppTheme.textTertiary.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    'snoozed',
+                    style: AppTheme.caption.copyWith(color: AppTheme.textTertiary, fontSize: 8),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 16, bottom: 4),
+            child: Text(
+              'Rhodey',
+              style: AppTheme.caption.copyWith(color: AppTheme.accent, letterSpacing: 0.3),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 16, bottom: 8),
+            child: Text(
+              msg.text,
+              style: AppTheme.body.copyWith(fontSize: 12.5, height: 1.35),
+            ),
+          ),
+          if (active.isNotEmpty) ...active.map((t) => row(t)),
+          if (snoozed.isNotEmpty) ...[const SizedBox(height: 4), ...snoozed.map((t) => row(t, dim: true))],
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.only(left: 4),
+            child: Text(
+              'Tap a task to make it the focus.',
+              style: AppTheme.caption.copyWith(
+                color: AppTheme.textTertiary,
+                fontSize: 9,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Two-state layout: IDLE ⇄ CONVERSATION ─────────────────
+
+  /// IDLE: Rhodey's welcome + deliberately clean middle + the single focal
+  /// card pinned just above the input bar. Zero decision fatigue.
+  Widget _buildIdleState() {
+    return Column(
+      key: const ValueKey('idle'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildWelcomeBanner(),
+        const Spacer(),
+        _buildFocalArea(),
+      ],
+    );
+  }
+
+  /// CONVERSATION: compact focus bar pinned at top + the chat stream.
+  /// The welcome hides; the card becomes pinned context while you talk.
+  Widget _buildConversationState() {
+    return Column(
+      key: const ValueKey('conversation'),
+      children: [
+        _buildCompactFocalBar(),
+        Expanded(child: _buildConversationArea()),
+      ],
+    );
+  }
+
+  /// The idle greeting — Rhodey's voice line, time-prefixed, 1-2 lines.
+  /// This is the app-intelligence summary: a greeting with judgment, never
+  /// a status dump.
+  Widget _buildWelcomeBanner() {
+    final voice = _briefing.voiceLine?.trim() ?? '';
+    final hour = DateTime.now().hour;
+    final greeting = hour < 12
+        ? 'Good morning'
+        : (hour < 17 ? 'Good afternoon' : 'Good evening');
+    final line = voice.isNotEmpty
+        ? voice
+        : "What's on your mind, Danny?";
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '$greeting, Danny.',
+            style: AppTheme.caption.copyWith(
+              color: AppTheme.accent,
+              fontSize: 11,
+              letterSpacing: 0.6,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            line,
+            style: const TextStyle(
+              fontFamily: 'InstrumentSerif',
+              fontSize: 19,
+              fontWeight: FontWeight.w300,
+              color: AppTheme.textPrimary,
+              height: 1.3,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// CONVERSATION header: the current focus, compact, with a collapse
+  /// chevron to return to the calm idle state.
+  Widget _buildCompactFocalBar() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: AppTheme.border, width: 1)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _focalItems.isEmpty
+                ? _buildAllClearCompact()
+                : _buildFocalCard(_focalItems.first, compact: true),
+          ),
+          // Collapse back to idle
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => setState(() => _conversationOpen = false),
+              child: const Padding(
+                padding: EdgeInsets.all(8),
+                child: Icon(Icons.keyboard_arrow_down, color: AppTheme.textTertiary, size: 22),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAllClearCompact() {
+    return Row(
+      children: [
+        Container(
+          width: 6,
+          height: 6,
+          decoration: const BoxDecoration(color: AppTheme.green, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 8),
+        const Text(
+          'All clear, Danny.',
+          style: TextStyle(
+            fontSize: 12,
+            color: AppTheme.textTertiary,
+            fontWeight: FontWeight.w300,
+          ),
+        ),
+      ],
+    );
+  }
+
 
   // ── Voice ────────────────────────────────────────────────────
 
@@ -700,14 +1424,31 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   // ── Scroll & TTS ─────────────────────────────────────────────
 
   void _scrollToBottom() {
-    Future.delayed(const Duration(milliseconds: 100), () {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
+    // The conversation area fades in through a 350ms AnimatedSwitcher — a
+    // single delayed animateTo can fire before the list has clients (or a
+    // settled extent), silently landing above the newest message. Retry until
+    // the list attaches, then glide to the true bottom.
+    _retryScrollToBottom(0);
+  }
+
+  void _retryScrollToBottom(int attempt) {
+    if (!mounted) return;
+    if (!_scrollController.hasClients) {
+      if (attempt >= 10) return; // give up after ~1.2s
+      Future.delayed(const Duration(milliseconds: 120), () {
+        if (mounted) _retryScrollToBottom(attempt + 1);
+      });
+      return;
+    }
+    // reverse:true → offset 0 IS the bottom (the newest message). Measure
+    // after the frame so the just-added message's layout is included.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
     });
   }
 
@@ -755,8 +1496,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
         child: Column(
           children: [
             _buildAmbientHeader(),
-            _buildFocalArea(),
-            Expanded(child: _buildConversationArea()),
+            Expanded(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 350),
+                switchInCurve: Curves.easeOut,
+                switchOutCurve: Curves.easeIn,
+                child: _conversationOpen
+                    ? _buildConversationState()
+                    : _buildIdleState(),
+              ),
+            ),
             if (_voiceState == VoiceState.listening || _voiceState == VoiceState.error)
               VoiceStateMachine(
                 state: _voiceState,
@@ -777,7 +1526,6 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
   Widget _buildAmbientHeader() {
     final pulseLabel = _pulseLabel();
     final pulseColor = _pulseColor();
-    final vaultTotal = _briefing.vaultedCount;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -822,39 +1570,36 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
           const Spacer(),
 
-          // Vault badge
-          if (vaultTotal > 0)
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                borderRadius: BorderRadius.circular(10),
-                onTap: () {
-                  _addRhodeyResponse('📦 $vaultTotal items vaulted behind the pulse. Want me to pull any forward?');
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: AppTheme.surfaceAlt,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppTheme.border, width: 1),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('📦', style: TextStyle(fontSize: 10)),
-                      const SizedBox(width: 3),
-                      Text(
-                        '$vaultTotal',
-                        style: AppTheme.caption.copyWith(
-                          color: AppTheme.textTertiary,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                        ),
+          // Task icon — active task count. Tap opens the task ledger in chat.
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: _handleTaskIconTap,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppTheme.surfaceAlt,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: AppTheme.border, width: 1),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.checklist_rtl, size: 12, color: AppTheme.textSecondary),
+                    const SizedBox(width: 3),
+                    Text(
+                      '$_activeTaskCount',
+                      style: AppTheme.caption.copyWith(
+                        color: AppTheme.textTertiary,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
+            ),
             ),
         ],
       ),
@@ -876,16 +1621,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: AppTheme.border, width: 1)),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Rhodey's voice line as greeting
-          _buildRhodeyStage(),
-
           // Focal card (Top-1 item)
           if (_focalItems.isNotEmpty)
             Padding(
@@ -913,80 +1652,6 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
               padding: const EdgeInsets.only(top: 6),
               child: _buildTransparencyReport(),
             ),
-
-          // Quick-reply chips
-          if (_focalItems.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: _buildQuickReplyChips(),
-            ),
-        ],
-      ),
-    );
-  }
-
-  // ── Rhodey's Stage ─────────────────────────────────────────
-
-  Widget _buildRhodeyStage() {
-    final voice = _briefing.voiceLine ?? '';
-    final greeting = _briefing.greeting;
-
-    String rhodeySays;
-    if (voice.isNotEmpty) {
-      rhodeySays = voice;
-    } else if (greeting.isNotEmpty) {
-      rhodeySays = greeting;
-    } else {
-      final h = DateTime.now().hour;
-      final prefix = h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
-      rhodeySays = 'Good $prefix, Danny.';
-    }
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(top: 2, right: 6),
-                child: Text(
-                  '\u201c',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w300,
-                    color: AppTheme.accent.withValues(alpha: 0.4),
-                    height: 1.0,
-                  ),
-                ),
-              ),
-              Expanded(
-                child: Text(
-                  rhodeySays,
-                  style: const TextStyle(
-                    fontFamily: 'InstrumentSerif',
-                    fontSize: 22,
-                    fontWeight: FontWeight.w300,
-                    color: AppTheme.textPrimary,
-                    height: 1.25,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          Padding(
-            padding: const EdgeInsets.only(left: 28, top: 2),
-            child: Text(
-              'Rhodey',
-              style: AppTheme.caption.copyWith(
-                color: AppTheme.accent,
-                fontSize: 9,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -994,7 +1659,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
 
   // ── Focal Card (Phase 2 v2: three-button model with LLM reason) ──
 
-  Widget _buildFocalCard(_FocalItem item) {
+  Widget _buildFocalCard(_FocalItem item, {bool compact = false}) {
     final isCompleting = _completingCardId == item.id;
     final isFromBriefing = item.metadata['from_briefing'] == true;
     final focalReason = item.metadata['reason'] as String?;
@@ -1019,7 +1684,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 350),
         width: double.infinity,
-        padding: const EdgeInsets.all(14),
+        padding: EdgeInsets.all(compact ? 10 : 14),
         decoration: BoxDecoration(
           color: isCompleting ? AppTheme.green.withValues(alpha: 0.08) : AppTheme.accentBg,
           borderRadius: BorderRadius.circular(12),
@@ -1073,14 +1738,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
             Text(
               item.title,
               style: AppTheme.body.copyWith(
-                fontSize: 14,
+                fontSize: compact ? 13 : 14,
                 fontWeight: FontWeight.w600,
                 height: 1.3,
               ),
             ),
 
-            // LLM reason — the "why" behind this choice
-            if (focalReason != null && focalReason.isNotEmpty && !isCompleting)
+            // LLM reason — the "why" behind this choice (hidden when compact)
+            if (!compact && focalReason != null && focalReason.isNotEmpty && !isCompleting)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
@@ -1094,8 +1759,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
                 ),
               ),
 
-            // Deadline subtitle (legacy)
-            if (item.subtitle != null && item.subtitle!.isNotEmpty && focalReason == null)
+            // Chief-of-staff context line (added · org · deadline). Hidden
+            // when compact (the narrow header shows just title + buttons) and
+            // when the LLM reason is shown instead.
+            if (!compact && item.subtitle != null && item.subtitle!.isNotEmpty && focalReason == null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
@@ -1120,7 +1787,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
                 ),
               ),
 
-            const SizedBox(height: 12),
+            SizedBox(height: compact ? 8 : 12),
 
             // Three-button model
             Row(
@@ -1142,17 +1809,19 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
                     onTap: () => _snoozeFocalItem(item),
                   ),
                 ),
-                // "Not right" — correction signal (only for LLM-chosen items)
-                if (isFromBriefing) ...[
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: _MiniButton(
-                      label: 'Not right',
-                      color: AppTheme.red,
-                      onTap: () => _correctFocalItem(item),
-                    ),
+                // Third button — type-aware:
+                //  graph nodes/edges/merges → "Reject" (permanent, mirrors Inbox)
+                //  tasks → "Not right" (defer + correction signal)
+                const SizedBox(width: 6),
+                Expanded(
+                  child: _MiniButton(
+                    label: _isGraphType(item) ? 'Reject' : 'Not right',
+                    color: AppTheme.red,
+                    onTap: () => _isGraphType(item)
+                        ? _rejectFocalItem(item)
+                        : _correctFocalItem(item),
                   ),
-                ],
+                ),
               ],
             ),
           ],
@@ -1291,10 +1960,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
             decoration: const BoxDecoration(color: AppTheme.green, shape: BoxShape.circle),
           ),
           const SizedBox(width: 8),
-          const Flexible(
+          Flexible(
             child: Text(
-              'Nothing needs your attention right now.',
-              style: TextStyle(
+              'All clear, Danny. What\'s on your mind?',
+              style: const TextStyle(
                 fontSize: 12,
                 color: AppTheme.textTertiary,
                 fontWeight: FontWeight.w300,
@@ -1306,169 +1975,120 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
     );
   }
 
-  // ── Quick-Reply Chips ──────────────────────────────────────
-
-  Widget _buildQuickReplyChips() {
-    // Show chips matching the three-button model
-    final chips = <String>[
-      "I'll do it",
-      'Not now',
-      'Not right',
-    ];
-
-    return Wrap(
-      spacing: 6,
-      runSpacing: 4,
-      children: chips.map((chip) {
-        Color chipColor;
-        Color chipBg;
-        switch (chip) {
-          case "I'll do it":
-            chipColor = AppTheme.green;
-            chipBg = AppTheme.green.withValues(alpha: 0.08);
-            break;
-          case 'Not now':
-            chipColor = AppTheme.amber;
-            chipBg = AppTheme.amber.withValues(alpha: 0.08);
-            break;
-          case 'Not right':
-            chipColor = AppTheme.red;
-            chipBg = AppTheme.red.withValues(alpha: 0.08);
-            break;
-          default:
-            chipColor = AppTheme.textSecondary;
-            chipBg = AppTheme.surfaceAlt;
-        }
-
-        return GestureDetector(
-          onTap: () {
-            if (_focalItems.isEmpty) return;
-            switch (chip) {
-              case "I'll do it":
-                _completeFocalItem(_focalItems.first);
-                break;
-              case 'Not now':
-                _snoozeFocalItem(_focalItems.first);
-                break;
-              case 'Not right':
-                _correctFocalItem(_focalItems.first);
-                break;
-            }
-          },
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: chipBg,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: chipColor.withValues(alpha: 0.25),
-                width: 1,
-              ),
-            ),
-            child: Text(
-              chip,
-              style: AppTheme.caption.copyWith(
-                color: chipColor,
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-
   // ── Conversation area ────────────────────────────────────────
 
   Widget _buildConversationArea() {
-    if (_messages.isEmpty) {
+    if (_messages.isEmpty && _focalItems.isEmpty) {
       return _buildEmptyConversation();
     }
 
     return RefreshIndicator(
-      onRefresh: _loadHistory,
+      onRefresh: () => _loadHistory(force: true),
       color: AppTheme.accent,
+      // reverse:true pins offset 0 = the BOTTOM = the newest message. The task
+      // ledger (posted at the end) is therefore visible BY CONSTRUCTION when
+      // the conversation opens — no scroll race with the history backfill.
       child: ListView(
+        reverse: true,
         controller: _scrollController,
         padding: const EdgeInsets.only(top: 4, bottom: 8),
-        children: [
-          // History pill
-          GestureDetector(
-            onTap: _loadHistory,
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppTheme.surfaceAlt,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: AppTheme.border, width: 1),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.history, size: 14, color: AppTheme.textTertiary),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Show earlier activity',
-                    style: AppTheme.caption.copyWith(
-                      color: AppTheme.textTertiary,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+        children: () {
+          // _messages is stored oldest-first; with reverse:true the FIRST child
+          // renders at the bottom, so iterate newest-first for a real chat.
+          final reversed = _messages.reversed.toList();
+          final entries = <Widget>[];
 
-          // Messages
-          ..._messages.asMap().entries.map((entry) {
-            final index = entry.key;
-            final msg = entry.value;
+          for (var i = 0; i < reversed.length; i++) {
+            final msg = reversed[i];
+
+            // Task ledger (from the task icon) — rendered as an actionable list
+            if (msg.type == MessageType.taskList && msg.taskList != null) {
+              entries.add(_buildTaskListMessage(msg));
+              continue;
+            }
 
             if (msg.role == MessageRole.rhodey && !msg.isRhodeyTyping) {
-              final cardData = parseMessageToCardData(msg.text);
+              final cardData = resolveCardData(
+                intent: msg.intent,
+                text: msg.text,
+                timestamp: msg.timestamp,
+              );
               if (cardData != null) {
-                return _buildRichCard(msg, cardData);
+                entries.add(_buildRichCard(msg, cardData));
+                continue;
               }
             }
 
-            final isGroupStart = index == 0 || _messages[index - 1].role != msg.role;
-            return ChatBubble(
+            final isGroupStart = i == 0 || reversed[i - 1].role != msg.role;
+            entries.add(ChatBubble(
               message: msg,
               isGroupStart: isGroupStart,
               onRetry: msg.isFailed ? () => _retryMessage(msg.id) : null,
               onTap: !msg.isUser && msg.text.isNotEmpty ? () => _speakMessage(msg.text) : null,
-            );
-          }),
+              onQuickReply: (reply) => _sendMessage(reply),
+            ));
+          }
 
-          const SizedBox(height: 16),
-        ],
+          // 'Show earlier activity' is the LAST child → renders at the very
+          // TOP (reverse:true flips the axis). Hidden once loaded.
+          if (!_historyLoaded) {
+            entries.add(GestureDetector(
+              onTap: () => _loadHistory(),
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppTheme.surfaceAlt,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppTheme.border, width: 1),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.history, size: 14, color: AppTheme.textTertiary),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Show earlier activity',
+                      style: AppTheme.caption.copyWith(
+                        color: AppTheme.textTertiary,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ));
+          }
+
+          entries.add(const SizedBox(height: 16));
+          return entries;
+        }(),
       ),
     );
   }
 
   Widget _buildEmptyConversation() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.chat_bubble_outline, size: 28, color: AppTheme.textMuted),
-            const SizedBox(height: 12),
-            const Text(
-              'Speak or type to get started',
-              style: TextStyle(
-                fontSize: 14,
-                color: AppTheme.textTertiary,
-                fontWeight: FontWeight.w300,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ],
+    return ListView(
+      controller: _scrollController,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: [
+        const SizedBox(height: 16),
+        const Center(
+          child: Icon(Icons.chat_bubble_outline, size: 28, color: AppTheme.textMuted),
         ),
-      ),
+        const SizedBox(height: 12),
+        const Center(
+          child: Text(
+            'Speak or type to get started',
+            style: TextStyle(
+              fontSize: 14,
+              color: AppTheme.textTertiary,
+              fontWeight: FontWeight.w300,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ],
     );
   }
 
@@ -1522,6 +2142,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
             cardData: cardData,
             onMarkDone: onMarkDone,
             onTap: () => _speakMessage(msg.text),
+            quickReplies: msg.quickReplies,
+            onQuickReply: msg.quickReplies?.isNotEmpty == true
+                ? (reply) => _sendMessage(reply)
+                : null,
           ),
         ],
       ),
@@ -1546,8 +2170,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
       decoration: const BoxDecoration(
         border: Border(top: BorderSide(color: AppTheme.border, width: 1)),
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
+          Row(
+            children: [
           // Voice button
           Material(
             color: Colors.transparent,
@@ -1607,6 +2234,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen> {
                 child: const Icon(Icons.arrow_upward, color: AppTheme.accent, size: 20),
               ),
             ),
+          ),
+        ],
           ),
         ],
       ),

@@ -7,7 +7,7 @@ import json
 import uuid
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +23,7 @@ from core.webhook import (
     process_email_pending_decision,
 )
 from core.pulse.graph import process_pending_edge_decision
+from api.briefing import _snooze_ok, _notes_ok
 from core.skills.whatsapp_ingest import process_whatsapp_message
 from core.pulse.sentinel import process_sentinel
 from core.pulse import (
@@ -204,13 +205,29 @@ async def health_check_route(request: Request):
 
 # --- GET TASKS (for Today tab — active + overdue) ---
 @app.get("/api/tasks")
-async def get_tasks_route(request: Request, status: str = None, limit: int = 50, offset: int = 0):
-    """List tasks filtered by status. Default: active (todo) tasks."""
+async def get_tasks_route(request: Request, status: str = None, limit: int = 50, offset: int = 0,
+                         include_snoozed: bool = False):
+    """List tasks filtered by status. Default: active (todo) tasks.
+
+    include_snoozed=True returns ALL active tasks including snoozed ones
+    (with snoozed_until populated) so the app's task ledger can show them
+    dimmed. The default (False) keeps the focal-card "Not now" deferral
+    behavior — snoozed tasks stay hidden from the focus queue.
+    """
     require_api_auth(request)
     try:
         supabase = get_supabase()
+        select_cols = ('id, title, status, priority, deadline, created_at, '
+                       'organization_id, direction, committed_to, recurrence, '
+                       'organizations(name)')
+        # Only select notes when the column exists (pre-migration safe)
+        if _notes_ok(supabase, 'tasks'):
+            select_cols += ', notes'
+        # Only select snoozed_until when the column exists (pre-migration safe)
+        if include_snoozed and _snooze_ok(supabase, 'tasks'):
+            select_cols += ', snoozed_until'
         query = supabase.table('tasks')\
-            .select('id, title, status, priority, deadline, created_at, organization_id, direction, committed_to, recurrence')\
+            .select(select_cols)\
             .eq('is_current', True)
         
         if status:
@@ -218,8 +235,20 @@ async def get_tasks_route(request: Request, status: str = None, limit: int = 50,
         else:
             query = query.in_('status', ['todo'])
         
+        # Exclude snoozed items by default (focal-card "Not now" deferral).
+        # The task-ledger view passes include_snoozed=True to see everything.
+        if not include_snoozed and _snooze_ok(supabase, 'tasks'):
+            query = query.or_('snoozed_until.is.null,snoozed_until.lt.now')
+        
         result = query.order('created_at', desc=True).limit(limit).offset(offset).execute()
-        return {"tasks": result.data or []}
+        tasks = result.data or []
+        # Flatten the nested organizations(name) join into a plain
+        # organization_name field — same shape the planner produces — so the
+        # app can show "which org this task belongs to" on focal cards.
+        for t in tasks:
+            org = t.pop('organizations', None) or {}
+            t['organization_name'] = org.get('name') if isinstance(org, dict) else None
+        return {"tasks": tasks}
     except Exception as e:
         print(f"Get tasks error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -364,65 +393,100 @@ async def send_message_route(request: Request):
             "metadata": metadata
         }
         
-        # Process exactly like Telegram webhook
-        print("🧪 Processing web message as Telegram update")
+        supabase = get_supabase()
 
-        await process_webhook(fake_update)
-        
-        # Read the captured bot response (set by send_telegram via capture_response)
-        from core.actions import get_captured_response, get_captured_session_id
-        response_text = get_captured_response()
-        resulting_session_id = get_captured_session_id() or session_id
+        # ── Fast-path: vault badge messages skip the full LLM pipeline ──
+        # The vault badge tap sends a system message that doesn't need intent
+        # classification or Action Planner processing — it's purely for
+        # conversation thread continuity. Storing it in raw_dumps is enough.
+        is_vault_message = message_text.startswith('📦 Vault items:')
 
-        # Build updated briefing so the frontend gets the new state in one round-trip
-        try:
-            from api.briefing import build_briefing
-            briefing = await build_briefing(get_supabase())
-            briefing_update = json.loads(json.dumps(briefing, default=str))
-        except Exception as brief_err:
-            print(f"Send-message briefing error (non-critical): {brief_err}")
-            briefing_update = None
-        
-        # Fire-and-forget silent push to refresh all phone screens instantly.
-        from core.services.push_notification import send_silent_push
-        push_payload = {"type": "briefing_refresh"}
-        
-        if briefing_update:
-            headline = briefing_update.get('voice_line')
-            if not headline:
-                headline = briefing_update.get('context_bar')
-            if not headline:
-                headline = briefing_update.get('greeting', '')
-                
-            mode = briefing_update.get('home_mode', 'proceed')
-            insights_list = []
-            
-            if mode == 'sprint':
-                nxt = briefing_update.get('next_event')
-                if nxt:
-                    insights_list.append({"text": f"🎯 Sprinting: {nxt}", "link": "rhodey://today"})
-                v_urg = briefing_update.get('vaulted_urgent_count', 0)
-                if v_urg > 0:
-                    insights_list.append({"text": f"🔴 {v_urg} urgent", "link": "rhodey://surface"})
-            elif mode == 'decide':
-                pend = briefing_update.get('pending_count', 0)
-                if pend > 0:
-                    insights_list.append({"text": f"⚖️ {pend} pending decisions", "link": "rhodey://inbox"})
-            else:
-                for ins in briefing_update.get('insights', []):
-                    insights_list.append({"text": ins, "link": "rhodey://surface"})
-                    
-            push_payload['headline'] = headline
-            push_payload['insights_json'] = json.dumps(insights_list)
-            
-        asyncio.ensure_future(send_silent_push(push_payload))
+        if is_vault_message:
+            # Store the inbound vault message
+            supabase.table('raw_dumps').insert({
+                'content': message_text,
+                'source': 'flutter',
+                'direction': 'inbound',
+                'message_type': 'text',
+                'status': 'processed',
+                'sender': 'user',
+            }).execute()
+
+            response_text = '📦 Vault items noted. They are tracked and will resurface as deadlines approach. Want to pull any forward? Just ask.'
+            resulting_session_id = session_id
+
+            # Store the bot response so poll and history can pick it up
+            supabase.table('raw_dumps').insert({
+                'content': response_text,
+                'source': 'flutter',
+                'direction': 'outbound',
+                'message_type': 'text',
+                'status': 'sent',
+                'sender': 'rhodey',
+            }).execute()
+        else:
+            # Normal path: full webhook pipeline
+            print("🧪 Processing web message as Telegram update")
+            await process_webhook(fake_update)
+
+            # Read the captured bot response
+            from core.actions import get_captured_response, get_captured_session_id
+            response_text = get_captured_response()
+            resulting_session_id = get_captured_session_id() or session_id
+
+        # ── Background: briefing rebuild + silent push (off the ack path) ──
+        # The ack (response_text) is ready the moment the pipeline finishes.
+        # The briefing rebuild is a SECOND LLM call that only feeds the push
+        # notification — awaiting it here is exactly why the app ack felt
+        # slower than Telegram's (which returns the moment the pipeline
+        # responds). So it runs in a background task instead.
+        if not is_vault_message:
+            async def _refresh_briefing_and_push():
+                try:
+                    from api.briefing import build_briefing
+                    briefing = await build_briefing(supabase)
+                    briefing_update = json.loads(json.dumps(briefing, default=str))
+
+                    from core.services.push_notification import send_silent_push
+                    push_payload = {"type": "briefing_refresh"}
+
+                    headline = briefing_update.get('voice_line')
+                    if not headline:
+                        headline = briefing_update.get('context_bar')
+                    if not headline:
+                        headline = briefing_update.get('greeting', '')
+
+                    mode = briefing_update.get('home_mode', 'proceed')
+                    insights_list = []
+
+                    if mode == 'sprint':
+                        nxt = briefing_update.get('next_event')
+                        if nxt:
+                            insights_list.append({"text": f"🎯 Sprinting: {nxt}", "link": "rhodey://today"})
+                        v_urg = briefing_update.get('vaulted_urgent_count', 0)
+                        if v_urg > 0:
+                            insights_list.append({"text": f"🔴 {v_urg} urgent", "link": "rhodey://surface"})
+                    elif mode == 'decide':
+                        pend = briefing_update.get('pending_count', 0)
+                        if pend > 0:
+                            insights_list.append({"text": f"⚖️ {pend} pending decisions", "link": "rhodey://inbox"})
+                    else:
+                        for ins in briefing_update.get('insights', []):
+                            insights_list.append({"text": ins, "link": "rhodey://surface"})
+
+                    push_payload['headline'] = headline
+                    push_payload['insights_json'] = json.dumps(insights_list)
+                    await send_silent_push(push_payload)
+                except Exception as brief_err:
+                    print(f"Send-message briefing/push error (non-critical): {brief_err}")
+
+            asyncio.ensure_future(_refresh_briefing_and_push())
 
         return {
             "success": True,
             "message": "Message processed",
             "response": response_text,
             "session_id": resulting_session_id,
-            "briefing_update": briefing_update,
         }
     
     except HTTPException:
@@ -449,6 +513,109 @@ async def get_messages_route(request: Request, limit: int = 50, offset: int = 0)
     except Exception as e:
         print(f"Get messages error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+# --- CONVERSATION HISTORY (merged user↔Rhodey thread) ---
+
+def _history_dedup_key(role: str, content: str, created_at) -> str:
+    """Dedup key for merged history: role + normalized content + minute bucket.
+
+    Bot outputs are written to BOTH the conversations table (log_exchange) and
+    raw_dumps (telegram_bot/pulse/pulse_engine), so rounding created_at to the
+    minute and normalizing whitespace collapses those near-identical rows.
+    Including the role prevents a user message and a bot reply that happen to
+    share identical short text in the same minute from being wrongly collapsed.
+    """
+    normalized = " ".join((content or "").split())[:200]
+    bucket = ""
+    if created_at:
+        try:
+            bucket = str(created_at)[:16]  # "2026-07-31T08:22" — minute granularity
+        except Exception:
+            bucket = ""
+    return f"{role}|{normalized}|{bucket}"
+
+
+@app.get("/api/conversation-history")
+async def conversation_history_route(request: Request, limit: int = 100, offset: int = 0):
+    """Return the complete user↔Rhodey conversation, newest-first.
+
+    The `conversations` table holds user exchanges (and some bot exchanges via
+    log_exchange), while raw_dumps holds EVERY bot output — task closures,
+    query responses, and pulse briefings (sources telegram_bot/pulse/
+    pulse_engine). Neither alone is the full chat, so this endpoint merges
+    both, dedupes by content+minute, and returns one chronological thread.
+    """
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+        # Fetch a large fixed cap from each table so the in-memory merge/dedup
+        # is complete for any realistic single-user volume, then slice. A
+        # limit+offset+100 window would silently truncate at deep offsets
+        # because dedup shrinks the merged unique set.
+        window = 2000
+
+        conv_res = supabase.table('conversations') \
+            .select('id, role, intent, content, created_at, session_id, metadata')\
+            .order('created_at', desc=True)\
+            .limit(window)\
+            .execute()
+
+        dump_res = supabase.table('raw_dumps') \
+            .select('id, content, created_at, direction, sender, message_type, source, metadata')\
+            .in_('direction', ['outgoing', 'outbound'])\
+            .order('created_at', desc=True)\
+            .limit(window)\
+            .execute()
+
+        entries = []
+        seen = set()
+
+        # conversations first — preferred because it carries role + intent
+        for row in (conv_res.data or []):
+            content = row.get('content') or ''
+            created = row.get('created_at')
+            raw_role = row.get('role') or 'bot'
+            role = 'user' if raw_role == 'user' else 'bot'
+            key = _history_dedup_key(role, content, created)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append({
+                'id': f"c{row['id']}",
+                'role': role,
+                'intent': row.get('intent'),
+                'content': content,
+                'created_at': created,
+                'session_id': row.get('session_id'),
+                'metadata': row.get('metadata'),
+            })
+
+        # raw_dumps bot outputs not already present (task acks, pulses, etc.)
+        for row in (dump_res.data or []):
+            content = row.get('content') or ''
+            created = row.get('created_at')
+            key = _history_dedup_key('bot', content, created)
+            if key in seen:
+                continue
+            seen.add(key)
+            source = row.get('source') or ''
+            entries.append({
+                'id': f"r{row['id']}",
+                'role': 'bot',
+                'intent': 'BRIEFING' if source in ('pulse', 'pulse_engine') else 'RESPONSE',
+                'content': content,
+                'created_at': created,
+                'session_id': None,
+                'metadata': row.get('metadata'),
+            })
+
+        entries.sort(key=lambda e: e.get('created_at') or '', reverse=True)
+        page = entries[offset:offset + limit]
+        return {"messages": page}
+    except Exception as e:
+        print(f"Conversation history error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 # --- SEARCH SENT EMAILS ---
 @app.post("/api/email-search/sent")
@@ -757,22 +924,81 @@ async def delete_alias_route(alias_id: int, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-# --- FOCAL ITEM ACTION (Phase 2 v2: done/snooze/correct) ---
+# --- Shared merge-reject (keep both) ---
+
+async def _reject_merge_proposal(supabase, merge_proposal_id: int) -> dict:
+    """Reject a node merge proposal: keep both — promote the pending label
+    to its own live node and resolve the proposal as rejected.
+
+    Shared by /api/graph-merge-action and /api/focal-action (reject) so the
+    focal card's "Reject" behaves identically to the Inbox's.
+    """
+    from core.services.db import maybe_single_safe
+    from core.lib.node_tables import resolve_merge_proposal
+    from core.pulse.graph import create_graph_node_with_db_record
+
+    mp_res = maybe_single_safe(supabase.table('merge_proposals').select('*').eq('id', merge_proposal_id))
+    if not mp_res or not mp_res.data:
+        return {"success": False, "message": "Merge proposal not found."}
+    merge_proposal = mp_res.data
+    if merge_proposal.get('status') != 'proposed':
+        return {"success": False, "message": "Merge proposal already processed."}
+
+    origin_id = merge_proposal.get('origin_id')
+    pending_label = merge_proposal.get('source_label', '')
+    pending_type = merge_proposal.get('source_type', 'person')
+
+    result = await create_graph_node_with_db_record(
+        label=pending_label,
+        node_type=pending_type,
+        source_text='',
+        source_tag='pending_approval',
+        force=True,
+    )
+    if not result.get('success'):
+        return {"success": False, "message": result.get('message', 'Failed to approve node')}
+
+    if origin_id:
+        supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', origin_id).execute()
+    resolve_merge_proposal(merge_proposal['id'], "rejected")
+    try:
+        record_decision(
+            decision_type="graph_node_merge_rejection",
+            title=f"Keep both: '{pending_label}' as separate node",
+            entity_type="graph_node", entity_id=str(origin_id),
+            confidence=1.0, source="web_ui",
+        )
+    except Exception:
+        pass
+    try:
+        await emit_observation(
+            subsystem='entity_extraction', event_type='correction',
+            features={"action": "reject_merge", "source_label": pending_label},
+            predicted="merge", actual="keep_separate",
+            outcome='corrected', source='web_ui',
+        )
+    except Exception:
+        pass
+    return {"success": True, "message": f"Keep both — approved '{pending_label}' as separate node."}
+
+
+# --- FOCAL ITEM ACTION (Phase 2 v2: done/snooze/correct/reject) ---
 @app.post("/api/focal-action")
 async def focal_action_route(request: Request):
     """Handle the three-button focal card actions.
 
     Body: {
         "action": "done",       // "done", "snooze", "correct"
-        "item_type": "task",    // "task", "graph_node", "graph_edge"
+        "item_type": "task",    // "task", "graph_node", "graph_edge", "merge"
         "item_id": "123",       // Task ID or pending item ID
         "title": "Fill DBS forms",
         "reason": "Blocking Qhord"   // Original LLM reason (for learning)
     }
 
     - "done":    Marks the task/decision as completed
-    - "snooze":  No-op (item will come back on next pulse)
-    - "correct": Sends correction signal to learning loop
+    - "snooze":  Persists a 7-day deferral (snoozed_until) so the item does
+                  NOT resurface on the next load. No learning signal.
+    - "correct": Same deferral + correction signal to the learning loop.
     """
     require_api_auth(request)
     try:
@@ -785,6 +1011,36 @@ async def focal_action_route(request: Request):
 
         if not action or not item_type or not item_id:
             raise HTTPException(status_code=400, detail="action, item_type, and item_id required")
+
+        # Shared: persist a 7-day deferral so a snoozed/corrected item stops
+        # resurfacing until the deferral expires (see db/72_focal_snooze.sql).
+        # Returns True only if the row was actually updated — the caller must
+        # surface a failure instead of telling the user the item was dismissed.
+        async def _persist_deferral() -> bool:
+            try:
+                from core.services.db import get_supabase
+                supabase = get_supabase()
+                defer_until = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+                if item_type == "task":
+                    res = supabase.table('tasks').update({'snoozed_until': defer_until})\
+                        .eq('id', int(item_id)).eq('is_current', True).execute()
+                    return bool(res.data)
+                elif item_type == "graph_node":
+                    res = supabase.table('pending_nodes').update({'snoozed_until': defer_until})\
+                        .eq('id', int(item_id)).execute()
+                    return bool(res.data)
+                elif item_type == "graph_edge":
+                    res = supabase.table('pending_graph_edges').update({'snoozed_until': defer_until})\
+                        .eq('id', int(item_id)).execute()
+                    return bool(res.data)
+                elif item_type == "merge":
+                    res = supabase.table('merge_proposals').update({'snoozed_until': defer_until})\
+                        .eq('id', int(item_id)).execute()
+                    return bool(res.data)
+                return False  # Unknown item type — nothing deferred
+            except Exception as e:
+                print(f"Focal deferral persist error: {e}")
+                return False
 
         if action == "done":
             if item_type == "task":
@@ -802,11 +1058,37 @@ async def focal_action_route(request: Request):
                 return {"success": True, "message": f"Approved {item_type}"}
             return {"success": True, "message": "Action completed"}
 
+        elif action == "reject":
+            # Permanent rejection for graph nodes/edges/merges — mirrors the
+            # Inbox's "Reject". Tasks have no reject semantics; the frontend
+            # keeps "Not right" (correction) for tasks.
+            if item_type == "graph_node":
+                from core.pulse.graph import process_graph_pending_decision
+                await process_graph_pending_decision(int(item_id), "reject", auto_decided=False)
+                return {"success": True, "message": f"Rejected {item_type}"}
+            elif item_type == "graph_edge":
+                from core.pulse.graph import process_pending_edge_decision
+                await process_pending_edge_decision(int(item_id), "reject", auto_decided=False)
+                return {"success": True, "message": f"Rejected {item_type}"}
+            elif item_type == "merge":
+                from core.services.db import get_supabase
+                supabase = get_supabase()
+                return await _reject_merge_proposal(supabase, int(item_id))
+            return {"success": True, "message": "Action completed"}
+
         elif action == "snooze":
-            # Snooze: no learning signal, item comes back on next pulse
-            return {"success": True, "message": "Dismissed until next pulse"}
+            # Persist a real deferral — the item must NOT resurface on the
+            # next load. No learning signal (defer ≠ reject).
+            persisted = await _persist_deferral()
+            if not persisted:
+                return {"success": False, "message": "Couldn't defer this item — please try again."}
+            return {"success": True, "message": "Dismissed — I'll keep it off your board for now"}
 
         elif action == "correct":
+            # Defer the item too (so a corrected focal pick doesn't resurface)
+            # AND emit a correction signal for the learning loop. If the
+            # deferral fails, still record the correction but be honest about it.
+            persisted = await _persist_deferral()
             # Correction: emit observation for learning loop
             try:
                 await emit_observation(
@@ -838,6 +1120,8 @@ async def focal_action_route(request: Request):
                     print(f"Focal correction decision record error: {dec_err}")
             except Exception as e:
                 print(f"Focal correction observation error (non-fatal): {e}")
+            if not persisted:
+                return {"success": False, "message": "Correction noted, but I couldn't defer this item — it may resurface."}
             return {"success": True, "message": "Correction recorded — Rhodey will learn from this."}
 
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
@@ -899,6 +1183,53 @@ async def home_mode_switch_route(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+# --- VAULT ACTIONS (pull forward from the vault drawer) ---
+@app.post("/api/vault-action")
+async def vault_action_route(request: Request):
+    """Pull a vaulted task forward so it re-enters the briefing horizon.
+
+    Body: { "action": "pull_forward", "task_id": 123 }
+
+    Pull-forward semantics: clears snoozed_until (if any) and drops the
+    reminder_at to "now" so the horizon guard no longer vaults the task —
+    it shows up in the next briefing and focal queue. No learning signal
+    (this is a preference, not a correction).
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        action = body.get("action", "")
+        task_id = body.get("task_id")
+        if action != "pull_forward" or not task_id:
+            raise HTTPException(status_code=400, detail="action=pull_forward and task_id required")
+        try:
+            tid = int(task_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="task_id must be an integer")
+
+        supabase = get_supabase()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = supabase.table('tasks').update({
+            'reminder_at': now_iso,
+            'snoozed_until': None,
+        }).eq('id', tid).eq('is_current', True).execute()
+        if not res.data:
+            return {"success": False, "message": "Task not found"}
+        return {"success": True, "message": "Pulled forward — it's back on your board.", "task_id": tid}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Vault action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- EMAIL PENDING TASK DECISIONS (approve/reject from frontend) ---
+        raise
+    except Exception as e:
+        print(f"Home mode switch error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # --- EMAIL PENDING TASK DECISIONS (approve/reject from frontend) ---
 @app.post("/api/email-action")
 async def email_action_route(request: Request):
@@ -927,6 +1258,199 @@ async def email_action_route(request: Request):
 
     except Exception as e:
         print(f"Email action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/email-action/batch")
+async def email_action_batch_route(request: Request):
+    """Batch approve/reject email items. One call, server processes all.
+
+    If no ids are provided, approves/rejects ALL pending actionable emails
+    (mirrors the inbox "Approve all" bar which sends action only).
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        ids = body.get('ids', [])
+        action = body.get('action', '')
+        if action not in ('approve', 'reject'):
+            raise HTTPException(status_code=400, detail="action required (approve|reject)")
+
+        if not ids:
+            # Approve-all: fetch every pending actionable email
+            supabase = get_supabase()
+            pending_res = supabase.table('messages') \
+                .select('id') \
+                .is_('danny_decision', 'null') \
+                .eq('channel', 'email') \
+                .eq('classification', 'actionable') \
+                .execute()
+            ids = [r['id'] for r in (pending_res.data or [])]
+            if not ids:
+                return {"success": True, "processed": 0, "failed": 0}
+
+        processed, failed = 0, 0
+        for i in range(0, len(ids), 100):
+            for pending_id in ids[i:i+100]:
+                try:
+                    await process_email_pending_decision(int(pending_id), action)
+                    processed += 1
+                except Exception:
+                    failed += 1
+        return {"success": True, "processed": processed, "failed": failed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Email batch action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- AUTO-DECISIONS (count / confirm / undo from the Inbox banner) ---
+# Mirrors the Telegram callback logic in core/webhook/handler.py so the app
+# behaves identically to the inline keyboards.
+
+@app.get("/api/auto-decisions")
+async def auto_decisions_count_route(request: Request):
+    """Count unverified auto-decisions (status=unverified)."""
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(minutes=30)).isoformat()
+
+        decision_res = supabase.table('decisions') \
+            .select('id') \
+            .eq('auto_decided', True) \
+            .eq('status', 'active') \
+            .is_('verified_at', None) \
+            .gte('decided_at', cutoff) \
+            .execute()
+        return {"count": len(decision_res.data or [])}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Auto-decisions count error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/auto-decisions/confirm")
+async def auto_decisions_confirm_route(request: Request):
+    """Confirm (verify) all unverified auto-decisions from the last 30 minutes.
+
+    Sets verified_at on each and emits an observation to reinforce pattern
+    confidence — identical to the Telegram 'confirm_auto_all' callback.
+    """
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(minutes=30)).isoformat()
+
+        decision_res = supabase.table('decisions') \
+            .select('id, decision_type') \
+            .eq('auto_decided', True) \
+            .eq('status', 'active') \
+            .is_('verified_at', None) \
+            .gte('decided_at', cutoff) \
+            .execute()
+
+        confirmed_count = 0
+        for row in (decision_res.data or []):
+            supabase.table('decisions').update({
+                'verified_at': now.isoformat(),
+            }).eq('id', row['id']).execute()
+            confirmed_count += 1
+
+        if confirmed_count > 0:
+            await emit_observation(
+                subsystem='auto_decisions',
+                event_type='verification',
+                outcome='confirmed',
+                predicted='auto_approve',
+                actual='verified',
+                features={'count': confirmed_count}
+            )
+            print(f"User confirmed {confirmed_count} auto-decisions via app")
+
+        return {"success": True, "confirmed": confirmed_count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Auto-decisions confirm error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/auto-decisions/undo")
+async def auto_decisions_undo_route(request: Request):
+    """Undo auto-processed items (channels/graph/edge) — mirrors Telegram undo callbacks.
+
+    Reverses the decision record and reverts the underlying DB row back to
+    pending so it reappears for re-review. body: {"target": "channels" | "graph" | "edge"}
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        undo_target = body.get('target', 'channels')
+        if undo_target not in ('channels', 'graph', 'edge'):
+            raise HTTPException(status_code=400, detail="target must be channels, graph, or edge")
+
+        from core.decisions import reverse_decision
+        supabase = get_supabase()
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(minutes=30)).isoformat()
+
+        decision_type = {
+            'channels': 'channel_approval',
+            'graph': 'graph_node_approval',
+            'edge': 'graph_edge_approval',
+        }[undo_target]
+
+        decision_res = supabase.table('decisions').select('id, entity_id, decision_type') \
+            .eq('auto_decided', True) \
+            .eq('status', 'active') \
+            .is_('verified_at', None) \
+            .gte('decided_at', cutoff) \
+            .eq('decision_type', decision_type) \
+            .execute()
+
+        undone_count = 0
+        for row in (decision_res.data or []):
+            decision_id = row['id']
+            entity_id = row.get('entity_id')
+
+            # Reverse the decision record
+            reverse_decision(decision_id, rationale="User undid auto-approve via app")
+
+            # Attempt to undo the actual DB action
+            if undo_target == 'channels' and entity_id and str(entity_id).isdigit():
+                try:
+                    # Revert message back to pending for re-review
+                    supabase.table('messages').update({'danny_decision': None}).eq('id', int(entity_id)).execute()
+                    undone_count += 1
+                except Exception as e:
+                    print(f"Undo channels failed: {e}")
+            elif undo_target == 'graph' and entity_id:
+                try:
+                    # Move the auto-approved pending node back to pending.
+                    # entity_id may be a serial int or a UUID string — try both.
+                    node_id = int(entity_id) if str(entity_id).isdigit() else entity_id
+                    supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', node_id).execute()
+                    undone_count += 1
+                except Exception as e:
+                    print(f"Undo graph failed: {e}")
+            elif undo_target == 'edge' and entity_id:
+                try:
+                    edge_id = int(entity_id) if str(entity_id).isdigit() else entity_id
+                    supabase.table('pending_graph_edges').update({'status': 'pending'}).eq('id', edge_id).execute()
+                    undone_count += 1
+                except Exception as e:
+                    print(f"Undo edge failed: {e}")
+
+        return {"success": True, "undone": undone_count, "target": undo_target}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Auto-decisions undo error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -1083,14 +1607,30 @@ async def graph_edge_action_route(request: Request):
 
 @app.post("/api/graph-edge-action/batch")
 async def graph_edge_action_batch_route(request: Request):
-    """Batch approve/reject graph edges. One call, server processes all."""
+    """Batch approve/reject graph edges. One call, server processes all.
+
+    If no ids are provided, approves/rejects ALL pending edges
+    (mirrors the inbox "Approve all" bar which sends action only).
+    """
     require_api_auth(request)
     try:
         body = await request.json()
         ids = body.get('ids', [])
         action = body.get('action', '')
-        if not ids or action not in ('approve', 'reject'):
-            raise HTTPException(status_code=400, detail="ids and action required")
+        if action not in ('approve', 'reject'):
+            raise HTTPException(status_code=400, detail="action required (approve|reject)")
+
+        if not ids:
+            # Approve-all: fetch every pending edge
+            supabase = get_supabase()
+            pending_res = supabase.table('pending_graph_edges') \
+                .select('id') \
+                .eq('status', 'pending') \
+                .execute()
+            ids = [r['id'] for r in (pending_res.data or [])]
+            if not ids:
+                return {"success": True, "processed": 0, "failed": 0}
+
         processed, failed = 0, 0
         for i in range(0, len(ids), 100):
             for pending_id in ids[i:i+100]:
@@ -1161,34 +1701,10 @@ async def graph_merge_action_route(request: Request):
         pending_type = merge_proposal.get('source_type', 'person')
 
         if action == 'reject':
-            from core.pulse.graph import create_graph_node_with_db_record
-            result = await create_graph_node_with_db_record(
-                label=pending_label,
-                node_type=pending_type,
-                source_text='',
-                source_tag='pending_approval',
-                force=True
-            )
-            if result.get('success'):
-                if origin_id:
-                    supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', origin_id).execute()
-                resolve_merge_proposal(merge_proposal['id'], "rejected")
-                try:
-                    record_decision(decision_type="graph_node_merge_rejection",
-                                    title=f"Keep both: '{pending_label}' as separate node",
-                                    entity_type="graph_node", entity_id=str(origin_id),
-                                    confidence=1.0, source="web_ui")
-                except Exception:
-                    pass
-                try:
-                    await emit_observation(subsystem='entity_extraction', event_type='correction',
-                                           features={"action": "reject_merge", "source_label": pending_label},
-                                           predicted="merge", actual="keep_separate",
-                                           outcome='corrected', source='web_ui')
-                except Exception:
-                    pass
-                return {"success": True, "message": f"Keep both — approved '{pending_label}' as separate node."}
-            return {"success": False, "message": result.get('message', 'Failed to approve node')}
+            # Shared with /api/focal-action (reject) — keeps both by promoting
+            # the pending label to its own live node and resolving the
+            # proposal as rejected.
+            return await _reject_merge_proposal(supabase, int(merge_proposal_id))
 
         # Accept merge
         target_id = merge_proposal.get('target_node_id')
@@ -1285,14 +1801,34 @@ async def graph_node_action_route(request: Request):
 
 @app.post("/api/graph-node-action/batch")
 async def graph_node_action_batch_route(request: Request):
-    """Batch approve/reject graph nodes. One call, server processes all."""
+    """Batch approve/reject graph nodes. One call, server processes all.
+
+    If no ids are provided, approves/rejects ALL pending nodes
+    (mirrors the inbox "Approve all" bar which sends action only).
+    """
     require_api_auth(request)
     try:
         body = await request.json()
         ids = body.get('ids', [])
         action = body.get('action', '')
-        if not ids or action not in ('approve', 'reject'):
-            raise HTTPException(status_code=400, detail="ids and action required")
+        if action not in ('approve', 'reject'):
+            raise HTTPException(status_code=400, detail="action required (approve|reject)")
+
+        if not ids:
+            # Approve-all: fetch every pending node (respecting snooze)
+            supabase = get_supabase()
+            pending_q = supabase.table('pending_nodes') \
+                .select('id') \
+                .eq('status', 'pending')
+            try:
+                pending_q = pending_q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+            except Exception:
+                pass  # Column not yet migrated — fall back to unfiltered
+            pending_res = pending_q.execute()
+            ids = [r['id'] for r in (pending_res.data or [])]
+            if not ids:
+                return {"success": True, "processed": 0, "failed": 0}
+
         from core.pulse.graph import process_graph_pending_decision
         processed, failed = 0, 0
         for i in range(0, len(ids), 100):
@@ -2467,6 +3003,8 @@ async def pending_nodes_route(request: Request):
             .select('id, label, type:node_type, status, source_text, created_at, eval_context')
         # Pull pending + flagged items (skip approved/rejected/merged)
         res = res.in_('status', ['pending', 'flagged'])
+        if _snooze_ok(supabase, 'pending_nodes'):
+            res = res.or_('snoozed_until.is.null,snoozed_until.lt.now')
         res = res.order('created_at', desc=True).limit(100).execute()
         return {"data": res.data or []}
     except Exception:
@@ -2483,8 +3021,10 @@ async def pending_merges_route(request: Request):
         supabase = get_supabase()
         res = supabase.table('merge_proposals') \
             .select('id, source_label, source_type, target_label, target_node_id, rationale, status') \
-            .eq('status', 'proposed') \
-            .order('id', desc=True) \
+            .eq('status', 'proposed')
+        if _snooze_ok(supabase, 'merge_proposals'):
+            res = res.or_('snoozed_until.is.null,snoozed_until.lt.now')
+        res = res.order('id', desc=True) \
             .limit(100) \
             .execute()
         return {"data": res.data or []}
@@ -2504,6 +3044,8 @@ async def pending_graph_edges_route(request: Request):
         res = supabase.table('pending_graph_edges') \
             .select('id, source_label, target_label, relationship, status, context, confidence, created_at')
         res = res.in_('status', ['pending', 'flagged'])
+        if _snooze_ok(supabase, 'pending_graph_edges'):
+            res = res.or_('snoozed_until.is.null,snoozed_until.lt.now')
         res = res.order('created_at', desc=True).limit(100).execute()
         return {"data": res.data or []}
     except Exception:

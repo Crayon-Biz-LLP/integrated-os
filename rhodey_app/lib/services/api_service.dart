@@ -247,6 +247,28 @@ class ApiService {
     return ApiResult.fail(result.error!);
   }
 
+  /// Fetches the real user↔Rhodey conversation from /api/conversation-history.
+  /// This reads the thread-scoped `conversations` table (proper user/bot
+  /// roles) instead of the raw_dumps noise stream that /api/messages returns.
+  Future<ApiResult<List<Map<String, dynamic>>>> getConversationHistory({
+    int limit = 100,
+    int offset = 0,
+  }) async {
+    final result = await get('/api/conversation-history',
+        query: {
+          'limit': limit.toString(),
+          'offset': offset.toString(),
+        });
+    if (result.success && result.data is Map) {
+      final msgs = (result.data as Map)['messages'] as List? ?? [];
+      return ApiResult.ok(List<Map<String, dynamic>>.from(msgs));
+    }
+    if (result.success) {
+      return ApiResult.ok([]);
+    }
+    return ApiResult.fail(result.error!);
+  }
+
   // ── Calendar events ──────────────────────────────────────────
 
   /// Fetches today's calendar events from /api/calendar-events?date=today.
@@ -310,13 +332,19 @@ class ApiService {
   // ── Tasks (Today tab) ────────────────────────────────────────
 
   /// Fetches active (todo) tasks from /api/tasks?status=todo.
-  Future<ApiResult<List<Map<String, dynamic>>>> getTasks({String? status}) async {
+  /// [includeSnoozed] also returns snoozed tasks (dimmed in the ledger).
+  Future<ApiResult<List<Map<String, dynamic>>>> getTasks(
+      {String? status, bool includeSnoozed = false}) async {
     final query = <String, String>{
-      'limit': '30',
+      // 200 rows so the active-task badge and ledger don't undercount.
+      'limit': '200',
       'offset': '0',
     };
     if (status != null) {
       query['status'] = status;
+    }
+    if (includeSnoozed) {
+      query['include_snoozed'] = 'true';
     }
     final result = await get('/api/tasks', query: query);
     if (result.success && result.data is Map) {
@@ -673,6 +701,18 @@ class ApiService {
       'item_id': itemId,
       'title': title,
       'reason': reason,
+    }, maxRetries: 1);
+  }
+
+  /// Pull a vaulted task forward via /api/vault-action so it re-enters
+  /// the briefing horizon. [action] is "pull_forward".
+  Future<ApiResult<dynamic>> vaultAction({
+    required String action,
+    required int taskId,
+  }) async {
+    return post('/api/vault-action', body: {
+      'action': action,
+      'task_id': taskId,
     }, maxRetries: 1);
   }
 

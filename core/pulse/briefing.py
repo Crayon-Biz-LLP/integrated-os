@@ -332,10 +332,15 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         except Exception as e:
             error("pulse", f"Cluster discovery failed, continuing pulse: {e}", format_error(e))
 
-        # ── Fetch tasks ──
-        active_tasks_res = supabase.table('tasks').select(
+        # ── Fetch tasks (exclude snoozed — focal "Not now" deferral) ──
+        active_tasks_q = supabase.table('tasks').select(
             'id, title, organization_id, priority, created_at, reminder_at, google_event_id, direction, committed_to'
-        ).eq('is_current', True).not_.in_('status', ['done', 'cancelled']).execute()
+        ).eq('is_current', True).not_.in_('status', ['done', 'cancelled'])
+        try:
+            active_tasks_q = active_tasks_q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+        except Exception:
+            pass  # Column not yet migrated — fall back to unfiltered
+        active_tasks_res = active_tasks_q.execute()
         active_tasks = active_tasks_res.data or []
 
         # ── Silence if no tasks ──

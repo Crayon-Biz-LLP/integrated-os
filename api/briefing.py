@@ -12,6 +12,7 @@ Sections built:
   traces    → paired input→outcome history (for Traces view)
 """
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import TypedDict
@@ -47,6 +48,13 @@ class WrapItem(TypedDict):
     text: str               # Task title
     detail: str             # Detail line: completion time, org, etc.
 
+class VaultedItem(TypedDict):
+    """A single vaulted task — shown when user taps the vault badge."""
+    id: str
+    title: str
+    priority: str
+    deadline: str | None
+
 
 class BriefingResponse(TypedDict):
     greeting: str
@@ -65,6 +73,7 @@ class BriefingResponse(TypedDict):
     home_mode: str                  # "proceed" | "decide" | "sprint" | "catch_up" | "wrap"
     vaulted_urgent_count: int       # Count of vaulted urgent tasks
     vaulted_high_count: int         # Count of vaulted high-priority tasks
+    vaulted_items: list[VaultedItem]  # Actual vaulted items (title, priority, deadline)
     # Phase 2 v2: LLM-chosen top focal item (replaces scoring formula)
     top_focal_item: dict | None     # {type, item_id, title, reason, urgency, action_label} or None
     # Sunday weekly learning report ("What I Learned This Week")
@@ -117,6 +126,44 @@ def _parse_dt(raw: str) -> datetime | None:
         return datetime.fromisoformat(raw).astimezone(IST)
     except (ValueError, TypeError):
         return None
+
+
+# ── Snooze support (focal-card "Not now") ────────────────────────────────────
+
+_SNOOZE_COLUMNS_OK: dict[str, bool] = {}
+
+
+def _snooze_ok(supabase, table: str) -> bool:
+    """True if `table` has the snoozed_until column (migration applied).
+
+    Cached per process so we only probe once per table. Lets callers apply
+    the snooze filter without breaking if the migration hasn't run yet.
+    """
+    if table not in _SNOOZE_COLUMNS_OK:
+        try:
+            supabase.table(table).select("snoozed_until").limit(1).execute()
+            _SNOOZE_COLUMNS_OK[table] = True
+        except Exception:
+            _SNOOZE_COLUMNS_OK[table] = False
+    return _SNOOZE_COLUMNS_OK[table]
+
+
+_NOTES_COLUMNS_OK: dict[str, bool] = {}
+
+
+def _notes_ok(supabase, table: str) -> bool:
+    """True if `table` has the notes column (migration applied).
+
+    Same cached-probe pattern as _snooze_ok — lets /api/tasks select `notes`
+    without breaking if the 73_task_notes.sql migration hasn't run yet.
+    """
+    if table not in _NOTES_COLUMNS_OK:
+        try:
+            supabase.table(table).select("notes").limit(1).execute()
+            _NOTES_COLUMNS_OK[table] = True
+        except Exception:
+            _NOTES_COLUMNS_OK[table] = False
+    return _NOTES_COLUMNS_OK[table]
 
 
 # ── Section builders ─────────────────────────────────────────────────────────
@@ -436,11 +483,12 @@ async def _auto_approve_pending_items(supabase) -> int:
 
     # ── Auto-approve high-confidence graph edges ──
     try:
-        pending_res = supabase.table("pending_graph_edges") \
+        pending_q = supabase.table("pending_graph_edges") \
             .select("id, source_label, target_label, relationship, source_type, target_type") \
-            .eq("status", "pending") \
-            .limit(20) \
-            .execute()
+            .eq("status", "pending")
+        if _snooze_ok(supabase, "pending_graph_edges"):
+            pending_q = pending_q.or_("snoozed_until.is.null,snoozed_until.lt.now")
+        pending_res = pending_q.limit(20).execute()
         for row in (pending_res.data or []):
             features = {
                 "relationship": row["relationship"],
@@ -461,11 +509,12 @@ async def _auto_approve_pending_items(supabase) -> int:
 
     # ── Auto-approve high-confidence graph nodes ──
     try:
-        node_res = supabase.table("pending_nodes") \
+        node_q = supabase.table("pending_nodes") \
             .select("id, label, type:node_type, source_text") \
-            .eq("status", "pending") \
-            .limit(20) \
-            .execute()
+            .eq("status", "pending")
+        if _snooze_ok(supabase, "pending_nodes"):
+            node_q = node_q.or_("snoozed_until.is.null,snoozed_until.lt.now")
+        node_res = node_q.limit(20).execute()
         for row in (node_res.data or []):
             features = {
                 "node_type": row["type"],
@@ -499,11 +548,13 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     async def _get_tasks():
         try:
-            res = supabase.table("tasks")\
+            q = supabase.table("tasks")\
                 .select("id, title, status, priority, deadline, reminder_at, created_at, completed_at, updated_at")\
                 .eq("is_current", True)\
-                .in_("status", ["todo"])\
-                .order("created_at", desc=True)\
+                .in_("status", ["todo"])
+            if _snooze_ok(supabase, "tasks"):
+                q = q.or_("snoozed_until.is.null,snoozed_until.lt.now")
+            res = q.order("created_at", desc=True)\
                 .limit(30)\
                 .execute()
             return list(res.data or [])
@@ -538,10 +589,12 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     async def _get_graph_nodes():
         try:
-            res = supabase.table("pending_nodes")\
+            q = supabase.table("pending_nodes")\
                 .select("id, label, type:node_type, status, eval_context")\
-                .in_("status", ["pending", "flagged"])\
-                .order("created_at", desc=True)\
+                .in_("status", ["pending", "flagged"])
+            if _snooze_ok(supabase, "pending_nodes"):
+                q = q.or_("snoozed_until.is.null,snoozed_until.lt.now")
+            res = q.order("created_at", desc=True)\
                 .limit(30)\
                 .execute()
             return list(res.data or [])
@@ -551,9 +604,12 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     async def _get_graph_edges():
         try:
-            res = supabase.table("pending_graph_edges")\
+            q = supabase.table("pending_graph_edges")\
                 .select("id, source_label, target_label, relationship, status")\
-                .in_("status", ["pending", "flagged"])\
+                .in_("status", ["pending", "flagged"])
+            if _snooze_ok(supabase, "pending_graph_edges"):
+                q = q.or_("snoozed_until.is.null,snoozed_until.lt.now")
+            res = q.order("created_at", desc=True)\
                 .limit(30)\
                 .execute()
             return list(res.data or [])
@@ -640,23 +696,33 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     # ── Horizon guard: filter far-future tasks ──
     async def _filter_horizon(tasks_raw: list[dict]) -> list[dict]:
-        """Remove tasks with deadline/reminder more than 2 days out."""
+        """Remove tasks that are ENTIRELY beyond the 2-day horizon.
+
+        A task is vaulted only when BOTH its deadline and its reminder (when
+        present) are more than 2 days out. A near-term reminder is an explicit
+        pull-forward signal (vault drawer) and overrides a far deadline — so
+        "Pull forward" actually brings the task back into the briefing.
+        """
         horizon_cutoff = datetime.now(IST) + timedelta(days=2)
         filtered = []
         for t in tasks_raw:
             deadline = t.get('deadline')
             reminder = t.get('reminder_at')
-            future_date = None
+            deadline_far = False
+            reminder_far = False
             if deadline:
                 dt = _parse_dt(deadline)
                 if dt and dt > horizon_cutoff:
-                    future_date = dt
-            if reminder and not future_date:
+                    deadline_far = True
+            if reminder:
                 dt = _parse_dt(reminder)
                 if dt and dt > horizon_cutoff:
-                    future_date = dt
-            if future_date:
-                continue  # Skip tasks more than 2 days in the future
+                    reminder_far = True
+            # Vault only when EVERY present date is beyond the horizon.
+            # A near-term reminder is an explicit pull-forward signal and
+            # overrides a far deadline (vault drawer "Pull forward").
+            if (deadline is None or deadline_far) and (reminder is None or reminder_far) and (deadline_far or reminder_far):
+                continue  # Entirely beyond the 2-day horizon
             filtered.append(t)
         return filtered
 
@@ -747,12 +813,12 @@ async def build_briefing(supabase) -> BriefingResponse:
             raw_deltas.append((done_dt, "\u2705", f"Done: {title}"))  # ✅
 
         # New pending decisions since last pulse
-        new_edges_res = supabase.table("pending_graph_edges") \
+        new_edges_q = supabase.table("pending_graph_edges") \
             .select("source_label, target_label, relationship, created_at") \
-            .gte("created_at", last_pulse_at) \
-            .order("created_at", desc=True) \
-            .limit(10) \
-            .execute()
+            .gte("created_at", last_pulse_at)
+        if _snooze_ok(supabase, "pending_graph_edges"):
+            new_edges_q = new_edges_q.or_("snoozed_until.is.null,snoozed_until.lt.now")
+        new_edges_res = new_edges_q.order("created_at", desc=True).limit(10).execute()
         for e in new_edges_res.data or []:
             src = (e.get("source_label") or "?").strip()
             tgt = (e.get("target_label") or "?").strip()
@@ -763,12 +829,12 @@ async def build_briefing(supabase) -> BriefingResponse:
                 continue
             raw_deltas.append((created_dt, "\U0001F517", f"New edge: {src} → {rel} → {tgt}"))  # 🔗
 
-        new_nodes_res = supabase.table("pending_nodes") \
+        new_nodes_q = supabase.table("pending_nodes") \
             .select("label, node_type, created_at") \
-            .gte("created_at", last_pulse_at) \
-            .order("created_at", desc=True) \
-            .limit(10) \
-            .execute()
+            .gte("created_at", last_pulse_at)
+        if _snooze_ok(supabase, "pending_nodes"):
+            new_nodes_q = new_nodes_q.or_("snoozed_until.is.null,snoozed_until.lt.now")
+        new_nodes_res = new_nodes_q.order("created_at", desc=True).limit(10).execute()
         for n in new_nodes_res.data or []:
             label = (n.get("label") or "").strip()
             ntype = (n.get("node_type") or "entity").strip()
@@ -848,6 +914,7 @@ async def build_briefing(supabase) -> BriefingResponse:
     # ── Now compute which of the raw tasks didn't make the cut for vault segmentation ──
     filtered_ids = {str(t.get("id")) for t in tasks if t.get("id")}
     vaulted_total = len(horizon_task_ids) - len(filtered_ids)
+    vaulted_items: list[VaultedItem] = []
     for t in raw_tasks_before_filter:
         tid = str(t.get("id"))
         if tid not in filtered_ids:
@@ -856,6 +923,12 @@ async def build_briefing(supabase) -> BriefingResponse:
                 vaulted_urgent += 1
             elif p == "high":
                 vaulted_high += 1
+            vaulted_items.append(VaultedItem(
+                id=str(t.get("id") or ""),
+                title=(t.get("title") or "").strip(),
+                priority=p or "medium",
+                deadline=t.get("deadline") or t.get("reminder_at"),
+            ))
 
     # ── Assemble sections ────────────────────────────────────────────────
     greeting = _greeting()
@@ -887,6 +960,8 @@ async def build_briefing(supabase) -> BriefingResponse:
     vaulted_count = 0
     voice_line = None
     home_mode = "proceed"
+    top_focal_item = None
+    transparency_report = None
     try:
         ai_res = supabase.table("app_intelligence")\
             .select("created_at, voice_line, pulse_mode, nag_list, stale_list, overdue_list, vaulted_count, context, insights, home_mode, top_focal_item, transparency_report")\
@@ -908,6 +983,9 @@ async def build_briefing(supabase) -> BriefingResponse:
                 insight_text = row.get("context", "")
                 vaulted_count = row.get("vaulted_count") or 0
                 home_mode = row.get("home_mode") or "proceed"
+                # top_focal_item is gated on the same recency check — a stale
+                # pulse must not render an outdated focal card next to a fresh
+                # voice line. The pulse stores it as a JSON string; parse to dict.
                 raw_focal = row.get("top_focal_item")
                 if raw_focal:
                     if isinstance(raw_focal, str):
@@ -919,31 +997,19 @@ async def build_briefing(supabase) -> BriefingResponse:
                         top_focal_item = raw_focal
                     else:
                         top_focal_item = None
-                else:
-                    top_focal_item = None
 
-                # Read weekly transparency report
-                transparency_report = row.get("transparency_report") or None
-                if isinstance(transparency_report, str):
-                    transparency_report = transparency_report.strip() or None
-                else:
-                    transparency_report = None
-                        try:
-                            top_focal_item = json.loads(raw_focal)
-                        except Exception:
-                            top_focal_item = None
-                    elif isinstance(raw_focal, dict):
-                        top_focal_item = raw_focal
-                    else:
-                        top_focal_item = None
-                else:
-                    top_focal_item = None
-                raw_overdue = row.get("overdue_list") or []
-                raw_stale = row.get("stale_list") or []
-                if raw_overdue:
-                    overdue_task_names = set(t.lower().strip() for t in raw_overdue if isinstance(t, str))
-                if raw_stale:
-                    stale_task_names = set(t.lower().strip() for t in raw_stale if isinstance(t, str))
+            # Read weekly transparency report
+            transparency_report = row.get("transparency_report") or None
+            if isinstance(transparency_report, str):
+                transparency_report = transparency_report.strip() or None
+            else:
+                transparency_report = None
+            raw_overdue = row.get("overdue_list") or []
+            raw_stale = row.get("stale_list") or []
+            if raw_overdue:
+                overdue_task_names = set(t.lower().strip() for t in raw_overdue if isinstance(t, str))
+            if raw_stale:
+                stale_task_names = set(t.lower().strip() for t in raw_stale if isinstance(t, str))
     except Exception as e:
         print(f"[Briefing] App intelligence error (table may not exist yet): {e}")
 
@@ -1087,7 +1153,7 @@ async def build_briefing(supabase) -> BriefingResponse:
         transparency_report=transparency_report,
         vaulted_urgent_count=vaulted_urgent,
         vaulted_high_count=vaulted_high,
-        vaulted_count=vaulted_total,
+        vaulted_items=vaulted_items,
         delta_items=delta_items,
         wrap_done_today=wrap_done_today,
         wrap_rolling=wrap_rolling,

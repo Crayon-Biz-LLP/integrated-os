@@ -33,11 +33,40 @@ class DetectedEntity:
     confidence: float = 1.0
 
 
-# Words that signal a following capitalized name is a person reference
+# Words that signal a following capitalized name is a person reference.
+# IMPORTANT: Prepositions ('with', 'from', 'by', 'to', 'for') were REMOVED —
+# they precede ANY capitalized word ("scheduled for Friday"), which caused
+# weekdays, months, and time words to be proposed as people. Only true
+# person-signal verbs remain. Because a preposition can sit between the verb
+# and the name ("met with Joel", "talked to Arani"), patterns scan a 3-word
+# window before the capitalized phrase (see detect_entities Pattern B).
 _PERSON_CONTEXT_WORDS = {
-    'with', 'from', 'by', 'to', 'for', 'talked', 'spoke', 'met',
-    'called', 'asked', 'told', 'said', 'introduced', 'worked',
-    'discussed', 'interviewed', 'contacted', 'assigned',
+    'talked', 'spoke', 'met', 'called', 'asked', 'told', 'said',
+    'introduced', 'worked', 'discussed', 'interviewed', 'contacted',
+    'assigned',
+}
+
+# How many words before a capitalized phrase to scan for a signal word.
+# Small enough to avoid cross-clause false positives ("the meeting on Friday"
+# has no verb in its window), large enough to bridge "met with Joel".
+_SIGNAL_WINDOW = 3
+
+# Words that can NEVER become entities — weekdays, months, and time references.
+# Pattern B (person) and Pattern D (organization) used to propose these as
+# entities whenever they followed a context word ("meeting scheduled for Friday"
+# → "Friday" became a person node). Filtered at the candidate source so both
+# patterns are protected.
+_RESERVED_ENTITY_WORDS = {
+    # Weekdays
+    'monday', 'tuesday', 'wednesday', 'thursday', 'friday',
+    'saturday', 'sunday',
+    # Months
+    'january', 'february', 'march', 'april', 'may', 'june', 'july',
+    'august', 'september', 'october', 'november', 'december',
+    # Time-of-day / relative time
+    'morning', 'afternoon', 'evening', 'night', 'noon', 'midnight',
+    'today', 'tomorrow', 'yesterday', 'tonight',
+    'week', 'weekend', 'month', 'year',
 }
 
 # Words that signal a following capitalized name is an organization reference
@@ -88,8 +117,13 @@ def _find_capitalized_phrases(text: str) -> list[tuple[str, int, int]]:
     matches = []
     for m in re.finditer(pattern, text):
         phrase = m.group(1)
-        if phrase.lower() not in _SKIP_WORDS:
-            matches.append((phrase, m.start(), m.end()))
+        phrase_lower = phrase.lower()
+        if phrase_lower in _SKIP_WORDS:
+            continue
+        # Never propose reserved words (weekdays, months, time refs) as entities
+        if any(w in _RESERVED_ENTITY_WORDS for w in phrase_lower.split()):
+            continue
+        matches.append((phrase, m.start(), m.end()))
     return matches
 
 
@@ -240,10 +274,14 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     for phrase, start, end in caps_phrases:
         if phrase.lower() in seen_labels:
             continue
-        # Check if preceded by context words
+        # Check if preceded by a person-signal verb within a small window.
+        # Window (not last-word-only) preserves "met with Joel" / "talked to Arani"
+        # while prepositions alone ("scheduled for Friday") never trigger.
         before = text[max(0, start - 25):start].strip().lower()
         ctx_words = before.split()
-        if ctx_words and ctx_words[-1] in _PERSON_CONTEXT_WORDS:
+        if ctx_words and any(
+            w in _PERSON_CONTEXT_WORDS for w in ctx_words[-_SIGNAL_WINDOW:]
+        ):
             _add(DetectedEntity(
                 label=phrase,
                 type='person',
@@ -277,10 +315,12 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     for phrase, start, end in caps_phrases:
         if phrase.lower() in seen_labels:
             continue
-        # Check if preceded by an organization context word
+        # Check if preceded by an organization context word within a small window.
         before = text[max(0, start - 25):start].strip().lower()
         ctx_words = before.split()
-        if ctx_words and ctx_words[-1] in _ORG_CONTEXT_WORDS:
+        if ctx_words and any(
+            w in _ORG_CONTEXT_WORDS for w in ctx_words[-_SIGNAL_WINDOW:]
+        ):
             _add(DetectedEntity(
                 label=phrase,
                 type='organization',

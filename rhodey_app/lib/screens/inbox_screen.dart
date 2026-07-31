@@ -354,7 +354,7 @@ class _InboxScreenState extends State<InboxScreen> {
     }
 
     if (!result.success && mounted) {
-      _showSnack(result.error ?? '⚠️ Dismiss failed on server');
+      _showSnack(result.error ?? '⚠️ Reject failed on server');
     }
   }
 

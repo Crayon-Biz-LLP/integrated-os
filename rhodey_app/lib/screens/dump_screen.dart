@@ -218,17 +218,6 @@ class _DumpScreenState extends State<DumpScreen> {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        icon: const Icon(Icons.image_outlined,
-                            color: AppTheme.textTertiary, size: 22),
-                        onPressed: () {},
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.description_outlined,
-                            color: AppTheme.textTertiary, size: 22),
-                        onPressed: () {},
-                      ),
                     ],
                   ),
                 ),

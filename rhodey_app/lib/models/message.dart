@@ -1,6 +1,6 @@
 enum MessageRole { user, rhodey }
 
-enum MessageType { text, taskResult, noteResult, decision, enrichment }
+enum MessageType { text, taskResult, noteResult, decision, enrichment, taskList }
 
 /// Outbound send states — the trust pipeline.
 ///
@@ -16,6 +16,14 @@ class ChatMessage {
   final DateTime timestamp;
   final List<String>? quickReplies;
 
+  /// Rows for a Rhodey task-ledger message (type == taskList).
+  final List<Map<String, dynamic>>? taskList;
+
+  /// Structured intent label from the backend (e.g. BRIEFING, RESPONSE,
+  /// QUERY, CLARIFICATION, WORKFLOW_RESOLUTION). Drives which card renders:
+  /// briefings become Moment cards, clarifications become prompt cards, etc.
+  final String? intent;
+
   /// Only meaningful for user messages.
   /// null = no send (inbound / Rhodey message).
   final SendStatus? sendStatus;
@@ -27,6 +35,8 @@ class ChatMessage {
     required this.text,
     required this.timestamp,
     this.quickReplies,
+    this.taskList,
+    this.intent,
     this.sendStatus,
   });
 

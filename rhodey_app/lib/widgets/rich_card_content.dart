@@ -4,7 +4,7 @@ import '../theme/app_theme.dart';
 // ── Card data types ───────────────────────────────────────────-
 
 /// Types of rich cards that can be rendered inline in CONVERSATION.
-enum CardType { task, taskDone, note, approval }
+enum CardType { task, taskDone, note, approval, briefing, clarification, workflow }
 
 /// Parsed card data extracted from a Rhodey message.
 class CardData {
@@ -13,11 +13,16 @@ class CardData {
   final String? subtitle;
   final String? fullText;
 
+  /// When the message was created — used by the Briefing card to decide
+  /// whether it opens expanded (today) or folded (older beats).
+  final DateTime? timestamp;
+
   const CardData({
     required this.type,
     required this.title,
     this.subtitle,
     this.fullText,
+    this.timestamp,
   });
 }
 
@@ -104,6 +109,56 @@ CardData? parseMessageToCardData(String text) {
   return null;
 }
 
+/// Intent-aware card resolution.
+///
+/// The backend labels every conversation row with a structured `intent`
+/// (BRIEFING / CLARIFICATION / WORKFLOW_RESOLUTION / ...). That label is
+/// authoritative when present — it picks the card without guessing at text.
+/// Live messages (sent via the chat input) carry no intent yet, so they fall
+/// back to the text-pattern parser above.
+CardData? resolveCardData({
+  String? intent,
+  required String text,
+  DateTime? timestamp,
+}) {
+  final trimmed = text.trim();
+  if (trimmed.isEmpty) return null;
+  final firstLine = trimmed.split('\n').first.trim();
+
+  switch (intent) {
+    case 'BRIEFING':
+    case 'DAILY_BRIEF':
+      // Rhodey initiated a pulse briefing → collapsible Moment card.
+      return CardData(
+        type: CardType.briefing,
+        title: firstLine,
+        fullText: trimmed,
+        timestamp: timestamp,
+      );
+    case 'CLARIFICATION':
+      // Rhodey is waiting on your input → prompt card with reply chips.
+      return CardData(
+        type: CardType.clarification,
+        title: firstLine,
+        fullText: trimmed,
+        timestamp: timestamp,
+      );
+    case 'WORKFLOW_REPLY':
+    case 'WORKFLOW_RESOLUTION':
+      // A workflow decision was resolved → compact confirmation card.
+      return CardData(
+        type: CardType.workflow,
+        title: firstLine,
+        fullText: trimmed,
+        timestamp: timestamp,
+      );
+    default:
+      // No structured intent (live messages, RESPONSE, QUERY, ...) — rely on
+      // the text-pattern parser (task / taskDone / note / approval).
+      return parseMessageToCardData(text);
+  }
+}
+
 // ── Widgets ─────────────────────────────────────────────────────
 
 /// Renders a rich inline card inside the conversation.
@@ -114,12 +169,18 @@ class RichCardContent extends StatelessWidget {
   final VoidCallback? onUndo;
   final VoidCallback? onTap;
 
+  /// Quick-reply chips to render inside a Clarification prompt card.
+  final List<String>? quickReplies;
+  final ValueChanged<String>? onQuickReply;
+
   const RichCardContent({
     super.key,
     required this.cardData,
     this.onMarkDone,
     this.onUndo,
     this.onTap,
+    this.quickReplies,
+    this.onQuickReply,
   });
 
   @override
@@ -144,6 +205,27 @@ class RichCardContent extends StatelessWidget {
           title: cardData.title,
           subtitle: cardData.subtitle,
           onUndo: onUndo,
+        );
+        break;
+      case CardType.briefing:
+        card = _BriefingInlineCard(
+          title: cardData.title,
+          fullText: cardData.fullText ?? cardData.title,
+          timestamp: cardData.timestamp,
+        );
+        break;
+      case CardType.clarification:
+        card = _ClarificationInlineCard(
+          title: cardData.title,
+          fullText: cardData.fullText ?? cardData.title,
+          quickReplies: quickReplies,
+          onQuickReply: onQuickReply,
+        );
+        break;
+      case CardType.workflow:
+        card = _WorkflowInlineCard(
+          title: cardData.title,
+          fullText: cardData.fullText ?? cardData.title,
         );
         break;
     }
@@ -311,9 +393,10 @@ class _ApprovalInlineCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // GREEN: a decision was made — acknowledgement, not a question.
     return _CardContainer(
-      color: AppTheme.accentBg,
-      borderColor: AppTheme.accent.withValues(alpha: 0.2),
+      color: AppTheme.greenBg,
+      borderColor: AppTheme.green.withValues(alpha: 0.25),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -348,6 +431,288 @@ class _ApprovalInlineCard extends StatelessWidget {
 }
 
 // ── Shared helpers ─────────────────────────────────────────────-
+
+/// The day's pulse briefing as a collapsible "moment" card.
+///
+/// Rhodey initiates these (Morning / Afternoon / Closing / Intel), so they
+/// render as day-beats with a time chip and structured sections — NOT as
+/// ordinary chat bubbles. Tap the header to fold/unfold.
+class _BriefingInlineCard extends StatefulWidget {
+  final String title;
+  final String fullText;
+  final DateTime? timestamp;
+
+  const _BriefingInlineCard({
+    required this.title,
+    required this.fullText,
+    this.timestamp,
+  });
+
+  @override
+  State<_BriefingInlineCard> createState() => _BriefingInlineCardState();
+}
+
+class _BriefingInlineCardState extends State<_BriefingInlineCard> {
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    // Today's briefing arrives expanded; older beats fold so History scrolls
+    // fast instead of surfacing a wall of old briefings.
+    final ts = widget.timestamp;
+    final today = DateTime.now();
+    _expanded = ts == null ||
+        (ts.year == today.year && ts.month == today.month && ts.day == today.day);
+  }
+
+  String _timeChip() {
+    final t = widget.title.toLowerCase();
+    if (t.contains('morning')) return '☀️';
+    if (t.contains('afternoon')) return '🌤️';
+    if (t.contains('closing')) return '🌙';
+    if (t.contains('intel')) return '🧠';
+    return '📋';
+  }
+
+  String _dayLabel() {
+    final ts = widget.timestamp;
+    if (ts == null) return '';
+    final today = DateTime.now();
+    if (ts.year == today.year && ts.month == today.month && ts.day == today.day) {
+      final hh = ts.hour.toString().padLeft(2, '0');
+      final mm = ts.minute.toString().padLeft(2, '0');
+      return 'Today · $hh:$mm';
+    }
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return '${months[ts.month - 1]} ${ts.day}';
+  }
+
+  /// Section labels the Pulse briefing engine actually emits. Restricting the
+  /// header match to this vocabulary prevents a short bullet like "🔴 Call
+  /// Bob" from being misclassified as a section header.
+  static const _sectionLabels = {'work', 'home', 'ideas', 'schedule', 'vault'};
+
+  /// Parse the briefing body into (header, bulletLines) section groups.
+  /// Section headers look like "🚀 Work", "🏠 Home", "💡 Ideas".
+  List<_BriefingSection> _sections() {
+    final sections = <_BriefingSection>[];
+    _BriefingSection? current;
+    for (final line in widget.fullText.split('\n')) {
+      final t = line.trim();
+      if (t.isEmpty) continue;
+      // Header: emoji (non-ASCII char) + one of the known section labels.
+      final headerMatch =
+          RegExp(r'^([^\x00-\x7F]{1,4})\s+([A-Za-z][A-Za-z ]{0,20})$').firstMatch(t);
+      if (headerMatch != null &&
+          _sectionLabels.contains(headerMatch.group(2)!.trim().toLowerCase())) {
+        current = _BriefingSection(t, []);
+        sections.add(current);
+        continue;
+      }
+      if (current != null) {
+        current.items.add(t);
+      }
+    }
+    return sections;
+  }
+
+  /// Intro paragraph — everything between the title line and the first
+  /// section header (e.g. "The signal's quiet on the update front...").
+  String _intro() {
+    final lines = widget.fullText.split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    if (lines.isEmpty) return '';
+    final sections = _sections();
+    final firstHeader = sections.isEmpty ? null : sections.first.header;
+    final buf = <String>[];
+    for (final line in lines) {
+      if (line == firstHeader) break;
+      buf.add(line);
+    }
+    // Skip the title line itself.
+    return buf.skip(1).join(' ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sections = _sections();
+    final intro = _intro();
+    // GOLD: Rhodey initiates these (Morning / Afternoon / Closing / Intel) —
+    // the "day beats" stand apart from transactional confirmations.
+    return _CardContainer(
+      color: AppTheme.champagneMuted,
+      borderColor: AppTheme.champagne.withValues(alpha: 0.35),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            borderRadius: BorderRadius.circular(8),
+            child: Row(
+              children: [
+                Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    color: AppTheme.champagne.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Center(child: Text(_timeChip(), style: const TextStyle(fontSize: 12))),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.title,
+                        style: AppTheme.body.copyWith(fontSize: 13, fontWeight: FontWeight.w600),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (_dayLabel().isNotEmpty)
+                        Text(_dayLabel(), style: AppTheme.caption.copyWith(
+                          color: AppTheme.textSecondary, fontSize: 9,
+                        )),
+                    ],
+                  ),
+                ),
+                Icon(
+                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  size: 18,
+                  color: AppTheme.textTertiary,
+                ),
+              ],
+            ),
+          ),
+          if (_expanded) ...[
+            const SizedBox(height: 6),
+            if (intro.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(intro, style: AppTheme.caption.copyWith(
+                  color: AppTheme.textPrimary, fontSize: 11,
+                )),
+              ),
+            for (final section in sections) ...[
+              Text(section.header, style: AppTheme.body.copyWith(
+                fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.champagne,
+              )),
+              const SizedBox(height: 2),
+              for (final item in section.items)
+                Padding(
+                  padding: const EdgeInsets.only(left: 6, bottom: 2),
+                  child: Text(item, style: AppTheme.body.copyWith(
+                    fontSize: 11, color: AppTheme.textPrimary,
+                  ), maxLines: 2, overflow: TextOverflow.ellipsis),
+                ),
+              const SizedBox(height: 4),
+            ],
+            if (sections.isEmpty)
+              Text(widget.fullText, style: AppTheme.caption.copyWith(
+                color: AppTheme.textSecondary, fontSize: 11,
+              )),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _BriefingSection {
+  final String header;
+  final List<String> items;
+  _BriefingSection(this.header, this.items);
+}
+
+/// A clarification ask — Rhodey is waiting on YOUR input. Renders as a
+/// "waiting on you" prompt card with quick-reply chips when available.
+class _ClarificationInlineCard extends StatelessWidget {
+  final String title;
+  final String? fullText;
+  final List<String>? quickReplies;
+  final ValueChanged<String>? onQuickReply;
+
+  const _ClarificationInlineCard({
+    required this.title,
+    this.fullText,
+    this.quickReplies,
+    this.onQuickReply,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final chips = quickReplies;
+    return _CardContainer(
+      color: AppTheme.amberBg,
+      borderColor: AppTheme.amber.withValues(alpha: 0.35),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.help_outline, size: 14, color: AppTheme.amber),
+              const SizedBox(width: 6),
+              Text('WAITING ON YOU', style: AppTheme.statusDot.copyWith(
+                color: AppTheme.amber, fontSize: 9, letterSpacing: 1.2,
+              )),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(fullText ?? title, style: AppTheme.body.copyWith(fontSize: 12)),
+          if (chips != null && chips.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: chips.map((c) {
+                return _SmallActionButton(
+                  label: c,
+                  color: AppTheme.amber,
+                  onTap: onQuickReply == null ? null : () => onQuickReply!(c),
+                );
+              }).toList(),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// A resolved workflow decision — compact confirmation card.
+class _WorkflowInlineCard extends StatelessWidget {
+  final String title;
+  final String? fullText;
+
+  const _WorkflowInlineCard({required this.title, this.fullText});
+
+  @override
+  Widget build(BuildContext context) {
+    // GREEN: resolved confirmation.
+    return _CardContainer(
+      color: AppTheme.greenBg,
+      borderColor: AppTheme.green.withValues(alpha: 0.25),
+      child: Row(
+        children: [
+          const Icon(Icons.compare_arrows, size: 14, color: AppTheme.green),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(title, style: AppTheme.body.copyWith(
+              fontSize: 12,
+            ), maxLines: 2, overflow: TextOverflow.ellipsis),
+          ),
+          Text('RESOLVED', style: AppTheme.statusDot.copyWith(
+            color: AppTheme.green, fontSize: 9, letterSpacing: 1.2,
+          )),
+        ],
+      ),
+    );
+  }
+}
 
 class _CardContainer extends StatelessWidget {
   final Widget child;

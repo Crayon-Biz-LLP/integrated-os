@@ -676,6 +676,10 @@ async def execute_planned_actions(
                         deadline=deadline,
                         direction=direction,
                         committed_to=committed_to,
+                        # Original message text rides along as the task note —
+                        # the app shows it as the "chief of staff" context on
+                        # the focal card.
+                        notes=text[:500] if text else None,
                     )
                 if result.get("action") == "created":
                     created_labels.append(action.human_label or title)
@@ -744,6 +748,7 @@ async def execute_planned_actions(
                         duration_mins=duration,
                         priority="important",
                         organization_name=action.params.get("organization_name"),
+                        notes=text[:500] if text else None,
                     )
                 if result.get("action") == "created":
                     created_labels.append(action.human_label or title)

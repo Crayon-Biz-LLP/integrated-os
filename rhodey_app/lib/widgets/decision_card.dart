@@ -115,7 +115,7 @@ class DecisionCard extends StatelessWidget {
                 ],
                 const Spacer(),
                 _ActionButton(
-                  label: 'Dismiss',
+                  label: 'Reject',
                   icon: Icons.close,
                   color: AppTheme.textTertiary,
                   onTap: onReject,

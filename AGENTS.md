@@ -1,5 +1,31 @@
 # Integrated-OS Agent Guide
 
+## ⭐ Product Vision — Read First (Non-Negotiable)
+
+Before ANY work on the product — new features, bug fixes, UI changes, prompts,
+architecture decisions, or migrations — read the canonical vision document:
+
+> **`product-summary/00-vision-and-mindset.md`**
+
+**The one-line vision:** *A Chief of Staff in your pocket that knows your world,
+exercises judgment about what matters now, learns from every decision you make,
+and makes you feel understood — so you can do the work that matters.*
+
+Every design/implementation decision must satisfy the evaluation criteria from
+that document:
+
+1. **Does this make Rhodey help the user — not the other way around?**
+2. **Does this reduce decision fatigue at the front door?**
+3. **Does this respect "when to show what" — judgment over volume?**
+4. **Does this deepen Rhodey's understanding and its learning loop?**
+   (Every user decision — approve/reject/snooze/correct — must persist AND
+   train Rhodey. A "Not now" that silently resets is a trust-breaker.)
+5. **Does this make the user feel understood?**
+
+Known anti-patterns (dashboard trap, hedged screen, lie buttons, passive vault,
+static stage, chatbot passivity, surfacing without learning) are listed in the
+vision document — if a change resembles one, it needs rethinking.
+
 ## Project Overview
 FastAPI-based executive command system deployed on Modal (Python 3.11+). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
 

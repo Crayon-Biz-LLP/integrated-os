@@ -41,6 +41,7 @@ async def create_task_direct(
     committed_to: str = None,
     dedup_key: str = None,
     project_name: str = None,  # Kept for backward compat — no longer used
+    notes: str = None,  # Original message context — shown on the app's focal card
 ) -> dict:
     """Direct task creation — no process_single_dump dependency.
 
@@ -106,6 +107,8 @@ async def create_task_direct(
             insert_data["committed_to"] = committed_to
         if dedup_key:
             insert_data["dedup_key"] = dedup_key
+        if notes:
+            insert_data["notes"] = notes
 
         res = supabase.table('tasks').insert(insert_data).execute()
         if not res.data:

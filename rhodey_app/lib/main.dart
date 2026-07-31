@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:home_widget/home_widget.dart';
 import 'theme/app_theme.dart';
-import 'screens/talk_screen.dart';
-import 'screens/dump_screen.dart';
 import 'screens/today_screen.dart';
 import 'screens/inbox_screen.dart';
 import 'screens/adaptive_home_screen.dart';
@@ -52,11 +50,6 @@ class RhodeyApp extends StatelessWidget {
     );
   }
 }
-
-/// Feature flag: set to false at compile time to restore the legacy 4-tab shell.
-///   flutter run --dart-define=USE_LEGACY_TABS=true
-///   flutter build apk --dart-define=USE_LEGACY_TABS=true
-const bool useLegacyTabs = bool.fromEnvironment('USE_LEGACY_TABS', defaultValue: false);
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
@@ -112,54 +105,6 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    // Feature flag: Rhodey Surface (production) or legacy 4-tab shell
-    if (useLegacyTabs) {
-      return const _LegacyTabShell();
-    }
-
     return const AdaptiveHomeScreen();
-  }
-}
-
-/// The original 4-tab shell — kept intact for safe rollback.
-class _LegacyTabShell extends StatefulWidget {
-  const _LegacyTabShell();
-
-  @override
-  State<_LegacyTabShell> createState() => _LegacyTabShellState();
-}
-
-class _LegacyTabShellState extends State<_LegacyTabShell> {
-  int _selectedIndex = 0;
-
-  final _screens = const [
-    TalkScreen(),
-    DumpScreen(),
-    TodayScreen(),
-    InboxScreen(),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: IndexedStack(
-        index: _selectedIndex,
-        children: _screens,
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: (i) => setState(() => _selectedIndex = i),
-        indicatorColor: AppTheme.accentBg,
-        backgroundColor: AppTheme.background,
-        height: 64,
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.chat_bubble_outline), label: 'Talk'),
-          NavigationDestination(icon: Icon(Icons.inbox_outlined), label: 'Captures'),
-          NavigationDestination(icon: Icon(Icons.today_outlined), label: 'Today'),
-          NavigationDestination(icon: Icon(Icons.checklist_outlined), label: 'Inbox'),
-        ],
-        labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
-      ),
-    );
   }
 }
