@@ -32,7 +32,7 @@ async def store_and_send_clarification(clar: dict, source_table: str, source_id:
         from core.webhook.telegram import send_telegram
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         if chat_id:
-            msg = f"🧠 {clar['question']} ({clar['shortcode']})"
+            msg = f"{clar['question']} ({clar['shortcode']})"
             success = await send_telegram(int(chat_id), msg, show_keyboard=False)
             if success:
                 supabase.table("clarification_feedback").update({

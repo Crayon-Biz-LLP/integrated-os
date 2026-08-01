@@ -75,7 +75,8 @@ async def send_push_notification(
     project_id = _get_project_id(creds)
     fcm_url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
 
-    # Fetch all registered device tokens
+    # Fetch all registered device tokens (deduped — a device that re-registered
+    # can leave duplicate rows, which would double-notify the user)
     supabase = get_supabase()
     tokens = []
     try:
@@ -86,6 +87,15 @@ async def send_push_notification(
     if not tokens:
         audit_log_sync("push", "INFO", "No registered device tokens — skipping push")
         return 0
+
+    seen_tokens = set()
+    unique_tokens = []
+    for entry in tokens:
+        tok = entry.get("token", "")
+        if tok and tok not in seen_tokens:
+            seen_tokens.add(tok)
+            unique_tokens.append(entry)
+    tokens = unique_tokens
 
     success_count = 0
     invalid_tokens = []
@@ -146,6 +156,17 @@ async def send_push_notification(
         except Exception as e:
             audit_log_sync("push", "WARNING", f"Failed to clean invalid tokens: {e}")
 
+    # Log the outcome so the reply-push path is observable. Previously this
+    # returned silently on success, making "reply never arrives via push"
+    # impossible to diagnose (the app only caught replies via the 60s poll).
+    audit_log_sync(
+        "push",
+        "INFO" if success_count else "WARNING",
+        f"📲 Push notification sent to {success_count} device(s)"
+        if success_count
+        else f"⚠️ Push notification reached 0 devices (tokens={len(tokens)})",
+    )
+
     return success_count
 
 
@@ -188,6 +209,15 @@ async def send_silent_push(data: dict) -> int:
     tokens = tokens_res.data if tokens_res and tokens_res.data else []
     if not tokens:
         return 0
+
+    seen_tokens = set()
+    unique_tokens = []
+    for entry in tokens:
+        tok = entry.get("token", "")
+        if tok and tok not in seen_tokens:
+            seen_tokens.add(tok)
+            unique_tokens.append(entry)
+    tokens = unique_tokens
 
     success_count = 0
     invalid_tokens = []

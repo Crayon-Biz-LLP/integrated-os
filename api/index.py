@@ -559,16 +559,19 @@ async def send_message_route(request: Request):
         if not message_text:
             raise HTTPException(status_code=400, detail="message required")
         
-        # Validate Telegram credentials
-        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        # Telegram is now an OPTIONAL secondary channel. The app's reply
+        # delivery (raw_dumps + FCM push) is Telegram-independent — see
+        # core/services/reply_delivery.py — so a missing TELEGRAM_CHAT_ID
+        # no longer blocks the app from sending. When present, the pipeline
+        # still routes replies to Telegram too (send_telegram handles the
+        # graceful skip internally when only the chat id is absent).
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID") or "0"
+        chat_id = int(telegram_chat_id)
         
-        if not telegram_bot_token or not telegram_chat_id:
-            raise HTTPException(status_code=500, detail="Telegram credentials not configured")
-        
-        # Create a fake Telegram update object (mirrors what Telegram sends)
-        # Prefix update_id with "web_" to identify web UI messages
-        # Pass optional session_id for thread continuity
+        # Create a fake update object (mirrors what Telegram sends when
+        # configured; a neutral chat_id keeps thread continuity working
+        # in app-only mode). Prefix update_id with "web_" to identify
+        # web UI messages. Pass optional session_id for thread continuity.
         session_id = body.get("session_id")
         metadata = {}
         if session_id:
@@ -577,7 +580,7 @@ async def send_message_route(request: Request):
         fake_update = {
             "update_id": f"web_{int(time.time() * 1000)}",
             "message": {
-                "chat": {"id": int(telegram_chat_id)},
+                "chat": {"id": chat_id},
                 "text": message_text,
                 "date": int(time.time())
             },
@@ -630,7 +633,7 @@ async def send_message_route(request: Request):
         # FCM push fired inside send_telegram + the backup poll.
         try:
             import modal
-            modal.Function.lookup("rhodey-os", "process_message_background").spawn({
+            modal.Function.from_name("rhodey-os", "process_message_background").spawn({
                 "fake_update": fake_update,
                 "session_id": session_id,
             })

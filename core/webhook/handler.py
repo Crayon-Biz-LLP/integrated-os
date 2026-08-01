@@ -9,9 +9,10 @@ from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.telemetry import emit_observation
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
 from core.lib.query_timer import start_timer, mark, report
-from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
+from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context, _fresh_anchor
 from core.actions import capture_session_id, capture_response
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
+from core.lib.rhodey_voice import ok, fail, ack_merged, ack_rejected, ack_undone, ack_verified
 from core.webhook.classify import classify_intent, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
 from core.services.db import maybe_single_safe
@@ -51,7 +52,7 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         url_result = check_and_quarantine_url(text, source=source)
         if url_result.is_url:
             if url_result.action == "dismissed":
-                await send_telegram(chat_id, "Already seen this link and dismissed it. Skipping.")
+                await send_telegram(chat_id, "Already seen that link and dismissed it — skipping.")
                 return receipt or "\u2705"
             final = url_result.message if url_result.action == "inserted" else (receipt or "\u2705")
             await send_telegram(chat_id, final)
@@ -85,7 +86,7 @@ async def resolve_graph_person_context(chat_id: int, context_text: str, pending_
         pending_id=pending_id, decision='approve', context=ctx
     )
     if result.get('success'):
-        msg = f"✅ Approved person '{label}'"
+        msg = f"'{label}' is approved."
         if ctx:
             msg += f" ({ctx})"
         inferred = result.get('inferred_edges', [])
@@ -93,7 +94,7 @@ async def resolve_graph_person_context(chat_id: int, context_text: str, pending_
             msg += "\n🔗 " + "\n🔗 ".join(inferred)
         await send_telegram(chat_id, msg)
     else:
-        await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+        await send_telegram(chat_id, fail(result.get('message', 'Error')))
     resolve_clarification(chat_id, 'node')
 
 async def process_callback_query(callback_query: dict):
@@ -131,7 +132,7 @@ async def process_callback_query(callback_query: dict):
             pending_id = int(cancel_clar_match.group(1))
             resolve_clarification(chat_id, 'node')
             supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', pending_id).eq('status', 'awaiting_details').execute()
-            await send_telegram(chat_id, "Cancelled. Node stays pending for next Decision Pulse.")
+            await send_telegram(chat_id, "Cancelled — it stays pending for the next Decision Pulse.")
             return {"success": True}
 
         # Confirm auto-decisions callback: "confirm_auto_all"
@@ -176,18 +177,18 @@ async def process_callback_query(callback_query: dict):
 
                     await send_telegram(
                         chat_id,
-                        f"✅ Verified {confirmed_count} auto-decisions. Pattern confidence reinforced."
+                        ack_verified(confirmed_count)
                     )
                     audit_log_sync("webhook", "INFO",
                         f"User confirmed {confirmed_count} auto-decisions — patterns strengthened")
                 else:
                     await send_telegram(
                         chat_id,
-                        "No unverified auto-decisions found in the last 30 minutes."
+                        "Nothing unverified in the last 30 minutes."
                     )
             except Exception as confirm_err:
                 audit_log_sync("webhook", "WARNING", f"Confirm auto-processed failed: {confirm_err}")
-                await send_telegram(chat_id, "⚠️ Failed to verify auto-decisions. Check logs.")
+                await send_telegram(chat_id, "Couldn't verify auto-decisions — check the logs.")
             return {"success": True}
 
         # Undo auto-processed items callback: "undo_auto_channels", "undo_auto_graph", "undo_auto_edge"
@@ -280,12 +281,12 @@ async def process_callback_query(callback_query: dict):
                             audit_log_sync("webhook", "ERROR", f"Undo edge failed: {e}")
                 
                 if undone_count > 0:
-                    await send_telegram(chat_id, f"↩️ Undone {undone_count} auto-processed {undo_target} items. They will reappear in the next Decision Pulse for re-review.")
+                    await send_telegram(chat_id, ack_undone(undone_count, undo_target))
                 else:
-                    await send_telegram(chat_id, "No auto-processed items found to undo in the last 30 minutes. They may have already been verified or reversed.")
+                    await send_telegram(chat_id, "Nothing to undo in the last 30 minutes — likely already verified or reversed.")
             except Exception as undo_err:
                 audit_log_sync("webhook", "WARNING", f"Undo auto-processed failed: {undo_err}")
-                await send_telegram(chat_id, "⚠️ Failed to undo auto-processed items. Check logs.")
+                await send_telegram(chat_id, "Couldn't undo those — check the logs.")
             return {"success": True}
 
         # Suggest mode pattern callback: "pattern_approve_{subsystem}_{hash}" or "pattern_skip_{subsystem}_{hash}"
@@ -296,7 +297,7 @@ async def process_callback_query(callback_query: dict):
             # payload format: {subsystem}_{feature_hash}
             sep = payload.rfind('_')
             if sep <= 0:
-                await send_telegram(chat_id, "Invalid pattern callback data.")
+                await send_telegram(chat_id, "That pattern callback didn't parse.")
                 return {"success": True}
             subsystem = payload[:sep]
             feature_hash = payload[sep+1:]
@@ -319,13 +320,13 @@ async def process_callback_query(callback_query: dict):
                         'soft_accepted_count': current_count + 1,
                     }).eq('subsystem', subsystem).eq('feature_hash', feature_hash).execute()
 
-                    await send_telegram(chat_id, f"✅ Pattern auto-approve enabled for {subsystem}")
+                    await send_telegram(chat_id, f"{subsystem} will auto-approve from now on.")
                     audit_log_sync("decision_pulse", "INFO", f"Suggest mode approve: {subsystem}:{feature_hash} pattern promoted to auto-approve")
                 except Exception as e:
-                    await send_telegram(chat_id, f"⚠️ Failed to approve pattern: {e}")
+                    await send_telegram(chat_id, f"Couldn't approve that pattern: {e}")
                     audit_log_sync("decision_pulse", "WARNING", f"Suggest mode approve failed: {e}")
             else:
-                await send_telegram(chat_id, "Pattern skipped. You can review it again in the next Decision Pulse.")
+                await send_telegram(chat_id, "Skipped that pattern — you can look again in the next Decision Pulse.")
 
             return {"success": True}
 
@@ -336,19 +337,19 @@ async def process_callback_query(callback_query: dict):
             pending_id = int(merge_match.group(2))
             pending_row = maybe_single_safe(supabase.table('pending_nodes').select('*').eq('id', pending_id))
             if not pending_row or not pending_row.data:
-                await send_telegram(chat_id, "Merge proposal not found.")
+                await send_telegram(chat_id, "That merge proposal's gone.")
                 return {"success": True}
             pr = pending_row.data
             if pr.get('status') != 'merge_proposed':
-                await send_telegram(chat_id, "Merge proposal already processed.")
+                await send_telegram(chat_id, "Already handled that one.")
                 return {"success": True}
             if merge_action == 'reject':
                 supabase.table('pending_nodes').update({'status': 'rejected'}).eq('id', pending_id).execute()
-                await send_telegram(chat_id, f"Merge rejected for '{pr['label']}'.")
+                await send_telegram(chat_id, ack_rejected(pr['label']))
                 return {"success": True}
             target_id = pr.get('merge_candidate_id')
             if not target_id:
-                await send_telegram(chat_id, "Merge candidate not found in proposal.")
+                await send_telegram(chat_id, "Couldn't find the merge target in that proposal.")
                 return {"success": True}
             from core.lib.graph_rules import get_canonical_id
             target_canonical = get_canonical_id(target_id)
@@ -359,7 +360,7 @@ async def process_callback_query(callback_query: dict):
                 supabase.table('graph_edges').update({'source_node_id': target_canonical}).eq('source_node_id', source_node_id).execute()
                 supabase.table('graph_edges').update({'target_node_id': target_canonical}).eq('target_node_id', source_node_id).execute()
             supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
-            await send_telegram(chat_id, f"✅ Merged '{pr['label']}' → {target_canonical[:8]}... Edges reassigned.")
+            await send_telegram(chat_id, ack_merged(pr['label'], target_canonical[:8]))
             return {"success": True}
 
         # Batch approve/reject all items of a type
@@ -404,7 +405,7 @@ async def process_callback_query(callback_query: dict):
             msg = f"{verb} {results['success']} {target}"
             if results['failure']:
                 msg += f", {results['failure']} failed"
-            await send_telegram(chat_id, f"✅ {msg}.")
+            await send_telegram(chat_id, f"{ok(msg)}.")
             return {"success": True}
 
         # Example data: "approve_e123" or "reject_w45" or "edit_pe12"
@@ -425,7 +426,7 @@ async def process_callback_query(callback_query: dict):
                 if action == 'edit':
                     pe_res = maybe_single_safe(supabase.table('pending_graph_edges').select('source_label, relationship, target_label').eq('id', sc_int))
                     if not getattr(pe_res, 'data', None):
-                        await send_telegram(chat_id, "Edge not found or already processed.")
+                        await send_telegram(chat_id, "That edge's gone or already handled.")
                         return {"success": True}
                         
                     pe = pe_res.data
@@ -472,12 +473,12 @@ async def process_callback_query(callback_query: dict):
                         result = await process_channel_pending_decision('whatsapp', sc_int, 'approve' if is_approve else 'reject')
             
             if result and result.get('success'):
-                await send_telegram(chat_id, f"✅ {result.get('message', 'Done')}")
+                await send_telegram(chat_id, ok(result.get('message', 'Done')))
             elif result:
                 if result.get('action') != 'not_found':
-                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                    await send_telegram(chat_id, fail(result.get('message', 'Error')))
                 else:
-                    await send_telegram(chat_id, f"⚠️ No pending item found matching [{shortcode}].")
+                    await send_telegram(chat_id, f"No pending item matches [{shortcode}].")
             return {"success": True}
             
         # If it didn't match the approve/reject regex, it's a state machine reply (e.g. "t", "n", "u", "1")
@@ -485,7 +486,7 @@ async def process_callback_query(callback_query: dict):
         
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Callback query processing failed: {e}")
-        await send_telegram(chat_id, "Something went wrong processing your button tap.")
+        await send_telegram(chat_id, "That tap didn't go through — mind trying again?")
         
     return {"success": True}
 
@@ -531,7 +532,7 @@ async def process_webhook(update: dict):
             if triggered:
                 owner_id = os.getenv("TELEGRAM_CHAT_ID")
                 if owner_id:
-                    await send_telegram(owner_id, "Journal signal received. Synchronizing archive and re-wiring graph...")
+                    await send_telegram(owner_id, "Got the journal signal — syncing the archive and re-wiring the graph...")
                 return {"success": True, "message": "Sync pipeline triggered"}
             else:
                 return {"success": False, "message": "GitHub trigger failed"}
@@ -579,14 +580,14 @@ async def process_webhook(update: dict):
 
             if photo:
                 file_id = photo[-1].get('file_id')
-                await send_telegram(chat_id, "Processing image...")
+                await send_telegram(chat_id, "Looking at that image...")
                 file_bytes, mime = await download_telegram_file(file_id)
                 await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour, core_json=core_json)
                 return {"success": True}
 
             elif voice or audio:
                 file_id = voice.get('file_id') or audio.get('file_id')
-                await send_telegram(chat_id, "Processing audio...")
+                await send_telegram(chat_id, "Listening to that audio...")
                 file_bytes, mime = await download_telegram_file(file_id)
                 await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour, core_json=core_json)
                 return {"success": True}
@@ -596,20 +597,20 @@ async def process_webhook(update: dict):
                 mime = document.get('mime_type', '')
 
                 if mime in ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'] or mime.startswith('text/'):
-                    await send_telegram(chat_id, "Processing document...")
+                    await send_telegram(chat_id, "Reading that document...")
                     file_bytes, mime = await download_telegram_file(file_id)
                     await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour, core_json=core_json)
                     return {"success": True}
                 else:
-                    await send_telegram(chat_id, "Unsupported file type. Send as PDF, DOCX, or text.")
+                    await send_telegram(chat_id, "That file type won't work — PDF, DOCX, or text only.")
                     return {"success": True}
 
-            await send_telegram(chat_id, "I can only process text, images, audio, and documents.")
+            await send_telegram(chat_id, "I can handle text, images, audio, and documents.")
             return {"success": True}
 
         MAX_TEXT_LENGTH = 10000
         if len(text) > MAX_TEXT_LENGTH:
-            await send_telegram(chat_id, f"Message too long ({len(text)} chars). Please send shorter messages (max {MAX_TEXT_LENGTH} chars).")
+            await send_telegram(chat_id, f"That's a long one ({len(text)} chars) — keep it under {MAX_TEXT_LENGTH}.")
             return {"success": True}
 
         _email_approve_match = re.match(r'^[eE](\d+)\s+(yes|approve|do it|yep|add it)$', text.strip(), re.IGNORECASE)
@@ -639,7 +640,7 @@ async def process_webhook(update: dict):
         if session:
             # Did they say yes to the proposal?
             if text.strip().lower() in ('yes', 'confirm', 'looks good', 'do it', 'approve', 'y'):
-                await send_telegram(chat_id, "⏳ Applying corrections...")
+                await send_telegram(chat_id, "Applying those corrections...")
                 results = await apply_graph_actions(session['actions'], session['original_items_map'])
                 clear_session(chat_id)
                 summary_text = f"Applied: {results['applied']} | Failed: {results['failed']}\n" + "\n".join(results['details'])
@@ -649,7 +650,7 @@ async def process_webhook(update: dict):
             # Did they cancel the session?
             if text.strip().lower() in ('no', 'cancel', 'stop', 'drop', 'n'):
                 clear_session(chat_id)
-                await send_telegram(chat_id, "Session cancelled. Items remain pending.")
+                await send_telegram(chat_id, "Cancelled — those items stay pending.")
                 return {"success": True}
             
             # If they sent something else, assume it's a modification to the proposal.
@@ -665,7 +666,7 @@ async def process_webhook(update: dict):
             if text.strip().lower() in ('cancel',):
                 supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', clar['pending_id']).in_('status', ['awaiting_details', 'awaiting_clarification']).execute()
                 resolve_clarification(chat_id, pending_type)
-                await send_telegram(chat_id, "Cancelled. Node stays pending for next Decision Pulse.")
+                await send_telegram(chat_id, "Cancelled — it stays pending for the next Decision Pulse.")
                 return {"success": True}
             if step == 'awaiting_person_context':
                 if text.strip().lower() in ('skip', 'no', 'none', 'n/a'):
@@ -702,9 +703,9 @@ async def process_webhook(update: dict):
                     new_source=new_source, new_target=new_target, new_rel=new_rel
                 )
                 if result.get('success'):
-                    await send_telegram(chat_id, f"✅ {result['message']}")
+                    await send_telegram(chat_id, ok(result['message']))
                 else:
-                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                    await send_telegram(chat_id, fail(result.get('message', 'Error')))
                 resolve_clarification(chat_id, 'edge')
                 return {"success": True}
 
@@ -737,9 +738,9 @@ async def process_webhook(update: dict):
                 res = handle_response(_sc, _ans)
                 if res.get("status") == "ok":
                     action = res.get("action", "processed")
-                    await send_telegram(chat_id, f"✅ Clarification resolved: {action}")
+                    await send_telegram(chat_id, f"Got it — clarification resolved: {action}")
                 else:
-                    await send_telegram(chat_id, f"⚠️ {res.get('message', 'Error handling clarification')}")
+                    await send_telegram(chat_id, fail(res.get('message', 'Error handling clarification')))
                 return {"success": True}
             except Exception as e:
                 audit_log_sync("webhook", "ERROR", f"Error handling c-shortcode: {e}")
@@ -769,19 +770,19 @@ async def process_webhook(update: dict):
                     result = await process_graph_pending_decision(pending_id=int(_sc), decision='approve')
                 
                 if result and result.get('success'):
-                    msg = f"✅ {result.get('message', 'Done')}"
+                    msg = ok(result.get('message', 'Done'))
                     inferred = result.get('inferred_edges', [])
                     if inferred:
                         msg += "\n🔗 " + "\n🔗 ".join(inferred)
                     await send_telegram(chat_id, msg)
                 elif result:
-                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                    await send_telegram(chat_id, fail(result.get('message', 'Error')))
                 
                 clear_session(chat_id)
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Graph prefix shortcode error: {_sc_err}")
-                await send_telegram(chat_id, "Something went wrong. Try again.")
+                await send_telegram(chat_id, "That didn't go through — mind trying again?")
                 return {"success": True}
 
         if _graph_reject_match:
@@ -789,14 +790,14 @@ async def process_webhook(update: dict):
                 _sc = _graph_reject_match.group(1)
                 result = await process_graph_pending_decision(pending_id=int(_sc), decision='reject')
                 if result.get('success'):
-                    await send_telegram(chat_id, f"✅ {result['message']}")
+                    await send_telegram(chat_id, ok(result['message']))
                 else:
-                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                    await send_telegram(chat_id, fail(result['message']))
                 clear_session(chat_id)
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Graph prefix shortcode error: {_sc_err}")
-                await send_telegram(chat_id, "Something went wrong. Try again.")
+                await send_telegram(chat_id, "That didn't go through — mind trying again?")
                 return {"success": True}
 
         if _graph_direct_match:
@@ -805,7 +806,7 @@ async def process_webhook(update: dict):
                 _value = _graph_direct_match.group(2)
                 pending_item = maybe_single_safe(supabase.table('pending_nodes').select('id, label, type').eq('id', _sc))
                 if not pending_item or not pending_item.data:
-                    await send_telegram(chat_id, "⚠️ Pending item not found.")
+                    await send_telegram(chat_id, "Couldn't find that pending item.")
                     clear_session(chat_id)
                     return {"success": True}
                 ptype = pending_item.data.get('type')
@@ -818,19 +819,19 @@ async def process_webhook(update: dict):
                     result = await process_graph_pending_decision(pending_id=_sc, decision='approve')
                 
                 if result.get('success'):
-                    msg = f"✅ {result['message']}"
+                    msg = ok(result['message'])
                     inferred = result.get('inferred_edges', [])
                     if inferred:
                         msg += "\n🔗 " + "\n🔗 ".join(inferred)
                     await send_telegram(chat_id, msg)
                 else:
-                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                    await send_telegram(chat_id, fail(result.get('message', 'Error')))
                     
                 clear_session(chat_id)
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Graph direct shortcode error: {_sc_err}")
-                await send_telegram(chat_id, "Something went wrong. Try again.")
+                await send_telegram(chat_id, "That didn't go through — mind trying again?")
                 return {"success": True}
 
         # pe-prefix: direct to pending_graph_edges
@@ -843,13 +844,13 @@ async def process_webhook(update: dict):
                     decision='approve' if _is_approve else 'reject'
                 )
                 if result.get('success'):
-                    await send_telegram(chat_id, f"✅ {result['message']}")
+                    await send_telegram(chat_id, ok(result['message']))
                 else:
-                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                    await send_telegram(chat_id, fail(result.get('message', 'Error')))
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Pending edge shortcode error: {_sc_err}")
-                await send_telegram(chat_id, "Something went wrong. Try again.")
+                await send_telegram(chat_id, "That didn't go through — mind trying again?")
                 return {"success": True}
                 
         if _pe_edit_match:
@@ -887,13 +888,13 @@ async def process_webhook(update: dict):
                     new_source=new_source, new_target=new_target, new_rel=new_rel
                 )
                 if result.get('success'):
-                    await send_telegram(chat_id, f"✅ {result['message']}")
+                    await send_telegram(chat_id, ok(result['message']))
                 else:
-                    await send_telegram(chat_id, f"⚠️ {result.get('message', 'Error')}")
+                    await send_telegram(chat_id, fail(result.get('message', 'Error')))
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Pending edge edit error: {_sc_err}")
-                await send_telegram(chat_id, "Something went wrong. Try again.")
+                await send_telegram(chat_id, "That didn't go through — mind trying again?")
                 return {"success": True}
 
         # e-prefix: direct to messages(email)
@@ -906,15 +907,15 @@ async def process_webhook(update: dict):
                     decision='approve' if _is_approve else 'reject'
                 )
                 if result['success']:
-                    await send_telegram(chat_id, f"✅ {result['message']}")
+                    await send_telegram(chat_id, ok(result['message']))
                 else:
-                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                    await send_telegram(chat_id, fail(result['message']))
                     if result['action'] in ('staging_failed',):
                         raise Exception(result['message'])
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Email prefix shortcode error: {_sc_err}")
-                await send_telegram(chat_id, "Something went wrong. Try again.")
+                await send_telegram(chat_id, "That didn't go through — mind trying again?")
                 return {"success": True}
 
         # c-prefix: direct to messages(call)
@@ -929,15 +930,15 @@ async def process_webhook(update: dict):
                     rejection_context=_ctx
                 )
                 if result['success']:
-                    await send_telegram(chat_id, f"✅ {result['message']}")
+                    await send_telegram(chat_id, ok(result['message']))
                 else:
-                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                    await send_telegram(chat_id, fail(result['message']))
                     if result['action'] in ('staging_failed',):
                         raise Exception(result['message'])
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Call prefix shortcode error: {_sc_err}")
-                await send_telegram(chat_id, "Something went wrong. Try again.")
+                await send_telegram(chat_id, "That didn't go through — mind trying again?")
                 return {"success": True}
 
         # w-prefix: direct to messages(whatsapp)
@@ -952,15 +953,15 @@ async def process_webhook(update: dict):
                     rejection_context=_ctx
                 )
                 if result['success']:
-                    await send_telegram(chat_id, f"✅ {result['message']}")
+                    await send_telegram(chat_id, ok(result['message']))
                 else:
-                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                    await send_telegram(chat_id, fail(result['message']))
                     if result['action'] in ('staging_failed',):
                         raise Exception(result['message'])
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"WhatsApp prefix shortcode error: {_sc_err}")
-                await send_telegram(chat_id, "Something went wrong. Try again.")
+                await send_telegram(chat_id, "That didn't go through — mind trying again?")
                 return {"success": True}
 
         # t-prefix: direct to messages(teams)
@@ -975,15 +976,15 @@ async def process_webhook(update: dict):
                     rejection_context=_ctx
                 )
                 if result['success']:
-                    await send_telegram(chat_id, f"✅ {result['message']}")
+                    await send_telegram(chat_id, ok(result['message']))
                 else:
-                    await send_telegram(chat_id, f"⚠️ {result['message']}")
+                    await send_telegram(chat_id, fail(result['message']))
                     if result['action'] in ('staging_failed',):
                         raise Exception(result['message'])
                 return {"success": True}
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Teams prefix shortcode error: {_sc_err}")
-                await send_telegram(chat_id, "Something went wrong. Try again.")
+                await send_telegram(chat_id, "That didn't go through — mind trying again?")
                 return {"success": True}
 
         # ---------------------------------------------------------
@@ -996,13 +997,13 @@ async def process_webhook(update: dict):
                 pending_items = pending_res.data or []
                 
                 if pending_items:
-                    await send_telegram(chat_id, "⏳ Interpreting your corrections...")
+                    await send_telegram(chat_id, "Working through those corrections...")
                     
                     # Call Gemini
                     actions = await interpret_graph_corrections(text, pending_items)
                     
                     if not actions:
-                        await send_telegram(chat_id, "⚠️ Couldn't parse any structured actions from that. Try again?")
+                        await send_telegram(chat_id, "Couldn't parse structured actions from that — try again?")
                         return {"success": True}
                     
                     # Store in session cache
@@ -1044,7 +1045,7 @@ async def process_webhook(update: dict):
                     
             except Exception as e:
                 audit_log_sync("webhook", "ERROR", f"Graph NLP route error: {e}")
-                await send_telegram(chat_id, "⚠️ Failed to process graph corrections.")
+                await send_telegram(chat_id, "Couldn't process those graph corrections.")
                 return {"success": True}
 
         # Unprefixed: backward-compatible — email first, then calls, then practice dismissal
@@ -1059,7 +1060,7 @@ async def process_webhook(update: dict):
                 )
 
                 if result['success']:
-                    await send_telegram(chat_id, f"✅ {result['message']}")
+                    await send_telegram(chat_id, ok(result['message']))
                     return {"success": True}
 
                 if result['action'] == 'not_found':
@@ -1068,10 +1069,10 @@ async def process_webhook(update: dict):
                         decision='approve' if _is_approve else 'reject'
                     )
                     if call_result['success']:
-                        await send_telegram(chat_id, f"✅ {call_result['message']}")
+                        await send_telegram(chat_id, ok(call_result['message']))
                         return {"success": True}
                     if call_result['action'] != 'not_found':
-                        await send_telegram(chat_id, f"⚠️ {call_result['message']}")
+                        await send_telegram(chat_id, fail(call_result['message']))
                         if call_result['action'] in ('staging_failed',):
                             raise Exception(call_result['message'])
                         return {"success": True}
@@ -1081,10 +1082,10 @@ async def process_webhook(update: dict):
                         decision='approve' if _is_approve else 'reject'
                     )
                     if whatsapp_result['success']:
-                        await send_telegram(chat_id, f"✅ {whatsapp_result['message']}")
+                        await send_telegram(chat_id, ok(whatsapp_result['message']))
                         return {"success": True}
                     if whatsapp_result['action'] != 'not_found':
-                        await send_telegram(chat_id, f"⚠️ {whatsapp_result['message']}")
+                        await send_telegram(chat_id, fail(whatsapp_result['message']))
                         if whatsapp_result['action'] in ('staging_failed',):
                             raise Exception(whatsapp_result['message'])
                         return {"success": True}
@@ -1123,14 +1124,14 @@ async def process_webhook(update: dict):
                     await send_telegram(chat_id, f"⚠️ No pending item found matching [{_shortcode}].")
                     return {"success": True}
 
-                await send_telegram(chat_id, f"⚠️ {result['message']}")
+                await send_telegram(chat_id, fail(result['message']))
                 if result['action'] in ('staging_failed',):
                     raise Exception(result['message'])
                 return {"success": True}
 
             except Exception as _sc_err:
                 audit_log_sync("webhook", "WARNING", f"Shortcode handler error: {_sc_err}")
-                await send_telegram(chat_id, "Something went wrong. Try again or use /ep to retry.")
+                await send_telegram(chat_id, "That didn't go through — try again or use /ep to retry.")
                 return {"success": True}
 
         if text.strip().startswith('ed '):
@@ -1149,7 +1150,7 @@ async def process_webhook(update: dict):
             try:
                 t_res = supabase.table('conversation_threads').select('active_anchor').eq('id', session_id).execute()
                 if t_res.data:
-                    active_anchor = t_res.data[0].get('active_anchor')
+                    active_anchor = _fresh_anchor(t_res.data[0].get('active_anchor'))
             except Exception:
                 pass
         else:

@@ -62,25 +62,23 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
         except Exception:
             pass
 
-        # Persist response to raw_dumps so the app can see it regardless of input channel
-        try:
-            from core.services.db import get_supabase
-            supabase = get_supabase()
-            supabase.table('raw_dumps').insert({
-                'content': message_text[:3000],  # Cap at 3000 chars for DB
-                'status': 'completed',
-                'direction': 'outgoing',
-                'sender': 'system',
-                'message_type': 'response',
-                'source': 'telegram_bot',
-                'metadata': {'type': 'bot_response'},
-            }).execute()
-        except Exception:
-            pass
+        # Deliver the reply to the APP FIRST — raw_dumps persist + FCM push.
+        # This is the primary channel and is fully Telegram-independent (see
+        # core/services/reply_delivery.py). The Telegram send below is an
+        # optional secondary channel. Ordering tradeoff: an FCM stall (≤15s
+        # per token on timeout) delays the Telegram message — acceptable,
+        # because the app is the primary channel.
+        from core.services.reply_delivery import deliver_outbound_reply
+        await deliver_outbound_reply(message_text, notify_push=notify_push)
 
+        # Optional Telegram channel — skip gracefully when creds are absent
+        # (the app already received the reply above).
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if not telegram_bot_token:
+            audit_log_sync("telegram", "INFO", "TELEGRAM_BOT_TOKEN not set — reply delivered to app only")
+            return True
         chunks = _chunk_message(message_text)
         total = len(chunks)
-        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
         success = True
         last_failed = -1
@@ -148,23 +146,6 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
                     await client.post(url, json={"chat_id": chat_id, "text": note, "parse_mode": "Markdown"})
             except Exception:
                 pass
-        # Fire a push notification so the app gets the response instantly
-        # AWAITED, not fire-and-forget — Modal suspends containers after response,
-        # killing background tasks before Firebase receives the request.
-        # notify_push=False: the pulse briefing already sends its own dedicated
-        # "Rhodey Pulse" push right after calling send_telegram — letting the
-        # internal push fire too produced a duplicate banner for every briefing.
-        if notify_push:
-            try:
-                from core.services.push_notification import send_push_notification
-                await send_push_notification(
-                    title="Rhodey",
-                    body=message_text[:120] + ("\u2026" if len(message_text) > 120 else ""),
-                    data={"type": "briefing"},
-                )
-            except Exception:
-                pass
-
         return success
     finally:
         drain_action_context()

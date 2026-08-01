@@ -255,8 +255,8 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                     channels.append(f"{len(graph_items)} graph node")
                 if pending_edges:
                     channels.append(f"{len(pending_edges)} graph edge")
-                push_title = f"{total} pending decisions"
-                push_body = f"From: {', '.join(channels)}"
+                push_title = f"{total} things need your call"
+                push_body = f"From {', '.join(channels)} — want a look?"
                 await send_push_notification(
                     title=push_title,
                     body=push_body,

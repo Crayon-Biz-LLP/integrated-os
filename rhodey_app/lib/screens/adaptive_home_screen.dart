@@ -146,10 +146,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// so a pulse briefing that ran while the app was backgrounded would leave
   /// home stale (yesterday's voice line, old focal board) until pull-to-refresh.
   /// Refresh the pulse intelligence + focal board on every genuine resume.
+  /// If a reply is still pending (fast-ack sent, worker still running), also
+  /// poll conversation history immediately — the 60s backup poll alone would
+  /// otherwise delay an already-arrived reply by up to a minute after resume.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _hasStarted) {
       _refreshHome();
+      if (_awaitingResponse) {
+        _pollForUpdates();
+      }
     }
   }
 
@@ -1048,6 +1054,28 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           _addRhodeyResponse(responseText);
         }
       } else {
+        final errMsg = result.error ?? '';
+        final isTimeout = errMsg.contains('TimeoutException') ||
+            errMsg.toLowerCase().contains('timed out');
+        if (isTimeout) {
+          // A timeout is NOT proof the message failed — the backend may still
+          // be processing (slow inline fallback / worker cold start) and the
+          // real reply arrives via FCM push + backup poll. Never show the
+          // destructive "Failed to send, Retry" here — a retry could create a
+          // duplicate task. Keep the poll alive; the ack-expiry watchdog
+          // softens the placeholder if nothing lands.
+          _addRhodeyAck("Still working on it — I'll ping you when it's ready.");
+          _ackExpiryTimer?.cancel();
+          _ackExpiryTimer = Timer(const Duration(seconds: 180), () {
+            if (!mounted) return;
+            _stopBackupPoll();
+            if (_pendingAckId != null) {
+              _updateMessage(_pendingAckId!,
+                  text: "Still working on it — I'll ping you when it's ready.");
+            }
+          });
+          return;
+        }
         _updateMessage(id, sendStatus: SendStatus.failed);
         // Stop the poll only if no prior fast-ack is still awaiting its reply;
         // otherwise keep that ack's poll + expiry backstop alive so it resolves

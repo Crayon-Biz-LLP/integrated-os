@@ -1005,8 +1005,8 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         try:
             notification_body = briefing_text[:80].strip() if briefing_text.strip() else "New pulse briefing available"
             push_count = await send_push_notification(
-                title="Rhodey Pulse",
-                body=f"📡 {notification_body}...",
+                title="Rhodey",
+                body=notification_body,
                 data={"type": "briefing"},
             )
             audit_log_sync("pulse", "INFO", f"📲 Push notification sent to {push_count} device(s)")

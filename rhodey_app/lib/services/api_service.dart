@@ -391,10 +391,12 @@ class ApiService {
 
   // ── Task status update ────────────────────────────────────────
 
-  /// Marks a task as done/cancelled via /api/tasks/{id}/status.
+  /// Marks a task as done/cancelled via PATCH /api/tasks/{id}/status.
+  /// The backend registers this route as PATCH only (POST returns 405),
+  /// so we must use PATCH — a POST here silently fails to complete the task.
   Future<ApiResult<dynamic>> updateTaskStatus(
       int taskId, String status) async {
-    return post('/api/tasks/$taskId/status', body: {'status': status});
+    return _send('PATCH', '/api/tasks/$taskId/status', body: {'status': status});
   }
 
   // ── Decision actions ──────────────────────────────────────────

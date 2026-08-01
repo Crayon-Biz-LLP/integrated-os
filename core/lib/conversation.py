@@ -7,6 +7,30 @@ from core.llm.compat import call_llm_with_fallback_sync
 
 SESSION_TIMEOUT_MINUTES = 60
 MAX_HISTORY_TOKENS = 5000
+# An anchor only reflects "this thread is about X" while X was mentioned
+# recently. Older anchors must not steer routing (e.g. an old Ashraya anchor
+# biasing a later unrelated personal task).
+ANCHOR_FRESH_MINUTES = 30
+
+def _fresh_anchor(anchor):
+    """Return the anchor only if its entity was mentioned recently (ANCHOR_FRESH_MINUTES).
+
+    Stale or missing anchors return None so routing never inherits long-dead
+    thread context. Parsing is best-effort; unparseable timestamps are stale.
+    """
+    if not anchor:
+        return None
+    mentioned = anchor.get('last_mentioned_at')
+    if not mentioned:
+        return None
+    try:
+        mentioned_dt = datetime.fromisoformat(str(mentioned).replace('Z', '+00:00'))
+        age_minutes = (datetime.now(timezone.utc) - mentioned_dt).total_seconds() / 60
+        if age_minutes <= ANCHOR_FRESH_MINUTES:
+            return anchor
+    except Exception:
+        return None
+    return None
 
 def _approx_tokens(text: str) -> int:
     """Approximate token count based on character length (~4 chars/token)."""
@@ -452,14 +476,14 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
                 else:
                     _touch_thread(thread_id)
                     t_res = supabase.table('conversation_threads').select('active_anchor').eq('id', thread_id).execute()
-                    anchor = t_res.data[0].get('active_anchor') if t_res.data else None
+                    anchor = _fresh_anchor(t_res.data[0].get('active_anchor')) if t_res.data else None
                     from core.lib.audit_logger import audit_log_sync
                     audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via workflow_resume")
                     return thread_id, anchor
             else:
                 _touch_thread(thread_id)
                 t_res = supabase.table('conversation_threads').select('active_anchor').eq('id', thread_id).execute()
-                anchor = t_res.data[0].get('active_anchor') if t_res.data else None
+                anchor = _fresh_anchor(t_res.data[0].get('active_anchor')) if t_res.data else None
                 from core.lib.audit_logger import audit_log_sync
                 audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via workflow_resume")
                 return thread_id, anchor
@@ -476,7 +500,7 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
                         audit_log_sync("routing", "INFO",
                             f"Routed to thread {best['thread_id']} via entity_disambiguated "
                             f"(entity={best.get('entity_name','')}, score={best.get('score',0)}, source={best.get('source','')})")
-                        return best['thread_id'], best.get('active_anchor')
+                        return best['thread_id'], _fresh_anchor(best.get('active_anchor'))
                     elif best.get('is_new'):
                         # Create new entity thread
                         new_thread = supabase.table('conversation_threads').insert({
@@ -542,7 +566,7 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
                 audit_log_sync("routing", "INFO",
                     f"Routed to thread {thread_id} via recent_activity "
                     f"(recent={resume_recent}, question={bot_asked_question})")
-                return thread_id, last_thread.data[0].get('active_anchor')
+                return thread_id, _fresh_anchor(last_thread.data[0].get('active_anchor'))
 
         # 5. Else general (deterministic: most recently active first)
         general = supabase.table('conversation_threads') \
@@ -559,7 +583,7 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
             _touch_thread(thread_id)
             from core.lib.audit_logger import audit_log_sync
             audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via fallback_general (existing)")
-            return thread_id, general.data[0].get('active_anchor')
+            return thread_id, _fresh_anchor(general.data[0].get('active_anchor'))
         else:
             new_thread = supabase.table('conversation_threads').insert({
                 'chat_id': chat_id,

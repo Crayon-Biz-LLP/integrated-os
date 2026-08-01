@@ -353,7 +353,7 @@ async def handle_ed_command(text: str, chat_id: int):
                 .execute()
             drafts = drafts_res.data or []
             if not drafts:
-                await send_telegram(chat_id, "✅ No pending drafts.")
+                await send_telegram(chat_id, "No pending drafts.")
                 return
 
             email_ids = [d['message_id'] for d in drafts if d.get('message_id')]
@@ -385,7 +385,7 @@ async def handle_ed_command(text: str, chat_id: int):
             await send_telegram(chat_id, "\n---\n".join(lines))
         except Exception as e:
             audit_log_sync("webhook", "ERROR", f"/ed list error: {e}")
-            await send_telegram(chat_id, f"⚠️ Failed to fetch pending drafts: {e}")
+            await send_telegram(chat_id, f"Couldn't fetch pending drafts: {e}")
         return
 
     # ed approve {id}
@@ -409,12 +409,12 @@ async def handle_ed_command(text: str, chat_id: int):
                     addr = email_res.data.get('sender_id', '') if email_res and email_res.data else ''
                 else:
                     addr = ''
-                await send_telegram(chat_id, f"✅ Draft [{draft_id}] sent to {addr}.")
+                await send_telegram(chat_id, f"Draft {draft_id} went to {addr}.")
             else:
-                await send_telegram(chat_id, f"❌ Failed to send draft [{draft_id}]. Error: {error}")
+                await send_telegram(chat_id, f"Couldn't send draft {draft_id}: {error}")
         except Exception as e:
             audit_log_sync("webhook", "ERROR", f"ed approve error: {e}")
-            await send_telegram(chat_id, f"❌ Failed to send draft [{draft_id}]. Error: {e}")
+            await send_telegram(chat_id, f"Couldn't send draft {draft_id}: {e}")
         return
 
     # ed reject {id}
@@ -428,12 +428,12 @@ async def handle_ed_command(text: str, chat_id: int):
                 .eq('status', 'pending')\
                 .execute()
             if res.data:
-                await send_telegram(chat_id, f"🗑️ Draft [{draft_id}] rejected and discarded.")
+                await send_telegram(chat_id, f"Draft {draft_id} is rejected and discarded.")
             else:
-                await send_telegram(chat_id, f"⚠️ Draft [{draft_id}] not found or already processed.")
+                await send_telegram(chat_id, f"Couldn't find draft {draft_id} — maybe already handled.")
         except Exception as e:
             audit_log_sync("webhook", "ERROR", f"ed reject error: {e}")
-            await send_telegram(chat_id, f"⚠️ Failed to reject draft [{draft_id}]: {e}")
+            await send_telegram(chat_id, f"Couldn't reject draft {draft_id}: {e}")
         return
 
     # ed edit {id} <new text>
@@ -448,7 +448,7 @@ async def handle_ed_command(text: str, chat_id: int):
                 .eq('status', 'pending')\
                 .execute()
             if not upd.data:
-                await send_telegram(chat_id, f"⚠️ Draft [{draft_id}] not found or already processed.")
+                await send_telegram(chat_id, f"Couldn't find draft {draft_id} — maybe already handled.")
                 return
 
             draft_res = maybe_single_safe(
@@ -457,7 +457,7 @@ async def handle_ed_command(text: str, chat_id: int):
                 .eq('id', draft_id)
             )
             if not draft_res or not draft_res.data or not draft_res.data.get('message_id'):
-                await send_telegram(chat_id, f"✅ Draft [{draft_id}] updated.")
+                await send_telegram(chat_id, f"Draft {draft_id} is updated.")
                 return
 
             email_res = maybe_single_safe(
@@ -466,7 +466,7 @@ async def handle_ed_command(text: str, chat_id: int):
                 .eq('id', draft_res.data['message_id'])
             )
             if not email_res or not email_res.data:
-                await send_telegram(chat_id, f"✅ Draft [{draft_id}] updated.")
+                await send_telegram(chat_id, f"Draft {draft_id} is updated.")
                 return
 
             e = email_res.data
@@ -479,7 +479,7 @@ async def handle_ed_command(text: str, chat_id: int):
             )
         except Exception as e:
             audit_log_sync("webhook", "ERROR", f"ed edit error: {e}")
-            await send_telegram(chat_id, f"⚠️ Failed to edit draft [{draft_id}]: {e}")
+            await send_telegram(chat_id, f"Couldn't edit draft {draft_id}: {e}")
         return
 
     await send_telegram(chat_id, "⚠️ Unknown /ed command. Use: `/ed`, `ed approve {id}`, `ed reject {id}`, `ed edit {id} <text>`")

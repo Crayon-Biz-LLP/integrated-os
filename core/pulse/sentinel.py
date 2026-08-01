@@ -213,7 +213,7 @@ Context:
                     if mins_until <= 15:
                         try:
                             await send_push_notification(
-                                title=f"Meeting in {mins_until} min",
+                                title=f"{title} starts in {mins_until} min",
                                 body=title,
                                 data={"type": "nudge", "event_title": title},
                             )
@@ -427,7 +427,7 @@ Context:
                         try:
                             top_person = stale_delegations[0]["person"] if stale_delegations else "someone"
                             await send_push_notification(
-                                title=f"⏳ {len(stale_delegations)} stale delegation(s)",
+                                title="Something's waiting on you",
                                 body=f"Waiting on {top_person} and {len(stale_delegations)-1} other(s)" if len(stale_delegations) > 1 else f"Waiting on {top_person}",
                                 data={"type": "delegation"},
                             )

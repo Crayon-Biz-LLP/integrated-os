@@ -22,7 +22,7 @@ async def handle_practices_command(chat_id: int):
         all_practices = practices_res.data or []
 
         if not all_practices:
-            await send_telegram(chat_id, "🏃 No practices tracked yet.")
+            await send_telegram(chat_id, "No practices tracked yet.")
             return
 
         active = []
@@ -115,7 +115,7 @@ async def handle_practices_command(chat_id: int):
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"/practices error: {e}")
-        await send_telegram(chat_id, f"⚠️ Practices query failed: {e}")
+        await send_telegram(chat_id, f"Couldn't pull practices: {e}")
 
 async def handle_status_command(chat_id: int):
     """Pure DB snapshot. No LLM. No Pulse trigger."""
@@ -203,7 +203,7 @@ async def handle_status_command(chat_id: int):
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"/status error: {e}")
-        await send_telegram(chat_id, f"⚠️ Status check failed: {e}")
+        await send_telegram(chat_id, f"Couldn't pull status: {e}")
 
 async def handle_undo_command(text: str, chat_id: int):
     # Bare /undo → show most recent entry
@@ -240,7 +240,7 @@ async def handle_undo_command(text: str, chat_id: int):
             return {"success": True}
         except Exception as e:
             audit_log_sync("webhook", "ERROR", f"/undo fetch error: {e}")
-            await send_telegram(chat_id, f"⚠️ Failed to fetch last entry: {e}")
+            await send_telegram(chat_id, f"Couldn't fetch the last entry: {e}")
             return {"success": True}
 
     # Parse subcommands
@@ -292,7 +292,7 @@ async def handle_undo_command(text: str, chat_id: int):
                         supabase.table('tasks').update({"status": "cancelled"}).eq('id', t['id']).execute()
             except Exception:
                 pass
-            await send_telegram(chat_id, f"🗑️ Deleted: _{content[:80]}..._")
+            await send_telegram(chat_id, f"Deleted — {content[:80]}...")
             return {"success": True}
 
         if undo_n:
@@ -318,7 +318,7 @@ async def handle_undo_command(text: str, chat_id: int):
                         supabase.table('tasks').update({"status": "cancelled"}).eq('id', t['id']).execute()
             except Exception:
                 pass
-            await send_telegram(chat_id, f"📝 Flipped to note: _{content[:80]}..._")
+            await send_telegram(chat_id, f"Logged as a note — {content[:80]}...")
             return {"success": True}
 
         if undo_t:
@@ -334,12 +334,12 @@ async def handle_undo_command(text: str, chat_id: int):
                     .execute()
             except Exception:
                 pass
-            await send_telegram(chat_id, f"📋 Flipped to task: _{content[:80]}..._")
+            await send_telegram(chat_id, f"On your list as a task — {content[:80]}...")
             return {"success": True}
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Undo action error: {e}")
-        await send_telegram(chat_id, f"⚠️ Undo failed: {e}")
+        await send_telegram(chat_id, f"Couldn't undo that: {e}")
         return {"success": True}
 
 async def handle_audit_command(chat_id: int):
@@ -395,7 +395,7 @@ async def handle_audit_command(chat_id: int):
         await send_telegram(chat_id, "\n".join(lines))
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"/audit error: {e}")
-        await send_telegram(chat_id, f"⚠️ Audit check failed: {e}")
+        await send_telegram(chat_id, f"Couldn't run the audit: {e}")
 
 
 async def handle_command(text: str, chat_id: int):
@@ -539,7 +539,7 @@ async def handle_command(text: str, chat_id: int):
             else:
                 reply = "✅ No pending email decisions. Inbox is clean."
         except Exception as ep_err:
-            reply = f"⚠️ Error fetching pending emails: {ep_err}"
+            reply = f"Couldn't fetch pending emails: {ep_err}"
         await send_telegram(chat_id, reply)
         return {"success": True}
 
@@ -551,7 +551,7 @@ async def handle_command(text: str, chat_id: int):
         return await handle_undo_command(text, chat_id)
 
     else:
-        await send_telegram(chat_id, "⚠️ Unknown command. Type /help or tap the menu to see available commands.")
+        await send_telegram(chat_id, "Not sure about that one — try /help to see what I can do.")
 
     await send_telegram(chat_id, reply)
     return {"success": True}

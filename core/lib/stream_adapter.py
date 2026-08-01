@@ -59,8 +59,13 @@ class TelegramStreamAdapter(StreamAdapter):
         self._last_flush = 0.0
         self._complete = False
         self._bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        if not self._bot_token:
-            raise ValueError("TELEGRAM_BOT_TOKEN not set")
+        # Graceful degrade instead of raising: without a bot token (app-only
+        # mode / Telegram removed) the adapter accumulates text but never
+        # calls the Telegram API. Callers (interrogate_brain, handle_daily_brief)
+        # still build their full reply from the accumulated stream and deliver
+        # it to the app via raw_dumps + push — streaming simply has no visible
+        # channel. Previously this raised ValueError, which the callers' outer
+        # except turned into "Search failed" — losing the real answer.
         self._http: Optional[httpx.AsyncClient] = None
         self._lock = asyncio.Lock()
         
@@ -83,6 +88,8 @@ class TelegramStreamAdapter(StreamAdapter):
         if self._complete:
             return
         self._accumulated = text
+        if not self._bot_token:
+            return  # App-only mode — accumulate silently, no Telegram API call
         client = await self._ensure_http()
         url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
         payload = {
@@ -128,6 +135,8 @@ class TelegramStreamAdapter(StreamAdapter):
         """Edit the Telegram message with current accumulated text."""
         if not self.message_id or not self._accumulated:
             return
+        if not self._bot_token:
+            return  # App-only mode — nothing to edit on Telegram
         async with self._lock:
             client = await self._ensure_http()
             url = f"https://api.telegram.org/bot{self._bot_token}/editMessageText"

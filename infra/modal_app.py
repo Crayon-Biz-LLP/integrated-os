@@ -78,6 +78,12 @@ def web_endpoint():
 @app.function(
     secrets=secrets,
     timeout=300,
+    # Keep one worker warm so the reply path has NO cold start — the web
+    # endpoint already runs min_containers=1; the background worker must
+    # too, or the first send after an idle window pays a 5-15s container
+    # boot before the LLM even starts. Same scaledown_window as web.
+    min_containers=1,
+    scaledown_window=300,
 )
 def process_message_background(payload: dict):
     """Background worker for /api/send-message fast-ack.
