@@ -91,6 +91,20 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   /// Timeout guard for slow send-message calls.
   Timer? _sendTimeout;
+
+  /// Id of the in-flight fast-ack bubble ("Got it. Processing..."). The
+  /// backup poll removes/replaces it when Rhodey's real reply lands.
+  String? _pendingAckId;
+
+  /// Expiry watchdog for the fast-ack bubble: if Rhodey's reply doesn't land
+  /// within 3 minutes (worker failure / LLM outage), soften the ack instead
+  /// of leaving a dead "Processing..." bubble forever.
+  Timer? _ackExpiryTimer;
+
+  /// True while the /api/send-message request is still awaiting a response.
+  /// The timeout watchdog extends while this is true (the inline fallback
+  /// runs the full LLM turn and can take 30-60s).
+  bool _sendInFlight = false;
   /// Guards against duplicate history loads.
   bool _historyLoaded = false;
   /// Guards against double-tap on the task icon while the ledger is posting.
@@ -122,10 +136,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   }
 
   /// Regained focus after a pushed screen popped. Refresh live data so the
-  /// decision digest and focal board reflect decisions made there.
+  /// decision digest and focal board reflect decisions made there (one call).
   @override
   void didPopNext() {
-    _loadFocalItems();
+    _loadHome();
   }
 
   /// App returned to foreground. FCM `onMessage` only fires in the foreground,
@@ -146,8 +160,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _hasStarted = true;
     });
-    _loadBriefing();
-    _loadFocalItems();
+    _loadHome();
     _initSpeech();
     _tts.setLanguage("en-US");
     _tts.setSpeechRate(0.5);
@@ -188,6 +201,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     }
     _pollTimer?.cancel();
     _sendTimeout?.cancel();
+    _ackExpiryTimer?.cancel();
     _pushDebounce?.cancel();
     _textController.dispose();
     _scrollController.dispose();
@@ -200,54 +214,59 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   Future<void> _loadBriefing() async {
     try {
       final briefing = await _api.getBriefing();
-      if (mounted) {
-        setState(() {
-          _briefing = briefing;
-          _briefingLoading = false;
-
-          // If briefing has an LLM-chosen top_focal_item, promote it as #1
-          final focal = briefing.topFocalItem;
-          if (focal != null && focal.isNotEmpty && focal['title'] != null) {
-            final existingIdx = _focalItems.indexWhere(
-              (f) => f.id == 'focal_${focal['item_id']}',
-            );
-            final itemType = focal['type'] as String? ?? 'task';
-            final llmLabel = focal['action_label'] as String?;
-            final newItem = _FocalItem(
-              id: 'focal_${focal['item_id'] ?? focal['title']}',
-              title: focal['title'] as String? ?? '',
-              description: focal['reason'] as String?,
-              actionLabel: _actionLabelForType(itemType, llmLabel),
-              source: itemType,
-              metadata: {
-                'focal_item_id': focal['item_id'],
-                'focal_type': focal['type'],
-                'reason': focal['reason'],
-                'urgency': focal['urgency'],
-                'from_briefing': true,
-              },
-            );
-            if (existingIdx >= 0) {
-              _focalItems[existingIdx] = newItem;
-            } else {
-              _focalItems.insert(0, newItem);
-            }
-            // Remove any duplicate from _loadFocalItems that has the same natural ID
-            final naturalId = focal['item_id']?.toString() ?? '';
-            if (naturalId.isNotEmpty) {
-              _focalItems.removeWhere((f) =>
-                f.id == naturalId && f.id != newItem.id
-              );
-            }
-          }
-        });
-        WidgetDataProvider().updatePulseWidget(briefing);
-      }
+      if (mounted) _applyBriefing(briefing);
     } catch (_) {
       if (mounted) {
         setState(() => _briefingLoading = false);
       }
     }
+  }
+
+  /// Applies a fetched briefing to state — shared by the legacy _loadBriefing
+  /// and the single-call _loadHome (P2).
+  void _applyBriefing(BriefingResponse briefing) {
+    if (!mounted) return;
+    setState(() {
+      _briefing = briefing;
+      _briefingLoading = false;
+
+      // If briefing has an LLM-chosen top_focal_item, promote it as #1
+      final focal = briefing.topFocalItem;
+      if (focal != null && focal.isNotEmpty && focal['title'] != null) {
+        final existingIdx = _focalItems.indexWhere(
+          (f) => f.id == 'focal_${focal['item_id']}',
+        );
+        final itemType = focal['type'] as String? ?? 'task';
+        final llmLabel = focal['action_label'] as String?;
+        final newItem = _FocalItem(
+          id: 'focal_${focal['item_id'] ?? focal['title']}',
+          title: focal['title'] as String? ?? '',
+          description: focal['reason'] as String?,
+          actionLabel: _actionLabelForType(itemType, llmLabel),
+          source: itemType,
+          metadata: {
+            'focal_item_id': focal['item_id'],
+            'focal_type': focal['type'],
+            'reason': focal['reason'],
+            'urgency': focal['urgency'],
+            'from_briefing': true,
+          },
+        );
+        if (existingIdx >= 0) {
+          _focalItems[existingIdx] = newItem;
+        } else {
+          _focalItems.insert(0, newItem);
+        }
+        // Remove any duplicate from _loadFocalItems that has the same natural ID
+        final naturalId = focal['item_id']?.toString() ?? '';
+        if (naturalId.isNotEmpty) {
+          _focalItems.removeWhere((f) =>
+            f.id == naturalId && f.id != newItem.id
+          );
+        }
+      }
+    });
+    WidgetDataProvider().updatePulseWidget(briefing);
   }
 
   // ── Focal items ─────────────────────────────────────────────────
@@ -257,74 +276,106 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       final decResult = await _api.getPendingDecisions();
       final taskResult = await _api.getTasks(status: 'todo');
       if (!mounted) return;
-
-      final items = <_FocalItem>[];
-
-      // Decisions first (graph nodes, edges, channel items)
-      if (decResult.success && decResult.data != null) {
-        // Live pending count for the decision digest — same source the Inbox
-        // screen reads, so the digest drops as items are actioned.
-        _pendingDecisionCount = decResult.data!.length;
-        for (final pd in decResult.data!) {
-          final source = pd.source;
-          items.add(_FocalItem(
-            id: pd.id,
-            title: pd.title,
-            description: pd.description,
-            actionLabel: _sourceActionLabel(source),
-            source: source,
-            metadata: {
-              'source': source,
-              'api_id': pd.id,
-              'pending_id': int.tryParse(pd.id),
-            },
-          ));
-        }
-      }
-
-      // Due/overdue tasks fill remaining slots
-      if (taskResult.success && taskResult.data != null) {
-        _activeTaskCount = taskResult.data!.length;
-        for (final t in taskResult.data!) {
-          final deadline = t['deadline'] as String?;
-          if (deadline == null || !_isUrgent(deadline)) continue;
-          items.add(_FocalItem(
-            id: t['id'].toString(),
-            title: t['title'] as String? ?? 'Untitled',
-            subtitle: _formatTaskContext(t),
-            source: 'task',
-            actionLabel: 'Done',
-            metadata: {'task_id': t['id']},
-          ));
-        }
-      }
-
-      if (mounted) {
-        setState(() {
-          // Preserve items that were deliberately surfaced: the LLM-chosen
-          // briefing item AND any task the user manually promoted to focus.
-          // Everything else rebuilds from live pending/task data.
-          final preserved = <_FocalItem>[];
-          for (final f in _focalItems) {
-            if (f.metadata['from_briefing'] == true ||
-                f.metadata['promoted'] == true) {
-              preserved.add(f);
-            }
-          }
-          _focalItems = items;
-          for (final p in preserved.reversed) {
-            _focalItems.removeWhere((f) => f.id == p.id);
-            _focalItems.insert(0, p);
-          }
-          _focalLoading = false;
-          _instrumentation.nowCardsShown = _focalItems.length;
-        });
-      }
+      final decisions = (decResult.success && decResult.data != null)
+          ? decResult.data!
+          : <PendingDecision>[];
+      final tasks = (taskResult.success && taskResult.data != null)
+          ? taskResult.data!
+          : <Map<String, dynamic>>[];
+      _applyFocalData(decisions, tasks);
     } catch (_) {
       // Network or parse error — show empty state
     } finally {
       if (mounted) {
         setState(() => _focalLoading = false);
+      }
+    }
+  }
+
+  /// Applies fetched decisions + tasks to the focal board — shared by the
+  /// legacy _loadFocalItems and the single-call _loadHome (P2).
+  void _applyFocalData(List<PendingDecision> decisions,
+      List<Map<String, dynamic>> tasks) {
+    if (!mounted) return;
+    final items = <_FocalItem>[];
+
+    // Decisions first (graph nodes, edges, channel items)
+    // Live pending count for the decision digest — same source the Inbox
+    // screen reads, so the digest drops as items are actioned.
+    _pendingDecisionCount = decisions.length;
+    for (final pd in decisions) {
+      final source = pd.source;
+      items.add(_FocalItem(
+        id: pd.id,
+        title: pd.title,
+        description: pd.description,
+        actionLabel: _sourceActionLabel(source),
+        source: source,
+        metadata: {
+          'source': source,
+          'api_id': pd.id,
+          'pending_id': int.tryParse(pd.id),
+        },
+      ));
+    }
+
+    // Due/overdue tasks fill remaining slots
+    _activeTaskCount = tasks.length;
+    for (final t in tasks) {
+      final deadline = t['deadline'] as String?;
+      if (deadline == null || !_isUrgent(deadline)) continue;
+      items.add(_FocalItem(
+        id: t['id'].toString(),
+        title: t['title'] as String? ?? 'Untitled',
+        subtitle: _formatTaskContext(t),
+        source: 'task',
+        actionLabel: 'Done',
+        metadata: {'task_id': t['id']},
+      ));
+    }
+
+    setState(() {
+      // Preserve items that were deliberately surfaced: the LLM-chosen
+      // briefing item AND any task the user manually promoted to focus.
+      // Everything else rebuilds from live pending/task data.
+      final preserved = <_FocalItem>[];
+      for (final f in _focalItems) {
+        if (f.metadata['from_briefing'] == true ||
+            f.metadata['promoted'] == true) {
+          preserved.add(f);
+        }
+      }
+      _focalItems = items;
+      for (final p in preserved.reversed) {
+        _focalItems.removeWhere((f) => f.id == p.id);
+        _focalItems.insert(0, p);
+      }
+      _focalLoading = false;
+      _instrumentation.nowCardsShown = _focalItems.length;
+    });
+  }
+
+  /// ONE-CALL home load (P2): briefing + focal board + counts from
+  /// /api/home-feed — collapses the app's 6 startup round-trips into 1.
+  /// Falls back to the two legacy calls when the endpoint is unavailable
+  /// (older backend) or returns an empty payload.
+  Future<void> _loadHome() async {
+    try {
+      final feed = await _api.getHomeFeed();
+      if (!mounted) return;
+      if (feed.isEmpty) {
+        // Older backend without /api/home-feed — use the legacy calls.
+        await Future.wait([_loadBriefing(), _loadFocalItems()]);
+        return;
+      }
+      _applyBriefing(feed.briefing);
+      _applyFocalData(feed.decisions, feed.tasks);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _briefingLoading = false;
+          _focalLoading = false;
+        });
       }
     }
   }
@@ -546,10 +597,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       );
     }
 
-    // 5. Background refresh for fresh counts (deferred 2s to avoid flicker)
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) _loadFocalItems();
-    });
+    // N4: local count decrement instead of a 5-call refetch — the action
+    // already succeeded; the digest ticks down here and the next natural
+    // refresh (pull / resume / Inbox return) reconciles with the server.
+    _decrementCountsFor(item);
   }
 
   /// Resolve the (itemType, itemId) pair for ANY focal item so the unified
@@ -626,10 +677,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         "Noted. I'll keep it off your board for a while — it'll resurface if it's still relevant.",
       );
     }
-    // Refresh the live pending count so the digest drops with the deferral.
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) _loadFocalItems();
-    });
+    // N4: local count decrement instead of a 5-call refetch.
+    _decrementCountsFor(item);
   }
 
   /// True when the /api/focal-action response actually reports success.
@@ -643,6 +692,20 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     final data = result.data;
     if (data is Map) return data['success'] != false;
     return true;
+  }
+
+  /// N4: decrement the digest / active-task count locally after a focal
+  /// action succeeds. The card is already removed from the board — a full
+  /// _loadFocalItems refetch (5 network calls) is redundant for one action.
+  void _decrementCountsFor(_FocalItem item) {
+    if (!mounted) return;
+    setState(() {
+      if (item.source == 'task') {
+        if (_activeTaskCount > 0) _activeTaskCount--;
+      } else if (_pendingDecisionCount > 0) {
+        _pendingDecisionCount--;
+      }
+    });
   }
 
   /// "Reject" — permanent rejection for graph nodes/edges/merges, mirroring
@@ -692,10 +755,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         "Rejected — I'll leave that one off the board and adjust my judgment.",
       );
     }
-    // Refresh the live pending count so the digest drops with the rejection.
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) _loadFocalItems();
-    });
+    // N4: local count decrement instead of a 5-call refetch.
+    _decrementCountsFor(item);
   }
 
   /// "Not right" — persists the same deferral AND sends a correction signal
@@ -750,10 +811,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         "Got it — I've noted that wasn't the right priority. I'll adjust.",
       );
     }
-    // Refresh the live pending count so the digest drops with the correction.
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) _loadFocalItems();
-    });
+    // N4: local count decrement instead of a 5-call refetch.
+    _decrementCountsFor(item);
   }
 
 
@@ -847,6 +906,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     if (!mounted || !result.success) return;
     // API returns messages newest-first — reverse to oldest-first
     // so new messages append at the end (bottom of chat).
+    var replyArrived = false;
     for (final m in result.data!.reversed) {
       final id = m['id'].toString();
       if (_seenMessageIds.contains(id)) continue;
@@ -860,6 +920,12 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       // Guard: skip server-side copies of a message the user just sent
       // optimistically (its local echo is already on screen).
       if (role == MessageRole.user && _hasLocalEcho(content)) continue;
+
+      if (role == MessageRole.rhodey) {
+        replyArrived = true;
+        // Replace the fast-ack "Processing..." bubble with the real reply.
+        _removePendingAck();
+      }
 
       final createdAt = m['created_at'] as String? ?? '';
       final ts = createdAt.isNotEmpty
@@ -875,6 +941,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       );
       setState(() { _messages.add(msg); });
       _scrollToBottom();
+    }
+    // P3 fast-ack: once Rhodey's real reply lands in history, the awaited
+    // response is complete — stop the backup poll.
+    if (replyArrived && _awaitingResponse) {
+      _stopBackupPoll();
     }
   }
 
@@ -912,31 +983,80 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     _scrollToBottom();
     _startBackupPoll();
 
-    // Timeout guard: if the API takes > 45s, flag as failed
+    // Timeout watchdog: the fast-ack API returns in ~1s; the inline fallback
+    // (local dev / Modal spawn failure) runs the full LLM turn and can take
+    // 30-60s. The watchdog extends its window while the request is still in
+    // flight and only hard-fails a genuinely hung request (~70s total). In
+    // fast-ack mode a soft "still working" note replaces the ack bubble and
+    // the backup poll stays alive so the reply still lands via FCM push.
+    _sendInFlight = true;
     _sendTimeout?.cancel();
-    _sendTimeout = Timer(const Duration(seconds: 45), () {
+    // A new send invalidates any prior fast-ack expiry watchdog — it must not
+    // fire mid-send and kill the new message's poll.
+    _ackExpiryTimer?.cancel();
+    var watchTicks = 0;
+    void watchdogTick() {
       if (!mounted) return;
+      if (_sendInFlight && watchTicks < 2) {
+        watchTicks++;
+        _sendTimeout = Timer(const Duration(seconds: 25), watchdogTick);
+        return;
+      }
+      _sendInFlight = false;
+      if (_pendingAckId != null) {
+        // Fast-ack path: the backend accepted the message; the reply is just
+        // slow (Modal worker still running). Soften the ack and keep the
+        // backup poll alive so the reply still lands when it arrives.
+        _updateMessage(_pendingAckId!,
+            text: "Still working on it — I'll ping you when it's ready.");
+        return;
+      }
       _updateMessage(id, sendStatus: SendStatus.failed);
       _stopBackupPoll();
-    });
+    }
+    _sendTimeout = Timer(const Duration(seconds: 20), watchdogTick);
 
     _api.sendMessage(text.trim()).then((result) {
       _sendTimeout?.cancel();
+      _sendInFlight = false;
       if (!mounted) return;
       if (result.success) {
         _updateMessage(id, sendStatus: SendStatus.resolved);
-        String responseText;
-        if (result.data is Map) {
-          responseText = (result.data as Map)['response'] as String? ?? 'Got it. Processing...';
+        final data = result.data is Map ? result.data as Map : null;
+        final isFastAck = data?['fast_ack'] == true;
+        final responseText =
+            data?['response'] as String? ?? 'Got it. Processing...';
+        if (isFastAck) {
+          // P3 fast-ack: the backend returned instantly; the real reply is on
+          // its way via FCM push + backup poll. Show the ack now (poll keeps
+          // running — it stops itself when the reply lands in history).
+          _addRhodeyAck(responseText);
+          // Ack-expiry watchdog: if Rhodey's reply never lands (worker crash,
+          // LLM outage), soften the ack and stop polling after 3 minutes
+          // instead of leaving a dead "Processing..." bubble forever.
+          _ackExpiryTimer?.cancel();
+          _ackExpiryTimer = Timer(const Duration(seconds: 180), () {
+            if (!mounted) return;
+            _stopBackupPoll();
+            if (_pendingAckId != null) {
+              _updateMessage(_pendingAckId!,
+                  text: "Still working on it — I'll ping you when it's ready.");
+            }
+          });
         } else {
-          responseText = 'Got it. Processing...';
-        }
-        Future.delayed(const Duration(milliseconds: 400), () {
-          if (!mounted) return;
+          // Inline fallback (non-Modal): the reply is already in the response.
           _addRhodeyResponse(responseText);
-        });
+        }
       } else {
         _updateMessage(id, sendStatus: SendStatus.failed);
+        // Stop the poll only if no prior fast-ack is still awaiting its reply;
+        // otherwise keep that ack's poll + expiry backstop alive so it resolves
+        // normally (a failed send must not orphan an earlier "Processing..."
+        // bubble or kill its reply polling).
+        if (_pendingAckId == null) {
+          _stopBackupPoll();
+          _ackExpiryTimer?.cancel();
+        }
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -979,6 +1099,34 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     });
     _scrollToBottom();
     _tts.speak(text);
+  }
+
+  /// P3 fast-ack acknowledgment: adds Rhodey's bubble WITHOUT stopping the
+  /// backup poll and WITHOUT speaking — the real reply is on its way and the
+  /// poll stops itself the moment it lands in conversation history.
+  void _addRhodeyAck(String text) {
+    _removePendingAck(); // never stack two "Processing..." bubbles
+    final id = 'r${++_msgCounter}';
+    _pendingAckId = id;
+    setState(() {
+      _messages.add(ChatMessage(
+        id: id, role: MessageRole.rhodey, text: text, timestamp: DateTime.now(),
+      ));
+    });
+    _scrollToBottom();
+  }
+
+  /// Removes the pending fast-ack bubble once Rhodey's real reply lands in
+  /// history (via the backup poll), so a turn never shows both the
+  /// "Processing..." ack and the real reply.
+  void _removePendingAck() {
+    final ackId = _pendingAckId;
+    if (ackId == null) return;
+    _pendingAckId = null;
+    _ackExpiryTimer?.cancel();
+    setState(() {
+      _messages.removeWhere((m) => m.id == ackId);
+    });
   }
 
   // ── Task ledger (task icon → conversation) ────────────────
@@ -1297,9 +1445,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     );
   }
 
-  /// Home pull-to-refresh: reload the pulse intelligence and the focal board.
+  /// Home pull-to-refresh: reload the pulse intelligence and the focal board
+  /// in ONE /api/home-feed call (P2) instead of six round-trips.
   Future<void> _refreshHome() async {
-    await Future.wait([_loadBriefing(), _loadFocalItems()]);
+    await _loadHome();
   }
 
   /// CONVERSATION: compact focus bar pinned at top + the chat stream.
@@ -1314,6 +1463,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     );
   }
 
+  /// Capitalizes the first letter of a string — guards against backend
+  /// voice lines that arrive lowercase (e.g. "good morning, danny.").
+  String _capitalizeFirst(String s) {
+    if (s.isEmpty) return s;
+    return s[0].toUpperCase() + s.substring(1);
+  }
+
   /// The idle greeting — Rhodey's voice line, time-prefixed, 1-2 lines.
   /// This is the app-intelligence summary: a greeting with judgment, never
   /// a status dump.
@@ -1321,11 +1477,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     final voice = _briefing.voiceLine?.trim() ?? '';
     final hour = DateTime.now().hour;
     final greeting = hour < 12
-        ? 'Good morning'
-        : (hour < 17 ? 'Good afternoon' : 'Good evening');
-    final line = voice.isNotEmpty
-        ? voice
-        : "What's on your mind, Danny?";
+        ? 'Good Morning'
+        : (hour < 17 ? 'Good Afternoon' : 'Good Evening');
+    final line = _capitalizeFirst(
+      voice.isNotEmpty ? voice : "What's on your mind, Danny?",
+    );
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 4),

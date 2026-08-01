@@ -471,8 +471,25 @@ async def _auto_approve_pending_items(supabase) -> int:
     decision digest always reflect what's LEFT after auto-approval — not
     everything that was ever created.
 
+    Performance hardening (P1):
+    - 5-minute TTL gate — the sweep runs at most once per window instead of
+      on every briefing load (the dedicated decision_pulse sweeps every 30 min,
+      so skipping an inline run is safe for freshness).
+    - Batch pattern lookup — all entity_extraction patterns are loaded in ONE
+      query and passed as patterns_map, so compute_pattern_confidence skips its
+      per-row fallback DB chain (was up to 6 sequential queries per row).
+
     Returns the number of items auto-approved.
     """
+    # ── 5-minute TTL gate ──
+    try:
+        from core.lib.redis_cache import cache_get, cache_set
+        _GATE_KEY = "auto_approve:last_run"
+        if cache_get(_GATE_KEY) is not None:
+            return 0
+    except Exception:
+        pass  # Redis unavailable → fail open and run
+
     auto_count = 0
     try:
         from core.lib.telemetry import compute_pattern_confidence
@@ -480,6 +497,21 @@ async def _auto_approve_pending_items(supabase) -> int:
     except ImportError as e:
         print(f"[Briefing] Auto-approval imports failed (non-fatal): {e}")
         return 0
+
+    # ── Batch pattern lookup: one query, keyed by deterministic feature_hash ──
+    patterns_map: dict = {}
+    try:
+        pat_res = supabase.table("subsystem_patterns") \
+            .select("feature_hash, total_count, correct_count, corrected_count, soft_accepted_count, feature_json, first_seen, last_seen") \
+            .eq("subsystem", "entity_extraction") \
+            .execute()
+        for p in (pat_res.data or []):
+            fh = p.get("feature_hash")
+            if fh:
+                patterns_map[fh] = p
+        print(f"[Briefing] Auto-approval: loaded {len(patterns_map)} patterns in 1 query")
+    except Exception as e:
+        print(f"[Briefing] Pattern batch fetch error (non-fatal): {e}")
 
     # ── Auto-approve high-confidence graph edges ──
     try:
@@ -496,7 +528,8 @@ async def _auto_approve_pending_items(supabase) -> int:
                 "target_type": row.get("target_type"),
             }
             try:
-                pr = await compute_pattern_confidence(features, "entity_extraction")
+                pr = await compute_pattern_confidence(
+                    features, "entity_extraction", patterns_map=patterns_map)
                 if pr.get("recommendation") in ("approve", "auto_approve"):
                     await process_pending_edge_decision(row["id"], "approve", auto_decided=True)
                     auto_count += 1
@@ -521,7 +554,8 @@ async def _auto_approve_pending_items(supabase) -> int:
                 "has_context": bool(row.get("source_text")),
             }
             try:
-                pr = await compute_pattern_confidence(features, "entity_extraction")
+                pr = await compute_pattern_confidence(
+                    features, "entity_extraction", patterns_map=patterns_map)
                 if pr.get("recommendation") in ("approve", "auto_approve"):
                     await process_graph_pending_decision(row["id"], "approve", auto_decided=True)
                     auto_count += 1
@@ -531,6 +565,12 @@ async def _auto_approve_pending_items(supabase) -> int:
                 continue
     except Exception as e:
         print(f"[Briefing] Node auto-approval query error (non-fatal): {e}")
+
+    # ── Mark the sweep as done (5-min TTL) ──
+    try:
+        cache_set(_GATE_KEY, datetime.now(timezone.utc).isoformat(), ttl=300)
+    except Exception:
+        pass
 
     return auto_count
 

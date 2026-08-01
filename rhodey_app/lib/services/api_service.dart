@@ -38,6 +38,24 @@ class PendingDecision {
   });
 }
 
+/// Result of the single-call home feed (/api/home-feed).
+/// Bundles briefing + pending decisions + active tasks so the home screen
+/// opens with ONE network round-trip instead of six.
+class HomeFeed {
+  final BriefingResponse briefing;
+  final List<PendingDecision> decisions;
+  final List<Map<String, dynamic>> tasks;
+
+  const HomeFeed({
+    required this.briefing,
+    required this.decisions,
+    required this.tasks,
+  });
+
+  bool get isEmpty =>
+      briefing.greeting.isEmpty && decisions.isEmpty && tasks.isEmpty;
+}
+
 /// Simplified calendar event.
 class CalendarEventItem {
   final String id;
@@ -99,8 +117,11 @@ class ApiService {
 
   /// GET with retry.
   /// Public so that screens (e.g. Inbox) can fetch arbitrary endpoints.
+  /// [timeout] defaults to 10s; heavier aggregate endpoints (home-feed,
+  /// briefing) pass a longer window since they bundle multiple queries.
   Future<ApiResult<dynamic>> get(String path,
-      {Map<String, String>? query}) async {
+      {Map<String, String>? query,
+      Duration timeout = const Duration(seconds: 10)}) async {
     final uri = query != null
         ? _uri(path).replace(queryParameters: query)
         : _uri(path);
@@ -108,7 +129,7 @@ class ApiService {
       try {
         final resp = await _client
             .get(uri, headers: _headers())
-            .timeout(const Duration(seconds: 15));
+            .timeout(timeout);
         if (resp.statusCode == 200 || resp.statusCode == 201) {
           return ApiResult.ok(jsonDecode(resp.body));
         }
@@ -136,7 +157,7 @@ class ApiService {
   /// [maxRetries] controls how many times to retry on timeout/server errors.
   /// Set to 0 for mutation endpoints (send-message) to prevent duplicate processing.
   Future<ApiResult<dynamic>> post(String path,
-      {Map<String, dynamic>? body, Duration timeout = const Duration(seconds: 15), int maxRetries = 3}) async {
+      {Map<String, dynamic>? body, Duration timeout = const Duration(seconds: 10), int maxRetries = 3}) async {
     final attempts = maxRetries + 1; // +1 for the initial attempt
     for (var attempt = 0; attempt < attempts; attempt++) {
       try {
@@ -171,13 +192,8 @@ class ApiService {
   // ── Send message ─────────────────────────────────────────────
 
   /// Sends a message to Rhodey via /api/send-message.
-  /// On success, returns the raw body (which may contain Rhodey's response and session_id).
-  /// Pass [sessionId] for thread continuity across messages.
-  /// Uses a longer timeout (30s) because process_webhook on Vercel includes LLM calls.
-  /// Sends a message to Rhodey via /api/send-message.
-  /// On success, returns the raw body (which may contain Rhodey's response and session_id).
-  /// Pass [sessionId] for thread continuity across messages.
-  /// Uses a longer timeout (60s) because process_webhook on Vercel includes LLM calls.
+  /// On success, returns the raw body (which may contain Rhodey's response
+  /// and session_id). Pass [sessionId] for thread continuity.
   /// **No retries** — to prevent duplicate processing on the backend.
   Future<ApiResult<dynamic>> sendMessage(String text, {String? sessionId}) async {
     final body = <String, dynamic>{'message': text};
@@ -185,8 +201,12 @@ class ApiService {
       body['session_id'] = sessionId;
     }
     debugPrint('[API] sendMessage: "${text.length > 60 ? text.substring(0, 60) : text}"');
+    // Fast-ack: /api/send-message returns in ~1s on Modal (the full pipeline
+    // runs on a background worker; the reply arrives via FCM push + poll).
+    // 30s covers the inline fallback path (local dev / Modal spawn failure)
+    // where the full LLM turn still runs synchronously before responding.
     return post('/api/send-message', body: body,
-        timeout: const Duration(seconds: 60), maxRetries: 0);
+        timeout: const Duration(seconds: 30), maxRetries: 0);
   }
 
   /// Uploads a file (image, audio, document) via /api/multimodal-input.
@@ -513,8 +533,61 @@ class ApiService {
     if (!result.success || result.data is! Map) {
       return ApiResult.ok([]);
     }
-    final items = (result.data as Map)['data'] as List? ?? [];
-    final decisions = items.map((n) {
+    return ApiResult.ok(_parseGraphNodes((result.data as Map)['data'] as List? ?? []));
+  }
+
+  /// Fetches pending graph edges from /api/pending-graph-edges.
+  Future<ApiResult<List<PendingDecision>>> fetchPendingGraphEdges() async {
+    final result = await get('/api/pending-graph-edges');
+    if (!result.success || result.data is! Map) {
+      return ApiResult.ok([]);
+    }
+    return ApiResult.ok(_parseGraphEdges((result.data as Map)['data'] as List? ?? []));
+  }
+
+  /// Fetches pending merge proposals from /api/pending-merges.
+  Future<ApiResult<List<PendingDecision>>> fetchPendingMerges() async {
+    final result = await get('/api/pending-merges');
+    if (!result.success || result.data is! Map) {
+      return ApiResult.ok([]);
+    }
+    return ApiResult.ok(_parseMerges((result.data as Map)['data'] as List? ?? []));
+  }
+
+  /// Fetches ALL pending decisions from all sources (4 concurrent calls).
+  Future<ApiResult<List<PendingDecision>>> getPendingDecisions() async {
+    final nodeFut = fetchPendingGraphNodes();
+    final edgeFut = fetchPendingGraphEdges();
+    final mergeFut = fetchPendingMerges();
+    final msgFut = getMessages(limit: 50);
+
+    final nodeResult = await nodeFut;
+    final edgeResult = await edgeFut;
+    final mergeResult = await mergeFut;
+    final msgResult = await msgFut;
+
+    final decisions = <PendingDecision>[];
+    if (nodeResult.success) decisions.addAll(nodeResult.data!);
+    if (mergeResult.success) decisions.addAll(mergeResult.data!);
+    if (edgeResult.success) decisions.addAll(edgeResult.data!);
+    if (msgResult.success) decisions.addAll(_parseMessages(msgResult.data!));
+
+    _sortDecisions(decisions);
+    return ApiResult.ok(decisions);
+  }
+
+  /// Sorts pending decisions: merges first, then graph nodes, edges, channels.
+  void _sortDecisions(List<PendingDecision> decisions) {
+    decisions.sort((a, b) {
+      const order = ['merge', 'graph_node', 'graph_edge', 'email', 'call', 'whatsapp'];
+      final ai = order.indexOf(a.source);
+      final bi = order.indexOf(b.source);
+      return ai.compareTo(bi);
+    });
+  }
+
+  List<PendingDecision> _parseGraphNodes(List<dynamic> items) {
+    return items.map((n) {
       final node = n as Map<String, dynamic>;
       final label = node['label'] as String? ?? 'Untitled';
       final nodeType = node['type'] as String? ?? 'person';
@@ -547,17 +620,10 @@ class ApiService {
         raw: node,
       );
     }).toList();
-    return ApiResult.ok(decisions);
   }
 
-  /// Fetches pending graph edges from /api/pending-graph-edges.
-  Future<ApiResult<List<PendingDecision>>> fetchPendingGraphEdges() async {
-    final result = await get('/api/pending-graph-edges');
-    if (!result.success || result.data is! Map) {
-      return ApiResult.ok([]);
-    }
-    final items = (result.data as Map)['data'] as List? ?? [];
-    final decisions = items.map((e) {
+  List<PendingDecision> _parseGraphEdges(List<dynamic> items) {
+    return items.map((e) {
       final edge = e as Map<String, dynamic>;
       final src = edge['source_label'] as String? ?? '?';
       final tgt = edge['target_label'] as String? ?? '?';
@@ -574,17 +640,10 @@ class ApiService {
         raw: edge,
       );
     }).toList();
-    return ApiResult.ok(decisions);
   }
 
-  /// Fetches pending merge proposals from /api/pending-merges.
-  Future<ApiResult<List<PendingDecision>>> fetchPendingMerges() async {
-    final result = await get('/api/pending-merges');
-    if (!result.success || result.data is! Map) {
-      return ApiResult.ok([]);
-    }
-    final items = (result.data as Map)['data'] as List? ?? [];
-    final decisions = items.map((m) {
+  List<PendingDecision> _parseMerges(List<dynamic> items) {
+    return items.map((m) {
       final mp = m as Map<String, dynamic>;
       final sourceLabel = mp['source_label'] as String? ?? '?';
       final targetLabel = mp['target_label'] as String? ?? '?';
@@ -597,80 +656,75 @@ class ApiService {
         raw: {...mp, 'status': 'merge_proposed'},
       );
     }).toList();
-    return ApiResult.ok(decisions);
   }
 
-  /// Fetches ALL pending decisions from all sources.
-  Future<ApiResult<List<PendingDecision>>> getPendingDecisions() async {
-    // Fire all four requests concurrently, then await.
-    final nodeFut = fetchPendingGraphNodes();
-    final edgeFut = fetchPendingGraphEdges();
-    final mergeFut = fetchPendingMerges();
-    final msgFut = getMessages(limit: 50);
-
-    final nodeResult = await nodeFut;
-    final edgeResult = await edgeFut;
-    final mergeResult = await mergeFut;
-    final msgResult = await msgFut;
-
+  List<PendingDecision> _parseMessages(List<Map<String, dynamic>> msgs) {
     final decisions = <PendingDecision>[];
+    for (final m in msgs) {
+      final source = m['source'] as String? ?? '';
+      final status = m['status'] as String? ?? '';
+      final messageType = m['message_type'] as String? ?? '';
 
-    if (nodeResult.success) {
-      decisions.addAll(nodeResult.data!);
-    }
-    if (mergeResult.success) {
-      decisions.addAll(mergeResult.data!);
-    }
-    if (edgeResult.success) {
-      decisions.addAll(edgeResult.data!);
-    }
-    if (msgResult.success) {
-      for (final m in msgResult.data!) {
-        final source = m['source'] as String? ?? '';
-        final status = m['status'] as String? ?? '';
-        final messageType = m['message_type'] as String? ?? '';
+      if (status != 'pending') continue;
 
-        if (status != 'pending') continue;
-
-        String decisionSource;
-        if (source == 'email' || messageType == 'email_action') {
-          decisionSource = 'email';
-        } else if (source == 'whatsapp') {
-          decisionSource = 'whatsapp';
-        } else if (source == 'call') {
-          decisionSource = 'call';
-        } else {
-          continue;
-        }
-
-        decisions.add(PendingDecision(
-          id: m['id'].toString(),
-          source: decisionSource,
-          title: m['content'] as String? ?? 'Untitled',
-          description: 'via $decisionSource',
-          raw: m,
-        ));
+      String decisionSource;
+      if (source == 'email' || messageType == 'email_action') {
+        decisionSource = 'email';
+      } else if (source == 'whatsapp') {
+        decisionSource = 'whatsapp';
+      } else if (source == 'call') {
+        decisionSource = 'call';
+      } else {
+        continue;
       }
+
+      decisions.add(PendingDecision(
+        id: m['id'].toString(),
+        source: decisionSource,
+        title: m['content'] as String? ?? 'Untitled',
+        description: 'via $decisionSource',
+        raw: m,
+      ));
     }
+    return decisions;
+  }
 
-    // Sort: merges first, then graph nodes, edges, then channel items
-    decisions.sort((a, b) {
-      const order = ['merge', 'graph_node', 'graph_edge', 'email', 'call', 'whatsapp'];
-      final ai = order.indexOf(a.source);
-      final bi = order.indexOf(b.source);
-      return ai.compareTo(bi);
-    });
-
-    return ApiResult.ok(decisions);
-  }  // ── Briefing ──────────────────────────────────────────────
+  // ── Briefing ──────────────────────────────────────────────
 
   /// Fetches the structured briefing from /api/briefing.
   Future<BriefingResponse> getBriefing() async {
-    final result = await get('/api/briefing');
+    final result =
+        await get('/api/briefing', timeout: const Duration(seconds: 15));
     if (result.success && result.data is Map) {
       return BriefingResponse.fromJson(result.data as Map<String, dynamic>);
     }
     return BriefingResponse.empty();
+  }
+
+  /// ONE-CALL home load (P2): briefing + pending decisions + active tasks
+  /// from /api/home-feed. Collapses the app's 6 startup round-trips into 1.
+  Future<HomeFeed> getHomeFeed() async {
+    final result =
+        await get('/api/home-feed', timeout: const Duration(seconds: 15));
+    if (!result.success || result.data is! Map) {
+      // Fallback: home-feed unavailable (older backend) — the caller's
+      // individual fetchers remain the source of truth.
+      return HomeFeed(briefing: BriefingResponse.empty(), decisions: const [], tasks: const []);
+    }
+    final data = result.data as Map<String, dynamic>;
+
+    final briefing = BriefingResponse.fromJson(
+        (data['briefing'] as Map<String, dynamic>?) ?? {});
+    final decisions = <PendingDecision>[
+      ..._parseGraphNodes((data['pending_nodes'] as List?) ?? []),
+      ..._parseMerges((data['pending_merges'] as List?) ?? []),
+      ..._parseGraphEdges((data['pending_edges'] as List?) ?? []),
+      ..._parseMessages(
+          (data['pending_messages'] as List?)?.cast<Map<String, dynamic>>() ?? []),
+    ];
+    _sortDecisions(decisions);
+    final tasks = (data['tasks'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    return HomeFeed(briefing: briefing, decisions: decisions, tasks: tasks);
   }
 
   // ── Home mode switch ────────────────────────────────────────
@@ -714,6 +768,105 @@ class ApiService {
       'action': action,
       'task_id': taskId,
     }, maxRetries: 1);
+  }
+
+  // ── Live Entities (Decisions tab mirror) ─────────────────────
+
+  /// Fetches live graph nodes (people, orgs, concepts) from /api/graph-nodes/live.
+  Future<ApiResult<List<Map<String, dynamic>>>> getLiveGraphNodes() async {
+    final result = await get('/api/graph-nodes/live');
+    if (result.success && result.data is Map) {
+      final nodes = (result.data as Map)['data'] as List? ?? [];
+      return ApiResult.ok(List<Map<String, dynamic>>.from(nodes));
+    }
+    if (result.success) {
+      return ApiResult.ok([]);
+    }
+    return ApiResult.fail(result.error ?? 'Failed to load live entities');
+  }
+
+  /// Searches live graph nodes by label for merge targeting.
+  Future<ApiResult<List<Map<String, dynamic>>>> searchGraphNodes(
+      String query,
+      {String? type, String scope = 'live'}) async {
+    final q = <String, String>{'q': query, 'scope': scope};
+    if (type != null) q['type'] = type;
+    final result = await get('/api/graph-nodes/search', query: q);
+    if (result.success && result.data is List) {
+      return ApiResult.ok(List<Map<String, dynamic>>.from(result.data as List));
+    }
+    if (result.success) {
+      return ApiResult.ok([]);
+    }
+    return ApiResult.ok([]);
+  }
+
+  /// Merges one live node into another via /api/graph-node-merge.
+  Future<ApiResult<dynamic>> mergeGraphNode(
+      String sourceId, String targetId,
+      {String scope = 'live'}) async {
+    return _send('POST', '/api/graph-node-merge', body: {
+      'id': sourceId,
+      'target_id': targetId,
+      'scope': scope,
+    });
+  }
+
+  /// Renames a live node via PUT /api/graph-node/{id}.
+  Future<ApiResult<dynamic>> renameGraphNode(String id, String newLabel,
+      {String scope = 'live'}) async {
+    return _send('PUT', '/api/graph-node/$id', body: {
+      'label': newLabel,
+      'scope': scope,
+    });
+  }
+
+  /// Changes a live node's type via PATCH /api/graph-node/{id}/type.
+  Future<ApiResult<dynamic>> changeGraphNodeType(String id, String newType,
+      {String scope = 'live'}) async {
+    return _send('PATCH', '/api/graph-node/$id/type', body: {
+      'type': newType,
+      'scope': scope,
+    });
+  }
+
+  /// Deletes a live node via DELETE /api/graph-node/{id}?scope=live.
+  Future<ApiResult<dynamic>> deleteGraphNode(String id,
+      {String scope = 'live'}) async {
+    return _send('DELETE', '/api/graph-node/$id', query: {'scope': scope});
+  }
+
+  /// Low-level PUT/PATCH/DELETE with the same auth + JSON conventions.
+  Future<ApiResult<dynamic>> _send(String method, String path,
+      {Map<String, dynamic>? body, Map<String, String>? query}) async {
+    final uri = query != null
+        ? _uri(path).replace(queryParameters: query)
+        : _uri(path);
+    try {
+      late http.Response resp;
+      if (method == 'PUT') {
+        resp = await _client
+            .put(uri, headers: _headers(), body: body != null ? jsonEncode(body) : null)
+            .timeout(const Duration(seconds: 15));
+      } else if (method == 'PATCH') {
+        resp = await _client
+            .patch(uri, headers: _headers(), body: body != null ? jsonEncode(body) : null)
+            .timeout(const Duration(seconds: 15));
+      } else if (method == 'DELETE') {
+        resp = await _client
+            .delete(uri, headers: _headers())
+            .timeout(const Duration(seconds: 15));
+      } else {
+        return ApiResult.fail('Unsupported method $method');
+      }
+      if (resp.statusCode == 200 || resp.statusCode == 201) {
+        final decoded = resp.body.isNotEmpty ? jsonDecode(resp.body) : {'success': true};
+        return ApiResult.ok(decoded);
+      }
+      return ApiResult.fail('${resp.statusCode}: ${resp.body}');
+    } catch (e) {
+      return ApiResult.fail('$e');
+    }
   }
 
   // ── Config access ────────────────────────────────────────────

@@ -993,7 +993,11 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 chat_id=int(telegram_chat_id),
                 message_text=briefing_text,
                 show_keyboard=False,
-                inline_keyboard=None
+                inline_keyboard=None,
+                # The dedicated "Rhodey Pulse" push below is the single push for
+                # briefings — suppress send_telegram's internal one to avoid a
+                # duplicate notification for every pulse briefing.
+                notify_push=False,
             )
 
         # Send push notification regardless of Telegram success

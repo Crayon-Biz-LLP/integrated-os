@@ -299,6 +299,128 @@ async def get_briefing_route(request: Request):
             "_error": str(e)[:500],
         }
 
+
+# --- HOME FEED (single round-trip for app open) ---
+@app.get("/api/home-feed")
+async def home_feed_route(request: Request):
+    """One request returning everything the home screen needs on open.
+
+    Collapses the app's 6 startup round-trips (briefing + pending
+    nodes/edges/merges/messages + active tasks) into a single call, all
+    fetched in parallel server-side.
+
+    Response shape:
+      briefing          → same payload as GET /api/briefing
+      pending_nodes     → same rows as /api/pending-graph-nodes
+      pending_edges     → same rows as /api/pending-graph-edges
+      pending_merges    → same rows as /api/pending-merges
+      pending_messages  → same rows as /api/messages (limit 50)
+      tasks             → same rows as /api/tasks?status=todo (limit 200)
+    """
+    require_api_auth(request)
+    try:
+        supabase = get_supabase()
+
+        # ── Briefing (includes P1-gated auto-approval) ──
+        briefing_fut = asyncio.ensure_future(
+            _home_feed_briefing())
+
+        # ── Pending nodes (mirror pending_nodes_route) ──
+        async def _nodes():
+            try:
+                q = supabase.table('pending_nodes') \
+                    .select('id, label, type:node_type, status, source_text, created_at, eval_context') \
+                    .in_('status', ['pending', 'flagged'])
+                if _snooze_ok(supabase, 'pending_nodes'):
+                    q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+                return (q.order('created_at', desc=True).limit(100).execute()).data or []
+            except Exception:
+                return []
+
+        # ── Pending edges (mirror pending_graph_edges_route) ──
+        async def _edges():
+            try:
+                q = supabase.table('pending_graph_edges') \
+                    .select('id, source_label, target_label, relationship, status, context, confidence, created_at') \
+                    .in_('status', ['pending', 'flagged'])
+                if _snooze_ok(supabase, 'pending_graph_edges'):
+                    q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+                return (q.order('created_at', desc=True).limit(100).execute()).data or []
+            except Exception:
+                return []
+
+        # ── Pending merges (mirror pending_merges_route) ──
+        async def _merges():
+            try:
+                q = supabase.table('merge_proposals') \
+                    .select('id, source_label, source_type, target_label, target_node_id, rationale, status') \
+                    .eq('status', 'proposed')
+                if _snooze_ok(supabase, 'merge_proposals'):
+                    q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+                return (q.order('id', desc=True).limit(100).execute()).data or []
+            except Exception:
+                return []
+
+        # ── Pending messages (mirror /api/messages, limit 50) ──
+        async def _messages():
+            try:
+                return (supabase.table('raw_dumps') \
+                    .select('id, content, created_at, direction, sender, message_type, status, metadata, source') \
+                    .order('created_at', desc=True) \
+                    .limit(50) \
+                    .execute()).data or []
+            except Exception:
+                return []
+
+        # ── Active tasks (mirror /api/tasks default: status=todo, limit 200) ──
+        async def _tasks():
+            try:
+                select_cols = ('id, title, status, priority, deadline, created_at, '
+                               'organization_id, direction, committed_to, recurrence, '
+                               'organizations(name)')
+                if _notes_ok(supabase, 'tasks'):
+                    select_cols += ', notes'
+                q = supabase.table('tasks') \
+                    .select(select_cols) \
+                    .eq('is_current', True) \
+                    .in_('status', ['todo'])
+                if _snooze_ok(supabase, 'tasks'):
+                    q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+                return (q.order('created_at', desc=True).limit(200).execute()).data or []
+            except Exception:
+                return []
+
+        nodes_fut = asyncio.ensure_future(_nodes())
+        edges_fut = asyncio.ensure_future(_edges())
+        merges_fut = asyncio.ensure_future(_merges())
+        msgs_fut = asyncio.ensure_future(_messages())
+        tasks_fut = asyncio.ensure_future(_tasks())
+
+        briefing, nodes, edges, merges, messages, tasks = await asyncio.gather(
+            briefing_fut, nodes_fut, edges_fut, merges_fut, msgs_fut, tasks_fut)
+
+        return {
+            "briefing": briefing,
+            "pending_nodes": nodes,
+            "pending_edges": edges,
+            "pending_merges": merges,
+            "pending_messages": messages,
+            "tasks": tasks,
+        }
+    except Exception as e:
+        print(f"Home feed error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+async def _home_feed_briefing():
+    """Build the briefing payload for /api/home-feed (defensive wrapper)."""
+    from api.briefing import build_briefing
+    supabase = get_supabase()
+    briefing = await build_briefing(supabase)
+    return json.loads(json.dumps(briefing, default=str))
+
 # --- EVENING ROUNDUP ---
 @app.api_route("/api/roundup", methods=["GET", "POST"])
 async def roundup_route(request: Request):
@@ -358,10 +480,79 @@ async def send_draft_route(request: Request):
     return {"success": success, "error": error}
 
 # --- SEND MESSAGE VIA WEB UI (Mirrors Telegram exactly) ---
+async def _run_web_message_pipeline(fake_update: dict, session_id: str | None) -> tuple[str | None, str | None]:
+    """Execute the full web-message pipeline (classify → route → reply → push).
+
+    Single source of truth for BOTH the inline fallback path and the Modal
+    background worker (process_message_background). Begins its own action
+    context because the worker runs in a separate container.
+
+    The reply is delivered to the app two ways (kept from the original path):
+      - send_telegram (inside process_webhook) fires an FCM push with the
+        reply text — the app's push handler polls conversation history.
+      - The briefing rebuild + silent push refreshes the home screen.
+
+    Returns (response_text, resulting_session_id) — used by the inline
+    fallback path only (the Modal worker ignores the return value).
+    """
+    from core.actions import begin_action_context, clear_action_context
+    begin_action_context()
+    try:
+        print("🧪 Processing web message as Telegram update")
+        await process_webhook(fake_update)
+
+        from core.actions import get_captured_response, get_captured_session_id
+        response_text = get_captured_response()
+        resulting_session_id = get_captured_session_id() or session_id
+
+        # ── Briefing rebuild + silent push (off the ack path) ──
+        try:
+            supabase = get_supabase()
+            from api.briefing import build_briefing
+            briefing = await build_briefing(supabase)
+            briefing_update = json.loads(json.dumps(briefing, default=str))
+
+            from core.services.push_notification import send_silent_push
+            push_payload = {"type": "briefing_refresh"}
+
+            headline = briefing_update.get('voice_line')
+            if not headline:
+                headline = briefing_update.get('context_bar')
+            if not headline:
+                headline = briefing_update.get('greeting', '')
+
+            mode = briefing_update.get('home_mode', 'proceed')
+            insights_list = []
+
+            if mode == 'sprint':
+                nxt = briefing_update.get('next_event')
+                if nxt:
+                    insights_list.append({"text": f"🎯 Sprinting: {nxt}", "link": "rhodey://today"})
+                v_urg = briefing_update.get('vaulted_urgent_count', 0)
+                if v_urg > 0:
+                    insights_list.append({"text": f"🔴 {v_urg} urgent", "link": "rhodey://surface"})
+            elif mode == 'decide':
+                pend = briefing_update.get('pending_count', 0)
+                if pend > 0:
+                    insights_list.append({"text": f"⚖️ {pend} pending decisions", "link": "rhodey://inbox"})
+            else:
+                for ins in briefing_update.get('insights', []):
+                    insights_list.append({"text": ins, "link": "rhodey://surface"})
+
+            push_payload['headline'] = headline
+            push_payload['insights_json'] = json.dumps(insights_list)
+            await send_silent_push(push_payload)
+        except Exception as brief_err:
+            print(f"Send-message briefing/push error (non-critical): {brief_err}")
+
+        return response_text, resulting_session_id
+    finally:
+        clear_action_context()
+
+
 @app.post("/api/send-message")
 async def send_message_route(request: Request):
     require_api_auth(request)
-    begin_action_context()
     try:
         body = await request.json()
         message_text = body.get("message")
@@ -424,68 +615,41 @@ async def send_message_route(request: Request):
                 'status': 'sent',
                 'sender': 'rhodey',
             }).execute()
-        else:
-            # Normal path: full webhook pipeline
-            print("🧪 Processing web message as Telegram update")
-            await process_webhook(fake_update)
 
-            # Read the captured bot response
-            from core.actions import get_captured_response, get_captured_session_id
-            response_text = get_captured_response()
-            resulting_session_id = get_captured_session_id() or session_id
+            return {
+                "success": True,
+                "message": "Message processed",
+                "response": response_text,
+                "session_id": resulting_session_id,
+            }
 
-        # ── Background: briefing rebuild + silent push (off the ack path) ──
-        # The ack (response_text) is ready the moment the pipeline finishes.
-        # The briefing rebuild is a SECOND LLM call that only feeds the push
-        # notification — awaiting it here is exactly why the app ack felt
-        # slower than Telegram's (which returns the moment the pipeline
-        # responds). So it runs in a background task instead.
-        if not is_vault_message:
-            async def _refresh_briefing_and_push():
-                try:
-                    from api.briefing import build_briefing
-                    briefing = await build_briefing(supabase)
-                    briefing_update = json.loads(json.dumps(briefing, default=str))
+        # ── Fast-ack (P3): return instantly, process in a Modal worker ──
+        # The full pipeline (intent classify → entity extraction → routing →
+        # LLM reply) runs in a dedicated Modal container via
+        # process_message_background. The reply reaches the app through the
+        # FCM push fired inside send_telegram + the backup poll.
+        try:
+            import modal
+            modal.Function.lookup("rhodey-os", "process_message_background").spawn({
+                "fake_update": fake_update,
+                "session_id": session_id,
+            })
+            return {
+                "success": True,
+                "fast_ack": True,
+                "message": "Processing",
+                "response": "Got it. Processing...",
+                "session_id": session_id,
+            }
+        except Exception as e:
+            print(f"Send-message: background spawn failed ({e}) — falling back to inline")
 
-                    from core.services.push_notification import send_silent_push
-                    push_payload = {"type": "briefing_refresh"}
-
-                    headline = briefing_update.get('voice_line')
-                    if not headline:
-                        headline = briefing_update.get('context_bar')
-                    if not headline:
-                        headline = briefing_update.get('greeting', '')
-
-                    mode = briefing_update.get('home_mode', 'proceed')
-                    insights_list = []
-
-                    if mode == 'sprint':
-                        nxt = briefing_update.get('next_event')
-                        if nxt:
-                            insights_list.append({"text": f"🎯 Sprinting: {nxt}", "link": "rhodey://today"})
-                        v_urg = briefing_update.get('vaulted_urgent_count', 0)
-                        if v_urg > 0:
-                            insights_list.append({"text": f"🔴 {v_urg} urgent", "link": "rhodey://surface"})
-                    elif mode == 'decide':
-                        pend = briefing_update.get('pending_count', 0)
-                        if pend > 0:
-                            insights_list.append({"text": f"⚖️ {pend} pending decisions", "link": "rhodey://inbox"})
-                    else:
-                        for ins in briefing_update.get('insights', []):
-                            insights_list.append({"text": ins, "link": "rhodey://surface"})
-
-                    push_payload['headline'] = headline
-                    push_payload['insights_json'] = json.dumps(insights_list)
-                    await send_silent_push(push_payload)
-                except Exception as brief_err:
-                    print(f"Send-message briefing/push error (non-critical): {brief_err}")
-
-            asyncio.ensure_future(_refresh_briefing_and_push())
-
+        # Fallback (local dev / non-Modal): run the full pipeline inline
+        response_text, resulting_session_id = await _run_web_message_pipeline(fake_update, session_id)
         return {
             "success": True,
             "message": "Message processed",
-            "response": response_text,
+            "response": response_text or "Got it. Processing...",
             "session_id": resulting_session_id,
         }
     
@@ -494,8 +658,6 @@ async def send_message_route(request: Request):
     except Exception as e:
         print(f"Send message error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-    finally:
-        clear_action_context()
 
 # --- GET MESSAGE HISTORY ---
 @app.get("/api/messages")
@@ -548,11 +710,13 @@ async def conversation_history_route(request: Request, limit: int = 100, offset:
     require_api_auth(request)
     try:
         supabase = get_supabase()
-        # Fetch a large fixed cap from each table so the in-memory merge/dedup
-        # is complete for any realistic single-user volume, then slice. A
-        # limit+offset+100 window would silently truncate at deep offsets
-        # because dedup shrinks the merged unique set.
-        window = 2000
+        # Fetch a capped window from each table sized to the requested slice,
+        # then merge/dedupe in memory and slice. The window must leave headroom
+        # over (offset + limit) because content+minute dedup shrinks the merged
+        # unique set — but a fixed 2000-row cap made every small read (e.g. the
+        # app's tap-to-open with limit=30) fetch 2000 rows from EACH table,
+        # which is the source of the tap-to-briefing lag. Scale with the request.
+        window = min(max(limit + offset + 300, limit * 4), 5000)
 
         conv_res = supabase.table('conversations') \
             .select('id, role, intent, content, created_at, session_id, metadata')\
@@ -982,6 +1146,86 @@ async def _reject_merge_proposal(supabase, merge_proposal_id: int) -> dict:
     return {"success": True, "message": f"Keep both — approved '{pending_label}' as separate node."}
 
 
+# --- Shared merge-accept (combine into canonical) ---
+
+async def _accept_merge_proposal(supabase, merge_proposal_id: int, swap: bool = False) -> dict:
+    """Accept a node merge proposal: combine source into target (or swapped).
+
+    Shared by /api/graph-merge-action and /api/focal-action (done) so the
+    focal card's "Approve" behaves identically to the Inbox's approve.
+    """
+    from core.services.db import maybe_single_safe
+    from core.lib.node_tables import resolve_merge_proposal
+
+    mp_res = maybe_single_safe(supabase.table('merge_proposals').select('*').eq('id', merge_proposal_id))
+    if not mp_res or not mp_res.data:
+        return {"success": False, "message": "Merge proposal not found."}
+    merge_proposal = mp_res.data
+    if merge_proposal.get('status') != 'proposed':
+        return {"success": False, "message": "Merge proposal already processed."}
+
+    origin_id = merge_proposal.get('origin_id')
+    pending_label = merge_proposal.get('source_label', '')
+
+    target_id = merge_proposal.get('target_node_id')
+    if not target_id:
+        return {"success": False, "message": "Merge candidate not found in proposal."}
+
+    from core.lib.graph_rules import get_canonical_id, execute_graph_node_merge
+
+    source_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label').eq('label', pending_label).eq('is_current', True))
+    source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
+    target_canonical = get_canonical_id(target_id)
+
+    if not source_node_id:
+        # Pending label was merged before it was ever created as a graph node.
+        if origin_id:
+            supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', origin_id).execute()
+        resolve_merge_proposal(merge_proposal['id'], "accepted")
+        try:
+            record_decision(decision_type="graph_node_merge",
+                            title=f"Aliased pending '{pending_label}' to target",
+                            entity_type="graph_node", entity_id=str(origin_id),
+                            confidence=1.0, source="web_ui")
+        except Exception:
+            pass
+        try:
+            await emit_observation(subsystem='entity_extraction', event_type='correction',
+                                   features={"action": "alias_merge", "source_label": pending_label},
+                                   predicted=pending_label, actual="aliased",
+                                   outcome='corrected', source='web_ui')
+        except Exception:
+            pass
+        return {"success": True, "message": f"Pending label '{pending_label}' is now aliased to the target node."}
+
+    loser_id = target_canonical if swap else source_node_id
+    winner_id = source_node_id if swap else target_canonical
+
+    execute_graph_node_merge(loser_id, winner_id, "ui_merge_accept")
+
+    if origin_id:
+        supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', origin_id).execute()
+    resolve_merge_proposal(merge_proposal['id'], "accepted")
+
+    # Learner feedback
+    try:
+        record_decision(decision_type="graph_node_merge",
+                        title=f"Merged '{pending_label}' into canonical node",
+                        entity_type="graph_node", entity_id=str(origin_id),
+                        confidence=1.0, source="web_ui")
+    except Exception:
+        pass
+    try:
+        await emit_observation(subsystem='entity_extraction', event_type='correction',
+                               features={"action": "accept_merge", "source_label": pending_label},
+                               predicted=pending_label, actual="merged",
+                               outcome='corrected', source='web_ui')
+    except Exception:
+        pass
+
+    return {"success": True, "message": f"Merged '{pending_label}' into canonical node."}
+
+
 # --- FOCAL ITEM ACTION (Phase 2 v2: done/snooze/correct/reject) ---
 @app.post("/api/focal-action")
 async def focal_action_route(request: Request):
@@ -1047,6 +1291,11 @@ async def focal_action_route(request: Request):
                 # Use the shared _complete_task() which handles Google sync, outcome memory, etc.
                 result = await _complete_task(int(item_id), "done")
                 return result
+            elif item_type == "merge":
+                # Accept the merge — shared helper, identical to the Inbox's approve.
+                from core.services.db import get_supabase
+                supabase = get_supabase()
+                return await _accept_merge_proposal(supabase, int(item_id))
             elif item_type in ("graph_node", "graph_edge"):
                 from core.pulse.graph import process_pending_edge_decision, process_graph_pending_decision
                 from core.services.db import get_supabase
@@ -1683,22 +1932,8 @@ async def graph_merge_action_route(request: Request):
         if not merge_proposal_id or action not in ('accept', 'reject'):
             raise HTTPException(status_code=400, detail="id and valid action (accept/reject) required")
 
-        from core.services.db import get_supabase, maybe_single_safe
-        from core.lib.node_tables import resolve_merge_proposal
+        from core.services.db import get_supabase
         supabase = get_supabase()
-
-        # Read merge proposal by its own ID (frontend sends merge_proposals.id)
-        mp_res = maybe_single_safe(supabase.table('merge_proposals').select('*').eq('id', int(merge_proposal_id)))
-        if not mp_res or not mp_res.data:
-            return {"success": False, "message": "Merge proposal not found."}
-        merge_proposal = mp_res.data
-        if merge_proposal.get('status') != 'proposed':
-            return {"success": False, "message": "Merge proposal already processed."}
-
-        # Find corresponding pending node via origin_id
-        origin_id = merge_proposal.get('origin_id')
-        pending_label = merge_proposal.get('source_label', '')
-        pending_type = merge_proposal.get('source_type', 'person')
 
         if action == 'reject':
             # Shared with /api/focal-action (reject) — keeps both by promoting
@@ -1706,64 +1941,8 @@ async def graph_merge_action_route(request: Request):
             # proposal as rejected.
             return await _reject_merge_proposal(supabase, int(merge_proposal_id))
 
-        # Accept merge
-        target_id = merge_proposal.get('target_node_id')
-        if not target_id:
-            return {"success": False, "message": "Merge candidate not found in proposal."}
-
-        from core.lib.graph_rules import get_canonical_id, execute_graph_node_merge
-
-        source_node_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label').eq('label', pending_label).eq('is_current', True))
-        source_node_id = source_node_res.data['id'] if source_node_res and source_node_res.data else None
-        target_canonical = get_canonical_id(target_id)
-
-        if not source_node_id:
-            # Pending label was merged before it was ever created as a graph node.
-            if origin_id:
-                supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', origin_id).execute()
-            resolve_merge_proposal(merge_proposal['id'], "accepted")
-            try:
-                record_decision(decision_type="graph_node_merge",
-                                title=f"Aliased pending '{pending_label}' to target",
-                                entity_type="graph_node", entity_id=str(origin_id),
-                                confidence=1.0, source="web_ui")
-            except Exception:
-                pass
-            try:
-                await emit_observation(subsystem='entity_extraction', event_type='correction',
-                                       features={"action": "alias_merge", "source_label": pending_label},
-                                       predicted=pending_label, actual="aliased",
-                                       outcome='corrected', source='web_ui')
-            except Exception:
-                pass
-            return {"success": True, "message": f"Pending label '{pending_label}' is now aliased to the target node."}
-
-        loser_id = target_canonical if swap else source_node_id
-        winner_id = source_node_id if swap else target_canonical
-
-        execute_graph_node_merge(loser_id, winner_id, "ui_merge_accept")
-
-        if origin_id:
-            supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', origin_id).execute()
-        resolve_merge_proposal(merge_proposal['id'], "accepted")
-
-        # Learner feedback
-        try:
-            record_decision(decision_type="graph_node_merge",
-                            title=f"Merged '{pending_label}' into canonical node",
-                            entity_type="graph_node", entity_id=str(origin_id),
-                            confidence=1.0, source="web_ui")
-        except Exception:
-            pass
-        try:
-            await emit_observation(subsystem='entity_extraction', event_type='correction',
-                                   features={"action": "accept_merge", "source_label": pending_label},
-                                   predicted=pending_label, actual="merged",
-                                   outcome='corrected', source='web_ui')
-        except Exception:
-            pass
-
-        return {"success": True, "message": f"Merged '{pending_label}' into canonical node."}
+        # Accept merge — shared helper (identical to the Inbox's approve).
+        return await _accept_merge_proposal(supabase, int(merge_proposal_id), swap=bool(swap))
 
     except Exception:
         import traceback

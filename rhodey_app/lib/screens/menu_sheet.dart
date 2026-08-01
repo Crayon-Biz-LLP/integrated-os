@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import 'today_screen.dart';
-import 'dump_screen.dart';
+import 'entities_screen.dart';
 import 'inbox_screen.dart';
 import 'history_screen.dart';
 import 'settings_screen.dart';
@@ -44,12 +44,12 @@ void showMenuSheet(BuildContext context) {
               },
             ),
             _MenuTile(
-              icon: Icons.inbox_outlined,
-              label: 'Captures',
+              icon: Icons.account_tree_outlined,
+              label: 'Entities',
               onTap: () {
                 Navigator.pop(ctx);
                 Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const DumpScreen()));
+                    MaterialPageRoute(builder: (_) => const EntitiesScreen()));
               },
             ),
             _MenuTile(

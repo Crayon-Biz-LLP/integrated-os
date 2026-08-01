@@ -24,7 +24,7 @@ def _chunk_message(text: str, max_len: int = 4000) -> list[str]:
         text = text[split_at:].lstrip()
     return chunks
 
-async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True, inline_keyboard: list = None, skip_validation: bool = False):
+async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True, inline_keyboard: list = None, skip_validation: bool = False, notify_push: bool = True):
     import re
     try:
         evidence = snapshot_action_context()
@@ -151,15 +151,19 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
         # Fire a push notification so the app gets the response instantly
         # AWAITED, not fire-and-forget — Modal suspends containers after response,
         # killing background tasks before Firebase receives the request.
-        try:
-            from core.services.push_notification import send_push_notification
-            await send_push_notification(
-                title="Rhodey",
-                body=message_text[:120] + ("\u2026" if len(message_text) > 120 else ""),
-                data={"type": "briefing"},
-            )
-        except Exception:
-            pass
+        # notify_push=False: the pulse briefing already sends its own dedicated
+        # "Rhodey Pulse" push right after calling send_telegram — letting the
+        # internal push fire too produced a duplicate banner for every briefing.
+        if notify_push:
+            try:
+                from core.services.push_notification import send_push_notification
+                await send_push_notification(
+                    title="Rhodey",
+                    body=message_text[:120] + ("\u2026" if len(message_text) > 120 else ""),
+                    data={"type": "briefing"},
+                )
+            except Exception:
+                pass
 
         return success
     finally:

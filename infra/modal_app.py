@@ -66,3 +66,33 @@ def web_endpoint():
     """
     from api.index import app as fastapi_app
     return fastapi_app
+
+
+# ── Background Message Worker (P3 fast-ack) ────────────────────
+# /api/send-message returns instantly and spawns THIS function on a dedicated
+# container. Because it's a separate Modal function (not an asyncio task in
+# the web container), it survives the web request's return — Modal keeps the
+# worker alive until it completes. The full pipeline (classify → entity
+# extraction → route → LLM reply → push) runs here, then the reply reaches
+# the app via the FCM push fired inside send_telegram + the backup poll.
+@app.function(
+    secrets=secrets,
+    timeout=300,
+)
+def process_message_background(payload: dict):
+    """Background worker for /api/send-message fast-ack.
+
+    payload: {"fake_update": dict, "session_id": str | None}
+
+    Delegates to api.index._run_web_message_pipeline — the exact same code
+    path the inline fallback uses, so behavior is identical everywhere.
+    """
+    import asyncio
+    from api.index import _run_web_message_pipeline
+
+    fake_update = payload.get("fake_update")
+    session_id = payload.get("session_id")
+    if not fake_update:
+        print("[process_message_background] Missing fake_update — aborting")
+        return
+    asyncio.run(_run_web_message_pipeline(fake_update, session_id))

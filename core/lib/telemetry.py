@@ -396,6 +396,7 @@ async def get_pattern_summary(
 async def compute_pattern_confidence(
     features: dict,
     subsystem: str,
+    patterns_map: dict | None = None,
 ) -> dict:
     """
     Given a feature set, look up the stored pattern and return confidence.
@@ -437,19 +438,27 @@ async def compute_pattern_confidence(
         best_match_key = "exact"
         for i, fb_features in enumerate(fallback_sets):
             feature_hash = hash_features(fb_features, subsystem)
-            row = maybe_single_safe(
-                supabase.table("subsystem_patterns")
-                .select("total_count, correct_count, corrected_count, soft_accepted_count, feature_json, first_seen, last_seen")
-                .eq("subsystem", subsystem)
-                .eq("feature_hash", feature_hash)
-            )
-            # Transient guard: maybe_single_safe can return None if the
-            # Supabase client hits a connection blip. Skip this fallback
-            # iteration instead of crashing.
-            if row is None:
+            if patterns_map is not None:
+                # Batch path: the caller pre-fetched all patterns for this
+                # subsystem in ONE query and passes the {feature_hash: row}
+                # map in — turns the per-item fallback chain (up to 6
+                # sequential DB queries) into a single in-memory lookup.
+                row_data = patterns_map.get(feature_hash)
+            else:
+                row = maybe_single_safe(
+                    supabase.table("subsystem_patterns")
+                    .select("total_count, correct_count, corrected_count, soft_accepted_count, feature_json, first_seen, last_seen")
+                    .eq("subsystem", subsystem)
+                    .eq("feature_hash", feature_hash)
+                )
+                # Transient guard: maybe_single_safe can return None if the
+                # Supabase client hits a connection blip. Skip this fallback
+                # iteration instead of crashing.
+                row_data = row.data if row is not None else None
+            if row_data is None:
                 continue
-            if row.data and row.data["total_count"] >= MIN_PATTERN_OBSERVATIONS:
-                best_match = row.data
+            if row_data.get("total_count", 0) >= MIN_PATTERN_OBSERVATIONS:
+                best_match = row_data
                 if i == 0:
                     best_match_key = "exact"
                 else:
