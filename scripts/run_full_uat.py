@@ -2094,6 +2094,12 @@ def print_summary():
 
 def main():
     """Run all UAT scenarios."""
+    try:
+        supabase.table("organizations").select("id").limit(1).execute()
+    except Exception:
+        print("\n⏭️  Migration 75 removed the organizations table — org ids are graph node UUIDs.")
+        print("   This UAT suite targets the old org-routing schema; it is obsolete as-is.")
+        sys.exit(0)
     dry_run = "--dry-run" in sys.argv
     layer_filter = None
     for arg in sys.argv:

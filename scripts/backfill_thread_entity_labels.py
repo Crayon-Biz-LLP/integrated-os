@@ -55,9 +55,10 @@ def backfill_entity_labels():
         label = None
         try:
             if etype == 'organization':
-                r = supabase.table('organizations').select('name').eq('id', eid).limit(1).execute()
+                # Migration 75: orgs are graph nodes; id = node uuid, label = name
+                r = supabase.table('graph_nodes').select('label').eq('id', eid).eq('type', 'organization').limit(1).execute()
                 if r.data:
-                    label = r.data[0].get('name', '')
+                    label = r.data[0].get('label', '')
             elif etype == 'project':
                 r = supabase.table('projects').select('name').eq('id', eid).limit(1).execute()
                 if r.data:

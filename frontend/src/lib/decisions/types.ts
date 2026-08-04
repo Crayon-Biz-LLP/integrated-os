@@ -105,6 +105,20 @@ export interface GraphPendingNode {
     [key: string]: any;
   };
   epistemic_status?: string;
+  /** Present on LIVE nodes: graph_nodes.metadata (enrichment lives here). */
+  metadata?: {
+    enrichment?: {
+      role?: string | null;
+      strategic_weight?: number | null;
+      is_active?: boolean;
+      org_type?: string | null;
+      description?: string | null;
+      organization_name?: string | null;
+      last_interaction_date?: string | null;
+      [key: string]: any;
+    };
+    [key: string]: any;
+  };
 }
 
 

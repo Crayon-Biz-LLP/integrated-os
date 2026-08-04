@@ -308,6 +308,12 @@ def backfill_domain_to_graph():
 
 
 if __name__ == '__main__':
+    try:
+        supabase.table("organizations").select("id").limit(1).execute()
+    except Exception:
+        print("\n⏭️  Migration 75 removed the people/organizations tables — no domain mirror to sync.")
+        print("   Use scripts/verify_consolidation.py for ongoing graph checks instead.")
+        sys.exit(0)
     print(f"{'[DRY RUN] ' if dry_run else '[LIVE] '}Backfill entity sync")
     print("=" * 60)
     d1 = backfill_graph_to_domain()

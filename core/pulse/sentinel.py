@@ -14,6 +14,7 @@ from core.pulse.calendar import MemoryCache
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.services.push_notification import send_push_notification
+from core.services.push_notification import push_data_content
 
 
 def hash_features_simple(features: dict, subsystem: str) -> str:
@@ -212,10 +213,18 @@ Context:
                     # P4: Push notification for meeting nudge (only when within 15 mins)
                     if mins_until <= 15:
                         try:
+                            nudge_content = f"{title} starts in {mins_until} min"
                             await send_push_notification(
-                                title=f"{title} starts in {mins_until} min",
+                                title=nudge_content,
                                 body=title,
-                                data={"type": "nudge", "event_title": title},
+                                data={
+                                    "type": "nudge",
+                                    "event_title": title,
+                                    # Carry the full message (with time context)
+                                    # so the Today screen renders it instantly on
+                                    # tap — no fetch wait.
+                                    "content": push_data_content(nudge_content),
+                                },
                             )
                         except Exception as push_err:
                             audit_log_sync("sentinel", "WARNING", f"Push nudge failed (non-critical): {push_err}")
@@ -426,10 +435,16 @@ Context:
                         # P4: Push notification for stale delegations
                         try:
                             top_person = stale_delegations[0]["person"] if stale_delegations else "someone"
+                            delegation_body = f"Waiting on {top_person} and {len(stale_delegations)-1} other(s)" if len(stale_delegations) > 1 else f"Waiting on {top_person}"
                             await send_push_notification(
                                 title="Something's waiting on you",
-                                body=f"Waiting on {top_person} and {len(stale_delegations)-1} other(s)" if len(stale_delegations) > 1 else f"Waiting on {top_person}",
-                                data={"type": "delegation"},
+                                body=delegation_body,
+                                data={
+                                    "type": "delegation",
+                                    # Carry the summary so the Inbox renders it
+                                    # instantly on tap (no fetch wait).
+                                    "content": push_data_content(delegation_body),
+                                },
                             )
                         except Exception as push_err:
                             audit_log_sync("sentinel", "WARNING", f"Push delegation alert failed (non-critical): {push_err}")

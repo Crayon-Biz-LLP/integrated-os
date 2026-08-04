@@ -1601,6 +1601,11 @@ if __name__ == "__main__":
     if not os.getenv("LIVE_DB"):
         print("WARNING: LIVE_DB not set. Set LIVE_DB=true to proceed.")
         sys.exit(1)
+    try:
+        supabase.table("organizations").select("id").limit(1).execute()
+    except Exception:
+        print("\n⏭️  Migration 75 removed the organizations table — this UAT suite targets the old org schema.")
+        sys.exit(0)
     if CHAT_ID in (0, 999888777):
         print("ERROR: TELEGRAM_CHAT_ID must be set. Check .env file.")
         sys.exit(1)

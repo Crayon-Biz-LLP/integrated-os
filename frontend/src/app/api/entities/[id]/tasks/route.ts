@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
+/**
+ * Active tasks mentioning a live entity (people + orgs).
+ *
+ * Relocated from /api/people/[id]/tasks during the People→Entities
+ * consolidation (the People tab was removed; task viewing moved into the
+ * Entities edit dialog). The path keeps the node id for a future owner-based
+ * query, but matching is by label like the old route.
+ *
+ * NOTE: requires migration 75 (tasks.organization_id -> graph_nodes). The
+ * org join is hardcoded to graph_nodes(label) — run db/75 before deploying.
+ */
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -29,8 +40,8 @@ export async function GET(
       deadline,
       created_at,
       organization_id,
-      organizations (
-        name
+      graph_nodes (
+        label
       )
     `)
     .ilike("title", `%${name}%`)
@@ -62,7 +73,7 @@ export async function GET(
       deadline: t.deadline,
       created_at: t.created_at,
       organization_id: t.organization_id,
-      organization_name: t.organizations?.name || null,
+      organization_name: t.graph_nodes?.label || null,
     }))
     .sort((a: any, b: any) => {
       const priorityDiff = (priorityOrder[a.priority] || 6) - (priorityOrder[b.priority] || 6);

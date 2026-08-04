@@ -132,7 +132,7 @@ async def process_callback_query(callback_query: dict):
             pending_id = int(cancel_clar_match.group(1))
             resolve_clarification(chat_id, 'node')
             supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', pending_id).eq('status', 'awaiting_details').execute()
-            await send_telegram(chat_id, "Cancelled — it stays pending for the next Decision Pulse.")
+            await send_telegram(chat_id, "Cancelled — it stays pending.")
             return {"success": True}
 
         # Confirm auto-decisions callback: "confirm_auto_all"
@@ -188,7 +188,7 @@ async def process_callback_query(callback_query: dict):
                     )
             except Exception as confirm_err:
                 audit_log_sync("webhook", "WARNING", f"Confirm auto-processed failed: {confirm_err}")
-                await send_telegram(chat_id, "Couldn't verify auto-decisions — check the logs.")
+                await send_telegram(chat_id, "Couldn't verify auto-decisions — try again in a moment.")
             return {"success": True}
 
         # Undo auto-processed items callback: "undo_auto_channels", "undo_auto_graph", "undo_auto_edge"
@@ -286,7 +286,7 @@ async def process_callback_query(callback_query: dict):
                     await send_telegram(chat_id, "Nothing to undo in the last 30 minutes — likely already verified or reversed.")
             except Exception as undo_err:
                 audit_log_sync("webhook", "WARNING", f"Undo auto-processed failed: {undo_err}")
-                await send_telegram(chat_id, "Couldn't undo those — check the logs.")
+                await send_telegram(chat_id, "Couldn't undo those — try again in a moment.")
             return {"success": True}
 
         # Suggest mode pattern callback: "pattern_approve_{subsystem}_{hash}" or "pattern_skip_{subsystem}_{hash}"
@@ -297,7 +297,7 @@ async def process_callback_query(callback_query: dict):
             # payload format: {subsystem}_{feature_hash}
             sep = payload.rfind('_')
             if sep <= 0:
-                await send_telegram(chat_id, "That pattern callback didn't parse.")
+                await send_telegram(chat_id, "That pattern didn't register — try again.")
                 return {"success": True}
             subsystem = payload[:sep]
             feature_hash = payload[sep+1:]
@@ -323,10 +323,10 @@ async def process_callback_query(callback_query: dict):
                     await send_telegram(chat_id, f"{subsystem} will auto-approve from now on.")
                     audit_log_sync("decision_pulse", "INFO", f"Suggest mode approve: {subsystem}:{feature_hash} pattern promoted to auto-approve")
                 except Exception as e:
-                    await send_telegram(chat_id, f"Couldn't approve that pattern: {e}")
+                    await send_telegram(chat_id, "Couldn't approve that pattern — try again.")
                     audit_log_sync("decision_pulse", "WARNING", f"Suggest mode approve failed: {e}")
             else:
-                await send_telegram(chat_id, "Skipped that pattern — you can look again in the next Decision Pulse.")
+                await send_telegram(chat_id, "Skipped that pattern — you can pick it up again later.")
 
             return {"success": True}
 
@@ -486,7 +486,7 @@ async def process_callback_query(callback_query: dict):
         
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Callback query processing failed: {e}")
-        await send_telegram(chat_id, "That tap didn't go through — mind trying again?")
+        await send_telegram(chat_id, "That tap didn't go through — try again?")
         
     return {"success": True}
 
@@ -532,7 +532,7 @@ async def process_webhook(update: dict):
             if triggered:
                 owner_id = os.getenv("TELEGRAM_CHAT_ID")
                 if owner_id:
-                    await send_telegram(owner_id, "Got the journal signal — syncing the archive and re-wiring the graph...")
+                    await send_telegram(owner_id, "Got the journal — syncing it into your archive now.")
                 return {"success": True, "message": "Sync pipeline triggered"}
             else:
                 return {"success": False, "message": "GitHub trigger failed"}
@@ -666,7 +666,7 @@ async def process_webhook(update: dict):
             if text.strip().lower() in ('cancel',):
                 supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', clar['pending_id']).in_('status', ['awaiting_details', 'awaiting_clarification']).execute()
                 resolve_clarification(chat_id, pending_type)
-                await send_telegram(chat_id, "Cancelled — it stays pending for the next Decision Pulse.")
+                await send_telegram(chat_id, "Cancelled — it stays pending.")
                 return {"success": True}
             if step == 'awaiting_person_context':
                 if text.strip().lower() in ('skip', 'no', 'none', 'n/a'):

@@ -76,7 +76,12 @@ Body:
         return ""
 
 
-async def add_person_from_email(name: str, email: str = None, source: str = 'email_ingest') -> int | None:
+async def add_person_from_email(name: str, email: str = None, source: str = 'email_ingest') -> str | None:
+    """Resolve (or create) a person, returning the graph NODE uuid.
+
+    The people mirror table was removed (migration 75) — the node's own
+    UUID is the person id and is what messages.linked_person_id stores.
+    """
     if not name or len(name.strip()) < 2:
         return None
 
@@ -86,11 +91,13 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
         print(f"Skipping blocklisted person from email: {name_clean}")
         return None
 
-    existing = supabase.table('people').select('id, name').eq('is_current', True).execute()
+    # Match against live person NODES by label / normalized name.
+    existing = supabase.table('graph_nodes').select('id, label, canonical_id').eq('type', 'person').eq('is_current', True).execute()
     existing_names = {}
     for p in (existing.data or []):
-        existing_names[p['name'].lower()] = p['id']
-        norm = normalize_person_name(p['name'])
+        label = p.get('label') or ''
+        existing_names[label.lower()] = p['id']
+        norm = normalize_person_name(label)
         if norm and norm not in existing_names:
             existing_names[norm] = p['id']
 
@@ -100,29 +107,25 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
     matched = existing_names.get(name_norm) if name_norm else None
     if matched is None:
         matched = existing_names.get(name_lower)
-        
+
     if matched is not None:
-        # Resolve canonical if it exists in graph
-        g_res = maybe_single_safe(supabase.table("graph_nodes").select("canonical_id, db_record_id").eq("db_record_id", str(matched)).eq('is_current', True))
-        if g_res and g_res.data and g_res.data.get("canonical_id"):
-            c_res = maybe_single_safe(supabase.table("graph_nodes").select("db_record_id").eq("id", g_res.data["canonical_id"]))
-            if c_res and c_res.data and c_res.data.get("db_record_id"):
-                return int(c_res.data["db_record_id"])
-        return matched
+        # Follow canonical chain if this node was merged into another
+        node = next((p for p in existing.data if p['id'] == matched), None)
+        canonical_id = (node or {}).get('canonical_id')
+        if canonical_id:
+            return str(canonical_id)
+        return str(matched)
 
     from core.pulse.tools import create_person
-    result_msg = await create_person(name=name_clean, context=source)
-    if "ID " in result_msg:
-        try:
-            new_id = int(result_msg.split("ID ")[1])
-            print(f"Added new person from email via tool: {name_clean}")
-            return new_id
-        except Exception:
-            pass
+    result = await create_person(name=name_clean, context=source)
+    # create_person returns the created node id (UUID) on success.
+    if result and result.get('node_id'):
+        print(f"Added new person from email via tool: {name_clean}")
+        return str(result['node_id'])
     return None
 
 
-async def write_relationship_note(sender_name: str, sender_email: str, subject: str, summary: str, people_id: int = None):
+async def write_relationship_note(sender_name: str, sender_email: str, subject: str, summary: str, people_id: str = None):
     prompt = f"""Synthesize a brief relationship note based on this email interaction. Focus on: who sent it, what was communicated, why it matters for Danny's relationship knowledge graph. NOT a raw summary.
 
 Sender: {sender_name} ({sender_email})

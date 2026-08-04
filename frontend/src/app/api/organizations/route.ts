@@ -9,14 +9,35 @@ export async function GET(req: NextRequest) {
     return NextResponse.json([]);
   }
 
-  const { data: orgsData, error: orgsError } = await supabase
-    .from("organizations")
-    .select("*")
-    .order("name", { ascending: true });
+  // Consolidation (migration 75): organizations live as graph nodes; the node
+  // UUID is the org id. Enrichment (is_active, org_type, description, parent)
+  // lives on node metadata.enrichment.
+  const { data: nodes, error: nodesError } = await supabase
+    .from("graph_nodes")
+    .select("id, label, metadata, db_record_id, created_at")
+    .eq("type", "organization")
+    .eq("is_current", true)
+    .limit(500);
 
-  if (orgsError) {
-    return NextResponse.json({ error: orgsError.message }, { status: 500 });
+  if (nodesError) {
+    return NextResponse.json({ error: nodesError.message }, { status: 500 });
   }
 
-  return NextResponse.json(orgsData);
+  const orgs = (nodes || []).map((n: any) => {
+    const meta = n.metadata || {};
+    const enrich = meta.enrichment || {};
+    return {
+      id: n.id,
+      name: n.label,
+      is_active: enrich.is_active ?? true,
+      org_type: enrich.org_type ?? null,
+      description: enrich.description ?? null,
+      parent_organization_id: enrich.parent_organization_id ?? null,
+      created_at: n.created_at,
+    };
+  });
+
+  orgs.sort((a: any, b: any) => a.name.localeCompare(b.name));
+
+  return NextResponse.json(orgs);
 }

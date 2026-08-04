@@ -12,10 +12,15 @@ export async function GET(req: NextRequest) {
   const dueWindow = searchParams.get("dueWindow");
 
   // Fetch org name lookup so tasks with org but no project show org name instead of "General"
-  const { data: orgsData } = await supabase.from("organizations").select("id, name");
+  // (migration 75: orgs are graph nodes — id is the node uuid, name is label)
+  const { data: orgsData } = await supabase
+    .from("graph_nodes")
+    .select("id, label")
+    .eq("type", "organization")
+    .eq("is_current", true);
   const orgMap: Record<string, string> = {};
   if (orgsData) {
-    orgsData.forEach((o: any) => { orgMap[o.id] = o.name; });
+    orgsData.forEach((o: any) => { orgMap[o.id] = o.label; });
   }
 
   let query = supabase

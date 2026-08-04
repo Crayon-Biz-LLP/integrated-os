@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from core.webhook.telegram import send_telegram
 from core.services.push_notification import send_push_notification
+from core.services.push_notification import push_data_content
 from core.lib.audit_logger import audit_log_sync
 from core.pulse.llm import supabase
 from core.lib.redis_cache import acquire_lock, release_lock
@@ -257,10 +258,12 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                     channels.append(f"{len(pending_edges)} graph edge")
                 push_title = f"{total} things need your call"
                 push_body = f"From {', '.join(channels)} — want a look?"
+                # Carry a summary so the app renders it the moment the
+                # notification is tapped — no waiting on the Inbox fetch.
                 await send_push_notification(
                     title=push_title,
                     body=push_body,
-                    data={"type": "decision"},
+                    data={"type": "decision", "content": push_data_content(push_body)},
                 )
                 supabase.table('core_config').upsert({
                     'key': 'last_decision_push_fp',

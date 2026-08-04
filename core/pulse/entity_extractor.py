@@ -109,9 +109,10 @@ async def extract_and_link_entities(
             continue
 
         if ntype == "organization":
+            # Graph-first: org id IS the graph node id (mirror removed, migration 75)
             try:
                 res = maybe_single_safe(
-                    supabase.table('organizations').select('id').ilike('name', label)
+                    supabase.table('graph_nodes').select('id').eq('type', 'organization').eq('is_current', True).ilike('label', label)
                 )
                 if res and res.data:
                     org_candidates.append(res.data['id'])

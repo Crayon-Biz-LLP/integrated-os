@@ -1163,12 +1163,12 @@ def backfill_orphaned_node_edges():
         "cluster": "OWNS"
     }
 
-    # Pre-fetch known person labels from people table for misclassification correction
+    # Pre-fetch known person labels from graph nodes for misclassification correction
     known_people = set()
     try:
-        pp = supabase.table("people").select("name").eq('is_current', True).execute()
+        pp = supabase.table("graph_nodes").select("label").eq("type", "person").eq('is_current', True).execute()
         for r in (pp.data or []):
-            known_people.add(r["name"].lower().strip())
+            known_people.add(r["label"].lower().strip())
     except Exception:
         pass
 
@@ -1246,10 +1246,22 @@ def backfill_orphaned_node_edges():
 
 
 
+def _mirror_table_exists(table: str) -> bool:
+    """True if a mirror table still exists (people/organizations)."""
+    try:
+        supabase.table(table).select("id").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
 def sync_person_nodes_to_people_table():
     """Sync person-type graph nodes to people table via people_id.
     For each person node missing people_id, match by label to people table.
     Creates new people table rows for unmatched person nodes."""
+    if not _mirror_table_exists("people"):
+        print("\n⏭️  Person→people sync skipped: people table removed (migration 75).")
+        return
     print("\n👤 Person node sync: Linking graph people to people table...")
     nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata", in_filter_col="type", in_filter_val=["person"])
     if not nodes:
@@ -1325,6 +1337,9 @@ def _fetch_paginated(table: str, select: str, in_filter_col: str = None, in_filt
 
 
 def sync_people_to_graph_nodes():
+    if not _mirror_table_exists("people"):
+        print("⏭️  People→graph sync skipped: people table removed (migration 75).")
+        return
     """Reverse sync: ensure every people table row has a graph_nodes entry.
     Creates graph_nodes for orphan people records (e.g. legacy imports, direct inserts).
     Skips entries marked [DELETED], [CHANGED TO ORGANIZATION], or [MERGED INTO].
@@ -1456,6 +1471,9 @@ def sync_person_org_edges():
 
 
 def sync_organizations_to_graph_nodes():
+    if not _mirror_table_exists("organizations"):
+        print("⏭️  Org→graph sync skipped: organizations table removed (migration 75).")
+        return
     """Reverse sync: ensure every organizations table row has a graph_nodes entry.
     Creates organization-type graph nodes with db_record_id → organizations.id.
     If a wrong-type node (e.g. person) exists with the same label, deletes it first
@@ -1748,11 +1766,14 @@ if __name__ == "__main__":
     
     # Verification
     org_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "organization").not_.is_("db_record_id", "null").eq('is_current', True).execute()
-    expected_orgs = supabase.table("organizations").select("*", count="exact").execute()
     actual_org_count = getattr(org_count, "count", 0) if hasattr(org_count, "count") else len(org_count.data or []) if org_count else 0
-    expected_org_count = getattr(expected_orgs, "count", 0) if hasattr(expected_orgs, "count") else len(expected_orgs.data or [])
-    if actual_org_count < expected_org_count:
-        print(f"⚠️  Org sync mismatch: {actual_org_count}/{expected_org_count} graph nodes created — some orgs missing")
+    try:
+        expected_orgs = supabase.table("organizations").select("*", count="exact").execute()
+        expected_org_count = getattr(expected_orgs, "count", 0) if hasattr(expected_orgs, "count") else len(expected_orgs.data or [])
+        if actual_org_count < expected_org_count:
+            print(f"⚠️  Org sync mismatch: {actual_org_count}/{expected_org_count} graph nodes created — some orgs missing")
+    except Exception:
+        print("⏭️  Org-count verification skipped: organizations table removed (migration 75).")
     
     proj_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "project").not_.is_("db_record_id", "null").eq('is_current', True).execute()
     expected_projs = supabase.table("projects").select("*", count="exact").execute()

@@ -1,7 +1,7 @@
 from core.services.db import get_supabase, maybe_single_safe
 import difflib
 import re
-from datetime import datetime, timezone
+import time
 from dotenv import load_dotenv
 from core.lib.audit_logger import audit_log_sync
 
@@ -63,33 +63,351 @@ def canonicalize_relationship(rel: str, source_type: str, target_type: str) -> s
 
 _alias_cache = None
 
+
+def _meta_aliases(node) -> list:
+    """Extract the metadata.aliases array from a graph node (JSONB-safe)."""
+    m = node.get("metadata") or {}
+    if isinstance(m, str):
+        try:
+            import json as _json
+            m = _json.loads(m)
+        except Exception:
+            m = {}
+    al = m.get("aliases") or []
+    if isinstance(al, str):
+        al = [al]
+    return [str(a).strip() for a in al if str(a).strip()]
+
+
+def _build_alias_cache() -> dict:
+    """Build {alias_lower: canonical_label} from graph_nodes metadata.aliases.
+
+    Migration 76: aliases live ON the node (single source of truth). The old
+    person_aliases table is only consulted as a fallback during the transition
+    window (code deployed before the SQL runs) — node data always wins.
+    """
+    cache = {}
+    try:
+        res = supabase.table("graph_nodes") \
+            .select("id, label, type, is_current, metadata") \
+            .in_("type", ["person", "organization"]) \
+            .eq("is_current", True) \
+            .execute()
+        for n in (res.data or []):
+            label = (n.get("label") or "").strip()
+            if not label:
+                continue
+            cache[label.lower()] = label  # self-mapping (case-insensitive)
+            for a in _meta_aliases(n):
+                a_low = a.lower()
+                if a_low and a_low != label.lower():
+                    cache[a_low] = label
+    except Exception as e:
+        audit_log_sync("graph_pipeline", "WARNING", f"Alias cache build from nodes failed: {e}")
+    # Transition fallback: person_aliases table may still exist pre-migration.
+    try:
+        res = supabase.table("person_aliases").select("canonical_name, alias").execute()
+        for r in (res.data or []):
+            a = (r.get("alias") or "").lower().strip()
+            c = (r.get("canonical_name") or "").strip()
+            if a and c:
+                cache.setdefault(a, c)
+    except Exception:
+        pass  # table gone post-migration — nodes are authoritative
+    return cache
+
+
 def resolve_alias(label: str) -> str:
-    """Check if the label matches a known alias, and return the canonical name. 
-    Otherwise return the original label."""
+    """Check if the label matches a known alias and return the canonical name.
+
+    Reads graph_nodes metadata.aliases (migration 76). Otherwise returns the
+    original label."""
     global _alias_cache
     if _alias_cache is None:
-        try:
-            res = supabase.table("person_aliases").select("canonical_name, alias").execute()
-            _alias_cache = {r["alias"].lower().strip(): r["canonical_name"] for r in (res.data or [])}
-        except Exception:
-            _alias_cache = {}
-            
+        _alias_cache = _build_alias_cache()
+
     lookup = label.lower().strip()
     if lookup in _alias_cache:
         canonical = _alias_cache[lookup]
-        # Write-back async or fire-and-forget
+        # Fire-and-forget write-back: bump metadata.alias_usage on the node.
         try:
-            # We can't do async easily here, so just sync execute
-            res = maybe_single_safe(supabase.table("person_aliases").select("resolution_count").eq("alias", lookup))
-            count = res.data.get("resolution_count", 0) if res and res.data else 0
-            supabase.table("person_aliases").update({
-                "resolution_count": count + 1,
-                "last_resolved_at": datetime.now(timezone.utc).isoformat()
-            }).eq("alias", lookup).execute()
+            res = supabase.table("graph_nodes") \
+                .select("id, metadata") \
+                .ilike("label", canonical) \
+                .eq("is_current", True) \
+                .limit(1) \
+                .execute()
+            if res and res.data:
+                node = res.data[0]
+                m = node.get("metadata") or {}
+                if isinstance(m, str):
+                    import json as _json
+                    try:
+                        m = _json.loads(m)
+                    except Exception:
+                        m = {}
+                usage = dict(m.get("alias_usage") or {})
+                usage[lookup] = int(usage.get(lookup, 0)) + 1
+                supabase.table("graph_nodes").update({
+                    "metadata": {**m, "alias_usage": usage}
+                }).eq("id", node["id"]).execute()
         except Exception as e:
-            audit_log_sync("graph_pipeline", "WARNING", f"Alias write-back failed for '{lookup}': {e}")
+            audit_log_sync("graph_pipeline", "WARNING", f"Alias usage write-back failed for '{lookup}': {e}")
         return canonical
     return label
+
+
+# ── Relationship-aware resolution (migration 76) ─────────────────────────────
+# Maps natural-language relationship terms to canonical edge types so a query
+# like "what are the tasks related to my wife" resolves via the graph edge
+# (Danny --SPOUSE_OF--> Sunjula Daniel) instead of a hardcoded name.
+RELATIONSHIP_TERMS = {
+    "wife": "SPOUSE_OF",
+    "husband": "SPOUSE_OF",
+    "spouse": "SPOUSE_OF",
+    "mother": "PARENT_OF",
+    "mom": "PARENT_OF",
+    "father": "PARENT_OF",
+    "dad": "PARENT_OF",
+    "brother": "SIBLING_OF",
+    "sister": "SIBLING_OF",
+    "son": "CHILD_OF",
+    "daughter": "CHILD_OF",
+    "friend": "FRIEND_OF",
+    "colleague": "WORKS_WITH",
+    "co-worker": "WORKS_WITH",
+    "coworker": "WORKS_WITH",
+    "teammate": "WORKS_WITH",
+    "boss": "WORKS_WITH",
+}
+
+_user_node_cache = None
+_USER_CACHE_TTL = 300  # seconds — node/alias edits must be visible without a restart
+
+
+def _cache_fresh(cached, ttl: int) -> bool:
+    return cached is not None and (time.time() - cached[0]) < ttl
+
+
+def get_user_node() -> dict | None:
+    """Return the live 'user' node (the person the app belongs to, e.g. Danny).
+
+    Detection order (future-user safe): a live person node whose metadata.aliases
+    contains 'user'/'me'/'my'/'i', else the node labeled 'Danny'. TTL-cached.
+    """
+    global _user_node_cache
+    if _cache_fresh(_user_node_cache, _USER_CACHE_TTL):
+        return _user_node_cache[1]
+    try:
+        res = supabase.table("graph_nodes") \
+            .select("id, label, metadata") \
+            .eq("type", "person") \
+            .eq("is_current", True) \
+            .execute()
+        result = None
+        for n in (res.data or []):
+            label = (n.get("label") or "").lower().strip()
+            aliases = [a.lower() for a in _meta_aliases(n)]
+            if label in ("danny", "user") or any(a in ("user", "me", "my", "i") for a in aliases):
+                result = {"id": n["id"], "label": n.get("label")}
+                break
+        if not result:
+            # Fallback: any person node labeled danny/user even without aliases
+            res2 = supabase.table("graph_nodes") \
+                .select("id, label") \
+                .eq("type", "person") \
+                .in_("label", ["Danny", "danny", "DANNY", "User", "user"]) \
+                .eq("is_current", True) \
+                .limit(1) \
+                .execute()
+            if res2 and res2.data:
+                result = {"id": res2.data[0]["id"], "label": res2.data[0]["label"]}
+        _user_node_cache = (time.time(), result)
+    except Exception as e:
+        audit_log_sync("graph_pipeline", "WARNING", f"get_user_node failed: {e}")
+        _user_node_cache = (time.time(), None)
+    return _user_node_cache[1]
+
+
+def resolve_relationship_reference(text: str) -> dict | None:
+    """Resolve a relationship mention in a query to a person node.
+
+    e.g. "my wife", "my wife's tasks", "our brother" → follows the user node's
+    graph edges (SPOUSE_OF / SIBLING_OF / ...) and returns the OTHER person node.
+
+    Returns {"node_id", "label", "relationship", "term"} or None.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    low = text.lower()
+    user = get_user_node()
+    if not user:
+        return None
+
+    referenced = False
+    # Relationship ownership matters: 'my wife'/'our wife' (and bare "wife's
+    # tasks") are user-relative → resolve against the user node. But 'his
+    # wife'/'her husband'/'their sister' refer to SOMEONE ELSE's relationship
+    # — resolving those against the user node would answer "Marcus and his
+    # wife" with the user's own spouse. Three-way discrimination below.
+    for term, rel in RELATIONSHIP_TERMS.items():
+        if re.search(rf"\b(?:his|her|their)\s+{re.escape(term)}\b", low):
+            continue  # third-person possessive — not the user's relationship
+        if not re.search(rf"\b(?:my|our)?\s*{re.escape(term)}\b", low):
+            continue
+        referenced = True
+        try:
+            res = supabase.table("graph_edges") \
+                .select("source_node_id, target_node_id, relationship") \
+                .ilike("relationship", rel) \
+                .or_(f"source_node_id.eq.{user['id']},target_node_id.eq.{user['id']}") \
+                .eq("is_current", True) \
+                .limit(20) \
+                .execute()
+        except Exception as e:
+            audit_log_sync("graph_pipeline", "WARNING", f"Relationship edge lookup failed for '{term}': {e}")
+            continue
+        for e in (res.data or []):
+            other_id = e["target_node_id"] if e["source_node_id"] == user["id"] else e["source_node_id"]
+            n = maybe_single_safe(supabase.table("graph_nodes")
+                                  .select("id, label, type")
+                                  .eq("id", other_id)
+                                  .eq("is_current", True))
+            if n and n.data and n.data.get("type") == "person":
+                return {
+                    "node_id": n.data["id"],
+                    "label": n.data["label"],
+                    "relationship": rel,
+                    "term": term,
+                }
+        # Term found but no matching edge — try remaining terms before giving up
+    if referenced:
+        return None
+    return None
+
+
+_person_index_cache = None
+_PERSON_INDEX_TTL = 300  # seconds — new people/aliases become resolvable quickly
+_COMMON_QUERY_WORDS = {
+    "what", "where", "when", "why", "who", "how", "which", "tasks", "related",
+    "about", "does", "doing", "show", "give", "list", "tell", "from", "with",
+    "this", "that", "there", "their", "these", "those", "task", "update", "status",
+}
+
+
+def _build_person_index() -> list:
+    """Cache live person nodes as (label, aliases, id) for text scanning. TTL'd."""
+    global _person_index_cache
+    if _cache_fresh(_person_index_cache, _PERSON_INDEX_TTL):
+        return _person_index_cache[1]
+    idx = []
+    try:
+        res = supabase.table("graph_nodes") \
+            .select("id, label, metadata") \
+            .eq("type", "person") \
+            .eq("is_current", True) \
+            .execute()
+        for n in (res.data or []):
+            label = (n.get("label") or "").strip()
+            if not label:
+                continue
+            idx.append({"id": n["id"], "label": label, "aliases": _meta_aliases(n)})
+        # Transition fallback: pre-migration the aliases still live in the
+        # person_aliases table — merge them so exact alias matches work before
+        # db/76 is applied (node data wins after migration).
+        try:
+            a_res = supabase.table("person_aliases").select("alias, canonical_name").execute()
+            for r in (a_res.data or []):
+                alias = (r.get("alias") or "").strip()
+                canon = (r.get("canonical_name") or "").strip()
+                if not alias or not canon:
+                    continue
+                for n in idx:
+                    if n["label"].lower() == canon.lower():
+                        if alias.lower() not in [a.lower() for a in n["aliases"]]:
+                            n["aliases"].append(alias)
+                        break
+        except Exception:
+            pass  # table gone post-migration
+    except Exception as e:
+        audit_log_sync("graph_pipeline", "WARNING", f"_build_person_index failed: {e}")
+    _person_index_cache = (time.time(), idx)
+    return idx
+
+
+def find_person_node_for_mention(mention: str) -> dict | None:
+    """Resolve a person mention (label or alias) to a live person node.
+
+    Returns {"node_id", "label"} or None. Used at query time so "sunju" and
+    "Sunjula" both resolve to the Sunjula Daniel node via metadata.aliases.
+    """
+    if not mention or not isinstance(mention, str):
+        return None
+    mention_low = mention.lower().strip()
+    if len(mention_low) < 3:
+        return None
+    idx = _build_person_index()
+    # Exact label / alias match first
+    for n in idx:
+        if n["label"].lower() == mention_low:
+            return {"node_id": n["id"], "label": n["label"], "exact": True}
+        for a in n["aliases"]:
+            if a.lower() == mention_low:
+                return {"node_id": n["id"], "label": n["label"], "exact": True}
+    # Substring fallback for partial names (e.g. "sunjula" in "Sunjula Daniel")
+    for n in idx:
+        label = n["label"]
+        if len(label) >= 4 and len(mention_low) >= 4 and mention_low in label.lower():
+            return {"node_id": n["id"], "label": label, "exact": False}
+    return None
+
+
+def find_person_node_in_text(text: str) -> dict | None:
+    """Scan a full query for any known person (label or alias) and resolve it.
+
+    Priority: relationship terms handled separately; here we match exact
+    word-boundary label/alias occurrences, then token-substring matches for
+    tokens >= 4 chars (excluding common query words). Returns
+    {"node_id", "label", "matched", "exact"} or None.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    low = text.lower()
+    idx = _build_person_index()
+
+    # 1. Exact word-boundary matches of full label / alias
+    for n in idx:
+        label = n["label"]
+        if re.search(rf"\b{re.escape(label.lower())}\b", low):
+            return {"node_id": n["id"], "label": label, "matched": label, "exact": True}
+        for a in n["aliases"]:
+            if len(a) >= 3 and re.search(rf"\b{re.escape(a.lower())}\b", low):
+                return {"node_id": n["id"], "label": label, "matched": a, "exact": True}
+
+    # 2. Token-substring: any token (>=4 chars) that is a substring of a label
+    #    and not a common query word (e.g. "sunju" inside "Sunjula Daniel").
+    #    Returns exact=False so callers can choose to trust it less.
+    tokens = [t.strip(" ,.!?;:'\"") for t in re.split(r"\s+", low)]
+    tokens = [t for t in tokens if len(t) >= 4 and t not in _COMMON_QUERY_WORDS]
+    for t in tokens:
+        for n in idx:
+            label = n["label"]
+            if len(label) >= len(t) and t in label.lower():
+                return {"node_id": n["id"], "label": label, "matched": t, "exact": False}
+    return None
+
+
+def resolve_person_in_query(query: str) -> dict | None:
+    """Query-time person resolution: relationship first, then name/alias scan.
+
+    Returns {"node_id", "label", "exact"} or None. This is the entry point
+    that makes "my wife" (via SPOUSE_OF edge) AND "sunju" (via
+    metadata.aliases) both resolve to Sunjula Daniel's node.
+    """
+    rel = resolve_relationship_reference(query)
+    if rel:
+        return {"node_id": rel["node_id"], "label": rel["label"], "exact": True}
+    return find_person_node_in_text(query)
 
 NOISE_LABELS = {
     # Pronouns
@@ -217,85 +535,30 @@ def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
             pass
             
         # 5. DB lookup for grounded types — exact guard pattern (not order-dependent)
-        # 5a: People table — skip if role marks deletion/org-change/merge
-        #         or if deleted_at is set, or if the linked graph_node is no longer current
-        #         (e.g. merged into another entity). This last check is critical:
-        #         without it, merged entities keep reappearing because the people row
-        #         stays active even after the graph_node is merged/deleted.
+        # 5a/5b: Consolidation (migration 74) — resolve directly against live
+        #        graph nodes. is_current=True already excludes merged/deleted
+        #        entities (merge sets is_current=false + canonical_id), so the
+        #        people/org mirror tables are no longer consulted and the
+        #        resurrection-via-stale-mirror bug class is eliminated.
         try:
-            db_res = maybe_single_safe(supabase.table('people').select('id, name, role, deleted_at, graph_node_id').ilike('name', label).eq('is_current', True))
+            db_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label, type').eq('type', 'person').ilike('label', label).eq('is_current', True))
             if db_res and db_res.data:
-                role = str(db_res.data.get('role') or '')
-                is_deleted = False
-                if any(m in role for m in ["[DELETED]", "[CHANGED TO ORGANIZATION]", "[MERGED INTO"]):
-                    is_deleted = True
-                if db_res.data.get('deleted_at'):
-                    is_deleted = True
-                # Check if this person's linked graph_node is still current
-                # If the graph_node was merged or deleted (hard delete), the people
-                # row is orphaned and should not be used for entity resolution.
-                gn_id = db_res.data.get('graph_node_id')
-                if gn_id:
-                    try:
-                        gn_check = maybe_single_safe(
-                            supabase.table('graph_nodes').select('is_current').eq('id', gn_id)
-                        )
-                        if not gn_check or not gn_check.data:
-                            # Graph node was hard-deleted from DB — people row orphaned
-                            is_deleted = True
-                        elif not gn_check.data.get('is_current'):
-                            # Graph node was merged into another entity — orphaned
-                            is_deleted = True
-                    except Exception:
-                        pass
-                # Fallback: if graph_node_id was null (never backfilled), check by label
-                if not is_deleted:
-                    try:
-                        non_current = supabase.table('graph_nodes').select('id, canonical_id')\
-                            .ilike('label', db_res.data['name'])\
-                            .eq('type', 'person')\
-                            .eq('is_current', False)\
-                            .not_.is_('canonical_id', 'null')\
-                            .limit(1).execute()
-                        if non_current and non_current.data:
-                            # This person was merged — treat as deleted
-                            is_deleted = True
-                    except Exception:
-                        pass
-                if not is_deleted:
-                    result["label"] = db_res.data["name"]
-                    result["node_type"] = "person"
-                    result["confidence"] = 0.9
-                    return result
+                result["label"] = db_res.data["label"]
+                result["node_id"] = db_res.data["id"]
+                result["node_type"] = "person"
+                result["confidence"] = 0.9
+                return result
         except Exception:
             pass
 
-        # 5b: Organizations table — skip if deactivated, or if linked graph_node no longer current
         try:
-            db_res = maybe_single_safe(supabase.table('organizations').select('id, name, is_active, graph_node_id').ilike('name', label))
+            db_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label, type').eq('type', 'organization').ilike('label', label).eq('is_current', True))
             if db_res and db_res.data:
-                is_deleted = False
-                if db_res.data.get('is_active') is False:
-                    is_deleted = True
-                gn_id = db_res.data.get('graph_node_id')
-                if gn_id:
-                    try:
-                        gn_check = maybe_single_safe(
-                            supabase.table('graph_nodes').select('is_current').eq('id', gn_id)
-                        )
-                        if not gn_check or not gn_check.data:
-                            # Graph node was hard-deleted — org row orphaned
-                            is_deleted = True
-                        elif not gn_check.data.get('is_current'):
-                            # Graph node was merged — org row orphaned
-                            is_deleted = True
-                    except Exception:
-                        pass
-                if not is_deleted:
-                    result["label"] = db_res.data["name"]
-                    result["node_type"] = "organization"
-                    result["confidence"] = 0.9
-                    return result
+                result["label"] = db_res.data["label"]
+                result["node_id"] = db_res.data["id"]
+                result["node_type"] = "organization"
+                result["confidence"] = 0.9
+                return result
         except Exception:
             pass
 
@@ -504,54 +767,10 @@ def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "
     
     from core.lib.audit_logger import audit_log_sync
 
-    # 8. Clean up the domain table row for the merged-away entity
-    # Without this, the entity detector finds the active domain row and
-    # recreates the graph node — causing merged entities to reappear.
-    # Uses db_record_id first, then falls back to graph_node_id on domain table.
-    src_type = src_node.get('type')
-    src_db_id = src_node.get('db_record_id')
-    src_domain_id = None
-    
-    # Resolve the domain row ID: by db_record_id first, then by graph_node_id
-    if src_type == 'person':
-        if src_db_id:
-            src_domain_id = src_db_id
-        else:
-            try:
-                p_res = maybe_single_safe(supabase.table('people').select('id').eq('graph_node_id', source_id))
-                if p_res and p_res.data:
-                    src_domain_id = str(p_res.data['id'])
-            except Exception:
-                pass
-        if src_domain_id:
-            try:
-                supabase.table('people').update({
-                    'deleted_at': datetime.now(timezone.utc).isoformat(),
-                    'is_current': False,
-                    'strategic_weight': 0,
-                    'graph_node_id': None
-                }).eq('id', src_domain_id).execute()
-            except Exception as e:
-                audit_log_sync("pulse", "WARNING", f"Failed to clean up people row on merge: {e}")
-    elif src_type == 'organization':
-        if src_db_id:
-            src_domain_id = src_db_id
-        else:
-            try:
-                o_res = maybe_single_safe(supabase.table('organizations').select('id').eq('graph_node_id', source_id))
-                if o_res and o_res.data:
-                    src_domain_id = str(o_res.data['id'])
-            except Exception:
-                pass
-        if src_domain_id:
-            try:
-                supabase.table('organizations').update({
-                    'is_active': False,
-                    'graph_node_id': None
-                }).eq('id', src_domain_id).execute()
-            except Exception as e:
-                audit_log_sync("pulse", "WARNING", f"Failed to clean up org row on merge: {e}")
-    # Project type removed — projects are now mapped as organizations
+    # 8. Domain-table cleanup on merge: NOT NEEDED since migration 75.
+    # The people/organizations mirror tables no longer exist — the graph node
+    # itself (is_current=false + canonical_id) is the single source of truth.
+    # is_current=false prevents the entity detector from resurrecting it.
 
     audit_log_sync("pulse", "INFO", f"Merged node {src_node['label']} into {tgt_node['label']} ({provenance})")
     
@@ -588,11 +807,15 @@ def validate_edge(source_type: str, relationship: str, target_type: str) -> dict
     return {"action": "auto_reject", "reason": f"Invalid relationship {rel_upper} for {source_type} -> {target_type}"}
 
 def has_structural_anchor(label: str, node_type: str) -> bool:
+    """Check whether a live graph node of the given type exists for this label.
+
+    Consolidation (migration 74): the graph node is the single source of
+    truth — the mirror tables are no longer consulted.
+    """
     if node_type not in GROUNDED_TYPES or GROUNDED_TYPES[node_type] is None:
         return True  # no check available — allow through
-    table, column = GROUNDED_TYPES[node_type]
     try:
-        result = supabase.table(table).select('id').ilike(column, label.strip()).execute()
+        result = supabase.table('graph_nodes').select('id').eq('type', node_type).ilike('label', label.strip()).eq('is_current', True).execute()
         return len(result.data) > 0
     except Exception:
         return True

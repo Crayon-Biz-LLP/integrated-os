@@ -17,6 +17,7 @@ from core.llm.config import WorkloadProfile
 from core.webhook.telegram import send_telegram
 from core.services.push_notification import send_push_notification
 from core.services.push_notification import send_silent_push
+from core.services.push_notification import push_data_content
 from core.services.google_service import get_tasks_service
 from core.lib.audit_logger import info, warning, error, audit_log_sync
 from core.lib.temporal_lineage import detect_drift
@@ -64,7 +65,7 @@ def _extract_insight(text: str) -> str:
     """Extract the first meaningful narrative paragraph from briefing text.
 
     Skips the first line (which is usually the briefing mode like
-    "Closing the loop: Sign off.") and returns the next non-empty paragraph.
+    "Wrap-up.") and returns the next non-empty paragraph.
     """
     if not text:
         return ""
@@ -77,6 +78,62 @@ def _extract_insight(text: str) -> str:
             return stripped[:120]
     # Fallback: return first line
     return lines[0][:120] if lines else ''
+
+
+_SECTION_ICONS = '🏡⛪🚀💡✅📅🛡️🔴🟡⚪⏳'
+_BARE_SECTION_NAMES = {
+    'home', 'work', 'church', 'ideas', 'schedule', 'done',
+    'stale', 'stale loops', 'backlog', 'weekend recon', 'urgent', 'important',
+}
+
+
+def _is_section_line(line: str) -> bool:
+    """True if a line is a briefing section header or a task bullet.
+
+    An emoji-led line only counts as a section when the word after the icon is
+    a known section name (e.g. "🏠 Home") — a narrative opening like "✅ Done 3
+    tasks today — …" is NOT treated as a section, so we never double-inject.
+    """
+    s = line.strip()
+    if not s:
+        return False
+    if s.startswith(('-', '•')):
+        return True
+    if s[0] in _SECTION_ICONS:
+        s = s[1:].strip()
+    bare = s.split(':', 1)[0].strip().lower().rstrip('.')
+    return bare in _BARE_SECTION_NAMES
+
+
+def _ensure_briefing_opening(briefing_text: str, briefing_mode: str, opening_line: str) -> str:
+    """Guarantee the briefing opens with the headline + a Rhodey opening line.
+
+    The prompt mandates an opening, but a weak LLM run can still drop it —
+    this enforces it server-side so a pulse never renders as a bare section list.
+    """
+    text = briefing_text.strip()
+    if not text:
+        return text
+    lines = [ln.strip() for ln in text.split('\n')]
+    # 1) Headline first — prepend if the LLM skipped or mangled it. Compare on
+    #    the punctuation-normalised token so a near-match ("Morning check:" vs
+    #    "Morning check.") never produces a doubled headline.
+    first = lines[0].rstrip('.:') if lines else ''
+    mode_key = briefing_mode.strip().rstrip('.:')
+    if not first or mode_key not in first:
+        lines = [briefing_mode, ''] + lines
+    # 2) The line right after the headline must be narrative, not a section.
+    anchor = 1
+    while anchor < len(lines) and not lines[anchor]:
+        anchor += 1
+    if anchor < len(lines) and not _is_section_line(lines[anchor]):
+        return '\n'.join(lines)
+    # 3) No opening — inject one between the headline and the board.
+    opening = opening_line.strip() or "Here's where things stand."
+    tail = lines[1:]
+    while tail and not tail[0]:
+        tail.pop(0)
+    return '\n'.join([lines[0], '', opening, ''] + tail)
 
 
 def _store_briefing_to_history(briefing_text: str):
@@ -372,28 +429,28 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         is_monday_morning = (day == 1 and hour < 11)
 
         if is_weekend and not is_pre_monday:
-            briefing_mode = "⚪ CHORES & 💡 IDEAS (Weekend Rest)"
+            briefing_mode = "Weekend: chores and ideas."
             system_persona = "Focus ONLY on Home, Family, and Chores. Explicitly hide Work tasks. Be relaxed."
         elif is_pre_monday:
-            briefing_mode = "🌙 Pre-Monday: Loading the board."
+            briefing_mode = "Pre-Monday: loading the week."
             system_persona = "Pre-load Monday. Show Work tasks that start tomorrow. Keep Home visible but deprioritized. Be direct."
         else:
             if hour < 12:
-                briefing_mode = "Morning Status: We're cleared."
-                system_persona = "Cut through the noise and focus Danny on what moves the needle today. No coaching, no motivation—just what needs doing."
+                briefing_mode = "Morning check."
+                system_persona = "Give Danny the plain picture of the board — what's on top, what's new, what needs doing. No coaching."
             elif hour < 15 or (hour == 15 and now.minute < 30):
-                briefing_mode = "Afternoon Check: Moving the needle."
-                system_persona = "Focused on the main effort. Keep Danny building toward the goal. Be direct."
+                briefing_mode = "Afternoon check."
+                system_persona = "Keep Danny moving on today's priorities. Be direct."
             elif hour < 19:
                 if day == 5:
-                    briefing_mode = "Closing the loop: Friday sign off."
-                    system_persona = "Push Danny to close work tasks so he can transition to weekend. Log pending items. Be dry."
+                    briefing_mode = "Friday wrap-up."
+                    system_persona = "Help Danny close the work week: what's done, what can wait. Be dry."
                 else:
-                    briefing_mode = "Closing the loop: Sign off."
-                    system_persona = "Push Danny to close work tasks so he can transition to family. Log pending items. Be dry."
+                    briefing_mode = "Wrap-up."
+                    system_persona = "Help Danny close the day: what's done, what's still open. Be dry."
             else:
-                briefing_mode = "Intel: Vaulted."
-                system_persona = "Focus on closure and transition. Secure the board. Highlight what was ✅ Done today and what matters on the 🏠 Home front. Keep work loops minimal but visible. Maintain the 'Grid'—vertical sections are mandatory."
+                briefing_mode = "Night wind-down."
+                system_persona = "Close out the day: what got done, what's still open, what's next. Be calm and brief."
 
         is_overloaded = len(active_tasks) > 15
 
@@ -968,6 +1025,28 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         briefing_text = re.sub(r'(?<!\n)\n(?=🚀|🏠|⛪|💡|✅|📅|🔴|🟡|⚪|⏳|🛡️)', r'\n\n', briefing_text)
         briefing_text = re.sub(r'\[ID:\d+\]', '', briefing_text)
 
+        # ── Opening guarantee: headline + Rhodey opening line (server-side) ──
+        # The prompt mandates an opening, but a weak LLM run can still drop it.
+        # Enforce it here so every pulse opens with the headline and a voice
+        # line before any section header.
+        try:
+            opening_hint = ""
+            if isinstance(output, dict):
+                try:
+                    opening_hint = (pulse_output.voice_line or "").strip()
+                except Exception:
+                    pass
+            if not opening_hint:
+                if new_inputs_text and new_inputs_text != "None":
+                    opening_hint = "A few things came in since the last briefing — here's where things stand."
+                elif overdue_tasks or urgent_tasks:
+                    opening_hint = "There are items that need your attention — here's where things stand."
+                else:
+                    opening_hint = "Here's where things stand."
+            briefing_text = _ensure_briefing_opening(briefing_text, briefing_mode, opening_hint)
+        except Exception as e:
+            audit_log_sync("pulse", "WARNING", f"Opening guarantee failed: {e}")
+
         # ── Sunday transparency report (must run before Telegram send) ──
         # Save pre-report briefing for voice_line extraction (report text could confuse _extract_insight)
         pre_report_briefing = briefing_text
@@ -1007,7 +1086,7 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             push_count = await send_push_notification(
                 title="Rhodey",
                 body=notification_body,
-                data={"type": "briefing"},
+                data={"type": "briefing", "content": push_data_content(briefing_text)},
             )
             audit_log_sync("pulse", "INFO", f"📲 Push notification sent to {push_count} device(s)")
             # Silent data-only push for Flutter background refresh
@@ -1084,13 +1163,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
                 pulse_mode_clean = 'morning'
             elif 'afternoon' in mode_lower:
                 pulse_mode_clean = 'afternoon'
-            elif 'closing' in mode_lower or 'sign off' in mode_lower:
+            elif 'wrap' in mode_lower or 'closing' in mode_lower or 'sign off' in mode_lower:
                 pulse_mode_clean = 'closing_loop'
             elif 'weekend' in mode_lower or 'chores' in mode_lower:
                 pulse_mode_clean = 'weekend'
             elif 'pre-monday' in mode_lower or 'loading' in mode_lower:
                 pulse_mode_clean = 'pre_monday'
-            elif 'intel' in mode_lower or 'vaulted' in mode_lower:
+            elif 'wind' in mode_lower or 'intel' in mode_lower or 'vaulted' in mode_lower:
                 pulse_mode_clean = 'intel'
             else:
                 pulse_mode_clean = 'check_in'

@@ -230,3 +230,88 @@ export async function fetchLiveGraphNodes(): Promise<any[]> {
   const json = await res.json();
   return (json.data || []);
 }
+
+/**
+ * Update enrichment on a LIVE graph node (consolidation migrations 74-76:
+ * role / strategic_weight / is_active / org_type / description /
+ * organization_name / last_interaction_date all live in metadata.enrichment).
+ * Only the allow-listed fields are written server-side; extra keys are ignored.
+ */
+export interface EnrichmentUpdates {
+  role?: string | null;
+  strategic_weight?: number | null;
+  is_active?: boolean;
+  org_type?: string | null;
+  description?: string | null;
+  organization_name?: string | null;
+  last_interaction_date?: string | null;
+}
+
+export async function updateGraphNodeEnrichment(
+  nodeId: number | string,
+  updates: EnrichmentUpdates
+): Promise<{ success: boolean; message?: string; enrichment?: Record<string, any> }> {
+  const res = await fetch(`/api/graph-node/${nodeId}/enrichment`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Failed to update details' }));
+    throw new Error(err.detail || 'Failed to update details');
+  }
+  return res.json();
+}
+
+// ── Aliases (moved from lib/people — People tab consolidated into Entities) ──
+
+export interface EntityAlias {
+  id: string;
+  alias: string;
+  canonical_name: string;
+  resolution_count?: number;
+}
+
+/** All aliases, filtered client-side by canonical name (FastAPI /api/aliases). */
+export async function fetchAliasesForEntity(canonicalName: string): Promise<EntityAlias[]> {
+  const res = await fetch(`/api/aliases`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch aliases");
+  const data = await res.json();
+  const aliases: EntityAlias[] = data.aliases || [];
+  return aliases.filter((a) => a.canonical_name.toLowerCase() === canonicalName.toLowerCase());
+}
+
+export async function createEntityAlias(
+  alias: string,
+  canonicalName: string
+): Promise<{ success: boolean; alias?: EntityAlias; message?: string }> {
+  const res = await fetch(`/api/aliases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ alias, canonical_name: canonicalName }),
+  });
+  return res.json();
+}
+
+export async function deleteEntityAlias(
+  alias: string,
+  canonicalName: string
+): Promise<{ success: boolean; message?: string }> {
+  const res = await fetch(`/api/aliases`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ alias, canonical_name: canonicalName }),
+  });
+  return res.json();
+}
+
+/** Active tasks mentioning this entity's label (web route /api/entities/[id]/tasks). */
+export async function fetchEntityTasks(
+  nodeId: number | string,
+  name: string
+): Promise<Array<{ id: number; title: string; status: string; priority: string; organization_name?: string | null }>> {
+  const params = new URLSearchParams({ name });
+  const res = await fetch(`/api/entities/${nodeId}/tasks?${params.toString()}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch tasks");
+  return res.json();
+}

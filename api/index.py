@@ -217,9 +217,10 @@ async def get_tasks_route(request: Request, status: str = None, limit: int = 50,
     require_api_auth(request)
     try:
         supabase = get_supabase()
+        # NOTE: requires migration 75 (tasks.organization_id -> graph_nodes).
         select_cols = ('id, title, status, priority, deadline, created_at, '
                        'organization_id, direction, committed_to, recurrence, '
-                       'organizations(name)')
+                       'graph_nodes(label)')
         # Only select notes when the column exists (pre-migration safe)
         if _notes_ok(supabase, 'tasks'):
             select_cols += ', notes'
@@ -242,12 +243,13 @@ async def get_tasks_route(request: Request, status: str = None, limit: int = 50,
         
         result = query.order('created_at', desc=True).limit(limit).offset(offset).execute()
         tasks = result.data or []
-        # Flatten the nested organizations(name) join into a plain
+        # Flatten the nested graph_nodes(label) join into a plain
         # organization_name field — same shape the planner produces — so the
         # app can show "which org this task belongs to" on focal cards.
+        # (migration 75: tasks.organization_id now references graph_nodes)
         for t in tasks:
-            org = t.pop('organizations', None) or {}
-            t['organization_name'] = org.get('name') if isinstance(org, dict) else None
+            org = t.pop('graph_nodes', None) or {}
+            t['organization_name'] = org.get('label') if isinstance(org, dict) else None
         return {"tasks": tasks}
     except Exception as e:
         print(f"Get tasks error: {e}")
@@ -375,9 +377,10 @@ async def home_feed_route(request: Request):
         # ── Active tasks (mirror /api/tasks default: status=todo, limit 200) ──
         async def _tasks():
             try:
+                # NOTE: requires migration 75 (tasks.organization_id -> graph_nodes).
                 select_cols = ('id, title, status, priority, deadline, created_at, '
                                'organization_id, direction, committed_to, recurrence, '
-                               'organizations(name)')
+                               'graph_nodes(label)')
                 if _notes_ok(supabase, 'tasks'):
                     select_cols += ', notes'
                 q = supabase.table('tasks') \
@@ -386,7 +389,15 @@ async def home_feed_route(request: Request):
                     .in_('status', ['todo'])
                 if _snooze_ok(supabase, 'tasks'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
-                return (q.order('created_at', desc=True).limit(200).execute()).data or []
+                rows = (q.order('created_at', desc=True).limit(200).execute()).data or []
+                # Flatten the nested graph_nodes(label) join into
+                # organization_name — same shape /api/tasks produces, so
+                # home-feed consumers (Flutter focal cards, web
+                # what-to-do-now) keep showing the org.
+                for t in rows:
+                    org = t.pop('graph_nodes', None) or {}
+                    t['organization_name'] = org.get('label') if isinstance(org, dict) else None
+                return rows
             except Exception:
                 return []
 
@@ -933,8 +944,8 @@ async def _complete_task(task_id: int, new_status: str = "done") -> dict:
         org_name = None
         org_id = task.get('organization_id')
         if org_id:
-            org_lookup = maybe_single_safe(supabase.table('organizations').select('name').eq('id', org_id))
-            org_name = org_lookup.data['name'] if org_lookup.data else None
+            org_lookup = maybe_single_safe(supabase.table('graph_nodes').select('label').eq('id', org_id))
+            org_name = org_lookup.data['label'] if org_lookup.data else None
         await write_outcome_memory(task_title, org_name)
 
     # Invalidate task caches
@@ -971,23 +982,106 @@ async def update_task_status(request: Request, task_id: int):
 # --- ALIAS MANAGEMENT ---
 @app.get("/api/aliases")
 async def list_aliases_route(request: Request):
-    """List all person aliases."""
+    """List all person aliases.
+
+    Migration 76: aliases live on graph_nodes.metadata.aliases. The response
+    keeps the legacy shape ({id, alias, canonical_name, resolution_count}) so
+    clients are unchanged — id is now the NODE UUID and delete requires the
+    alias text.
+    """
     require_api_auth(request)
     try:
         supabase = get_supabase()
-        result = supabase.table('person_aliases') \
-            .select('id, alias, canonical_name, resolution_count, last_resolved_at, created_at') \
-            .order('alias', desc=False) \
+        result = supabase.table('graph_nodes') \
+            .select('id, label, metadata') \
+            .eq('type', 'person') \
+            .eq('is_current', True) \
             .execute()
-        return {"aliases": result.data or []}
+        aliases = []
+        seen = set()
+        for n in (result.data or []):
+            meta = n.get('metadata') or {}
+            if isinstance(meta, str):
+                import json as _j
+                try:
+                    meta = _j.loads(meta)
+                except Exception:
+                    meta = {}
+            usage = meta.get('alias_usage') or {}
+            for a in (meta.get('aliases') or []):
+                a_str = str(a).strip()
+                key = a_str.lower()
+                if not a_str or key in seen:
+                    continue
+                seen.add(key)
+                aliases.append({
+                    'id': n['id'],
+                    'alias': a_str,
+                    'canonical_name': n.get('label', ''),
+                    'resolution_count': int(usage.get(key, 0) or 0),
+                })
+        aliases.sort(key=lambda x: x['alias'].lower())
+        return {"aliases": aliases}
     except Exception as e:
         print(f"List aliases error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _invalidate_alias_caches():
+    """Drop in-memory alias caches in graph_rules so edits take effect now."""
+    import sys as _sys
+    gr = _sys.modules.get('core.lib.graph_rules')
+    if gr is not None:
+        gr._alias_cache = None
+        gr._person_index_cache = None
+        gr._user_node_cache = None
+
+
+def _find_person_node_by_label(canonical_name: str) -> dict | None:
+    """Resolve a canonical name to a live person node (exact label, then chain)."""
+    supabase = get_supabase()
+    res = supabase.table('graph_nodes').select('id, label, metadata') \
+        .eq('type', 'person').eq('is_current', True) \
+        .ilike('label', canonical_name).limit(1).execute()
+    if res and res.data:
+        return res.data[0]
+    # archived label -> canonical chain
+    arch = supabase.table('graph_nodes').select('id, label, canonical_id, metadata') \
+        .eq('type', 'person').ilike('label', canonical_name).limit(1).execute()
+    if arch and arch.data and arch.data[0].get('canonical_id'):
+        cid = arch.data[0]['canonical_id']
+        cnode = supabase.table('graph_nodes').select('id, label, metadata') \
+            .eq('id', cid).eq('is_current', True).limit(1).execute()
+        if cnode and cnode.data:
+            return cnode.data[0]
+    return None
+
+
+def _read_node_meta(node: dict) -> dict:
+    meta = node.get('metadata') or {}
+    if isinstance(meta, str):
+        import json as _j
+        try:
+            meta = _j.loads(meta)
+        except Exception:
+            meta = {}
+    return meta
+
+
+def _alias_payload(node: dict, alias: str) -> dict:
+    meta = _read_node_meta(node)
+    usage = meta.get('alias_usage') or {}
+    return {
+        'id': node['id'],
+        'alias': alias,
+        'canonical_name': node.get('label', ''),
+        'resolution_count': int(usage.get(alias.lower(), 0) or 0),
+    }
+
+
 @app.post("/api/aliases")
 async def create_alias_route(request: Request):
-    """Create a new person alias (alias -> canonical_name)."""
+    """Create a new person alias (alias -> canonical_name) on the person node."""
     require_api_auth(request)
     try:
         body = await request.json()
@@ -1000,28 +1094,22 @@ async def create_alias_route(request: Request):
             raise HTTPException(status_code=400, detail="alias and canonical_name must be different")
 
         supabase = get_supabase()
+        node = _find_person_node_by_label(canonical_name)
+        if not node:
+            return {"success": False, "message": f"No person node found for '{canonical_name}'"}
 
-        # Check for existing alias
-        existing = supabase.table('person_aliases') \
-            .select('id') \
-            .ilike('alias', alias) \
-            .maybe_single() \
-            .execute()
-        if existing and existing.data:
-            return {"success": False, "message": f"Alias '{alias}' already exists. Use PUT to update."}
+        meta = _read_node_meta(node)
+        aliases = [str(a).strip() for a in (meta.get('aliases') or []) if str(a).strip()]
+        key = alias.lower()
+        if any(str(a).lower() == key for a in aliases):
+            return {"success": False, "message": f"Alias '{alias}' already exists."}
 
-        result = supabase.table('person_aliases').insert({
-            'alias': alias,
-            'canonical_name': canonical_name,
-            'resolution_count': 0,
-        }).execute()
-
-        if result and result.data:
-            # Invalidate the alias cache in graph_rules so the new alias takes effect immediately
-            import sys as _sys
-            _sys.modules.get('core.lib.graph_rules', object())._alias_cache = None
-            return {"success": True, "alias": result.data[0]}
-        return {"success": False, "message": "Failed to create alias"}
+        aliases.append(alias)
+        supabase.table('graph_nodes').update({
+            'metadata': {**meta, 'aliases': aliases},
+        }).eq('id', node['id']).execute()
+        _invalidate_alias_caches()
+        return {"success": True, "alias": _alias_payload(node, alias)}
     except HTTPException:
         raise
     except Exception as e:
@@ -1029,66 +1117,124 @@ async def create_alias_route(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.put("/api/aliases/{alias_id}")
-async def update_alias_route(alias_id: int, request: Request):
-    """Update an existing person alias."""
+@app.delete("/api/aliases")
+async def delete_alias_route(request: Request):
+    """Delete an alias from a person node. Body: {alias, canonical_name}."""
     require_api_auth(request)
     try:
         body = await request.json()
         alias = (body.get('alias') or '').strip()
         canonical_name = (body.get('canonical_name') or '').strip()
-
-        if not alias or not canonical_name:
-            raise HTTPException(status_code=400, detail="alias and canonical_name required")
+        if not alias:
+            raise HTTPException(status_code=400, detail="alias required")
 
         supabase = get_supabase()
+        node = _find_person_node_by_label(canonical_name or "")
+        if not node:
+            # Try by node id if passed instead of a name
+            nid = (body.get('node_id') or '').strip()
+            if nid:
+                res = supabase.table('graph_nodes').select('id, label, metadata') \
+                    .eq('id', nid).limit(1).execute()
+                if res and res.data:
+                    node = res.data[0]
+        if not node:
+            raise HTTPException(status_code=404, detail="Person node not found")
 
-        # Check alias exists
-        existing = supabase.table('person_aliases').select('id').eq('id', alias_id).maybe_single().execute()
-        if not existing or not existing.data:
-            raise HTTPException(status_code=404, detail="Alias not found")
+        meta = _read_node_meta(node)
+        aliases = [str(a).strip() for a in (meta.get('aliases') or []) if str(a).strip()]
+        key = alias.lower()
+        remaining = [a for a in aliases if a.lower() != key]
+        if len(remaining) == len(aliases):
+            return {"success": False, "message": f"Alias '{alias}' not found on this person"}
 
-        supabase.table('person_aliases').update({
-            'alias': alias,
-            'canonical_name': canonical_name,
-        }).eq('id', alias_id).execute()
-
-        # Invalidate cache
-        import sys as _sys
-        _sys.modules.get('core.lib.graph_rules', object())._alias_cache = None
-
-        return {"success": True, "message": f"Alias updated: '{alias}' -> '{canonical_name}'"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Update alias error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.delete("/api/aliases/{alias_id}")
-async def delete_alias_route(alias_id: int, request: Request):
-    """Delete a person alias by ID."""
-    require_api_auth(request)
-    try:
-        supabase = get_supabase()
-        
-        existing = supabase.table('person_aliases').select('id, alias').eq('id', alias_id).maybe_single().execute()
-        if not existing or not existing.data:
-            raise HTTPException(status_code=404, detail="Alias not found")
-
-        alias = existing.data['alias']
-        supabase.table('person_aliases').delete().eq('id', alias_id).execute()
-
-        # Invalidate cache
-        import sys as _sys
-        _sys.modules.get('core.lib.graph_rules', object())._alias_cache = None
-
+        usage = dict(meta.get('alias_usage') or {})
+        usage.pop(key, None)
+        new_meta = {**meta, 'aliases': remaining}
+        if usage:
+            new_meta['alias_usage'] = usage
+        else:
+            new_meta.pop('alias_usage', None)
+        supabase.table('graph_nodes').update({'metadata': new_meta}).eq('id', node['id']).execute()
+        _invalidate_alias_caches()
         return {"success": True, "message": f"Deleted alias '{alias}'"}
     except HTTPException:
         raise
     except Exception as e:
         print(f"Delete alias error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/people/{person_id}/tasks")
+async def person_tasks_route(person_id: str, request: Request):
+    """Open tasks that mention a person's name — mirrors the dashboard's
+    person-detail active-tasks section."""
+    require_api_auth(request)
+    try:
+        name = request.query_params.get('name', '').strip()
+        supabase = get_supabase()
+
+        # NOTE: requires migration 75 (tasks.organization_id -> graph_nodes).
+        org_join = 'graph_nodes(label)'
+        org_key = 'graph_nodes'
+        org_label_field = 'label'
+
+        if name:
+            tasks_res = supabase.table('tasks') \
+                .select(f'id, title, status, priority, reminder_at, deadline, created_at, organization_id, {org_join}') \
+                .ilike('title', f'%{name}%') \
+                .eq('is_current', True) \
+                .not_.in_('status', ('done', 'cancelled')) \
+                .order('created_at', desc=True) \
+                .limit(100) \
+                .execute()
+        else:
+            # Fallback: tasks linked to the person's org if no name given.
+            # person_id IS the graph node UUID (migration 75).
+            person_res = maybe_single_safe(
+                supabase.table('graph_nodes').select('metadata').eq('type', 'person').eq('is_current', True).eq('id', person_id)
+            )
+            org_name = None
+            if person_res and person_res.data:
+                meta = person_res.data.get('metadata') or {}
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except Exception:
+                        meta = {}
+                org_name = (meta.get('enrichment') or {}).get('organization_name')
+            if not org_name:
+                return []
+            tasks_res = supabase.table('tasks') \
+                .select(f'id, title, status, priority, reminder_at, deadline, created_at, organization_id, {org_join}') \
+                .ilike('title', f'%{org_name}%') \
+                .eq('is_current', True) \
+                .not_.in_('status', ('done', 'cancelled')) \
+                .order('created_at', desc=True) \
+                .limit(100) \
+                .execute()
+
+        tasks = tasks_res.data or []
+        result = []
+        for t in tasks:
+            org = t.get(org_key) or {}
+            result.append({
+                'id': t.get('id'),
+                'title': t.get('title'),
+                'status': t.get('status'),
+                'priority': t.get('priority'),
+                'reminder_at': t.get('reminder_at'),
+                'deadline': t.get('deadline'),
+                'created_at': t.get('created_at'),
+                'organization_id': t.get('organization_id'),
+                'organization_name': org.get(org_label_field) if isinstance(org, dict) else None,
+            })
+        return result
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 
 # --- Shared merge-reject (keep both) ---
@@ -1259,6 +1405,21 @@ async def focal_action_route(request: Request):
         if not action or not item_type or not item_id:
             raise HTTPException(status_code=400, detail="action, item_type, and item_id required")
 
+        # LLM-provided item ids are strings, and by the time Danny taps a
+        # button the item may already be resolved — or the id may not be a
+        # plain integer at all (a hallucinated / UUID id for an
+        # already-handled item). Never crash on that: an unparseable id is an
+        # unactionable item, reported honestly instead of a 500.
+        def _item_int() -> int | None:
+            try:
+                return int(item_id)
+            except (TypeError, ValueError):
+                return None
+
+        # Honest failure payload for an item that can no longer be acted on.
+        _unactionable = {"success": False, "message": "I couldn't complete that item — it may have changed."}
+        _unactionable_reject = {"success": False, "message": "I couldn't reject that item — it may have changed."}
+
         # Shared: persist a 7-day deferral so a snoozed/corrected item stops
         # resurfacing until the deferral expires (see db/72_focal_snooze.sql).
         # Returns True only if the row was actually updated — the caller must
@@ -1267,22 +1428,25 @@ async def focal_action_route(request: Request):
             try:
                 from core.services.db import get_supabase
                 supabase = get_supabase()
+                iid = _item_int()
+                if iid is None:
+                    return False
                 defer_until = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
                 if item_type == "task":
                     res = supabase.table('tasks').update({'snoozed_until': defer_until})\
-                        .eq('id', int(item_id)).eq('is_current', True).execute()
+                        .eq('id', iid).eq('is_current', True).execute()
                     return bool(res.data)
                 elif item_type == "graph_node":
                     res = supabase.table('pending_nodes').update({'snoozed_until': defer_until})\
-                        .eq('id', int(item_id)).execute()
+                        .eq('id', iid).execute()
                     return bool(res.data)
                 elif item_type == "graph_edge":
                     res = supabase.table('pending_graph_edges').update({'snoozed_until': defer_until})\
-                        .eq('id', int(item_id)).execute()
+                        .eq('id', iid).execute()
                     return bool(res.data)
                 elif item_type == "merge":
                     res = supabase.table('merge_proposals').update({'snoozed_until': defer_until})\
-                        .eq('id', int(item_id)).execute()
+                        .eq('id', iid).execute()
                     return bool(res.data)
                 return False  # Unknown item type — nothing deferred
             except Exception as e:
@@ -1291,22 +1455,38 @@ async def focal_action_route(request: Request):
 
         if action == "done":
             if item_type == "task":
+                iid = _item_int()
+                if iid is None:
+                    return _unactionable
                 # Use the shared _complete_task() which handles Google sync, outcome memory, etc.
-                result = await _complete_task(int(item_id), "done")
-                return result
+                return await _complete_task(iid, "done")
             elif item_type == "merge":
+                iid = _item_int()
+                if iid is None:
+                    return _unactionable
                 # Accept the merge — shared helper, identical to the Inbox's approve.
                 from core.services.db import get_supabase
                 supabase = get_supabase()
-                return await _accept_merge_proposal(supabase, int(item_id))
+                return await _accept_merge_proposal(supabase, iid)
             elif item_type in ("graph_node", "graph_edge"):
+                iid = _item_int()
+                if iid is None:
+                    return _unactionable
                 from core.pulse.graph import process_pending_edge_decision, process_graph_pending_decision
                 from core.services.db import get_supabase
                 supabase = get_supabase()
-                if item_type == "graph_edge":
-                    await process_pending_edge_decision(int(item_id), "approve", auto_decided=False)
-                else:
-                    await process_graph_pending_decision(int(item_id), "approve", auto_decided=False)
+                try:
+                    if item_type == "graph_edge":
+                        res = await process_pending_edge_decision(iid, "approve", auto_decided=False)
+                    else:
+                        res = await process_graph_pending_decision(iid, "approve", auto_decided=False)
+                except Exception as branch_err:
+                    print(f"Focal graph decision error: {branch_err}")
+                    return _unactionable
+                # Respect the real outcome — the pulse may have already
+                # auto-approved this row before Danny tapped the button.
+                if not res.get("success", False):
+                    return res
                 return {"success": True, "message": f"Approved {item_type}"}
             return {"success": True, "message": "Action completed"}
 
@@ -1315,17 +1495,32 @@ async def focal_action_route(request: Request):
             # Inbox's "Reject". Tasks have no reject semantics; the frontend
             # keeps "Not right" (correction) for tasks.
             if item_type == "graph_node":
+                iid = _item_int()
+                if iid is None:
+                    return _unactionable_reject
                 from core.pulse.graph import process_graph_pending_decision
-                await process_graph_pending_decision(int(item_id), "reject", auto_decided=False)
-                return {"success": True, "message": f"Rejected {item_type}"}
+                try:
+                    return await process_graph_pending_decision(iid, "reject", auto_decided=False)
+                except Exception as branch_err:
+                    print(f"Focal reject error: {branch_err}")
+                    return _unactionable_reject
             elif item_type == "graph_edge":
+                iid = _item_int()
+                if iid is None:
+                    return _unactionable_reject
                 from core.pulse.graph import process_pending_edge_decision
-                await process_pending_edge_decision(int(item_id), "reject", auto_decided=False)
-                return {"success": True, "message": f"Rejected {item_type}"}
+                try:
+                    return await process_pending_edge_decision(iid, "reject", auto_decided=False)
+                except Exception as branch_err:
+                    print(f"Focal reject error: {branch_err}")
+                    return _unactionable_reject
             elif item_type == "merge":
+                iid = _item_int()
+                if iid is None:
+                    return _unactionable_reject
                 from core.services.db import get_supabase
                 supabase = get_supabase()
-                return await _reject_merge_proposal(supabase, int(item_id))
+                return await _reject_merge_proposal(supabase, iid)
             return {"success": True, "message": "Action completed"}
 
         elif action == "snooze":
@@ -2199,63 +2394,27 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
             old_type = live_res.data.get('type')
             node_id = pending_id
             
-            # --- Archive old domain row if type changed away from it ---
-            if old_type == 'person' and new_type != 'person':
-                p_id = live_res.data.get('db_record_id')
-                if p_id:
-                    supabase.table('people').update({
-                        'deleted_at': 'now()',
-                        'strategic_weight': 0,
-                        'graph_node_id': None
-                    }).eq('id', p_id).execute()
-            elif old_type == 'organization' and new_type != 'organization':
-                o_id = live_res.data.get('db_record_id')
-                if o_id:
-                    supabase.table('organizations').update({
-                        'is_active': False,
-                        'graph_node_id': None
-                    }).eq('id', o_id).execute()
-
-            
+            # (migration 75: no mirror rows to archive — graph node is truth)
             supabase.table('graph_nodes').update({'type': new_type}).eq('id', pending_id).execute()
             supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
-            
-            # --- Create new domain row if type changed to a grounded type ---
-            new_domain_id = None
-            if new_type == 'person':
-                existing = maybe_single_safe(supabase.table('people').select('id').ilike('name', label).eq('is_current', True).is_('deleted_at','null'))
-                if existing and existing.data:
-                    new_domain_id = str(existing.data['id'])
-                else:
-                    try:
-                        ins = supabase.table('people').insert({
-                            'name': label, 'source': 'graph_type_change',
-                            'strategic_weight': 5, 'is_current': True
-                        }).execute()
-                        if ins.data:
-                            new_domain_id = str(ins.data[0]['id'])
-                    except Exception:
-                        pass
-            elif new_type == 'organization':
-                existing = maybe_single_safe(supabase.table('organizations').select('id').ilike('name', label).eq('is_active', True))
-                if existing and existing.data:
-                    new_domain_id = str(existing.data['id'])
-                else:
-                    try:
-                        ins = supabase.table('organizations').insert({
-                            'name': label, 'is_active': True
-                        }).execute()
-                        if ins.data:
-                            new_domain_id = str(ins.data[0]['id'])
-                    except Exception:
-                        pass
-            # Set bidirectional links between graph node and domain row
-            if new_domain_id:
-                supabase.table('graph_nodes').update({'db_record_id': new_domain_id}).eq('id', node_id).execute()
-                if new_type == 'person':
-                    supabase.table('people').update({'graph_node_id': node_id}).eq('id', new_domain_id).execute()
-                elif new_type == 'organization':
-                    supabase.table('organizations').update({'graph_node_id': node_id}).eq('id', new_domain_id).execute()
+
+            # Self-canonical id when a node becomes a grounded entity type
+            if new_type in ('person', 'organization'):
+                try:
+                    nm_res = maybe_single_safe(supabase.table('graph_nodes').select('metadata').eq('id', pending_id))
+                    nm = (nm_res.data.get('metadata') or {}) if nm_res and nm_res.data else {}
+                    if isinstance(nm, str):
+                        try:
+                            nm = json.loads(nm)
+                        except Exception:
+                            nm = {}
+                    if new_type == 'person':
+                        nm['people_id'] = pending_id
+                    else:
+                        nm['organization_id'] = pending_id
+                    supabase.table('graph_nodes').update({'metadata': nm, 'db_record_id': pending_id}).eq('id', pending_id).execute()
+                except Exception:
+                    pass
 
             # Learner feedback
             try:
@@ -2296,70 +2455,29 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         label = pending_res.data['label']
         old_type = pending_res.data.get('type')
         
-        # --- Handle domain table cleanup for type change ---
-        if old_type == 'person' and new_type != 'person':
-            live_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('label', label).eq('is_current', True))
-            if live_node and live_node.data:
-                p_id = live_node.data.get('db_record_id')
-                if p_id:
-                    supabase.table('people').update({
-                        'deleted_at': 'now()',
-                        'strategic_weight': 0,
-                        'graph_node_id': None
-                    }).eq('id', p_id).execute()
-        elif old_type == 'organization' and new_type != 'organization':
-            live_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('label', label).eq('is_current', True))
-            if live_node and live_node.data:
-                o_id = live_node.data.get('db_record_id')
-                if o_id:
-                    supabase.table('organizations').update({
-                        'is_active': False,
-                        'graph_node_id': None
-                    }).eq('id', o_id).execute()
-
-        
+        # (migration 75: no mirror rows to archive — graph node is truth)
         supabase.table('pending_nodes').update({'node_type': new_type}).eq('id', pending_id_int).execute()
         supabase.table('graph_type_overrides').upsert({'label': label, 'node_type': new_type}).execute()
-        
-        # --- Create new domain row if type changed to a grounded type ---
-        new_domain_id = None
+
+        # Self-canonical id when a node becomes a grounded entity type
         if new_type in ('person', 'organization'):
-            live_node = maybe_single_safe(supabase.table('graph_nodes').select('id').eq('label', label).eq('is_current', True))
+            live_node = maybe_single_safe(supabase.table('graph_nodes').select('id, metadata').eq('label', label).eq('is_current', True))
             node_id = str(live_node.data['id']) if live_node and live_node.data else None
             if node_id:
-                if new_type == 'person':
-                    existing = maybe_single_safe(supabase.table('people').select('id').ilike('name', label).eq('is_current', True).is_('deleted_at','null'))
-                    if existing and existing.data:
-                        new_domain_id = str(existing.data['id'])
-                    else:
+                try:
+                    nm = live_node.data.get('metadata') or {}
+                    if isinstance(nm, str):
                         try:
-                            ins = supabase.table('people').insert({
-                                'name': label, 'source': 'graph_type_change',
-                                'strategic_weight': 5, 'is_current': True
-                            }).execute()
-                            if ins.data:
-                                new_domain_id = str(ins.data[0]['id'])
+                            nm = json.loads(nm)
                         except Exception:
-                            pass
-                elif new_type == 'organization':
-                    existing = maybe_single_safe(supabase.table('organizations').select('id').ilike('name', label).eq('is_active', True))
-                    if existing and existing.data:
-                        new_domain_id = str(existing.data['id'])
-                    else:
-                        try:
-                            ins = supabase.table('organizations').insert({
-                                'name': label, 'is_active': True
-                            }).execute()
-                            if ins.data:
-                                new_domain_id = str(ins.data[0]['id'])
-                        except Exception:
-                            pass
-                if new_domain_id:
-                    supabase.table('graph_nodes').update({'db_record_id': new_domain_id}).eq('id', node_id).execute()
+                            nm = {}
                     if new_type == 'person':
-                        supabase.table('people').update({'graph_node_id': node_id}).eq('id', new_domain_id).execute()
-                    elif new_type == 'organization':
-                        supabase.table('organizations').update({'graph_node_id': node_id}).eq('id', new_domain_id).execute()
+                        nm['people_id'] = node_id
+                    else:
+                        nm['organization_id'] = node_id
+                    supabase.table('graph_nodes').update({'metadata': nm, 'db_record_id': node_id}).eq('id', node_id).execute()
+                except Exception:
+                    pass
 
         # Learner feedback
         try:
@@ -2421,18 +2539,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
                 return {"success": False, "message": "Live node not found"}
             label = live_res.data['label']
             
-            # --- Clear FK references before deleting the graph node ---
-            supabase.table('people').update({
-                'deleted_at': 'now()',
-                'strategic_weight': 0,
-                'graph_node_id': None
-            }).eq('graph_node_id', pending_id).execute()
-
-            supabase.table('organizations').update({
-                'is_active': False,
-                'graph_node_id': None
-            }).eq('graph_node_id', pending_id).execute()
-
+            # (migration 75: no mirror rows to clear — graph node is truth)
             supabase.table('graph_nodes').update({
                 'canonical_id': None
             }).eq('canonical_id', pending_id).execute()
@@ -2530,18 +2637,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
         if live_res and live_res.data:
             l_id = live_res.data['id']
 
-            # --- Clear FK references before deleting the graph node ---
-            supabase.table('people').update({
-                'deleted_at': 'now()',
-                'strategic_weight': 0,
-                'graph_node_id': None
-            }).eq('graph_node_id', l_id).execute()
-
-            supabase.table('organizations').update({
-                'is_active': False,
-                'graph_node_id': None
-            }).eq('graph_node_id', l_id).execute()
-
+            # (migration 75: no mirror rows to clear — graph node is truth)
             supabase.table('graph_nodes').update({
                 'canonical_id': None
             }).eq('canonical_id', l_id).execute()
@@ -2641,36 +2737,8 @@ async def graph_node_manual_merge_route(request: Request):
                 else:
                     supabase.table('graph_edges').update({'target_node_id': winner_id}).eq('id', l_edge['id']).execute()
             
-            # --- Handle domain table cleanup for merged entities ---
-            if source_type == 'person':
-                s_meta = maybe_single_safe(supabase.table('graph_nodes').select('metadata, db_record_id').eq('id', loser_id))
-                s_people_id = s_meta.data.get('metadata', {}).get('people_id') if s_meta and s_meta.data else None
-                # Fallback: use db_record_id if metadata.people_id not set
-                if not s_people_id and s_meta and s_meta.data:
-                    s_people_id = s_meta.data.get('db_record_id')
-                
-                if s_people_id:
-                    supabase.table('people').update({
-                        'deleted_at': 'now()',
-                        'strategic_weight': 0
-                    }).eq('id', s_people_id).execute()
-            elif source_type == 'organization':
-                # Find the org row: by db_record_id (which stores UUID for orgs) or by graph_node_id
-                s_org_id = None
-                s_meta = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('id', loser_id))
-                if s_meta and s_meta.data and s_meta.data.get('db_record_id'):
-                    s_org_id = s_meta.data['db_record_id']
-                else:
-                    org_res = maybe_single_safe(supabase.table('organizations').select('id').eq('graph_node_id', loser_id))
-                    if org_res and org_res.data:
-                        s_org_id = org_res.data['id']
-                
-                if s_org_id:
-                    supabase.table('organizations').update({
-                        'is_active': False,
-                        'graph_node_id': None
-                    }).eq('id', s_org_id).execute()
-            
+            # (migration 75: no mirror rows to clean on merge — the loser node's
+            # is_current=false + canonical_id handle archiving in the graph itself)
             # Canonicalise and rewire live edges
             # BUG FIX: Set is_current=False on the loser so it stops appearing in
             # the Live tab and all is_current=True queries. Previously only
@@ -2780,30 +2848,9 @@ async def graph_node_manual_merge_route(request: Request):
                     else:
                         supabase.table('graph_edges').update({'target_node_id': target_id}).eq('id', l_edge['id']).execute()
                 
-                # Handle domain table cleanup for merged entities
-                if source_type == 'person':
-                    s_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('id', s_live_id))
-                    s_pid = s_node.data.get('db_record_id') if s_node and s_node.data else None
-                    if s_pid:
-                        supabase.table('people').update({
-                            'deleted_at': 'now()',
-                            'strategic_weight': 0
-                        }).eq('id', s_pid).execute()
-                elif source_type == 'organization':
-                    s_org_id = None
-                    s_node = maybe_single_safe(supabase.table('graph_nodes').select('db_record_id').eq('id', s_live_id))
-                    if s_node and s_node.data and s_node.data.get('db_record_id'):
-                        s_org_id = s_node.data['db_record_id']
-                    else:
-                        org_res = maybe_single_safe(supabase.table('organizations').select('id').eq('graph_node_id', s_live_id))
-                        if org_res and org_res.data:
-                            s_org_id = org_res.data['id']
-                    if s_org_id:
-                        supabase.table('organizations').update({
-                            'is_active': False,
-                            'graph_node_id': None
-                        }).eq('id', s_org_id).execute()
-                        
+                # (migration 75: no mirror rows to clean on merge — the graph
+                # node's is_current=false + canonical_id handle archiving)
+
                 # Update as merged alias instead of deleting
                 # BUG FIX: Set is_current=False on the loser so it stops appearing
                 # in the Live tab was still is_current=True after a merge.
@@ -3245,7 +3292,7 @@ async def graph_nodes_live_route(request: Request):
         # Bring key nodes and conceptual/structural entities (exclude system tasks/memories)
         entity_types = ['person', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']
         res = supabase.table('graph_nodes') \
-            .select('id, label, type, created_at') \
+            .select('id, label, type, created_at, metadata') \
             .in_('type', entity_types) \
             .is_('canonical_id', 'null') \
             .eq('is_current', True) \
@@ -3253,6 +3300,101 @@ async def graph_nodes_live_route(request: Request):
             .limit(5000) \
             .execute()
         return {"data": res.data or []}
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.patch("/api/graph-node/{node_id}/enrichment")
+async def graph_node_enrichment_route(node_id: str, request: Request):
+    """Update enrichment fields on a LIVE graph node.
+
+    Consolidation (migrations 74-76): all person/org enrichment lives on
+    graph_nodes.metadata.enrichment — role, strategic_weight, is_active,
+    org_type, description, organization_name, last_interaction_date. This is
+    the generic editing surface now that the separate People/Organizations
+    tables and the web Organizations tab are gone.
+
+    Only the allow-listed fields below are writable; anything else is ignored.
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="JSON object required")
+
+        allowed = {
+            'role', 'strategic_weight', 'is_active', 'org_type',
+            'description', 'organization_name', 'last_interaction_date',
+        }
+        updates = {k: v for k, v in body.items() if k in allowed}
+        if not updates:
+            return {"success": False, "message": "No editable enrichment fields provided"}
+
+        # Validate strategic_weight range (None = clear the value)
+        if 'strategic_weight' in updates:
+            w = updates['strategic_weight']
+            if w is not None:
+                try:
+                    w = int(w)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail="strategic_weight must be an integer")
+                if w < 1 or w > 10:
+                    raise HTTPException(status_code=400, detail="strategic_weight must be between 1 and 10")
+                updates['strategic_weight'] = w
+
+        # Normalize booleans (clients may send true/false or "true"/"false")
+        if 'is_active' in updates:
+            v = updates['is_active']
+            if isinstance(v, str):
+                v = v.strip().lower() in ('1', 'true', 'yes', 'on')
+            updates['is_active'] = bool(v)
+
+        from core.services.db import get_supabase, maybe_single_safe
+        supabase = get_supabase()
+
+        node_res = maybe_single_safe(
+            supabase.table('graph_nodes').select('id, label, type, metadata, db_record_id')
+            .eq('id', node_id)
+        )
+        if not node_res or not node_res.data:
+            raise HTTPException(status_code=404, detail="Live node not found")
+
+        node = node_res.data
+        meta = node.get('metadata') or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        enrich = dict(meta.get('enrichment') or {})
+        enrich.update(updates)
+        meta['enrichment'] = enrich
+
+        supabase.table('graph_nodes').update({'metadata': meta}).eq('id', node_id).execute()
+
+        # Learner feedback so the correction trains the system
+        try:
+            from core.pulse.decision_pulse import record_decision
+            record_decision(
+                decision_type="graph_node_enrichment",
+                title=f"Updated details for {node.get('label', node_id)}",
+                entity_type="graph_node",
+                entity_id=str(node_id),
+                confidence=1.0,
+                source="web_ui",
+            )
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "message": "Details updated",
+            "enrichment": enrich,
+        }
+    except HTTPException:
+        raise
     except Exception:
         import traceback
         traceback.print_exc()

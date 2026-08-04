@@ -14,13 +14,14 @@ supabase = get_supabase()
 
 
 def _resolve_org_id(organization_name: str = None):
-    """Resolve organization name to ID. No project resolution — tasks go to orgs directly."""
+    """Resolve organization name to graph NODE id (mirror table removed — migration 75).
+    No project resolution — tasks go to orgs directly."""
     if not organization_name:
         return None
     from core.services.db import get_supabase
     supabase = get_supabase()
     try:
-        org_res = supabase.table('organizations').select('id').ilike('name', organization_name).limit(1).execute()
+        org_res = supabase.table('graph_nodes').select('id').eq('type', 'organization').eq('is_current', True).ilike('label', organization_name).limit(1).execute()
         if org_res.data:
             return org_res.data[0]['id']
     except Exception:
@@ -389,53 +390,50 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
     except Exception as e:
         return f"FAIL: Error updating task {task_id}: {e}"
 
-async def create_person(name: str, context: str = "", source: str = "tools") -> str:
-    """Create a person row + graph node + Danny KNOWS edge."""
+async def create_person(name: str, context: str = "", source: str = "tools") -> dict:
+    """Create a person graph node + Danny KNOWS edge (graph-first, mirror removed).
+
+    Returns {"success": bool, "node_id": str|None, "message": str}.
+    The node's UUID is the person id everywhere (migration 75).
+    """
     try:
         existing = maybe_single_safe(
-            supabase.table('people').select('id, name').ilike('name', name).eq('is_current', True)
+            supabase.table('graph_nodes').select('id, label').eq('type', 'person').ilike('label', name).eq('is_current', True)
         )
         if existing and existing.data:
-            return f"Person already exists: {existing.data['name']} (ID {existing.data['id']})"
+            return {"success": True, "node_id": existing.data['id'], "message": f"Person already exists: {existing.data['label']}"}
 
         from core.lib.people_utils import normalize_person_name
         norm_name = normalize_person_name(name)
-        existing_norm = supabase.table('people').select('id, name').eq('is_current', True).execute()
-        for p in (existing_norm.data or []):
-            if normalize_person_name(p['name']) == norm_name:
-                return f"Person already exists (normalized): {p['name']} (ID {p['id']})"
-
-        result = supabase.table('people').insert({
-            "name": name,
-            "source": context or source,
-            "strategic_weight": 5,
-        }).execute()
-        if not result or not result.data:
-            return f"Failed to create person '{name}': DB insert returned no data"
-
-        people_id = result.data[0]['id']
+        existing_norm = supabase.table('graph_nodes').select('label').eq('type', 'person').eq('is_current', True).execute()
+        for n in (existing_norm.data or []):
+            if normalize_person_name(n['label']) == norm_name:
+                return {"success": True, "node_id": n['id'], "message": f"Person already exists (normalized): {n['label']}"}
 
         from core.pulse.graph import create_graph_node_with_db_record
         gn_result = await create_graph_node_with_db_record(
             label=name,
             node_type='person',
-            source_text=f"{source}:{people_id}",
+            source_text=source,
             context=context,
             source_tag=source,
         )
 
-        if gn_result.get('success'):
+        if gn_result.get('success') and gn_result.get('action') == 'approved':
             audit_log_sync("tools", "INFO",
-                f"Gap 5: Created person '{name}' (people_id={people_id}) with graph node")
-            return f"Created person: {name} (ID {people_id})"
+                f"Gap 5: Created person '{name}' with graph node")
+            return {"success": True, "node_id": gn_result.get('node_id'), "message": f"Created person: {name}"}
+        elif gn_result.get('action') == 'merge_proposed':
+            # A similar node exists — nothing was created; don't claim success.
+            return {"success": False, "node_id": gn_result.get('merge_candidate_id'), "message": f"Not created — similar person exists: {gn_result.get('message')}"}
         else:
             audit_log_sync("tools", "WARNING",
-                f"Gap 5: Person '{name}' created (ID {people_id}) but graph node failed: {gn_result.get('message')}")
-            return f"Created person (partial): {name} (ID {people_id})"
+                f"Gap 5: Person '{name}' graph node failed: {gn_result.get('message')}")
+            return {"success": False, "node_id": None, "message": f"FAIL: {gn_result.get('message')}"}
 
     except Exception as e:
         audit_log_sync("tools", "ERROR", f"create_person failed for '{name}': {e}")
-        return f"Failed to create person '{name}': {e}"
+        return {"success": False, "node_id": None, "message": f"Failed to create person '{name}': {e}"}
 
 
 def skip_recurring_instance(task_id: int, date_str: str = None):

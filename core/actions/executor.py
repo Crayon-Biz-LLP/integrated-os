@@ -57,16 +57,8 @@ async def _detect_new_orgs_and_create_pending(text: str, chat_id: int, cached_en
             audit_log_sync("executor", "INFO", f"Skipped pending_node for '{org.label}' — already exists as graph node")
             continue
 
-        # Check if already in organizations table
-        existing_org = supabase.table('organizations') \
-            .select('id') \
-            .ilike('name', org.label) \
-            .eq('is_active', True) \
-            .limit(1) \
-            .execute()
-        if existing_org and existing_org.data:
-            audit_log_sync("executor", "INFO", f"Skipped pending_node for '{org.label}' — already exists in organizations table")
-            continue
+        # (Consolidation: the graph-node check above is the single source of
+        # truth — the organizations mirror table is no longer consulted.)
 
         # Create new pending_node
         res = supabase.table('pending_nodes').insert({

@@ -1,4 +1,4 @@
-from core.prompts.voice import get_voice
+from core.prompts.voice import get_voice, BLOCKED_WORDS
 from core.prompts.guards import inject_guards
 from core.pulse.models import BriefingContext
 
@@ -22,8 +22,9 @@ CURRENT TIME: {now_str}
 Danny wants his daily brief for {day_label}. You have his calendar, active tasks, overdue items, and recent completions. Identify what matters and cut through the noise.
 
 Structure:
-- Calendar events first. If an event is marked [PAST], note it already happened.
-- **Context:** section second: 1-3 sentences on overdue items, blockers, urgency.
+- Open with 1-2 sentences in Rhodey's voice: what's new, what's on top, what needs Danny's attention today. This opening is ALWAYS required — never start with a section header or the calendar.
+- Calendar events second. If an event is marked [PAST], note it already happened.
+- **Context:** section third: 1-3 sentences on overdue items, blockers, urgency.
 - Stop after context. No analysis of your own response.
 
 Format:
@@ -71,13 +72,14 @@ MONDAY REENTRY: {'TRUE - start with weekend recon' if ctx.is_monday_morning else
 PEOPLE: {ctx.people_names}
 {ctx.conversation_history}
 
---- OPENING SYNTHESIS ---
-Start with 1-2 sharp sentences that weave what's new (HINDSIGHT, NEW INPUTS) into tactical reality.
+--- OPENING (ALWAYS REQUIRED) ---
+Every briefing MUST open with Rhodey's opening line before any section header. Never start with a section.
+The opening is the headline line, then 1-2 sentences in Rhodey's voice that orient Danny: what's new, what's on top, what needs his attention.
 
-COMPASS TONE:
-- If HINDSIGHT_EMPTY: Skip hindsight. Start with the board directly.
-- If HINDSIGHT_STALE but not empty: Dry one-sentence acknowledgment ("The signal is quiet on the reflection front."), then the board.
-- If hindsight is fresh: Weave insights into a forward-leaning opening.
+COMPASS TONE (the opening is always written — only its content changes):
+- HINDSIGHT_EMPTY: Open with the board itself — what's on top right now, what needs a decision. Never skip the opening.
+- HINDSIGHT_STALE but not empty: Dry one-sentence acknowledgment, then the opening. (e.g. "Nothing new since this morning — the board hasn't moved.")
+- Hindsight fresh: Weave insights into a forward-leaning opening.
 
 PHASE FOCUS (used by system_persona above):
 The system_persona line at the top already encodes the phase-specific focus. Do not override it here.
@@ -112,7 +114,8 @@ Build these sections from the data below. Only include sections that have items.
 - NIGHT mode: Schedule, Done, Home, Church, Work (top 2-3), Ideas.
 
 --- TONE AND STYLE ---
-Tone: {voice} Direct, punchy, varied phrasing. Never use: Operational, Vanguard, Strategic Momentum, Battlefield, Chief of Staff, Tactical, Executive Office, momentum, focus, gentle, reflection, push, strategic, SITREP, optimal, cluster, ready for your review.
+Tone: {voice} Direct, punchy, varied phrasing. Never use: {BLOCKED_WORDS}.
+The banned list governs your own prose only — task titles quoted verbatim (DATA FIDELITY rule 1) always win over it.
 
 Layout rules:
 - Every section icon and every task MUST occupy its own individual line.

@@ -43,7 +43,7 @@ def cleanup_orphan_tasks(dry_run: bool = False):
         oid = task.get("organization_id")
         if not oid:
             continue
-        org = supabase.table("organizations").select("id").eq("id", oid).execute()
+        org = supabase.table("graph_nodes").select("id").eq("id", oid).eq("type", "organization").execute()
         if not org.data:
             orphans += 1
             if not dry_run:

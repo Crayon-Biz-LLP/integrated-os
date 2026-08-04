@@ -953,7 +953,6 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     # ── Now compute which of the raw tasks didn't make the cut for vault segmentation ──
     filtered_ids = {str(t.get("id")) for t in tasks if t.get("id")}
-    vaulted_total = len(horizon_task_ids) - len(filtered_ids)
     vaulted_items: list[VaultedItem] = []
     for t in raw_tasks_before_filter:
         tid = str(t.get("id"))
@@ -1154,17 +1153,17 @@ async def build_briefing(supabase) -> BriefingResponse:
         mode = pulse_mode.lower()
         # Map actual pulse mode strings to insights labels
         if 'morning' in mode:
-            insights_list.insert(0, '☀️ Morning focus — move the needle today')
+            insights_list.insert(0, "☀️ Morning check — here's what's on top")
         elif 'afternoon' in mode:
-            insights_list.insert(0, '🌤️ Afternoon check — keep building')
+            insights_list.insert(0, '🌤️ Afternoon check — keep moving')
         elif 'closing' in mode or 'sign off' in mode:
-            insights_list.insert(0, '🌇 Closing the loop — wrap up before sign-off')
+            insights_list.insert(0, '🌇 Wrap-up — closing out the day')
         elif 'weekend' in mode or 'chores' in mode:
-            insights_list.insert(0, '🌿 Weekend mode — rest and recharge')
+            insights_list.insert(0, '🌿 Weekend — chores and ideas')
         elif 'pre-monday' in mode:
-            insights_list.insert(0, '📈 Pre-Monday — loading the board')
+            insights_list.insert(0, '📈 Pre-Monday — loading the week')
         elif 'intel' in mode or 'vaulted' in mode:
-            insights_list.insert(0, '🌙 Intel: Vaulted — secure the board')
+            insights_list.insert(0, '🌙 Night wind-down — end of day')
 
     # Build context bar from pulse insight
     context_bar = None

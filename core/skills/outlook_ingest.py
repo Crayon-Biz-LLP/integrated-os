@@ -352,9 +352,10 @@ async def ingest_outlook_messages(limit=25):
                 linked_person_id = None
                 linked_person_name = classification_data.get("linked_person_name")
                 if linked_person_name:
-                    person_res = maybe_single_safe(supabase.table('people').select('id, name').ilike('name', linked_person_name).eq('is_current', True))
+                    # Graph-first: the person NODE id (UUID) is linked_person_id (migration 75)
+                    person_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label').eq('type', 'person').eq('is_current', True).ilike('label', linked_person_name))
                     if not getattr(person_res, 'data', None):
-                        person_res = maybe_single_safe(supabase.table('people').select('id, name').ilike('name', f'%{linked_person_name}%').eq('is_current', True))
+                        person_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label').eq('type', 'person').eq('is_current', True).ilike('label', f'%{linked_person_name}%'))
                     if getattr(person_res, 'data', None):
                         linked_person_id = person_res.data['id']
                 

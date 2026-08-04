@@ -68,17 +68,17 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
         from core.lib.entity_detector import resolve_org_and_project
         org_id, proj_id, resolver_reason = resolve_org_and_project(text)
         if org_id:
-            r = supabase.table('organizations').select('name').eq('id', org_id).execute()
+            r = supabase.table('graph_nodes').select('label').eq('id', org_id).execute()
             if r.data:
-                entity_names.add(r.data[0]['name'].lower())
+                entity_names.add(r.data[0]['label'].lower())
     except Exception:
         resolver_reason = "resolver_error"
 
     try:
-        people = supabase.table('people').select('name').eq('is_current', True).execute()
+        people = supabase.table('graph_nodes').select('label').eq('type', 'person').eq('is_current', True).execute()
         text_lower = text.lower()
         for p in (people.data or []):
-            name = p['name'].strip().lower()
+            name = p['label'].strip().lower()
             if name and len(name) >= 3 and name in text_lower:
                 entity_names.add(name)
     except Exception:
@@ -86,13 +86,13 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
 
     # Build enriched payload text: raw values + canonical names from ID fields
     payload_text_parts = [str(v) for v in payload.values()]
-    for id_field, table in [('organization_id', 'organizations')]:
+    for id_field in ('organization_id',):
         val = payload.get(id_field)
         if val and isinstance(val, str) and len(val) == 36:
             try:
-                r = supabase.table(table).select('name').eq('id', val).execute()
+                r = supabase.table('graph_nodes').select('label').eq('id', val).execute()
                 if r.data:
-                    payload_text_parts.append(r.data[0]['name'])
+                    payload_text_parts.append(r.data[0]['label'])
             except Exception:
                 pass
     payload_text = ' '.join(payload_text_parts).lower()
@@ -308,9 +308,9 @@ def _resolve_entity_to_candidates(chat_id: int, entity_type: str, entity_id, sou
     # Fetch entity name for primary-topic check
     entity_name = ""
     if entity_type == 'organization':
-        r = maybe_single_safe(supabase.table('organizations').select('name').eq('id', entity_id))
+        r = maybe_single_safe(supabase.table('graph_nodes').select('label').eq('id', entity_id))
         if r.data:
-            entity_name = r.data.get('name', '')
+            entity_name = r.data.get('label', '')
 
     
     # Primary topic check — filter out side mentions
@@ -377,13 +377,13 @@ def _llm_entity_disambiguation(text: str, chat_id: int) -> list:
     """
     supabase = get_supabase()
     
-    # Fetch known org names
-    orgs = supabase.table('organizations').select('id, name').execute().data or []
+    # Fetch known org names (graph nodes, mirror removed)
+    orgs = supabase.table('graph_nodes').select('id, label').eq('type', 'organization').eq('is_current', True).execute().data or []
     
     if not orgs:
         return []
     
-    known_orgs = [o['name'] for o in orgs]
+    known_orgs = [o['label'] for o in orgs]
     
     prompt = f"""Given this message: "{text}"
 

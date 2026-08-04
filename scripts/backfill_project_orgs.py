@@ -160,6 +160,12 @@ def backfill_people():
 
 
 if __name__ == '__main__':
+    try:
+        supabase.table("organizations").select("id").limit(1).execute()
+    except Exception:
+        print("\n⏭️  Migration 75 removed the organizations table — org ids are graph node UUIDs.")
+        print("   This one-time backfill is obsolete; projects already reference node ids.")
+        sys.exit(0)
     print(f"Mode: {'DRY RUN (no changes)' if dry_run else 'LIVE (will write changes)'}")
     p_fixed = backfill_projects()
     pe_fixed = backfill_people()

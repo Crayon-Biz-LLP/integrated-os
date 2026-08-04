@@ -64,10 +64,11 @@ async def deliver_outbound_reply(
 
     try:
         from core.services.push_notification import send_push_notification
+        from core.services.push_notification import push_data_content
         pushed = await send_push_notification(
             title="Rhodey",
             body=message_text[:120] + ("\u2026" if len(message_text) > 120 else ""),
-            data={"type": "briefing"},
+            data={"type": "briefing", "content": push_data_content(message_text)},
         )
         return pushed
     except Exception as e:

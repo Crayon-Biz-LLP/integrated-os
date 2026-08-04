@@ -42,11 +42,12 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
             audit_log_sync("planner", "WARNING", f"Invalid task ID in close text: '{task_id_str}'")
     
     # 1. Fetch active tasks (todo/in_progress)
-    tasks_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, organizations(name)").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
+    # NOTE: requires migration 75 (tasks.organization_id -> graph_nodes).
+    tasks_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, graph_nodes(label)").eq("is_current", True).not_.in_("status", ["done", "cancelled"]).execute()
     open_tasks = tasks_res.data or []
     
     # 2. Fetch recurring tasks (even if done, because done means skip instance)
-    recurring_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, organizations(name)").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
+    recurring_res = supabase.table("tasks").select("id, title, status, recurrence, google_event_id, graph_nodes(label)").eq("is_current", True).neq("recurrence", "").neq("recurrence", "none").execute()
     recurring_tasks = [t for t in (recurring_res.data or []) if t["status"] != "cancelled"]
     
     # 3. Fetch upcoming calendar events
@@ -74,7 +75,7 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
                 task_google_event_ids.add(gid)
             
             next_occ = base_id_to_time.get(gid) if gid else None
-            org_name = t.get("organizations", {}).get("name") if t.get("organizations") else None
+            org_name = t.get("graph_nodes", {}).get("label") if t.get("graph_nodes") else None
             
             candidates.append({
                 "type": "task", 
@@ -96,10 +97,10 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
             seen_events.add(e["id"])
             candidates.append({"type": "event", "id": e["id"], "title": e["title"], "time": e["time"]})
             
-    # 4. Fetch organizations for LLM resolution
-    orgs_res = supabase.table("organizations").select("id, name").execute()
+    # 4. Fetch organizations for LLM resolution (consolidation: graph-first)
+    orgs_res = supabase.table("graph_nodes").select("id, label").eq("type", "organization").eq("is_current", True).execute()
     orgs = orgs_res.data or []
-    org_lines = "\n".join([f"  - {o['name']} (ID: {o['id']})" for o in orgs]) if orgs else "  - (none)"
+    org_lines = "\n".join([f"  - {o['label']} (ID: {o['id']})" for o in orgs]) if orgs else "  - (none)"
     
 
     # Pre-filter lexically to save tokens

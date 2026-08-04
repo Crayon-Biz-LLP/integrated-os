@@ -2,6 +2,7 @@ from core.llm import get_embedding
 import time
 import re
 import asyncio
+import json
 from datetime import datetime, timezone, timedelta
 
 from core.services.db import get_supabase
@@ -80,9 +81,33 @@ class ContextProvider:
         cached = self.caches['organizations'].get()
         if cached is not None:
             return cached
-            
-        res = supabase.table('organizations').select('*').eq('is_active', True).execute()
-        orgs = res.data or []
+
+        # Consolidation (migrations 74+75): organizations come from live graph
+        # nodes; enrichment lives on the node's metadata. `id` is the graph
+        # NODE id (mirror table removed) — the same id tasks.organization_id,
+        # projects.organization_id and project_organizations now reference.
+        res = supabase.table('graph_nodes') \
+            .select('id, label, metadata, db_record_id') \
+            .eq('type', 'organization') \
+            .eq('is_current', True) \
+            .execute()
+        orgs = []
+        for n in res.data or []:
+            meta = n.get('metadata') or {}
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            enrich = meta.get('enrichment') or {}
+            orgs.append({
+                'name': n.get('label'),
+                'id': meta.get('organization_id') or n.get('db_record_id') or n.get('id'),
+                'description': enrich.get('description'),
+                'is_active': enrich.get('is_active', True),
+                'org_type': enrich.get('org_type'),
+                'parent_organization_id': enrich.get('parent_organization_id'),
+            })
         self.caches['organizations'].set(orgs)
         return orgs
 
@@ -148,8 +173,29 @@ class ContextProvider:
         if cached is not None:
             return cached
             
-        res = supabase.table('people').select('id, name, strategic_weight').eq('is_current', True).execute()
-        people = res.data or []
+        # Consolidation (migration 74): people come from live person graph
+        # nodes — enrichment lives on the node's metadata.
+        res = supabase.table('graph_nodes') \
+            .select('id, label, metadata, db_record_id') \
+            .eq('type', 'person') \
+            .eq('is_current', True) \
+            .execute()
+        people = []
+        for n in res.data or []:
+            meta = n.get('metadata') or {}
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            enrich = meta.get('enrichment') or {}
+            people.append({
+                'id': n.get('id'),
+                'name': n.get('label'),
+                'strategic_weight': enrich.get('strategic_weight', 5),
+                # Legacy bigint people id (mirror) — used by messages.linked_person_id
+                'people_id': meta.get('people_id') or n.get('db_record_id'),
+            })
         self.caches['people'].set(people)
         return people
         
@@ -386,6 +432,18 @@ class ContextProvider:
         if entity_name:
             entity_lower = entity_name.lower().strip()
             
+            # Migration 76: for a PERSON entity, also match any of the person's
+            # aliases (e.g. "Sunju" in task titles when entity is "Sunjula Daniel").
+            person_terms = {entity_lower}
+            try:
+                from core.lib.graph_rules import _build_person_index
+                for p in _build_person_index():
+                    if p["label"].lower() == entity_lower:
+                        person_terms.update(a.lower() for a in p["aliases"] if len(a) >= 3)
+                        break
+            except Exception:
+                pass
+            
             entity_org_ids = set()
             for oid, oname in org_map.items():
                 if entity_lower in oname.lower():
@@ -395,7 +453,8 @@ class ContextProvider:
             for t in tasks:
                 t_title = t.get('title', '').lower()
                 t_org = t.get('organization_id')
-                if entity_lower in t_title or t_org in entity_org_ids:
+                title_hit = any(term in t_title for term in person_terms if term)
+                if title_hit or t_org in entity_org_ids:
                     filtered.append(t)
             
             tasks = filtered

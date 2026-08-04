@@ -100,7 +100,7 @@ def _infer_rejection_reason(msg: dict) -> str:
     if sender and len(sender) > 1:
         try:
             supabase = get_supabase()
-            person_check = supabase.table('people').select('id').ilike('name', sender).eq('is_current', True).limit(1).execute()
+            person_check = supabase.table('graph_nodes').select('id').eq('type', 'person').ilike('label', sender).eq('is_current', True).limit(1).execute()
             if not person_check.data:
                 return "unknown_sender"
         except Exception:

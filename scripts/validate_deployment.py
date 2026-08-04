@@ -19,11 +19,20 @@ def validate_deployment(deploy_timestamp: str):
     res = supabase.table('graph_nodes').select('label, type, id, created_at').eq('type', 'organization').gt('created_at', deploy_timestamp).execute()
     
     if res.data:
-        # Check if they are in pending_nodes or organizations
+        # Migration 75: orgs are graph nodes only — the leak check is now a
+        # self-canonical identity check (node must carry its own id + enrichment).
         leaked = []
+        import json as _json
         for row in res.data:
-            org_check = maybe_single_safe(supabase.table('organizations').select('id').eq('graph_node_id', row['id']))
-            if not getattr(org_check, 'data', None):
+            org_check = maybe_single_safe(supabase.table('graph_nodes').select('metadata, db_record_id').eq('id', row['id']))
+            meta = (org_check.data.get('metadata') or {}) if org_check and org_check.data else {}
+            if isinstance(meta, str):
+                try:
+                    meta = _json.loads(meta)
+                except Exception:
+                    meta = {}
+            if (meta.get('organization_id') != row['id']) or \
+               ((org_check.data or {}).get('db_record_id') != row['id']):
                 pend = maybe_single_safe(supabase.table('pending_nodes').select('id').eq('label', row['label']))
                 if not getattr(pend, 'data', None):
                     leaked.append(row)

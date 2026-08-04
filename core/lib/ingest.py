@@ -49,7 +49,7 @@ async def ingest(
     summary: str = "",
     suggested_title: Optional[str] = None,
     suggested_project: Optional[str] = None,
-    linked_person_id: Optional[int] = None,
+    linked_person_id: Optional[str] = None,
     is_human_sender: bool = False,
     has_memory_value: bool = False,
     needs_draft: bool = False,
@@ -67,7 +67,7 @@ async def ingest(
         summary: 1-2 sentence summary
         suggested_title: Task title (for actionable items)
         suggested_project: Project name (e.g. "SOLVSTRAT")
-        linked_person_id: Resolved person ID from people table
+        linked_person_id: Resolved person graph NODE id (UUID, migration 75)
         is_human_sender: Whether the message is from a real person
         has_memory_value: Whether to create a memory/relationship note
         needs_draft: Whether an email draft should be generated

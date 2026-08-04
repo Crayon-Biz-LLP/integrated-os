@@ -7,7 +7,6 @@ import asyncio
 import uuid
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
-from core.lib.people_utils import normalize_person_name
 from core.lib.graph_rules import find_similar_node, resolve_alias, canonicalize_relationship, normalize_label_display, get_canonical_id, normalize_label, NOISE_LABELS, insert_pending_edge, make_memory_preview
 from core.clarifier import evaluate_node, evaluate_edge, store_and_send_clarification
 from core.decisions import record_decision
@@ -70,26 +69,24 @@ async def create_graph_node_with_db_record(
                         "merge_candidate_id": top["id"]}
 
         if node_type == 'person':
-            norm_name = normalize_person_name(label)
-            existing_resp = supabase.table('people').select('id, name').eq('is_current', True).execute()
-            existing_people = existing_resp.data if existing_resp else []
-            matched_id = None
-            for p in existing_people:
-                if normalize_person_name(p['name']) == norm_name or p['name'].lower() == label.lower():
-                    matched_id = p['id']
-                    break
-
-            if matched_id:
-                people_id = matched_id
-                audit_log_sync("pulse", "INFO", f"Reusing existing person '{label}' (ID {people_id})")
-            else:
-                insert_data = {"name": label, "source": "graph_approval", "strategic_weight": 5}
-                if context:
-                    insert_data["role"] = context.strip()
-                result = supabase.table('people').insert(insert_data).execute()
-                if not result or not result.data:
-                    raise Exception("Supabase insert returned no data for people")
-                people_id = result.data[0]['id']
+            # Graph node only — the people mirror table was removed (migration 75).
+            # The node's own UUID is now the person's canonical id.
+            # Read the existing node FIRST: on re-approval the upsert below would
+            # otherwise replace metadata wholesale and wipe previously-learned
+            # enrichment (organization_name, last_interaction_date).
+            existing_meta = {}
+            try:
+                ex_res = maybe_single_safe(supabase.table('graph_nodes').select('metadata').eq('type', 'person').eq('normalized_label', normalize_label(label)))
+                if ex_res and ex_res.data:
+                    em = ex_res.data.get('metadata') or {}
+                    if isinstance(em, str):
+                        try:
+                            em = json.loads(em)
+                        except Exception:
+                            em = {}
+                    existing_meta = em
+            except Exception:
+                pass
 
             upsert_res = supabase.table("graph_nodes").upsert(
                 {
@@ -97,29 +94,31 @@ async def create_graph_node_with_db_record(
                     "type": "person",
                     "epistemic_status": "asserted",
                     "normalized_label": normalize_label(label),
-                    "db_record_id": str(people_id),
+                    "db_record_id": None,
                     "metadata": {
+                        **existing_meta,
                         "source": source_tag,
-                        "people_id": str(people_id),
                         "memory_id": source_text,
                     }
                 },
                 on_conflict="normalized_label, type"
             ).execute()
 
-            # Back-link: store graph_node_id on the people row
-            if upsert_res and upsert_res.data:
-                graph_node_id = upsert_res.data[0].get('id')
-                if graph_node_id:
-                    supabase.table('people').update({'graph_node_id': graph_node_id}).eq('id', people_id).execute()
+            if not upsert_res or not upsert_res.data:
+                raise Exception("Supabase upsert returned no data for graph_nodes")
+            graph_node_id = upsert_res.data[0].get('id')
+            if not graph_node_id:
+                raise Exception("Graph node id missing after upsert")
+            audit_log_sync("pulse", "INFO", f"Person node ready: '{label}' (node {graph_node_id})")
 
-            # Resolve org from source_text for people row + pending edge
+            # Resolve org from source_text for the pending edge + enrichment.
+            # Read live org NODES (mirror table gone).
             matched_org_name = None
             if source_text and source_text.strip() not in ("", "batch"):
-                orgs_res = supabase.table('organizations').select('name').execute()
+                orgs_res = supabase.table('graph_nodes').select('label').eq('type', 'organization').eq('is_current', True).execute()
                 source_lower = source_text.lower()
                 for o in (orgs_res.data or []):
-                    oname = o['name'].strip()
+                    oname = (o.get('label') or '').strip()
                     if oname.lower() in NOISE_LABELS:
                         continue
                     if f" {oname.lower()} " in f" {source_lower} ":
@@ -133,13 +132,7 @@ async def create_graph_node_with_db_record(
                         matched_org_name = oname
                         break
 
-            # Backfill organization_name on the people row
             if matched_org_name:
-                try:
-                    supabase.table('people').update({'organization_name': matched_org_name}).eq('id', people_id).execute()
-                except Exception:
-                    pass
-
                 res = insert_pending_edge(
                     label,
                     matched_org_name,
@@ -155,11 +148,37 @@ async def create_graph_node_with_db_record(
             else:
                 audit_log_sync("pulse", "INFO", f"Post-creation hook: No confident org match found for person {label}.")
 
+            # ── Consolidation (migration 74): merge enrichment onto the node ──
+            # Read-modify-write so re-approval never wipes a previously-set
+            # organization_name / last_interaction_date.
+            try:
+                node_meta_res = maybe_single_safe(supabase.table('graph_nodes').select('metadata').eq('id', graph_node_id))
+                node_meta = (node_meta_res.data.get('metadata') or {}) if node_meta_res and node_meta_res.data else {}
+                if isinstance(node_meta, str):
+                    try:
+                        node_meta = json.loads(node_meta)
+                    except Exception:
+                        node_meta = {}
+                enrich = dict(node_meta.get('enrichment') or {})
+                if context and context.strip():
+                    enrich['role'] = context.strip()
+                if matched_org_name:
+                    enrich['organization_name'] = matched_org_name
+                enrich.setdefault('strategic_weight', 5)
+                enrich.setdefault('is_active', True)
+                # Self-canonical identity (migration 75): the node's own UUID
+                # is the person id everywhere — no legacy mirror id exists.
+                node_meta['people_id'] = graph_node_id
+                node_meta['enrichment'] = enrich
+                supabase.table('graph_nodes').update({'metadata': node_meta, 'db_record_id': graph_node_id}).eq('id', graph_node_id).execute()
+            except Exception:
+                pass
+
             await _ensure_danny_edge(label, node_type)
 
             # Bridge C: Backfill existing notes/tasks that mention this person
             await _backfill_existing_content_for_entity(
-                label=label, node_type='person', db_record_id=str(people_id)
+                label=label, node_type='person', db_record_id=graph_node_id
             )
 
             inferred = []
@@ -171,32 +190,27 @@ async def create_graph_node_with_db_record(
                 msg += f" ({matched_org_name})"
             if context:
                 msg += f" ({context.strip()})"
-            return {"success": True, "action": "approved", "message": msg, "inferred_edges": inferred}
+            return {"success": True, "action": "approved", "node_id": graph_node_id, "message": msg, "inferred_edges": inferred}
 
         else:
-            # For organizations: create/upsert an organizations table row first,
-            # then link graph_node_id back to it.
-            org_db_id = None
-            if node_type == 'organization':
-                existing_org = maybe_single_safe(supabase.table('organizations').select('id').ilike('name', label))
-                if existing_org and existing_org.data:
-                    org_db_id = existing_org.data['id']
-                    audit_log_sync("pulse", "INFO", f"Reusing existing organization '{label}' (ID {org_db_id})")
-                else:
-                    org_insert = supabase.table('organizations').insert({
-                        "name": label,
-                        "is_active": True,
-                    }).execute()
-                    if not org_insert or not org_insert.data:
-                        raise Exception("Supabase insert returned no data for organizations")
-                    org_db_id = org_insert.data[0]['id']
-
-            node_meta = {
-                "source": source_tag,
-                "memory_id": source_text,
-            }
-            if org_db_id:
-                node_meta["organization_id"] = str(org_db_id)
+            # Organizations: graph node only — the organizations mirror table was
+            # removed (migration 75). The node's own UUID is the org id.
+            # Merge with existing metadata on re-approval (never wipe enrichment).
+            existing_meta = {}
+            try:
+                ex_res = maybe_single_safe(supabase.table('graph_nodes').select('metadata').eq('type', node_type).eq('normalized_label', normalize_label(label)))
+                if ex_res and ex_res.data:
+                    em = ex_res.data.get('metadata') or {}
+                    if isinstance(em, str):
+                        try:
+                            em = json.loads(em)
+                        except Exception:
+                            em = {}
+                    existing_meta = em
+            except Exception:
+                pass
+            enrich = dict(existing_meta.get('enrichment') or {})
+            enrich.setdefault('is_active', True)
 
             upsert_res = supabase.table("graph_nodes").upsert(
                 {
@@ -204,24 +218,44 @@ async def create_graph_node_with_db_record(
                     "type": node_type,
                     "epistemic_status": "asserted",
                     "normalized_label": normalize_label(label),
-                    "db_record_id": str(org_db_id) if org_db_id else None,
-                    "metadata": node_meta,
+                    "db_record_id": None,
+                    "metadata": {
+                        **existing_meta,
+                        "source": source_tag,
+                        "memory_id": source_text,
+                        "enrichment": enrich,
+                    },
                 },
                 on_conflict="normalized_label, type"
             ).execute()
 
-            # Back-link: store graph_node_id on the organizations row
-            if org_db_id and upsert_res and upsert_res.data:
-                graph_node_id = upsert_res.data[0].get('id')
-                if graph_node_id:
-                    supabase.table('organizations').update({'graph_node_id': graph_node_id}).eq('id', org_db_id).execute()
+            if not upsert_res or not upsert_res.data:
+                raise Exception("Supabase upsert returned no data for graph_nodes")
+            graph_node_id = upsert_res.data[0].get('id')
+            if not graph_node_id:
+                raise Exception("Graph node id missing after upsert")
+            audit_log_sync("pulse", "INFO", f"Org node ready: '{label}' (node {graph_node_id})")
+
+            # Self-canonical identity: node's own UUID is the org id
+            try:
+                node_meta_res = maybe_single_safe(supabase.table('graph_nodes').select('metadata').eq('id', graph_node_id))
+                node_meta = (node_meta_res.data.get('metadata') or {}) if node_meta_res and node_meta_res.data else {}
+                if isinstance(node_meta, str):
+                    try:
+                        node_meta = json.loads(node_meta)
+                    except Exception:
+                        node_meta = {}
+                node_meta['organization_id'] = graph_node_id
+                supabase.table('graph_nodes').update({'metadata': node_meta, 'db_record_id': graph_node_id}).eq('id', graph_node_id).execute()
+            except Exception:
+                pass
 
             await _ensure_danny_edge(label, node_type)
 
             # Bridge C: Backfill existing notes/tasks that mention this organization
-            if node_type == 'organization' and org_db_id:
+            if node_type == 'organization':
                 await _backfill_existing_content_for_entity(
-                    label=label, node_type='organization', db_record_id=str(org_db_id)
+                    label=label, node_type='organization', db_record_id=graph_node_id
                 )
 
             inferred = []
@@ -229,8 +263,8 @@ async def create_graph_node_with_db_record(
                 inferred = await _infer_additional_edges(label, node_type, source_text)
 
             msg = f"Approved node '{label}' ({node_type})"
-            if node_type == 'organization' and org_db_id:
-                msg = f"Approved organization '{label}' — organizations row created/linked (ID {org_db_id})"
+            if node_type == 'organization':
+                msg = f"Approved organization '{label}'"
             return {"success": True, "action": "approved", "message": msg, "inferred_edges": inferred}
 
     except Exception as e:
@@ -832,15 +866,23 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             # people.organization_name.
             try:
                 if rel == "WORKS_AT" and pe.get('source_type') == 'person':
-                    # Backfill people.organization_name
-                    person_res = supabase.table('people').select('id, organization_name').ilike('name', s_label).eq('is_current', True).limit(1).execute()
-                    if person_res and person_res.data:
-                        person = person_res.data[0]
-                        if not person.get('organization_name'):
-                            t_node_res = supabase.table('graph_nodes').select('label').eq('id', t_id).limit(1).execute()
-                            if t_node_res and t_node_res.data and t_node_res.data[0].get('label'):
-                                supabase.table('people').update({'organization_name': t_node_res.data[0]['label']}).eq('id', person['id']).execute()
-                                audit_log_sync("pulse", "INFO", f"Backfill: Set people.organization_name for '{s_label}' via WORKS_AT approval")
+                    # Backfill organization_name into the person node's enrichment
+                    t_node_res = supabase.table('graph_nodes').select('label').eq('id', t_id).limit(1).execute()
+                    t_label = t_node_res.data[0]['label'] if t_node_res and t_node_res.data and t_node_res.data[0].get('label') else None
+                    if t_label:
+                        node_res = maybe_single_safe(supabase.table('graph_nodes').select('metadata').eq('id', s_id))
+                        if node_res and node_res.data:
+                            node_meta = node_res.data.get('metadata') or {}
+                            if isinstance(node_meta, str):
+                                try:
+                                    node_meta = json.loads(node_meta)
+                                except Exception:
+                                    node_meta = {}
+                            enrich = node_meta.get('enrichment') or {}
+                            enrich['organization_name'] = t_label
+                            node_meta['enrichment'] = enrich
+                            supabase.table('graph_nodes').update({'metadata': node_meta}).eq('id', s_id).execute()
+                            audit_log_sync("pulse", "INFO", f"Backfill: Set enrichment.organization_name for '{s_label}' via WORKS_AT approval")
             except Exception as backfill_err:
                 audit_log_sync("pulse", "WARNING", f"Edge approval backfill failed for {rel} '{s_label}': {backfill_err}")
 
@@ -902,18 +944,25 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, task_descrip
 
         search_text = f"{task_title} {task_description or ''}".lower()
 
-        # Use cache if provided, otherwise fetch
+        # Use cache if provided, otherwise fetch person nodes directly
+        # (consolidation: the graph node is the source of truth)
         if people_cache is not None:
             all_people = people_cache
         else:
-            all_people = supabase.table('people').select('id, name').eq('is_current', True).execute().data or []
+            all_people = supabase.table('graph_nodes') \
+                .select('id, label') \
+                .eq('type', 'person') \
+                .eq('is_current', True) \
+                .execute().data or []
 
         for person in (all_people or []):
-            if person['name'].lower() in search_text:
+            pname = person.get('name') or person.get('label') or ''
+            if pname.lower() in search_text:
                 person_node = supabase.table('graph_nodes') \
                     .select('id') \
                     .eq('type', 'person') \
-                    .filter('metadata->>people_id', 'eq', str(person['id'])) \
+                    .eq('is_current', True) \
+                    .eq('id', person.get('id')) \
                     .maybe_single() \
                     .execute()
 
@@ -921,7 +970,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, task_descrip
                     from core.lib.graph_rules import insert_pending_edge
                     insert_pending_edge(
                         task_title,
-                        person['name'],
+                        pname,
                         "INVOLVES",
                         {
                             "source_text": f"tasks:{task_id}",
@@ -1133,19 +1182,19 @@ async def analyze_communication_patterns(people: list) -> str:
             if not person_name or not person_id:
                 continue
 
-            # Get person node
+            # Person node: people now come from graph_nodes (consolidation),
+            # so person_id IS the node id itself.
+            person_node_id = str(person_id)
             person_node_res = supabase.table('graph_nodes') \
                 .select('id') \
+                .eq('id', person_node_id) \
                 .eq('type', 'person') \
-                .filter('metadata->>people_id', 'eq', str(person_id)) \
                 .eq('is_current', True) \
                 .maybe_single() \
                 .execute()
 
             if not person_node_res or not person_node_res.data:
                 continue
-
-            person_node_id = person_node_res.data['id']
 
             # Count INVOLVES edges (task involvements)
             involves_edges = supabase.table('graph_edges') \
@@ -1160,10 +1209,11 @@ async def analyze_communication_patterns(people: list) -> str:
             # Get recent email count for this person
             email_count = 0
             try:
+                linked = person.get('people_id') or person.get('db_record_id')
                 email_res = supabase.table('messages') \
                     .select('id', count='exact') \
                     .eq('channel', 'email') \
-                    .or_(f'sender_name.ilike.%{person_name}%,linked_person_id.eq.{person_id}') \
+                    .or_(f'sender_name.ilike.%{person_name}%' + (f',linked_person_id.eq.{linked}' if linked else '')) \
                     .execute()
                 email_count = email_res.count or 0
             except Exception:
@@ -1228,8 +1278,15 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
 
         task_map = {t['id']: t for t in active_tasks if t and isinstance(t, dict) and 'id' in t}
 
-        # Get all person nodes
+        # Get all person nodes — match by legacy bigint people_id (mirror) or
+        # by the node id itself (consolidated graph-first shape).
         people_ids = {p['id']: p['name'] for p in people if p and isinstance(p, dict) and 'id' in p and 'name' in p}
+        for p in people:
+            if not p or not isinstance(p, dict):
+                continue
+            legacy = p.get('people_id')
+            if legacy and p.get('name'):
+                people_ids[str(legacy)] = p['name']
         person_nodes = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'person') \
@@ -1246,13 +1303,10 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
                 except Exception:
                     continue
             people_id = meta.get('people_id')
-            if people_id:
-                try:
-                    people_id_int = int(people_id)
-                    if people_id_int in people_ids:
-                        node_to_person[node['id']] = people_ids[people_id_int]
-                except (ValueError, TypeError):
-                    pass
+            if people_id and str(people_id) in people_ids:
+                # Migration 75: metadata.people_id is the node's own UUID —
+                # match as a string, never int() (legacy bigint ids are gone).
+                node_to_person[node['id']] = people_ids[str(people_id)]
 
         # Find INVOLVES edges linking person nodes to task nodes
         task_nodes = supabase.table('graph_nodes') \

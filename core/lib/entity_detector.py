@@ -199,14 +199,43 @@ def detect_entities(text: str) -> List[DetectedEntity]:
             .execute()
         graph_nodes = gn_res.data or []
 
-        orgs_res = supabase.table('organizations').select('id, name').execute()
-        orgs = orgs_res.data or []
-
-        people_res = supabase.table('people') \
-            .select('id, name') \
+        # Consolidation (migration 74): orgs/people come from live graph nodes.
+        # db ids below are the LEGACY domain-table ids (orgs: organizations.id,
+        # people: people.id) preserved in node metadata — memories FKs depend on them.
+        orgs_res = supabase.table('graph_nodes') \
+            .select('id, label, metadata, db_record_id') \
+            .eq('type', 'organization') \
             .eq('is_current', True) \
             .execute()
-        people = people_res.data or []
+        import json as _json
+        orgs = []
+        for _n in orgs_res.data or []:
+            _meta = _n.get('metadata') or {}
+            if isinstance(_meta, str):
+                try:
+                    _meta = _json.loads(_meta)
+                except Exception:
+                    _meta = {}
+            # Graph-first (migration 75): the org id IS the graph node id
+            orgs.append({'name': _n.get('label'), 'id': _n.get('id')})
+        orgs = [o for o in orgs if o.get('id')]
+
+        people_res = supabase.table('graph_nodes') \
+            .select('id, label, metadata, db_record_id') \
+            .eq('type', 'person') \
+            .eq('is_current', True) \
+            .execute()
+        people = []
+        for _n in people_res.data or []:
+            _meta = _n.get('metadata') or {}
+            if isinstance(_meta, str):
+                try:
+                    _meta = _json.loads(_meta)
+                except Exception:
+                    _meta = {}
+            # Graph-first (migration 75): the person id IS the graph node id
+            people.append({'name': _n.get('label'), 'id': _n.get('id')})
+        people = [p for p in people if p.get('id')]
 
     except Exception as e:
         audit_log_sync("entity_detector", "WARNING", f"Phase 1 DB fetch failed: {e}")

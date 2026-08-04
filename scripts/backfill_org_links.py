@@ -21,7 +21,19 @@ from core.skills.backfill_graph import fetch_all_paginated, _normalize_meta
 supabase = get_supabase()
 
 
+def _mirror_exists(table: str) -> bool:
+    try:
+        supabase.table(table).select("id").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
 def main():
+    if not _mirror_exists("organizations"):
+        print("\n⏭️  Migration 75 removed the organizations table — org ids are graph node UUIDs")
+        print("   and tasks already reference them. This one-time backfill is obsolete.")
+        return
     print("=" * 60)
     print("🔄 ORG LINK BACKFILL")
     print("=" * 60)

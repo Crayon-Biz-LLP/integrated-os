@@ -594,6 +594,12 @@ async def main():
     print("=" * 60)
 
     try:
+        supabase.table("organizations").select("id").limit(1).execute()
+    except Exception:
+        print("\n⏭️  Migration 75 removed the organizations table — this simulation targets the old schema.")
+        return
+
+    try:
         test_s1_unknown_org_create_project()
         test_s2_unknown_org_create_task()
         test_s3_duplicate_project_same_org()

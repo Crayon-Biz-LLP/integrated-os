@@ -34,40 +34,21 @@ def is_blocklisted_person(name: str) -> bool:
 
 
 def enrich_people_from_graph() -> int:
-    """Enrich people table from graph edges — updates org and last_interaction_date.
+    """Enrich person GRAPH NODES from graph edges — updates
+    metadata.enrichment.organization_name and last_interaction_date.
+
+    Consolidation (migration 74): the graph node is the single source of
+    truth; the people mirror table is no longer written.
     Returns count of people enriched."""
     supabase = get_supabase()
     enriched = 0
     try:
-        people_res = supabase.table('people').select('id, name').eq('is_current', True).execute()
-        if not people_res.data:
-            return 0
-
-        # Get all person graph nodes
+        # Get all live person graph nodes (the single source of truth)
         nodes_res = supabase.table('graph_nodes').select('id, label, metadata').eq('type', 'person').eq('is_current', True).execute()
         if not nodes_res.data:
             return 0
 
-        node_to_people = {}
-        for node in nodes_res.data:
-            meta = node.get('metadata') or {}
-            if isinstance(meta, str):
-                try:
-                    import json
-                    meta = json.loads(meta)
-                except Exception:
-                    meta = {}
-            people_id = meta.get('people_id')
-            if people_id:
-                try:
-                    node_to_people[node['id']] = int(people_id)
-                except (ValueError, TypeError):
-                    pass
-
-        # Get all edges involving person nodes
-        person_node_ids = list(node_to_people.keys())
-        if not person_node_ids:
-            return 0
+        person_node_ids = [n['id'] for n in nodes_res.data]
 
         edges_res = supabase.table('graph_edges').select(
             'source_node_id, target_node_id, relationship, created_at'
@@ -79,45 +60,60 @@ def enrich_people_from_graph() -> int:
         if not edges_res.data:
             return 0
 
-        # Build per-person stats
+        # Build per-node stats: node_id → {last_edge_at, org_label}
         from datetime import datetime, timezone
-        person_stats = {}  # people_id → {last_edge_at, org_label}
+        node_stats = {}
         for edge in edges_res.data:
             src = edge.get('source_node_id')
             tgt = edge.get('target_node_id')
             rel = edge.get('relationship', '')
             created = edge.get('created_at')
 
-            person_id = node_to_people.get(src) or node_to_people.get(tgt)
-            if not person_id:
+            node_id = src if src in person_node_ids else (tgt if tgt in person_node_ids else None)
+            if not node_id:
                 continue
 
-            if person_id not in person_stats:
-                person_stats[person_id] = {'last_edge_at': None, 'org_label': None}
+            if node_id not in node_stats:
+                node_stats[node_id] = {'last_edge_at': None, 'org_label': None}
 
-            # Track latest edge
-            if created and (not person_stats[person_id]['last_edge_at'] or created > person_stats[person_id]['last_edge_at']):
-                person_stats[person_id]['last_edge_at'] = created
+            if created and (not node_stats[node_id]['last_edge_at'] or created > node_stats[node_id]['last_edge_at']):
+                node_stats[node_id]['last_edge_at'] = created
 
-            # Track MEMBER_OF edges for org
-            if rel == 'MEMBER_OF' and not person_stats[person_id]['org_label']:
-                # Find the org label
-                other_id = tgt if src == node_to_people.get(person_id) else src
+            if rel == 'MEMBER_OF' and not node_stats[node_id]['org_label']:
+                other_id = tgt if src == node_id else src
                 org_node = maybe_single_safe(supabase.table('graph_nodes').select('label').eq('id', other_id))
                 if org_node and org_node.data:
-                    person_stats[person_id]['org_label'] = org_node.data['label']
+                    node_stats[node_id]['org_label'] = org_node.data['label']
 
-        # Update people table
-        for pid, stats in person_stats.items():
+        # Update graph node metadata.enrichment
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for node_id, stats in node_stats.items():
             update_data = {}
             if stats['last_edge_at']:
                 update_data['last_interaction_date'] = stats['last_edge_at']
             if stats['org_label']:
                 update_data['organization_name'] = stats['org_label']
-            if update_data:
-                update_data['enriched_at'] = datetime.now(timezone.utc).isoformat()
-                supabase.table('people').update(update_data).eq('id', pid).execute()
+            if not update_data:
+                continue
+            try:
+                node_res = maybe_single_safe(supabase.table('graph_nodes').select('metadata').eq('id', node_id))
+                if not node_res or not node_res.data:
+                    continue
+                node_meta = node_res.data.get('metadata') or {}
+                if isinstance(node_meta, str):
+                    try:
+                        import json
+                        node_meta = json.loads(node_meta)
+                    except Exception:
+                        node_meta = {}
+                enrich = dict(node_meta.get('enrichment') or {})
+                enrich.update(update_data)
+                enrich['enriched_at'] = now_iso
+                node_meta['enrichment'] = enrich
+                supabase.table('graph_nodes').update({'metadata': node_meta}).eq('id', node_id).execute()
                 enriched += 1
+            except Exception as write_err:
+                audit_log_sync("pulse", "WARNING", f"Enrichment write failed for node {node_id}: {write_err}")
 
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"People enrichment failed: {e}")

@@ -6,8 +6,7 @@ import { WhatsAppPendingList } from '@/components/decisions/whatsapp-pending-lis
 import { GraphPendingList } from '@/components/decisions/graph-pending-list';
 import { NodePendingList } from '@/components/decisions/node-pending-list';
 import { MergePendingList } from '@/components/decisions/merge-pending-list';
-import { EntityTableList } from '@/components/decisions/entity-table-list';
-import { Phone, MessageSquare, Network, Box, GitMerge, Users, Bot } from 'lucide-react';
+import { Phone, MessageSquare, Network, Box, GitMerge, Bot } from 'lucide-react';
 import { AutoDecisionList } from '@/components/decisions/auto-decision-list';
 import type { CallPendingItem, WhatsAppPendingMessage, GraphPendingEdge, GraphPendingNode, GraphMergeProposal, AutoDecisionItem } from '@/lib/decisions/types';
 
@@ -17,7 +16,6 @@ export function DecisionsShell({
   initialGraphItems,
   initialGraphNodes,
   initialMergeProposals,
-  initialRejectedNodes,
   initialAutoDecisions,
 }: {
   initialCallItems: CallPendingItem[];
@@ -25,12 +23,10 @@ export function DecisionsShell({
   initialGraphItems: GraphPendingEdge[];
   initialGraphNodes: GraphPendingNode[];
   initialMergeProposals: GraphMergeProposal[];
-  initialRejectedNodes?: GraphPendingNode[];
   initialAutoDecisions?: AutoDecisionItem[];
 }) {
-  const entityNodes = initialGraphNodes.filter(n => ["person", "organization"].includes(n.type));
-  const rejectedEntityNodes = (initialRejectedNodes || []).filter(n => ["person", "organization"].includes(n.type));
-  const otherNodes = initialGraphNodes.filter(n => !["person", "organization"].includes(n.type));
+  // Entity approvals/live view moved to /dashboard/entities (Decisions stays pending-only)
+  const otherNodes = initialGraphNodes;
 
   return (
     <div className="p-4 md:p-6">
@@ -68,15 +64,6 @@ export function DecisionsShell({
             )}
           </TabsTrigger>
           
-          <TabsTrigger value="entities">
-            <Users className="h-4 w-4 mr-2" />
-            Entities
-            {entityNodes.length > 0 && (
-              <span className="ml-1.5 text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full tabular-nums">
-                {entityNodes.length}
-              </span>
-            )}
-          </TabsTrigger>
           <TabsTrigger value="nodes">
             <Box className="h-4 w-4 mr-2" />
             Graph Nodes
@@ -115,9 +102,6 @@ export function DecisionsShell({
           <GraphPendingList items={initialGraphItems} />
         </TabsContent>
         
-        <TabsContent value="entities" className="mt-4">
-          <EntityTableList items={entityNodes} rejectedItems={rejectedEntityNodes} />
-        </TabsContent>
         <TabsContent value="nodes" className="mt-4">
           <NodePendingList items={otherNodes} />
         </TabsContent>

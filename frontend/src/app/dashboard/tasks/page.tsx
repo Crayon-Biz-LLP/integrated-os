@@ -25,14 +25,16 @@ export default async function Page() {
       .eq("is_current", true)
       .limit(500),
     supabase
-      .from("organizations")
-      .select("id, name")
+      .from("graph_nodes")
+      .select("id, label")
+      .eq("type", "organization")
+      .eq("is_current", true)
   ]);
 
   const orgNames: Record<string, string> = {};
   if (orgsRes.data) {
     orgsRes.data.forEach((o: any) => {
-      orgNames[o.id] = o.name;
+      orgNames[o.id] = o.label;
     });
   }
 

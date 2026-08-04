@@ -62,10 +62,9 @@ def ack_merged(label: str, target: str) -> str:
 
 
 def ack_undone(count: int, what: str) -> str:
-    return (
-        f"Undid {count} {what} — they'll come back in the next "
-        "Decision Pulse for a fresh look."
-    )
+    # The voice spec bans log-line phrasing ("...in the next Decision Pulse")
+    # — speak like a person, not a system.
+    return f"Undid {count} {what} — they're back on the table."
 
 
 def ack_verified(count: int) -> str:

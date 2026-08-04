@@ -17,6 +17,31 @@ from core.services.db import get_supabase
 
 _SCOPES = ["https://www.googleapis.com/auth/firebase.messaging"]
 
+# FCM caps the total message payload at 4096 bytes. Carrying the full reply/
+# briefing text inside the push (so the app can render it instantly on tap)
+# must never overflow that budget — truncate byte-aware so multi-byte UTF-8
+# (emoji, Indic script) is never split mid-sequence.
+_PUSH_CONTENT_MAX_BYTES = 2800  # headroom under the 4KB cap for other fields
+
+
+def push_data_content(text: str, max_bytes: int = _PUSH_CONTENT_MAX_BYTES) -> str:
+    """Truncate message text to fit the FCM data payload, byte-aware.
+
+    Returns an empty string for empty input. Never splits a multi-byte
+    character: truncation happens on the encoded byte string, then we strip
+    back to the last whole character boundary.
+    """
+    if not text:
+        return ""
+    encoded = text.encode("utf-8", errors="ignore")
+    if len(encoded) <= max_bytes:
+        return text
+    cut = encoded[:max_bytes]
+    # Back off to a UTF-8 character boundary so we never emit a partial char.
+    while cut and (cut[-1] & 0xC0) == 0x80:
+        cut = cut[:-1]
+    return cut.decode("utf-8", errors="ignore")
+
 
 def _get_fcm_credentials():
     """Return service account credentials for FCM, or None if not configured."""

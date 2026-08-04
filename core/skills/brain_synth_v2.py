@@ -297,14 +297,21 @@ async def synth_entity(entity_id, entity_name, org_name, org_context):
 
 async def run_batch_sweep_v2():
     try:
-        orgs_res = supabase.table('organizations').select('id, name, description').eq('is_active', True).execute()
+        # Graph-first (migration 75): orgs are graph nodes; enrichment has description
+        orgs_res = supabase.table('graph_nodes').select('id, label, metadata').eq('type', 'organization').eq('is_current', True).execute()
 
         print(f"Gathering fragments for {len(orgs_res.data)} organizations...")
         
-        # Stage 1-3: Gather, filter, incremental check (Parallel)
         tasks = []
         for org in orgs_res.data:
-            tasks.append(synth_entity(org['id'], org['name'], org['name'], org.get('description', '')))
+            _m = org.get('metadata') or {}
+            if isinstance(_m, str):
+                try:
+                    _m = json.loads(_m)
+                except Exception:
+                    _m = {}
+            _enrich = _m.get('enrichment') or {}
+            tasks.append(synth_entity(org['id'], org['label'], org['label'], _enrich.get('description', '')))
         gathered_payloads = await asyncio.gather(*tasks)
         
         # Filter out skips

@@ -508,7 +508,7 @@ async def handle_command(text: str, chat_id: int):
                 async with httpx.AsyncClient() as client:
                     resp = await client.post(url, json=payload, headers=headers, timeout=10)
                     if resp.status_code == 204:
-                        reply = "✅ **Graph Backfill Triggered**\nIt is running in the background via GitHub Actions. Extracted edges will appear in the next Decision Pulse."
+                        reply = "Graph backfill is running in the background — extracted edges will surface when they're ready."
                     else:
                         reply = f"⚠️ GitHub dispatch failed: {resp.status_code}"
             else:

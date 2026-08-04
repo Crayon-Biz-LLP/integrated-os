@@ -48,6 +48,7 @@ async def associative_retrieve(
     query_norm = query.lower().strip()
     query_hash = hashlib.sha256(query_norm.encode()).hexdigest()
     ent_key = f"retrieval:entities:{query_hash}"
+    pers_key = f"retrieval:person:{query_hash}"
     emb_key = f"retrieval:embedding:{query_hash}"
 
     async def _get_cached_entities():
@@ -58,7 +59,21 @@ async def associative_retrieve(
         if ents:
             await asyncio.to_thread(cache_set, ent_key, ents, 3600)
         return ents or []
-        
+
+    async def _get_cached_person():
+        # Migration 76: resolve people (by name, alias, or relationship term)
+        # from the query itself so person-boost fires without a caller hint.
+        if active_person_id:
+            return {"node_id": active_person_id}
+        res = await asyncio.to_thread(cache_get, pers_key)
+        if res is not None:
+            return res
+        from core.lib.graph_rules import resolve_person_in_query
+        person = await asyncio.to_thread(resolve_person_in_query, query)
+        if person:
+            await asyncio.to_thread(cache_set, pers_key, person, 3600)
+        return person
+
     async def _get_cached_embedding():
         res = await asyncio.to_thread(cache_get, emb_key)
         if res is not None:
@@ -71,12 +86,17 @@ async def associative_retrieve(
         return vec
 
     llm_task = asyncio.create_task(_get_cached_entities())
+    person_task = asyncio.create_task(_get_cached_person())
     emb_task = asyncio.create_task(_get_cached_embedding())
 
     lex_phrases = _parse_query(query) or []
 
     llm_phrases = await llm_task
+    resolved_person = await person_task
     query_emb = await emb_task
+
+    if resolved_person:
+        active_person_id = resolved_person.get("node_id") or active_person_id
 
     # Phase 1b: if chunk_enrichment is on, re-embed query with entity prefix
     if config.chunk_enrichment and llm_phrases:
@@ -240,9 +260,9 @@ async def _extract_query_entities(query: str) -> List[str]:
         labels = []
         supabase = get_supabase()
         if org_id:
-            org = supabase.table('organizations').select('name').eq('id', org_id).maybe_single().execute()
+            org = supabase.table('graph_nodes').select('label').eq('id', org_id).maybe_single().execute()
             if org and org.data:
-                labels.append(org.data['name'])
+                labels.append(org.data['label'])
         # Projects table decommissioned — orgs are the primary entity
         return labels
     except Exception:
@@ -560,43 +580,44 @@ def _compute_person_boost(memory_ids: List[int], person_id: str) -> Dict[int, fl
         return boost
 
     try:
-        import uuid
-        is_uuid = False
-        try:
-            uuid.UUID(str(person_id))
-            is_uuid = True
-        except ValueError:
-            pass
-
         labels = []
-        if is_uuid:
-            res = supabase.table("graph_nodes").select("label").eq("id", person_id).execute()
-            if res and res.data:
-                labels.append(res.data[0]["label"])
-        else:
-            try:
-                res = supabase.table("people").select("name").eq("id", int(person_id)).execute()
-                if res and res.data:
-                    labels.append(res.data[0]["name"])
-            except ValueError:
-                pass
+        # Graph-first (migration 75): the person id is the graph node UUID
+        res = supabase.table("graph_nodes").select("label, metadata").eq("id", str(person_id)).limit(1).execute()
+        if res and res.data:
+            labels.append(res.data[0]["label"])
+            # Migration 76: also match by the person's aliases (e.g. 'sunju')
+            m = res.data[0].get("metadata") or {}
+            if isinstance(m, str):
+                try:
+                    import json as _json
+                    m = _json.loads(m)
+                except Exception:
+                    m = {}
+            al = m.get("aliases") or []
+            if isinstance(al, str):
+                al = [al]
+            labels.extend(str(a) for a in al if str(a).strip())
 
         if not labels:
             return boost
 
-        label_clean = labels[0].lower().strip()
+        # Find matching retrieval_phrase_nodes across label + all aliases
+        node_ids = []
+        for lab in labels:
+            lab_clean = lab.lower().strip()
+            if not lab_clean:
+                continue
+            res = supabase.table("retrieval_phrase_nodes") \
+                .select("id") \
+                .eq("node_type", "person") \
+                .ilike("normalized_text", f"%{lab_clean}%") \
+                .execute()
+            if res and res.data:
+                node_ids.extend(r["id"] for r in res.data)
+        node_ids = list(dict.fromkeys(node_ids))
 
-        # Find matching retrieval_phrase_nodes
-        res = supabase.table("retrieval_phrase_nodes") \
-            .select("id") \
-            .eq("node_type", "person") \
-            .ilike("normalized_text", f"%{label_clean}%") \
-            .execute()
-
-        if not res or not res.data:
+        if not node_ids:
             return boost
-
-        node_ids = [r["id"] for r in res.data]
 
         # Find passage_ids linking to these node_ids
         res = supabase.table("retrieval_passage_phrase_links") \

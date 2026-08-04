@@ -75,6 +75,30 @@ async def resolve_anaphora(query: str, active_anchor: dict = None, classify_cont
                 query_type = qt
         except json.JSONDecodeError:
             pass
+
+    # ── Deterministic person resolution (migration 76) ──────────────────────
+    # The LLM may return "my wife" or "sunju" verbatim; neither is a node label.
+    # Resolve deterministically: relationship term → graph edge (SPOUSE_OF ...),
+    # else alias → node label. This keeps the entity a REAL node label even when
+    # the model under-resolves, and fixes "tasks related to my wife" → Sunjula Daniel.
+    try:
+        from core.lib.graph_rules import resolve_person_in_query
+        # Sync DB work — run off the event loop (this function is started as a
+        # task early to overlap with classification; don't block the loop).
+        person = await asyncio.to_thread(resolve_person_in_query, query)
+        if not person and active_anchor and active_anchor.get("name"):
+            person = await asyncio.to_thread(
+                resolve_person_in_query, f"{active_anchor['name']} {query}")
+        if person and person.get("label"):
+            # Only trust deterministic resolution over the LLM when the LLM
+            # returned nothing, or the match is EXACT (label/alias/relationship).
+            # Substring heuristics must not clobber a correct LLM entity in
+            # multi-person queries (e.g. "how are Marcus and Anita related?").
+            if (not entity) or person.get("exact"):
+                entity = person["label"]
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"Deterministic person resolution failed: {e}")
+
     return entity, query_type, resolved_query_text
 
 
@@ -383,39 +407,47 @@ async def handle_role_update(text: str, chat_id: int, classification: dict, sour
         return
 
     try:
-        person = None
-        person_id = None
-        res = supabase.table('people').select('id, name, role').ilike('name', f'%{person_name}%').eq('is_current', True).limit(1).execute()
+        node_id = None
+        node_meta = {}
+        res = supabase.table('graph_nodes').select('id, label, metadata').eq('type', 'person').ilike('label', f'%{person_name}%').eq('is_current', True).limit(1).execute()
         if res and res.data:
-            person = res.data[0]
-            person_id = person['id']
-        if not person_id:
-            gn_data = None
-            gn = supabase.table('graph_nodes').select('id, label').eq('type', 'person').ilike('label', f'%{person_name}%').eq('is_current', True).limit(1).execute()
-            gn_data = gn.data[0] if gn and gn.data else None
-            if gn_data:
-                new_people = supabase.table('people').insert({
-                    'name': gn_data['label'],
-                    'role': f"{role_title} of {org_name}" if org_name else role_title,
-                    'organization_name': org_name or None,
-                    'source': 'role_update'
-                }).execute()
-                person_id = new_people.data[0]['id']
-                await send_telegram(chat_id, f"\U0001f464 Created people entry for {gn_data['label']} with role: {role_title}" + (f" at {org_name}." if org_name else "."))
+            node_id = res.data[0]['id']
+            node_meta = res.data[0].get('metadata') or {}
+            if isinstance(node_meta, str):
+                try:
+                    node_meta = json.loads(node_meta)
+                except Exception:
+                    node_meta = {}
+        if not node_id:
+            # Person not in graph yet — create the node with the role baked into
+            # enrichment (also creates the mirror people row + Danny KNOWS edge).
+            from core.pulse.graph import create_graph_node_with_db_record
+            new_role_full = f"{role_title} of {org_name}" if org_name else role_title
+            created = await create_graph_node_with_db_record(
+                label=person_name.title(),
+                node_type='person',
+                source_text='role_update',
+                context=new_role_full,
+                source_tag='role_update',
+            )
+            if created.get('success') and created.get('action') == 'approved':
+                await send_telegram(chat_id, f"\U0001f464 Created people entry for {person_name.title()} with role: {role_title}" + (f" at {org_name}." if org_name else "."))
             else:
                 await send_telegram(chat_id, f"I don't recognize '{person_name}' in the system. Please add them first.")
-                return
+            return
 
-        update_data = {}
-        if org_name:
-            update_data['organization_name'] = org_name
+        enrich = dict(node_meta.get('enrichment') or {})
         new_role = f"{role_title} of {org_name}" if org_name else role_title
-        if person.get('role') and new_role not in person['role']:
-            update_data['role'] = f"{person['role']}; {new_role}"
-        elif not person.get('role'):
-            update_data['role'] = new_role
-        if update_data:
-            supabase.table('people').update(update_data).eq('id', person_id).execute()
+        cur_role = enrich.get('role') or ''
+        if cur_role and new_role not in cur_role:
+            enrich['role'] = f"{cur_role}; {new_role}"
+        elif not cur_role:
+            enrich['role'] = new_role
+        if org_name:
+            enrich['organization_name'] = org_name
+        enrich['is_active'] = True
+        node_meta['enrichment'] = enrich
+        supabase.table('graph_nodes').update({'metadata': node_meta}).eq('id', node_id).execute()
 
         msg = f"\u2705 Role updated: {person_name} \u2192 {role_title}" + (f" at {org_name}." if org_name else ".")
         await send_telegram(chat_id, msg)
@@ -1225,14 +1257,21 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _ri += 1
         projects_context = "None"
         try:
+            # Consolidation: organizations from live graph nodes
             org_fetch = await asyncio.to_thread(
-                lambda: supabase.table('organizations').select('name, description').eq('is_active', True).execute()
+                lambda: supabase.table('graph_nodes').select('id, label, metadata').eq('type', 'organization').eq('is_current', True).execute()
             )
             if org_fetch.data:
                 org_lines = []
                 for o in org_fetch.data:
-                    name = o.get('name', '').strip()
-                    desc = o.get('description', '').strip()
+                    name = (o.get('label') or '').strip()
+                    ometa = o.get('metadata') or {}
+                    if isinstance(ometa, str):
+                        try:
+                            ometa = json.loads(ometa)
+                        except Exception:
+                            ometa = {}
+                    desc = ((ometa.get('enrichment') or {}).get('description') or '').strip()
                     if name:
                         org_lines.append(f"  • {name}" + (f" — {desc[:120]}" if desc else ""))
                 if org_lines:
@@ -1274,25 +1313,36 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         active_context = _r2[_ri]
         _ri += 1
 
-        # ── Alias context: inject known aliases (e.g. Yashwant Daniel → Danny) ──
+        # ── Alias context: inject known aliases (e.g. Sunju → Sunjula Daniel) ──
+        # Migration 76: aliases live on graph_nodes.metadata.aliases. Transition
+        # fallback to person_aliases kept so the code works pre-migration.
         alias_context = "None"
         try:
-            a_res = supabase.table('person_aliases').select('alias, canonical_name').execute()
-            if a_res and a_res.data:
-                alias_lines = []
-                for a in a_res.data:
-                    alias = (a.get('alias') or '').strip()
-                    canonical = (a.get('canonical_name') or '').strip()
-                    if alias and canonical and alias.lower() != canonical.lower():
-                        alias_lines.append(f"  '{alias}' = '{canonical}'")
-                if alias_lines:
-                    alias_context = (
-                        "ENTITY ALIASES — these names refer to the SAME person/entity. Treat them as identical:\n"
-                        + "\n".join(alias_lines)
-                        + "\n\nIMPORTANT: Do NOT list aliased names as separate people/entities. "
-                        "For example, if 'Yashwant Daniel' is aliased to 'Danny' and you're talking to Danny, "
-                        "never say 'Yashwant Daniel' is a separate family member — they are the same person."
-                    )
+            alias_lines = []
+            from core.lib.graph_rules import _build_alias_cache
+            cache = _build_alias_cache()
+            for alias_low, canonical in sorted(cache.items()):
+                if alias_low and canonical and alias_low != canonical.lower():
+                    alias_lines.append(f"  '{alias_low}' = '{canonical}'")
+            if not alias_lines:
+                # transition fallback: legacy table still present
+                try:
+                    a_res = supabase.table('person_aliases').select('alias, canonical_name').execute()
+                    for a in (a_res.data or []):
+                        alias = (a.get('alias') or '').strip()
+                        canonical = (a.get('canonical_name') or '').strip()
+                        if alias and canonical and alias.lower() != canonical.lower():
+                            alias_lines.append(f"  '{alias}' = '{canonical}'")
+                except Exception:
+                    pass
+            if alias_lines:
+                alias_context = (
+                    "ENTITY ALIASES — these names refer to the SAME person/entity. Treat them as identical:\n"
+                    + "\n".join(alias_lines)
+                    + "\n\nIMPORTANT: Do NOT list aliased names as separate people/entities. "
+                    "For example, if 'Sunju' is aliased to 'Sunjula Daniel' and you're discussing Sunjula, "
+                    "never treat 'Sunju' as a separate family member — they are the same person."
+                )
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Alias context fetch failed: {e}")
 
