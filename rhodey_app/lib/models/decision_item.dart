@@ -73,4 +73,44 @@ class DecisionItem {
 
   /// Whether this item is a merge proposal.
   bool get isMergeProposal => type == DecisionType.merge;
+
+  /// Serializes this item for the on-device inbox cache.
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'type': type.name,
+        'priority': priority.name,
+        'title': title,
+        'description': description,
+        'confidence': confidence,
+        'contextLabel': contextLabel,
+        'createdAt': createdAt.toIso8601String(),
+        'metadata': metadata,
+        'nodeType': nodeType,
+      };
+
+  /// Rebuilds an item from a cached [json] map. Falls back to safe defaults so
+  /// a schema drift in the cache can never crash the inbox render.
+  factory DecisionItem.fromJson(Map<String, dynamic> json) {
+    DecisionType type = DecisionType.clarification;
+    DecisionPriority priority = DecisionPriority.standard;
+    try {
+      type = DecisionType.values.byName(json['type'] as String? ?? '');
+    } catch (_) {}
+    try {
+      priority = DecisionPriority.values.byName(json['priority'] as String? ?? '');
+    } catch (_) {}
+    return DecisionItem(
+      id: json['id'] as String? ?? '',
+      type: type,
+      priority: priority,
+      title: json['title'] as String? ?? '',
+      description: json['description'] as String?,
+      confidence: (json['confidence'] as num?)?.toDouble(),
+      contextLabel: json['contextLabel'] as String?,
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ??
+          DateTime.now(),
+      metadata: (json['metadata'] as Map?)?.cast<String, dynamic>() ?? const {},
+      nodeType: json['nodeType'] as String?,
+    );
+  }
 }

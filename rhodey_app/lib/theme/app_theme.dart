@@ -146,6 +146,49 @@ class AppTheme {
         height: 1.4,
       );
 
+  // ── Card grammar (one consistent language across all screens) ──
+
+  /// Standard card corner radius — every card/banner/row uses this so the
+  /// surface grammar is uniform app-wide (bubbles keep their chat shape).
+  static const double cardRadius = 12;
+
+  /// Small control radius (chips, action buttons, badges).
+  static const double controlRadius = 8;
+
+  // ── Warm motion (Chief-of-Staff calm — fade + gentle rise, never bounce) ──
+
+  static const Duration motionBase = Duration(milliseconds: 350);
+
+  /// Ease curve for entrances — soft deceleration, no overshoot.
+  static const Curve motionCurve = Curves.easeOutCubic;
+
+  // ── System/notation typography (JetBrainsMono) ──
+  //
+  // Rhodey's voice is serif (InstrumentSerif); conversational body is
+  // PlusJakartaSans. JetBrainsMono is reserved for NON-Rhodey system
+  // notation: timestamps, counts, confidence, type labels — the "ledger"
+  // text that reads like a clock or a terminal, not a person.
+
+  /// Timestamps, counts, time ranges (10px mono).
+  static const TextStyle monoCaption = TextStyle(
+    fontFamily: 'JetBrainsMono',
+    fontSize: 10,
+    fontWeight: FontWeight.w400,
+    color: textTertiary,
+    height: 1.3,
+    letterSpacing: 0.2,
+  );
+
+  /// Type/label badges — CLARIFICATION, NEW PERSON, N PENDING (9px mono caps).
+  static const TextStyle monoLabel = TextStyle(
+    fontFamily: 'JetBrainsMono',
+    fontSize: 9,
+    fontWeight: FontWeight.w500,
+    color: textTertiary,
+    height: 1.2,
+    letterSpacing: 1.2,
+  );
+
   // ── Legacy getters (compile-time const, for backward compat with legacy screens) ──
 
   /// Legacy accent color
@@ -154,8 +197,11 @@ class AppTheme {
   /// Legacy accent background
   static const Color accentBg = champagneMuted;
 
-  /// Legacy body text
+  /// Legacy body text — now explicitly PlusJakartaSans so the chat surface
+  /// (bubbles, card bodies) actually uses the design font instead of falling
+  /// back to the platform default (Roboto on Android).
   static const TextStyle body = TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 14,
     fontWeight: FontWeight.w400,
     color: textPrimary,
@@ -164,6 +210,7 @@ class AppTheme {
 
   /// Legacy small body
   static const TextStyle bodySmall = TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 13,
     fontWeight: FontWeight.w400,
     color: textSecondary,
@@ -172,6 +219,7 @@ class AppTheme {
 
   /// Legacy caption
   static const TextStyle caption = TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 11,
     fontWeight: FontWeight.w500,
     color: textTertiary,
@@ -181,6 +229,7 @@ class AppTheme {
 
   /// Legacy label
   static const TextStyle label = TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 12,
     fontWeight: FontWeight.w600,
     color: textSecondary,
@@ -190,6 +239,7 @@ class AppTheme {
 
   /// Legacy title
   static const TextStyle title = TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 15,
     fontWeight: FontWeight.w600,
     color: textPrimary,
@@ -198,6 +248,7 @@ class AppTheme {
 
   /// Legacy status dot
   static const TextStyle statusDot = TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 10,
     fontWeight: FontWeight.w600,
     height: 1.0,
@@ -205,6 +256,7 @@ class AppTheme {
 
   /// Legacy display medium
   static const TextStyle displayMedium = TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 22,
     fontWeight: FontWeight.w600,
     color: textPrimary,
@@ -213,7 +265,12 @@ class AppTheme {
   );
 
   /// Legacy chat bubble colors
-  static const Color userBubble = Color(0xFF1E2A3A);
+  ///
+  /// userBubble was a cold navy (0xFF1E2A3A) — the one color that broke the
+  /// warm stone/champagne language. Now a warm charcoal, slightly lighter than
+  /// the bot's bubble so the two still read as distinct (borders + alignment
+  /// differentiate them further).
+  static const Color userBubble = Color(0xFF23211E);
   static const Color botBubble = Color(0xFF1A1A1E);
 
   // ── Theme Data ──

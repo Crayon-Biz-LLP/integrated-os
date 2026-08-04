@@ -104,6 +104,9 @@ class ChatBubble extends StatelessWidget {
   Widget _buildNormalBubble(bool isUser, double screenWidth) {
     return Container(
       constraints: BoxConstraints(maxWidth: screenWidth * 0.72),
+      // Unify the chat gutter: Rhodey bubbles sit at the same 16px left edge
+      // as cards and name labels; user bubbles mirror it on the right.
+      margin: EdgeInsets.only(left: isUser ? 0 : 16, right: isUser ? 16 : 0),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         color: isUser ? AppTheme.userBubble : AppTheme.botBubble,
@@ -126,7 +129,7 @@ class ChatBubble extends StatelessWidget {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(message.timeString, style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.textTertiary)),
+              Text(message.timeString, style: AppTheme.monoCaption),
               if (isUser) ...[
                 const SizedBox(width: 4),
                 _sendStatusIcon(),
@@ -141,6 +144,9 @@ class ChatBubble extends StatelessWidget {
   Widget _buildFailedBubble(bool isUser, double screenWidth) {
     return Container(
       constraints: BoxConstraints(maxWidth: screenWidth * 0.72),
+      // Unify the chat gutter: Rhodey bubbles sit at the same 16px left edge
+      // as cards and name labels; user bubbles mirror it on the right.
+      margin: EdgeInsets.only(left: isUser ? 0 : 16, right: isUser ? 16 : 0),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         color: AppTheme.redBg,

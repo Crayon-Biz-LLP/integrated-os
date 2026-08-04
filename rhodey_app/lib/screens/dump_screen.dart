@@ -43,8 +43,10 @@ class _DumpScreenState extends State<DumpScreen> with WidgetsBindingObserver {
       _captures = result.data!.map((c) {
         final content = c['content'] as String? ?? '';
         final createdAt = c['created_at'] as String? ?? '';
+        // Server timestamps are UTC (timestamptz) — convert to device-local so
+        // the capture list times match the phone's clock.
         final ts = createdAt.isNotEmpty
-            ? (DateTime.tryParse(createdAt) ?? DateTime.now())
+            ? ((DateTime.tryParse(createdAt) ?? DateTime.now()).toLocal())
             : DateTime.now();
         final source = c['source'] as String? ?? '';
         final msgType = c['message_type'] as String? ?? c['status'] as String? ?? 'done';

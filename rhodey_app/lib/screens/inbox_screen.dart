@@ -1,12 +1,20 @@
 import 'package:flutter/material.dart';
 import '../models/decision_item.dart';
 import '../services/api_service.dart';
+import '../services/inbox_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/route_observer.dart';
 import '../widgets/decision_card.dart';
+import '../widgets/merge_search_sheet.dart';
+import '../widgets/push_banner.dart';
 
 class InboxScreen extends StatefulWidget {
-  const InboxScreen({super.key});
+  /// Push payload when this screen was opened from a notification tap. The
+  /// carried `content` renders instantly (WhatsApp-style) while the real
+  /// pending list loads in the background.
+  final Map<String, dynamic>? pushData;
+
+  const InboxScreen({super.key, this.pushData});
 
   @override
   State<InboxScreen> createState() => _InboxScreenState();
@@ -15,17 +23,28 @@ class InboxScreen extends StatefulWidget {
 class _InboxScreenState extends State<InboxScreen>
     with RouteAware, WidgetsBindingObserver {
   final _api = ApiService();
+  final _inboxCache = InboxCache();
   List<DecisionItem> _items = [];
   bool _loading = true;
   String _error = '';
 
+  /// True once the cached inbox has been painted on the initial open. Guards
+  /// the cache-first render so it only runs on the very first load — silent
+  /// refreshes, pull-to-refresh, and post-action reloads skip it.
+  bool _cachePainted = false;
+
   /// Count of unverified auto-decisions — fetched on load
   int _autoDecisionCount = 0;
+
+  /// Notification content carried in the push — rendered instantly on tap so
+  /// the Inbox never shows a bare spinner before the real list arrives.
+  String _pushContent = '';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _pushContent = (widget.pushData?['content'] as String?)?.trim() ?? '';
     _loadDecisions();
     _loadAutoDecisionCount();
   }
@@ -66,7 +85,25 @@ class _InboxScreenState extends State<InboxScreen>
   }
 
   Future<void> _loadDecisions({bool silent = false}) async {
-    if (!silent) setState(() => _loading = true);
+    // WhatsApp-style instant render: on the initial open, paint the cached
+    // inbox from disk BEFORE any network round-trip, so the Inbox never shows
+    // a bare spinner. The live fetch below reconciles and re-saves.
+    if (!silent && !_cachePainted) {
+      final cached = await _inboxCache.load();
+      if (mounted && cached.items.isNotEmpty) {
+        setState(() {
+          _items = cached.items;
+          _autoDecisionCount = cached.autoDecisionCount;
+          _loading = false;
+        });
+      } else if (mounted) {
+        setState(() => _loading = true);
+      }
+    } else if (!silent && mounted) {
+      setState(() => _loading = true);
+    }
+    _cachePainted = true;
+
     final result = await _api.getPendingDecisions();
     if (!mounted) return;
 
@@ -109,12 +146,23 @@ class _InboxScreenState extends State<InboxScreen>
 
     if (mounted) {
       setState(() {
-        // Silent refreshes keep the last-known-good list on failure so the
-        // badge never flickers away; the full spinner only shows on first load.
-        if (silent && !result.success && _items.isNotEmpty) return;
+        // Keep the last-known-good list on ANY failed fetch (cached or live)
+        // so a flaky connection at cold open can never blank the instantly-
+        // rendered inbox; the full spinner only shows on first load.
+        if (!result.success && _items.isNotEmpty) return;
         _items = items;
         _loading = false;
       });
+    }
+
+    // Write-behind: keep the on-device cache fresh for the next open. Only
+    // persist a successful (possibly empty) list so a stale cache can never
+    // be wiped by a transient failure.
+    if (result.success) {
+      await _inboxCache.save(InboxCacheData(
+        items: items,
+        autoDecisionCount: _autoDecisionCount,
+      ));
     }
   }
 
@@ -125,6 +173,14 @@ class _InboxScreenState extends State<InboxScreen>
     if (result.success && result.data is Map) {
       final count = (result.data as Map)['count'] as int? ?? 0;
       setState(() => _autoDecisionCount = count);
+      // Persist so the auto-decision banner also renders instantly on open.
+      // Read-modify-write: swap only the count so this parallel fetch can
+      // never clobber the items cache with a stale/empty _items list.
+      final cached = await _inboxCache.load();
+      await _inboxCache.save(InboxCacheData(
+        items: cached.items,
+        autoDecisionCount: count,
+      ));
     }
   }
 
@@ -282,6 +338,43 @@ class _InboxScreenState extends State<InboxScreen>
       _removeItem(item);
     } else {
       _showSnack(result.error ?? 'Failed to approve');
+    }
+  }
+
+  // ── Merge into existing (mirrors the web dashboard) ───────────
+
+  /// Opens a search sheet to pick an existing live node to merge [item] into.
+  Future<void> _showMergeSheet(DecisionItem item) async {
+    final target = await MergeSearchSheet.show(context, nodeType: item.nodeType);
+    if (target == null || !mounted) return;
+    await _handleMerge(item, target);
+  }
+
+  /// Executes the merge against /api/graph-node-merge, then removes the item
+  /// from the list (with cache write-through) on success.
+  Future<void> _handleMerge(
+      DecisionItem item, Map<String, dynamic> target) async {
+    final apiId = item.metadata['api_id'] as String?;
+    if (apiId == null) return;
+    final id = int.tryParse(apiId);
+    if (id == null) return;
+    final targetId = target['id'] as String?;
+    if (targetId == null) return;
+    final targetLabel = target['label'] as String? ?? 'existing node';
+
+    // Pending → live merge: scope='pending' so the backend rewires the
+    // pending node's edges into the target and marks the source merged.
+    final result = await _api.mergeGraphNode(
+      id.toString(),
+      targetId,
+      scope: 'pending',
+    );
+    if (!mounted) return;
+    if (result.success) {
+      _removeItem(item);
+      _showSnack('🔀 Merged into "$targetLabel"', isError: false);
+    } else {
+      _showSnack(result.error ?? 'Failed to merge');
     }
   }
 
@@ -544,6 +637,11 @@ class _InboxScreenState extends State<InboxScreen>
     if (!mounted) return;
     if (result.success) {
       setState(() => _autoDecisionCount = 0);
+      // Write-through so the banner doesn't reappear from cache on next open.
+      _inboxCache.save(InboxCacheData(
+        items: List.of(_items),
+        autoDecisionCount: 0,
+      ));
       _showSnack('✅ Auto-decisions verified', isError: false);
     } else {
       _showSnack(result.error ?? 'Failed to confirm');
@@ -621,6 +719,12 @@ class _InboxScreenState extends State<InboxScreen>
 
   void _removeItem(DecisionItem item) {
     setState(() => _items.removeWhere((i) => i.id == item.id));
+    // Write-through: an actioned item must not resurrect on the next cold
+    // open, so keep the on-device cache in sync with the UI immediately.
+    _inboxCache.save(InboxCacheData(
+      items: List.of(_items),
+      autoDecisionCount: _autoDecisionCount,
+    ));
   }
 
   void _showSnack(String msg, {bool isError = true}) {
@@ -638,6 +742,22 @@ class _InboxScreenState extends State<InboxScreen>
   @override
   Widget build(BuildContext context) {
     if (_loading) {
+      // WhatsApp-style instant content: if this screen was opened from a push
+      // tap, render the pushed summary NOW above the spinner instead of a bare
+      // loader — the real list replaces it when the fetch lands.
+      if (_pushContent.isNotEmpty) {
+        return Scaffold(
+          appBar: AppBar(title: const Text('Inbox')),
+          body: ListView(
+            padding: const EdgeInsets.fromLTRB(0, 8, 0, 40),
+            children: [
+              PushBanner(title: 'Inbox', content: _pushContent),
+              const SizedBox(height: 48),
+              const Center(child: CircularProgressIndicator()),
+            ],
+          ),
+        );
+      }
       return Scaffold(
         appBar: AppBar(title: const Text('Inbox')),
         body: const Center(child: CircularProgressIndicator()),
@@ -664,11 +784,11 @@ class _InboxScreenState extends State<InboxScreen>
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
                 color: AppTheme.accentBg,
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(AppTheme.controlRadius),
               ),
               child: Text(
                 '${_items.length} pending',
-                style: AppTheme.statusDot.copyWith(color: AppTheme.accent),
+                style: AppTheme.monoLabel.copyWith(color: AppTheme.accent),
               ),
             ),
           ],
@@ -679,6 +799,10 @@ class _InboxScreenState extends State<InboxScreen>
         child: ListView(
           padding: const EdgeInsets.fromLTRB(0, 8, 0, 80),
           children: [
+            // Instant content from the notification that opened this screen
+            if (_pushContent.isNotEmpty)
+              PushBanner(title: 'From your notification', content: _pushContent),
+
             // Error banner
             if (_error.isNotEmpty)
               Padding(
@@ -727,6 +851,9 @@ class _InboxScreenState extends State<InboxScreen>
               onEdit: d.type == DecisionType.edge
                   ? () => _showEdgeEditSheet(d)
                   : null,
+              onMerge: d.type == DecisionType.person
+                  ? () => _showMergeSheet(d)
+                  : null,
             )),
             if (highPriority.isNotEmpty && standardPriority.isNotEmpty)
               const SizedBox(height: 16),
@@ -740,6 +867,9 @@ class _InboxScreenState extends State<InboxScreen>
               onEdit: d.type == DecisionType.edge
                   ? () => _showEdgeEditSheet(d)
                   : null,
+              onMerge: d.type == DecisionType.person
+                  ? () => _showMergeSheet(d)
+                  : null,
             )),
             if (standardPriority.isNotEmpty && lowPriority.isNotEmpty)
               const SizedBox(height: 16),
@@ -750,6 +880,9 @@ class _InboxScreenState extends State<InboxScreen>
               item: d,
               onApprove: () => _handleApprove(d),
               onReject: () => _handleReject(d),
+              onMerge: d.type == DecisionType.person
+                  ? () => _showMergeSheet(d)
+                  : null,
             )),
 
             if (_items.isEmpty) ...[
@@ -785,12 +918,11 @@ class _AutoDecisionBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppTheme.accentBg,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppTheme.accent.withValues(alpha: 0.3)),
-      ),
+      padding: const EdgeInsets.all(12),        decoration: BoxDecoration(
+          color: AppTheme.accentBg,
+          borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+          border: Border.all(color: AppTheme.accent.withValues(alpha: 0.3)),
+        ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -800,7 +932,7 @@ class _AutoDecisionBanner extends StatelessWidget {
               const SizedBox(width: 6),
               Text(
                 '$count auto-decisions pending review',
-                style: const TextStyle(
+                style: AppTheme.monoCaption.copyWith(
                   color: AppTheme.accent,
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
@@ -941,3 +1073,4 @@ class _SectionLabel extends StatelessWidget {
     );
   }
 }
+

@@ -2,9 +2,15 @@ import 'package:flutter/material.dart';
 import '../models/today_data.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/push_banner.dart';
 
 class TodayScreen extends StatefulWidget {
-  const TodayScreen({super.key});
+  /// Push payload when this screen was opened from a notification tap. The
+  /// carried `content` renders instantly (WhatsApp-style) while the real
+  /// calendar/tasks load in the background.
+  final Map<String, dynamic>? pushData;
+
+  const TodayScreen({super.key, this.pushData});
 
   @override
   State<TodayScreen> createState() => _TodayScreenState();
@@ -18,10 +24,16 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
   bool _loading = true;
   String _eventError = '';
 
+  /// Notification content carried in the push (e.g. "Team sync starts in 12
+  /// min") — rendered instantly on tap so Today never shows a bare spinner
+  /// before the real data arrives.
+  String _pushContent = '';
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _pushContent = (widget.pushData?['content'] as String?)?.trim() ?? '';
     _loadAll();
   }
 
@@ -82,12 +94,25 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? (_pushContent.isNotEmpty
+              ? ListView(
+                  padding: const EdgeInsets.fromLTRB(0, 8, 0, 40),
+                  children: [
+                    PushBanner(title: 'Today', content: _pushContent),
+                    const SizedBox(height: 48),
+                    const Center(child: CircularProgressIndicator()),
+                  ],
+                )
+              : const Center(child: CircularProgressIndicator()))
           : RefreshIndicator(
               onRefresh: _loadAll,
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(0, 8, 0, 80),
                 children: [
+                  // Instant content from the notification that opened this screen
+                  if (_pushContent.isNotEmpty)
+                    PushBanner(title: 'From your notification', content: _pushContent),
+
                   if (_events.isNotEmpty) ...[
                     _FocusCard(
                       item: FocusItem(
@@ -173,7 +198,7 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                                   builder: (ctx) => AlertDialog(
                                     backgroundColor: AppTheme.surface,
                                     shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(14),
+                                      borderRadius: BorderRadius.circular(AppTheme.cardRadius),
                                       side: const BorderSide(color: AppTheme.border),
                                     ),
                                     title: Text('Cancel task?',
@@ -441,7 +466,7 @@ class _FocusCard extends StatelessWidget {
           end: Alignment.bottomRight,
           colors: [AppTheme.accentBg, AppTheme.surface],
         ),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         border: Border.all(
           color: AppTheme.accent.withValues(alpha: 0.2), width: 1,
         ),
@@ -459,9 +484,7 @@ class _FocusCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('FOCUS', style: AppTheme.statusDot.copyWith(
-                  color: AppTheme.accent, fontSize: 9, letterSpacing: 1.5,
-                )),
+                Text('FOCUS', style: AppTheme.monoLabel.copyWith(color: AppTheme.accent)),
                 const SizedBox(height: 4),
                 Text(item.title, style: AppTheme.displayMedium.copyWith(fontSize: 18)),
                 if (item.subtitle != null) ...[
@@ -529,7 +552,7 @@ class _EventRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         border: Border.all(
           color: isActive ? AppTheme.accent.withValues(alpha: 0.3) : AppTheme.border,
           width: 1,
@@ -551,7 +574,7 @@ class _EventRow extends StatelessWidget {
               color: isActive ? AppTheme.textPrimary : AppTheme.textSecondary,
             )),
           ),
-          Text(timeRange, style: AppTheme.caption.copyWith(fontSize: 11)),
+          Text(timeRange, style: AppTheme.monoCaption),
         ],
       ),
     );
@@ -577,7 +600,7 @@ class _TaskRow extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             color: isWarning ? AppTheme.redBg : AppTheme.surface,
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(AppTheme.cardRadius),
             border: Border.all(
               color: isWarning ? AppTheme.red.withValues(alpha: 0.2) : AppTheme.border,
               width: 1,
@@ -617,7 +640,7 @@ class _CaptureRowPreview extends StatelessWidget {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: AppTheme.surface, borderRadius: BorderRadius.circular(10),
+        color: AppTheme.surface, borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         border: Border.all(color: AppTheme.border, width: 1),
       ),
       child: Row(
@@ -626,7 +649,7 @@ class _CaptureRowPreview extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(child: Text(title, style: AppTheme.body.copyWith(fontSize: 13),
               maxLines: 1, overflow: TextOverflow.ellipsis)),
-          Text(time, style: AppTheme.caption.copyWith(fontSize: 10)),
+          Text(time, style: AppTheme.monoCaption),
         ],
       ),
     );

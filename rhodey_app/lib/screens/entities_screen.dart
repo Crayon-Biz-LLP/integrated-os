@@ -219,6 +219,7 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
     final label = node['label'] as String? ?? 'Untitled';
     final type = node['type'] as String? ?? 'unknown';
     final createdAt = node['created_at'] as String? ?? '';
+    final enrichment = _enrichmentOf(node);
 
     final typeColor = switch (type) {
       'person' => AppTheme.green,
@@ -235,11 +236,13 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
       _ => Icons.circle_outlined,
     };
 
+    final enrichSummary = _enrichmentSummary(type, enrichment);
+
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       color: AppTheme.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         side: const BorderSide(color: AppTheme.border),
       ),
       child: InkWell(
@@ -266,6 +269,22 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
                   children: [
                     Text(label, style: AppTheme.bodyStyle, maxLines: 1, overflow: TextOverflow.ellipsis),
                     const SizedBox(height: 2),
+                    if (enrichSummary.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 2),
+                        child: Text(
+                          enrichSummary,
+                          style: AppTheme.caption.copyWith(
+                            color: (enrichment?['strategic_weight'] as num?)?.toInt() == null
+                                ? AppTheme.textSecondary
+                                : ((enrichment?['strategic_weight'] as num?)?.toInt() ?? 0) >= 8
+                                    ? AppTheme.champagne
+                                    : AppTheme.textSecondary,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
                     Text(
                       createdAt.isNotEmpty ? '$type · ${_shortDate(createdAt)}' : type,
                       style: AppTheme.caption.copyWith(color: AppTheme.textSecondary),
@@ -338,6 +357,15 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
               onTap: () async {
                 Navigator.pop(ctx);
                 await _typeFlow(node);
+              },
+            ),
+            _ActionTile(
+              icon: Icons.tune,
+              label: 'Edit details (role, weight, active…)',
+              color: AppTheme.champagne,
+              onTap: () async {
+                Navigator.pop(ctx);
+                await _enrichFlow(node);
               },
             ),
             _ActionTile(
@@ -553,6 +581,347 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
     } else {
       _toast(result.error ?? 'Type change failed', error: true);
     }
+  }
+
+  /// Inline enrichment editing — role, weight, active, org fields, aliases
+  /// and active tasks. Enrichment lives on graph_nodes.metadata.enrichment
+  /// (migrations 74-76); aliases on metadata.aliases (migration 76). The
+  /// People tab was consolidated here, so person nodes get alias + task
+  /// management in the same dialog.
+  Future<void> _enrichFlow(Map<String, dynamic> node) async {
+    final id = node['id'].toString();
+    final label = node['label'] as String? ?? 'Untitled';
+    final isPerson = (node['type'] as String? ?? '') == 'person';
+    final e = _enrichmentOf(node);
+
+    final role = TextEditingController(text: (e?['role'] as String?) ?? '');
+    final orgName = TextEditingController(text: (e?['organization_name'] as String?) ?? '');
+    final orgType = TextEditingController(text: (e?['org_type'] as String?) ?? '');
+    final weight = TextEditingController(
+        text: (e?['strategic_weight'] as num?)?.toInt().toString() ?? '');
+    final description = TextEditingController(text: (e?['description'] as String?) ?? '');
+    final aliasController = TextEditingController();
+    var isActive = (e?['is_active'] as bool?) ?? true;
+
+    // Aliases + tasks (person nodes only) load in the background while the
+    // dialog opens, so the dialog never feels frozen on slow networks.
+    List<Map<String, dynamic>> aliases = [];
+    var aliasesLoading = isPerson;
+    List<Map<String, dynamic>> tasks = [];
+    var tasksLoading = isPerson;
+
+    if (!mounted) return;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          // Kick off the background alias/task load once the dialog is up.
+          if (isPerson && aliasesLoading) {
+            Future(() async {
+              final aliasRes = await _api.getAliases();
+              final nameLc = label.toLowerCase();
+              final loaded = List<Map<String, dynamic>>.from(
+                  aliasRes.success ? (aliasRes.data ?? []) : [])
+                  .where((a) =>
+                      (a['canonical_name'] as String? ?? '').toLowerCase() ==
+                      nameLc)
+                  .toList()
+                  .cast<Map<String, dynamic>>();
+              final tasksRes = await _api.getPersonTasks(id, label);
+              final loadedTasks = tasksRes.success
+                  ? List<Map<String, dynamic>>.from(tasksRes.data ?? [])
+                  : <Map<String, dynamic>>[];
+              if (!mounted) return;
+              setSheet(() {
+                aliases = loaded;
+                tasks = loadedTasks;
+                aliasesLoading = false;
+                tasksLoading = false;
+              });
+            });
+          }
+          return AlertDialog(
+          backgroundColor: AppTheme.surface,
+          title: Text('Edit details — $label', style: AppTheme.title),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _enrichField('Role', 'e.g. Wife, Auditor, Vendor…', role),
+                _enrichField('Organization', 'e.g. CrayonBiz LLP', orgName),
+                _enrichField('Org type', 'e.g. company, nonprofit, family…', orgType),
+                _enrichField('Strategic weight (1–10)', '5', weight, keyboardType: TextInputType.number),
+                const SizedBox(height: 10),
+                Text('Description', style: AppTheme.caption),
+                const SizedBox(height: 4),
+                TextField(
+                  controller: description,
+                  style: AppTheme.body,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    hintText: 'One line about this entity…',
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Icon(Icons.circle, size: 10, color: AppTheme.green),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text('Active — inactive entities are deprioritized.',
+                          style: AppTheme.bodyMuted),
+                    ),
+                    Switch(
+                      value: isActive,
+                      activeTrackColor: AppTheme.green,
+                      onChanged: (v) => setSheet(() => isActive = v),
+                    ),
+                  ],
+                ),
+                if (isPerson) ...[
+                  const SizedBox(height: 14),
+                  Text('ALIASES (${aliasesLoading ? '' : aliases.length})',
+                      style: AppTheme.label.copyWith(
+                        color: AppTheme.textTertiary,
+                        fontSize: 10,
+                        letterSpacing: 1.2,
+                      )),
+                  const SizedBox(height: 6),
+                  if (aliasesLoading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 6),
+                      child: Center(
+                        child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                    )
+                  else if (aliases.isEmpty)
+                    Text('No aliases — add nicknames or alternate names',
+                        style: AppTheme.hintStyle.copyWith(fontSize: 11))
+                  else
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: aliases.map((a) {
+                        final aliasText = a['alias'] as String? ?? '';
+                        return Chip(
+                          label: Text(aliasText),
+                          labelStyle: AppTheme.caption.copyWith(color: AppTheme.champagne),
+                          backgroundColor: AppTheme.champagneMuted,
+                          side: BorderSide(color: AppTheme.champagne.withValues(alpha: 0.25)),
+                          deleteIcon: const Icon(Icons.close,
+                              size: 14, color: AppTheme.textTertiary),
+                          onDeleted: () async {
+                            final canonical =
+                                a['canonical_name'] as String? ?? label;
+                            final res = await _api.deleteAlias(aliasText, canonical);
+                            if (!mounted) return;
+                            if (res.success) {
+                              setSheet(() {
+                                aliases.removeWhere((x) =>
+                                    (x['alias'] as String? ?? '').toLowerCase() ==
+                                    aliasText.toLowerCase());
+                              });
+                            } else {
+                              _toast(res.error ?? 'Failed to delete alias',
+                                  error: true);
+                            }
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: aliasController,
+                          style: AppTheme.body.copyWith(fontSize: 13),
+                          decoration: const InputDecoration(
+                            hintText: 'e.g. Nickname…',
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: () async {
+                          final alias = aliasController.text.trim();
+                          if (alias.isEmpty) return;
+                          final res =
+                              await _api.createAlias(alias, label);
+                          if (!mounted) return;
+                          final created = res.data;
+                          final ok = res.success &&
+                              (created is! Map || created['success'] != false);
+                          if (ok && created is Map && created['alias'] is Map) {
+                            setSheet(() {
+                              aliases.add(
+                                  (created['alias'] as Map).cast<String, dynamic>());
+                              aliasController.clear();
+                            });
+                          } else {
+                            _toast(
+                              (created is Map && created['message'] is String)
+                                  ? created['message'] as String
+                                  : 'Failed to add alias',
+                              error: true,
+                            );
+                          }
+                        },
+                        child: const Text('Add',
+                            style: TextStyle(color: AppTheme.champagne)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Text('ACTIVE TASKS (${tasksLoading ? '' : tasks.length})',
+                      style: AppTheme.label.copyWith(
+                        color: AppTheme.textTertiary,
+                        fontSize: 10,
+                        letterSpacing: 1.2,
+                      )),
+                  const SizedBox(height: 6),
+                  if (tasksLoading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 6),
+                      child: Center(
+                        child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                    )
+                  else if (tasks.isEmpty)
+                    Text('No active tasks mention this person',
+                        style: AppTheme.hintStyle.copyWith(fontSize: 11))
+                  else
+                    ...tasks.take(8).map((t) => Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: AppTheme.surfaceAlt,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  t['priority'] as String? ?? '',
+                                  style: AppTheme.caption
+                                      .copyWith(color: AppTheme.textSecondary),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  t['title'] as String? ?? '',
+                                  style: AppTheme.bodySmall.copyWith(fontSize: 12),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Save', style: TextStyle(color: AppTheme.champagne)),
+            ),
+          ],
+        );
+        },
+      ),
+    );
+
+    if (saved != true || !mounted) return;
+
+    final weightVal = int.tryParse(weight.text.trim());
+    final updates = <String, dynamic>{
+      'role': role.text.trim().isEmpty ? null : role.text.trim(),
+      'organization_name': orgName.text.trim().isEmpty ? null : orgName.text.trim(),
+      'org_type': orgType.text.trim().isEmpty ? null : orgType.text.trim(),
+      'strategic_weight': weightVal,
+      'description': description.text.trim().isEmpty ? null : description.text.trim(),
+      'is_active': isActive,
+    };
+    if (weightVal != null && (weightVal < 1 || weightVal > 10)) {
+      _toast('Strategic weight must be between 1 and 10', error: true);
+      return;
+    }
+
+    setState(() => _busy = true);
+    final result = await _api.updateGraphNodeEnrichment(id, updates);
+    if (!mounted) return;
+    setState(() => _busy = false);
+
+    if (result.success) {
+      _toast('Details updated');
+      await _load();
+    } else {
+      _toast(result.error ?? 'Update failed', error: true);
+    }
+  }
+
+  Widget _enrichField(String label, String hint, TextEditingController controller,
+      {TextInputType? keyboardType}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: AppTheme.caption),
+          const SizedBox(height: 4),
+          TextField(
+            controller: controller,
+            style: AppTheme.body,
+            keyboardType: keyboardType,
+            decoration: InputDecoration(hintText: hint, isDense: true),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Map<String, dynamic>? _enrichmentOf(Map<String, dynamic> node) {
+    final meta = node['metadata'];
+    if (meta is Map) {
+      final e = meta['enrichment'];
+      if (e is Map) return Map<String, dynamic>.from(e);
+    }
+    return null;
+  }
+
+  String _enrichmentSummary(String type, Map<String, dynamic>? e) {
+    if (e == null) return '';
+    final bits = <String>[];
+    if (type == 'person') {
+      final role = e['role'] as String?;
+      final w = (e['strategic_weight'] as num?)?.toInt();
+      if (role != null && role.isNotEmpty) bits.add(role);
+      if (w != null) bits.add('weight $w/10');
+    } else if (type == 'organization') {
+      final t = e['org_type'] as String?;
+      final d = e['description'] as String?;
+      if (t != null && t.isNotEmpty) bits.add(t);
+      if (d != null && d.isNotEmpty) bits.add(d);
+    }
+    if (bits.isEmpty) return '';
+    return bits.take(3).join(' · ');
   }
 
   Future<void> _deleteFlow(Map<String, dynamic> node) async {

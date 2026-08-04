@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/message.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
+import '../voice/rhodey_voice.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/rich_card_content.dart';
 
@@ -110,8 +111,10 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
       final content = m['content'] as String? ?? '';
       final role = m['role'] as String? ?? 'bot';
       final createdAt = m['created_at'] as String? ?? '';
+      // Server timestamps are UTC (timestamptz) — convert to device-local so
+      // the bubble clock and Today/date labels match the phone's clock.
       final ts = createdAt.isNotEmpty
-          ? (DateTime.tryParse(createdAt) ?? DateTime.now())
+          ? ((DateTime.tryParse(createdAt) ?? DateTime.now()).toLocal())
           : DateTime.now();
       return ChatMessage(
         id: m['id'].toString(),
@@ -199,10 +202,10 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
         }
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to send — check your connection.', style: TextStyle(fontSize: 12)),
+        SnackBar(
+          content: Text(RhodeyVoice.failedToSend(), style: const TextStyle(fontSize: 12)),
           backgroundColor: AppTheme.red,
-          duration: Duration(seconds: 2),
+          duration: const Duration(seconds: 2),
         ),
       );
       return;

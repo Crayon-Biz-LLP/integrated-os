@@ -7,6 +7,7 @@ class DecisionCard extends StatelessWidget {
   final VoidCallback? onApprove;
   final VoidCallback? onReject;
   final VoidCallback? onEdit;
+  final VoidCallback? onMerge;
 
   const DecisionCard({
     super.key,
@@ -14,6 +15,7 @@ class DecisionCard extends StatelessWidget {
     this.onApprove,
     this.onReject,
     this.onEdit,
+    this.onMerge,
   });
 
   @override
@@ -40,10 +42,7 @@ class DecisionCard extends StatelessWidget {
                 const SizedBox(width: 6),
                 Text(
                   _typeLabel,
-                  style: AppTheme.caption.copyWith(
-                    color: AppTheme.textTertiary,
-                    letterSpacing: 0.5,
-                  ),
+                  style: AppTheme.monoLabel,
                 ),
                 const Spacer(),
                 if (item.confidence != null)
@@ -55,10 +54,7 @@ class DecisionCard extends StatelessWidget {
                     ),
                     child: Text(
                       '${(item.confidence! * 100).toInt()}%',
-                      style: AppTheme.caption.copyWith(
-                        color: AppTheme.accent,
-                        fontSize: 10,
-                      ),
+                      style: AppTheme.monoCaption.copyWith(color: AppTheme.accent),
                     ),
                   ),
                 const SizedBox(width: 6),
@@ -111,6 +107,17 @@ class DecisionCard extends StatelessWidget {
                     icon: Icons.edit_outlined,
                     color: AppTheme.accent,
                     onTap: onEdit,
+                  ),
+                ],
+                if (onMerge != null) ...[
+                  const SizedBox(width: 6),
+                  _ActionButton(
+                    label: 'Merge',
+                    icon: Icons.call_merge,
+                    // Accent (distinct from Approve's green); never collides
+                    // with Edit since Edit only renders on edge cards.
+                    color: AppTheme.accent,
+                    onTap: onMerge,
                   ),
                 ],
                 const Spacer(),

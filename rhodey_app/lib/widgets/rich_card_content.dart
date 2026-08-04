@@ -460,8 +460,9 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
     super.initState();
     // Today's briefing arrives expanded; older beats fold so History scrolls
     // fast instead of surfacing a wall of old briefings.
-    final ts = widget.timestamp;
+    final raw = widget.timestamp;
     final today = DateTime.now();
+    final ts = raw?.toLocal();
     _expanded = ts == null ||
         (ts.year == today.year && ts.month == today.month && ts.day == today.day);
   }
@@ -470,14 +471,21 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
     final t = widget.title.toLowerCase();
     if (t.contains('morning')) return '☀️';
     if (t.contains('afternoon')) return '🌤️';
-    if (t.contains('closing')) return '🌙';
-    if (t.contains('intel')) return '🧠';
+    // Renamed headlines (voice pass): "Friday wrap-up." / "Wrap-up." and
+    // "Night wind-down." — keep the chips matching the new names.
+    if (t.contains('wrap') || t.contains('closing') || t.contains('sign off')) return '🌙';
+    if (t.contains('night') || t.contains('wind') || t.contains('intel')) return '🧠';
+    if (t.contains('weekend') || t.contains('chores')) return '🌿';
+    if (t.contains('pre-monday') || t.contains('loading')) return '📈';
     return '📋';
   }
 
   String _dayLabel() {
-    final ts = widget.timestamp;
-    if (ts == null) return '';
+    final raw = widget.timestamp;
+    if (raw == null) return '';
+    // Server timestamps are UTC (timestamptz) — always render device-local so
+    // the card's clock matches the phone's.
+    final ts = raw.toLocal();
     final today = DateTime.now();
     if (ts.year == today.year && ts.month == today.month && ts.day == today.day) {
       final hh = ts.hour.toString().padLeft(2, '0');
@@ -574,8 +582,8 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
                         overflow: TextOverflow.ellipsis,
                       ),
                       if (_dayLabel().isNotEmpty)
-                        Text(_dayLabel(), style: AppTheme.caption.copyWith(
-                          color: AppTheme.textSecondary, fontSize: 9,
+                        Text(_dayLabel(), style: AppTheme.monoCaption.copyWith(
+                          color: AppTheme.textSecondary,
                         )),
                     ],
                   ),
@@ -593,27 +601,27 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
             if (intro.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
-                child: Text(intro, style: AppTheme.caption.copyWith(
-                  color: AppTheme.textPrimary, fontSize: 11,
+                child: Text(intro, style: AppTheme.body.copyWith(
+                  color: AppTheme.textPrimary,
                 )),
               ),
             for (final section in sections) ...[
               Text(section.header, style: AppTheme.body.copyWith(
-                fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.champagne,
+                fontWeight: FontWeight.w700, color: AppTheme.champagne,
               )),
               const SizedBox(height: 2),
               for (final item in section.items)
                 Padding(
-                  padding: const EdgeInsets.only(left: 6, bottom: 2),
+                  padding: const EdgeInsets.only(bottom: 2),
                   child: Text(item, style: AppTheme.body.copyWith(
-                    fontSize: 11, color: AppTheme.textPrimary,
+                    color: AppTheme.textPrimary,
                   ), maxLines: 2, overflow: TextOverflow.ellipsis),
                 ),
               const SizedBox(height: 4),
             ],
             if (sections.isEmpty)
-              Text(widget.fullText, style: AppTheme.caption.copyWith(
-                color: AppTheme.textSecondary, fontSize: 11,
+              Text(widget.fullText, style: AppTheme.body.copyWith(
+                color: AppTheme.textSecondary,
               )),
           ],
         ],
@@ -729,10 +737,13 @@ class _CardContainer extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      padding: const EdgeInsets.all(12),
+      // Horizontal padding matches the chat bubble's (16) so card text sits
+      // on the exact same baseline as bubble text — one 32px text line runs
+      // across bubbles, cards, and bullets in the conversation.
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       decoration: BoxDecoration(
         color: color ?? AppTheme.surface,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         border: Border.all(
           color: borderColor ?? AppTheme.border,
           width: 1,

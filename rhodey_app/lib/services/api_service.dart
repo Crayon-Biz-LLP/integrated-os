@@ -3,6 +3,7 @@ import 'dart:math' show Random;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'api_config.dart';
+import 'home_feed_cache.dart';
 import '../models/briefing.dart';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -85,6 +86,7 @@ class ApiService {
 
   final _config = ApiConfig();
   final _client = http.Client();
+  final _homeFeedCache = HomeFeedCache();
   int _idCounter = 0;
 
   /// Call once at app startup to load persisted config.
@@ -397,6 +399,50 @@ class ApiService {
   Future<ApiResult<dynamic>> updateTaskStatus(
       int taskId, String status) async {
     return _send('PATCH', '/api/tasks/$taskId/status', body: {'status': status});
+  }
+
+  // ── Entity details (People tab consolidated into Entities) ─
+
+  /// Open tasks mentioning a person (Entities edit dialog).
+  /// [personId] is the graph node UUID (migration 75 — people table removed).
+  Future<ApiResult<List<Map<String, dynamic>>>> getPersonTasks(
+      String personId, String personName) async {
+    final result = await get('/api/people/$personId/tasks',
+        query: {'name': personName});
+    if (!result.success || result.data is! List) {
+      return ApiResult.fail(result.error ?? 'Failed to load person tasks');
+    }
+    return ApiResult.ok(
+        List<Map<String, dynamic>>.from(result.data as List));
+  }
+
+  /// All person aliases (for the Entities edit dialog's alias manager).
+  Future<ApiResult<List<Map<String, dynamic>>>> getAliases() async {
+    final result = await get('/api/aliases');
+    if (!result.success || result.data is! Map) {
+      return ApiResult.fail(result.error ?? 'Failed to load aliases');
+    }
+    final aliases = (result.data as Map)['aliases'];
+    if (aliases is! List) return ApiResult.ok([]);
+    return ApiResult.ok(List<Map<String, dynamic>>.from(aliases));
+  }
+
+  /// Create a person alias (alias -> canonical name).
+  Future<ApiResult<dynamic>> createAlias(
+      String alias, String canonicalName) async {
+    return post('/api/aliases', body: {
+      'alias': alias,
+      'canonical_name': canonicalName,
+    });
+  }
+
+  /// Delete a person alias from its node (migration 76: alias on node).
+  Future<ApiResult<dynamic>> deleteAlias(
+      String alias, String canonicalName) async {
+    return _send('DELETE', '/api/aliases', body: {
+      'alias': alias,
+      'canonical_name': canonicalName,
+    });
   }
 
   // ── Decision actions ──────────────────────────────────────────
@@ -714,7 +760,30 @@ class ApiService {
       return HomeFeed(briefing: BriefingResponse.empty(), decisions: const [], tasks: const []);
     }
     final data = result.data as Map<String, dynamic>;
+    // Write-behind: keep the on-device cache warm for instant cold opens.
+    // Only persist a payload that actually carries content — a transient
+    // success-but-empty response must not wipe a good cache (which would
+    // make the next cold open render nothing at all).
+    final feed = _parseHomeFeed(data);
+    if (!feed.isEmpty) {
+      await _homeFeedCache.save(data);
+    }
+    return feed;
+  }
 
+  /// Renders the last cached home feed instantly (no network wait), or null
+  /// when no cache exists yet. Cold opens / notification taps call this first,
+  /// then [getHomeFeed] reconciles with live data.
+  Future<HomeFeed?> getCachedHomeFeed() async {
+    final cached = await _homeFeedCache.load();
+    if (cached == null || cached.isEmpty) return null;
+    final feed = _parseHomeFeed(cached);
+    return feed.isEmpty ? null : feed;
+  }
+
+  /// Parses a raw /api/home-feed payload into a [HomeFeed]. Shared by the live
+  /// fetch and the local cache so both paths agree on shape.
+  HomeFeed _parseHomeFeed(Map<String, dynamic> data) {
     final briefing = BriefingResponse.fromJson(
         (data['briefing'] as Map<String, dynamic>?) ?? {});
     final decisions = <PendingDecision>[
@@ -836,6 +905,15 @@ class ApiService {
   Future<ApiResult<dynamic>> deleteGraphNode(String id,
       {String scope = 'live'}) async {
     return _send('DELETE', '/api/graph-node/$id', query: {'scope': scope});
+  }
+
+  /// Updates enrichment on a live node via PATCH /api/graph-node/{id}/enrichment.
+  ///
+  /// Consolidation (migrations 74-76): role, strategic_weight, is_active,
+  /// org_type, description, organization_name all live in metadata.enrichment.
+  Future<ApiResult<dynamic>> updateGraphNodeEnrichment(String id,
+      Map<String, dynamic> enrichment) async {
+    return _send('PATCH', '/api/graph-node/$id/enrichment', body: enrichment);
   }
 
   /// Low-level PUT/PATCH/DELETE with the same auth + JSON conventions.
