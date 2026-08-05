@@ -133,15 +133,11 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
 
     try:
         events = get_upcoming_events(minutes_ahead=60)
-        if not events:
-            print("No upcoming events in the next 60 mins.")
-            await complete_pulse_run(supabase, run_id, status="completed",
-                metadata={"reason": "no_upcoming", "alerted": 0})
-            return {"success": True, "alerted": 0}
-
         now = datetime.now(timezone.utc)
         alerted_count = 0
-        
+
+        # Maintenance sweeps below run unconditionally each cycle — they must not
+        # be gated behind upcoming events (a calendar lull starved them all).
         for event in events:
             try:
                 event_id = event.get('id')
@@ -527,7 +523,7 @@ Context:
         try:
             signals_res = supabase.table('org_creation_signals') \
                 .select('*') \
-                .is_('status', 'pending') \
+                .eq('status', 'pending') \
                 .limit(10) \
                 .execute()
             if signals_res and signals_res.data:
@@ -544,7 +540,7 @@ Context:
                         .execute()
                 
                 if signal_items:
-                    alert_msg = "⚠️ *Unknown Organization Signals*\n\nTasks were attempted with orgs that don't exist in the `organizations` table. Approve the org first via Decisions, or check the name.\n" + "\n".join(signal_items)
+                    alert_msg = "⚠️ *Unknown Organization Signals*\n\nTasks were attempted with orgs that don't exist as `graph_nodes` of type organization. Approve the org first via Decisions, or check the name.\n" + "\n".join(signal_items)
                     await send_telegram(int(telegram_chat_id), alert_msg)
                     audit_log_sync("sentinel", "INFO", f"org_creation_signals: alerted {len(signal_items)} unknown org(s)")
         except Exception as sig_err:
@@ -678,7 +674,7 @@ Context:
         # --- PIGGYBACK: T5 Graph Integrity Sweep ---
         try:
             # Copy approved pending edges with node_ids to graph_edges if missing
-            pe_res = supabase.table('pending_graph_edges').select('id, source_node_id, relationship, target_node_id, shortcode, source_text, metadata') \
+            pe_res = supabase.table('pending_graph_edges').select('id, source_node_id, relationship, target_node_id, shortcode, source_text, eval_context') \
                 .eq('status', 'approved') \
                 .neq('approval_source', 'provenance') \
                 .not_.is_('source_node_id', 'null') \
@@ -706,7 +702,7 @@ Context:
                         "target_node_id": pe["target_node_id"],
                         "weight": 1.0,
                         "source_ref": pe.get("source_text") or f"pending_edge:{pe['id']}",
-                        "metadata": pe.get("metadata", {})
+                        "metadata": pe.get("eval_context", {})
                     })
                 
                 if to_insert:
@@ -737,6 +733,8 @@ Context:
 
         await complete_pulse_run(supabase, run_id, status="completed",
             metadata={"alerted": alerted_count})
+        audit_log_sync("sentinel", "INFO",
+                       f"sentinel: cycle complete (trigger={trigger}, alerted={alerted_count})")
         return {"success": True, "alerted": alerted_count}
 
     except Exception as e:
