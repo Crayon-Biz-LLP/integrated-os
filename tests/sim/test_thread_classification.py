@@ -45,14 +45,12 @@ def mock_webhook_side_effects():
          patch('core.webhook.handler.route_by_intent', new_callable=AsyncMock) as m_route, \
          patch('core.webhook.handler.get_recent_context', new_callable=AsyncMock) as m_recent, \
          patch('core.webhook.handler.check_and_resume_workflow', new_callable=AsyncMock) as m_wf, \
-         patch('core.webhook.handler.get_or_create_session') as m_session, \
-         patch('core.webhook.handler.get_thread_summary') as m_summary:
+         patch('core.webhook.handler.get_or_create_session') as m_session:
          
         m_recent.return_value = []
         m_wf.return_value = False
-        m_summary.return_value = ""
         
-        yield {'send': m_send, 'route': m_route, 'recent': m_recent, 'workflow': m_wf, 'session': m_session, 'summary': m_summary}
+        yield {'send': m_send, 'route': m_route, 'recent': m_recent, 'workflow': m_wf, 'session': m_session}
 
 @pytest.fixture
 def seeded_thread():
@@ -125,7 +123,6 @@ async def test_s1_url_then_person_query_no_summary(spy_classifier, mock_webhook_
     chat_id = int(os.environ.get("TELEGRAM_CHAT_ID", "111111111"))
     pairs = [{"user": {"content": "https://github.com/solvstrat/pricing"}, "bot": {"content": "Repository link logged for the project vault. Now go be a dad."}}]
     mock_webhook_side_effects['session'].return_value = ("fake_session_1", pairs, None)
-    mock_webhook_side_effects['summary'].return_value = ""
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "Who is Binu?"}}
     res = await process_webhook(update)
     assert res.get("success") is True, f"Failed: {res}"
@@ -138,17 +135,19 @@ async def test_s1_url_then_person_query_no_summary(spy_classifier, mock_webhook_
 
 @skip_unless_live_db
 @pytest.mark.asyncio
-async def test_s2_url_then_person_query_with_summary(spy_classifier, mock_webhook_side_effects):
+async def test_s2_url_then_person_query_summary_excluded(spy_classifier, mock_webhook_side_effects):
+    """Direction B: thread summaries are never fed to prompts — only the last
+    user turn(s). Aged transcript must not reach the classifier."""
     chat_id = int(os.environ.get("TELEGRAM_CHAT_ID", "111111111"))
     pairs = [{"user": {"content": "https://github.com/solvstrat/pricing"}, "bot": {"content": "Repository link logged for the project vault. Now go be a dad."}}]
-    summary = "User shared a repository link which was archived."
     mock_webhook_side_effects['session'].return_value = ("fake_session_2", pairs, None)
-    mock_webhook_side_effects['summary'].return_value = summary
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "Who is Binu?"}}
     await process_webhook(update)
     history = spy_classifier['args']['conversation_history']
-    assert 'THREAD SUMMARY' in history
-    assert 'User shared a repository link' in history
+    assert 'THREAD SUMMARY' not in history
+    assert 'User shared a repository link' not in history
+    assert 'PRECEDING TURNS' in history
+    assert 'github.com' in history
     assert 'go be a dad' not in history
     assert spy_classifier['result']['intent'] in ['QUERY', 'CLARIFICATION_NEEDED']
 
@@ -157,7 +156,6 @@ async def test_s2_url_then_person_query_with_summary(spy_classifier, mock_webhoo
 async def test_s3_empty_history_no_crash(spy_classifier, mock_webhook_side_effects):
     chat_id = int(os.environ.get("TELEGRAM_CHAT_ID", "111111111"))
     mock_webhook_side_effects['session'].return_value = ("fake_session_3", [], None)
-    mock_webhook_side_effects['summary'].return_value = ""
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "Who is Binu?"}}
     await process_webhook(update)
     history = spy_classifier['args']['conversation_history']
@@ -171,7 +169,6 @@ async def test_s4_entity_anchor_in_context(spy_classifier, mock_webhook_side_eff
     pairs = [{"user": {"content": "Update Binu to Pastor"}, "bot": {"content": "Role update logged for Binu."}}]
     anchor = {"name": "Binu", "type": "person"}
     mock_webhook_side_effects['session'].return_value = ("fake_session_4", pairs, anchor)
-    mock_webhook_side_effects['summary'].return_value = ""
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "What about his email?"}}
     await process_webhook(update)
     history = spy_classifier['args']['conversation_history']
@@ -183,7 +180,6 @@ async def test_s5_continuation_preserves_previous_turn(spy_classifier, mock_webh
     chat_id = int(os.environ.get("TELEGRAM_CHAT_ID", "111111111"))
     pairs = [{"user": {"content": "Add Equisoft meeting Mon"}, "bot": {"content": "Meeting added for Equisoft on Monday."}}]
     mock_webhook_side_effects['session'].return_value = ("fake_session_5", pairs, None)
-    mock_webhook_side_effects['summary'].return_value = ""
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "What about that meeting?"}}
     await process_webhook(update)
     history = spy_classifier['args']['conversation_history']
@@ -199,7 +195,6 @@ async def test_s6_bot_receipts_stripped_from_context(spy_classifier, mock_webhoo
         {"user": {"content": "Check Qhord timeline"}, "bot": {"content": "Timeline check logged. Now go be a dad."}}
     ]
     mock_webhook_side_effects['session'].return_value = ("fake_session_6", pairs, None)
-    mock_webhook_side_effects['summary'].return_value = ""
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "Who is Vasanth?"}}
     await process_webhook(update)
     history = spy_classifier['args']['conversation_history']
@@ -228,7 +223,7 @@ async def test_s7_resolve_thread_integration(seeded_thread, spy_classifier, mock
     
     history = spy_classifier['args']['conversation_history']
     assert 'ACTIVE ENTITY: Integration Test Project (project)' in history
-    assert 'THREAD SUMMARY: User recorded meeting notes.' in history
-    assert 'PRECEDING TURN' in history
+    assert 'THREAD SUMMARY' not in history
+    assert 'PRECEDING TURNS' in history
     assert 'Record meeting notes' in history
     assert 'go be a dad' not in history

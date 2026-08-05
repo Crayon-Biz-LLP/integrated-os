@@ -1,3 +1,4 @@
+import asyncio
 import os
 from supabase import create_client, Client
 
@@ -12,6 +13,21 @@ def get_supabase() -> Client:
             os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         )
     return _supabase
+
+
+async def exec_query(builder):
+    """Execute a Supabase query builder off the event loop.
+
+    The supabase-py client is SYNCHRONOUS: a bare .execute() blocks the
+    calling thread. In async handlers that stalls the entire event loop,
+    turning asyncio.gather into serial execution and queueing every
+    concurrent request behind the current one (the 20s screen-load
+    symptom). Offloading to a worker thread lets parallel queries actually
+    run in parallel and keeps the loop free for other requests.
+
+    Usage: res = await exec_query(supabase.table("t").select("*").eq(...))
+    """
+    return await asyncio.to_thread(builder.execute)
 
 
 

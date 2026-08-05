@@ -6,7 +6,6 @@ from core.pulse.models import BriefingContext
 def build_daily_brief_prompt(
     now_str: str,
     day_label: str,
-    conversation_history: str,
     calendar_text: str,
     overdue_text: str,
     todo_text: str,
@@ -38,8 +37,6 @@ Example:
 - 💰 Task name [Project]
 - 📋 Another task [Project]
 
-{conversation_history}
-
 {day_label.upper()} — DATA CONTEXT:
 
 CALENDAR EVENTS:
@@ -70,7 +67,6 @@ HEADLINE: Use exactly "{ctx.briefing_mode}" as your opening headline.
 SYSTEM LOAD: {'OVERLOADED - urgent items need attention' if ctx.is_overloaded else 'STEADY'}
 MONDAY REENTRY: {'TRUE - start with weekend recon' if ctx.is_monday_morning else 'FALSE'}
 PEOPLE: {ctx.people_names}
-{ctx.conversation_history}
 
 --- OPENING (ALWAYS REQUIRED) ---
 Every briefing MUST open with Rhodey's opening line before any section header. Never start with a section.

@@ -104,7 +104,17 @@ class _InboxScreenState extends State<InboxScreen>
     }
     _cachePainted = true;
 
-    final result = await _api.getPendingDecisions();
+    // One round-trip via the collapsed /api/inbox endpoint when available;
+    // falls back to the legacy 4-call path for older backends.
+    final bundle = await _api.getInboxBundle();
+    if (!mounted) return;
+
+    final result = bundle.success
+        ? ApiResult.ok(bundle.data!.decisions)
+        : await _api.getPendingDecisions();
+    if (bundle.success) {
+      setState(() => _autoDecisionCount = bundle.data!.autoDecisionCount);
+    }
     if (!mounted) return;
 
     final items = <DecisionItem>[];
@@ -120,25 +130,28 @@ class _InboxScreenState extends State<InboxScreen>
 
         // Detect merge proposals and person type from raw data
         final status = pd.raw['status'] as String? ?? '';
-        final nodeType = pd.raw['type'] as String? ?? pd.raw['node_type'] as String?;
+        final nodeType =
+            pd.raw['type'] as String? ?? pd.raw['node_type'] as String?;
         final isMerge = status == 'merge_proposed';
         final source = pd.source;
 
-        items.add(DecisionItem(
-          id: 'api_${source}_${pd.id}',
-          type: isMerge
-              ? DecisionType.merge
-              : _sourceToType(source),
-          priority: isMerge ? DecisionPriority.high : DecisionPriority.standard,
-          title: pd.title,
-          description: isMerge
-              ? 'Merge proposed — accept to combine duplicate nodes'
-              : pd.description,
-          confidence: confidence > 0 ? confidence : null,
-          createdAt: DateTime.now().subtract(const Duration(hours: 2)),
-          nodeType: nodeType,
-          metadata: {'api_id': pd.id, 'source': source},
-        ));
+        items.add(
+          DecisionItem(
+            id: 'api_${source}_${pd.id}',
+            type: isMerge ? DecisionType.merge : _sourceToType(source),
+            priority: isMerge
+                ? DecisionPriority.high
+                : DecisionPriority.standard,
+            title: pd.title,
+            description: isMerge
+                ? 'Merge proposed — accept to combine duplicate nodes'
+                : pd.description,
+            confidence: confidence > 0 ? confidence : null,
+            createdAt: DateTime.now().subtract(const Duration(hours: 2)),
+            nodeType: nodeType,
+            metadata: {'api_id': pd.id, 'source': source},
+          ),
+        );
       }
     } else {
       _error = result.error ?? '';
@@ -157,30 +170,26 @@ class _InboxScreenState extends State<InboxScreen>
 
     // Write-behind: keep the on-device cache fresh for the next open. Only
     // persist a successful (possibly empty) list so a stale cache can never
-    // be wiped by a transient failure.
+    // be wiped by a transient failure. Items live in their own key — the
+    // parallel count fetch can't clobber them.
     if (result.success) {
-      await _inboxCache.save(InboxCacheData(
-        items: items,
-        autoDecisionCount: _autoDecisionCount,
-      ));
+      await _inboxCache.saveItems(items);
     }
   }
 
   Future<void> _loadAutoDecisionCount() async {
-    final result = await _api.get('/api/auto-decisions',
-        query: {'status': 'unverified', 'limit': '1'});
+    final result = await _api.get(
+      '/api/auto-decisions',
+      query: {'status': 'unverified', 'limit': '1'},
+    );
     if (!mounted) return;
     if (result.success && result.data is Map) {
       final count = (result.data as Map)['count'] as int? ?? 0;
       setState(() => _autoDecisionCount = count);
       // Persist so the auto-decision banner also renders instantly on open.
-      // Read-modify-write: swap only the count so this parallel fetch can
-      // never clobber the items cache with a stale/empty _items list.
-      final cached = await _inboxCache.load();
-      await _inboxCache.save(InboxCacheData(
-        items: cached.items,
-        autoDecisionCount: count,
-      ));
+      // The count has its own cache key — no read-modify-write, so this
+      // parallel fetch can never clobber the items cache.
+      await _inboxCache.saveCount(count);
     }
   }
 
@@ -219,7 +228,8 @@ class _InboxScreenState extends State<InboxScreen>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                width: 36, height: 4,
+                width: 36,
+                height: 4,
                 decoration: BoxDecoration(
                   color: AppTheme.textTertiary.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(2),
@@ -234,7 +244,8 @@ class _InboxScreenState extends State<InboxScreen>
               Text(
                 'Role, relationship, or organization',
                 style: AppTheme.bodySmall.copyWith(
-                  color: AppTheme.textTertiary, fontSize: 12,
+                  color: AppTheme.textTertiary,
+                  fontSize: 12,
                 ),
               ),
               const SizedBox(height: 12),
@@ -250,7 +261,8 @@ class _InboxScreenState extends State<InboxScreen>
                     borderSide: BorderSide(color: AppTheme.border),
                   ),
                   contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 12,
+                    horizontal: 14,
+                    vertical: 12,
                   ),
                   isDense: true,
                 ),
@@ -275,7 +287,8 @@ class _InboxScreenState extends State<InboxScreen>
                             'Skip',
                             textAlign: TextAlign.center,
                             style: TextStyle(
-                              color: AppTheme.textSecondary, fontSize: 13,
+                              color: AppTheme.textSecondary,
+                              fontSize: 13,
                             ),
                           ),
                         ),
@@ -319,7 +332,10 @@ class _InboxScreenState extends State<InboxScreen>
 
     if (contextResult != null && mounted) {
       // contextResult is '' for Skip, or the entered text
-      await _doApprovePerson(item, context: contextResult.isEmpty ? null : contextResult);
+      await _doApprovePerson(
+        item,
+        context: contextResult.isEmpty ? null : contextResult,
+      );
     }
   }
 
@@ -345,7 +361,10 @@ class _InboxScreenState extends State<InboxScreen>
 
   /// Opens a search sheet to pick an existing live node to merge [item] into.
   Future<void> _showMergeSheet(DecisionItem item) async {
-    final target = await MergeSearchSheet.show(context, nodeType: item.nodeType);
+    final target = await MergeSearchSheet.show(
+      context,
+      nodeType: item.nodeType,
+    );
     if (target == null || !mounted) return;
     await _handleMerge(item, target);
   }
@@ -353,7 +372,9 @@ class _InboxScreenState extends State<InboxScreen>
   /// Executes the merge against /api/graph-node-merge, then removes the item
   /// from the list (with cache write-through) on success.
   Future<void> _handleMerge(
-      DecisionItem item, Map<String, dynamic> target) async {
+    DecisionItem item,
+    Map<String, dynamic> target,
+  ) async {
     final apiId = item.metadata['api_id'] as String?;
     if (apiId == null) return;
     final id = int.tryParse(apiId);
@@ -515,7 +536,8 @@ class _InboxScreenState extends State<InboxScreen>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                width: 36, height: 4,
+                width: 36,
+                height: 4,
                 decoration: BoxDecoration(
                   color: AppTheme.textTertiary.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(2),
@@ -530,7 +552,8 @@ class _InboxScreenState extends State<InboxScreen>
               Text(
                 item.title,
                 style: AppTheme.bodySmall.copyWith(
-                  color: AppTheme.textTertiary, fontSize: 12,
+                  color: AppTheme.textTertiary,
+                  fontSize: 12,
                 ),
               ),
               const SizedBox(height: 12),
@@ -546,7 +569,8 @@ class _InboxScreenState extends State<InboxScreen>
                     borderSide: BorderSide(color: AppTheme.border),
                   ),
                   contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 12,
+                    horizontal: 14,
+                    vertical: 12,
                   ),
                   isDense: true,
                 ),
@@ -571,7 +595,8 @@ class _InboxScreenState extends State<InboxScreen>
                             'Cancel',
                             textAlign: TextAlign.center,
                             style: TextStyle(
-                              color: AppTheme.textSecondary, fontSize: 13,
+                              color: AppTheme.textSecondary,
+                              fontSize: 13,
                             ),
                           ),
                         ),
@@ -619,7 +644,10 @@ class _InboxScreenState extends State<InboxScreen>
       if (apiId != null) {
         final id = int.tryParse(apiId);
         if (id != null) {
-          final result = await _api.approveGraphEdgeWithRelation(id, newRelation);
+          final result = await _api.approveGraphEdgeWithRelation(
+            id,
+            newRelation,
+          );
           if (result.success) {
             _removeItem(item);
           } else {
@@ -638,10 +666,8 @@ class _InboxScreenState extends State<InboxScreen>
     if (result.success) {
       setState(() => _autoDecisionCount = 0);
       // Write-through so the banner doesn't reappear from cache on next open.
-      _inboxCache.save(InboxCacheData(
-        items: List.of(_items),
-        autoDecisionCount: 0,
-      ));
+      _inboxCache.saveItems(List.of(_items));
+      _inboxCache.saveCount(0);
       _showSnack('✅ Auto-decisions verified', isError: false);
     } else {
       _showSnack(result.error ?? 'Failed to confirm');
@@ -649,8 +675,10 @@ class _InboxScreenState extends State<InboxScreen>
   }
 
   Future<void> _undoAutoChannelDecisions() async {
-    final result = await _api.post('/api/auto-decisions/undo',
-        body: {'target': 'channels'});
+    final result = await _api.post(
+      '/api/auto-decisions/undo',
+      body: {'target': 'channels'},
+    );
     if (!mounted) return;
     if (result.success) {
       _loadDecisions();
@@ -669,16 +697,22 @@ class _InboxScreenState extends State<InboxScreen>
     ApiResult result;
     switch (itemType) {
       case 'edges':
-        result = await _api.post('/api/graph-edge-action/batch',
-            body: {'action': 'approve'});
+        result = await _api.post(
+          '/api/graph-edge-action/batch',
+          body: {'action': 'approve'},
+        );
         break;
       case 'nodes':
-        result = await _api.post('/api/graph-node-action/batch',
-            body: {'action': 'approve'});
+        result = await _api.post(
+          '/api/graph-node-action/batch',
+          body: {'action': 'approve'},
+        );
         break;
       case 'emails':
-        result = await _api.post('/api/email-action/batch',
-            body: {'action': 'approve'});
+        result = await _api.post(
+          '/api/email-action/batch',
+          body: {'action': 'approve'},
+        );
         break;
       default:
         return;
@@ -706,8 +740,7 @@ class _InboxScreenState extends State<InboxScreen>
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: Text('Proceed',
-                style: TextStyle(color: AppTheme.accent)),
+            child: Text('Proceed', style: TextStyle(color: AppTheme.accent)),
           ),
         ],
       ),
@@ -721,10 +754,8 @@ class _InboxScreenState extends State<InboxScreen>
     setState(() => _items.removeWhere((i) => i.id == item.id));
     // Write-through: an actioned item must not resurrect on the next cold
     // open, so keep the on-device cache in sync with the UI immediately.
-    _inboxCache.save(InboxCacheData(
-      items: List.of(_items),
-      autoDecisionCount: _autoDecisionCount,
-    ));
+    _inboxCache.saveItems(List.of(_items));
+    _inboxCache.saveCount(_autoDecisionCount);
   }
 
   void _showSnack(String msg, {bool isError = true}) {
@@ -766,13 +797,23 @@ class _InboxScreenState extends State<InboxScreen>
 
     final merges = _items.where((d) => d.isMergeProposal).toList();
     final nonMerges = _items.where((d) => !d.isMergeProposal).toList();
-    final highPriority = nonMerges.where((d) => d.priority == DecisionPriority.high).toList();
-    final standardPriority = nonMerges.where((d) => d.priority == DecisionPriority.standard).toList();
-    final lowPriority = nonMerges.where((d) => d.priority == DecisionPriority.low).toList();
+    final highPriority = nonMerges
+        .where((d) => d.priority == DecisionPriority.high)
+        .toList();
+    final standardPriority = nonMerges
+        .where((d) => d.priority == DecisionPriority.standard)
+        .toList();
+    final lowPriority = nonMerges
+        .where((d) => d.priority == DecisionPriority.low)
+        .toList();
 
     // Count types for batch operations
-    final edgeCount = nonMerges.where((d) => d.type == DecisionType.edge).length;
-    final nodeCount = nonMerges.where((d) => d.type == DecisionType.person).length;
+    final edgeCount = nonMerges
+        .where((d) => d.type == DecisionType.edge)
+        .length;
+    final nodeCount = nonMerges
+        .where((d) => d.type == DecisionType.person)
+        .length;
 
     return Scaffold(
       appBar: AppBar(
@@ -801,12 +842,18 @@ class _InboxScreenState extends State<InboxScreen>
           children: [
             // Instant content from the notification that opened this screen
             if (_pushContent.isNotEmpty)
-              PushBanner(title: 'From your notification', content: _pushContent),
+              PushBanner(
+                title: 'From your notification',
+                content: _pushContent,
+              ),
 
             // Error banner
             if (_error.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 child: Text(
                   '⚠️ $_error',
                   style: const TextStyle(color: AppTheme.red, fontSize: 11),
@@ -833,57 +880,62 @@ class _InboxScreenState extends State<InboxScreen>
             // ── Merge Proposals ──
             if (merges.isNotEmpty) ...[
               _SectionLabel('Merge Proposals'),
-              ...merges.map((d) => DecisionCard(
-                item: d,
-                onApprove: () => _handleApprove(d),
-                onReject: () => _handleReject(d),
-              )),
+              ...merges.map(
+                (d) => DecisionCard(
+                  item: d,
+                  onApprove: () => _handleApprove(d),
+                  onReject: () => _handleReject(d),
+                ),
+              ),
               if (nonMerges.isNotEmpty) const SizedBox(height: 16),
             ],
 
             // ── Standard items ──
-            if (highPriority.isNotEmpty)
-              _SectionLabel('High Priority'),
-            ...highPriority.map((d) => DecisionCard(
-              item: d,
-              onApprove: () => _handleApprove(d),
-              onReject: () => _handleReject(d),
-              onEdit: d.type == DecisionType.edge
-                  ? () => _showEdgeEditSheet(d)
-                  : null,
-              onMerge: d.type == DecisionType.person
-                  ? () => _showMergeSheet(d)
-                  : null,
-            )),
+            if (highPriority.isNotEmpty) _SectionLabel('High Priority'),
+            ...highPriority.map(
+              (d) => DecisionCard(
+                item: d,
+                onApprove: () => _handleApprove(d),
+                onReject: () => _handleReject(d),
+                onEdit: d.type == DecisionType.edge
+                    ? () => _showEdgeEditSheet(d)
+                    : null,
+                onMerge: d.type == DecisionType.person
+                    ? () => _showMergeSheet(d)
+                    : null,
+              ),
+            ),
             if (highPriority.isNotEmpty && standardPriority.isNotEmpty)
               const SizedBox(height: 16),
 
-            if (standardPriority.isNotEmpty)
-              _SectionLabel('Standard'),
-            ...standardPriority.map((d) => DecisionCard(
-              item: d,
-              onApprove: () => _handleApprove(d),
-              onReject: () => _handleReject(d),
-              onEdit: d.type == DecisionType.edge
-                  ? () => _showEdgeEditSheet(d)
-                  : null,
-              onMerge: d.type == DecisionType.person
-                  ? () => _showMergeSheet(d)
-                  : null,
-            )),
+            if (standardPriority.isNotEmpty) _SectionLabel('Standard'),
+            ...standardPriority.map(
+              (d) => DecisionCard(
+                item: d,
+                onApprove: () => _handleApprove(d),
+                onReject: () => _handleReject(d),
+                onEdit: d.type == DecisionType.edge
+                    ? () => _showEdgeEditSheet(d)
+                    : null,
+                onMerge: d.type == DecisionType.person
+                    ? () => _showMergeSheet(d)
+                    : null,
+              ),
+            ),
             if (standardPriority.isNotEmpty && lowPriority.isNotEmpty)
               const SizedBox(height: 16),
 
-            if (lowPriority.isNotEmpty)
-              _SectionLabel('Low Effort'),
-            ...lowPriority.map((d) => DecisionCard(
-              item: d,
-              onApprove: () => _handleApprove(d),
-              onReject: () => _handleReject(d),
-              onMerge: d.type == DecisionType.person
-                  ? () => _showMergeSheet(d)
-                  : null,
-            )),
+            if (lowPriority.isNotEmpty) _SectionLabel('Low Effort'),
+            ...lowPriority.map(
+              (d) => DecisionCard(
+                item: d,
+                onApprove: () => _handleApprove(d),
+                onReject: () => _handleReject(d),
+                onMerge: d.type == DecisionType.person
+                    ? () => _showMergeSheet(d)
+                    : null,
+              ),
+            ),
 
             if (_items.isEmpty) ...[
               const SizedBox(height: 40),
@@ -918,11 +970,12 @@ class _AutoDecisionBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.all(12),        decoration: BoxDecoration(
-          color: AppTheme.accentBg,
-          borderRadius: BorderRadius.circular(AppTheme.cardRadius),
-          border: Border.all(color: AppTheme.accent.withValues(alpha: 0.3)),
-        ),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.accentBg,
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+        border: Border.all(color: AppTheme.accent.withValues(alpha: 0.3)),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -995,7 +1048,8 @@ class _BatchOperationsBar extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Wrap(
-            spacing: 6, runSpacing: 6,
+            spacing: 6,
+            runSpacing: 6,
             children: [
               if (edgeCount >= 2)
                 _ChipButton(
@@ -1067,10 +1121,11 @@ class _SectionLabel extends StatelessWidget {
       child: Text(
         label.toUpperCase(),
         style: AppTheme.label.copyWith(
-          color: AppTheme.textTertiary, fontSize: 11, letterSpacing: 0.8,
+          color: AppTheme.textTertiary,
+          fontSize: 11,
+          letterSpacing: 0.8,
         ),
       ),
     );
   }
 }
-

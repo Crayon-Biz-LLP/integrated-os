@@ -41,7 +41,7 @@ from core.pulse import (
 )
 from core.pulse.tools import skip_recurring_instance
 from core.pulse.pipeline import run_full_health_check
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import get_supabase, maybe_single_safe, exec_query
 
 
 @asynccontextmanager
@@ -327,6 +327,13 @@ async def home_feed_route(request: Request):
         briefing_fut = asyncio.ensure_future(
             _home_feed_briefing())
 
+        # Supabase's client is SYNCHRONOUS — bare .execute() blocks the event
+        # loop and turns asyncio.gather into serial execution. Offloading the
+        # blocking I/O to worker threads (exec_query helper) lets these run in
+        # parallel AND keeps the loop free so concurrent requests
+        # (inbox/today/entities) aren't queued behind home-feed — the root
+        # cause of the 20s screen loads.
+
         # ── Pending nodes (mirror pending_nodes_route) ──
         async def _nodes():
             try:
@@ -335,7 +342,8 @@ async def home_feed_route(request: Request):
                     .in_('status', ['pending', 'flagged'])
                 if _snooze_ok(supabase, 'pending_nodes'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
-                return (q.order('created_at', desc=True).limit(100).execute()).data or []
+                res = await exec_query(q.order('created_at', desc=True).limit(100))
+                return res.data or []
             except Exception:
                 return []
 
@@ -347,7 +355,8 @@ async def home_feed_route(request: Request):
                     .in_('status', ['pending', 'flagged'])
                 if _snooze_ok(supabase, 'pending_graph_edges'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
-                return (q.order('created_at', desc=True).limit(100).execute()).data or []
+                res = await exec_query(q.order('created_at', desc=True).limit(100))
+                return res.data or []
             except Exception:
                 return []
 
@@ -359,18 +368,21 @@ async def home_feed_route(request: Request):
                     .eq('status', 'proposed')
                 if _snooze_ok(supabase, 'merge_proposals'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
-                return (q.order('id', desc=True).limit(100).execute()).data or []
+                res = await exec_query(q.order('id', desc=True).limit(100))
+                return res.data or []
             except Exception:
                 return []
 
         # ── Pending messages (mirror /api/messages, limit 50) ──
         async def _messages():
             try:
-                return (supabase.table('raw_dumps') \
+                res = await exec_query(
+                    supabase.table('raw_dumps') \
                     .select('id, content, created_at, direction, sender, message_type, status, metadata, source') \
                     .order('created_at', desc=True) \
-                    .limit(50) \
-                    .execute()).data or []
+                    .limit(50)
+                )
+                return res.data or []
             except Exception:
                 return []
 
@@ -389,7 +401,7 @@ async def home_feed_route(request: Request):
                     .in_('status', ['todo'])
                 if _snooze_ok(supabase, 'tasks'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
-                rows = (q.order('created_at', desc=True).limit(200).execute()).data or []
+                rows = (await exec_query(q.order('created_at', desc=True).limit(200))).data or []
                 # Flatten the nested graph_nodes(label) join into
                 # organization_name — same shape /api/tasks produces, so
                 # home-feed consumers (Flutter focal cards, web
@@ -425,12 +437,38 @@ async def home_feed_route(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+_HOME_FEED_BRIEFING_CACHE_KEY = "rhodey:briefing:home_feed:v1"
+
+
 async def _home_feed_briefing():
-    """Build the briefing payload for /api/home-feed (defensive wrapper)."""
+    """Build the briefing payload for /api/home-feed (defensive wrapper).
+
+    Read-through Redis cache (2 min TTL): the briefing is a generated
+    artifact (LLM + 9 data sources) that takes 9-16s to rebuild and was
+    blocking the event loop for every request queued behind it. Within the
+    TTL window home-feed serves the cached payload in ~1s — Pulse
+    regenerates the underlying data on its own schedule, so staleness is
+    bounded and deliberate. Cache failures fail open to a live build.
+    """
     from api.briefing import build_briefing
+    from core.lib.redis_cache import cache_get, cache_set
+
+    try:
+        cached = cache_get(_HOME_FEED_BRIEFING_CACHE_KEY)
+        if cached is not None and isinstance(cached, dict):
+            return cached
+    except Exception as e:
+        print(f"[Briefing] Cache read failed (non-fatal): {e}")
+
     supabase = get_supabase()
     briefing = await build_briefing(supabase)
-    return json.loads(json.dumps(briefing, default=str))
+    payload = json.loads(json.dumps(briefing, default=str))
+
+    try:
+        cache_set(_HOME_FEED_BRIEFING_CACHE_KEY, payload, ttl=120)
+    except Exception as e:
+        print(f"[Briefing] Cache write failed (non-fatal): {e}")
+    return payload
 
 # --- EVENING ROUNDUP ---
 @app.api_route("/api/roundup", methods=["GET", "POST"])
@@ -847,17 +885,32 @@ async def get_calendar_events(request: Request, date: str = None, start: str = N
             rfc_start = format_rfc3339(start_dt)
             rfc_end = format_rfc3339(end_dt)
 
+        # 5-minute TTL cache: Today's screen must not hit the live Google +
+        # Outlook APIs on every open. Fail-open — a cache miss/error just
+        # fetches live, exactly as before.
+        cache_key = f"rhodey:calendar:{date or (f'{start}|{end}' if start and end else 'today')}"
+        from core.lib.redis_cache import cache_get, cache_set
+        cached = cache_get(cache_key)
+        if cached is not None and isinstance(cached, list):
+            return {"events": cached}
+
         simplified = []
 
-        service = build('calendar', 'v3', credentials=get_google_creds())
-        events_res = service.events().list(
-            calendarId='primary',
-            timeMin=rfc_start,
-            timeMax=rfc_end,
-            singleEvents=True,
-            orderBy='startTime',
-            maxResults=50
-        ).execute()
+        # Google + Outlook calls are blocking network I/O — run them in a
+        # worker thread so a slow provider can't stall the event loop (and
+        # every other request queued behind this one).
+        def _fetch_google():
+            service = build('calendar', 'v3', credentials=get_google_creds())
+            return service.events().list(
+                calendarId='primary',
+                timeMin=rfc_start,
+                timeMax=rfc_end,
+                singleEvents=True,
+                orderBy='startTime',
+                maxResults=50
+            ).execute()
+
+        events_res = await asyncio.to_thread(_fetch_google)
         for event in events_res.get('items', []):
             simplified.append({
                 'id': event.get('id'),
@@ -869,8 +922,14 @@ async def get_calendar_events(request: Request, date: str = None, start: str = N
             })
 
         try:
-            outlook_events = get_outlook_calendar_events_range(start_dt, end_dt) \
-                if start and end else get_outlook_calendar_events(start_dt)
+            if start and end:
+                outlook_events = await asyncio.to_thread(
+                    get_outlook_calendar_events_range, start_dt, end_dt
+                )
+            else:
+                outlook_events = await asyncio.to_thread(
+                    get_outlook_calendar_events, start_dt
+                )
             for e in outlook_events:
                 simplified.append({
                     'id': e.get('id'),
@@ -880,6 +939,9 @@ async def get_calendar_events(request: Request, date: str = None, start: str = N
                 })
         except Exception as ol_err:
             print(f"Outlook calendar events error: {ol_err}")
+
+        # Store the simplified list (json-serializable) with a 5-min TTL.
+        cache_set(cache_key, simplified, ttl=300)
 
         return {"events": simplified}
     except Exception as e:
@@ -953,6 +1015,17 @@ async def _complete_task(task_id: int, new_status: str = "done") -> dict:
         from core.pulse.context import context_provider
         context_provider.caches['tasks'].invalidate()
         context_provider.caches['recent_tasks'].invalidate()
+    except Exception:
+        pass
+
+    # Invalidate the home-feed briefing cache so the next request returns a
+    # briefing that no longer names the completed task. Without this, the
+    # cached briefing (2-min TTL) keeps serving the completed task as its
+    # top_focal_item / voice-line subject — the server-side half of the
+    # "completed task still showing on the focal card" ghost.
+    try:
+        from core.lib.redis_cache import cache_delete
+        cache_delete(_HOME_FEED_BRIEFING_CACHE_KEY)
     except Exception:
         pass
 
@@ -3282,27 +3355,174 @@ async def pending_graph_edges_route(request: Request):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/api/graph-nodes/live")
-async def graph_nodes_live_route(request: Request):
+@app.get("/api/inbox")
+async def inbox_route(request: Request):
+    """Collapsed Inbox payload: pending nodes/edges/merges + messages + the
+    auto-decision count in ONE call.
+
+    The Inbox screen previously fired 5 round-trips (pending nodes, edges,
+    merges, messages, auto-decisions count). Mirroring the /api/home-feed
+    pattern, all five are fetched in parallel server-side so the phone makes
+    a single request — each sub-fetch fails open to [] so one table error
+    can't 500 the whole Inbox.
+    """
     require_api_auth(request)
+    _t0 = time.perf_counter()
+    _sub_ms = {}
     try:
-        from core.services.db import get_supabase
         supabase = get_supabase()
-        
-        # Bring key nodes and conceptual/structural entities (exclude system tasks/memories)
-        entity_types = ['person', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']
-        res = supabase.table('graph_nodes') \
-            .select('id, label, type, created_at, metadata') \
-            .in_('type', entity_types) \
-            .is_('canonical_id', 'null') \
-            .eq('is_current', True) \
-            .order('created_at', desc=True) \
-            .limit(5000) \
-            .execute()
-        return {"data": res.data or []}
+
+        # Supabase's client is SYNCHRONOUS — bare .execute() blocks the event
+        # loop, so the parallel gather below would otherwise run serially and
+        # stall concurrent requests. Offload to worker threads (exec_query).
+
+        async def _nodes():
+            try:
+                q = supabase.table('pending_nodes') \
+                    .select('id, label, type:node_type, status, source_text, created_at, eval_context') \
+                    .in_('status', ['pending', 'flagged'])
+                if _snooze_ok(supabase, 'pending_nodes'):
+                    q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+                res = await exec_query(q.order('created_at', desc=True).limit(100))
+                return res.data or []
+            except Exception:
+                return []
+
+        async def _edges():
+            try:
+                q = supabase.table('pending_graph_edges') \
+                    .select('id, source_label, target_label, relationship, status, context, confidence, created_at') \
+                    .in_('status', ['pending', 'flagged'])
+                if _snooze_ok(supabase, 'pending_graph_edges'):
+                    q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+                res = await exec_query(q.order('created_at', desc=True).limit(100))
+                return res.data or []
+            except Exception:
+                return []
+
+        async def _merges():
+            try:
+                q = supabase.table('merge_proposals') \
+                    .select('id, source_label, source_type, target_label, target_node_id, rationale, status') \
+                    .eq('status', 'proposed')
+                if _snooze_ok(supabase, 'merge_proposals'):
+                    q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
+                res = await exec_query(q.order('id', desc=True).limit(100))
+                return res.data or []
+            except Exception:
+                return []
+
+        async def _messages():
+            try:
+                res = await exec_query(
+                    supabase.table('raw_dumps') \
+                    .select('id, content, created_at, direction, sender, message_type, status, metadata, source') \
+                    .order('created_at', desc=True) \
+                    .limit(50)
+                )
+                return res.data or []
+            except Exception:
+                return []
+
+        async def _auto_count():
+            try:
+                now = datetime.now(timezone.utc)
+                cutoff = (now - timedelta(minutes=30)).isoformat()
+                res = await exec_query(
+                    supabase.table('decisions') \
+                    .select('id') \
+                    .eq('auto_decided', True) \
+                    .eq('status', 'active') \
+                    .is_('verified_at', None) \
+                    .gte('decided_at', cutoff)
+                )
+                return len(res.data or [])
+            except Exception:
+                return 0
+
+        async def _timed(label, coro):
+            """Run a sub-fetch while recording its wall-clock ms."""
+            _s = time.perf_counter()
+            try:
+                return await coro
+            finally:
+                _sub_ms[label] = round((time.perf_counter() - _s) * 1000, 1)
+
+        (nodes, edges, merges, messages, auto_count) = await asyncio.gather(
+            _timed('pending_nodes', _nodes()),
+            _timed('pending_edges', _edges()),
+            _timed('pending_merges', _merges()),
+            _timed('messages', _messages()),
+            _timed('auto_count', _auto_count()),
+        )
+
+        total_ms = round((time.perf_counter() - _t0) * 1000, 1)
+        print(
+            f"[TIMING] /api/inbox total={total_ms}ms "
+            f"sub={_sub_ms} "
+            f"rows={{nodes:{len(nodes)},edges:{len(edges)},merges:{len(merges)},messages:{len(messages)},auto_count:{auto_count}}}"
+        )
+
+        return {
+            "pending_nodes": nodes,
+            "pending_edges": edges,
+            "pending_merges": merges,
+            "pending_messages": messages,
+            "auto_decision_count": auto_count,
+        }
     except Exception:
         import traceback
         traceback.print_exc()
+        print(f"[TIMING] /api/inbox total={round((time.perf_counter() - _t0) * 1000, 1)}ms FAILED")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/graph-nodes/live")
+async def graph_nodes_live_route(request: Request, limit: int = None, offset: int = 0, q: str = None):
+    """Live graph entities, paginated + searchable.
+
+    limit/offset/q bound the payload — the Entities screen pages through
+    results instead of downloading the entire graph (this was a fixed
+    5000-row dump with full metadata, multi-MB on mobile). Omitting `limit`
+    preserves the legacy unbounded behavior for existing callers (web UI).
+    """
+    require_api_auth(request)
+    _t0 = time.perf_counter()
+    try:
+        from core.services.db import get_supabase
+        supabase = get_supabase()
+
+        # Bring key nodes and conceptual/structural entities (exclude system tasks/memories)
+        entity_types = ['person', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']
+        query = supabase.table('graph_nodes') \
+            .select('id, label, type, created_at, metadata') \
+            .in_('type', entity_types) \
+            .is_('canonical_id', 'null') \
+            .eq('is_current', True)
+        if q and q.strip():
+            query = query.ilike('label', f'%{q.strip()}%')
+        if limit is not None:
+            query = query.order('created_at', desc=True) \
+                .limit(min(int(limit), 500)) \
+                .offset(int(offset or 0))
+        else:
+            query = query.order('created_at', desc=True).limit(5000)
+        res = query.execute()
+        rows = res.data or []
+        total_ms = round((time.perf_counter() - _t0) * 1000, 1)
+        print(
+            f"[TIMING] /api/graph-nodes/live total={total_ms}ms "
+            f"params={{limit:{limit},offset:{offset},q:{q.strip() if q else None}}} "
+            f"rows={len(rows)}"
+        )
+        return {"data": rows}
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        print(
+            f"[TIMING] /api/graph-nodes/live total={round((time.perf_counter() - _t0) * 1000, 1)}ms "
+            f"params={{limit:{limit},offset:{offset},q:{q.strip() if q else None}}} FAILED"
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

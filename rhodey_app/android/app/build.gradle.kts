@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // START: FlutterFire Configuration
@@ -31,15 +33,45 @@ android {
 
     signingConfigs {
         create("release") {
-            val keystorePath = System.getenv("KEYSTORE_PATH") ?: "upload-keystore.jks"
-            val storePass = System.getenv("KEYSTORE_PASSWORD") ?: "RhodeyApp2026"
-            val keyPass = System.getenv("KEY_PASSWORD") ?: "RhodeyApp2026"
-            val keyAliasName = System.getenv("KEY_ALIAS") ?: "upload"
+            // Release signing credentials come from the environment OR a local
+            // (gitignored) android/key.properties — never hardcoded. The build
+            // fails fast if neither is present, so a release APK can never be
+            // signed with default credentials.
+            val keyPropsFile = rootProject.file("key.properties")
+            val keyProps = Properties().apply {
+                if (keyPropsFile.exists()) {
+                    keyPropsFile.inputStream().use { load(it) }
+                }
+            }
+            fun cred(name: String, prop: String): String? =
+                System.getenv(name) ?: keyProps.getProperty(prop)
 
-            storeFile = file(keystorePath)
-            storePassword = storePass
-            keyAlias = keyAliasName
-            keyPassword = keyPass
+            val keystorePath = cred("KEYSTORE_PATH", "storeFile")
+            val storePass = cred("KEYSTORE_PASSWORD", "storePassword")
+            val keyPass = cred("KEY_PASSWORD", "keyPassword")
+            val keyAliasName = cred("KEY_ALIAS", "keyAlias")
+
+            // Fail fast with a clear message — but only when a release build is
+            // actually requested. This signingConfigs block is evaluated during
+            // configuration of EVERY build (debug included), and debug builds
+            // never sign, so they must not require credentials.
+            val releaseRequested = gradle.startParameter.taskNames.any {
+                it.contains("release", ignoreCase = true)
+            }
+            if (releaseRequested) {
+                require(keystorePath != null && storePass != null &&
+                    keyPass != null && keyAliasName != null) {
+                    "Release signing credentials are not configured. Set the " +
+                        "KEYSTORE_PATH / KEYSTORE_PASSWORD / KEY_PASSWORD / KEY_ALIAS " +
+                        "environment variables or create android/key.properties with " +
+                        "storeFile / storePassword / keyPassword / keyAlias."
+                }
+            }
+
+            storeFile = file(keystorePath ?: "upload-keystore.jks")
+            storePassword = storePass ?: ""
+            keyAlias = keyAliasName ?: "upload"
+            keyPassword = keyPass ?: ""
         }
     }
 

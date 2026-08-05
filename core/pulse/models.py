@@ -40,7 +40,6 @@ class BriefingContext:
     briefing_mode: str = ""
     is_overloaded: bool = False
     is_monday_morning: bool = False
-    conversation_history: str = ""
 
     # Strategy & Business
     season_config: str = ""

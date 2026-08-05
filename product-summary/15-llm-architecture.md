@@ -43,8 +43,8 @@ Timeout values were increased (from 15s/45s/120s/10s respectively) to align with
 
 | Model | Purpose | Provider | Context |
 |-------|---------|----------|---------|
-| `gemini-3.5-flash` | Pulse briefing generation | Gemini | Primary LLM for the intelligence cycle |
-| `gemini-3.1-flash-lite` | Intent classification, email classification | Gemini | Fast, cheap classification tasks |
+| `gemini-3.6-flash` | Pulse briefing generation | Gemini | Primary LLM for the intelligence cycle |
+| `gemini-3.5-flash-lite` | Intent classification, email classification | Gemini | Fast, cheap classification tasks |
 | `gemini-embedding-2-preview` | Text embeddings (768-dim) | Gemini | All vector search operations |
 | `gemma-4-31b-it` | LLM fallback | OpenRouter | Second-tier fallback for graph backfill |
 | `nvidia/nemotron-3-super-120b-a12b:free` | LLM fallback (free tier) | OpenRouter | Last-resort fallback |
@@ -147,7 +147,7 @@ Every LLM call is logged to the `model_registry` table:
 
 | Column | Example |
 |--------|---------|
-| `model_name` | gemini-3.1-flash-lite |
+| `model_name` | gemini-3.5-flash-lite |
 | `provider` | gemini |
 | `input_tokens` | 1,234 |
 | `output_tokens` | 567 |

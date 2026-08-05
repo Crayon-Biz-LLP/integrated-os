@@ -530,13 +530,19 @@ class TestPendingNode:
                 # Any other failure is unexpected
                 assert False, f"Approval failed with unexpected error: {err_msg}"
 
-            # People row should exist
-            people = supabase.table("people") \
-                .select("id, name, role") \
-                .ilike("name", f"{label}%") \
+            # Person should exist as a self-canonical graph node (migration 75)
+            person_nodes = supabase.table("graph_nodes") \
+                .select("id, label, type, metadata") \
+                .ilike("label", f"{label}%") \
+                .eq("is_current", True) \
                 .execute()
-            assert len(people.data) >= 1, "Person should have been created in people table"
-            assert "Equisoft" in (people.data[0].get("role") or "")
+            assert len(person_nodes.data) >= 1, "Person should have been created as a graph node"
+            node_meta = person_nodes.data[0].get("metadata") or {}
+            if isinstance(node_meta, str):
+                import json
+                node_meta = json.loads(node_meta)
+            role = (node_meta.get("enrichment") or {}).get("role") or ""
+            assert "Equisoft" in role, f"Enrichment role should contain Equisoft, got: {role}"
 
             # Graph node should exist
             graph_nodes = supabase.table("graph_nodes") \
@@ -548,14 +554,11 @@ class TestPendingNode:
             assert graph_nodes.data[0]["type"] == "person"
 
         finally:
-            # Cleanup: also remove what process_graph_pending_decision created
-            people = supabase.table("people") \
-                .select("id").ilike("name", f"{label}%").execute()
-            for p in (people.data or []):
-                try:
-                    supabase.table("people").delete().eq("id", p["id"]).execute()
-                except Exception:
-                    pass
+            # Cleanup: remove what process_graph_pending_decision created
+            try:
+                supabase.table("pending_nodes").delete().eq("id", pending_id).execute()
+            except Exception:
+                pass
             graph_nodes = supabase.table("graph_nodes") \
                 .select("id").ilike("label", f"{label}%").execute()
             for n in (graph_nodes.data or []):

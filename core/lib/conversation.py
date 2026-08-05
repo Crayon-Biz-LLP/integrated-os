@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timezone
 
 from core.llm.compat import call_llm_with_fallback_sync
+from core.llm.constants import CLASSIFICATION_MODEL
 
 SESSION_TIMEOUT_MINUTES = 60
 MAX_HISTORY_TOKENS = 5000
@@ -11,6 +12,9 @@ MAX_HISTORY_TOKENS = 5000
 # recently. Older anchors must not steer routing (e.g. an old Ashraya anchor
 # biasing a later unrelated personal task).
 ANCHOR_FRESH_MINUTES = 30
+# A general thread older than this is archived on next fallback and a fresh
+# session started — the general bucket can never accumulate forever.
+GENERAL_THREAD_MAX_DAYS = 7
 
 def _fresh_anchor(anchor):
     """Return the anchor only if its entity was mentioned recently (ANCHOR_FRESH_MINUTES).
@@ -396,7 +400,7 @@ If no entity matches, respond with: NONE
 
 Response (one line only):"""
     
-    resp = call_llm_with_fallback_sync(prompt, model="gemini-3.1-flash-lite", is_critical=False)
+    resp = call_llm_with_fallback_sync(prompt, model=CLASSIFICATION_MODEL, is_critical=False)
     result = resp.text.strip().upper() if resp and resp.text else ""
     
     candidates = []
@@ -570,20 +574,42 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
 
         # 5. Else general (deterministic: most recently active first)
         general = supabase.table('conversation_threads') \
-            .select('id, active_anchor') \
+            .select('id, active_anchor, created_at') \
             .eq('chat_id', chat_id) \
             .eq('thread_type', 'general') \
             .is_('archived_at', 'null') \
             .order('last_active_at', desc=True) \
             .limit(1) \
             .execute()
-            
-        if general.data:
-            thread_id = general.data[0]['id']
+
+        general_rows = general.data if general.data else []
+        if general_rows:
+            # ── General-session rotation ──
+            # A general thread older than GENERAL_THREAD_MAX_DAYS is archived
+            # and replaced by a fresh session. Without this the general bucket
+            # would accumulate every non-entity message forever.
+            try:
+                g_created = general_rows[0].get('created_at')
+                if g_created:
+                    g_created_dt = datetime.fromisoformat(str(g_created).replace('Z', '+00:00'))
+                    g_age_days = (datetime.now(timezone.utc) - g_created_dt).total_seconds() / 86400
+                    if g_age_days > GENERAL_THREAD_MAX_DAYS:
+                        supabase.table('conversation_threads') \
+                            .update({'archived_at': datetime.now(timezone.utc).isoformat()}) \
+                            .eq('id', general_rows[0]['id']) \
+                            .execute()
+                        from core.lib.audit_logger import audit_log_sync
+                        audit_log_sync("routing", "INFO",
+                            f"Rotated stale general thread {general_rows[0]['id']} (> {GENERAL_THREAD_MAX_DAYS}d) — fresh session")
+                        general_rows = []
+            except Exception:
+                pass  # rotation is best-effort hygiene
+        if general_rows:
+            thread_id = general_rows[0]['id']
             _touch_thread(thread_id)
             from core.lib.audit_logger import audit_log_sync
             audit_log_sync("routing", "INFO", f"Routed to thread {thread_id} via fallback_general (existing)")
-            return thread_id, _fresh_anchor(general.data[0].get('active_anchor'))
+            return thread_id, _fresh_anchor(general_rows[0].get('active_anchor'))
         else:
             new_thread = supabase.table('conversation_threads').insert({
                 'chat_id': chat_id,
@@ -638,7 +664,7 @@ Conversation:
 {raw}
 
 Summary:"""
-        resp = call_llm_with_fallback_sync(prompt, model="gemini-3.1-flash-lite", is_critical=False)
+        resp = call_llm_with_fallback_sync(prompt, model=CLASSIFICATION_MODEL, is_critical=False)
         summary = resp.text.strip()
         if summary and len(summary) < 600:
             return summary
@@ -699,7 +725,7 @@ Conversation:
 {raw}
 
 Topic Summary:"""
-        resp = call_llm_with_fallback_sync(prompt, model="gemini-3.1-flash-lite", is_critical=False)
+        resp = call_llm_with_fallback_sync(prompt, model=CLASSIFICATION_MODEL, is_critical=False)
         summary = resp.text.strip()
         if summary and len(summary) < 600:
             return summary
@@ -708,11 +734,12 @@ Topic Summary:"""
     return ""
 
 async def _background_summary_check(session_id: str):
-    """Best-effort background job to generate/update thread summary.
-    
-    Fires eagerly every 3 user exchanges so short threads always have
-    a summary for the awareness layer to scan. Always updates the summary
-    so it doesn't go stale as the conversation evolves.
+    """Best-effort background job to generate/update the thread summary.
+
+    Direction B: summaries are an EPISODIC INDEX for retrieval / future
+    close-extraction — they are deliberately NOT fed into any prompt
+    (no raw or summarized transcript in LLM context). Fires eagerly every
+    3 user exchanges so short threads always have a current summary.
     """
     try:
         conv_res = get_supabase().table('conversations').select('id').eq('thread_id', session_id).eq('role', 'user').execute()
@@ -871,41 +898,26 @@ def log_exchange(session_id: str, role: str, intent: str, content: str, chat_id:
         from core.lib.audit_logger import audit_log_sync
         audit_log_sync("conversation", "ERROR", f"log_exchange error: {e}")
 
-def format_classify_context(pairs: list, thread_summary: str = "", active_anchor: dict = None) -> str:
-    """Format a bounded context block specifically for classification.
-    
-    Replaces raw conversation history to prevent bot receipt leakage.
-    Uses abstractive thread summary + last user message only.
+def format_classify_context(pairs: list, active_anchor: dict = None) -> str:
+    """Format the ONLY conversation-derived context block in the system.
+
+    Bounded to the last 2 user turns — immediate follow-up coherence only
+    ("reschedule the 2pm", "and the timeline?"). No thread summaries, no
+    aged transcript: long-term knowledge comes from structured state.
     """
     parts = []
-    
-    if thread_summary:
-        parts.append(f"THREAD SUMMARY: {thread_summary[:500]}")
     
     if active_anchor and active_anchor.get('name') and active_anchor.get('type'):
         parts.append(f"ACTIVE ENTITY: {active_anchor['name']} ({active_anchor['type']})")
         
     if pairs:
-        last = pairs[-1]
-        user = last.get('user')
-        if user and user.get('content'):
-            parts.append("PRECEDING TURN:")
-            parts.append(f"User: {user['content'][:500]}")
+        recent_user = [p for p in pairs if (p.get('user') or {}).get('content')][-2:]
+        if recent_user:
+            parts.append("PRECEDING TURNS (last 2 user messages — for immediate follow-ups only):")
+            for p in recent_user:
+                parts.append(f"User: {p['user']['content'][:500]}")
             
     if parts:
         return "CONVERSATION HISTORY:\n" + "\n".join(parts)
     return ""
 
-def format_history_for_prompt(pairs: list) -> str:
-    """Format conversation history as a CONVERSATION HISTORY block for LLM prompts."""
-    if not pairs:
-        return ""
-    lines = ["CONVERSATION HISTORY:"]
-    for pair in pairs:
-        user = pair.get('user')
-        bot = pair.get('bot')
-        if user:
-            lines.append(f'User: {user.get("content", "")}')
-        if bot:
-            lines.append(f'Rhodey: {bot.get("content", "")}')
-    return "\n".join(lines)

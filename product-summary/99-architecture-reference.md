@@ -321,7 +321,7 @@ Nightly cron generates **canonical pages** — holistic organization-level summa
 
 | Component | What it does |
 |---|---|
-| `core/pulse/briefing.py` | Single LLM call (gemini-3.5-flash), write-behind pattern. 2-phase parallelized: Phase 1 (independent queries) → Phase 2 (cross-referenced context). ~30-40% faster than legacy |
+| `core/pulse/briefing.py` | Single LLM call (gemini-3.6-flash), write-behind pattern. 2-phase parallelized: Phase 1 (independent queries) → Phase 2 (cross-referenced context). ~30-40% faster than legacy |
 | `core/pulse/decision_pulse.py` | AI-free — pending approvals only. Queries messages + pending_nodes + pending_graph_edges |
 | `core/pulse/sentinel.py` | 5-min cron. Meeting alarms (60-min lookahead) + 7 piggyback services (index queue, enrichment queue, auto-archive, pattern detection, feedback ingestion, ND sweep, enrichment processing) |
 | `core/pulse/pipeline.py` | Consolidated health monitor — DLQ items, recent errors, LLM degradation checks |

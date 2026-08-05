@@ -15,7 +15,7 @@ export default async function EmailsPage() {
         classification, source, received_at,
         linked_project_id, linked_person_id,
         linked_project:projects(name),
-        linked_person:people(name)
+        linked_person:graph_nodes(name)
       `)
       .eq("channel", "email")
       .order("received_at", { ascending: false })

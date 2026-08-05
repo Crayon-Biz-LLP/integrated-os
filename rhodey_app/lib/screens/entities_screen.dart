@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/api_service.dart';
@@ -7,9 +8,10 @@ import '../theme/app_theme.dart';
 /// UI's Decisions → Entities tab so node monitoring/merging works on-device.
 ///
 /// Actions are destructive-by-intent, so every one is guarded by a confirm
-/// dialog. All calls go through ApiService to the existing backend routes
-/// (/api/graph-nodes/live, /api/graph-nodes/search, /api/graph-node-merge,
-/// /api/graph-node/{id} PUT/PATCH/DELETE) — no backend changes needed.
+/// dialog. All calls go through ApiService to the backend routes
+/// (/api/graph-nodes/live with limit/offset/q pagination + search,
+/// /api/graph-nodes/search, /api/graph-node-merge,
+/// /api/graph-node/{id} PUT/PATCH/DELETE).
 class EntitiesScreen extends StatefulWidget {
   const EntitiesScreen({super.key});
 
@@ -28,6 +30,19 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
   String _filterType = 'all';
   bool _busy = false;
 
+  /// Server-side pagination + search: the backend filters by label and pages
+  /// the result, so the phone never downloads the whole graph (was 5000 rows
+  /// with metadata on every open).
+  static const _pageSize = 200;
+  int _offset = 0;
+  bool _hasMore = false;
+  Timer? _searchDebounce;
+
+  /// Monotonic load sequence — a slow response from an older search/pagination
+  /// must never overwrite a newer one (the debounce shrinks but can't close
+  /// that race).
+  int _loadSeq = 0;
+
   static const _types = [
     'all',
     'person',
@@ -43,50 +58,84 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
   void initState() {
     super.initState();
     _load();
-    _search.addListener(_applyFilter);
+    _search.addListener(_onSearchChanged);
   }
 
   @override
   void dispose() {
-    _search.removeListener(_applyFilter);
+    _search.removeListener(_onSearchChanged);
+    _searchDebounce?.cancel();
     _search.dispose();
     super.dispose();
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = '';
-    });
-    final result = await _api.getLiveGraphNodes();
-    if (!mounted) return;
+  Future<void> _load({bool more = false}) async {
+    final seq = ++_loadSeq;
+    if (more) {
+      setState(() => _busy = true);
+    } else {
+      _offset = 0;
+      _all = [];
+      setState(() {
+        _loading = true;
+        _error = '';
+      });
+    }
+    final q = _search.text.trim();
+    final result = await _api.getLiveGraphNodes(
+      limit: _pageSize,
+      offset: _offset,
+      q: q.isEmpty ? null : q,
+    );
+    // A newer load superseded this one — drop the stale response.
+    if (!mounted || seq != _loadSeq) return;
     setState(() {
       _loading = false;
+      _busy = false;
       if (result.success) {
-        _all = result.data ?? [];
+        final rows = result.data ?? [];
+        _all = more ? [..._all, ...rows] : rows;
+        _offset = _all.length;
+        _hasMore = rows.length == _pageSize;
         _applyFilter();
       } else {
-        _error = result.error ?? 'Failed to load entities';
+        if (_all.isEmpty) _error = result.error ?? 'Failed to load entities';
       }
     });
+  }
+
+  /// Server-side search, debounced — the backend filters + pages, so typing
+  /// never re-downloads the whole graph.
+  void _onSearchChanged() {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      _load();
+    });
+  }
+
+  Future<void> _loadMore() async {
+    if (_busy || !_hasMore) return;
+    await _load(more: true);
   }
 
   void _applyFilter() {
     final q = _search.text.trim().toLowerCase();
     setState(() {
-      _filtered = _all.where((n) {
-        final label = (n['label'] as String? ?? '').toLowerCase();
-        final type = n['type'] as String? ?? '';
-        final matchesType = _filterType == 'all' || type == _filterType;
-        final matchesQuery = q.isEmpty || label.contains(q);
-        return matchesType && matchesQuery;
-      }).toList()
-        ..sort((a, b) {
-          final ta = (a['type'] as String? ?? '');
-          final tb = (b['type'] as String? ?? '');
-          if (ta != tb) return ta.compareTo(tb);
-          return (a['label'] as String? ?? '').compareTo(b['label'] as String? ?? '');
-        });
+      _filtered =
+          _all.where((n) {
+            final label = (n['label'] as String? ?? '').toLowerCase();
+            final type = n['type'] as String? ?? '';
+            final matchesType = _filterType == 'all' || type == _filterType;
+            final matchesQuery = q.isEmpty || label.contains(q);
+            return matchesType && matchesQuery;
+          }).toList()..sort((a, b) {
+            final ta = (a['type'] as String? ?? '');
+            final tb = (b['type'] as String? ?? '');
+            if (ta != tb) return ta.compareTo(tb);
+            return (a['label'] as String? ?? '').compareTo(
+              b['label'] as String? ?? '',
+            );
+          });
     });
   }
 
@@ -129,7 +178,11 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
               style: AppTheme.body,
               decoration: const InputDecoration(
                 hintText: 'Search people, orgs, concepts…',
-                prefixIcon: Icon(Icons.search, color: AppTheme.textTertiary, size: 20),
+                prefixIcon: Icon(
+                  Icons.search,
+                  color: AppTheme.textTertiary,
+                  size: 20,
+                ),
                 isDense: true,
               ),
             ),
@@ -158,7 +211,9 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
                     ),
                     showCheckmark: false,
                     labelStyle: TextStyle(
-                      color: selected ? AppTheme.champagne : AppTheme.textSecondary,
+                      color: selected
+                          ? AppTheme.champagne
+                          : AppTheme.textSecondary,
                     ),
                   ),
                 );
@@ -168,20 +223,27 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
           // List
           Expanded(
             child: _loading
-                ? const Center(child: CircularProgressIndicator(color: AppTheme.champagne))
+                ? const Center(
+                    child: CircularProgressIndicator(color: AppTheme.champagne),
+                  )
                 : _error.isNotEmpty
-                    ? _buildError()
-                    : _filtered.isEmpty
-                        ? _buildEmpty()
-                        : RefreshIndicator(
-                            onRefresh: _refresh,
-                            color: AppTheme.champagne,
-                            child: ListView.builder(
-                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
-                              itemCount: _filtered.length,
-                              itemBuilder: (_, i) => _buildNodeTile(_filtered[i]),
-                            ),
-                          ),
+                ? _buildError()
+                : _filtered.isEmpty
+                ? _buildEmpty()
+                : RefreshIndicator(
+                    onRefresh: _refresh,
+                    color: AppTheme.champagne,
+                    child: ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
+                      itemCount: _filtered.length + (_hasMore ? 1 : 0),
+                      itemBuilder: (_, i) {
+                        if (i >= _filtered.length) {
+                          return _buildLoadMoreTile();
+                        }
+                        return _buildNodeTile(_filtered[i]);
+                      },
+                    ),
+                  ),
           ),
         ],
       ),
@@ -197,7 +259,11 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
           children: [
             const Icon(Icons.cloud_off, color: AppTheme.textMuted, size: 32),
             const SizedBox(height: 12),
-            Text(_error, style: AppTheme.hintStyle, textAlign: TextAlign.center),
+            Text(
+              _error,
+              style: AppTheme.hintStyle,
+              textAlign: TextAlign.center,
+            ),
             const SizedBox(height: 16),
             OutlinedButton(onPressed: _load, child: const Text('Retry')),
           ],
@@ -207,10 +273,26 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
   }
 
   Widget _buildEmpty() {
-    return Center(
-      child: Text(
-        'No entities found.',
-        style: AppTheme.hintStyle,
+    return Center(child: Text('No entities found.', style: AppTheme.hintStyle));
+  }
+
+  Widget _buildLoadMoreTile() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Center(
+        child: _busy
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: AppTheme.champagne,
+                ),
+              )
+            : OutlinedButton(
+                onPressed: _loadMore,
+                child: const Text('Show more'),
+              ),
       ),
     );
   }
@@ -267,7 +349,12 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(label, style: AppTheme.bodyStyle, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    Text(
+                      label,
+                      style: AppTheme.bodyStyle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     const SizedBox(height: 2),
                     if (enrichSummary.isNotEmpty)
                       Padding(
@@ -275,24 +362,38 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
                         child: Text(
                           enrichSummary,
                           style: AppTheme.caption.copyWith(
-                            color: (enrichment?['strategic_weight'] as num?)?.toInt() == null
+                            color:
+                                (enrichment?['strategic_weight'] as num?)
+                                        ?.toInt() ==
+                                    null
                                 ? AppTheme.textSecondary
-                                : ((enrichment?['strategic_weight'] as num?)?.toInt() ?? 0) >= 8
-                                    ? AppTheme.champagne
-                                    : AppTheme.textSecondary,
+                                : ((enrichment?['strategic_weight'] as num?)
+                                              ?.toInt() ??
+                                          0) >=
+                                      8
+                                ? AppTheme.champagne
+                                : AppTheme.textSecondary,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     Text(
-                      createdAt.isNotEmpty ? '$type · ${_shortDate(createdAt)}' : type,
-                      style: AppTheme.caption.copyWith(color: AppTheme.textSecondary),
+                      createdAt.isNotEmpty
+                          ? '$type · ${_shortDate(createdAt)}'
+                          : type,
+                      style: AppTheme.caption.copyWith(
+                        color: AppTheme.textSecondary,
+                      ),
                     ),
                   ],
                 ),
               ),
-              const Icon(Icons.more_horiz, color: AppTheme.textTertiary, size: 18),
+              const Icon(
+                Icons.more_horiz,
+                color: AppTheme.textTertiary,
+                size: 18,
+              ),
             ],
           ),
         ),
@@ -414,7 +515,10 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
     }
   }
 
-  Future<Map<String, dynamic>?> _pickTargetNode(String excludeLabel, String? nodeType) async {
+  Future<Map<String, dynamic>?> _pickTargetNode(
+    String excludeLabel,
+    String? nodeType,
+  ) async {
     final controller = TextEditingController();
     List<Map<String, dynamic>> results = [];
     Map<String, dynamic>? selected;
@@ -459,7 +563,9 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
                 if (!r.success) return;
                 setState(() {
                   results = (r.data ?? [])
-                      .where((n) => (n['label'] as String? ?? '') != excludeLabel)
+                      .where(
+                        (n) => (n['label'] as String? ?? '') != excludeLabel,
+                      )
                       .take(8)
                       .toList();
                 });
@@ -470,8 +576,10 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
               child: results.isEmpty
                   ? Padding(
                       padding: const EdgeInsets.all(16),
-                      child: Text('Type at least 2 characters to search.',
-                          style: AppTheme.hintStyle),
+                      child: Text(
+                        'Type at least 2 characters to search.',
+                        style: AppTheme.hintStyle,
+                      ),
                     )
                   : ListView.builder(
                       shrinkWrap: true,
@@ -480,8 +588,14 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
                         final n = results[i];
                         return ListTile(
                           dense: true,
-                          title: Text(n['label'] as String? ?? '', style: AppTheme.body),
-                          subtitle: Text(n['type'] as String? ?? '', style: AppTheme.caption),
+                          title: Text(
+                            n['label'] as String? ?? '',
+                            style: AppTheme.body,
+                          ),
+                          subtitle: Text(
+                            n['type'] as String? ?? '',
+                            style: AppTheme.caption,
+                          ),
                           onTap: () {
                             selected = n;
                             Navigator.pop(ctx, n);
@@ -516,7 +630,10 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
           onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, controller.text.trim()),
             child: const Text('Save'),
@@ -524,7 +641,12 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
         ],
       ),
     );
-    if (newLabel == null || newLabel.isEmpty || newLabel == oldLabel || !mounted) return;
+    if (newLabel == null ||
+        newLabel.isEmpty ||
+        newLabel == oldLabel ||
+        !mounted) {
+      return;
+    }
 
     setState(() => _busy = true);
     final result = await _api.renameGraphNode(id, newLabel);
@@ -556,8 +678,12 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
               child: Row(
                 children: [
                   Icon(
-                    t == current ? Icons.radio_button_checked : Icons.radio_button_off,
-                    color: t == current ? AppTheme.champagne : AppTheme.textTertiary,
+                    t == current
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_off,
+                    color: t == current
+                        ? AppTheme.champagne
+                        : AppTheme.textTertiary,
                     size: 18,
                   ),
                   const SizedBox(width: 10),
@@ -595,11 +721,18 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
     final e = _enrichmentOf(node);
 
     final role = TextEditingController(text: (e?['role'] as String?) ?? '');
-    final orgName = TextEditingController(text: (e?['organization_name'] as String?) ?? '');
-    final orgType = TextEditingController(text: (e?['org_type'] as String?) ?? '');
+    final orgName = TextEditingController(
+      text: (e?['organization_name'] as String?) ?? '',
+    );
+    final orgType = TextEditingController(
+      text: (e?['org_type'] as String?) ?? '',
+    );
     final weight = TextEditingController(
-        text: (e?['strategic_weight'] as num?)?.toInt().toString() ?? '');
-    final description = TextEditingController(text: (e?['description'] as String?) ?? '');
+      text: (e?['strategic_weight'] as num?)?.toInt().toString() ?? '',
+    );
+    final description = TextEditingController(
+      text: (e?['description'] as String?) ?? '',
+    );
     final aliasController = TextEditingController();
     var isActive = (e?['is_active'] as bool?) ?? true;
 
@@ -620,13 +753,18 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
             Future(() async {
               final aliasRes = await _api.getAliases();
               final nameLc = label.toLowerCase();
-              final loaded = List<Map<String, dynamic>>.from(
-                  aliasRes.success ? (aliasRes.data ?? []) : [])
-                  .where((a) =>
-                      (a['canonical_name'] as String? ?? '').toLowerCase() ==
-                      nameLc)
-                  .toList()
-                  .cast<Map<String, dynamic>>();
+              final loaded =
+                  List<Map<String, dynamic>>.from(
+                        aliasRes.success ? (aliasRes.data ?? []) : [],
+                      )
+                      .where(
+                        (a) =>
+                            (a['canonical_name'] as String? ?? '')
+                                .toLowerCase() ==
+                            nameLc,
+                      )
+                      .toList()
+                      .cast<Map<String, dynamic>>();
               final tasksRes = await _api.getPersonTasks(id, label);
               final loadedTasks = tasksRes.success
                   ? List<Map<String, dynamic>>.from(tasksRes.data ?? [])
@@ -641,209 +779,265 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
             });
           }
           return AlertDialog(
-          backgroundColor: AppTheme.surface,
-          title: Text('Edit details — $label', style: AppTheme.title),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _enrichField('Role', 'e.g. Wife, Auditor, Vendor…', role),
-                _enrichField('Organization', 'e.g. CrayonBiz LLP', orgName),
-                _enrichField('Org type', 'e.g. company, nonprofit, family…', orgType),
-                _enrichField('Strategic weight (1–10)', '5', weight, keyboardType: TextInputType.number),
-                const SizedBox(height: 10),
-                Text('Description', style: AppTheme.caption),
-                const SizedBox(height: 4),
-                TextField(
-                  controller: description,
-                  style: AppTheme.body,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                    hintText: 'One line about this entity…',
-                    isDense: true,
+            backgroundColor: AppTheme.surface,
+            title: Text('Edit details — $label', style: AppTheme.title),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _enrichField('Role', 'e.g. Wife, Auditor, Vendor…', role),
+                  _enrichField('Organization', 'e.g. CrayonBiz LLP', orgName),
+                  _enrichField(
+                    'Org type',
+                    'e.g. company, nonprofit, family…',
+                    orgType,
                   ),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    const Icon(Icons.circle, size: 10, color: AppTheme.green),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text('Active — inactive entities are deprioritized.',
-                          style: AppTheme.bodyMuted),
+                  _enrichField(
+                    'Strategic weight (1–10)',
+                    '5',
+                    weight,
+                    keyboardType: TextInputType.number,
+                  ),
+                  const SizedBox(height: 10),
+                  Text('Description', style: AppTheme.caption),
+                  const SizedBox(height: 4),
+                  TextField(
+                    controller: description,
+                    style: AppTheme.body,
+                    maxLines: 2,
+                    decoration: const InputDecoration(
+                      hintText: 'One line about this entity…',
+                      isDense: true,
                     ),
-                    Switch(
-                      value: isActive,
-                      activeTrackColor: AppTheme.green,
-                      onChanged: (v) => setSheet(() => isActive = v),
-                    ),
-                  ],
-                ),
-                if (isPerson) ...[
-                  const SizedBox(height: 14),
-                  Text('ALIASES (${aliasesLoading ? '' : aliases.length})',
-                      style: AppTheme.label.copyWith(
-                        color: AppTheme.textTertiary,
-                        fontSize: 10,
-                        letterSpacing: 1.2,
-                      )),
-                  const SizedBox(height: 6),
-                  if (aliasesLoading)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 6),
-                      child: Center(
-                        child: SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      ),
-                    )
-                  else if (aliases.isEmpty)
-                    Text('No aliases — add nicknames or alternate names',
-                        style: AppTheme.hintStyle.copyWith(fontSize: 11))
-                  else
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      children: aliases.map((a) {
-                        final aliasText = a['alias'] as String? ?? '';
-                        return Chip(
-                          label: Text(aliasText),
-                          labelStyle: AppTheme.caption.copyWith(color: AppTheme.champagne),
-                          backgroundColor: AppTheme.champagneMuted,
-                          side: BorderSide(color: AppTheme.champagne.withValues(alpha: 0.25)),
-                          deleteIcon: const Icon(Icons.close,
-                              size: 14, color: AppTheme.textTertiary),
-                          onDeleted: () async {
-                            final canonical =
-                                a['canonical_name'] as String? ?? label;
-                            final res = await _api.deleteAlias(aliasText, canonical);
-                            if (!mounted) return;
-                            if (res.success) {
-                              setSheet(() {
-                                aliases.removeWhere((x) =>
-                                    (x['alias'] as String? ?? '').toLowerCase() ==
-                                    aliasText.toLowerCase());
-                              });
-                            } else {
-                              _toast(res.error ?? 'Failed to delete alias',
-                                  error: true);
-                            }
-                          },
-                        );
-                      }).toList(),
-                    ),
-                  const SizedBox(height: 6),
+                  ),
+                  const SizedBox(height: 12),
                   Row(
                     children: [
+                      const Icon(Icons.circle, size: 10, color: AppTheme.green),
+                      const SizedBox(width: 8),
                       Expanded(
-                        child: TextField(
-                          controller: aliasController,
-                          style: AppTheme.body.copyWith(fontSize: 13),
-                          decoration: const InputDecoration(
-                            hintText: 'e.g. Nickname…',
-                            isDense: true,
-                          ),
+                        child: Text(
+                          'Active — inactive entities are deprioritized.',
+                          style: AppTheme.bodyMuted,
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      TextButton(
-                        onPressed: () async {
-                          final alias = aliasController.text.trim();
-                          if (alias.isEmpty) return;
-                          final res =
-                              await _api.createAlias(alias, label);
-                          if (!mounted) return;
-                          final created = res.data;
-                          final ok = res.success &&
-                              (created is! Map || created['success'] != false);
-                          if (ok && created is Map && created['alias'] is Map) {
-                            setSheet(() {
-                              aliases.add(
-                                  (created['alias'] as Map).cast<String, dynamic>());
-                              aliasController.clear();
-                            });
-                          } else {
-                            _toast(
-                              (created is Map && created['message'] is String)
-                                  ? created['message'] as String
-                                  : 'Failed to add alias',
-                              error: true,
-                            );
-                          }
-                        },
-                        child: const Text('Add',
-                            style: TextStyle(color: AppTheme.champagne)),
+                      Switch(
+                        value: isActive,
+                        activeTrackColor: AppTheme.green,
+                        onChanged: (v) => setSheet(() => isActive = v),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 14),
-                  Text('ACTIVE TASKS (${tasksLoading ? '' : tasks.length})',
+                  if (isPerson) ...[
+                    const SizedBox(height: 14),
+                    Text(
+                      'ALIASES (${aliasesLoading ? '' : aliases.length})',
                       style: AppTheme.label.copyWith(
                         color: AppTheme.textTertiary,
                         fontSize: 10,
                         letterSpacing: 1.2,
-                      )),
-                  const SizedBox(height: 6),
-                  if (tasksLoading)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 6),
-                      child: Center(
-                        child: SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
                       ),
-                    )
-                  else if (tasks.isEmpty)
-                    Text('No active tasks mention this person',
-                        style: AppTheme.hintStyle.copyWith(fontSize: 11))
-                  else
-                    ...tasks.take(8).map((t) => Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 6, vertical: 1),
-                                decoration: BoxDecoration(
-                                  color: AppTheme.surfaceAlt,
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: Text(
-                                  t['priority'] as String? ?? '',
-                                  style: AppTheme.caption
-                                      .copyWith(color: AppTheme.textSecondary),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  t['title'] as String? ?? '',
-                                  style: AppTheme.bodySmall.copyWith(fontSize: 12),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
+                    ),
+                    const SizedBox(height: 6),
+                    if (aliasesLoading)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 6),
+                        child: Center(
+                          child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
                           ),
-                        )),
+                        ),
+                      )
+                    else if (aliases.isEmpty)
+                      Text(
+                        'No aliases — add nicknames or alternate names',
+                        style: AppTheme.hintStyle.copyWith(fontSize: 11),
+                      )
+                    else
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: aliases.map((a) {
+                          final aliasText = a['alias'] as String? ?? '';
+                          return Chip(
+                            label: Text(aliasText),
+                            labelStyle: AppTheme.caption.copyWith(
+                              color: AppTheme.champagne,
+                            ),
+                            backgroundColor: AppTheme.champagneMuted,
+                            side: BorderSide(
+                              color: AppTheme.champagne.withValues(alpha: 0.25),
+                            ),
+                            deleteIcon: const Icon(
+                              Icons.close,
+                              size: 14,
+                              color: AppTheme.textTertiary,
+                            ),
+                            onDeleted: () async {
+                              final canonical =
+                                  a['canonical_name'] as String? ?? label;
+                              final res = await _api.deleteAlias(
+                                aliasText,
+                                canonical,
+                              );
+                              if (!mounted) return;
+                              if (res.success) {
+                                setSheet(() {
+                                  aliases.removeWhere(
+                                    (x) =>
+                                        (x['alias'] as String? ?? '')
+                                            .toLowerCase() ==
+                                        aliasText.toLowerCase(),
+                                  );
+                                });
+                              } else {
+                                _toast(
+                                  res.error ?? 'Failed to delete alias',
+                                  error: true,
+                                );
+                              }
+                            },
+                          );
+                        }).toList(),
+                      ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: aliasController,
+                            style: AppTheme.body.copyWith(fontSize: 13),
+                            decoration: const InputDecoration(
+                              hintText: 'e.g. Nickname…',
+                              isDense: true,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton(
+                          onPressed: () async {
+                            final alias = aliasController.text.trim();
+                            if (alias.isEmpty) return;
+                            final res = await _api.createAlias(alias, label);
+                            if (!mounted) return;
+                            final created = res.data;
+                            final ok =
+                                res.success &&
+                                (created is! Map ||
+                                    created['success'] != false);
+                            if (ok &&
+                                created is Map &&
+                                created['alias'] is Map) {
+                              setSheet(() {
+                                aliases.add(
+                                  (created['alias'] as Map)
+                                      .cast<String, dynamic>(),
+                                );
+                                aliasController.clear();
+                              });
+                            } else {
+                              _toast(
+                                (created is Map && created['message'] is String)
+                                    ? created['message'] as String
+                                    : 'Failed to add alias',
+                                error: true,
+                              );
+                            }
+                          },
+                          child: const Text(
+                            'Add',
+                            style: TextStyle(color: AppTheme.champagne),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    Text(
+                      'ACTIVE TASKS (${tasksLoading ? '' : tasks.length})',
+                      style: AppTheme.label.copyWith(
+                        color: AppTheme.textTertiary,
+                        fontSize: 10,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    if (tasksLoading)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 6),
+                        child: Center(
+                          child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        ),
+                      )
+                    else if (tasks.isEmpty)
+                      Text(
+                        'No active tasks mention this person',
+                        style: AppTheme.hintStyle.copyWith(fontSize: 11),
+                      )
+                    else
+                      ...tasks
+                          .take(8)
+                          .map(
+                            (t) => Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 1,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.surfaceAlt,
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      t['priority'] as String? ?? '',
+                                      style: AppTheme.caption.copyWith(
+                                        color: AppTheme.textSecondary,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      t['title'] as String? ?? '',
+                                      style: AppTheme.bodySmall.copyWith(
+                                        fontSize: 12,
+                                      ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Save', style: TextStyle(color: AppTheme.champagne)),
-            ),
-          ],
-        );
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text(
+                  'Save',
+                  style: TextStyle(color: AppTheme.champagne),
+                ),
+              ),
+            ],
+          );
         },
       ),
     );
@@ -853,10 +1047,14 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
     final weightVal = int.tryParse(weight.text.trim());
     final updates = <String, dynamic>{
       'role': role.text.trim().isEmpty ? null : role.text.trim(),
-      'organization_name': orgName.text.trim().isEmpty ? null : orgName.text.trim(),
+      'organization_name': orgName.text.trim().isEmpty
+          ? null
+          : orgName.text.trim(),
       'org_type': orgType.text.trim().isEmpty ? null : orgType.text.trim(),
       'strategic_weight': weightVal,
-      'description': description.text.trim().isEmpty ? null : description.text.trim(),
+      'description': description.text.trim().isEmpty
+          ? null
+          : description.text.trim(),
       'is_active': isActive,
     };
     if (weightVal != null && (weightVal < 1 || weightVal > 10)) {
@@ -877,8 +1075,12 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
     }
   }
 
-  Widget _enrichField(String label, String hint, TextEditingController controller,
-      {TextInputType? keyboardType}) {
+  Widget _enrichField(
+    String label,
+    String hint,
+    TextEditingController controller, {
+    TextInputType? keyboardType,
+  }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Column(
@@ -963,12 +1165,17 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
         title: Text(title, style: AppTheme.title),
         content: Text(message, style: AppTheme.bodyMuted),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: Text(
               confirmLabel,
-              style: TextStyle(color: destructive ? AppTheme.red : AppTheme.champagne),
+              style: TextStyle(
+                color: destructive ? AppTheme.red : AppTheme.champagne,
+              ),
             ),
           ),
         ],

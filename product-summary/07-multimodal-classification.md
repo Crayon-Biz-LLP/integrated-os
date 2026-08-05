@@ -2,7 +2,7 @@
 
 ## Intent Classification
 
-Every incoming text message is classified by Gemini 3.1 Flash Lite (`gemini-3.1-flash-lite-preview`) into one of 8 intents.
+Every incoming text message is classified by Gemini 3.5 Flash Lite (`gemini-3.5-flash-lite`) into one of 8 intents.
 
 ### Classification Prompt Structure
 

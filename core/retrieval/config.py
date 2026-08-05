@@ -1,5 +1,7 @@
 import os
 
+from core.llm.constants import CLASSIFICATION_MODEL
+
 
 class RetrievalConfig:
     """Feature flags for the retrieval pipeline.
@@ -68,7 +70,9 @@ PPR_DAMPING = 0.85
 PPR_ITERATIONS = 20
 PPR_TOLERANCE = 1e-6
 
-TRIPLE_EXTRACTION_MODEL = "gemini-3.1-flash-lite"
+# Shared with the canonical lite-tier model — one source of truth so a
+# future lite-model upgrade can't silently miss triple extraction.
+TRIPLE_EXTRACTION_MODEL = CLASSIFICATION_MODEL
 
 DEFAULT_TOP_K_PHRASES = 30
 DEFAULT_TOP_K_PASSAGES = 10

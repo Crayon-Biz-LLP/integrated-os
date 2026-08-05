@@ -268,7 +268,7 @@ def seed_full_test_data():
     supabase = get_supabase()
 
     # Sweep any stale [SIM_TEST] rows before seeding to avoid duplicate key errors
-    for tbl, col in [('organizations', 'name'), ('projects', 'name'),
+    for tbl, col in [('projects', 'name'),
                      ('graph_nodes', 'label'), ('memories', 'content'),
                      ('raw_dumps', 'text'), ('tasks', 'title')]:
         try:
@@ -277,13 +277,17 @@ def seed_full_test_data():
             pass
 
     orgs_data = [
-        {'name': '[SIM_TEST] Crayon Biz LLP'},
-        {'name': '[SIM_TEST] Equisoft'},
+        '[SIM_TEST] Crayon Biz LLP',
+        '[SIM_TEST] Equisoft',
     ]
-    for o in orgs_data:
-        res = supabase.table('organizations').insert(o).execute()
+    for name in orgs_data:
+        res = supabase.table('graph_nodes').insert({
+            'label': name,
+            'type': 'organization',
+            'normalized_label': normalize_label(name),
+        }).execute()
         if res.data:
-            seeded['orgs'][o['name']] = res.data[0]['id']
+            seeded['orgs'][name] = res.data[0]['id']
 
     projects_data = [
         {'name': '[SIM_TEST] Qhord', 'context': '', 'organization_id': seeded['orgs'].get('[SIM_TEST] Crayon Biz LLP'), 'status': 'active'},
@@ -299,8 +303,6 @@ def seed_full_test_data():
         {'label': '[SIM_TEST] Danny', 'type': 'person', 'normalized_label': normalize_label('[SIM_TEST] Danny')},
         {'label': '[SIM_TEST] Shifrah', 'type': 'person', 'normalized_label': normalize_label('[SIM_TEST] Shifrah')},
         {'label': '[SIM_TEST] Marcus', 'type': 'person', 'normalized_label': normalize_label('[SIM_TEST] Marcus')},
-        {'label': '[SIM_TEST] Crayon Biz LLP', 'type': 'organization', 'normalized_label': normalize_label('[SIM_TEST] Crayon Biz LLP')},
-        {'label': '[SIM_TEST] Equisoft', 'type': 'organization', 'normalized_label': normalize_label('[SIM_TEST] Equisoft')},
         {'label': '[SIM_TEST] Qhord', 'type': 'project', 'normalized_label': normalize_label('[SIM_TEST] Qhord')},
         {'label': '[SIM_TEST] Ashraya', 'type': 'project', 'normalized_label': normalize_label('[SIM_TEST] Ashraya')},
     ]
@@ -335,11 +337,9 @@ def seed_full_test_data():
 
     _cleanup_by_ids('tasks', 'id', seeded['tasks'] + seeded['_created_tasks'])
     _cleanup_by_ids('memories', 'id', seeded['memories'] + seeded['_created_memories'])
-    _cleanup_by_ids('graph_nodes', 'id', list(seeded['graph_nodes'].values()))
+    _cleanup_by_ids('graph_nodes', 'id', list(seeded['graph_nodes'].values()) + list(seeded['orgs'].values()))
     _cleanup_by_ids('projects', 'id', list(seeded['projects'].values()))
-    _cleanup_by_ids('organizations', 'id', list(seeded['orgs'].values()))
 
-    _verify_cleanup('organizations', 'name', '[SIM_TEST]%')
     _verify_cleanup('projects', 'name', '[SIM_TEST]%')
     _verify_cleanup('graph_nodes', 'label', '[SIM_TEST]%')
     _verify_cleanup('tasks', 'title', '[SIM_TEST]%')

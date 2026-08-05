@@ -76,6 +76,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// re-promoted on the next home load (the "came back" bug).
   final Set<String> _deferredFocalKeys = <String>{};
   bool _focalLoading = true;
+
   /// ID of the focal item currently animating to "done" state
   String? _completingCardId;
 
@@ -88,6 +89,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   // ── CONVERSATION ──
   final _messages = <ChatMessage>[];
+
+  /// Memoized card resolution keyed by message id — resolveCardData (regex
+  /// parsing) runs at most once per message instead of on every rebuild.
+  final _cardDataCache = <String, CardData?>{};
   final _scrollController = ScrollController();
   final _textController = TextEditingController();
   int _msgCounter = 0;
@@ -114,17 +119,34 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// The timeout watchdog extends while this is true (the inline fallback
   /// runs the full LLM turn and can take 30-60s).
   bool _sendInFlight = false;
+
   /// Guards against duplicate history loads.
   bool _historyLoaded = false;
+
   /// Guards against double-tap on the task icon while the ledger is posting.
   bool _taskTapping = false;
 
   // ── Two-state layout (idle ⇄ conversation) ──
   bool _conversationOpen = false;
+
   /// Active (todo) task count — shown on the task icon badge.
   int _activeTaskCount = 0;
+
+  /// Title→id index of the last-fetched todo tasks — powers card "Mark done"
+  /// with a synchronous local lookup (no per-tap network round-trip) and
+  /// fail-closed matching (never completes the wrong task).
+  final Map<String, int> _taskIdByTitle = {};
+
+  /// True once a backfill fetch has been attempted — the index is normally
+  /// populated by _applyFocalData, so the fetch only fires when that was empty.
+  bool _taskIndexBackfilled = false;
+
   /// Debounce timer for push notifications — coalesces rapid pushes.
   Timer? _pushDebounce;
+
+  /// Coalesces home refreshes triggered back-to-back (a route pop and a
+  /// lifecycle resume can both fire within the same second) into one call.
+  Timer? _homeRefreshDebounce;
 
   // ── WhatsApp-style instant delivery ──
   /// Number of live home-feed reconciles currently in flight (after the cached
@@ -139,6 +161,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// notification taps render from this instantly, then reconcile with the
   /// server (write-behind on every successful fetch).
   final _messageCache = MessageCache();
+
   /// Content rendered instantly from a tapped push (provisional bubble). The
   /// real server row replaces it when history lands — tracked to dedupe.
   String? _pendingPushContent;
@@ -163,10 +186,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   }
 
   /// Regained focus after a pushed screen popped. Refresh live data so the
-  /// decision digest and focal board reflect decisions made there (one call).
+  /// decision digest and focal board reflect decisions made there — debounced
+  /// so a simultaneous lifecycle resume doesn't trigger a duplicate refresh.
   @override
   void didPopNext() {
-    _loadHome();
+    _scheduleHomeRefresh();
   }
 
   /// App returned to foreground. FCM `onMessage` only fires in the foreground,
@@ -179,7 +203,15 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _hasStarted) {
-      _refreshHome();
+      // Only refresh home when Home is actually the visible route. A pushed
+      // screen (Inbox/Today/Entities) refreshes itself on resume and fires
+      // didPopNext on the way back — refreshing home underneath a pushed
+      // screen would be a wasted /api/home-feed round-trip (and with the
+      // briefing rebuild that used to mean a 10-16s server hog per resume).
+      final route = ModalRoute.of(context);
+      if (route == null || route.isCurrent) {
+        _scheduleHomeRefresh();
+      }
       if (_awaitingResponse) {
         _pollForUpdates();
       }
@@ -223,7 +255,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     routeObserver.unsubscribe(this);
-    if (NotificationService.onNotificationOpened == _handlePushNotificationTap) {
+    if (NotificationService.onNotificationOpened ==
+        _handlePushNotificationTap) {
       NotificationService.onNotificationOpened = null;
     }
     if (NotificationService.onPushReceived == _handlePushReceived) {
@@ -236,6 +269,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     _sendTimeout?.cancel();
     _ackExpiryTimer?.cancel();
     _pushDebounce?.cancel();
+    _homeRefreshDebounce?.cancel();
     _textController.dispose();
     _scrollController.dispose();
     _instrumentation.log();
@@ -263,8 +297,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// top_focal_item is only promoted while it still maps to a live item: an
   /// item the user deferred, or that got resolved since the pulse wrote the
   /// briefing, must not resurface (the "Not now came back" bug).
-  void _applyBriefing(BriefingResponse briefing,
-      {Set<String>? liveItemIds, bool promoteFocal = true}) {
+  void _applyBriefing(
+    BriefingResponse briefing, {
+    Set<String>? liveItemIds,
+    bool promoteFocal = true,
+  }) {
     if (!mounted) return;
     setState(() {
       _briefing = briefing;
@@ -285,7 +322,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         final deferredKey = naturalId.isEmpty ? '' : '$itemType:$naturalId';
         final wasDeferredThisSession =
             deferredKey.isNotEmpty && _deferredFocalKeys.contains(deferredKey);
-        final stillLive = liveItemIds == null ||
+        final stillLive =
+            liveItemIds == null ||
             _focalItemStillLive(itemType, naturalId, liveItemIds);
         if (!wasDeferredThisSession && stillLive) {
           final existingIdx = _focalItems.indexWhere(
@@ -313,8 +351,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           }
           // Remove any duplicate from _loadFocalItems that has the same natural ID
           if (naturalId.isNotEmpty) {
-            _focalItems.removeWhere((f) =>
-              f.id == naturalId && f.id != newItem.id
+            _focalItems.removeWhere(
+              (f) => f.id == naturalId && f.id != newItem.id,
             );
           }
         }
@@ -329,9 +367,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// it again is exactly the resurrection bug. Only task / pending-decision
   /// types have a live list to verify against; anything else (calendar, notes,
   /// vault) is the LLM's judgment call and is kept.
-  bool _focalItemStillLive(String type, String naturalId, Set<String> liveItemIds) {
+  bool _focalItemStillLive(
+    String type,
+    String naturalId,
+    Set<String> liveItemIds,
+  ) {
     if (naturalId.isEmpty) return true;
-    final mapsToBoard = type == 'task' ||
+    final mapsToBoard =
+        type == 'task' ||
         type == 'graph_node' ||
         type == 'graph_edge' ||
         type == 'merge';
@@ -369,8 +412,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   /// Applies fetched decisions + tasks to the focal board — shared by the
   /// legacy _loadFocalItems and the single-call _loadHome (P2).
-  void _applyFocalData(List<PendingDecision> decisions,
-      List<Map<String, dynamic>> tasks) {
+  void _applyFocalData(
+    List<PendingDecision> decisions,
+    List<Map<String, dynamic>> tasks,
+  ) {
     if (!mounted) return;
     final items = <_FocalItem>[];
 
@@ -380,45 +425,108 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     _pendingDecisionCount = decisions.length;
     for (final pd in decisions) {
       final source = pd.source;
-      items.add(_FocalItem(
-        id: pd.id,
-        title: pd.title,
-        description: pd.description,
-        actionLabel: _sourceActionLabel(source),
-        source: source,
-        metadata: {
-          'source': source,
-          'api_id': pd.id,
-          'pending_id': int.tryParse(pd.id),
-        },
-      ));
+      items.add(
+        _FocalItem(
+          id: pd.id,
+          title: pd.title,
+          description: pd.description,
+          actionLabel: _sourceActionLabel(source),
+          source: source,
+          metadata: {
+            'source': source,
+            'api_id': pd.id,
+            'pending_id': int.tryParse(pd.id),
+          },
+        ),
+      );
     }
 
+    // Only non-terminal tasks count toward the active ledger and the
+    // title→id index — a stale on-device cache can briefly carry
+    // done/cancelled rows, and a done title in the index could make a
+    // conversation "Mark done" resolve to an already-completed task.
+    final activeTasks = tasks.where((t) {
+      final st = (t['status'] as String? ?? 'todo').toLowerCase();
+      return st != 'done' && st != 'cancelled';
+    }).toList();
+
     // Due/overdue tasks fill remaining slots
-    _activeTaskCount = tasks.length;
-    for (final t in tasks) {
+    _activeTaskCount = activeTasks.length;
+
+    // Refresh the title→id index with the freshest task list — card "Mark
+    // done" resolves ids locally from this (no per-tap network fetch).
+    _taskIdByTitle.clear();
+    for (final t in activeTasks) {
+      final id = t['id'] as int?;
+      final title = (t['title'] as String? ?? '').toLowerCase().trim();
+      if (id != null && title.isNotEmpty) {
+        // putIfAbsent: first match wins for duplicate titles (same semantics
+        // as the old first-match loop).
+        _taskIdByTitle.putIfAbsent(title, () => id);
+      }
+    }
+
+    for (final t in activeTasks) {
+      // Defensive: never surface a terminal-status task on the board. The
+      // server filters to 'todo', but the on-device cache can briefly hold
+      // pre-completion rows — a task completed elsewhere (Today screen,
+      // conversation card, Telegram) must not repaint while the live fetch
+      // reconciles.
+      final st = (t['status'] as String? ?? 'todo').toLowerCase();
+      if (st == 'done' || st == 'cancelled') continue;
       final deadline = t['deadline'] as String?;
       if (deadline == null || !_isUrgent(deadline)) continue;
-      items.add(_FocalItem(
-        id: t['id'].toString(),
-        title: t['title'] as String? ?? 'Untitled',
-        subtitle: _formatTaskContext(t),
-        source: 'task',
-        actionLabel: 'Done',
-        metadata: {'task_id': t['id']},
-      ));
+      items.add(
+        _FocalItem(
+          id: t['id'].toString(),
+          title: t['title'] as String? ?? 'Untitled',
+          subtitle: _formatTaskContext(t),
+          source: 'task',
+          actionLabel: 'Done',
+          metadata: {'task_id': t['id']},
+        ),
+      );
     }
+
+    // Live id sets for the preserved-item cross-check. A briefing-chosen or
+    // manually-promoted item whose underlying task/decision was resolved
+    // since it was surfaced (completed via another surface, a timed-out
+    // completion that still landed server-side, Telegram, etc.) must not be
+    // resurrected — that ghost is exactly this bug (task done in the DB but
+    // still showing on the focal card). Reuses the promotion guard's
+    // still-live semantics via _focalItemStillLive.
+    final liveIds = <String>{
+      for (final t in tasks) t['id'].toString(),
+      for (final d in decisions) d.id,
+    };
 
     setState(() {
       // Preserve items that were deliberately surfaced: the LLM-chosen
-      // briefing item AND any task the user manually promoted to focus.
+      // briefing item AND any task the user manually promoted to focus —
+      // but only while the underlying item is still genuinely actionable.
       // Everything else rebuilds from live pending/task data.
       final preserved = <_FocalItem>[];
       for (final f in _focalItems) {
-        if (f.metadata['from_briefing'] == true ||
-            f.metadata['promoted'] == true) {
-          preserved.add(f);
+        if (f.metadata['from_briefing'] != true &&
+            f.metadata['promoted'] != true) {
+          continue;
         }
+        // Resolve the item's server-side identity for the cross-check.
+        final naturalId =
+            (f.metadata['focal_item_id'] ??
+                    f.metadata['task_id'] ??
+                    f.metadata['pending_id'])
+                ?.toString() ??
+            '';
+        final type = (f.metadata['focal_type'] as String? ?? f.source ?? 'task')
+            .toLowerCase();
+        final stillLive = _focalItemStillLive(type, naturalId, liveIds);
+        // Drop only when we have real knowledge: an empty live set means the
+        // sub-fetch failed (fetchers swallow errors → []). A dropped briefing
+        // item self-heals via re-promotion, but a manually promoted item
+        // would be permanently lost — keep it when we can't prove it's gone.
+        if (liveIds.isNotEmpty && !stillLive) continue;
+        preserved.add(f);
       }
       _focalItems = items;
       for (final p in preserved.reversed) {
@@ -463,7 +571,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         }
         _applyHomeFeed(feed);
       } finally {
-        if (mounted) setState(() => _syncingCount = (_syncingCount - 1).clamp(0, 1 << 30));
+        if (mounted) {
+          setState(() => _syncingCount = (_syncingCount - 1).clamp(0, 1 << 30));
+        }
       }
     } catch (_) {
       if (mounted) {
@@ -487,8 +597,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       for (final d in feed.decisions) d.id,
       for (final t in feed.tasks) t['id'].toString(),
     };
-    _applyBriefing(feed.briefing,
-        liveItemIds: liveItemIds, promoteFocal: promoteFocal);
+    _applyBriefing(
+      feed.briefing,
+      liveItemIds: liveItemIds,
+      promoteFocal: promoteFocal,
+    );
     _applyFocalData(feed.decisions, feed.tasks);
   }
 
@@ -538,7 +651,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       // real extra context ('Fill DBS forms, then call Timmy...').
       final title = (task['title'] as String? ?? '').trim().toLowerCase();
       final noteClean = notes.trim().toLowerCase();
-      final isEcho = title.isNotEmpty &&
+      final isEcho =
+          title.isNotEmpty &&
           (noteClean == title ||
               (noteClean.contains(title) &&
                   (noteClean.length - title.length) < 10));
@@ -572,13 +686,20 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   String _sourceActionLabel(String source) {
     switch (source) {
-      case 'graph_node': return 'Approve';
-      case 'merge': return 'Approve';
-      case 'graph_edge': return 'Review';
-      case 'email': return 'Create';
-      case 'whatsapp': return 'Create';
-      case 'call': return 'Create';
-      default: return 'View';
+      case 'graph_node':
+        return 'Approve';
+      case 'merge':
+        return 'Approve';
+      case 'graph_edge':
+        return 'Review';
+      case 'email':
+        return 'Create';
+      case 'whatsapp':
+        return 'Create';
+      case 'call':
+        return 'Create';
+      default:
+        return 'View';
     }
   }
 
@@ -638,7 +759,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       // LLM-chosen item from briefing — use unified endpoint
       result = await _api.focalAction(
         action: 'done',
-        itemType: item.metadata['focal_type'] as String? ?? item.source ?? 'task',
+        itemType:
+            item.metadata['focal_type'] as String? ?? item.source ?? 'task',
         itemId: item.metadata['focal_item_id'].toString(),
         title: item.title,
       );
@@ -685,15 +807,19 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       if (mounted) {
         setState(() => _completingCardId = null);
         final data = result?.data;
-        final serverMsg =
-            (data is Map && data['message'] is String) ? data['message'] as String : null;
+        final serverMsg = (data is Map && data['message'] is String)
+            ? data['message'] as String
+            : null;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-                result == null
-                    ? RhodeyVoice.couldntComplete()
-                    : (serverMsg ?? result.error ?? RhodeyVoice.couldntComplete()),
-                style: const TextStyle(fontSize: 12)),
+              result == null
+                  ? RhodeyVoice.couldntComplete()
+                  : (serverMsg ??
+                        result.error ??
+                        RhodeyVoice.couldntComplete()),
+              style: const TextStyle(fontSize: 12),
+            ),
             // Amber for the unactionable case, red for a real failed action.
             backgroundColor: result == null ? AppTheme.amber : AppTheme.red,
             duration: const Duration(seconds: 2),
@@ -755,8 +881,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(RhodeyVoice.couldntDefer(),
-                style: TextStyle(fontSize: 12)),
+            content: Text(
+              RhodeyVoice.couldntDefer(),
+              style: TextStyle(fontSize: 12),
+            ),
             backgroundColor: AppTheme.amber,
             duration: const Duration(seconds: 2),
           ),
@@ -778,8 +906,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Text("Couldn't defer that item — it will resurface. Please try again.",
-                style: TextStyle(fontSize: 12)),
+            content: const Text(
+              "Couldn't defer that item — it will resurface. Please try again.",
+              style: TextStyle(fontSize: 12),
+            ),
             backgroundColor: AppTheme.red,
             duration: const Duration(seconds: 2),
           ),
@@ -844,8 +974,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text("I couldn't start a merge for that item.",
-                style: TextStyle(fontSize: 12)),
+            content: Text(
+              "I couldn't start a merge for that item.",
+              style: TextStyle(fontSize: 12),
+            ),
             backgroundColor: AppTheme.amber,
             duration: Duration(seconds: 2),
           ),
@@ -873,12 +1005,15 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       // "message": ...} — result.error is '' then, so read the server's
       // message from the body (same pattern as _completeFocalItem).
       final data = result.data;
-      final serverMsg =
-          (data is Map && data['message'] is String) ? data['message'] as String : null;
+      final serverMsg = (data is Map && data['message'] is String)
+          ? data['message'] as String
+          : null;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(serverMsg ?? result.error ?? "Couldn't merge that item.",
-              style: const TextStyle(fontSize: 12)),
+          content: Text(
+            serverMsg ?? result.error ?? "Couldn't merge that item.",
+            style: const TextStyle(fontSize: 12),
+          ),
           backgroundColor: AppTheme.red,
           duration: const Duration(seconds: 2),
         ),
@@ -900,8 +1035,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('🔀 Merged into "$targetLabel"',
-              style: const TextStyle(fontSize: 12)),
+          content: Text(
+            '🔀 Merged into "$targetLabel"',
+            style: const TextStyle(fontSize: 12),
+          ),
           backgroundColor: AppTheme.green,
           duration: const Duration(seconds: 2),
         ),
@@ -919,8 +1056,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text("I couldn't reject that item — it may resurface.",
-                style: TextStyle(fontSize: 12)),
+            content: Text(
+              "I couldn't reject that item — it may resurface.",
+              style: TextStyle(fontSize: 12),
+            ),
             backgroundColor: AppTheme.red,
             duration: Duration(seconds: 2),
           ),
@@ -938,8 +1077,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     if (!_focalActionOk(result) && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(result.error ?? RhodeyVoice.couldntReject(),
-              style: const TextStyle(fontSize: 12)),
+          content: Text(
+            result.error ?? RhodeyVoice.couldntReject(),
+            style: const TextStyle(fontSize: 12),
+          ),
           backgroundColor: AppTheme.red,
           duration: const Duration(seconds: 2),
         ),
@@ -972,8 +1113,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(RhodeyVoice.couldntDefer(),
-                style: TextStyle(fontSize: 12)),
+            content: Text(
+              RhodeyVoice.couldntDefer(),
+              style: TextStyle(fontSize: 12),
+            ),
             backgroundColor: AppTheme.amber,
             duration: const Duration(seconds: 2),
           ),
@@ -997,8 +1140,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Text("I noted that, but couldn't defer the item — it may resurface.",
-                style: TextStyle(fontSize: 12)),
+            content: const Text(
+              "I noted that, but couldn't defer the item — it may resurface.",
+              style: TextStyle(fontSize: 12),
+            ),
             backgroundColor: AppTheme.amber,
             duration: const Duration(seconds: 2),
           ),
@@ -1021,8 +1166,6 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     // N4: local count decrement instead of a 5-call refetch.
     _decrementCountsFor(item);
   }
-
-
 
   // ── Conversation ─────────────────────────────────────────────
 
@@ -1096,14 +1239,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       final ts = createdAt.isNotEmpty
           ? ((DateTime.tryParse(createdAt) ?? DateTime.now()).toLocal())
           : DateTime.now();
-      _messages.add(ChatMessage(
-        id: '$idPrefix${_msgCounter++}',
-        role: role,
-        text: content,
-        timestamp: ts,
-        intent: m['intent'] as String?,
-        sendStatus: role == MessageRole.user ? SendStatus.sent : null,
-      ));
+      _messages.add(
+        ChatMessage(
+          id: '$idPrefix${_msgCounter++}',
+          role: role,
+          text: content,
+          timestamp: ts,
+          intent: m['intent'] as String?,
+          sendStatus: role == MessageRole.user ? SendStatus.sent : null,
+        ),
+      );
       addedAny = true;
     }
     if (addedAny) {
@@ -1139,12 +1284,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     _pendingPushMessageId = id;
     _pendingPushContent = content;
     setState(() {
-      _messages.add(ChatMessage(
-        id: id,
-        role: MessageRole.rhodey,
-        text: content,
-        timestamp: DateTime.now(),
-      ));
+      _messages.add(
+        ChatMessage(
+          id: id,
+          role: MessageRole.rhodey,
+          text: content,
+          timestamp: DateTime.now(),
+        ),
+      );
     });
     _scrollToBottom();
   }
@@ -1178,7 +1325,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     _awaitingResponse = true;
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(_backupPollInterval, (_) {
-      if (!_awaitingResponse) { _stopBackupPoll(); return; }
+      if (!_awaitingResponse) {
+        _stopBackupPoll();
+        return;
+      }
       _pollForUpdates();
     });
   }
@@ -1243,11 +1393,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     // Start as 'sent' immediately (optimistic) — avoids a pending spinner
     // flicker while the API call is in flight.
     final msg = ChatMessage(
-      id: id, role: MessageRole.user, text: text.trim(),
-      timestamp: DateTime.now(), sendStatus: SendStatus.sent,
+      id: id,
+      role: MessageRole.user,
+      text: text.trim(),
+      timestamp: DateTime.now(),
+      sendStatus: SendStatus.sent,
     );
 
-    setState(() { _messages.add(msg); });
+    setState(() {
+      _messages.add(msg);
+    });
     _textController.clear();
     _scrollToBottom();
     _startBackupPoll();
@@ -1276,13 +1431,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         // Fast-ack path: the backend accepted the message; the reply is just
         // slow (Modal worker still running). Soften the ack and keep the
         // backup poll alive so the reply still lands when it arrives.
-        _updateMessage(_pendingAckId!,
-            text: "Still working on it — I'll ping you when it's ready.");
+        _updateMessage(
+          _pendingAckId!,
+          text: "Still working on it — I'll ping you when it's ready.",
+        );
         return;
       }
       _updateMessage(id, sendStatus: SendStatus.failed);
       _stopBackupPoll();
     }
+
     _sendTimeout = Timer(const Duration(seconds: 20), watchdogTick);
 
     _api.sendMessage(text.trim()).then((result) {
@@ -1308,8 +1466,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             if (!mounted) return;
             _stopBackupPoll();
             if (_pendingAckId != null) {
-              _updateMessage(_pendingAckId!,
-                  text: "Still working on it — I'll ping you when it's ready.");
+              _updateMessage(
+                _pendingAckId!,
+                text: "Still working on it — I'll ping you when it's ready.",
+              );
             }
           });
         } else {
@@ -1318,7 +1478,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         }
       } else {
         final errMsg = result.error ?? '';
-        final isTimeout = errMsg.contains('TimeoutException') ||
+        final isTimeout =
+            errMsg.contains('TimeoutException') ||
             errMsg.toLowerCase().contains('timed out');
         if (isTimeout) {
           // A timeout is NOT proof the message failed — the backend may still
@@ -1333,8 +1494,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             if (!mounted) return;
             _stopBackupPoll();
             if (_pendingAckId != null) {
-              _updateMessage(_pendingAckId!,
-                  text: "Still working on it — I'll ping you when it's ready.");
+              _updateMessage(
+                _pendingAckId!,
+                text: "Still working on it — I'll ping you when it's ready.",
+              );
             }
           });
           return;
@@ -1351,8 +1514,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(RhodeyVoice.failedToSend(),
-                  style: const TextStyle(fontSize: 12)),
+              content: Text(
+                RhodeyVoice.failedToSend(),
+                style: const TextStyle(fontSize: 12),
+              ),
               backgroundColor: AppTheme.red,
               duration: const Duration(seconds: 3),
             ),
@@ -1366,6 +1531,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     setState(() {
       final idx = _messages.indexWhere((m) => m.id == id);
       if (idx == -1) return;
+      // Only a text change can alter the card — status-only updates (ack
+      // bubbles) keep the memoized card.
+      if (text != null && text != _messages[idx].text) {
+        _cardDataCache.remove(id);
+      }
       _messages[idx] = ChatMessage(
         id: _messages[idx].id,
         role: _messages[idx].role,
@@ -1384,9 +1554,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     _stopBackupPoll();
     final id = 'r${++_msgCounter}';
     setState(() {
-      _messages.add(ChatMessage(
-        id: id, role: MessageRole.rhodey, text: text, timestamp: DateTime.now(),
-      ));
+      _messages.add(
+        ChatMessage(
+          id: id,
+          role: MessageRole.rhodey,
+          text: text,
+          timestamp: DateTime.now(),
+        ),
+      );
     });
     _scrollToBottom();
     _tts.speak(text);
@@ -1400,9 +1575,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     final id = 'r${++_msgCounter}';
     _pendingAckId = id;
     setState(() {
-      _messages.add(ChatMessage(
-        id: id, role: MessageRole.rhodey, text: text, timestamp: DateTime.now(),
-      ));
+      _messages.add(
+        ChatMessage(
+          id: id,
+          role: MessageRole.rhodey,
+          text: text,
+          timestamp: DateTime.now(),
+        ),
+      );
     });
     _scrollToBottom();
   }
@@ -1450,8 +1630,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     if (!result.success || result.data == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text("Couldn't load your board right now — check your connection.",
-              style: TextStyle(fontSize: 12)),
+          content: Text(
+            "Couldn't load your board right now — check your connection.",
+            style: TextStyle(fontSize: 12),
+          ),
           backgroundColor: AppTheme.red,
           duration: Duration(seconds: 2),
         ),
@@ -1469,14 +1651,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       // have fresh data here, no need to wait for the next refresh.
       _activeTaskCount = active.length;
       _messages.removeWhere((m) => m.type == MessageType.taskList);
-      _messages.add(ChatMessage(
-        id: id,
-        role: MessageRole.rhodey,
-        type: MessageType.taskList,
-        text: RhodeyVoice.taskLedgerIntro(active.length, snoozed.length),
-        taskList: tasks,
-        timestamp: DateTime.now(),
-      ));
+      _messages.add(
+        ChatMessage(
+          id: id,
+          role: MessageRole.rhodey,
+          type: MessageType.taskList,
+          text: RhodeyVoice.taskLedgerIntro(active.length, snoozed.length),
+          taskList: tasks,
+          timestamp: DateTime.now(),
+        ),
+      );
     });
     _scrollToBottom();
   }
@@ -1501,7 +1685,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     // Pulling a snoozed task into focus clears its deferral server-side.
     var pulledForward = false;
     if (wasSnoozed && taskId is int) {
-      final result = await _api.vaultAction(action: 'pull_forward', taskId: taskId);
+      final result = await _api.vaultAction(
+        action: 'pull_forward',
+        taskId: taskId,
+      );
       pulledForward = result.success;
     }
     if (!mounted) return;
@@ -1516,11 +1703,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             wasSnoozed && pulledForward
                 ? '"${item.title}" pulled forward — in focus.'
                 : (wasSnoozed
-                    ? '"${item.title}" is in focus — I couldn\'t clear its deferral.'
-                    : '"${item.title}" is now the focus.'),
+                      ? '"${item.title}" is in focus — I couldn\'t clear its deferral.'
+                      : '"${item.title}" is now the focus.'),
             style: const TextStyle(fontSize: 12),
           ),
-          backgroundColor: wasSnoozed && !pulledForward ? AppTheme.amber : AppTheme.accent,
+          backgroundColor: wasSnoozed && !pulledForward
+              ? AppTheme.amber
+              : AppTheme.accent,
           duration: const Duration(seconds: 2),
         ),
       );
@@ -1555,6 +1744,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           return 2;
       }
     }
+
     // Urgent first, then high, then the rest — matches the web UI's feel.
     // Snoozed items also sort by priority for a uniform ledger.
     active.sort((a, b) => prioRank(a).compareTo(prioRank(b)));
@@ -1578,7 +1768,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       }
 
       // Mark the currently-focused task so the ledger visibly responds to a tap.
-      final isCurrentFocus = !dim &&
+      final isCurrentFocus =
+          !dim &&
           _focalItems.isNotEmpty &&
           _focalItems.first.id == t['id'].toString();
 
@@ -1590,7 +1781,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           decoration: BoxDecoration(
             color: isCurrentFocus
                 ? AppTheme.accent.withValues(alpha: 0.06)
-                : (dim ? AppTheme.surfaceAlt.withValues(alpha: 0.5) : AppTheme.surfaceAlt),
+                : (dim
+                      ? AppTheme.surfaceAlt.withValues(alpha: 0.5)
+                      : AppTheme.surfaceAlt),
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: isCurrentFocus
@@ -1619,16 +1812,22 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                       style: AppTheme.body.copyWith(
                         fontSize: 12.5,
                         fontWeight: FontWeight.w500,
-                        color: dim ? AppTheme.textTertiary : AppTheme.textPrimary,
+                        color: dim
+                            ? AppTheme.textTertiary
+                            : AppTheme.textPrimary,
                       ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     if (deadline != null && deadline.isNotEmpty)
                       Text(
-                        dim ? 'Snoozed · ${_formatDeadline(deadline)}' : _formatDeadline(deadline),
+                        dim
+                            ? 'Snoozed · ${_formatDeadline(deadline)}'
+                            : _formatDeadline(deadline),
                         style: AppTheme.monoCaption.copyWith(
-                          color: dim ? AppTheme.textTertiary : AppTheme.textSecondary,
+                          color: dim
+                              ? AppTheme.textTertiary
+                              : AppTheme.textSecondary,
                         ),
                       ),
                   ],
@@ -1636,26 +1835,38 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
               ),
               if (isCurrentFocus)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: AppTheme.accent.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
                     'in focus',
-                    style: AppTheme.caption.copyWith(color: AppTheme.accent, fontSize: 8),
+                    style: AppTheme.caption.copyWith(
+                      color: AppTheme.accent,
+                      fontSize: 8,
+                    ),
                   ),
                 )
               else if (dim)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: AppTheme.textTertiary.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
                     'snoozed',
-                    style: AppTheme.caption.copyWith(color: AppTheme.textTertiary, fontSize: 8),
+                    style: AppTheme.caption.copyWith(
+                      color: AppTheme.textTertiary,
+                      fontSize: 8,
+                    ),
                   ),
                 ),
             ],
@@ -1674,7 +1885,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             padding: const EdgeInsets.only(bottom: 4),
             child: Text(
               'Rhodey',
-              style: AppTheme.caption.copyWith(color: AppTheme.accent, letterSpacing: 0.3),
+              style: AppTheme.caption.copyWith(
+                color: AppTheme.accent,
+                letterSpacing: 0.3,
+              ),
             ),
           ),
           Padding(
@@ -1687,7 +1901,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             ),
           ),
           if (active.isNotEmpty) ...active.map((t) => row(t)),
-          if (snoozed.isNotEmpty) ...[const SizedBox(height: 4), ...snoozed.map((t) => row(t, dim: true))],
+          if (snoozed.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            ...snoozed.map((t) => row(t, dim: true)),
+          ],
           const SizedBox(height: 4),
           Padding(
             padding: const EdgeInsets.only(left: 4),
@@ -1740,6 +1957,18 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// in ONE /api/home-feed call (P2) instead of six round-trips.
   Future<void> _refreshHome() async {
     await _loadHome();
+  }
+
+  /// Coalesces resume/pop-triggered refreshes into a single /api/home-feed
+  /// call — a route pop and a foreground transition can fire within the same
+  /// second, and each refresh is a full network round-trip. A 400ms window
+  /// is imperceptible; the last scheduled refresh always wins.
+  void _scheduleHomeRefresh() {
+    _homeRefreshDebounce?.cancel();
+    _homeRefreshDebounce = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted) return;
+      _loadHome();
+    });
   }
 
   /// CONVERSATION: compact focus bar pinned at top + the chat stream.
@@ -1833,7 +2062,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
               onTap: () => setState(() => _conversationOpen = false),
               child: const Padding(
                 padding: EdgeInsets.all(8),
-                child: Icon(Icons.keyboard_arrow_down, color: AppTheme.textTertiary, size: 22),
+                child: Icon(
+                  Icons.keyboard_arrow_down,
+                  color: AppTheme.textTertiary,
+                  size: 22,
+                ),
               ),
             ),
           ),
@@ -1848,7 +2081,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         Container(
           width: 6,
           height: 6,
-          decoration: const BoxDecoration(color: AppTheme.green, shape: BoxShape.circle),
+          decoration: const BoxDecoration(
+            color: AppTheme.green,
+            shape: BoxShape.circle,
+          ),
         ),
         const SizedBox(width: 8),
         Text(
@@ -1863,7 +2099,6 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     );
   }
 
-
   // ── Voice ────────────────────────────────────────────────────
 
   Future<void> _initSpeech() async {
@@ -1872,22 +2107,41 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         if (!mounted) return;
         debugPrint('[Voice] Error: ${error.errorMsg}');
         if (error.errorMsg == 'error_speech_timeout') {
-          setState(() { _voiceState = VoiceState.idle; _voiceError = null; });
+          setState(() {
+            _voiceState = VoiceState.idle;
+            _voiceError = null;
+          });
           return;
         }
-        setState(() { _voiceState = VoiceState.error; _voiceError = error.errorMsg; });
+        setState(() {
+          _voiceState = VoiceState.error;
+          _voiceError = error.errorMsg;
+        });
       },
-      onStatus: (status) { debugPrint('[Voice] Status: $status'); },
+      onStatus: (status) {
+        debugPrint('[Voice] Status: $status');
+      },
     );
     if (!_speechAvailable && mounted) {
-      setState(() { _voiceState = VoiceState.error; _voiceError = 'Speech recognition not available'; });
+      setState(() {
+        _voiceState = VoiceState.error;
+        _voiceError = 'Speech recognition not available';
+      });
     }
   }
 
   void _toggleVoice() {
-    if (_voiceState == VoiceState.idle) { _startListening(); }
-    else if (_voiceState == VoiceState.listening) { _stopListening(); }
-    else { setState(() { _voiceState = VoiceState.idle; _transcribedText = null; _voiceError = null; }); }
+    if (_voiceState == VoiceState.idle) {
+      _startListening();
+    } else if (_voiceState == VoiceState.listening) {
+      _stopListening();
+    } else {
+      setState(() {
+        _voiceState = VoiceState.idle;
+        _transcribedText = null;
+        _voiceError = null;
+      });
+    }
   }
 
   Future<void> _startListening() async {
@@ -1895,7 +2149,12 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     if (!_speechAvailable) {
       _speechAvailable = await _speech.initialize();
       if (!_speechAvailable) {
-        if (mounted) { setState(() { _voiceState = VoiceState.error; _voiceError = 'Speech recognition not available'; }); }
+        if (mounted) {
+          setState(() {
+            _voiceState = VoiceState.error;
+            _voiceError = 'Speech recognition not available';
+          });
+        }
         return;
       }
     }
@@ -1904,10 +2163,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       onResult: (result) {
         if (!mounted) return;
         final text = result.recognizedWords;
-        if (text.isNotEmpty) { _transcribedText = text; }
+        if (text.isNotEmpty) {
+          _transcribedText = text;
+        }
         if (result.finalResult) {
           final words = result.recognizedWords;
-          if (words.isNotEmpty) { _sendMessage(words); }
+          if (words.isNotEmpty) {
+            _sendMessage(words);
+          }
           setState(() => _voiceState = VoiceState.idle);
           _transcribedText = null;
         }
@@ -1930,11 +2193,17 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       _transcribedText = null;
       return;
     }
-    setState(() { _voiceState = VoiceState.idle; _transcribedText = null; });
+    setState(() {
+      _voiceState = VoiceState.idle;
+      _transcribedText = null;
+    });
   }
 
   void _retryVoice() {
-    setState(() { _voiceState = VoiceState.idle; _transcribedText = null; });
+    setState(() {
+      _voiceState = VoiceState.idle;
+      _transcribedText = null;
+    });
     Future.delayed(const Duration(milliseconds: 300), () {
       if (!mounted) return;
       _startListening();
@@ -1955,9 +2224,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     // focal board — no explicit refresh needed here (avoids double fetch).
     // When opened from a decision/delegation push, pass the payload so the
     // pushed summary renders instantly (WhatsApp-style) while the list loads.
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => InboxScreen(pushData: pushData),
-    ));
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => InboxScreen(pushData: pushData)),
+    );
   }
 
   void _handlePushNotificationTap(Map<String, dynamic> data) {
@@ -1971,9 +2241,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       case 'nudge':
         // Pass the nudge payload so the meeting content renders instantly on
         // the Today screen while its calendar/tasks fetch in the background.
-        Navigator.push(context, MaterialPageRoute(
-          builder: (_) => TodayScreen(pushData: data),
-        ));
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => TodayScreen(pushData: data)),
+        );
         break;
       case 'briefing':
         // Mirror Telegram: tapping the pulse notification opens the
@@ -2050,24 +2321,36 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   String _pulseLabel() {
     final mode = _briefing.pulseMode ?? '';
     switch (mode.toLowerCase()) {
-      case 'morning': return 'MORNING';
-      case 'afternoon': return 'AFTERNOON';
-      case 'closing_loop': return 'CLOSING';
-      case 'weekend': return 'WEEKEND';
-      case 'pre_monday': return 'PRE-MONDAY';
-      case 'intel': return 'INTEL';
-      default: return '';
+      case 'morning':
+        return 'MORNING';
+      case 'afternoon':
+        return 'AFTERNOON';
+      case 'closing_loop':
+        return 'CLOSING';
+      case 'weekend':
+        return 'WEEKEND';
+      case 'pre_monday':
+        return 'PRE-MONDAY';
+      case 'intel':
+        return 'INTEL';
+      default:
+        return '';
     }
   }
 
   Color _pulseColor() {
     final mode = _briefing.pulseMode ?? '';
     switch (mode.toLowerCase()) {
-      case 'morning': return AppTheme.accent;
-      case 'afternoon': return AppTheme.amber;
-      case 'closing_loop': return AppTheme.red;
-      case 'intel': return AppTheme.textTertiary;
-      default: return AppTheme.accent;
+      case 'morning':
+        return AppTheme.accent;
+      case 'afternoon':
+        return AppTheme.amber;
+      case 'closing_loop':
+        return AppTheme.red;
+      case 'intel':
+        return AppTheme.textTertiary;
+      default:
+        return AppTheme.accent;
     }
   }
 
@@ -2082,18 +2365,24 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       body: SafeArea(
         child: Column(
           children: [
-            _buildAmbientHeader(),
+            // Repaint boundaries isolate the header (syncing chip animation)
+            // and the content area (chat scroll + focal entrance motion) so a
+            // repaint in one never repaints the other.
+            RepaintBoundary(child: _buildAmbientHeader()),
             Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 350),
-                switchInCurve: Curves.easeOut,
-                switchOutCurve: Curves.easeIn,
-                child: _conversationOpen
-                    ? _buildConversationState()
-                    : _buildIdleState(),
+              child: RepaintBoundary(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 350),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeIn,
+                  child: _conversationOpen
+                      ? _buildConversationState()
+                      : _buildIdleState(),
+                ),
               ),
             ),
-            if (_voiceState == VoiceState.listening || _voiceState == VoiceState.error)
+            if (_voiceState == VoiceState.listening ||
+                _voiceState == VoiceState.error)
               VoiceStateMachine(
                 state: _voiceState,
                 transcribedText: _transcribedText,
@@ -2129,7 +2418,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
               onTap: _showMenu,
               child: Container(
                 padding: const EdgeInsets.all(8),
-                child: const Icon(Icons.menu, color: AppTheme.textSecondary, size: 22),
+                child: const Icon(
+                  Icons.menu,
+                  color: AppTheme.textSecondary,
+                  size: 22,
+                ),
               ),
             ),
           ),
@@ -2174,10 +2467,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
               ),
             ),
             const SizedBox(width: 4),
-            Text('syncing', style: AppTheme.monoCaption.copyWith(
-              color: AppTheme.textTertiary,
-              fontSize: 9,
-            )),
+            Text(
+              'syncing',
+              style: AppTheme.monoCaption.copyWith(
+                color: AppTheme.textTertiary,
+                fontSize: 9,
+              ),
+            ),
           ],
 
           const Spacer(),
@@ -2198,7 +2494,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.checklist_rtl, size: 12, color: AppTheme.textSecondary),
+                    const Icon(
+                      Icons.checklist_rtl,
+                      size: 12,
+                      color: AppTheme.textSecondary,
+                    ),
                     const SizedBox(width: 3),
                     Text(
                       '$_activeTaskCount',
@@ -2212,7 +2512,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                 ),
               ),
             ),
-            ),
+          ),
         ],
       ),
     );
@@ -2224,10 +2524,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     if (_briefingLoading || _focalLoading) {
       return Container(
         padding: const EdgeInsets.all(16),
-        child: const Center(child: SizedBox(
-          width: 14, height: 14,
-          child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.textTertiary),
-        )),
+        child: const Center(
+          child: SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: AppTheme.textTertiary,
+            ),
+          ),
+        ),
       );
     }
 
@@ -2262,7 +2568,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             ),
 
           // Sunday weekly transparency report
-          if (_briefing.transparencyReport != null && _briefing.transparencyReport!.isNotEmpty)
+          if (_briefing.transparencyReport != null &&
+              _briefing.transparencyReport!.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: _buildTransparencyReport(),
@@ -2301,7 +2608,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         width: double.infinity,
         padding: EdgeInsets.all(compact ? 10 : 14),
         decoration: BoxDecoration(
-          color: isCompleting ? AppTheme.green.withValues(alpha: 0.08) : AppTheme.accentBg,
+          color: isCompleting
+              ? AppTheme.green.withValues(alpha: 0.08)
+              : AppTheme.accentBg,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: isCompleting
@@ -2360,7 +2669,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             ),
 
             // LLM reason — the "why" behind this choice (hidden when compact)
-            if (!compact && focalReason != null && focalReason.isNotEmpty && !isCompleting)
+            if (!compact &&
+                focalReason != null &&
+                focalReason.isNotEmpty &&
+                !isCompleting)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
@@ -2377,7 +2689,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             // Chief-of-staff context line (added · org · deadline). Hidden
             // when compact (the narrow header shows just title + buttons) and
             // when the LLM reason is shown instead.
-            if (!compact && item.subtitle != null && item.subtitle!.isNotEmpty && focalReason == null)
+            if (!compact &&
+                item.subtitle != null &&
+                item.subtitle!.isNotEmpty &&
+                focalReason == null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
@@ -2390,7 +2705,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
               ),
 
             // Next event (contextual)
-            if (_briefing.nextEvent != null && _briefing.nextEvent!.isNotEmpty && !isFromBriefing)
+            if (_briefing.nextEvent != null &&
+                _briefing.nextEvent!.isNotEmpty &&
+                !isFromBriefing)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
@@ -2452,8 +2769,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.call_merge,
-                            size: 13, color: AppTheme.accent),
+                        const Icon(
+                          Icons.call_merge,
+                          size: 13,
+                          color: AppTheme.accent,
+                        ),
                         const SizedBox(width: 4),
                         Text(
                           'Merge into existing',
@@ -2491,7 +2811,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       ),
       child: Row(
         children: [
-          const Icon(Icons.check_circle_outline, size: 14, color: AppTheme.green),
+          const Icon(
+            Icons.check_circle_outline,
+            size: 14,
+            color: AppTheme.green,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -2531,11 +2855,12 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     final displayLines = lines.length > 8 ? lines.take(8).toList() : lines;
 
     return Container(
-      padding: const EdgeInsets.all(12),        decoration: BoxDecoration(
-          color: AppTheme.surfaceAlt,
-          borderRadius: BorderRadius.circular(AppTheme.cardRadius),
-          border: Border.all(color: AppTheme.border, width: 1),
-        ),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+        border: Border.all(color: AppTheme.border, width: 1),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -2630,8 +2955,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.close,
-                        size: 18, color: AppTheme.textTertiary),
+                    icon: const Icon(
+                      Icons.close,
+                      size: 18,
+                      color: AppTheme.textTertiary,
+                    ),
                     onPressed: () => Navigator.pop(sheetContext),
                   ),
                 ],
@@ -2676,7 +3004,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           Container(
             width: 6,
             height: 6,
-            decoration: const BoxDecoration(color: AppTheme.green, shape: BoxShape.circle),
+            decoration: const BoxDecoration(
+              color: AppTheme.green,
+              shape: BoxShape.circle,
+            ),
           ),
           const SizedBox(width: 8),
           Flexible(
@@ -2701,83 +3032,93 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       return _buildEmptyConversation();
     }
 
+    final now = DateTime.now();
     return RefreshIndicator(
       onRefresh: () => _loadHistory(force: true),
       color: AppTheme.accent,
       // reverse:true pins offset 0 = the BOTTOM = the newest message. The task
       // ledger (posted at the end) is therefore visible BY CONSTRUCTION when
       // the conversation opens — no scroll race with the history backfill.
-      child: ListView(
+      child: ListView.builder(
         reverse: true,
         controller: _scrollController,
         padding: const EdgeInsets.only(top: 4, bottom: 8),
-        children: () {
-          // _messages is stored oldest-first; with reverse:true the FIRST child
-          // renders at the bottom, so iterate newest-first for a real chat.
-          final reversed = _messages.reversed.toList();
-          final entries = <Widget>[];
+        // Lazy list: only visible rows are built (previously every message was
+        // materialized + regex-parsed on every rebuild). Each message occupies
+        // two slots — [content, gap] — followed by the optional "Show earlier
+        // activity" footer and a top spacer (later slots render at the very
+        // top because the list is reversed).
+        itemCount: _messages.length * 2 + (_historyLoaded ? 0 : 1) + 1,
+        itemBuilder: (context, index) {
+          // Slot layout (index 0 = bottom = newest message):
+          //   even indices → message content · odd indices → 10px gap
+          //   then "Show earlier activity" (if not loaded), then a spacer.
+          final msgSlots = _messages.length * 2;
+          if (index < msgSlots) {
+            if (index.isOdd) return const SizedBox(height: 10);
+            final msgIndex = index ~/ 2;
+            final msg = _messages[_messages.length - 1 - msgIndex];
 
-          final now = DateTime.now();
-          for (var i = 0; i < reversed.length; i++) {
-            final msg = reversed[i];
+            // The newest live message fades/rises in on arrival (older
+            // history renders statically — calm on open).
+            final isNewestLive =
+                msgIndex == 0 &&
+                msg.timestamp.isAfter(now.subtract(const Duration(minutes: 5)));
 
+            // Task ledger (from the task icon) — rendered as an actionable list
+            Widget? content;
+            var holdsState = false;
+            if (msg.type == MessageType.taskList && msg.taskList != null) {
+              content = _buildTaskListMessage(msg);
+              holdsState = true;
+            } else if (msg.role == MessageRole.rhodey && !msg.isRhodeyTyping) {
+              // Memoized: resolveCardData runs once per message, not per rebuild.
+              final cardData = _cachedCardData(msg);
+              if (cardData != null) {
+                content = _buildRichCard(msg, cardData);
+                holdsState = true; // briefing expand/collapse lives in the card
+              }
+            }
+            if (content == null) {
+              final isGroupStart =
+                  msgIndex == 0 ||
+                  _messages[_messages.length - msgIndex].role != msg.role;
+              content = ChatBubble(
+                message: msg,
+                isGroupStart: isGroupStart,
+                onRetry: msg.isFailed ? () => _retryMessage(msg.id) : null,
+                onTap: !msg.isUser && msg.text.isNotEmpty
+                    ? () => _speakMessage(msg.text)
+                    : null,
+                onQuickReply: (reply) => _sendMessage(reply),
+              );
+            }
             // Keyed shell: EVERY message gets a stable key so per-message
             // state survives list churn. Without it, insertions recycle card
             // states by position — the newest briefing's collapse would
             // silently reset on the next poll, making its arrow feel dead.
-            // The newest live message also fades/rises in on arrival (older
-            // history renders statically — calm on open).
-            final isNewestLive = i == 0 &&
-                msg.timestamp.isAfter(now.subtract(const Duration(minutes: 5)));
-            Widget shell(Widget child) => _FadeRise(
-                  key: ValueKey('msg-${msg.id}'),
-                  animate: isNewestLive,
-                  child: child,
-                );
-
-            // Consistent breathing room between every message (Rhodey → you
-            // and back), matching a human chief-of-staff's pacing.
-            void addMessage(Widget child) {
-              entries.add(shell(child));
-              entries.add(const SizedBox(height: 10));
-            }
-
-            // Task ledger (from the task icon) — rendered as an actionable list
-            if (msg.type == MessageType.taskList && msg.taskList != null) {
-              addMessage(_buildTaskListMessage(msg));
-              continue;
-            }
-
-            if (msg.role == MessageRole.rhodey && !msg.isRhodeyTyping) {
-              final cardData = resolveCardData(
-                intent: msg.intent,
-                text: msg.text,
-                timestamp: msg.timestamp,
-              );
-              if (cardData != null) {
-                addMessage(_buildRichCard(msg, cardData));
-                continue;
-              }
-            }
-
-            final isGroupStart = i == 0 || reversed[i - 1].role != msg.role;
-            addMessage(ChatBubble(
-              message: msg,
-              isGroupStart: isGroupStart,
-              onRetry: msg.isFailed ? () => _retryMessage(msg.id) : null,
-              onTap: !msg.isUser && msg.text.isNotEmpty ? () => _speakMessage(msg.text) : null,
-              onQuickReply: (reply) => _sendMessage(reply),
-            ));
+            // Stateful rows (cards/ledgers) stay mounted on scroll-off; plain
+            // bubbles dispose freely. The newest live message fades/rises in
+            // on arrival (older history renders statically — calm on open).
+            return _FadeRise(
+              key: ValueKey('msg-${msg.id}'),
+              animate: isNewestLive,
+              keepAlive: holdsState,
+              child: content,
+            );
           }
 
-          // 'Show earlier activity' is the LAST child → renders at the very
-          // TOP (reverse:true flips the axis). Hidden once loaded.
-          if (!_historyLoaded) {
-            entries.add(GestureDetector(
+          // 'Show earlier activity' renders at the very TOP (reverse:true
+          // flips the axis). Hidden once loaded.
+          if (index == msgSlots && !_historyLoaded) {
+            return GestureDetector(
               onTap: () => _loadHistory(),
               child: Container(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: AppTheme.surfaceAlt,
                   borderRadius: BorderRadius.circular(20),
@@ -2786,7 +3127,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.history, size: 14, color: AppTheme.textTertiary),
+                    const Icon(
+                      Icons.history,
+                      size: 14,
+                      color: AppTheme.textTertiary,
+                    ),
                     const SizedBox(width: 6),
                     Text(
                       'Show earlier activity',
@@ -2798,12 +3143,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                   ],
                 ),
               ),
-            ));
+            );
           }
-
-          entries.add(const SizedBox(height: 16));
-          return entries;
-        }(),
+          return const SizedBox(height: 16);
+        },
       ),
     );
   }
@@ -2820,8 +3163,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         children: [
           const SizedBox(height: 16),
           const Center(
-            child:
-                Icon(Icons.chat_bubble_outline, size: 28, color: AppTheme.textMuted),
+            child: Icon(
+              Icons.chat_bubble_outline,
+              size: 28,
+              color: AppTheme.textMuted,
+            ),
           ),
           const SizedBox(height: 12),
           const Center(
@@ -2840,18 +3186,57 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     );
   }
 
-  /// Find a task ID from a card title by fetching open tasks.
-  Future<int?> _findTaskIdForCard(String title) async {
-    final result = await _api.getTasks(status: 'todo');
-    if (!result.success || result.data == null) return null;
-    final lower = title.toLowerCase().trim();
-    for (final t in result.data!) {
-      final taskTitle = (t['title'] as String? ?? '').toLowerCase().trim();
-      if (taskTitle == lower || taskTitle.contains(lower) || lower.contains(taskTitle)) {
-        return t['id'] as int?;
+  /// Resolves a task id from a card title WITHOUT a per-tap network call.
+  ///
+  /// The title→id index is populated by _applyFocalData from the tasks
+  /// already fetched for the focal board; a single lazy fetch backfills it if
+  /// that list was empty (focal load failed). Matching is fail-closed: an
+  /// exact normalized match wins; a containment match is only accepted when
+  /// exactly one task qualifies — never an arbitrary pick, so a "Fix login
+  /// bug" card can't complete "Fix login bug on Android". Null → the caller
+  /// shows the existing "not found" snackbar.
+  Future<int?> _taskIdForTitle(String title) async {
+    if (_taskIdByTitle.isEmpty && !_taskIndexBackfilled) {
+      final result = await _api.getTasks(status: 'todo');
+      if (result.success && result.data != null) {
+        // Only mark backfilled on success — a transient failure retries on
+        // the next tap instead of silently disabling lookup for the session.
+        _taskIndexBackfilled = true;
+        for (final t in result.data!) {
+          final id = t['id'] as int?;
+          final taskTitle = (t['title'] as String? ?? '').toLowerCase().trim();
+          if (id != null && taskTitle.isNotEmpty) {
+            // putIfAbsent: first match wins for duplicate titles (same
+            // semantics as the old first-match loop).
+            _taskIdByTitle.putIfAbsent(taskTitle, () => id);
+          }
+        }
       }
     }
-    return null;
+    final lower = title.toLowerCase().trim();
+    if (lower.isEmpty) return null;
+    final exact = _taskIdByTitle[lower];
+    if (exact != null) return exact;
+    final candidates = <int>{};
+    for (final e in _taskIdByTitle.entries) {
+      if (e.key.contains(lower) || lower.contains(e.key)) {
+        candidates.add(e.value);
+      }
+    }
+    return candidates.length == 1 ? candidates.first : null;
+  }
+
+  /// resolveCardData, memoized by message id — the regex parser runs at most
+  /// once per message instead of on every rebuild.
+  CardData? _cachedCardData(ChatMessage msg) {
+    if (!_cardDataCache.containsKey(msg.id)) {
+      _cardDataCache[msg.id] = resolveCardData(
+        intent: msg.intent,
+        text: msg.text,
+        timestamp: msg.timestamp,
+      );
+    }
+    return _cardDataCache[msg.id];
   }
 
   Widget _buildRichCard(ChatMessage msg, CardData cardData) {
@@ -2859,13 +3244,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     if (cardData.type == CardType.task) {
       onMarkDone = () async {
         _instrumentation.homeActionsCompleted++;
-        final taskId = await _findTaskIdForCard(cardData.title);
+        final taskId = await _taskIdForTitle(cardData.title);
         if (taskId != null && mounted) {
           await _api.updateTaskStatus(taskId, 'done');
         } else if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Task already completed or not found.', style: TextStyle(fontSize: 12)),
+              content: Text(
+                'Task already completed or not found.',
+                style: TextStyle(fontSize: 12),
+              ),
               backgroundColor: AppTheme.amber,
               duration: Duration(seconds: 2),
             ),
@@ -2882,9 +3270,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         children: [
           Padding(
             padding: const EdgeInsets.only(left: 16, bottom: 4),
-            child: Text('Rhodey', style: AppTheme.caption.copyWith(
-              color: AppTheme.accent, letterSpacing: 0.3,
-            )),
+            child: Text(
+              'Rhodey',
+              style: AppTheme.caption.copyWith(
+                color: AppTheme.accent,
+                letterSpacing: 0.3,
+              ),
+            ),
           ),
           RichCardContent(
             cardData: cardData,
@@ -2923,67 +3315,75 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         children: [
           Row(
             children: [
-          // Voice button
-          Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(20),
-              onTap: _toggleVoice,
-              child: Container(
-                padding: const EdgeInsets.all(8),
-                child: Icon(
-                  _voiceState == VoiceState.listening ? Icons.mic : Icons.mic_none,
-                  color: _voiceState == VoiceState.listening ? AppTheme.accent : AppTheme.textTertiary,
-                  size: 20,
+              // Voice button
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(20),
+                  onTap: _toggleVoice,
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    child: Icon(
+                      _voiceState == VoiceState.listening
+                          ? Icons.mic
+                          : Icons.mic_none,
+                      color: _voiceState == VoiceState.listening
+                          ? AppTheme.accent
+                          : AppTheme.textTertiary,
+                      size: 20,
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
 
-          const SizedBox(width: 4),
+              const SizedBox(width: 4),
 
-          // Text field
-          Expanded(
-            child: TextField(
-              controller: _textController,
-              style: AppTheme.body.copyWith(fontSize: 14),
-              decoration: InputDecoration(
-                hintText: 'Ask Rhodey...',
-                hintStyle: AppTheme.caption.copyWith(
-                  color: AppTheme.textTertiary,
-                  fontSize: 14,
+              // Text field
+              Expanded(
+                child: TextField(
+                  controller: _textController,
+                  style: AppTheme.body.copyWith(fontSize: 14),
+                  decoration: InputDecoration(
+                    hintText: 'Ask Rhodey...',
+                    hintStyle: AppTheme.caption.copyWith(
+                      color: AppTheme.textTertiary,
+                      fontSize: 14,
+                    ),
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                    isDense: true,
+                  ),
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (text) {
+                    if (text.trim().isNotEmpty) {
+                      _sendMessage(text.trim());
+                    }
+                  },
                 ),
-                border: InputBorder.none,
-                contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                isDense: true,
               ),
-              textInputAction: TextInputAction.send,
-              onSubmitted: (text) {
-                if (text.trim().isNotEmpty) {
-                  _sendMessage(text.trim());
-                }
-              },
-            ),
-          ),
 
-          // Send button
-          Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(20),
-              onTap: () {
-                final text = _textController.text;
-                if (text.trim().isNotEmpty) {
-                  _sendMessage(text.trim());
-                }
-              },
-              child: Container(
-                padding: const EdgeInsets.all(8),
-                child: const Icon(Icons.arrow_upward, color: AppTheme.accent, size: 20),
+              // Send button
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(20),
+                  onTap: () {
+                    final text = _textController.text;
+                    if (text.trim().isNotEmpty) {
+                      _sendMessage(text.trim());
+                    }
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    child: const Icon(
+                      Icons.arrow_upward,
+                      color: AppTheme.accent,
+                      size: 20,
+                    ),
+                  ),
+                ),
               ),
-            ),
-          ),
-        ],
+            ],
           ),
         ],
       ),
@@ -3036,7 +3436,7 @@ class _MiniButton extends StatelessWidget {
 // 10px rise on easeOutCubic, never a bounce. Key it (per message, per focal
 // item) so a swap replays it while ordinary rebuilds do not.
 
-class _FadeRise extends StatelessWidget {
+class _FadeRise extends StatefulWidget {
   final Widget child;
 
   /// When false (older history), the child renders statically — the tween
@@ -3045,12 +3445,35 @@ class _FadeRise extends StatelessWidget {
   /// across list churn.
   final bool animate;
 
-  const _FadeRise({super.key, required this.child, this.animate = true});
+  /// Whether the row must stay mounted when scrolled off a lazy list. Only
+  /// rows holding state (rich cards, task ledgers) need this — plain bubbles
+  /// are stateless and can be disposed freely. No-op outside a sliver (e.g.
+  /// the focal board's Column).
+  final bool keepAlive;
+
+  const _FadeRise({
+    super.key,
+    required this.child,
+    this.animate = true,
+    this.keepAlive = true,
+  });
+
+  @override
+  State<_FadeRise> createState() => _FadeRiseState();
+}
+
+class _FadeRiseState extends State<_FadeRise>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => widget.keepAlive;
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
+    final child = widget.child;
+    if (!widget.animate) return child;
     return TweenAnimationBuilder<double>(
-      tween: Tween(begin: animate ? 0 : 1, end: 1),
+      tween: Tween(begin: 0, end: 1),
       duration: AppTheme.motionBase,
       curve: AppTheme.motionCurve,
       builder: (context, t, child) => Opacity(

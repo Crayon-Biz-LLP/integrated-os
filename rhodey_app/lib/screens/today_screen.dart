@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/today_data.dart';
 import '../services/api_service.dart';
+import '../services/today_cache.dart';
 import '../theme/app_theme.dart';
 import '../widgets/push_banner.dart';
 
@@ -18,6 +19,7 @@ class TodayScreen extends StatefulWidget {
 
 class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
   final _api = ApiService();
+  final _todayCache = TodayCache();
   List<CalendarEventItem> _events = [];
   List<Map<String, dynamic>> _tasks = [];
   List<Map<String, dynamic>> _captures = [];
@@ -34,6 +36,7 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _pushContent = (widget.pushData?['content'] as String?)?.trim() ?? '';
+    _paintCached();
     _loadAll();
   }
 
@@ -52,30 +55,58 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// WhatsApp-style instant render: paint the last-known snapshot from disk
+  /// before any network round-trip so navigation never shows a bare spinner.
+  Future<void> _paintCached() async {
+    final cached = await _todayCache.load();
+    if (!mounted || cached == null || cached.isEmpty) return;
+    setState(() {
+      _events = cached.events;
+      _tasks = cached.tasks;
+      _captures = cached.captures;
+      _loading = false;
+    });
+  }
+
   Future<void> _loadAll() async {
     final calFut = _api.getCalendarEvents();
     final taskFut = _api.getTasks();
     final capFut = _api.getCaptures(limit: 10);
 
-    final calResult = await calFut;
-    final taskResult = await taskFut;
-    final capResult = await capFut;
-
-    if (!mounted) return;
-    setState(() {
-      _loading = false;
-      if (calResult.success) {
-        _events = calResult.data!;
-      } else {
-        _eventError = calResult.error ?? '';
-      }
-      if (taskResult.success) {
-        _tasks = taskResult.data!;
-      }
-      if (capResult.success) {
-        _captures = capResult.data!;
-      }
+    // Partial render: paint each section the moment it lands instead of
+    // holding a full-screen spinner until the SLOWEST call (calendar, which
+    // hits the live Google/Outlook APIs) finishes.
+    calFut.then((r) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        if (r.success) {
+          _events = r.data!;
+          _eventError = '';
+        } else {
+          _eventError = r.error ?? '';
+        }
+      });
     });
+    taskFut.then((r) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        if (r.success) _tasks = r.data!;
+      });
+    });
+    capFut.then((r) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        if (r.success) _captures = r.data!;
+      });
+    });
+
+    await Future.wait([calFut, taskFut, capFut]);
+    if (!mounted) return;
+    // Write-behind: keep the last-known snapshot for the next instant open.
+    await _todayCache.save(events: _events, tasks: _tasks, captures: _captures);
   }
 
   @override
@@ -95,15 +126,15 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
       ),
       body: _loading
           ? (_pushContent.isNotEmpty
-              ? ListView(
-                  padding: const EdgeInsets.fromLTRB(0, 8, 0, 40),
-                  children: [
-                    PushBanner(title: 'Today', content: _pushContent),
-                    const SizedBox(height: 48),
-                    const Center(child: CircularProgressIndicator()),
-                  ],
-                )
-              : const Center(child: CircularProgressIndicator()))
+                ? ListView(
+                    padding: const EdgeInsets.fromLTRB(0, 8, 0, 40),
+                    children: [
+                      PushBanner(title: 'Today', content: _pushContent),
+                      const SizedBox(height: 48),
+                      const Center(child: CircularProgressIndicator()),
+                    ],
+                  )
+                : const Center(child: CircularProgressIndicator()))
           : RefreshIndicator(
               onRefresh: _loadAll,
               child: ListView(
@@ -111,7 +142,10 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                 children: [
                   // Instant content from the notification that opened this screen
                   if (_pushContent.isNotEmpty)
-                    PushBanner(title: 'From your notification', content: _pushContent),
+                    PushBanner(
+                      title: 'From your notification',
+                      content: _pushContent,
+                    ),
 
                   if (_events.isNotEmpty) ...[
                     _FocusCard(
@@ -129,27 +163,41 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                   // Calendar
                   _SectionHeader(
                     title: 'Calendar',
-                    trailing: _events.isNotEmpty ? '+${_events.length} events ▸' : null,
+                    trailing: _events.isNotEmpty
+                        ? '+${_events.length} events ▸'
+                        : null,
                   ),
                   const SizedBox(height: 8),
                   if (_eventError.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Text(_eventError,
-                          style: AppTheme.caption.copyWith(color: AppTheme.red, fontSize: 11)),
+                      child: Text(
+                        _eventError,
+                        style: AppTheme.caption.copyWith(
+                          color: AppTheme.red,
+                          fontSize: 11,
+                        ),
+                      ),
                     )
                   else if (_events.isEmpty)
                     const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 16),
-                      child: Text('No events today',
-                          style: TextStyle(color: AppTheme.textTertiary, fontSize: 13)),
+                      child: Text(
+                        'No events today',
+                        style: TextStyle(
+                          color: AppTheme.textTertiary,
+                          fontSize: 13,
+                        ),
+                      ),
                     )
                   else
-                    ..._events.map((e) => _EventRow(
-                          title: e.title,
-                          timeRange: e.timeRange,
-                          isActive: e.isActive,
-                        )),
+                    ..._events.map(
+                      (e) => _EventRow(
+                        title: e.title,
+                        timeRange: e.timeRange,
+                        isActive: e.isActive,
+                      ),
+                    ),
                   if (_events.isNotEmpty || _eventError.isNotEmpty)
                     const SizedBox(height: 20),
 
@@ -161,87 +209,128 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 8),
                     ..._tasks.take(5).map((t) {
-                          final taskId = t['id'] as int? ?? 0;
-                          final title = t['title'] as String? ?? 'Untitled';
-                          final deadline = t['deadline'] as String?;
-                          final project = t['project_name'] as String?;
-                          final organization = t['organization_name'] as String?;
-                          final priority = t['priority'] as String?;
-                          final description = t['description'] as String?;
-                          return Dismissible(
-                            key: ValueKey('task_$taskId'),
-                            direction: DismissDirection.horizontal,
-                            background: Container(
-                              alignment: Alignment.centerLeft,
-                              padding: const EdgeInsets.only(left: 24),
-                              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: AppTheme.green.withValues(alpha: 0.2),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: const Icon(Icons.check_circle_outline, color: AppTheme.green, size: 22),
-                            ),
-                            secondaryBackground: Container(
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 24),
-                              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: AppTheme.red.withValues(alpha: 0.15),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: const Icon(Icons.cancel_outlined, color: AppTheme.red, size: 22),
-                            ),
-                            confirmDismiss: (direction) async {
-                              if (direction == DismissDirection.endToStart) {
-                                final confirmed = await showDialog<bool>(
-                                  context: context,
-                                  builder: (ctx) => AlertDialog(
-                                    backgroundColor: AppTheme.surface,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(AppTheme.cardRadius),
-                                      side: const BorderSide(color: AppTheme.border),
-                                    ),
-                                    title: Text('Cancel task?',
-                                      style: const TextStyle(color: AppTheme.textPrimary, fontSize: 16)),
-                                    content: Text('$title will be cancelled.',
-                                      style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
-                                    actions: [
-                                      TextButton(onPressed: () => Navigator.pop(ctx, false),
-                                        child: const Text('Keep task', style: TextStyle(color: AppTheme.textTertiary))),
-                                      TextButton(onPressed: () => Navigator.pop(ctx, true),
-                                        child: const Text('Cancel task', style: TextStyle(color: AppTheme.red))),
-                                    ],
+                      final taskId = t['id'] as int? ?? 0;
+                      final title = t['title'] as String? ?? 'Untitled';
+                      final deadline = t['deadline'] as String?;
+                      final project = t['project_name'] as String?;
+                      final organization = t['organization_name'] as String?;
+                      final priority = t['priority'] as String?;
+                      final description = t['description'] as String?;
+                      return Dismissible(
+                        key: ValueKey('task_$taskId'),
+                        direction: DismissDirection.horizontal,
+                        background: Container(
+                          alignment: Alignment.centerLeft,
+                          padding: const EdgeInsets.only(left: 24),
+                          margin: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppTheme.green.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(
+                            Icons.check_circle_outline,
+                            color: AppTheme.green,
+                            size: 22,
+                          ),
+                        ),
+                        secondaryBackground: Container(
+                          alignment: Alignment.centerRight,
+                          padding: const EdgeInsets.only(right: 24),
+                          margin: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppTheme.red.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(
+                            Icons.cancel_outlined,
+                            color: AppTheme.red,
+                            size: 22,
+                          ),
+                        ),
+                        confirmDismiss: (direction) async {
+                          if (direction == DismissDirection.endToStart) {
+                            final confirmed = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                backgroundColor: AppTheme.surface,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(
+                                    AppTheme.cardRadius,
                                   ),
-                                );
-                                if (confirmed == true && mounted) {
-                                  await _api.updateTaskStatus(taskId, 'cancelled');
-                                  await _loadAll();
-                                }
-                                return false;
-                              }
-                              if (mounted) {
-                                await _api.updateTaskStatus(taskId, 'done');
-                                await _loadAll();
-                              }
-                              return false;
-                            },
-                            child: _TaskRow(
-                              title: title,
-                              subtitle: deadline != null
-                                  ? _formatDeadline(deadline)
-                                  : null,
-                              isWarning: deadline != null && _isOverdue(deadline),
-                              onTap: () => _showTaskDetail(
-                                title, taskId,
-                                description: description,
-                                project: project,
-                                organization: organization,
-                                deadline: deadline,
-                                priority: priority,
+                                  side: const BorderSide(
+                                    color: AppTheme.border,
+                                  ),
+                                ),
+                                title: Text(
+                                  'Cancel task?',
+                                  style: const TextStyle(
+                                    color: AppTheme.textPrimary,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                                content: Text(
+                                  '$title will be cancelled.',
+                                  style: const TextStyle(
+                                    color: AppTheme.textSecondary,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx, false),
+                                    child: const Text(
+                                      'Keep task',
+                                      style: TextStyle(
+                                        color: AppTheme.textTertiary,
+                                      ),
+                                    ),
+                                  ),
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx, true),
+                                    child: const Text(
+                                      'Cancel task',
+                                      style: TextStyle(color: AppTheme.red),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ),
-                          );
-                        }),
+                            );
+                            if (confirmed == true && mounted) {
+                              await _api.updateTaskStatus(taskId, 'cancelled');
+                              await _loadAll();
+                            }
+                            return false;
+                          }
+                          if (mounted) {
+                            await _api.updateTaskStatus(taskId, 'done');
+                            await _loadAll();
+                          }
+                          return false;
+                        },
+                        child: _TaskRow(
+                          title: title,
+                          subtitle: deadline != null
+                              ? _formatDeadline(deadline)
+                              : null,
+                          isWarning: deadline != null && _isOverdue(deadline),
+                          onTap: () => _showTaskDetail(
+                            title,
+                            taskId,
+                            description: description,
+                            project: project,
+                            organization: organization,
+                            deadline: deadline,
+                            priority: priority,
+                          ),
+                        ),
+                      );
+                    }),
                     const SizedBox(height: 20),
                   ],
 
@@ -252,10 +341,16 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                       trailing: '${_captures.length} items ▸',
                     ),
                     const SizedBox(height: 8),
-                    ..._captures.take(5).map((c) => _CaptureRowPreview(
-                          title: c['content'] as String? ?? '',
-                          time: _formatTimestamp(c['created_at'] as String? ?? ''),
-                        )),
+                    ..._captures
+                        .take(5)
+                        .map(
+                          (c) => _CaptureRowPreview(
+                            title: c['content'] as String? ?? '',
+                            time: _formatTimestamp(
+                              c['created_at'] as String? ?? '',
+                            ),
+                          ),
+                        ),
                     const SizedBox(height: 20),
                   ],
 
@@ -263,8 +358,13 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                     const Padding(
                       padding: EdgeInsets.all(32),
                       child: Center(
-                        child: Text('No data yet — start by sending a message to Rhodey',
-                            style: TextStyle(color: AppTheme.textTertiary, fontSize: 13)),
+                        child: Text(
+                          'No data yet — start by sending a message to Rhodey',
+                          style: TextStyle(
+                            color: AppTheme.textTertiary,
+                            fontSize: 13,
+                          ),
+                        ),
                       ),
                     ),
                 ],
@@ -275,8 +375,20 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
 
   String _formatDate() {
     final now = DateTime.now();
-    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     return '${months[now.month - 1]} ${now.day}';
   }
 
@@ -337,7 +449,8 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
             children: [
               Center(
                 child: Container(
-                  width: 36, height: 4,
+                  width: 36,
+                  height: 4,
                   decoration: BoxDecoration(
                     color: AppTheme.border.withValues(alpha: 0.5),
                     borderRadius: BorderRadius.circular(2),
@@ -345,10 +458,14 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                 ),
               ),
               const SizedBox(height: 16),
-              Text(title,
-                style: const TextStyle(fontFamily: 'PlusJakartaSans', 
-                  fontSize: 18, fontWeight: FontWeight.w500,
-                  color: AppTheme.textPrimary, height: 1.3,
+              Text(
+                title,
+                style: const TextStyle(
+                  fontFamily: 'PlusJakartaSans',
+                  fontSize: 18,
+                  fontWeight: FontWeight.w500,
+                  color: AppTheme.textPrimary,
+                  height: 1.3,
                 ),
               ),
               const SizedBox(height: 12),
@@ -368,7 +485,9 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                 _detailRow('Deadline', _formatDeadline(deadline)),
                 const SizedBox(height: 8),
               ],
-              if (priority != null && priority.isNotEmpty && priority != 'none') ...[
+              if (priority != null &&
+                  priority.isNotEmpty &&
+                  priority != 'none') ...[
                 _detailRow('Priority', priority.toUpperCase()),
                 const SizedBox(height: 8),
               ],
@@ -389,8 +508,14 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           alignment: Alignment.center,
-                          child: const Text('Mark done',
-                            style: TextStyle(color: AppTheme.green, fontWeight: FontWeight.w500, fontSize: 13)),
+                          child: const Text(
+                            'Mark done',
+                            style: TextStyle(
+                              color: AppTheme.green,
+                              fontWeight: FontWeight.w500,
+                              fontSize: 13,
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -410,8 +535,14 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           alignment: Alignment.center,
-                          child: const Text('Cancel task',
-                            style: TextStyle(color: AppTheme.red, fontWeight: FontWeight.w500, fontSize: 13)),
+                          child: const Text(
+                            'Cancel task',
+                            style: TextStyle(
+                              color: AppTheme.red,
+                              fontWeight: FontWeight.w500,
+                              fontSize: 13,
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -431,16 +562,24 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
       children: [
         SizedBox(
           width: 80,
-          child: Text(label,
-            style: const TextStyle(fontFamily: 'PlusJakartaSans', 
-              fontSize: 11, color: AppTheme.textTertiary, fontWeight: FontWeight.w400,
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontFamily: 'PlusJakartaSans',
+              fontSize: 11,
+              color: AppTheme.textTertiary,
+              fontWeight: FontWeight.w400,
             ),
           ),
         ),
         Expanded(
-          child: Text(value,
-            style: const TextStyle(fontFamily: 'PlusJakartaSans', 
-              fontSize: 12, color: AppTheme.textSecondary, height: 1.4,
+          child: Text(
+            value,
+            style: const TextStyle(
+              fontFamily: 'PlusJakartaSans',
+              fontSize: 12,
+              color: AppTheme.textSecondary,
+              height: 1.4,
             ),
           ),
         ),
@@ -468,15 +607,18 @@ class _FocusCard extends StatelessWidget {
         ),
         borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         border: Border.all(
-          color: AppTheme.accent.withValues(alpha: 0.2), width: 1,
+          color: AppTheme.accent.withValues(alpha: 0.2),
+          width: 1,
         ),
       ),
       child: Row(
         children: [
           Container(
-            width: 3, height: 48,
+            width: 3,
+            height: 48,
             decoration: BoxDecoration(
-              color: AppTheme.accent, borderRadius: BorderRadius.circular(2),
+              color: AppTheme.accent,
+              borderRadius: BorderRadius.circular(2),
             ),
           ),
           const SizedBox(width: 14),
@@ -484,12 +626,21 @@ class _FocusCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('FOCUS', style: AppTheme.monoLabel.copyWith(color: AppTheme.accent)),
+                Text(
+                  'FOCUS',
+                  style: AppTheme.monoLabel.copyWith(color: AppTheme.accent),
+                ),
                 const SizedBox(height: 4),
-                Text(item.title, style: AppTheme.displayMedium.copyWith(fontSize: 18)),
+                Text(
+                  item.title,
+                  style: AppTheme.displayMedium.copyWith(fontSize: 18),
+                ),
                 if (item.subtitle != null) ...[
                   const SizedBox(height: 2),
-                  Text(item.subtitle!, style: AppTheme.bodySmall.copyWith(fontSize: 12)),
+                  Text(
+                    item.subtitle!,
+                    style: AppTheme.bodySmall.copyWith(fontSize: 12),
+                  ),
                 ],
               ],
             ),
@@ -497,12 +648,14 @@ class _FocusCard extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: AppTheme.accent, borderRadius: BorderRadius.circular(8),
+              color: AppTheme.accent,
+              borderRadius: BorderRadius.circular(8),
             ),
             child: Text(
               item.action ?? 'Focus',
               style: AppTheme.caption.copyWith(
-                color: Colors.white, fontWeight: FontWeight.w600,
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ),
@@ -523,14 +676,22 @@ class _SectionHeader extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
-          Text(title, style: AppTheme.label.copyWith(
-            color: AppTheme.textTertiary, fontSize: 11,
-          )),
+          Text(
+            title,
+            style: AppTheme.label.copyWith(
+              color: AppTheme.textTertiary,
+              fontSize: 11,
+            ),
+          ),
           const Spacer(),
           if (trailing != null)
-            Text(trailing!, style: AppTheme.caption.copyWith(
-              color: AppTheme.accent, fontSize: 11,
-            )),
+            Text(
+              trailing!,
+              style: AppTheme.caption.copyWith(
+                color: AppTheme.accent,
+                fontSize: 11,
+              ),
+            ),
         ],
       ),
     );
@@ -542,7 +703,9 @@ class _EventRow extends StatelessWidget {
   final String timeRange;
   final bool isActive;
   const _EventRow({
-    required this.title, required this.timeRange, this.isActive = false,
+    required this.title,
+    required this.timeRange,
+    this.isActive = false,
   });
 
   @override
@@ -554,14 +717,17 @@ class _EventRow extends StatelessWidget {
         color: AppTheme.surface,
         borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         border: Border.all(
-          color: isActive ? AppTheme.accent.withValues(alpha: 0.3) : AppTheme.border,
+          color: isActive
+              ? AppTheme.accent.withValues(alpha: 0.3)
+              : AppTheme.border,
           width: 1,
         ),
       ),
       child: Row(
         children: [
           Container(
-            width: 8, height: 8,
+            width: 8,
+            height: 8,
             decoration: BoxDecoration(
               color: isActive ? AppTheme.accent : AppTheme.textTertiary,
               shape: BoxShape.circle,
@@ -569,10 +735,13 @@ class _EventRow extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: Text(title, style: AppTheme.body.copyWith(
-              fontSize: 13,
-              color: isActive ? AppTheme.textPrimary : AppTheme.textSecondary,
-            )),
+            child: Text(
+              title,
+              style: AppTheme.body.copyWith(
+                fontSize: 13,
+                color: isActive ? AppTheme.textPrimary : AppTheme.textSecondary,
+              ),
+            ),
           ),
           Text(timeRange, style: AppTheme.monoCaption),
         ],
@@ -586,7 +755,12 @@ class _TaskRow extends StatelessWidget {
   final String? subtitle;
   final bool isWarning;
   final VoidCallback? onTap;
-  const _TaskRow({required this.title, this.subtitle, this.isWarning = false, this.onTap});
+  const _TaskRow({
+    required this.title,
+    this.subtitle,
+    this.isWarning = false,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -602,25 +776,36 @@ class _TaskRow extends StatelessWidget {
             color: isWarning ? AppTheme.redBg : AppTheme.surface,
             borderRadius: BorderRadius.circular(AppTheme.cardRadius),
             border: Border.all(
-              color: isWarning ? AppTheme.red.withValues(alpha: 0.2) : AppTheme.border,
+              color: isWarning
+                  ? AppTheme.red.withValues(alpha: 0.2)
+                  : AppTheme.border,
               width: 1,
             ),
           ),
           child: Row(
             children: [
-              Text(isWarning ? '⚠️' : '📋', style: const TextStyle(fontSize: 12)),
+              Text(
+                isWarning ? '⚠️' : '📋',
+                style: const TextStyle(fontSize: 12),
+              ),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(title,
+                child: Text(
+                  title,
                   style: AppTheme.body.copyWith(fontSize: 13),
-                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
               if (subtitle != null)
-                Text(subtitle!, style: AppTheme.caption.copyWith(
-                  color: isWarning ? AppTheme.red : AppTheme.textTertiary,
-                  fontSize: 12, fontWeight: FontWeight.w600,
-                )),
+                Text(
+                  subtitle!,
+                  style: AppTheme.caption.copyWith(
+                    color: isWarning ? AppTheme.red : AppTheme.textTertiary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
             ],
           ),
         ),
@@ -640,15 +825,22 @@ class _CaptureRowPreview extends StatelessWidget {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: AppTheme.surface, borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         border: Border.all(color: AppTheme.border, width: 1),
       ),
       child: Row(
         children: [
           const Text('🟢', style: TextStyle(fontSize: 10)),
           const SizedBox(width: 10),
-          Expanded(child: Text(title, style: AppTheme.body.copyWith(fontSize: 13),
-              maxLines: 1, overflow: TextOverflow.ellipsis)),
+          Expanded(
+            child: Text(
+              title,
+              style: AppTheme.body.copyWith(fontSize: 13),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
           Text(time, style: AppTheme.monoCaption),
         ],
       ),

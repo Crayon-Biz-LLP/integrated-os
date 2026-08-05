@@ -1413,6 +1413,9 @@ def sync_people_to_graph_nodes():
 
 def sync_person_org_edges():
     """Reverse sync: ensure every person with an organization_name has a pending WORKS_AT edge."""
+    if not _mirror_table_exists("people"):
+        print("\n⏭️  person→org edge sync skipped: people table removed (migration 75).")
+        return
     print("\n🔗 Reverse sync: people.organization_name → WORKS_AT edges...")
     all_people = _fetch_paginated("people", "id, name, organization_name, graph_node_id")
     if not all_people:

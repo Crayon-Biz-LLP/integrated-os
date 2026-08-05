@@ -20,7 +20,8 @@ class HistoryScreen extends StatefulWidget {
   State<HistoryScreen> createState() => _HistoryScreenState();
 }
 
-class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserver {
+class _HistoryScreenState extends State<HistoryScreen>
+    with WidgetsBindingObserver {
   final _api = ApiService();
   final _scrollController = ScrollController();
   List<ChatMessage> _messages = [];
@@ -33,6 +34,16 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
   /// by _sendReply must NOT advance the pagination offset, or "Show earlier"
   /// would skip real conversation rows.
   int _serverRows = 0;
+
+  /// Memoized card resolution keyed by message id — resolveCardData (regex
+  /// parsing) runs at most once per message instead of on every rebuild.
+  final _cardDataCache = <String, CardData?>{};
+
+  /// Title→id index of todo tasks, fetched once on the first mark-done tap —
+  /// no per-tap network round-trip, and fail-closed matching never completes
+  /// the wrong task.
+  final Map<String, int> _taskIdByTitle = {};
+  bool _taskIndexLoaded = false;
 
   @override
   void initState() {
@@ -85,7 +96,9 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
     if (_loadingEarlier || !_hasMore) return;
     setState(() => _loadingEarlier = true);
     final result = await _api.getConversationHistory(
-        limit: 60, offset: _serverRows);
+      limit: 60,
+      offset: _serverRows,
+    );
     if (!mounted) return;
 
     if (result.success && result.data!.isNotEmpty) {
@@ -144,27 +157,62 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
       return 'Today';
     }
     final yesterday = now.subtract(const Duration(days: 1));
-    if (dt.year == yesterday.year && dt.month == yesterday.month && dt.day == yesterday.day) {
+    if (dt.year == yesterday.year &&
+        dt.month == yesterday.month &&
+        dt.day == yesterday.day) {
       return 'Yesterday';
     }
-    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     return '${months[dt.month - 1]} ${dt.day}, ${dt.year}';
   }
 
-  /// Find a task ID from a card title by fetching open tasks — same logic as
-  /// the live conversation's rich cards.
-  Future<int?> _findTaskIdForCard(String title) async {
-    final result = await _api.getTasks(status: 'todo');
-    if (!result.success || result.data == null) return null;
-    final lower = title.toLowerCase().trim();
-    for (final t in result.data!) {
-      final taskTitle = (t['title'] as String? ?? '').toLowerCase().trim();
-      if (taskTitle == lower || taskTitle.contains(lower) || lower.contains(taskTitle)) {
-        return t['id'] as int?;
+  /// Resolves a task id from a card title — one /api/tasks fetch per screen
+  /// visit (cached in an index), never one per tap. Fail-closed: an exact
+  /// normalized match wins; a containment match is only accepted when exactly
+  /// one task qualifies, so a "Fix login bug" card can't complete "Fix login
+  /// bug on Android". Null → the existing "not found" snackbar.
+  Future<int?> _taskIdForTitle(String title) async {
+    if (!_taskIndexLoaded) {
+      final result = await _api.getTasks(status: 'todo');
+      if (result.success && result.data != null) {
+        // Only mark loaded on success — a transient failure retries on the
+        // next tap instead of disabling lookup for the whole screen visit.
+        _taskIndexLoaded = true;
+        for (final t in result.data!) {
+          final id = t['id'] as int?;
+          final taskTitle = (t['title'] as String? ?? '').toLowerCase().trim();
+          if (id != null && taskTitle.isNotEmpty) {
+            // putIfAbsent: first match wins for duplicate titles (same
+            // semantics as the old first-match loop).
+            _taskIdByTitle.putIfAbsent(taskTitle, () => id);
+          }
+        }
       }
     }
-    return null;
+    final lower = title.toLowerCase().trim();
+    if (lower.isEmpty) return null;
+    final exact = _taskIdByTitle[lower];
+    if (exact != null) return exact;
+    final candidates = <int>{};
+    for (final e in _taskIdByTitle.entries) {
+      if (e.key.contains(lower) || lower.contains(e.key)) {
+        candidates.add(e.value);
+      }
+    }
+    return candidates.length == 1 ? candidates.first : null;
   }
 
   /// Send a message (used by quick-reply chips) and prepend the local echo.
@@ -176,13 +224,16 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
     if (text.trim().isEmpty) return;
     final id = 'h${DateTime.now().millisecondsSinceEpoch}';
     setState(() {
-      _messages.insert(0, ChatMessage(
-        id: id,
-        role: MessageRole.user,
-        text: text,
-        timestamp: DateTime.now(),
-        sendStatus: SendStatus.sent,
-      ));
+      _messages.insert(
+        0,
+        ChatMessage(
+          id: id,
+          role: MessageRole.user,
+          text: text,
+          timestamp: DateTime.now(),
+          sendStatus: SendStatus.sent,
+        ),
+      );
     });
     final result = await _api.sendMessage(text.trim());
     if (!mounted) return;
@@ -203,7 +254,10 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(RhodeyVoice.failedToSend(), style: const TextStyle(fontSize: 12)),
+          content: Text(
+            RhodeyVoice.failedToSend(),
+            style: const TextStyle(fontSize: 12),
+          ),
           backgroundColor: AppTheme.red,
           duration: const Duration(seconds: 2),
         ),
@@ -214,12 +268,15 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
         ? (result.data as Map)['response'] as String? ?? 'Got it.'
         : 'Got it.';
     setState(() {
-      _messages.insert(0, ChatMessage(
-        id: 'hr${DateTime.now().millisecondsSinceEpoch}',
-        role: MessageRole.rhodey,
-        text: responseText,
-        timestamp: DateTime.now(),
-      ));
+      _messages.insert(
+        0,
+        ChatMessage(
+          id: 'hr${DateTime.now().millisecondsSinceEpoch}',
+          role: MessageRole.rhodey,
+          text: responseText,
+          timestamp: DateTime.now(),
+        ),
+      );
     });
     // reverse:true → offset 0 IS the bottom. Glide the new exchange into view,
     // retrying until the ListView attaches (same hardening as the home screen).
@@ -250,15 +307,24 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
     });
   }
 
-  /// Render a Rhodey message — rich card when the text parses to one,
-  /// otherwise a plain bubble. Mirrors the live conversation.
-  Widget _buildMessageItem(ChatMessage msg) {
-    if (msg.role == MessageRole.rhodey) {
-      final cardData = resolveCardData(
+  /// resolveCardData, memoized by message id — the regex parser runs at most
+  /// once per message instead of on every rebuild.
+  CardData? _cachedCardData(ChatMessage msg) {
+    if (!_cardDataCache.containsKey(msg.id)) {
+      _cardDataCache[msg.id] = resolveCardData(
         intent: msg.intent,
         text: msg.text,
         timestamp: msg.timestamp,
       );
+    }
+    return _cardDataCache[msg.id];
+  }
+
+  /// Render a Rhodey message — rich card when the text parses to one,
+  /// otherwise a plain bubble. Mirrors the live conversation.
+  Widget _buildMessageItem(ChatMessage msg) {
+    if (msg.role == MessageRole.rhodey) {
+      final cardData = _cachedCardData(msg);
       if (cardData != null) {
         return _buildRichCard(msg, cardData);
       }
@@ -276,13 +342,16 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
     VoidCallback? onMarkDone;
     if (cardData.type == CardType.task) {
       onMarkDone = () async {
-        final taskId = await _findTaskIdForCard(cardData.title);
+        final taskId = await _taskIdForTitle(cardData.title);
         if (taskId != null && mounted) {
           await _api.updateTaskStatus(taskId, 'done');
         } else if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Task already completed or not found.', style: TextStyle(fontSize: 12)),
+              content: Text(
+                'Task already completed or not found.',
+                style: TextStyle(fontSize: 12),
+              ),
               backgroundColor: AppTheme.amber,
               duration: Duration(seconds: 2),
             ),
@@ -299,9 +368,13 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
         children: [
           Padding(
             padding: const EdgeInsets.only(left: 16, bottom: 4),
-            child: Text('Rhodey', style: AppTheme.caption.copyWith(
-              color: AppTheme.accent, letterSpacing: 0.3,
-            )),
+            child: Text(
+              'Rhodey',
+              style: AppTheme.caption.copyWith(
+                color: AppTheme.accent,
+                letterSpacing: 0.3,
+              ),
+            ),
           ),
           RichCardContent(
             cardData: cardData,
@@ -329,72 +402,83 @@ class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserv
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _messages.isEmpty
-              ? Center(
-                  child: Text(
-                    _error.isNotEmpty ? '⚠️ $_error' : 'No conversation yet',
-                    style: AppTheme.body.copyWith(color: AppTheme.textTertiary),
-                  ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _loadHistory,
-                  // reverse:true → child 0 renders at the BOTTOM, so the list
-                  // opens on the most recent message with zero jumping.
-                  child: ListView(
-                    reverse: true,
-                    controller: _scrollController,
-                    padding: const EdgeInsets.only(bottom: 24),
-                    children: () {
-                      // _messages is newest-first; with reverse:true the first
-                      // child sits at the bottom, so iterate newest-first:
-                      // newest date group at the bottom, oldest at the top.
-                      final groups = _groupByDate(_messages);
-                      final entries = <Widget>[];
+          ? Center(
+              child: Text(
+                _error.isNotEmpty ? '⚠️ $_error' : 'No conversation yet',
+                style: AppTheme.body.copyWith(color: AppTheme.textTertiary),
+              ),
+            )
+          : RefreshIndicator(
+              onRefresh: _loadHistory,
+              // reverse:true → child 0 renders at the BOTTOM, so the list
+              // opens on the most recent message with zero jumping.
+              child: ListView(
+                reverse: true,
+                controller: _scrollController,
+                padding: const EdgeInsets.only(bottom: 24),
+                children: () {
+                  // _messages is newest-first; with reverse:true the first
+                  // child sits at the bottom, so iterate newest-first:
+                  // newest date group at the bottom, oldest at the top.
+                  final groups = _groupByDate(_messages);
+                  final entries = <Widget>[];
 
-                      for (final date in groups.keys) {
-                        // With reverse:true the LAST child of a group renders
-                        // ABOVE it — so the date header goes AFTER the group's
-                        // messages to sit on top of them (newest date group is
-                        // first in the list → bottom of the screen).
-                        for (final msg in groups[date]!) {
-                          entries.add(_buildMessageItem(msg));
-                        }
-                        entries.add(
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                            child: Text(
-                              date,
-                              style: AppTheme.label.copyWith(
-                                color: AppTheme.textTertiary,
+                  for (final date in groups.keys) {
+                    // With reverse:true the LAST child of a group renders
+                    // ABOVE it — so the date header goes AFTER the group's
+                    // messages to sit on top of them (newest date group is
+                    // first in the list → bottom of the screen).
+                    for (final msg in groups[date]!) {
+                      entries.add(_buildMessageItem(msg));
+                    }
+                    entries.add(
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                        child: Text(
+                          date,
+                          style: AppTheme.label.copyWith(
+                            color: AppTheme.textTertiary,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+
+                  // 'Show earlier' sits at the very TOP — with reverse:true
+                  // that means it must be the LAST child.
+                  if (_hasMore) {
+                    entries.add(
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                        child: Center(
+                          child: TextButton.icon(
+                            onPressed: _loadingEarlier ? null : _loadEarlier,
+                            icon: _loadingEarlier
+                                ? const SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 1.5,
+                                    ),
+                                  )
+                                : const Icon(Icons.expand_less, size: 16),
+                            label: const Text(
+                              'Show earlier',
+                              style: TextStyle(
                                 fontSize: 12,
+                                color: AppTheme.textSecondary,
                               ),
                             ),
                           ),
-                        );
-                      }
-
-                      // 'Show earlier' sits at the very TOP — with reverse:true
-                      // that means it must be the LAST child.
-                      if (_hasMore) {
-                        entries.add(Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                          child: Center(
-                            child: TextButton.icon(
-                              onPressed: _loadingEarlier ? null : _loadEarlier,
-                              icon: _loadingEarlier
-                                  ? const SizedBox(
-                                      width: 12, height: 12,
-                                      child: CircularProgressIndicator(strokeWidth: 1.5))
-                                  : const Icon(Icons.expand_less, size: 16),
-                              label: const Text('Show earlier',
-                                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-                            ),
-                          ),
-                        ));
-                      }
-                      return entries;
-                    }(),
-                  ),
-                ),
+                        ),
+                      ),
+                    );
+                  }
+                  return entries;
+                }(),
+              ),
+            ),
     );
   }
 }

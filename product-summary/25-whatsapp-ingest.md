@@ -48,7 +48,7 @@ core/skills/whatsapp_ingest.py::process_whatsapp_message()
 | `created_at` | timestamptz | Row creation |
 
 ## Classification Prompt
-Uses WhatsApp-specific context: personal chats, family, friends, church contacts. Same Gemini model (`gemini-3.1-flash-lite-preview`) and JSON-structured output as email classification, but adapted for shorter, conversational WhatsApp messages.
+Uses WhatsApp-specific context: personal chats, family, friends, church contacts. Same Gemini model (`gemini-3.5-flash-lite`) and JSON-structured output as email classification, but adapted for shorter, conversational WhatsApp messages.
 
 ## Approval Flow
 

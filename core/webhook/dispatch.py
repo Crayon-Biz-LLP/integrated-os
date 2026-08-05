@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import age_tag, IST_TIMEZONE, now_ist
 from core.pulse.context import context_provider
-from core.lib.conversation import get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context
+from core.lib.conversation import get_history, log_exchange, format_classify_context
 from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_BY_KEYWORD
 from core.llm.fallback import generate_content_with_fallback
@@ -48,11 +48,6 @@ async def resolve_anaphora(query: str, active_anchor: dict = None, classify_cont
         if active_anchor.get('last_summary_snippet'):
             parts.append(f"Recent context: {active_anchor['last_summary_snippet'][:200]}")
         anchor_context = "\n".join(parts)
-    thread_summary = ""
-    if session_id:
-        thread_summary = get_thread_summary(session_id)
-    if thread_summary:
-        anchor_context += f"\nEarlier in conversation: {thread_summary[:500]}"
     
     resolve_prompt = new_anaphora_prompt(anchor_context, classify_context, query)
     
@@ -112,7 +107,7 @@ def _format_task_line(title: str, organization_name: str = None, priority: str =
         line += suffix
     return line
 
-async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, conversation_history: str = ""):
+async def handle_daily_brief(text: str, chat_id: int, session_id: str = None):
     """
     Handle DAILY_BRIEF intent \u2014 on-demand daily briefing.
     Parses whether the user asks about today or tomorrow, queries Google Calendar
@@ -200,7 +195,6 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None, co
         prompt = build_daily_brief_prompt(
             now_str=now.strftime('%A, %d %B %Y, %H:%M %p IST'),
             day_label=day_label.lower(),
-            conversation_history=conversation_history,
             calendar_text=calendar_text,
             overdue_text=fmt_list(overdue_tasks),
             todo_text=fmt_list(active_tasks_list),
@@ -461,11 +455,6 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
     if not cid:
         cid = set_decision_chain_id()
 
-    history_text = ""
-    if session_id:
-        pairs = get_history(session_id)
-        history_text = format_history_for_prompt(pairs)
-
     handler_map = {
         'TASK': 'plan_actions',
         'DAILY_BRIEF': 'handle_daily_brief',
@@ -500,12 +489,11 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         if not classify_ctx and session_id:
             try:
                 _pairs = get_history(session_id, max_tokens=2000)
-                classify_ctx = format_classify_context(_pairs, 
-                    thread_summary=get_thread_summary(session_id), active_anchor=active_anchor)
+                classify_ctx = format_classify_context(_pairs, active_anchor=active_anchor)
             except Exception:
                 classify_ctx = ""
-        reply = await interrogate_brain(text, chat_id, session_id=session_id, 
-            conversation_history=history_text, active_anchor=active_anchor,
+        reply = await interrogate_brain(text, chat_id, session_id=session_id,
+            active_anchor=active_anchor,
             classify_context=classify_ctx, anaphora_task=anaphora_task)
         if contains_hidden:
             from core.actions.planner import plan_actions
@@ -529,7 +517,7 @@ async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str,
         await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor)
         
     elif intent == 'DAILY_BRIEF':
-        reply = await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
+        reply = await handle_daily_brief(text, chat_id, session_id=session_id)
         if reply:
             capture_response(reply)
             
@@ -697,110 +685,6 @@ async def _build_rich_anchor(graph_node_id, name):
     return anchor
 
 
-async def _build_active_context(resolved_entity: str, current_thread_id: str, chat_id: int) -> str | None:
-    """Fix D: Scan all recent threads for cross-references to the resolved entity.
-    
-    Returns a formatted "ACTIVE CONVERSATION CONTEXT" brief showing which other
-    threads have discussed the same entity, or None if no cross-references found.
-    Runs in <100ms (single SQL query) — zero latency impact in Phase 2.
-    """
-    if not resolved_entity or not current_thread_id:
-        return None
-    
-    try:
-        now = datetime.now(timezone.utc)
-        cutoff_24h = (now - timedelta(hours=24)).isoformat()
-        
-        # 1. Find recent threads (last 24h, non-archived, excluding current)
-        threads_data = None
-        threads_res = supabase.table('conversation_threads') \
-            .select('id, thread_type, entity_type, entity_label, summary, last_active_at') \
-            .eq('chat_id', chat_id) \
-            .gt('last_active_at', cutoff_24h) \
-            .is_('archived_at', 'null') \
-            .neq('id', current_thread_id) \
-            .order('last_active_at', desc=True) \
-            .limit(5) \
-            .execute()
-        threads_data = threads_res.data if threads_res.data else []
-        
-        if not threads_data:
-            return None
-        
-        entity_lower = resolved_entity.lower()
-        cross_refs = []
-        
-        # 2. Check thread summaries first (Fix A ensures summaries exist)
-        for thread in threads_data:
-            summary = thread.get('summary', '') or ''
-            entity_label = thread.get('entity_label', '') or ''
-            
-            if entity_lower in summary.lower() or entity_lower in entity_label.lower():
-                cross_refs.append({
-                    'label': entity_label or thread.get('thread_type', 'general'),
-                    'entity_type': thread.get('entity_type', ''),
-                    'summary': summary[:150] if summary else '',
-                    'last_active': thread.get('last_active_at', '')
-                })
-        
-        # 3. Fall back to scanning raw exchanges in the thread if no summary match
-        if not cross_refs:
-            for thread in threads_data:
-                try:
-                    ex_res = supabase.table('conversations') \
-                        .select('content') \
-                        .eq('thread_id', thread['id']) \
-                        .eq('role', 'user') \
-                        .order('created_at', desc=True) \
-                        .limit(5) \
-                        .execute()
-                    ex_data = ex_res.data if ex_res.data else []
-                    for ex in ex_data:
-                        content = ex.get('content', '') or ''
-                        if entity_lower in content.lower():
-                            cross_refs.append({
-                                'label': thread.get('entity_label', '') or thread.get('thread_type', 'general'),
-                                'entity_type': thread.get('entity_type', ''),
-                                'summary': content[:150],
-                                'last_active': thread.get('last_active_at', '')
-                            })
-                            break  # One reference per thread is enough
-                except Exception:
-                    continue
-        
-        if not cross_refs:
-            return None
-        
-        # 4. Build the brief
-        label_parts = []
-        for ref in cross_refs:
-            label = ref['label']
-            if ref['entity_type']:
-                label = f"{label} ({ref['entity_type']})"
-            time_str = age_tag(ref['last_active'])
-            summary = ref['summary'][:120] if ref['summary'] else '(recently active)'
-            label_parts.append(f"\u25cf {label} \u2014 {time_str}: {summary}")
-        
-        current_label = "General"
-        try:
-            t_res = supabase.table('conversation_threads').select('entity_label, entity_type').eq('id', current_thread_id).limit(1).execute()
-            if t_res.data:
-                t_row = t_res.data[0]
-                entity_label = t_row.get('entity_label', '') or ''
-                current_label = entity_label or 'General'
-        except Exception:
-            pass
-        
-        lines = [f"You've discussed \"{resolved_entity}\" across these threads recently:"]
-        lines.extend(label_parts)
-        lines.append(f"\nCurrent thread: {current_label}")
-        
-        return "\n".join(lines)
-    except Exception as e:
-        audit_log_sync("webhook", "WARNING", f"Failed to build active context: {e}")
-        return None
-
-
 class SharedQueryContext:
     """Caches expensive results (embedding, tasks, people) within one interrogate_brain call.
     Prevents redundant DB/API roundtrips when multiple context sections need the same data."""
@@ -844,7 +728,7 @@ class SharedQueryContext:
         return self._people
 
 
-async def interrogate_brain(query: str, chat_id: int, session_id: str = None, conversation_history: str = "", active_anchor: dict = None, classify_context: str = "", anaphora_task: asyncio.Task = None) -> str | None:
+async def interrogate_brain(query: str, chat_id: int, session_id: str = None, active_anchor: dict = None, classify_context: str = "", anaphora_task: asyncio.Task = None) -> str | None:
     search_task = None
     _last_reply = None
     # 'Searching your vault...' message is now dispatched from handler.py
@@ -1224,13 +1108,6 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         _p2_raw_comms = asyncio.create_task(safe_fetch(_fetch_raw_comms(), "None") if is_comms else safe_fetch(_empty_fetch("None"), "None"))
         _phase2_tasks.append(_p2_raw_comms)
         
-        # Active conversation context (Fix D) — cross-thread entity awareness
-        async def _fetch_active_context():
-            if resolved_entity and session_id:
-                return await _build_active_context(resolved_entity, session_id, chat_id)
-            return None
-        _p2_active_context = asyncio.create_task(safe_fetch(_fetch_active_context(), None))
-        _phase2_tasks.append(_p2_active_context)
         
         mark(trace_id_var.get(), "phase2_done")
         # ── AWAIT ALL pending tasks ──
@@ -1309,8 +1186,6 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         raw_comms_context = _r2[_ri]
         _ri += 1
         conversation_context = _r2[_ri]
-        _ri += 1
-        active_context = _r2[_ri]
         _ri += 1
 
         # ── Alias context: inject known aliases (e.g. Sunju → Sunjula Daniel) ──
@@ -1417,10 +1292,6 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         if conversation_context != "None":
             all_context.append(f"{_source_tag('past_conversations')} PAST CONVERSATIONS {_HIST_TAG}:\n{conversation_context}")
             available_sources.append("past conversations")
-        if active_context and active_context != "None":
-            all_context.append(f"{_source_tag('active_context')} ACTIVE CONVERSATION CONTEXT {_HIST_TAG}:\n{active_context}")
-            available_sources.append("active conversations")
-
         if not all_context:
             _last_reply = "\U0001f50d *I don't have any relevant data to answer that.*\n\n_Try rephrasing._"
             await send_telegram(chat_id, _last_reply)
@@ -1457,7 +1328,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, co
         
         # Build a streaming prompt — no JSON wrapper, plain text output
         stream_prompt = build_interrogate_brain_prompt(
-            now_str, sources_str, context_str, conversation_history, query, streaming=True
+            now_str, sources_str, context_str, query, streaming=True
         )
         
         # Stream to Telegram progressively

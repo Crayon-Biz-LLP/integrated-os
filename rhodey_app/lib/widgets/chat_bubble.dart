@@ -22,12 +22,17 @@ class ChatBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final isUser = message.isUser;
 
-    final screenWidth = MediaQuery.of(context).size.width;
+    // sizeOf registers a dependency on size changes only — MediaQuery.of
+    // would rebuild every bubble on ANY MediaQuery change (e.g. the keyboard
+    // toggling viewInsets while typing).
+    final screenWidth = MediaQuery.sizeOf(context).width;
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        crossAxisAlignment: isUser
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
         children: [
           if (isGroupStart && !isUser)
             Padding(
@@ -73,7 +78,8 @@ class ChatBubble extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(top: 8, left: 16),
               child: Wrap(
-                spacing: 6, runSpacing: 6,
+                spacing: 6,
+                runSpacing: 6,
                 children: message.quickReplies!.map((reply) {
                   return Material(
                     color: AppTheme.surfaceAlt,
@@ -84,12 +90,23 @@ class ChatBubble extends StatelessWidget {
                           ? null
                           : () => onQuickReply!(reply),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: AppTheme.borderLight, width: 1),
+                          border: Border.all(
+                            color: AppTheme.borderLight,
+                            width: 1,
+                          ),
                         ),
-                        child: Text(reply, style: AppTheme.bodySmall.copyWith(color: AppTheme.accent)),
+                        child: Text(
+                          reply,
+                          style: AppTheme.bodySmall.copyWith(
+                            color: AppTheme.accent,
+                          ),
+                        ),
                       ),
                     ),
                   );
@@ -117,7 +134,9 @@ class ChatBubble extends StatelessWidget {
           bottomRight: Radius.circular(isUser ? 4 : 16),
         ),
         border: Border.all(
-          color: isUser ? AppTheme.accent.withValues(alpha: 0.15) : AppTheme.border,
+          color: isUser
+              ? AppTheme.accent.withValues(alpha: 0.15)
+              : AppTheme.border,
           width: 1,
         ),
       ),
@@ -130,10 +149,7 @@ class ChatBubble extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(message.timeString, style: AppTheme.monoCaption),
-              if (isUser) ...[
-                const SizedBox(width: 4),
-                _sendStatusIcon(),
-              ],
+              if (isUser) ...[const SizedBox(width: 4), _sendStatusIcon()],
             ],
           ),
         ],
@@ -171,8 +187,13 @@ class ChatBubble extends StatelessWidget {
             children: [
               Icon(Icons.error_outline, size: 12, color: AppTheme.red),
               const SizedBox(width: 4),
-              Text('Failed to send', style: AppTheme.caption.copyWith(
-                  fontSize: 10, color: AppTheme.red)),
+              Text(
+                'Failed to send',
+                style: AppTheme.caption.copyWith(
+                  fontSize: 10,
+                  color: AppTheme.red,
+                ),
+              ),
               const Spacer(),
               if (onRetry != null)
                 Material(
@@ -182,14 +203,23 @@ class ChatBubble extends StatelessWidget {
                     borderRadius: BorderRadius.circular(6),
                     onTap: onRetry,
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Icon(Icons.refresh, size: 12, color: AppTheme.red),
                           const SizedBox(width: 3),
-                          Text('Retry', style: AppTheme.caption.copyWith(
-                              fontSize: 10, color: AppTheme.red, fontWeight: FontWeight.w600)),
+                          Text(
+                            'Retry',
+                            style: AppTheme.caption.copyWith(
+                              fontSize: 10,
+                              color: AppTheme.red,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -207,9 +237,11 @@ class ChatBubble extends StatelessWidget {
       case SendStatus.pending:
       case SendStatus.sending:
         return SizedBox(
-          width: 10, height: 10,
+          width: 10,
+          height: 10,
           child: CircularProgressIndicator(
-            strokeWidth: 1.5, color: AppTheme.textTertiary,
+            strokeWidth: 1.5,
+            color: AppTheme.textTertiary,
           ),
         );
       case SendStatus.sent:

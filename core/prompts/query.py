@@ -46,7 +46,6 @@ def build_interrogate_brain_prompt(
     now_str: str,
     sources_str: str,
     context_str: str,
-    conversation_history: str,
     query: str,
     streaming: bool = False
 ) -> str:
@@ -81,7 +80,7 @@ Then stop. No self-analysis.
 
 {FORMATTING_RULES}
 
-{context_str}{conversation_history}
+{context_str}
 
 Question: {query}"""
 
@@ -115,37 +114,9 @@ Give concrete specifics where available: what's happening, who's involved, what'
 
 {FORMATTING_RULES}
 
-{context_str}{conversation_history}
+{context_str}
 
 Question: {query}"""
-
-
-def build_anaphora_resolution_prompt(anchor_context: str, conversation_history: str, query: str) -> str:
-    # Internal routing prompt, no action guards needed
-    return f"""You are Rhodey's query parser.
-Task 1: Rewrite the following query to be fully self-contained by replacing any pronouns or vague references (e.g. it, that, he, the first one) with the specific entities or context they refer to from the conversation history. If the query is already clear, output it unchanged.
-Task 2: Extract the primary entity (project, person, or organization) from the resolved query. If there is no clear entity, output "None".
-Task 3: Classify the query type into one of these categories:
-  - "relationship": Asking how people/entities relate to each other ("How is X related to Y?", "What's the connection between X and Y?")
-  - "status_update": Asking for an update or progress on something ("What's the status of X?", "Give me an update on X")
-  - "historical": Asking about past events or activities ("What happened with X?", "What did X say about Y?")
-  - "schedule": Asking about calendar, meetings, or timing ("When is X?", "What meetings do I have?")
-  - "people": Asking about people in the network ("Who is X?", "Tell me about X")
-  - "general": Default — anything else
-
-{anchor_context}
-
-Output JSON format exactly like this:
-{{
-  "resolved_query": "...",
-  "primary_entity": "...",
-  "query_type": "relationship|status_update|historical|schedule|people|general"
-}}
-
-CONVERSATION HISTORY:
-{conversation_history if conversation_history else "None"}
-
-Query: {query}"""
 
 
 def new_anaphora_prompt(anchor_context: str, context: str, query: str) -> str:

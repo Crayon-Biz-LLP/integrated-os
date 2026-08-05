@@ -20,7 +20,7 @@ This is the system's "ears." It handles real-time communication from Telegram.
 
     Stealth Routing: Automatically assigns inputs to specific entities (e.g., SOLVSTRAT, CRAYON, PERSONAL) using a "Stealth Status" report that confirms logging without cluttering the chat with technical metadata.
 
-    Intent Classification: Uses gemini-3.1-flash-lite to distinguish between a "Task", "Note", or "Noise". Also utilizes real-time Incremental Entity Extraction to update the Knowledge Graph during ingestion.
+    Intent Classification: Uses gemini-3.5-flash-lite to distinguish between a "Task", "Note", or "Noise". Also utilizes real-time Incremental Entity Extraction to update the Knowledge Graph during ingestion.
 
 2. core/pulse/engine.py (The Engine)
 

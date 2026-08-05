@@ -93,8 +93,7 @@ async def test_bare_url_shortcircuit_calls_handle_confident_note():
             },
         }
 
-        with patch("core.webhook.handler.format_history_for_prompt"):
-            res = await process_webhook(fake_update)
+        res = await process_webhook(fake_update)
 
         assert res.get("success") is True
         mock_note.assert_awaited_once()
@@ -104,8 +103,7 @@ async def test_bare_url_shortcircuit_calls_handle_confident_note():
 @pytest.mark.asyncio
 async def test_non_url_message_does_not_shortcircuit():
     with patch("core.webhook.handler.classify_intent", new_callable=AsyncMock) as mock_classify, \
-         patch("core.webhook.handler.route_by_intent", new_callable=AsyncMock) as mock_route, \
-         patch("core.webhook.handler.format_history_for_prompt") as mock_fmt:
+         patch("core.webhook.handler.route_by_intent", new_callable=AsyncMock) as mock_route:
 
         mock_classify.return_value = {
             "intent": "TASK", "confidence": 0.95,
@@ -113,7 +111,6 @@ async def test_non_url_message_does_not_shortcircuit():
             "entity": "ASHRAYA", "time_context": None,
         }
         mock_route.return_value = None
-        mock_fmt.return_value = ""
 
         fake_update = {
             "message": {
@@ -179,15 +176,11 @@ def test_classify_prompt_contains_url_guard():
 
 @pytest.mark.asyncio
 async def test_bare_url_shortcircuit_independent_of_history():
-    conversation_history = (
-        "CONVERSATION HISTORY:\n"
-        "User: Remind me to get the invoice from the hotel in Varanasi related to the Ashraya team trip.\n"
-        "Rhodey: Varanasi hotel invoice task logged. Now go be a dad."
-    )
+    """Bare URLs always short-circuit to NOTE — transcript context is never
+    read in this path (Direction B: no raw history in the pipeline)."""
 
     with patch("core.webhook.handler.handle_confident_note", new_callable=AsyncMock) as mock_note, \
-         patch("core.webhook.handler.classify_intent", new_callable=AsyncMock) as mock_classify, \
-         patch("core.webhook.handler.format_history_for_prompt", return_value=conversation_history):
+         patch("core.webhook.handler.classify_intent", new_callable=AsyncMock) as mock_classify:
 
         mock_note.return_value = None
 
@@ -214,8 +207,7 @@ async def test_bare_url_shortcircuit_independent_of_history():
 @pytest.mark.asyncio
 async def test_invoice_task_still_goes_through_classifier():
     with patch("core.webhook.handler.classify_intent", new_callable=AsyncMock) as mock_classify, \
-         patch("core.webhook.handler.route_by_intent", new_callable=AsyncMock) as mock_route, \
-         patch("core.webhook.handler.format_history_for_prompt", return_value=""):
+         patch("core.webhook.handler.route_by_intent", new_callable=AsyncMock) as mock_route:
 
         mock_classify.return_value = {
             "intent": "TASK", "confidence": 0.95,
@@ -245,15 +237,8 @@ async def test_invoice_task_still_goes_through_classifier():
 async def test_bare_youtube_url_after_task_thread_routes_to_note():
     """Regression: a bare YouTube (or any non-GitHub) URL must also
     short-circuit — the fix is URL-class-wide, not GitHub-specific."""
-    conversation_history = (
-        "CONVERSATION HISTORY:\n"
-        "User: Remind me to get the invoice from the hotel in Varanasi.\n"
-        "Rhodey: Varanasi hotel invoice task logged."
-    )
-
     with patch("core.webhook.handler.handle_confident_note", new_callable=AsyncMock) as mock_note, \
-         patch("core.webhook.handler.classify_intent", new_callable=AsyncMock) as mock_classify, \
-         patch("core.webhook.handler.format_history_for_prompt", return_value=conversation_history):
+         patch("core.webhook.handler.classify_intent", new_callable=AsyncMock) as mock_classify:
 
         mock_note.return_value = None
 
@@ -283,8 +268,7 @@ async def test_url_with_extra_instruction_does_not_shortcircuit():
     this repo and tell me what it does") must NOT short-circuit — it needs
     the LLM to interpret intent."""
     with patch("core.webhook.handler.classify_intent", new_callable=AsyncMock) as mock_classify, \
-         patch("core.webhook.handler.route_by_intent", new_callable=AsyncMock) as mock_route, \
-         patch("core.webhook.handler.format_history_for_prompt", return_value=""):
+         patch("core.webhook.handler.route_by_intent", new_callable=AsyncMock) as mock_route:
 
         mock_classify.return_value = {
             "intent": "QUERY", "confidence": 0.92,

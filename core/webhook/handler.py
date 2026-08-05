@@ -9,7 +9,7 @@ from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.telemetry import emit_observation
 from core.lib.decision_audit import set_decision_chain_id, log_decision, DecisionStage
 from core.lib.query_timer import start_timer, mark, report
-from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_history_for_prompt, get_thread_summary, format_classify_context, _fresh_anchor
+from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_classify_context, _fresh_anchor
 from core.actions import capture_session_id, capture_response
 from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
 from core.lib.rhodey_voice import ok, fail, ack_merged, ack_rejected, ack_undone, ack_verified
@@ -1241,9 +1241,8 @@ async def process_webhook(update: dict):
             return {"success": True}
 
         if text.strip().lower() in ('/today', '/brief', '/day'):
-            history_text = format_history_for_prompt(history)
             log_exchange(session_id, 'user', 'DAILY_BRIEF', text, chat_id, metadata={"active_anchor": active_anchor} if active_anchor else None)
-            reply = await handle_daily_brief(text, chat_id, session_id=session_id, conversation_history=history_text)
+            reply = await handle_daily_brief(text, chat_id, session_id=session_id)
             if reply:
                 capture_response(reply)
             return {"success": True}
@@ -1251,9 +1250,8 @@ async def process_webhook(update: dict):
         if text.startswith('?'):
             query = text[1:].strip()
             if query:
-                history_text = format_history_for_prompt(history)
                 log_exchange(session_id, 'user', 'QUERY', text, chat_id, metadata={"active_anchor": active_anchor} if active_anchor else None)
-                reply = await interrogate_brain(query, chat_id, session_id=session_id, conversation_history=history_text, active_anchor=active_anchor)
+                reply = await interrogate_brain(query, chat_id, session_id=session_id, active_anchor=active_anchor)
                 if reply:
                     capture_response(reply)
                 return {"success": True}
@@ -1269,8 +1267,7 @@ async def process_webhook(update: dict):
             
             # 1. Run classifier to get entity extraction
             context = await get_recent_context(limit=2)
-            thread_summary = get_thread_summary(session_id)
-            classify_context_text = format_classify_context(history, thread_summary=thread_summary, active_anchor=active_anchor)
+            classify_context_text = format_classify_context(history, active_anchor=active_anchor)
             classification = await classify_intent(note_content, context, ist_hour=now.hour, core_json=core_json, conversation_history=classify_context_text)
             
             # 2. Lock intent and confidence
@@ -1344,8 +1341,7 @@ async def process_webhook(update: dict):
                 await send_telegram(chat_id, "Failed to dismiss practice. Try again.")
             return {"success": True}
 
-        thread_summary = get_thread_summary(session_id)
-        classify_context_text = format_classify_context(history, thread_summary=thread_summary, active_anchor=active_anchor)
+        classify_context_text = format_classify_context(history, active_anchor=active_anchor)
 
         # Start anaphora resolution NOW — it doesn't depend on classify result,
         # so it runs concurrently with classify + context assembly (~5s saved).

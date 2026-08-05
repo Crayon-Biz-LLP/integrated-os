@@ -21,7 +21,6 @@ from core.services.push_notification import push_data_content
 from core.services.google_service import get_tasks_service
 from core.lib.audit_logger import info, warning, error, audit_log_sync
 from core.lib.temporal_lineage import detect_drift
-from core.lib.conversation import get_or_create_session, format_history_for_prompt
 from core.lib.redis_cache import acquire_lock, release_lock
 from core.decisions import record_decision
 from core.pulse.models import PulseOutput
@@ -364,17 +363,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             audit_log_sync("pulse", "INFO", str(health_report))
         except Exception as e:
             warning("pulse", f"Heartbeat/Health check failed: {e}", format_error(e))
-
-        # ── Conversation history ──
-        conversation_history = ""
-        try:
-            pulse_chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
-            if pulse_chat_id:
-                session_id, hist_pairs, active_anchor = get_or_create_session(pulse_chat_id)
-                if hist_pairs:
-                    conversation_history = format_history_for_prompt(hist_pairs)
-        except Exception as e:
-            warning("pulse", f"Conversation history fetch failed: {e}")
 
         # ── Batch enrichment ──
         try:
@@ -934,7 +922,6 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
 
         from core.pulse.models import BriefingContext
         ctx = BriefingContext(
-            conversation_history=conversation_history,
             season_config=season_config,
             briefing_mode=briefing_mode,
             current_time_str=current_time_str,
