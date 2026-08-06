@@ -136,18 +136,7 @@ This means a query like `?what do I know about Qhord` returns both vector memori
 
 ## Journal Entity Mapping
 
-When journal entries are processed by `archive_ingest.py`, the `graphify()` function creates explicit relationship edges:
-
-```python
-ENTITY_MAPPINGS = {
-    "Solvstrat": ["solvstrat"],
-    "Crayon": ["crayon"],
-    "Sunju": ["sunju"],
-    "Jaden": ["jaden", "jeffery"],
-    "Church": ["church", "ashraya"],
-    "₹30L Debt": ["debt", "30l"],
-}
-```
+When journal entries are processed by `archive_ingest.py`, the `graphify()` function creates explicit relationship edges. The entity→keyword mapping is read from the tenant's `core_config` row (`get_entity_mappings()`, per-tenant; M6 de-personalization — no hardcoded entities in code, `DEFAULT_ENTITY_MAPPINGS` is only the tenant #1 legacy fallback).
 
 For each entity mentioned in the text:
 - Journal mentions "Solvstrat" → `Danny --works_at--> Solvstrat` edge
