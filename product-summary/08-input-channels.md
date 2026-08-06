@@ -22,7 +22,10 @@ Danny journals using a Google Form with 35 fields. The responses populate a Goog
 4. Maps entry type via `MEMORY_TYPE_MAPPING`: Prophecy / Psalm / Journal / Prayer / Sermon
 5. Generates an embedding via Gemini
 6. Inserts into `memories` with `memory_type='archive'` and all metadata preserved
-7. Calls `graphify()` — scans text against `ENTITY_MAPPINGS` (Solvstrat, Crayon, Qhord, Sunju, Jaden, Church) and creates typed graph edges
+7. Calls `graphify()` — scans text against the per-tenant entity→keyword
+   mapping (`get_entity_mappings()`, read from `core_config` once per run;
+   M6 de-personalization — no hardcoded Danny entities in code) and creates
+   typed graph edges
 
 ### Relationship Graph from Journal
 

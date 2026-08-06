@@ -10,6 +10,10 @@ repomix-output.xml
 outlook_tokens.json
 config.json
 data/
+
+# Database backups — full dump of the production DB (never commit)
+backups/
+*.dump
 .opencode/
 .codegraph/
 **/__pycache__/
