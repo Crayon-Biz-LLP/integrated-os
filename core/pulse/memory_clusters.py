@@ -18,11 +18,11 @@ import hashlib
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.retrieval.ppr import personalized_pagerank, build_adjacency_from_edges, normalize_scores
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 # ── Constants ──────────────────────────────────────────────────
 SEED_WEIGHT_THRESHOLD = 0.2          # Minimum seed weight for PPR seeding

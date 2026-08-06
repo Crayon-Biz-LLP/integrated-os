@@ -14,7 +14,7 @@ Sweeps restored (from the old architecture):
 
 import json
 from datetime import datetime, timezone, timedelta
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.retrieval.config import config as retrieval_config
 from core.retrieval.pipeline import process_pending_index_jobs, retry_failed_index_runs
@@ -54,7 +54,7 @@ async def run_retry_failed_runs(max_retries: int = 3, batch_size: int = 10) -> i
 
 def run_raw_dump_cleanup() -> int:
     """Mark stale staged/pending raw dumps >24h as abandoned."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         stale = supabase.table("raw_dumps") \
@@ -79,7 +79,7 @@ def run_graph_edge_expiry(expiry_days: int = 90) -> int:
     expiry_days where is_current=True. Falls back to inline UPDATE if the
     expire_stale_graph_edges RPC doesn't exist.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=expiry_days)).isoformat()
         # Try RPC first
@@ -109,7 +109,7 @@ def run_weekly_housekeeping() -> dict:
     Idempotent: guarded by audit_log 20h dedup check.
     Returns summary dict.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     now = datetime.now(timezone.utc)
 
     try:

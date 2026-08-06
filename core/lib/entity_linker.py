@@ -13,7 +13,7 @@ Architecture:
 
 from dataclasses import dataclass, field
 from typing import Optional, List
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.entity_detector import detect_entities
 
@@ -98,7 +98,7 @@ def _write_miss_signal(
     if not planner_org_name:
         return  # Silent skip: no explicit org resolution attempt — not a real miss
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         signal_data = {
             "org_name": f"[unresolved_org={planner_org_name}] {planner_proj_name or text[:50]}",
             "source": "entity_linker",

@@ -1,16 +1,16 @@
 from core.llm.constants import CLASSIFICATION_MODEL
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.llm import get_embedding
 import re
 import json
 import asyncio
 import httpx
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 async def fetch_url_metadata(url: str):
@@ -58,7 +58,9 @@ async def batch_enrich_resources():
     if not enrichment_data:
         return []
 
-    prompt = f"""You are Danny's Trusted Partner. For each resource below, provide a strategic_note (one sentence on strategic value) and category.
+    from core.services.user_settings import resolve_user_name
+    _user_name = resolve_user_name()
+    prompt = f"""You are {_user_name}'s Trusted Partner. For each resource below, provide a strategic_note (one sentence on strategic value) and category.
 
     Categories: COMPETITOR, TECH_TOOL, LEAD_POTENTIAL, MARKET_TREND, ASHRAYA, PERSONAL
     Rules:
@@ -89,8 +91,9 @@ async def batch_enrich_resources():
         )
         parsed = response.parse_json()
 
-        ist_offset = timezone(timedelta(hours=5, minutes=30))
-        enriched_at = datetime.now(ist_offset).isoformat()
+        # M2/M6: per-tenant timezone (fallback IST) — never a hardcoded offset.
+        from core.lib.time_utils import get_user_timezone
+        enriched_at = datetime.now(get_user_timezone()).isoformat()
 
         for item in parsed:
             for ed in enrichment_data:

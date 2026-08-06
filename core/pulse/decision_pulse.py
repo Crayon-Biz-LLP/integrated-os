@@ -17,9 +17,35 @@ from core.lib.audit_logger import audit_log_sync
 from core.pulse.llm import supabase
 from core.lib.redis_cache import acquire_lock, release_lock
 from core.pulse.run_logger import create_pulse_run, complete_pulse_run
+from core.services.db import (
+    active_user_ids, core_config_upsert, resolve_telegram_chat_id, tenant_scope,
+)
 
 
 async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
+    """(M4) Cron fan-out: iterate all active users, one tenant-scoped pass
+    each. Cron traffic carries no API key; each active user gets their own
+    pending-approvals cycle under tenant_scope(). A per-tenant failure is
+    isolated and reported without aborting the other tenants.
+
+    Legacy (pre-db/78, or no active users): runs once unscoped, exactly as
+    the pre-M4 decision pulse did.
+    """
+    uids = active_user_ids()
+    if not uids:
+        return await _process_decision_pulse_impl(auth_secret, trigger)
+    results = []
+    for uid in uids:
+        try:
+            with tenant_scope(uid):
+                results.append(await _process_decision_pulse_impl(auth_secret, trigger))
+        except Exception as e:
+            audit_log_sync("decision_pulse", "ERROR", f"Decision pulse failed for tenant {uid}: {e}")
+            results.append({"tenant": uid, "error": str(e)})
+    return {"success": True, "tenants": len(uids), "results": results}
+
+
+async def _process_decision_pulse_impl(auth_secret: str = None, trigger: str = "api"):
     """List pending approvals from messages, graph nodes, and edges.
 
     Fetches pending items, auto-approves high-confidence ones via pattern
@@ -265,10 +291,12 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
                     body=push_body,
                     data={"type": "decision", "content": push_data_content(push_body)},
                 )
-                supabase.table('core_config').upsert({
+                # M4: core_config PK is (owner_id, key) — the fingerprint is
+                # per-tenant rate limiting (each user's own last-push state).
+                core_config_upsert(supabase, {
                     'key': 'last_decision_push_fp',
                     'content': current_fp
-                }, on_conflict='key').execute()
+                }).execute()
             else:
                 audit_log_sync("decision_pulse", "INFO", "Rate-limited decision push — no changes since last push")
         except Exception as push_err:
@@ -278,9 +306,13 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
         auto_total = len(auto_approved_ids) + len(auto_approved_graph_ids) + len(auto_approved_edge_ids)
         digest_line = f"🤖 *Auto-processed:* {len(auto_approved_ids)} channel items, {len(auto_approved_graph_ids)} graph nodes, {len(auto_approved_edge_ids)} graph edges" if auto_total > 0 else None
 
+        from core.services.user_settings import resolve_user_name, current_user_id
+        # M4: per-tenant greeting — the opener must name THIS user, not the
+        # env/default name (a cross-tenant personalization leak otherwise).
+        _user_name = resolve_user_name(current_user_id())
         openers = [
-            "Danny, you got some pending decisions based out of your emails, call logs and beeper messages — your call on each?",
-            "Danny, you got some pending decisions from emails, calls, and beeper — your call on each?",
+            f"{_user_name}, you got some pending decisions based out of your emails, call logs and beeper messages — your call on each?",
+            f"{_user_name}, you got some pending decisions from emails, calls, and beeper — your call on each?",
             "Emails, call extracts, and texts waiting on a nod. Tap to approve or drop.",
         ]
         lines = [random.choice(openers), ""]
@@ -352,7 +384,9 @@ async def process_decision_pulse(auth_secret: str = None, trigger: str = "api"):
 
         message = "\n".join(lines).strip()
 
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        # M4: per-tenant Telegram chat (None for app-only tenants — the
+        # `if telegram_chat_id and message:` guard below skips the send).
+        telegram_chat_id = resolve_telegram_chat_id()
         send_success = False
 
         if telegram_chat_id and message:

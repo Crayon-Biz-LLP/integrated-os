@@ -9,7 +9,7 @@ with a first-class decision model that supports:
 """
 
 from datetime import datetime, timezone, timedelta
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 
 
@@ -29,7 +29,7 @@ def record_decision(
     reversible: bool = True,
 ) -> dict:
     """Record a new decision. Returns the inserted row."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     data = {
         "decision_type": decision_type,
         "title": title,
@@ -75,7 +75,7 @@ def record_decision(
 
 def supersede_decision(decision_id: int, title: str = None, rationale: str = None) -> bool:
     """Mark an active decision as superseded. Optionally record the new decision."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         supabase.table("decisions").update({
             "status": "superseded"
@@ -103,7 +103,7 @@ def supersede_decision(decision_id: int, title: str = None, rationale: str = Non
 
 def reverse_decision(decision_id: int, rationale: str = None) -> bool:
     """Mark a decision as reversed (the decision was wrong)."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         update_data = {"status": "reversed"}
         supabase.table("decisions").update(update_data).eq("id", decision_id).execute()
@@ -122,7 +122,7 @@ def get_active_decisions(
     limit: int = 20,
 ) -> list:
     """Fetch active decisions, optionally filtered."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         query = supabase.table("decisions").select("*").eq("status", "active")
         if decision_type:
@@ -140,7 +140,7 @@ def get_active_decisions(
 
 def get_recent_decisions(limit: int = 10) -> list:
     """Fetch the most recent decisions (any status)."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         res = supabase.table("decisions").select("*").order(
             "decided_at", desc=True
@@ -153,7 +153,7 @@ def get_recent_decisions(limit: int = 10) -> list:
 
 def expire_stale_decisions() -> int:
     """Mark expired decisions (past their expires_at). Returns count expired."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     now_iso = datetime.now(timezone.utc).isoformat()
     try:
         res = supabase.table("decisions").update({"status": "expired"}).eq(

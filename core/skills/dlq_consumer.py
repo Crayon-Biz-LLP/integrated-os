@@ -10,7 +10,7 @@ Phase C of the architecture overhaul (P5).
 
 import json
 from datetime import datetime, timezone, timedelta
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 
 
@@ -24,7 +24,7 @@ async def process_dlq(max_items: int = 5, max_retries: int = 3) -> dict:
     Returns:
         dict with keys: processed, succeeded, failed, escalated.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     now = datetime.now(timezone.utc)
 
     # Query DLQ items from audit_logs

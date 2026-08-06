@@ -7,10 +7,10 @@ and merge_candidate_id on the pending node, so the Decisions UI
 can show it as an automatic merge candidate.
 """
 import sys
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.graph_rules import find_similar_node
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 def dedupe_pending():
     from core.lib.node_tables import insert_merge_proposal

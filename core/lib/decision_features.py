@@ -12,7 +12,7 @@ Provides:
 """
 
 from datetime import datetime, timezone, timedelta
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 
 
 def _entity_lifecycle(entity_name: str) -> str:
@@ -34,7 +34,7 @@ def _entity_lifecycle(entity_name: str) -> str:
         return "unknown"
     
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         ist_offset = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist_offset)
         
@@ -99,7 +99,7 @@ def _infer_rejection_reason(msg: dict) -> str:
     sender = (msg.get('sender_name') or '').strip()
     if sender and len(sender) > 1:
         try:
-            supabase = get_supabase()
+            supabase = tenant_aware_client()
             person_check = supabase.table('graph_nodes').select('id').eq('type', 'person').ilike('label', sender).eq('is_current', True).limit(1).execute()
             if not person_check.data:
                 return "unknown_sender"
@@ -111,7 +111,7 @@ def _infer_rejection_reason(msg: dict) -> str:
     project = (msg.get('suggested_project') or '').strip()
     if project:
         try:
-            supabase = get_supabase()
+            supabase = tenant_aware_client()
             project_check = supabase.table('graph_nodes').select('id')\
                 .eq('type', 'organization')\
                 .ilike('label', project)\
@@ -127,7 +127,7 @@ def _infer_rejection_reason(msg: dict) -> str:
     if body:
         try:
             from core.lib.duplicate_guard import check_duplicate
-            supabase = get_supabase()
+            supabase = tenant_aware_client()
             tasks = supabase.table('tasks').select('id, title')\
                 .eq('is_current', True)\
                 .not_.in_('status', ['done', 'cancelled'])\

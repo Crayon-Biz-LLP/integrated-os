@@ -1,13 +1,13 @@
 import asyncio
 from typing import Optional, Dict
 from datetime import datetime, timezone
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.retrieval.schema import PhraseNode, RetrievalEdge, AliasEdge, PassagePhraseLink
 from core.retrieval.normalizer import classify_node_type
 from core.retrieval.config import INDEX_VERSION
 from core.lib.audit_logger import audit_log_sync
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 async def upsert_phrase_node(node: PhraseNode) -> Optional[int]:

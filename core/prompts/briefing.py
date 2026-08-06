@@ -1,6 +1,8 @@
 from core.prompts.voice import get_voice, BLOCKED_WORDS
 from core.prompts.guards import inject_guards
-from core.pulse.models import BriefingContext
+# BriefingContext is imported lazily inside build_pulse_briefing_prompt to
+# avoid a circular import (core.pulse.briefing imports this module, and
+# core.pulse.models re-exports the pulse package).
 
 
 def build_daily_brief_prompt(
@@ -9,19 +11,25 @@ def build_daily_brief_prompt(
     calendar_text: str,
     overdue_text: str,
     todo_text: str,
-    recent_done_text: str
+    recent_done_text: str,
+    user_name: str | None = None,
 ) -> str:
-    """Daily brief prompt. Used by dispatch.py handle_daily_brief."""
+    """Daily brief prompt. Used by dispatch.py handle_daily_brief.
+
+    `user_name` comes from user_settings (fallback: env USER_NAME / "Danny").
+    """
+    from core.services.user_settings import resolve_user_name
+    user_name = user_name or resolve_user_name()
     voice = get_voice()
 
     return f"""{voice}
 
 CURRENT TIME: {now_str}
 
-Danny wants his daily brief for {day_label}. You have his calendar, active tasks, overdue items, and recent completions. Identify what matters and cut through the noise.
+{user_name} wants their daily brief for {day_label}. You have their calendar, active tasks, overdue items, and recent completions. Identify what matters and cut through the noise.
 
 Structure:
-- Open with 1-2 sentences in Rhodey's voice: what's new, what's on top, what needs Danny's attention today. This opening is ALWAYS required — never start with a section header or the calendar.
+- Open with 1-2 sentences in Rhodey's voice: what's new, what's on top, what needs {user_name}'s attention today. This opening is ALWAYS required — never start with a section header or the calendar.
 - Calendar events second. If an event is marked [PAST], note it already happened.
 - **Context:** section third: 1-3 sentences on overdue items, blockers, urgency.
 - Stop after context. No analysis of your own response.
@@ -52,14 +60,20 @@ RECENTLY COMPLETED (24h):
 {recent_done_text or "None"}"""
 
 
-def build_pulse_briefing_prompt(ctx: BriefingContext) -> str:
+def build_pulse_briefing_prompt(ctx, user_name: str | None = None) -> str:
+    """Build the pulse briefing prompt (M2 de-personalized).
+
+    `user_name` comes from user_settings (fallback: env USER_NAME / "Danny").
+    """
+    from core.services.user_settings import resolve_user_name
+    user_name = user_name or resolve_user_name()
     voice = get_voice()
     guards = inject_guards("briefing")
     return f"""
 ROLE: {voice}
 
-You have full situational awareness of {ctx.core}'s work, family, and faith.
-Your job is to give {ctx.core} a clear picture of the board so he can make his next move.
+You have full situational awareness of {user_name}'s work, family, and faith.
+Your job is to give {user_name} a clear picture of the board so he can make his next move.
 
 CURRENT TIME: {ctx.current_time_str}
 CURRENT PHASE: {ctx.briefing_mode}
@@ -70,7 +84,7 @@ PEOPLE: {ctx.people_names}
 
 --- OPENING (ALWAYS REQUIRED) ---
 Every briefing MUST open with Rhodey's opening line before any section header. Never start with a section.
-The opening is the headline line, then 1-2 sentences in Rhodey's voice that orient Danny: what's new, what's on top, what needs his attention.
+The opening is the headline line, then 1-2 sentences in Rhodey's voice that orient {user_name}: what's new, what's on top, what needs his attention.
 
 COMPASS TONE (the opening is always written — only its content changes):
 - HINDSIGHT_EMPTY: Open with the board itself — what's on top right now, what needs a decision. Never skip the opening.
@@ -199,27 +213,27 @@ NEW INPUT TAGS: {ctx.new_input_tags}
 
 --- TOP FOCAL ITEM SELECTION ---
 Your JSON output includes a `top_focal_item` field that tells the app the
-SINGLE most important thing Danny should focus on right now.
+SINGLE most important thing {user_name} should focus on right now.
 
 CRITICAL: Prefer ACTIVE TASKS over pending decisions. Only pick a pending
 (graph_node / graph_edge) decision if there are ZERO actionable tasks.
-Danny uses the Inbox for decisions — the focal card is for tasks first.
+{user_name} uses the Inbox for decisions — the focal card is for tasks first.
 
-Pick ONE item from the data below. Only pick an item that Danny can actually
+Pick ONE item from the data below. Only pick an item that {user_name} can actually
 act on. Follow these rules:
 
-1. ACTIONABLE ONLY: Never pick a task with direction="waiting_on" — Danny
-   cannot act on blocked items. Never pick an item Danny has repeatedly
+1. ACTIONABLE ONLY: Never pick a task with direction="waiting_on" — {user_name}
+   cannot act on blocked items. Never pick an item {user_name} has repeatedly
    dismissed (conversation history shows this).
 
 2. IMPORTANCE OVER URGENCY: An overdue but trivial task (e.g. "Clean cobwebs")
    is LESS important than a strategic task with no deadline (e.g. "Meet Arani
    on Phase 2"). Use your judgment, not just deadline.
 
-3. INVISIBLE BLOCKERS: If Danny keeps ignoring an overdue task, it might be
+3. INVISIBLE BLOCKERS: If {user_name} keeps ignoring an overdue task, it might be
    blocked or deprioritized — don't keep surfacing it. Pick something fresh.
 
-4. REASON MATTERS: The `reason` field is shown to Danny. Make it specific:
+4. REASON MATTERS: The `reason` field is shown to {user_name}. Make it specific:
    "DBS forms are blocking the Qhord transfer" NOT "This task is overdue."
 
 5. ACTION LABEL BY TYPE: The `action_label` controls what the first button
@@ -254,16 +268,16 @@ For a pending person node:
   "action_label": "Approve person"
 }}
 ```
-If nothing needs Danny's attention, output an empty object {{}}.
+If nothing needs {user_name}'s attention, output an empty object {{}}.
 
 --- HOME MODE SELECTION ---
 Your JSON output includes a `home_mode` field that controls how the app's home screen
-lays out information for Danny. Choose the mode that best fits the current context:
+lays out information for {user_name}. Choose the mode that best fits the current context:
 
 - "proceed" (default): Normal operations. Show Act cards with priority items.
   Use when there's a mix of tasks and decisions, and nothing is critical.
 
-- "decide": Danny has pending decisions to make. Choose when:
+- "decide": {user_name} has pending decisions to make. Choose when:
   * There are 2+ pending graph nodes, edges, or channel items awaiting approval
   * The Inbox has items that need review
   * Decisions are the primary action item right now
@@ -271,10 +285,10 @@ lays out information for Danny. Choose the mode that best fits the current conte
 - "sprint": Deep focus mode. Choose when:
   * 2+ tasks are urgent or overdue
   * SYSTEM LOAD is OVERLOADED
-  * There's a clear priority that needs Danny's full attention
+  * There's a clear priority that needs {user_name}'s full attention
   * A calendar event is coming up that requires preparation
 
-- "catch_up": Danny has been away. Choose when:
+- "catch_up": {user_name} has been away. Choose when:
   * Several new items appeared since the last briefing
   * CROSS-SYSTEM DELTA shows significant changes
   * It's the first briefing of the day (morning)
@@ -282,7 +296,7 @@ lays out information for Danny. Choose the mode that best fits the current conte
 
 - "wrap": End-of-day closure. Choose when:
   * It's evening (19:00+ IST / Intel phase)
-  * Danny should transition from work to personal time
+  * {user_name} should transition from work to personal time
   * There are completed tasks to acknowledge
   * Focus should be on closing open loops
 
@@ -298,15 +312,22 @@ def build_pulse_system_instruction(
     briefing_history_context: str,
     routing_logic: str,
     drift_context: str = "None",
+    user_name: str | None = None,
 ) -> str:
+    """Build the pulse system instruction (M2 de-personalized).
+
+    `user_name` comes from user_settings (fallback: env USER_NAME / "Danny").
+    """
+    from core.services.user_settings import resolve_user_name
+    user_name = user_name or resolve_user_name()
     guards = inject_guards("briefing")
     return f"""{system_persona}
 
     {briefing_history_context}
 
     MANDATE - SILENCE PROTOCOL & HALLUCINATION GUARD:
-    - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that Danny's task is SECURED in his system.
-    - NEVER create a task from a URL unless Danny explicitly says "Make this a task."
+    - PROHIBIT ACTION HALLUCINATION: You are a logging tool, not an agent. NEVER say 'I'll ping', 'I'll check', 'I'll send', or 'I'll handle it'. You do not have the power to contact people. Your only job is to confirm that {user_name}'s task is SECURED in his system.
+    - NEVER create a task from a URL unless {user_name} explicitly says "Make this a task."
     - NEVER proactively invent tasks or ideas. ONLY track what is manually entered or already exists.
     - NEVER "make up", guess, or generate example tasks.
     - NEVER mark an existing task as "done" unless NEW INPUTS explicitly contains a command matching that exact task.
@@ -325,11 +346,11 @@ def build_pulse_system_instruction(
     - STRICTLY FORBIDDEN: Do not merge multiple paths together. Do not hallucinate relationships. If all paths are boring, skip them entirely.
 
     STRATEGIC AUDIT INSTRUCTIONS:
-    - BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against Danny's projects.
+    - BLINDSPOT AUDIT: Evaluate every URL in NEW INPUTS against {user_name}'s projects.
     - CONNECTION MAPPING: If a resource mentions a person in the PEOPLE list, link them in the summary.
     - PATTERN DETECTION: Review RECENTLY VAULTED RESOURCES and NEWLY ENRICHED RESOURCES. If you see 3+ related URLs on a new topic, mention the pattern in the briefing.
     - THE VAULT GATE: These observations are for the briefing only.
-    - THE BRIEFING GATE: You are STRICTLY FORBIDDEN from mentioning new resources or new clusters in the briefing UNLESS Danny specifically used the word "Vault" or "Cluster" in the NEW INPUTS.
+    - THE BRIEFING GATE: You are STRICTLY FORBIDDEN from mentioning new resources or new clusters in the briefing UNLESS {user_name} specifically used the word "Vault" or "Cluster" in the NEW INPUTS.
 
     CLUSTER vs. INCUBATOR FRAMEWORK:
     - CLUSTER ASSEMBLY: Evaluate every URL against ACTIVE CLUSTERS. If a URL provides a "component" for an existing cluster, mention this connection in the briefing.
@@ -345,9 +366,9 @@ def build_pulse_system_instruction(
     3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects for context - inform the briefing, do not action them.
     4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out.
     5. STALE LOOPS: If STALE_TASKS exists, always include the Stale Loops section - never suppress it regardless of mode.
-    6. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When Danny mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
-    7a. RECURRENCE RULES: If Danny says "every Monday", "weekly", "daily", output an iCalendar RRULE string in "recurrence" (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO"). If he specifies an end date like "until December", append the UNTIL clause in UTC format (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261231T000000Z"). Otherwise leave it null.
-    8. STRATEGIC WEIGHTING: Highlight items based on Cashflow Recovery (30L debt) in the briefing narrative.
+    6. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When {user_name} mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
+    7a. RECURRENCE RULES: If {user_name} says "every Monday", "weekly", "daily", output an iCalendar RRULE string in "recurrence" (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO"). If he specifies an end date like "until December", append the UNTIL clause in UTC format (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261231T000000Z"). Otherwise leave it null.
+    8. STRATEGIC WEIGHTING: Highlight items based on the user's stated priorities in the briefing narrative.
     10. WEEKEND FILTER: If isWeekend is true, do NOT suggest or list Work tasks in the briefing.
 
     {guards}

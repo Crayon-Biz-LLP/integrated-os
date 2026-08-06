@@ -2,7 +2,7 @@ import uuid
 import hashlib
 from typing import List, Optional, Dict
 from core.actions.models import Action
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.state_machines import guard_require_valid_transition
 from core.webhook.telegram import send_telegram
@@ -22,7 +22,7 @@ async def _detect_new_orgs_and_create_pending(text: str, chat_id: int, cached_en
     
     Returns: [{label, pending_id}] for each new or previously-pending org.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     
     if cached_entities is not None:
         entities = cached_entities
@@ -96,7 +96,7 @@ async def _save_fallback_note(text: str, chat_id: int, entity: str = None, sourc
         from datetime import datetime, timezone
         from core.pulse.entity_extractor import extract_and_link_entities
 
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         embedding = (await get_embedding(text)).vector
         embed_valid = bool(embedding and any(embedding))
         mem_res = supabase.table("memories").insert({
@@ -130,7 +130,7 @@ def validate_operation(action: Action) -> Optional[str]:
     Returns None if valid, or an error message string if invalid.
     Catches: missing target, nonexistent task, unparseable dates.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
 
     # Operations that require an existing task
     if action.operation in ["close_task", "suppress_instance", "cancel_recurring",
@@ -297,7 +297,7 @@ async def execute_planned_actions(
                 await send_telegram(chat_id, "I processed the input but couldn't identify any clear actions or notes to extract.")
         return
         
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
 
     # Guard 2c: Resolve entity from active_anchor for correct org routing
     resolved_entity = _resolve_entity_from_anchor(entity, active_anchor)

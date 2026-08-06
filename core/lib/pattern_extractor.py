@@ -9,7 +9,7 @@ Provides:
 
 from core.lib.telemetry import get_pattern_summary, weekly_synthesis
 from core.lib.audit_logger import audit_log_sync
-from core.services.db import maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 
 
 async def extract_patterns(
@@ -40,10 +40,9 @@ async def detect_drift(subsystem: str) -> list[dict]:
     Each signal includes the direction and magnitude of change.
     """
     try:
-        from core.services.db import get_supabase
         import json
 
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
 
         # Get this week's patterns
         current = await extract_patterns(subsystem, min_observations=3)

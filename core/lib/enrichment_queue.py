@@ -11,10 +11,10 @@ Job types:
 
 import json
 from datetime import datetime, timezone
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 MAX_RETRIES = 3
 
@@ -197,7 +197,7 @@ async def _process_task_graph_enrichment(
         # 3. If task was created without org_id but entity extraction found one, UPDATE it
         if org_candidates and not related_org_id:
             found_org_id = org_candidates[0]
-            supabase = get_supabase()
+            supabase = tenant_aware_client()
             try:
                 task_check = supabase.table('tasks').select('organization_id').eq('id', target_id).limit(1).execute()
                 if task_check.data and task_check.data[0].get('organization_id') is None:

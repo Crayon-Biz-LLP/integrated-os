@@ -2,13 +2,13 @@ import time
 import json
 from typing import List, Optional, Dict, Set
 from datetime import datetime, timezone
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.retrieval.schema import ExplainableBundle
 from core.retrieval.search import associative_retrieve
 from core.retrieval.config import config
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 # ---------------------------------------------------------------------------
 # Default questions (used when no ground-truth labels exist)

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from core.lib.audit_logger import audit_log_sync
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 
 
 def get_active_clarification(chat_id: int, pending_type: str = "node") -> Optional[dict]:
@@ -21,7 +21,7 @@ def get_active_clarification(chat_id: int, pending_type: str = "node") -> Option
 
     Returns the row dict or None if none exists.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         rows = supabase.table("pending_graph_clarifications") \
             .select("*") \
@@ -51,7 +51,7 @@ def set_clarification(chat_id: int, pending_id: int, *,
     Automatically expires any prior active clarifications for the same chat+type,
     then inserts a fresh one. Returns the new row id.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     now = datetime.now(timezone.utc)
     try:
         # Expire any existing active clarifications for this chat+type
@@ -85,7 +85,7 @@ def resolve_clarification(chat_id: int, pending_type: str = "node",
 
     Returns True if any rows were updated.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         res = supabase.table("pending_graph_clarifications") \
             .update({
@@ -175,7 +175,7 @@ def cleanup_expired_clarifications() -> int:
 
     Returns number of rows cleaned up (or -1 if RPC not found).
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         # Try the RPC first
         res = supabase.rpc("cleanup_expired_clarifications").execute()

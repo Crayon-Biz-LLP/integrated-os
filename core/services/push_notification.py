@@ -13,7 +13,7 @@ from google.auth.transport.requests import Request
 import httpx
 
 from core.lib.audit_logger import audit_log_sync
-from core.services.db import get_supabase
+from core.services.db import get_supabase, get_tenant
 
 _SCOPES = ["https://www.googleapis.com/auth/firebase.messaging"]
 
@@ -41,6 +41,18 @@ def push_data_content(text: str, max_bytes: int = _PUSH_CONTENT_MAX_BYTES) -> st
     while cut and (cut[-1] & 0xC0) == 0x80:
         cut = cut[:-1]
     return cut.decode("utf-8", errors="ignore")
+
+
+def scoped_tokens_query(owner_uid: str | None = None):
+    """device_tokens query, owner-scoped when a tenant is active (M4).
+
+    Returns the PostgREST builder (call .execute() on it). No tenant
+    context (legacy pre-db/78, single-user) → all tokens, as before.
+    """
+    q = get_supabase().table("device_tokens").select("token,platform")
+    if owner_uid:
+        q = q.eq("owner_id", owner_uid)
+    return q
 
 
 def _get_fcm_credentials():
@@ -100,12 +112,15 @@ async def send_push_notification(
     project_id = _get_project_id(creds)
     fcm_url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
 
-    # Fetch all registered device tokens (deduped — a device that re-registered
-    # can leave duplicate rows, which would double-notify the user)
+    # Fetch the current tenant's registered device tokens (deduped — a
+    # device that re-registered can leave duplicate rows, which would
+    # double-notify the user). M4: when running under a tenant context
+    # (cron fan-out, webhook scope), only that user's tokens are targeted;
+    # unscoped legacy paths (pre-db/78, single-user) keep querying all.
     supabase = get_supabase()
     tokens = []
     try:
-        tokens_res = supabase.table("device_tokens").select("token,platform").execute()
+        tokens_res = scoped_tokens_query(get_tenant()).execute()
         tokens = tokens_res.data if tokens_res and tokens_res.data else []
     except Exception as e:
         audit_log_sync("push", "WARNING", f"Could not query device_tokens table: {e}")
@@ -173,10 +188,13 @@ async def send_push_notification(
             except Exception as e:
                 audit_log_sync("push", "WARNING", f"FCM send error: {e}")
 
-    # Clean up invalid tokens
+    # Clean up invalid tokens (owner-scoped, matching the read above)
     if invalid_tokens:
         try:
-            supabase.table("device_tokens").delete().in_("token", invalid_tokens).execute()
+            del_q = supabase.table("device_tokens").delete().in_("token", invalid_tokens)
+            if get_tenant():
+                del_q = del_q.eq("owner_id", get_tenant())
+            del_q.execute()
             audit_log_sync("push", "INFO", f"Cleaned up {len(invalid_tokens)} invalid device tokens")
         except Exception as e:
             audit_log_sync("push", "WARNING", f"Failed to clean invalid tokens: {e}")
@@ -230,7 +248,7 @@ async def send_silent_push(data: dict) -> int:
     fcm_url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
 
     supabase = get_supabase()
-    tokens_res = supabase.table("device_tokens").select("token,platform").execute()
+    tokens_res = scoped_tokens_query(get_tenant()).execute()
     tokens = tokens_res.data if tokens_res and tokens_res.data else []
     if not tokens:
         return 0
@@ -279,7 +297,10 @@ async def send_silent_push(data: dict) -> int:
 
     if invalid_tokens:
         try:
-            supabase.table("device_tokens").delete().in_("token", invalid_tokens).execute()
+            del_q = supabase.table("device_tokens").delete().in_("token", invalid_tokens)
+            if get_tenant():
+                del_q = del_q.eq("owner_id", get_tenant())
+            del_q.execute()
         except Exception:
             pass
 

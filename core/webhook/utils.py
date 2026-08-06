@@ -1,4 +1,8 @@
-from core.services.db import get_supabase
+from contextlib import contextmanager
+from core.services.db import (
+    channel_tenant_scope,
+    tenant_aware_client,
+)
 from core.decisions import record_decision
 import os
 import httpx
@@ -8,11 +12,27 @@ from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
 from core.lib.graph_rules import resolve_alias
 
-supabase = get_supabase()
+# M3 sweep: the module-wide binding is now the tenant-aware facade. Every
+# `supabase.table(...)` / `supabase.rpc(...)` call in core/webhook/* flows
+# through it — tenant-scoped (fail-closed) after db/78, legacy unscoped
+# before. Importers keep `from core.webhook.utils import supabase` untouched.
+supabase = tenant_aware_client()
+
+
+@contextmanager
+def webhook_tenant_scope():
+    """(M3) webhook alias of the generic channel_tenant_scope() — kept so
+    the webhook module's entry wrappers read naturally. Same semantics:
+    no-op when a tenant context is already active; pre-db/78 resolves to
+    None → runs unscoped legacy, exactly as before.
+    """
+    with channel_tenant_scope():
+        yield
 
 
 async def process_channel_pending_decision(channel: str, pending_id: int, decision: str, auto_decided: bool = False, rejection_context: str = None) -> dict:
     """Shared handler for processing approve/reject for channel-specific pending messages (teams, whatsapp, call).
+    (M3: wrapped in the channel tenant scope.)
     
     Args:
         channel: 'call', 'whatsapp', 'teams'
@@ -23,6 +43,12 @@ async def process_channel_pending_decision(channel: str, pending_id: int, decisi
                           (e.g., "already handled", "wrong project"). Captured from
                           Telegram shortcode trailing text like "c42 reject, handled offline".
     """
+    with webhook_tenant_scope():
+        return await _process_channel_pending_decision(channel, pending_id, decision, auto_decided, rejection_context)
+
+
+async def _process_channel_pending_decision(channel: str, pending_id: int, decision: str, auto_decided: bool = False, rejection_context: str = None) -> dict:
+    """Inner implementation (M3: tenant scope applied by the public wrapper)."""
     row_res = supabase.table('messages')\
         .select('*')\
         .eq('id', pending_id)\
@@ -168,8 +194,8 @@ async def trigger_github_pulse() -> bool:
             audit_log_sync("webhook", "ERROR", "GITHUB_TOKEN not set")
             return False
 
-        owner = os.getenv("GITHUB_OWNER", "Crayon-Biz-LLP")
-        repo = os.getenv("GITHUB_REPO", "integrated-os")
+        from core.lib.constants import resolve_github_config
+        owner, repo = resolve_github_config()
 
         url = f"https://api.github.com/repos/{owner}/{repo}/dispatches"
 

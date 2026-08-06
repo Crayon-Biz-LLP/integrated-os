@@ -3,15 +3,16 @@ import requests
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from core.services.google_service import get_google_creds, _MemoryCache
+from core.services.google_service import get_cached_service
 from core.skills.outlook_token_helper import refresh_outlook_token
 from core.lib.audit_logger import audit_log_sync
 
 def search_gmail_sent(query: str, limit: int = 5) -> list:
     """Searches Gmail Sent folder for emails matching the query."""
     try:
-        from googleapiclient.discovery import build
-        gmail_service = build('gmail', 'v1', credentials=get_google_creds(), cache=_MemoryCache())
+        gmail_service = get_cached_service('gmail', 'v1')
+        if gmail_service is None:
+            return []
         
         # Build search query
         search_query = f'in:sent {query}' if query else 'in:sent'

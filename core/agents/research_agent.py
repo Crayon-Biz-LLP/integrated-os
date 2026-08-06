@@ -6,21 +6,23 @@ import httpx
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.lib.audit_logger import audit_log_sync
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 async def run_agent():
     print("Research Agent starting...")
 
     if not os.getenv("JINA_API_KEY"):
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        # M6: per-tenant chat id (env fallback for legacy single-user).
+        from core.services.db import resolve_telegram_chat_id
+        telegram_chat_id = resolve_telegram_chat_id()
         if telegram_chat_id:
             await send_telegram(int(telegram_chat_id), "Research Agent: JINA_API_KEY is not set. Agent queue is stalled.")
         print("ERROR: JINA_API_KEY not set. Aborting agent run.")
@@ -59,7 +61,9 @@ async def run_agent():
                     search_response = await client.get(jina_url, headers=headers, timeout=30.0)
                     search_results = search_response.text
 
-                synthesis_prompt = f"""You are Danny's Elite Research Analyst. He delegated this research task: "{task_text}". Read the attached web search results and synthesize a highly actionable, structured dossier. Extract only the signal. No fluff. Return the dossier formatted beautifully in Markdown.
+                from core.services.user_settings import resolve_user_name
+                _user_name = resolve_user_name()
+                synthesis_prompt = f"""You are {_user_name}'s Elite Research Analyst. They delegated this research task: "{task_text}". Read the attached web search results and synthesize a highly actionable, structured dossier. Extract only the signal. No fluff. Return the dossier formatted beautifully in Markdown.
 
 Web Search Results:
 {search_results}"""
@@ -84,7 +88,8 @@ Web Search Results:
                     "embedding": embedding
                 }]).execute()
 
-                telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                from core.services.db import resolve_telegram_chat_id
+                telegram_chat_id = resolve_telegram_chat_id()
                 if telegram_chat_id:
                     task_snippet = task_text[:40] + "..." if len(task_text) > 40 else task_text
                     try:

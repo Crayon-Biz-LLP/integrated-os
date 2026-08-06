@@ -30,6 +30,21 @@ try:
 except Exception:
     supabase = None
 
+
+def _owner_attr() -> str | None:
+    """Owner id from the current tenant context (M4), for attribution.
+
+    audit_logs.owner_id is an attribution-only (nullable) column: rows
+    written inside a tenant scope get stamped so sentinel's per-tenant
+    dedup gates (facade-scoped reads) can match their own markers. Rows
+    written outside any scope stay NULL (global infra, pre-db/78).
+    """
+    try:
+        from core.services.db import get_tenant
+        return get_tenant()
+    except Exception:
+        return None
+
 async def audit_log(service: str, level: str, message: str, metadata: dict = None):
     """
     Write an audit log entry to Supabase audit_logs table.
@@ -53,7 +68,8 @@ async def audit_log(service: str, level: str, message: str, metadata: dict = Non
             "service": service,
             "level": level,
             "message": message[:500] if message else "(empty)",
-            "metadata": json.dumps(meta)
+            "metadata": json.dumps(meta),
+            "owner_id": _owner_attr(),
         }
         supabase.table('audit_logs').insert(log_data).execute()
     except Exception as e:
@@ -79,7 +95,8 @@ def audit_log_sync(service: str, level: str, message: str, metadata: dict = None
             "service": service,
             "level": level,
             "message": message[:500] if message else "(empty)",
-            "metadata": json.dumps(meta)
+            "metadata": json.dumps(meta),
+            "owner_id": _owner_attr(),
         }
         supabase.table('audit_logs').insert(log_data).execute()
     except Exception as e:

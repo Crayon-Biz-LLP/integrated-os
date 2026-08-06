@@ -1,4 +1,4 @@
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client, get_tenant, tenant_mode_enabled
 import hashlib
 import re
 from datetime import datetime
@@ -15,7 +15,8 @@ try:
 except Exception:
     async_fetch = None
 
-supabase = get_supabase()
+# M3: tenant-aware facade (see core/webhook/utils.py webhook_tenant_scope)
+supabase = tenant_aware_client()
 
 # D5: Rate limiter — max 15 classify calls per 60s (flash-lite free tier ceiling)
 _classify_limiter = SlidingWindowLimiter(max_calls=15, per_seconds=60, redis_key="rhodey:rate_limit:classify")
@@ -160,11 +161,15 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
             "contains_hidden_action": False,
         }
 
-    # --- M3: Query caching ---
+    # --- M3: Query caching (tenant-namespaced) ---
     # Cache key includes text + conversation history (the two most variable inputs)
-    # Context and core_json change rarely and don't warrant cache-busting
+    # Context and core_json change rarely and don't warrant cache-busting. The
+    # key is tenant-namespaced: the classification result can reference tenant
+    # data (entity names, titles), so identical text from two tenants must
+    # never share a cached result.
+    _uid = get_tenant()
     cache_hash = hashlib.sha256((text + (conversation_history or "")).encode()).hexdigest()[:16]
-    cache_key = f"rhodey:classify:{cache_hash}"
+    cache_key = f"rhodey:classify:{_uid}:{cache_hash}" if _uid else f"rhodey:classify:{cache_hash}"
     cached = cache_get(cache_key)
     if cached is not None:
         audit_log_sync("webhook", "INFO", f"Classification cache hit: {text[:30]}...")
@@ -197,20 +202,45 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     entities_str = ''
     mentioned_entities_str = ''
     try:
-        node_data = cache_get('rhodey:entities:graph_nodes')
-        if node_data is None:
-            if async_fetch:
+        # M3 hardening: the asyncpg fast path below BYPASSES the tenant
+        # facade, so it must carry the owner filter itself, and the cache
+        # key must be tenant-namespaced — previously GLOBAL, so tenant B
+        # could be served tenant A's cached entity list (cross-tenant
+        # prompt leak). Scoped: uid set → owner-filtered query + per-user
+        # key. Legacy (pre-db/78): exact old behavior.
+        _tenant_mode = tenant_mode_enabled()
+        if _tenant_mode and _uid is None:
+            # Tenant-mode-but-no-context: FAIL CLOSED. Skip the cache read
+            # and the fast path entirely — the facade fallback below raises
+            # TenantRequiredError → no entities. Never a cross-tenant read,
+            # and never a stale read of the legacy (unscoped) cache key.
+            node_data = None
+        else:
+            _entities_key = f"rhodey:entities:graph_nodes:{_uid}" if _uid else "rhodey:entities:graph_nodes"
+            node_data = cache_get(_entities_key)
+        if node_data is None and not (_tenant_mode and _uid is None):
+            # asyncpg path: only when we can scope it safely. Tenant mode
+            # with no tenant context FAILS CLOSED (skip fast path → the
+            # facade fallback below raises TenantRequiredError → no
+            # entities, never a cross-tenant read).
+            if async_fetch and (_uid is not None or not _tenant_mode):
                 try:
-                    node_rows = await async_fetch(
-                        "SELECT label, type FROM graph_nodes WHERE type IN ('person', 'organization') AND is_current = TRUE ORDER BY updated_at DESC NULLS LAST LIMIT 30"
-                    )
+                    if _uid is not None:
+                        node_rows = await async_fetch(
+                            "SELECT label, type FROM graph_nodes WHERE type IN ('person', 'organization') AND is_current = TRUE AND owner_id = $1 ORDER BY updated_at DESC NULLS LAST LIMIT 30",
+                            _uid,
+                        )
+                    else:
+                        node_rows = await async_fetch(
+                            "SELECT label, type FROM graph_nodes WHERE type IN ('person', 'organization') AND is_current = TRUE ORDER BY updated_at DESC NULLS LAST LIMIT 30"
+                        )
                     node_data = [dict(r) for r in node_rows] if node_rows else None
                 except Exception:
                     pass
             if node_data is None:
                 node_res = supabase.table('graph_nodes').select('label, type').in_('type', ['person', 'organization']).eq('is_current', True).order('updated_at', desc=True).nullslast().limit(30).execute()
                 node_data = node_res.data if node_res and node_res.data else []
-            cache_set('rhodey:entities:graph_nodes', node_data, ttl=300)
+            cache_set(_entities_key, node_data, ttl=300)
         if node_data:
             people = [n['label'] for n in node_data if n['type'] == 'person'][:8]
             orgs = [n['label'] for n in node_data if n['type'] == 'organization'][:8]

@@ -104,10 +104,21 @@ async def process_multimodal_content(
     ist_hour: int = None, core_json: str = "[]"
 ):
     """Two-pass processing: extract → classify → route.
+    (M3: wrapped in the channel tenant scope.)
 
     Pass 1: Hybrid extraction (local for docs, Gemini for images/audio)
     Pass 2: Standard text pipeline (classify → plan → execute)
     """
+    from core.webhook.utils import webhook_tenant_scope
+    with webhook_tenant_scope():
+        return await _process_multimodal_content(file_bytes, mime_type, chat_id, ist_hour, core_json)
+
+
+async def _process_multimodal_content(
+    file_bytes: bytes, mime_type: str, chat_id: int,
+    ist_hour: int = None, core_json: str = "[]"
+):
+    """Inner implementation (M3: tenant scope applied by the public wrapper)."""
     ist_offset = IST_TIMEZONE
     now = datetime.now(ist_offset)
     current_hour = ist_hour if ist_hour is not None else now.hour

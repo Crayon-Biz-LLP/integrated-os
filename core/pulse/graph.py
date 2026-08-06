@@ -1,5 +1,5 @@
 from core.llm.constants import SYNTHESIS_MODEL
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 from core.llm import get_embedding
 from core.llm.fallback import generate_content_with_fallback
 import json
@@ -12,7 +12,7 @@ from core.clarifier import evaluate_node, evaluate_edge, store_and_send_clarific
 from core.decisions import record_decision
 from core.lib.node_tables import resolve_merge_proposal
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 def is_valid_uuid(val: str) -> bool:
@@ -415,15 +415,29 @@ async def _backfill_existing_content_for_entity(
 
 
 async def _ensure_danny_edge(label: str, node_type: str):
-    """Create OWNS/KNOWS edge from Danny to the node if one doesn't exist."""
+    """Create OWNS/KNOWS edge from the ROOT person to the node.
+
+    M5: the root person is the tenant's own (users.name — bootstrap_tenant
+    creates their person node), NOT hardcoded "Danny". Legacy unscoped runs
+    (pre-db/78) fall back to the "Danny" label exactly as before.
+    """
     rel = TYPE_TO_DANNY_EDGE.get(node_type)
     if not rel:
         return
     try:
-        danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny").eq('is_current', True))
-        if not danny_res or not danny_res.data:
-            return
-        danny_id = danny_res.data["id"]
+        root_name = "Danny"
+        try:
+            from core.services.user_settings import resolve_user_name, current_user_id
+            root_name = resolve_user_name(current_user_id()) or "Danny"
+        except Exception:
+            pass
+        root_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", root_name).eq('is_current', True))
+        if not root_res or not root_res.data:
+            # Fall back to the classic label (legacy data / pre-M2 names).
+            root_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny").eq('is_current', True))
+            if not root_res or not root_res.data:
+                return
+        danny_id = root_res.data["id"]
 
         label = normalize_label_display(label)
         # Resolve through aliases table (e.g. Sunju → Sunjula Daniel)

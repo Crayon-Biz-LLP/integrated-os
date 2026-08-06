@@ -4,13 +4,13 @@ import json
 from datetime import datetime, timezone
 
 from core.retrieval.pipeline import schedule_index_memory
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
 from core.models import ActionResult, accumulate_action
 from core.lib.state_machines import guard_require_valid_transition
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 def _resolve_org_id(organization_name: str = None):
@@ -18,8 +18,7 @@ def _resolve_org_id(organization_name: str = None):
     No project resolution — tasks go to orgs directly."""
     if not organization_name:
         return None
-    from core.services.db import get_supabase
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         org_res = supabase.table('graph_nodes').select('id').eq('type', 'organization').eq('is_current', True).ilike('label', organization_name).limit(1).execute()
         if org_res.data:
@@ -451,10 +450,11 @@ def skip_recurring_instance(task_id: int, date_str: str = None):
         if not e_id:
             return f"Task {task_id} has no linked Google Calendar event."
 
-        from googleapiclient.discovery import build
-        from core.services.google_service import get_google_creds, _MemoryCache
+        from core.services.google_service import get_cached_service
 
-        service = build('calendar', 'v3', credentials=get_google_creds(), cache=_MemoryCache())
+        service = get_cached_service('calendar', 'v3')
+        if service is None:
+            return f"Task {task_id} has no Google Calendar access for this tenant — cannot skip instance"
 
         if date_str:
             from datetime import datetime, timezone, timedelta

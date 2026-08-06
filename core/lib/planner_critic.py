@@ -18,7 +18,7 @@ Returns a ranked recommendation with transparency.
 from typing import Optional
 from core.lib.telemetry import compute_pattern_confidence
 from core.lib.audit_logger import audit_log_sync
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 
 
 # Default signal weights for generic deliberation
@@ -45,7 +45,7 @@ CROSS_SUBSYSTEM_MAP = {
 async def _extract_entities_from_text(text: str) -> list[str]:
     """Find known entity labels (people, orgs, projects) in text."""
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         node_res = supabase.table('graph_nodes').select('label').in_(
             'type', ['person', 'organization']
         ).neq('epistemic_status', 'hypothetical').eq('is_current', True).execute()
@@ -88,7 +88,7 @@ def _resolve_entity_type(entity_words: list[str]) -> str:
     if not entity_words:
         return "default"
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         # Single query: fetch types for all entity labels at once
         # Use the first 5 entity words to limit scope
         labels_to_check = entity_words[:5]

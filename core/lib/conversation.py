@@ -1,4 +1,4 @@
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 import uuid
 import re
 from datetime import datetime, timezone
@@ -42,7 +42,7 @@ def _approx_tokens(text: str) -> int:
 
 def _touch_thread(thread_id: str):
     try:
-        get_supabase().table('conversation_threads').update({'last_active_at': datetime.now(timezone.utc).isoformat()}).eq('id', thread_id).execute()
+        tenant_aware_client().table('conversation_threads').update({'last_active_at': datetime.now(timezone.utc).isoformat()}).eq('id', thread_id).execute()
     except Exception as e:
         from core.lib.audit_logger import audit_log_sync
         audit_log_sync("conversation", "WARNING", f"Failed to touch thread {thread_id}: {e}")
@@ -64,7 +64,7 @@ def _check_topic_overlap(text: str, payload: dict) -> bool:
         return True
 
     from core.lib.audit_logger import audit_log_sync
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     entity_names = set()
     resolver_reason = ""
 
@@ -217,7 +217,7 @@ def _resolve_person_candidates(text: str, chat_id: int) -> list:
     if not text:
         return []
     
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     results = []
     
     try:
@@ -305,7 +305,7 @@ def _resolve_entity_to_candidates(chat_id: int, entity_type: str, entity_id, sou
     if not entity_id:
         return []
     
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     results = []
     e_id = str(entity_id)
     
@@ -379,7 +379,7 @@ def _llm_entity_disambiguation(text: str, chat_id: int) -> list:
     Uses Gemini to check if text references a known entity.
     Returns list of candidate dicts (same format as _resolve_entity_to_candidates).
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     
     # Fetch known org names (graph nodes, mirror removed)
     orgs = supabase.table('graph_nodes').select('id, label').eq('type', 'organization').eq('is_current', True).execute().data or []
@@ -465,7 +465,7 @@ def resolve_thread(chat_id: int, text: str = None) -> tuple:
       (C3 fallback contract), not from thread routing.
     """
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         
         # 1. Open workflow bound to chat_id
         workflows = supabase.table('conversation_workflows').select('thread_id, payload').eq('chat_id', chat_id).eq('status', 'active').execute()
@@ -678,14 +678,14 @@ Summary:"""
 def _store_thread_summary(session_id: str, summary: str):
     """Persist thread summary to conversation_threads row."""
     try:
-        get_supabase().table('conversation_threads').update({'summary': summary}).eq('id', session_id).execute()
+        tenant_aware_client().table('conversation_threads').update({'summary': summary}).eq('id', session_id).execute()
     except Exception:
         pass
 
 def _store_thread_summary_if_missing(session_id: str, summary: str):
     """Persist thread summary idempotently, only if it doesn't already exist."""
     try:
-        get_supabase().table('conversation_threads') \
+        tenant_aware_client().table('conversation_threads') \
             .update({'summary': summary}) \
             .eq('id', session_id) \
             .is_('summary', 'null') \
@@ -742,7 +742,7 @@ async def _background_summary_check(session_id: str):
     3 user exchanges so short threads always have a current summary.
     """
     try:
-        conv_res = get_supabase().table('conversations').select('id').eq('thread_id', session_id).eq('role', 'user').execute()
+        conv_res = tenant_aware_client().table('conversations').select('id').eq('thread_id', session_id).eq('role', 'user').execute()
         user_count = len(conv_res.data or [])
         if user_count < 2 or user_count % 3 != 0:
             return  # Generate every 3rd user exchange (2, 5, 8, 11...)
@@ -762,7 +762,7 @@ def get_history(session_id: str, max_tokens: int = MAX_HISTORY_TOKENS) -> list:
     Builds user+bot pairs, drops oldest pairs from front until within max_tokens.
     On first overflow, compresses dropped pairs into a thread summary and stores it.
     """
-    res = get_supabase().table('conversations') \
+    res = tenant_aware_client().table('conversations') \
         .select('role, intent, content, token_count') \
         .eq('thread_id', session_id) \
         .order('created_at') \
@@ -771,7 +771,7 @@ def get_history(session_id: str, max_tokens: int = MAX_HISTORY_TOKENS) -> list:
     rows = res.data or []
     # Fallback to session_id if no rows found (for old conversations before migration)
     if not rows:
-        res = get_supabase().table('conversations') \
+        res = tenant_aware_client().table('conversations') \
             .select('role, intent, content, token_count') \
             .eq('session_id', session_id) \
             .order('created_at') \
@@ -818,7 +818,7 @@ def get_history(session_id: str, max_tokens: int = MAX_HISTORY_TOKENS) -> list:
     # Lazy summarization: store overflow summary only if thread has none yet
     if overflow:
         try:
-            t_res = get_supabase().table('conversation_threads') \
+            t_res = tenant_aware_client().table('conversation_threads') \
                 .select('summary').eq('id', session_id).execute()
             if t_res.data and not t_res.data[0].get('summary'):
                 summary = _compress_to_summary(overflow)
@@ -832,7 +832,7 @@ def get_history(session_id: str, max_tokens: int = MAX_HISTORY_TOKENS) -> list:
 def get_thread_summary(thread_id: str) -> str:
     """Retrieve stored compressed summary for a thread."""
     try:
-        t_res = get_supabase().table('conversation_threads') \
+        t_res = tenant_aware_client().table('conversation_threads') \
             .select('summary').eq('id', thread_id).execute()
         if t_res.data and t_res.data[0].get('summary'):
             return t_res.data[0]['summary']
@@ -851,7 +851,7 @@ async def _store_exchange_embedding(exchange_id: int, content: str):
         from core.llm import get_embedding
         emb = await get_embedding(content)
         if emb and emb.vector:
-            get_supabase().table('conversations') \
+            tenant_aware_client().table('conversations') \
                 .update({'embedding': emb.vector}) \
                 .eq('id', exchange_id) \
                 .execute()
@@ -873,7 +873,7 @@ def log_exchange(session_id: str, role: str, intent: str, content: str, chat_id:
             "token_count": _approx_tokens(content),
             "metadata": metadata or {}
         }
-        insert_res = get_supabase().table('conversations').insert(record).execute()
+        insert_res = tenant_aware_client().table('conversations').insert(record).execute()
         _touch_thread(session_id)
         
         # Store embedding for user exchanges (Fix C — fire-and-forget)

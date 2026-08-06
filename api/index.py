@@ -36,12 +36,15 @@ from core.pulse import (
     write_outcome_memory,
     get_outlook_calendar_events,
     get_outlook_calendar_events_range,
-    get_google_creds,
     format_rfc3339,
 )
 from core.pulse.tools import skip_recurring_instance
 from core.pulse.pipeline import run_full_health_check
-from core.services.db import get_supabase, maybe_single_safe, exec_query
+from core.services.db import (
+    active_user_ids, maybe_single_safe, exec_query,
+    get_tenant, set_tenant, resolve_telegram_chat_id, resolve_user_by_api_key,
+    tenant_aware_client, tenant_scope,
+)
 
 
 @asynccontextmanager
@@ -108,13 +111,36 @@ def verify_hmac(payload: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
 
-def require_api_auth(request: Request):
+def require_api_auth(request: Request) -> str | None:
+    """Authenticate an API request and resolve the tenant context (M3).
+
+    Resolution order:
+      1. Per-user key (multi-tenant): X-API-Key matches a users.api_key_hash
+         (sha256). Sets the tenant context to the user's id and RETURNS it.
+         The tenant STAYS set for the rest of the handler — FastAPI runs each
+         request in its own task, so contextvars cannot leak between
+         requests, and fire-and-forget tasks spawned inside a handler
+         inherit the caller's tenant, which is correct (they process that
+         user's data). Handlers are on the tenant-aware facade (M3), so a
+         per-user key auto-scopes every query in the handler body.
+      2. Legacy shared key: X-API-Key matches API_SECRET_KEY. Authorized but
+         UN-scoped (pre-db/78 production / transition) — returns None.
+      3. Dev mode: API_SECRET_KEY unset → allow all (unchanged) — None.
+    """
     api_key = request.headers.get("X-API-Key")
     expected = os.getenv("API_SECRET_KEY")
+
+    if api_key:
+        user = resolve_user_by_api_key(api_key)
+        if user and user.get("status", "active") == "active":
+            set_tenant(str(user["id"]))
+            return str(user["id"])
+
     if not expected:
-        return
+        return None
     if not api_key or not hmac.compare_digest(api_key, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    return None
 
 # --- THE PULSE ENGINE (Routes to pulse.py) ---
 @app.post("/api/pulse")
@@ -216,7 +242,7 @@ async def get_tasks_route(request: Request, status: str = None, limit: int = 50,
     """
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         # NOTE: requires migration 75 (tasks.organization_id -> graph_nodes).
         select_cols = ('id, title, status, priority, deadline, created_at, '
                        'organization_id, direction, committed_to, recurrence, '
@@ -261,7 +287,7 @@ async def get_captures_route(request: Request, limit: int = 50, offset: int = 0)
     """List recent raw_dumps — the unfiltered capture stream."""
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         result = supabase.table('raw_dumps')\
             .select('id, content, created_at, direction, sender, message_type, status, source')\
             .order('created_at', desc=True)\
@@ -284,7 +310,7 @@ async def get_briefing_route(request: Request):
     require_api_auth(request)
     try:
         from api.briefing import build_briefing
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         briefing = await build_briefing(supabase)
         # Deep-serialize through JSON to strip ALL nested TypedDict subclasses
         # FastAPI's jsonable_encoder chokes on TypedDict subclasses on Vercel
@@ -293,8 +319,9 @@ async def get_briefing_route(request: Request):
         print(f"Briefing error: {e}")
         import traceback
         traceback.print_exc()
+        from core.services.user_settings import resolve_user_name
         return {
-            "greeting": "Hey, Danny.",
+            "greeting": f"Hey, {resolve_user_name()}.",
             "next_event": None,
             "sections": [],
             "pending_count": 0,
@@ -321,7 +348,7 @@ async def home_feed_route(request: Request):
     """
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
 
         # ── Briefing (includes P1-gated auto-approval) ──
         briefing_fut = asyncio.ensure_future(
@@ -440,32 +467,44 @@ async def home_feed_route(request: Request):
 _HOME_FEED_BRIEFING_CACHE_KEY = "rhodey:briefing:home_feed:v1"
 
 
+def _briefing_cache_key() -> str:
+    """Tenant-scoped briefing cache key (M5).
+
+    The briefing payload is tenant-specific — a global key would serve
+    tenant B tenant A's cached briefing (silent cross-tenant leak). Key on
+    the tenant id; unscoped legacy runs keep the bare key.
+    """
+    uid = get_tenant()
+    return f"{_HOME_FEED_BRIEFING_CACHE_KEY}:{uid}" if uid else _HOME_FEED_BRIEFING_CACHE_KEY
+
+
 async def _home_feed_briefing():
     """Build the briefing payload for /api/home-feed (defensive wrapper).
 
-    Read-through Redis cache (2 min TTL): the briefing is a generated
-    artifact (LLM + 9 data sources) that takes 9-16s to rebuild and was
-    blocking the event loop for every request queued behind it. Within the
-    TTL window home-feed serves the cached payload in ~1s — Pulse
-    regenerates the underlying data on its own schedule, so staleness is
-    bounded and deliberate. Cache failures fail open to a live build.
+    Read-through Redis cache (2 min TTL, PER-TENANT key): the briefing is a
+    generated artifact (LLM + 9 data sources) that takes 9-16s to rebuild
+    and was blocking the event loop for every request queued behind it.
+    Within the TTL window home-feed serves the cached payload in ~1s —
+    Pulse regenerates the underlying data on its own schedule, so staleness
+    is bounded and deliberate. Cache failures fail open to a live build.
     """
     from api.briefing import build_briefing
     from core.lib.redis_cache import cache_get, cache_set
 
+    cache_key = _briefing_cache_key()
     try:
-        cached = cache_get(_HOME_FEED_BRIEFING_CACHE_KEY)
+        cached = cache_get(cache_key)
         if cached is not None and isinstance(cached, dict):
             return cached
     except Exception as e:
         print(f"[Briefing] Cache read failed (non-fatal): {e}")
 
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     briefing = await build_briefing(supabase)
     payload = json.loads(json.dumps(briefing, default=str))
 
     try:
-        cache_set(_HOME_FEED_BRIEFING_CACHE_KEY, payload, ttl=120)
+        cache_set(cache_key, payload, ttl=120)
     except Exception as e:
         print(f"[Briefing] Cache write failed (non-fatal): {e}")
     return payload
@@ -484,35 +523,61 @@ async def roundup_route(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     try:
-        from core.services.db import get_supabase
         from datetime import datetime, timezone, timedelta
         from core.webhook.telegram import send_telegram
 
-        supabase = get_supabase()
-        
-        # Check if 3+ notes were logged today
-        ist_offset = timezone(timedelta(hours=5, minutes=30))
-        now = datetime.now(ist_offset)
-        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        notes_res = supabase.table('memories') \
-            .select('id, content') \
-            .in_('memory_type', ['note', 'Journal']) \
-            .gte('created_at', start_of_day.isoformat()) \
-            .execute()
-            
-        if notes_res.data:
-            text_notes = [n for n in notes_res.data if not n.get('content', '').strip().startswith('http')]
-            if len(text_notes) >= 3:
-                return {"success": True, "message": "Already captured enough notes today. Skipping prompt."}
-            
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not chat_id:
-            raise HTTPException(status_code=500, detail="TELEGRAM_CHAT_ID missing")
-            
-        await send_telegram(int(chat_id), "🌆 Evening roundup — any meeting notes, ideas, or project updates from today?")
-        
-        return {"success": True, "message": "Roundup prompt sent"}
+        async def _roundup_for_tenant(uid: str | None) -> dict:
+            """Evening roundup for ONE tenant: skip when 3+ notes today, else
+            prompt via their Telegram chat (app-only tenants skip silently).
+
+            `uid` None → legacy unscoped run (no tenant context); the chat id
+            then resolves from env via the channel scope."""
+            supabase = tenant_aware_client()
+
+            # Check if 3+ notes were logged today
+            ist_offset = timezone(timedelta(hours=5, minutes=30))
+            now = datetime.now(ist_offset)
+            start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            notes_res = supabase.table('memories') \
+                .select('id, content') \
+                .in_('memory_type', ['note', 'Journal']) \
+                .gte('created_at', start_of_day.isoformat()) \
+                .execute()
+
+            if notes_res.data:
+                text_notes = [n for n in notes_res.data if not n.get('content', '').strip().startswith('http')]
+                if len(text_notes) >= 3:
+                    return {"tenant": uid, "skipped": True,
+                            "message": "Already captured enough notes today. Skipping prompt."}
+
+            chat_id = resolve_telegram_chat_id(uid)
+            if not chat_id:
+                return {"tenant": uid, "skipped": True,
+                        "message": "No Telegram chat for this tenant — app-only."}
+
+            await send_telegram(chat_id, "🌆 Evening roundup — any meeting notes, ideas, or project updates from today?")
+            return {"tenant": uid, "sent": True, "message": "Roundup prompt sent"}
+
+        # M4: fan out over all active users. Legacy (no users table / no
+        # active users) runs once under the channel scope — the same helper,
+        # so the two paths can't drift.
+        uids = active_user_ids()
+        if not uids:
+            from core.services.db import channel_tenant_scope
+            with channel_tenant_scope():
+                result = await _roundup_for_tenant(None)
+            return {"success": True, "results": [result]}
+
+        results = []
+        for uid in uids:
+            with tenant_scope(uid):
+                try:
+                    results.append(await _roundup_for_tenant(uid))
+                except Exception as tenant_err:
+                    print(f"Roundup error for tenant {uid}: {tenant_err}")
+                    results.append({"tenant": uid, "error": str(tenant_err)})
+        return {"success": True, "tenants": len(uids), "results": results}
     except Exception as e:
         print(f"Roundup error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -556,7 +621,7 @@ async def _run_web_message_pipeline(fake_update: dict, session_id: str | None) -
 
         # ── Briefing rebuild + silent push (off the ack path) ──
         try:
-            supabase = get_supabase()
+            supabase = tenant_aware_client()
             from api.briefing import build_briefing
             briefing = await build_briefing(supabase)
             briefing_update = json.loads(json.dumps(briefing, default=str))
@@ -636,7 +701,7 @@ async def send_message_route(request: Request):
             "metadata": metadata
         }
         
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
 
         # ── Fast-path: vault badge messages skip the full LLM pipeline ──
         # The vault badge tap sends a system message that doesn't need intent
@@ -716,7 +781,7 @@ async def send_message_route(request: Request):
 async def get_messages_route(request: Request, limit: int = 50, offset: int = 0):
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         result = supabase.table('raw_dumps')\
             .select('id, content, created_at, direction, sender, message_type, status, metadata, source')\
             .order('created_at', desc=True)\
@@ -761,7 +826,7 @@ async def conversation_history_route(request: Request, limit: int = 100, offset:
     """
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         # Fetch a capped window from each table sized to the requested slice,
         # then merge/dedupe in memory and slice. The window must leave headroom
         # over (offset + limit) because content+minute dedup shrinks the merged
@@ -865,8 +930,6 @@ async def search_sent_route(request: Request):
 async def get_calendar_events(request: Request, date: str = None, start: str = None, end: str = None):
     require_api_auth(request)
     try:
-        from googleapiclient.discovery import build
-
         if start and end:
             start_dt = datetime.fromisoformat(start).replace(hour=0, minute=0, second=0)
             end_dt = datetime.fromisoformat(end).replace(hour=23, minute=59, second=59)
@@ -887,8 +950,12 @@ async def get_calendar_events(request: Request, date: str = None, start: str = N
 
         # 5-minute TTL cache: Today's screen must not hit the live Google +
         # Outlook APIs on every open. Fail-open — a cache miss/error just
-        # fetches live, exactly as before.
-        cache_key = f"rhodey:calendar:{date or (f'{start}|{end}' if start and end else 'today')}"
+        # fetches live, exactly as before. Tenant-namespaced: calendar
+        # events are tenant data — a global key would serve tenant B
+        # tenant A's cached calendar.
+        _uid = get_tenant()
+        _base = date or (f'{start}|{end}' if start and end else 'today')
+        cache_key = f"rhodey:calendar:{_uid}:{_base}" if _uid else f"rhodey:calendar:{_base}"
         from core.lib.redis_cache import cache_get, cache_set
         cached = cache_get(cache_key)
         if cached is not None and isinstance(cached, list):
@@ -900,7 +967,10 @@ async def get_calendar_events(request: Request, date: str = None, start: str = N
         # worker thread so a slow provider can't stall the event loop (and
         # every other request queued behind this one).
         def _fetch_google():
-            service = build('calendar', 'v3', credentials=get_google_creds())
+            from core.services.google_service import get_cached_service
+            service = get_cached_service('calendar', 'v3')
+            if service is None:
+                return {"items": []}  # tenant has no Google creds (M5)
             return service.events().list(
                 calendarId='primary',
                 timeMin=rfc_start,
@@ -956,7 +1026,7 @@ async def _complete_task(task_id: int, new_status: str = "done") -> dict:
     This is the shared implementation used by both PATCH /api/tasks/{id}/status
     and POST /api/focal-action (done action).
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
 
     task_res = supabase.table('tasks').select('*').eq('id', task_id).eq('is_current', True).single().execute()
     if not task_res.data:
@@ -1025,7 +1095,7 @@ async def _complete_task(task_id: int, new_status: str = "done") -> dict:
     # "completed task still showing on the focal card" ghost.
     try:
         from core.lib.redis_cache import cache_delete
-        cache_delete(_HOME_FEED_BRIEFING_CACHE_KEY)
+        cache_delete(_briefing_cache_key())
     except Exception:
         pass
 
@@ -1064,7 +1134,7 @@ async def list_aliases_route(request: Request):
     """
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         result = supabase.table('graph_nodes') \
             .select('id, label, metadata') \
             .eq('type', 'person') \
@@ -1112,7 +1182,7 @@ def _invalidate_alias_caches():
 
 def _find_person_node_by_label(canonical_name: str) -> dict | None:
     """Resolve a canonical name to a live person node (exact label, then chain)."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     res = supabase.table('graph_nodes').select('id, label, metadata') \
         .eq('type', 'person').eq('is_current', True) \
         .ilike('label', canonical_name).limit(1).execute()
@@ -1166,7 +1236,7 @@ async def create_alias_route(request: Request):
         if alias.lower() == canonical_name.lower():
             raise HTTPException(status_code=400, detail="alias and canonical_name must be different")
 
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         node = _find_person_node_by_label(canonical_name)
         if not node:
             return {"success": False, "message": f"No person node found for '{canonical_name}'"}
@@ -1201,7 +1271,7 @@ async def delete_alias_route(request: Request):
         if not alias:
             raise HTTPException(status_code=400, detail="alias required")
 
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         node = _find_person_node_by_label(canonical_name or "")
         if not node:
             # Try by node id if passed instead of a name
@@ -1245,7 +1315,7 @@ async def person_tasks_route(person_id: str, request: Request):
     require_api_auth(request)
     try:
         name = request.query_params.get('name', '').strip()
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
 
         # NOTE: requires migration 75 (tasks.organization_id -> graph_nodes).
         org_join = 'graph_nodes(label)'
@@ -1499,8 +1569,7 @@ async def focal_action_route(request: Request):
         # surface a failure instead of telling the user the item was dismissed.
         async def _persist_deferral() -> bool:
             try:
-                from core.services.db import get_supabase
-                supabase = get_supabase()
+                supabase = tenant_aware_client()
                 iid = _item_int()
                 if iid is None:
                     return False
@@ -1538,16 +1607,14 @@ async def focal_action_route(request: Request):
                 if iid is None:
                     return _unactionable
                 # Accept the merge — shared helper, identical to the Inbox's approve.
-                from core.services.db import get_supabase
-                supabase = get_supabase()
+                supabase = tenant_aware_client()
                 return await _accept_merge_proposal(supabase, iid)
             elif item_type in ("graph_node", "graph_edge"):
                 iid = _item_int()
                 if iid is None:
                     return _unactionable
                 from core.pulse.graph import process_pending_edge_decision, process_graph_pending_decision
-                from core.services.db import get_supabase
-                supabase = get_supabase()
+                supabase = tenant_aware_client()
                 try:
                     if item_type == "graph_edge":
                         res = await process_pending_edge_decision(iid, "approve", auto_decided=False)
@@ -1591,8 +1658,7 @@ async def focal_action_route(request: Request):
                 iid = _item_int()
                 if iid is None:
                     return _unactionable_reject
-                from core.services.db import get_supabase
-                supabase = get_supabase()
+                supabase = tenant_aware_client()
                 return await _reject_merge_proposal(supabase, iid)
             return {"success": True, "message": "Action completed"}
 
@@ -1727,7 +1793,7 @@ async def vault_action_route(request: Request):
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="task_id must be an integer")
 
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         now_iso = datetime.now(timezone.utc).isoformat()
         res = supabase.table('tasks').update({
             'reminder_at': now_iso,
@@ -1798,7 +1864,7 @@ async def email_action_batch_route(request: Request):
 
         if not ids:
             # Approve-all: fetch every pending actionable email
-            supabase = get_supabase()
+            supabase = tenant_aware_client()
             pending_res = supabase.table('messages') \
                 .select('id') \
                 .is_('danny_decision', 'null') \
@@ -1834,7 +1900,7 @@ async def auto_decisions_count_route(request: Request):
     """Count unverified auto-decisions (status=unverified)."""
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         now = datetime.now(timezone.utc)
         cutoff = (now - timedelta(minutes=30)).isoformat()
 
@@ -1862,7 +1928,7 @@ async def auto_decisions_confirm_route(request: Request):
     """
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         now = datetime.now(timezone.utc)
         cutoff = (now - timedelta(minutes=30)).isoformat()
 
@@ -1915,7 +1981,7 @@ async def auto_decisions_undo_route(request: Request):
             raise HTTPException(status_code=400, detail="target must be channels, graph, or edge")
 
         from core.decisions import reverse_decision
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         now = datetime.now(timezone.utc)
         cutoff = (now - timedelta(minutes=30)).isoformat()
 
@@ -2142,7 +2208,7 @@ async def graph_edge_action_batch_route(request: Request):
 
         if not ids:
             # Approve-all: fetch every pending edge
-            supabase = get_supabase()
+            supabase = tenant_aware_client()
             pending_res = supabase.table('pending_graph_edges') \
                 .select('id') \
                 .eq('status', 'pending') \
@@ -2203,8 +2269,7 @@ async def graph_merge_action_route(request: Request):
         if not merge_proposal_id or action not in ('accept', 'reject'):
             raise HTTPException(status_code=400, detail="id and valid action (accept/reject) required")
 
-        from core.services.db import get_supabase
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
 
         if action == 'reject':
             # Shared with /api/focal-action (reject) — keeps both by promoting
@@ -2266,7 +2331,7 @@ async def graph_node_action_batch_route(request: Request):
 
         if not ids:
             # Approve-all: fetch every pending node (respecting snooze)
-            supabase = get_supabase()
+            supabase = tenant_aware_client()
             pending_q = supabase.table('pending_nodes') \
                 .select('id') \
                 .eq('status', 'pending')
@@ -2304,9 +2369,7 @@ async def graph_node_rename_route(pending_id: str, request: Request):
         body = await request.json()
         new_label = body.get('label')
         scope = body.get('scope', 'pending')
-        
-        from core.services.db import get_supabase, maybe_single_safe
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         
         if scope == 'live':
             live_res = maybe_single_safe(supabase.table('graph_nodes').select('label, type').eq('id', pending_id))
@@ -2455,9 +2518,7 @@ async def graph_node_change_type_route(pending_id: str, request: Request):
         
         if not new_type or new_type not in ['person', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']:
             raise HTTPException(status_code=400, detail="valid type required")
-            
-        from core.services.db import get_supabase, maybe_single_safe
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         
         if scope == 'live':
             live_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label, type, db_record_id').eq('id', pending_id))
@@ -2602,9 +2663,7 @@ async def graph_node_delete_route(pending_id: str, request: Request):
             scope = 'live'
         else:
             scope = 'pending'
-
-        from core.services.db import get_supabase, maybe_single_safe
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         
         if scope == 'live':
             live_res = maybe_single_safe(supabase.table('graph_nodes').select('label, type, db_record_id').eq('id', pending_id))
@@ -2762,9 +2821,7 @@ async def graph_node_manual_merge_route(request: Request):
         
         if not pending_id or not target_id:
             raise HTTPException(status_code=400, detail="id and target_id required")
-            
-        from core.services.db import get_supabase, maybe_single_safe
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         
         if scope == 'live':
             source_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label, type').eq('id', pending_id))
@@ -3000,7 +3057,7 @@ async def graph_nodes_search_route(request: Request):
     if not q or len(q) < 2:
         return []
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         table_name = 'pending_nodes' if scope == 'pending' else 'graph_nodes'
         select_cols = 'id, label, type:node_type' if scope == 'pending' else 'id, label, type'
         query = supabase.table(table_name).select(select_cols).ilike('label', f'%{q}%')
@@ -3030,7 +3087,7 @@ async def graph_nodes_similar_route(request: Request):
         matches = find_similar_node(label, node_type, threshold)
         
         # Also check pending_nodes for exact/high matches
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         pending_res = supabase.table('pending_nodes').select('id, label, type:node_type').eq('node_type', node_type).execute()
         pending_nodes = pending_res.data or []
         import difflib
@@ -3064,7 +3121,7 @@ async def graph_edges_similar_route(request: Request):
     if not source or not target or not rel:
         return []
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         # Find node IDs for the labels to check live graph_edges
         src_res = supabase.table('graph_nodes').select('id').ilike('label', source).eq('is_current', True).execute()
         tgt_res = supabase.table('graph_nodes').select('id').ilike('label', target).eq('is_current', True).execute()
@@ -3142,7 +3199,7 @@ async def app_version_route(request: Request):
     removing the dependency on GitHub API tokens.
     """
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         res = supabase.table('core_config').select('content').eq('key', 'app_version').limit(1).execute()
 
         if not res.data or not res.data[0].get('content'):
@@ -3211,7 +3268,7 @@ async def multimodal_input_route(request: Request):
 
         try:
             from api.briefing import build_briefing
-            briefing = await build_briefing(get_supabase())
+            briefing = await build_briefing(tenant_aware_client())
             briefing_update = json.loads(json.dumps(briefing, default=str))
         except Exception:
             briefing_update = None
@@ -3239,7 +3296,7 @@ async def register_device_route(request: Request):
         if not token:
             raise HTTPException(status_code=400, detail="token required")
         
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         # Upsert: update existing token or insert new one
         supabase.table('device_tokens').upsert({
             'token': token,
@@ -3272,9 +3329,9 @@ async def drive_webhook(request: Request):
 
     if resource_state == "change":
         try:
+            from core.lib.constants import resolve_github_config
             github_token = os.getenv("GITHUB_TOKEN")
-            owner = os.getenv("GITHUB_OWNER", "Crayon-Biz-LLP")
-            repo = os.getenv("GITHUB_REPO", "integrated-os")
+            owner, repo = resolve_github_config()
             if github_token and owner and repo:
                 url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/call_ingest.yml/dispatches"
                 headers = {
@@ -3300,7 +3357,7 @@ async def pending_nodes_route(request: Request):
     """List all pending graph nodes awaiting approval."""
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         res = supabase.table('pending_nodes') \
             .select('id, label, type:node_type, status, source_text, created_at, eval_context')
         # Pull pending + flagged items (skip approved/rejected/merged)
@@ -3320,7 +3377,7 @@ async def pending_merges_route(request: Request):
     """List all pending merge proposals awaiting approval."""
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         res = supabase.table('merge_proposals') \
             .select('id, source_label, source_type, target_label, target_node_id, rationale, status') \
             .eq('status', 'proposed')
@@ -3342,7 +3399,7 @@ async def pending_graph_edges_route(request: Request):
     """List all pending graph edges awaiting approval."""
     require_api_auth(request)
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         res = supabase.table('pending_graph_edges') \
             .select('id, source_label, target_label, relationship, status, context, confidence, created_at')
         res = res.in_('status', ['pending', 'flagged'])
@@ -3370,7 +3427,7 @@ async def inbox_route(request: Request):
     _t0 = time.perf_counter()
     _sub_ms = {}
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
 
         # Supabase's client is SYNCHRONOUS — bare .execute() blocks the event
         # loop, so the parallel gather below would otherwise run serially and
@@ -3489,8 +3546,7 @@ async def graph_nodes_live_route(request: Request, limit: int = None, offset: in
     require_api_auth(request)
     _t0 = time.perf_counter()
     try:
-        from core.services.db import get_supabase
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
 
         # Bring key nodes and conceptual/structural entities (exclude system tasks/memories)
         entity_types = ['person', 'organization', 'concept', 'place', 'event', 'animal', 'emotional_state']
@@ -3570,9 +3626,7 @@ async def graph_node_enrichment_route(node_id: str, request: Request):
             if isinstance(v, str):
                 v = v.strip().lower() in ('1', 'true', 'yes', 'on')
             updates['is_active'] = bool(v)
-
-        from core.services.db import get_supabase, maybe_single_safe
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
 
         node_res = maybe_single_safe(
             supabase.table('graph_nodes').select('id, label, type, metadata, db_record_id')

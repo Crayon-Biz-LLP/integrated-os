@@ -4,7 +4,7 @@ from core.context.config import StrategyConfig
 from core.context.gates import apply_entity_grounding_gate
 from core.lib.audit_logger import audit_log_sync
 from core.lib.decision_audit import log_decision, DecisionStage, ReasonCode
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 
 async def execute_context_strategy(
     query: str,
@@ -15,7 +15,10 @@ async def execute_context_strategy(
 ) -> ContextResult:
     """Execute a context retrieval strategy."""
     import re
-    supabase = get_supabase()
+    # M3: tenant facade — this module reads graph_nodes/tasks/messages/memories
+    # into LLM prompt context; a raw client here would leak every tenant's data
+    # into every other tenant's prompts.
+    supabase = tenant_aware_client()
     query_entities = list(extracted_entities or [])
 
     matched_items: List[RetrievalItem] = []

@@ -3,7 +3,7 @@ import json
 import re
 from typing import List
 from core.actions.models import Action
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
@@ -11,7 +11,7 @@ from core.llm.constants import CLASSIFICATION_MODEL, SYNTHESIS_MODEL
 from core.prompts.planner import build_planner_prompt
 
 async def plan_actions(text: str, title: str = "", entity: str = "", active_anchor: dict = None, intent: str = None) -> List[Action]:
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     
     # --- DETERMINISTIC PRE-FILTER: "Mark task N as done" → close_task ---
     # Same pattern as the classify pre-filter. Extracts the task ID directly

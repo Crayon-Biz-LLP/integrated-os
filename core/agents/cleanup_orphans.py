@@ -10,9 +10,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from core.lib.audit_logger import audit_log_sync
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 def cleanup_orphan_graph_edges(dry_run: bool = False):

@@ -5,7 +5,7 @@ import asyncio
 import json
 from datetime import datetime, timezone, timedelta
 
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client, get_tenant
 from core.services.google_service import get_google_calendar_events
 from core.services.outlook_service import get_outlook_calendar_events
 from core.lib.redis_cache import cache_get, cache_set, cache_delete
@@ -14,41 +14,60 @@ from core.lib.audit_logger import audit_log_sync
 from core.lib.constants import BOT_SENDERS
 from core.retrieval.config import config as retrieval_config
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 class SimpleCache:
-    """A lightweight TTL cache to avoid redundant DB queries. Backed by Redis if configured."""
+    """A lightweight TTL cache to avoid redundant DB queries. Backed by Redis if configured.
+
+    Tenant-aware: the effective Redis key AND the in-memory entry are
+    namespaced by the current tenant id (get_tenant). context_provider is a
+    module-level singleton shared across all tenants — without this, tenant
+    A's tasks/people/calendar cached in-process would be served to tenant B
+    (cross-tenant data leak, worse than the Redis-key variant since it leaks
+    without any shared cache infra).
+    """
     def __init__(self, ttl_seconds=60, redis_key=None):
         self.ttl = ttl_seconds
         self.redis_key = redis_key
-        self.data = None
-        self.timestamp = 0
+        # tenant-scoped key -> (data, fetched_at)
+        self._mem = {}
+
+    def _key(self):
+        """Effective storage key: redis_key namespaced by the current tenant."""
+        if not self.redis_key:
+            return None
+        uid = get_tenant()
+        return f"{self.redis_key}:{uid}" if uid else self.redis_key
 
     def get(self):
-        if self.data is not None and (time.time() - self.timestamp) < self.ttl:
-            return self.data
-            
-        if self.redis_key:
-            redis_data = cache_get(self.redis_key)
-            if redis_data is not None:
-                self.data = redis_data
-                self.timestamp = time.time()
-                return redis_data
-                
+        key = self._key()
+        if key is None:
+            return None
+        now = time.time()
+        entry = self._mem.get(key)
+        if entry is not None:
+            if now - entry[1] < self.ttl:
+                return entry[0]
+            self._mem.pop(key, None)  # expired → evict, cap memory growth
+        redis_data = cache_get(key)
+        if redis_data is not None:
+            self._mem[key] = (redis_data, now)
+            return redis_data
         return None
 
     def set(self, data):
-        self.data = data
-        self.timestamp = time.time()
-        
-        if self.redis_key:
-            cache_set(self.redis_key, data, ttl=self.ttl)
+        key = self._key()
+        if key is None:
+            return
+        self._mem[key] = (data, time.time())
+        cache_set(key, data, ttl=self.ttl)
 
     def invalidate(self):
-        self.data = None
-        self.timestamp = 0
-        if self.redis_key:
-            cache_delete(self.redis_key)
+        key = self._key()
+        if key is None:
+            return
+        self._mem.pop(key, None)
+        cache_delete(key)
 
 
 class ContextProvider:
@@ -223,7 +242,9 @@ class ContextProvider:
         if delta_days > max_days:
             end_date = start_date + timedelta(days=max_days)
 
-        cache_key = f"rhodey:cache:calendar_range:{start_date.strftime('%Y-%m-%d')}:{end_date.strftime('%Y-%m-%d')}:{max_days}"
+        _uid = get_tenant()
+        _range = f"{start_date.strftime('%Y-%m-%d')}:{end_date.strftime('%Y-%m-%d')}:{max_days}"
+        cache_key = f"rhodey:cache:calendar_range:{_uid}:{_range}" if _uid else f"rhodey:cache:calendar_range:{_range}"
         cached = cache_get(cache_key)
         if cached is not None:
             return cached

@@ -4,23 +4,25 @@ import io
 import tempfile
 import asyncio
 from datetime import datetime, timezone
-from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from faster_whisper import WhisperModel # type: ignore
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.services.llm import call_gemini_classify, CLASSIFICATION_MODEL
-from core.services.google_service import get_google_creds
+from core.services.google_service import get_cached_service
 
 
 GOOGLE_DRIVE_CALLS_FOLDER_ID = os.getenv("GOOGLE_DRIVE_CALLS_FOLDER_ID")
 
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 def get_drive_service():
-    return build("drive", "v3", credentials=get_google_creds())
+    service = get_cached_service("drive", "v3")
+    if service is None:
+        raise ValueError("No Google creds for this tenant (M5) — call ingest requires Drive access")
+    return service
 
 
 def list_new_recordings(service, folder_id: str) -> list:
