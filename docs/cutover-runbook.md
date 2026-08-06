@@ -67,13 +67,23 @@ old schema = legacy unscoped mode = identical behavior to today.
 curl -s -X POST https://<your-modal-url>/api/health \
   -H "x-pulse-secret: $PULSE_SECRET" | head -c 400
 
-# A manual briefing — must look exactly like Danny's usual output
+# A manual briefing — must look exactly like Danny's usual output.
+# /api/pulse is HMAC-signed (unlike /api/health): the X-Rhodey-Signature
+# header is HMAC-SHA256 of the raw body with PULSE_SECRET, and the
+# x-pulse-secret header must also match (process_pulse re-checks it).
+SIG=$(python3 -c "import hmac, hashlib, os; print(hmac.new(os.environ['PULSE_SECRET'].encode(), b'', hashlib.sha256).hexdigest())")
 curl -s -X POST https://<your-modal-url>/api/pulse \
+  -H "X-Rhodey-Signature: $SIG" \
   -H "x-pulse-secret: $PULSE_SECRET" | head -c 600
 ```
 
 Both must succeed and look normal. **Stop here if anything is off** — nothing
 has been migrated yet; the old system is untouched.
+
+> If `curl` still returns `Unauthorized`, verify both headers were sent:
+> `curl -sv` shows the request. An empty `X-Rhodey-Signature` or
+> `x-pulse-secret` (env not loaded) yields 401 — same for a POST with a
+> non-empty body signed as empty.
 
 ## Step 3 — Apply migrations db/78 → db/86 (in order, one psql session)
 
@@ -220,7 +230,7 @@ pre-cutover confirmation; on LIVE use the read-only checks below.
 | # | Check | Command |
 |---|---|---|
 | V1 | Briefing equivalence on LIVE (read-only gate) | `python3 scripts/verify_m2_equivalence.py --dsn "<live DSN>"` — all gates pass |
-| V2 | Health + briefing end-to-end | `/api/health` and `/api/pulse` with `x-pulse-secret` (Step 2 commands) — normal output |
+| V2 | Health + briefing end-to-end | `/api/health` with `x-pulse-secret`, `/api/pulse` with HMAC `X-Rhodey-Signature` + `x-pulse-secret` (Step 2 commands) — normal output |
 | V3 | Isolation gates on COPY (final re-run) | `verify_m3_webhook_isolation.py` + `verify_m3_remaining_isolation.py` + `verify_m4_cron_fanout.py` + `verify_m5_onboarding.py` against `rhodey_restore_test` — all pass |
 | V4 | Cost controls | `scripts/verify_m7_cost_controls.py` passes (mock/local); `GET /api/admin/spend?days=7` (Bearer `PULSE_SECRET`) shows Danny's credit overlay |
 | V5 | Cron jobs still firing | cron-job.org last-run times fresh after 5m/30m cycles |
