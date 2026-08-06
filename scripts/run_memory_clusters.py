@@ -18,4 +18,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from core.services.db import channel_tenant_scope
+
+    with channel_tenant_scope():
+        asyncio.run(main())

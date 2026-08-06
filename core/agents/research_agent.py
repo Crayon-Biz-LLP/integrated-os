@@ -6,7 +6,7 @@ import httpx
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from core.services.db import tenant_aware_client
+from core.services.db import channel_tenant_scope, tenant_aware_client
 from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.llm.fallback import generate_content_with_fallback
@@ -116,4 +116,5 @@ Web Search Results:
 
 
 if __name__ == '__main__':
-    asyncio.run(run_agent())
+    with channel_tenant_scope():
+        asyncio.run(run_agent())

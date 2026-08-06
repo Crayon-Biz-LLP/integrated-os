@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from core.lib.audit_logger import audit_log_sync
-from core.services.db import tenant_aware_client
+from core.services.db import channel_tenant_scope, tenant_aware_client
 
 supabase = tenant_aware_client()
 
@@ -102,10 +102,11 @@ if __name__ == "__main__":
             sys.exit(0)
 
     print("Starting orphan cleanup...\n")
-    print("Graph Edges:")
-    cleanup_orphan_graph_edges(dry_run)
-    print("Tasks:")
-    cleanup_orphan_tasks(dry_run)
-    print("Raw Dumps:")
-    cleanup_orphan_raw_dumps(dry_run)
+    with channel_tenant_scope():
+        print("Graph Edges:")
+        cleanup_orphan_graph_edges(dry_run)
+        print("Tasks:")
+        cleanup_orphan_tasks(dry_run)
+        print("Raw Dumps:")
+        cleanup_orphan_raw_dumps(dry_run)
     print("\nCleanup complete.")

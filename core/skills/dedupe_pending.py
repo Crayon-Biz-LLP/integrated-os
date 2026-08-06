@@ -7,7 +7,7 @@ and merge_candidate_id on the pending node, so the Decisions UI
 can show it as an automatic merge candidate.
 """
 import sys
-from core.services.db import tenant_aware_client
+from core.services.db import channel_tenant_scope, tenant_aware_client
 from core.lib.graph_rules import find_similar_node
 
 supabase = tenant_aware_client()
@@ -52,7 +52,8 @@ def dedupe_pending():
     return proposed
 
 if __name__ == "__main__":
-    print("Starting dedupe_pending...")
-    count = dedupe_pending()
-    print(f"Total merge proposals: {count}")
+    with channel_tenant_scope():
+        print("Starting dedupe_pending...")
+        count = dedupe_pending()
+        print(f"Total merge proposals: {count}")
     sys.exit(0)

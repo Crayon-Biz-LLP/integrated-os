@@ -4,7 +4,7 @@ import re
 import requests
 from datetime import datetime, timedelta, timezone
 
-from core.services.db import tenant_aware_client
+from core.services.db import channel_tenant_scope, tenant_aware_client
 from core.services.llm import call_gemini_classify
 from core.skills.outlook_token_helper import refresh_outlook_token
 
@@ -245,4 +245,5 @@ async def main():
     print(f"Result: {result}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    with channel_tenant_scope():
+        asyncio.run(main())
