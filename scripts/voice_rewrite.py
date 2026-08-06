@@ -5,7 +5,6 @@ across the backend. Every replacement is an exact substring match; misses
 are reported, never silently skipped. Safe to re-run (idempotent).
 """
 import io
-import re
 
 RESULTS = []
 

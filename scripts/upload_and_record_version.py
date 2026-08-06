@@ -73,7 +73,7 @@ def main():
 
     if not os.path.exists(apk_path):
         print(f"❌ APK not found at: {apk_path}")
-        print(f"   Build the APK first with: ./build_apk.sh")
+        print("   Build the APK first with: ./build_apk.sh")
         sys.exit(1)
 
     apk_size = os.path.getsize(apk_path)
@@ -120,15 +120,15 @@ def main():
             try:
                 _urlopen(update_req)
                 print(f"✅ Bucket '{BUCKET_NAME}' updated (200MB limit)")
-            except:
-                print(f"⚠️ Could not update bucket limit — may need manual Supabase dashboard config")
+            except Exception:
+                print("⚠️ Could not update bucket limit — may need manual Supabase dashboard config")
         else:
             error_body = e.read().decode()
             print(f"⚠️  Bucket creation note: HTTP {e.code}: {error_body}")
             print(f"✅ Using bucket '{BUCKET_NAME}'")
     except Exception as e:
         print(f"⚠️  Bucket setup note: {e}")
-        print(f"   Continuing with upload attempt...")
+        print("   Continuing with upload attempt...")
 
     # ── Step 2: Upload APK to Supabase Storage ──────────────────────────────
     upload_url = f"{supabase_url}/storage/v1/object/{BUCKET_NAME}/{OBJECT_NAME}"
@@ -157,21 +157,21 @@ def main():
 
     try:
         _urlopen(upload_req)
-        print(f"✅ APK uploaded to Supabase Storage")
+        print("✅ APK uploaded to Supabase Storage")
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()
         if "Payload too large" in error_body or e.code == 413:
-            print(f"❌ Supabase Storage free tier limits file size to 50MB.")
+            print("❌ Supabase Storage free tier limits file size to 50MB.")
             print(f"   APK is {apk_size / 1024 / 1024:.1f}MB — too large.")
-            print(f"")
-            print(f"🔧 To fix this, either:")
-            print(f"   1. Increase the upload limit in Supabase Dashboard → Storage → Settings")
-            print(f"   2. Or use a different storage (Cloudflare R2, S3, etc.)")
-            print(f"")
+            print("")
+            print("🔧 To fix this, either:")
+            print("   1. Increase the upload limit in Supabase Dashboard → Storage → Settings")
+            print("   2. Or use a different storage (Cloudflare R2, S3, etc.)")
+            print("")
             print(f"📌 The APK was BUILT SUCCESSFULLY at: {apk_path}")
-            print(f"   You can manually upload it to your APK host and run: ")
+            print("   You can manually upload it to your APK host and run: ")
             print(f"   export VERSION_CODE={version_code} VERSION_NAME={version_name} DOWNLOAD_URL=<your-url>")
-            print(f"   python3 scripts/record_app_version.py")
+            print("   python3 scripts/record_app_version.py")
         else:
             print(f"❌ Upload failed: HTTP {e.code}: {error_body}")
         sys.exit(1)
@@ -210,7 +210,7 @@ def main():
         print(f"❌ Version recording failed: HTTP {e.code}: {e.read().decode()}")
         sys.exit(1)
 
-    print(f"\n🎉 Done! In-app update checker will find this version on next app open.")
+    print("\n🎉 Done! In-app update checker will find this version on next app open.")
     print(f"   Open the app → it will detect v{version_name} → start download → install.")
 
 
