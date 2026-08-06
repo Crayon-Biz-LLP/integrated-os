@@ -7,6 +7,8 @@ Gates:
   [2] process_sentinel / process_decision_pulse fan out: with N active users
       the wrapper runs the impl once per user, each under its own tenant
       scope (spy on the impl + record get_tenant() inside)
+  [2b] process_pulse (briefing) + run_full_health_check fan out per active
+      user with the same wrapper pattern; legacy unscoped fallbacks
   [3] roundup fan-out shape: /api/roundup uses active_user_ids + tenant_scope
   [4] core_config_upsert picks 'owner_id,key' in tenant mode, 'key' legacy
   [5] resolve_telegram_chat_id: per-user value wins; single-active-user world
@@ -162,6 +164,99 @@ def main() -> None:
         seen_tenants.clear()
         asyncio.run(sentinel_mod.process_sentinel("secret", trigger="test"))
     check("legacy: no active users → single unscoped run",
+          len(seen_tenants) == 1 and seen_tenants[0] is None,
+          f"runs={len(seen_tenants)} tenants={seen_tenants}")
+
+    # [2b] briefing + health check fan out per tenant (M6 — closes the last
+    # cron fan-out gap; previously single-channel tenant only)
+    import core.pulse.briefing as briefing_mod
+    import core.pulse.pipeline as pipeline_mod
+
+    async def _fake_pulse_impl(auth_secret=None, request_id=None, trigger=None):
+        seen_tenants.append(db_mod.get_tenant())
+        return {"success": True, "briefing": f"briefing {db_mod.get_tenant()}"}
+
+    async def _fake_health_impl():
+        seen_tenants.append(db_mod.get_tenant())
+        return {"issues": [], "report": "ok", "counts": {"checks": 1}}
+
+    with patch.object(briefing_mod, "active_user_ids", return_value=[fake_uid_a, fake_uid_b]), \
+         patch.object(briefing_mod, "_process_pulse_impl", side_effect=_fake_pulse_impl):
+        seen_tenants.clear()
+        pres = asyncio.run(briefing_mod.process_pulse(trigger="test"))
+    check("process_pulse (briefing) fans out once per active user (tenant set each run)",
+          len(seen_tenants) == 2 and seen_tenants == [fake_uid_a, fake_uid_b],
+          f"runs={len(seen_tenants)} tenants={seen_tenants}")
+    check("process_pulse keeps legacy response shape + per-tenant results",
+          pres.get("briefing") is not None and pres.get("tenants") == 2
+          and len(pres.get("results", [])) == 2,
+          f"keys={sorted(pres.keys())}")
+
+    with patch.object(pipeline_mod, "active_user_ids", return_value=[fake_uid_a, fake_uid_b]), \
+         patch.object(pipeline_mod, "_run_full_health_check_impl", side_effect=_fake_health_impl):
+        seen_tenants.clear()
+        hres = asyncio.run(pipeline_mod.run_full_health_check())
+    check("run_full_health_check fans out once per active user (tenant set each run)",
+          len(seen_tenants) == 2 and seen_tenants == [fake_uid_a, fake_uid_b],
+          f"runs={len(seen_tenants)} tenants={seen_tenants}")
+    check("health check keeps issues/report/counts + tenant count",
+          isinstance(hres.get("issues"), list) and "ok" in hres.get("report", "")
+          and hres.get("tenants") == 2,
+          f"keys={sorted(hres.keys())}")
+
+    # Failure isolation: tenant A raises → tenant B still runs, and the
+    # aggregate keeps the legacy shape (no KeyError on report/briefing).
+    def _boom_pulse_impl(*a, **k):
+        seen_tenants.append(db_mod.get_tenant())
+        raise RuntimeError("tenant down")
+
+    def _ok_health_impl():
+        seen_tenants.append(db_mod.get_tenant())
+        return {"issues": [], "report": "ok", "counts": {"checks": 1}}
+
+    def _boom_health_impl():
+        seen_tenants.append(db_mod.get_tenant())
+        raise RuntimeError("tenant down")
+
+    with patch.object(briefing_mod, "active_user_ids", return_value=[fake_uid_a, fake_uid_b]), \
+         patch.object(briefing_mod, "_process_pulse_impl", side_effect=_boom_pulse_impl):
+        seen_tenants.clear()
+        fpres = asyncio.run(briefing_mod.process_pulse(trigger="test"))
+    check("failure isolation: one tenant's briefing failure doesn't abort the loop",
+          len(seen_tenants) == 2 and seen_tenants == [fake_uid_a, fake_uid_b],
+          f"runs={len(seen_tenants)} tenants={seen_tenants}")
+    check("failure isolation: aggregate still exposes briefing key (None-safe)",
+          "briefing" in fpres and fpres.get("results") and all("error" in r for r in fpres["results"]),
+          f"keys={sorted(fpres.keys())} results={fpres.get('results')}")
+
+    with patch.object(briefing_mod, "active_user_ids", return_value=[]), \
+         patch.object(briefing_mod, "_process_pulse_impl", side_effect=_fake_pulse_impl):
+        seen_tenants.clear()
+        asyncio.run(briefing_mod.process_pulse(trigger="test"))
+    check("legacy: briefing with no active users → single unscoped run",
+          len(seen_tenants) == 1 and seen_tenants[0] is None,
+          f"runs={len(seen_tenants)} tenants={seen_tenants}")
+
+    # Health-check failure isolation: tenant A raises → B still runs, and the
+    # aggregate ALWAYS carries issues/report/counts (api/index.py:228 returns
+    # the whole dict; check_pipeline_health reads result["report"] directly).
+    with patch.object(pipeline_mod, "active_user_ids", return_value=[fake_uid_a, fake_uid_b]), \
+         patch.object(pipeline_mod, "_run_full_health_check_impl", side_effect=_boom_health_impl):
+        seen_tenants.clear()
+        fhres = asyncio.run(pipeline_mod.run_full_health_check())
+    check("failure isolation: one tenant's health failure doesn't abort the loop",
+          len(seen_tenants) == 2 and seen_tenants == [fake_uid_a, fake_uid_b],
+          f"runs={len(seen_tenants)} tenants={seen_tenants}")
+    check("failure isolation: aggregate keeps issues/report/counts keys (no KeyError)",
+          "issues" in fhres and "report" in fhres and "counts" in fhres
+          and len(fhres.get("issues", [])) == 2,
+          f"keys={sorted(fhres.keys())} issues={fhres.get('issues')}")
+
+    with patch.object(pipeline_mod, "active_user_ids", return_value=[]), \
+         patch.object(pipeline_mod, "_run_full_health_check_impl", side_effect=_fake_health_impl):
+        seen_tenants.clear()
+        asyncio.run(pipeline_mod.run_full_health_check())
+    check("legacy: health check with no active users → single unscoped run",
           len(seen_tenants) == 1 and seen_tenants[0] is None,
           f"runs={len(seen_tenants)} tenants={seen_tenants}")
 

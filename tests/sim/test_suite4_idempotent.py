@@ -2,10 +2,12 @@ import pytest
 from datetime import datetime, timedelta, timezone
 from core.services.db import get_supabase
 from core.lib.audit_logger import set_trace_id
+from sim.conftest import requires_live_db
 
 supabase = get_supabase()
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_t1_idempotent_no_double_escalation():
     set_trace_id("sim-t1-idem")
@@ -34,6 +36,7 @@ async def test_t1_idempotent_no_double_escalation():
     supabase.table('tasks').delete().eq('id', tid).execute()
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_m5_idempotent_no_double_delete():
     set_trace_id("sim-m5-idem")
@@ -60,6 +63,7 @@ async def test_m5_idempotent_no_double_delete():
     assert not check_retrieval.data, "Retrieval index must be cleaned after first sweep"
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_t4_idempotent_no_double_delete(mock_google):
     set_trace_id("sim-t4-idem")

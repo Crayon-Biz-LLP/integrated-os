@@ -229,6 +229,84 @@ async def health_check_route(request: Request):
     return result
 
 
+@app.api_route("/api/admin/spend", methods=["GET", "POST"])
+async def admin_spend_route(request: Request, days: int = 7):
+    """(M6) Per-tenant LLM spend — cost-per-user per day/week.
+
+    Admin-only (same bearer/x-pulse-secret gate as /api/health). Reads the
+    llm_spend ledger (db/85) through the tenant facade, grouped by day.
+    Returns {days: [...], users: {uid: {name, total_usd, days: {date: usd}}}}.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
+    if not cron_secret:
+        raise HTTPException(status_code=500, detail="CRON_SECRET missing")
+    if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        days = max(1, min(int(days), 90))
+    except (TypeError, ValueError):
+        days = 7
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    from core.services.db import get_supabase
+    from core.services.user_settings import resolve_user_name
+
+    # Global admin read — raw client on purpose (no tenant context here; the
+    # tenant facade would fail closed without one). Gated by the secret above.
+    client = get_supabase()
+    try:
+        res = (
+            client.table("llm_spend")
+            .select("owner_id, ts, est_cost_usd")
+            .gte("ts", cutoff)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"llm_spend unavailable: {e}")
+
+    # Start from ALL active users (a user with credit but zero spend must
+    # still appear in the credits view), then overlay ledger + credit.
+    users: dict = {}
+    try:
+        ures = client.table("users").select("id, name").eq("status", "active").execute()
+        for u in ures.data or []:
+            uid = u.get("id")
+            if uid:
+                users[uid] = {"name": u.get("name") or uid, "total_usd": 0.0, "days": {}}
+    except Exception:
+        pass
+    for row in res.data or []:
+        uid = row.get("owner_id")
+        if not uid:
+            continue
+        date = (row.get("ts") or "")[:10]
+        cost = float(row.get("est_cost_usd") or 0.0)
+        u = users.setdefault(uid, {"name": resolve_user_name(uid), "total_usd": 0.0, "days": {}})
+        u["total_usd"] += cost
+        u["days"][date] = u["days"].get(date, 0.0) + cost
+    # Credit overlay: table-driven monthly credit, cycle = signup day, spend
+    # from the same ledger, remaining floored at 0. These helpers take an
+    # explicit uid and use the raw client internally, so no tenant context
+    # is required here.
+    from core.llm.budget import (
+        credit_remaining, cycle_spend_usd, cycle_start_utc, resolve_monthly_credit,
+    )
+    for uid, u in users.items():
+        u["total_usd"] = round(u["total_usd"], 4)
+        u["days"] = {k: round(v, 4) for k, v in sorted(u["days"].items())}
+        try:
+            u["monthly_credit_usd"] = resolve_monthly_credit(uid)
+            u["cycle_start_utc"] = cycle_start_utc(uid).isoformat()
+            u["cycle_spent_usd"] = round(cycle_spend_usd(uid), 4)
+            u["credit_remaining_usd"] = round(credit_remaining(uid), 4)
+        except Exception:
+            pass
+    return {"days": days, "users": users}
+
+
 # --- GET TASKS (for Today tab — active + overdue) ---
 @app.get("/api/tasks")
 async def get_tasks_route(request: Request, status: str = None, limit: int = 50, offset: int = 0,

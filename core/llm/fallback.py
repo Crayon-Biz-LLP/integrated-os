@@ -11,6 +11,10 @@ from .breaker import CircuitBreaker
 from .retry import DeadlineBudget, get_jittered_backoff
 from .providers import call_gemini, call_openrouter
 from .instrument import log_llm_outcome
+from .budget import (
+    WARN_THRESHOLD, credit_remaining, current_tenant, tenant_llm_limiter,
+    resolve_monthly_credit,
+)
 from core.lib.audit_logger import audit_log_sync
 
 gemini_breaker = CircuitBreaker("gemini", threshold=4, window_s=60)
@@ -48,6 +52,35 @@ async def generate_content_with_fallback(
         )
         log_llm_outcome(resp, outcome, prompt=prompt)
         return resp
+
+    # ── M6 cost controls: per-tenant rate limit + monthly credit (entry gate) ──
+    uid = current_tenant()
+    if uid:
+        # 1) Per-tenant calls/min — block (not just wait) when saturated so
+        #    one tenant can't monopolize the shared account.
+        try:
+            wait = tenant_llm_limiter(uid)._get_wait_secs()
+            if wait > 10:
+                audit_log_sync("llm_budget", "WARNING",
+                               f"LLM rate limit exceeded for tenant {uid} (wait={wait:.1f}s)")
+                return _create_degraded_response("rate_limit_exceeded", Outcome.SAFE_HOLD_EMITTED)
+        except Exception:
+            pass  # fail-open: limiter unavailable
+        # 2) Per-user MONTHLY credit (table-driven; cycle = signup day). Soft
+        #    warn near the limit (keep serving), hard block at 0 (safe hold).
+        #    One credit_remaining() call feeds both decisions (single SUM).
+        try:
+            remaining = credit_remaining(uid)
+            if remaining <= 0:
+                audit_log_sync("llm_budget", "WARNING",
+                               f"Monthly credit exhausted for tenant {uid} — blocking call")
+                return _create_degraded_response("credit_exhausted", Outcome.SAFE_HOLD_EMITTED)
+            credit = resolve_monthly_credit(uid)
+            if remaining <= WARN_THRESHOLD * credit:
+                audit_log_sync("llm_budget", "WARNING",
+                               f"Tenant {uid} is near their monthly credit limit (${credit:.2f}) — warn, not block")
+        except Exception:
+            pass  # fail-open: ledger unavailable
         
     async def _try_provider(provider_name, provider_fn, model_name, max_retries):
         nonlocal attempts, final_exc

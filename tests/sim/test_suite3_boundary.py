@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
 from core.services.db import get_supabase
 from core.lib.audit_logger import set_trace_id
+from sim.conftest import requires_live_db
 
 supabase = get_supabase()
 
 
+@requires_live_db
 def test_t1_noop_no_old_tasks():
     set_trace_id("sim-t1-noop")
     existing = supabase.table('tasks') \
@@ -29,6 +31,7 @@ def test_t1_noop_no_old_tasks():
         pass
 
 
+@requires_live_db
 def test_s5_noop_no_stale_waiting():
     set_trace_id("sim-s5-noop")
     stale = supabase.table('tasks') \
@@ -52,6 +55,7 @@ def test_s5_noop_no_stale_waiting():
     assert none_old, "No stale waiting_on tasks should exist"
 
 
+@requires_live_db
 def test_m5_noop_no_expired_memories():
     set_trace_id("sim-m5-noop")
     expired = supabase.table('memories') \
@@ -62,6 +66,7 @@ def test_m5_noop_no_expired_memories():
     assert not expired.data, "No expired memories should exist in test namespace"
 
 
+@requires_live_db
 def test_t4_noop_no_orphan_calendar():
     set_trace_id("sim-t4-noop")
     orphans = supabase.table('tasks') \

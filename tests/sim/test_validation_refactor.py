@@ -462,11 +462,12 @@ class TestStateMachines:
         assert guard_is_valid_transition("tasks", "todo", "done") is True
         assert guard_require_valid_transition("tasks", "todo", "done") is True
 
-    def test_s2_invalid_transition_blocked(self):
-        """S2: Invalid task transition (done→todo) blocked by guard."""
+    def test_s2_reopen_done_task_allowed(self):
+        """S2: Reopening a done task (done→todo) is allowed (product change:
+        completed tasks can be reopened for follow-up work)."""
         from core.lib.state_machines import guard_is_valid_transition, guard_require_valid_transition
-        assert guard_is_valid_transition("tasks", "done", "todo") is False
-        assert guard_require_valid_transition("tasks", "done", "todo") is False
+        assert guard_is_valid_transition("tasks", "done", "todo") is True
+        assert guard_require_valid_transition("tasks", "done", "todo") is True
 
     def test_s2b_raw_dumps_valid(self):
         """S2b: Valid raw_dumps transition passes."""

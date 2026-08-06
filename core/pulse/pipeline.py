@@ -6,7 +6,7 @@ Used by:
 """
 
 from core.services.db import (
-    channel_tenant_scope, core_config_upsert, tenant_aware_client,
+    active_user_ids, core_config_upsert, tenant_aware_client, tenant_scope,
 )
 import os
 from datetime import datetime, timezone, timedelta
@@ -43,10 +43,31 @@ async def check_pipeline_health() -> str:
 
 
 async def run_full_health_check() -> dict:
-    """(M3) Tenant-scoped entry: cron health checks carry no API key, so the
-    tenant resolves from the channel (single active user)."""
-    with channel_tenant_scope():
+    """(M6) Cron fan-out: iterate all active users, one tenant-scoped health
+    check each. Per-tenant failures are isolated and reported without
+    aborting the other tenants. Legacy (pre-db/78, or no active users): runs
+    once unscoped, exactly as the pre-M4 health check did. The "issues" /
+    "report" / "counts" keys are preserved for the /api/health consumers.
+    """
+    uids = active_user_ids()
+    if not uids:
         return await _run_full_health_check_impl()
+    reports = []
+    for uid in uids:
+        try:
+            with tenant_scope(uid):
+                reports.append(await _run_full_health_check_impl())
+        except Exception as e:
+            audit_log_sync("health_check", "ERROR", f"Health check failed for tenant {uid}: {e}")
+            reports.append({"issues": [f"tenant {uid}: {e}"], "report": f"⚠️ tenant {uid}: {e}", "counts": {}})
+    issues = [i for r in reports for i in r.get("issues", [])]
+    report = "\n\n".join(r.get("report", "") for r in reports if r.get("report"))
+    counts = {}
+    for r in reports:
+        for k, v in (r.get("counts") or {}).items():
+            counts[k] = counts.get(k, 0) + (v or 0)
+    return {"issues": issues, "report": report, "counts": counts,
+            "tenants": len(uids), "results": reports}
 
 
 async def _run_full_health_check_impl() -> dict:

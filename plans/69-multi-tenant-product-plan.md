@@ -265,10 +265,12 @@ tenants; pushes land only on the right user's devices.
 - Plus: `python3 -m py_compile` + `ruff check` clean; 47 unit tests green;
   both M3 isolation gates still pass.
 
-Remaining for M4 (deliberate): `process_pulse` (briefing) and
-`run_full_health_check` still run under the single channel tenant — they
-are the heavy LLM paths and fan out in the same wrapper pattern when M6
-per-tenant cost controls land.
+~~Remaining for M4 (deliberate)~~ **Done (M6, 2026-08-06)**: `process_pulse`
+(briefing) and `run_full_health_check` now fan out per active user with the
+same wrapper pattern (legacy unscoped fallback, per-tenant failure
+isolation). `process_pulse` keeps the legacy `briefing` response key and
+adds `tenants`/`results`; the health check keeps `issues`/`report`/`counts`
+and adds `tenants`/`results`. Gate: verify_m4 [2b] (6 checks).
 
 ### M5 — Onboarding (1 week) — the cold-start killer
 
@@ -332,9 +334,63 @@ without any single-user code paths.
   M3 (both gates) + M4 (12 gates) all still pass.
 
 ### M6 — Cost controls & telemetry (3 days)
-- Per-tenant rate limits (LLM calls/min), per-tenant daily LLM budget, spend telemetry surfaced
-  (`core/lib/telemetry.py` gains owner_id on observations — part of M3 sweep; dashboard here).
-- Exit: you can see cost-per-user per day/week; runaway tenants get capped automatically.
+
+**M6 progress (COMPLETE — 2026-08-06, credits v2):** per-tenant LLM spend
+is capped by a MONTHLY CREDIT the operator owns (table-driven, like every
+LLM product), not a code constant.
+
+- **`db/85_llm_spend.sql`:** `llm_spend` ledger (owner_id, ts, model,
+  provider, workload, tokens, est_cost_usd, outcome) + (owner_id, ts)
+  index + RLS policy. Applied to copy DB. One row per LLM outcome — it is
+  BOTH the durable spend source and the telemetry.
+- **`db/86_user_credit.sql`:** `users.monthly_credit_usd numeric` + `users.credit_cycle_day int`
+  (backfilled from created_at = signup day). THE OPERATOR edits the credit
+  in the Supabase table editor (or via `set_user_credit.py`) — nothing
+  cost-related lives in code except a NULL fallback.
+- **`core/llm/cost.py`:** per-model pricing table (USD per 1K tokens,
+  `MODEL_PRICING_USD_PER_1K`) + `estimate_cost_usd()`. Unknown models fall
+  back to a conservative rate so cost is never silently undercounted.
+- **`core/llm/budget.py` (credits model):** `resolve_monthly_credit(uid)`
+  (users.monthly_credit_usd → env → default $5/mo), `cycle_start_utc(uid)`
+  (anniversary billing — cycle resets on the user's signup day-of-month,
+  clamped to month length), `cycle_spend_usd(uid)` (SUM ledger since cycle
+  start), `credit_remaining/credit_warning/credit_exhausted` (soft warn at
+  ≤20% remaining, hard block at 0), `record_llm_spend()` (owner-scoped
+  insert), and `tenant_llm_limiter(uid, max_calls)` — per-tenant
+  sliding-window limiter (Redis key embeds uid; legacy shares one key;
+  classification keeps its own 15/min per-tenant cap). Users row cached 60s;
+  spend is NEVER cached.
+- **Entry gate (`core/llm/fallback.py`):** every LLM call checks the
+  per-tenant rate limiter (block when wait > 10s) then the credit: warn
+  (log, keep serving) in the ≤20% zone, degrade to safe-hold at exactly 0 —
+  a tenant can never spend past the credit you set. Legacy (no tenant
+  context) is uncapped — pre-M6 behaviour.
+- **Ledger writes (`core/llm/instrument.py`):** `log_llm_outcome()` records
+  every outcome (success/gemma/openrouter/degraded) into llm_spend with
+  owner, model, token estimates, cost. The ledger and model_registry agree.
+- **Classify rate-limit fix (`core/webhook/classify.py`):** the old limiter
+  was a GLOBAL key (`rhodey:rate_limit:classify`) — tenant A's 15 calls/min
+  could starve tenant B. Now per-tenant via `tenant_llm_limiter()`.
+- **Admin surface:** `GET /api/admin/spend?days=7` (bearer/x-pulse-secret
+  gate) returns per-user per-day totals PLUS the credit overlay
+  (monthly_credit_usd, cycle_start_utc, cycle_spent_usd,
+  credit_remaining_usd). `scripts/set_user_credit.py` sets/clears a user's
+  credit, `--status` shows cycle + spent + remaining, `--list` shows all
+  (dry-run by default, idempotent).
+
+**Verification — `scripts/verify_m7_cost_controls.py` (24 gates):**
+cost math (known/free/unknown/zero), table-driven credit resolution
+(users row wins over env; NULL → env; no row + no env → default), cycle
+math (signup day, most-recent boundary, 29-31 clamp in short months),
+per-tenant ledger isolation, warn zone serves / exhausted blocks (real
+entry point, no provider call), per-tenant limiter keying, ledger
+recording from log_llm_outcome, classify no-global-key. Copy-DB smoke:
+set $5 credit → status shows cycle=6th (signup day), spend=$0.0010 from
+ledger, remaining=$5.00 → cleanup verified. Plus py_compile + ruff clean;
+all other gates (M2/M3/M4/M5/M6) still pass.
+
+- Exit: you can see credit / spent / remaining per user per cycle; runaway
+  tenants get capped automatically at their monthly credit.
 
 ## 7. Cron design (unchanged infra, fanned out)
 
@@ -353,9 +409,22 @@ project stays on free) — external cron counts as activity.
 ## 9. Testing & validation
 
 - Keep existing suites green: `pytest tests/unit tests/sim tests/clusters`, `scripts/run_full_uat.py`.
-- **New: tenant-isolation test suite** (`tests/tenants/`): user A cannot read/write user B rows
-  (direct table reads, RPCs, retrieval, graph, pushes, core_config); cross-tenant n-gram collision
-  test (mirror `test_ngrams.py`); unauthenticated key rejection; per-tenant settings fallback.
+- **New: tenant-isolation test suite** (`tests/tenants/` — built 2026-08-06): user A cannot read/write
+  user B rows (direct table reads, RPCs, retrieval, graph, pushes, core_config); cross-tenant n-gram
+  collision test (mirror `test_ngrams.py`); unauthenticated key rejection; per-tenant settings
+  fallback. 7 tests, all green against the copy DB; markers cleaned up after each run.
+- **tests/sim refresh (2026-08-06):** the stale suite is green again — 21 pass / 74 skip / 0 fail.
+  Three stale classes fixed: (1) patch targets moved in the M3 sweep (`get_supabase` →
+  `tenant_aware_client`) in suite2/suite5/preflight; (2) one behavior drift (done→todo reopen now
+  valid) in test_validation_refactor; (3) a mock chain in preflight missed the anchor-resolution
+  query's `.eq('is_current', True)` so entities came back empty. The 18 DB-backed integration tests
+  now carry `@requires_live_db` — a faithful TLS-handshake probe (cert verification, like httpx's
+  default) skips them when the Supabase project is unreachable (CI sandbox, no network), and runs
+  them on a machine with real connectivity.
+- **Known pre-existing (deferred by user):** 16 `tests/unit/` failures (test_telemetry,
+  test_context_registry, test_graph_pipeline, test_pattern_extractor, test_suggest_mode) are the
+  same stale-patch class — they patch `get_supabase` names removed by the M3 sweep. Unrelated to
+  the M6-gap work; queued behind the "no unit-testing now" decision.
 - Migration dry-runs on DB copy with [TENANT-TEST] prefixed rows + cleanup (mirror UAT hygiene).
 
 ## 10. Rollout waves

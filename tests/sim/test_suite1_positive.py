@@ -3,10 +3,12 @@ from datetime import datetime, timedelta, timezone
 from core.services.db import get_supabase
 from core.lib.audit_logger import set_trace_id
 from core.pulse.sentinel import process_sentinel
+from sim.conftest import requires_live_db
 
 supabase = get_supabase()
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_t1_priority_escalation():
     set_trace_id("sim-t1-pos")
@@ -47,6 +49,7 @@ async def test_t1_priority_escalation():
     supabase.table('tasks').delete().eq('id', tid).execute()
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_s5_followup_auto_cancel():
     set_trace_id("sim-s5-pos")
@@ -88,6 +91,7 @@ async def test_s5_followup_auto_cancel():
     supabase.table('tasks').delete().eq('id', tid).execute()
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_m5_memory_sweep():
     set_trace_id("sim-m5-pos")
@@ -117,6 +121,7 @@ async def test_m5_memory_sweep():
     assert not check.data, "Memory should be deleted after sweep"
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_t4_orphan_calendar_cleanup(mock_google):
     set_trace_id("sim-t4-pos")
@@ -155,6 +160,7 @@ async def test_t4_orphan_calendar_cleanup(mock_google):
     supabase.table('tasks').delete().eq('id', tid).execute()
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_sentinel_piggyback_call_order(mock_telegram, mock_google):
     set_trace_id("sim-call-order")
