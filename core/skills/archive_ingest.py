@@ -6,7 +6,7 @@ from datetime import datetime
 from googleapiclient.errors import HttpError
 
 from core.retrieval.pipeline import schedule_index_memory
-from core.services.db import tenant_aware_client
+from core.services.db import channel_tenant_scope, tenant_aware_client
 from core.services.google_service import get_cached_service
 from core.llm.retry import get_jittered_backoff
 from core.lib.graph_rules import normalize_label
@@ -548,4 +548,5 @@ def run_ingest():
 
 
 if __name__ == "__main__":
-    run_ingest()
+    with channel_tenant_scope():
+        run_ingest()

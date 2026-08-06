@@ -10,7 +10,7 @@ import time
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
 from core.lib.graph_rules import resolve_alias, normalize_label
-from core.services.db import maybe_single_safe, tenant_aware_client
+from core.services.db import channel_tenant_scope, maybe_single_safe, tenant_aware_client
 
 
 
@@ -1755,34 +1755,37 @@ if __name__ == "__main__":
         print("ERROR: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
         sys.exit(1)
     
-    # Run backfill
-    run_backfill()
-    
-    # Run graph→table sync
+    # Standalone cron runs carry no API key — scope the whole run to the
+    # channel tenant (single active user) so the tenant facade works (M3).
+    with channel_tenant_scope():
+        # Run backfill
+        run_backfill()
+        
+        # Run graph→table sync
 
-    sync_person_nodes_to_people_table()
-    sync_people_to_graph_nodes()
-    
-    # Run table→graph sync (reverse direction)
-    sync_person_org_edges()
-    sync_organizations_to_graph_nodes()
-    
-    # Verification
-    org_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "organization").not_.is_("db_record_id", "null").eq('is_current', True).execute()
-    actual_org_count = getattr(org_count, "count", 0) if hasattr(org_count, "count") else len(org_count.data or []) if org_count else 0
-    try:
-        expected_orgs = supabase.table("organizations").select("*", count="exact").execute()
-        expected_org_count = getattr(expected_orgs, "count", 0) if hasattr(expected_orgs, "count") else len(expected_orgs.data or [])
-        if actual_org_count < expected_org_count:
-            print(f"⚠️  Org sync mismatch: {actual_org_count}/{expected_org_count} graph nodes created — some orgs missing")
-    except Exception:
-        print("⏭️  Org-count verification skipped: organizations table removed (migration 75).")
-    
-    proj_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "project").not_.is_("db_record_id", "null").eq('is_current', True).execute()
-    expected_projs = supabase.table("projects").select("*", count="exact").execute()
-    actual_proj_count = getattr(proj_count, "count", 0) if hasattr(proj_count, "count") else len(proj_count.data or []) if proj_count else 0
-    expected_proj_count = getattr(expected_projs, "count", 0) if hasattr(expected_projs, "count") else len(expected_projs.data or [])
-    if actual_proj_count < expected_proj_count:
-        print(f"⚠️  Project sync mismatch: {actual_proj_count}/{expected_proj_count} graph nodes created — some projects missing")
-    
-    print("✅ All Phase-2 operations complete")
+        sync_person_nodes_to_people_table()
+        sync_people_to_graph_nodes()
+        
+        # Run table→graph sync (reverse direction)
+        sync_person_org_edges()
+        sync_organizations_to_graph_nodes()
+        
+        # Verification
+        org_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "organization").not_.is_("db_record_id", "null").eq('is_current', True).execute()
+        actual_org_count = getattr(org_count, "count", 0) if hasattr(org_count, "count") else len(org_count.data or []) if org_count else 0
+        try:
+            expected_orgs = supabase.table("organizations").select("*", count="exact").execute()
+            expected_org_count = getattr(expected_orgs, "count", 0) if hasattr(expected_orgs, "count") else len(expected_orgs.data or [])
+            if actual_org_count < expected_org_count:
+                print(f"⚠️  Org sync mismatch: {actual_org_count}/{expected_org_count} graph nodes created — some orgs missing")
+        except Exception:
+            print("⏭️  Org-count verification skipped: organizations table removed (migration 75).")
+        
+        proj_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "project").not_.is_("db_record_id", "null").eq('is_current', True).execute()
+        expected_projs = supabase.table("projects").select("*", count="exact").execute()
+        actual_proj_count = getattr(proj_count, "count", 0) if hasattr(proj_count, "count") else len(proj_count.data or []) if proj_count else 0
+        expected_proj_count = getattr(expected_projs, "count", 0) if hasattr(expected_projs, "count") else len(expected_projs.data or [])
+        if actual_proj_count < expected_proj_count:
+            print(f"⚠️  Project sync mismatch: {actual_proj_count}/{expected_proj_count} graph nodes created — some projects missing")
+        
+        print("✅ All Phase-2 operations complete")

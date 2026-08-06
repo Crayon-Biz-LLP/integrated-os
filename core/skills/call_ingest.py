@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timezone
 from googleapiclient.http import MediaIoBaseDownload
 from faster_whisper import WhisperModel # type: ignore
-from core.services.db import tenant_aware_client
+from core.services.db import channel_tenant_scope, tenant_aware_client
 from core.services.llm import call_gemini_classify, CLASSIFICATION_MODEL
 from core.services.google_service import get_cached_service
 
@@ -264,4 +264,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    with channel_tenant_scope():
+        asyncio.run(main())

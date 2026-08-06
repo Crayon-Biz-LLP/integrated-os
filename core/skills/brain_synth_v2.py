@@ -4,7 +4,7 @@ import os
 import httpx
 from datetime import datetime, timezone
 
-from core.services.db import tenant_aware_client
+from core.services.db import channel_tenant_scope, tenant_aware_client
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.llm.constants import CLASSIFICATION_MODEL
@@ -562,4 +562,5 @@ FRAGMENTS (Old & New):
                 pass
 
 if __name__ == "__main__":
-    asyncio.run(run_batch_sweep_v2())
+    with channel_tenant_scope():
+        asyncio.run(run_batch_sweep_v2())

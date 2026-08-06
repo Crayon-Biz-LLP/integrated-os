@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from core.lib.constants import EmailStatus
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.time_utils import compute_expires_at
-from core.services.db import maybe_single_safe, tenant_aware_client
+from core.services.db import channel_tenant_scope, maybe_single_safe, tenant_aware_client
 from core.services.llm import call_gemini_classify
 import requests
 
@@ -512,4 +512,5 @@ async def main():
     print(f"Result: {result}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    with channel_tenant_scope():
+        asyncio.run(main())
