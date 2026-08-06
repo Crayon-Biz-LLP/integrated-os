@@ -1125,6 +1125,38 @@ class ApiService {
     return ApiResult.fail('Max retries exceeded');
   }
 
+  // ── Onboarding journey (M8) ─────────────────────────────────
+
+  /// Fetches the user's onboarding state: new | in_progress | seeded.
+  Future<ApiResult<dynamic>> getOnboardingStatus() =>
+      get('/api/onboarding/status', timeout: const Duration(seconds: 12));
+
+  /// Submits the completed journey and returns the first welcome briefing.
+  /// No retries — the seed is idempotent but must not double-fire.
+  Future<ApiResult<dynamic>> completeOnboarding(
+    Map<String, dynamic> payload,
+  ) =>
+      post(
+        '/api/onboarding/complete',
+        body: payload,
+        timeout: const Duration(seconds: 60),
+        maxRetries: 0,
+      );
+
+  /// Starts in-app Google OAuth — returns {url, state}.
+  Future<ApiResult<dynamic>> startGoogleOAuth() =>
+      get('/api/oauth/start', timeout: const Duration(seconds: 12));
+
+  /// Exchanges the OAuth code (captured from the rhodey:// callback) for
+  /// tokens stored per-user on the backend.
+  Future<ApiResult<dynamic>> exchangeGoogleOAuth(String code, String state) =>
+      post(
+        '/api/oauth/exchange',
+        body: {'code': code, 'state': state},
+        timeout: const Duration(seconds: 25),
+        maxRetries: 0,
+      );
+
   // ── Config access ────────────────────────────────────────────
 
   ApiConfig get config => _config;

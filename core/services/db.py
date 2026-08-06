@@ -184,16 +184,26 @@ def _inject_owner(data, uid: str):
     return [dict(r, owner_id=uid) if not r.get("owner_id") else dict(r) for r in data]
 
 
+# Tables whose tenant key IS the row key (they have no owner_id column).
+# The facade passes these through UN-scoped — callers always filter on
+# user_id/id explicitly, so there is no cross-tenant read/write surface.
+# (M8 onboarding: user_settings / user_oauth_tokens / users.)
+_TENANT_KEYED_TABLES = frozenset({"users", "user_settings", "user_oauth_tokens"})
+
+
 class TenantTable:
     """Tenant-scoped PostgREST builder for one table.
 
     Reads:  .select() is intercepted and pre-filtered with
             .eq('owner_id', tenant) — every chained eq/order/limit/execute
-            inherits the scope.
+            inherits the scope. For _TENANT_KEYED_TABLES (users,
+            user_settings, user_oauth_tokens — no owner_id column) the chain
+            is passed through raw; the caller filters on user_id/id.
     Writes: insert / upsert / update inject owner_id into the payload AND
             owner-scope the WHERE clause (update and delete append
             .eq('owner_id', tenant) so a chained filter can never touch
-            another tenant's row).
+            another tenant's row). Same tenant-keyed passthrough for the
+            three no-owner tables.
 
     Fail-closed: constructing outside a tenant context raises
     TenantRequiredError.
@@ -206,10 +216,15 @@ class TenantTable:
         # has no filters until .select() is called. Scoping is applied in
         # select()/delete()/update() below.
         self._inner = get_supabase().table(name)
+        self._keyed = name in _TENANT_KEYED_TABLES
 
     def select(self, columns="*", **kwargs):
-        # Intercept the read chain: every select is owner-scoped.
-        return self._inner.select(columns, **kwargs).eq("owner_id", self._uid)
+        # Intercept the read chain: every select is owner-scoped (except the
+        # tenant-keyed tables, which carry no owner_id column).
+        chain = self._inner.select(columns, **kwargs)
+        if not self._keyed:
+            chain = chain.eq("owner_id", self._uid)
+        return chain
 
     def __getattr__(self, item):
         # Other read-side verbs (eq/order/limit/execute/...) delegate to the
@@ -218,14 +233,20 @@ class TenantTable:
         return getattr(self._inner, item)
 
     def insert(self, data):
+        if self._keyed:
+            return self._inner.insert(data)
         return get_supabase().table(self._name).insert(_inject_owner(data, self._uid))
 
     def upsert(self, data, on_conflict=None, **kwargs):
+        if self._keyed:
+            return self._inner.upsert(data, on_conflict=on_conflict, **kwargs)
         return get_supabase().table(self._name).upsert(
             _inject_owner(data, self._uid), on_conflict=on_conflict, **kwargs
         )
 
     def update(self, data):
+        if self._keyed:
+            return self._inner.update(data)
         return (
             get_supabase()
             .table(self._name)
@@ -234,6 +255,8 @@ class TenantTable:
         )
 
     def delete(self):
+        if self._keyed:
+            return self._inner.delete()
         return self._inner.delete().eq("owner_id", self._uid)
 
 
