@@ -21,7 +21,6 @@ line, never printed.
 import os
 import re
 import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -93,7 +92,7 @@ def discover_conn() -> tuple[str, str]:
     for conn in _candidates(ref):
         print(f"  probing {conn.split('@')[1].split('?')[0]}")
         if _probe(conn, password):
-            print(f"  ✅ reachable")
+            print("  ✅ reachable")
             return conn, password
     raise SystemExit("❌ No reachable host — check network / SUPABASE_POOLER_HOST / Dashboard connection string")
 
