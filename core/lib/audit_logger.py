@@ -69,8 +69,13 @@ async def audit_log(service: str, level: str, message: str, metadata: dict = Non
             "level": level,
             "message": message[:500] if message else "(empty)",
             "metadata": json.dumps(meta),
-            "owner_id": _owner_attr(),
         }
+        # owner_id is attribution-only and only exists post-db/78. Sending
+        # the key (even null) on the pre-db/78 schema makes PostgREST reject
+        # the insert (PGRST204 unknown column) — found by Tier 4 on live.
+        owner_id = _owner_attr()
+        if owner_id:
+            log_data["owner_id"] = owner_id
         supabase.table('audit_logs').insert(log_data).execute()
     except Exception as e:
         # Fallback to print if audit_logs write fails
@@ -96,8 +101,13 @@ def audit_log_sync(service: str, level: str, message: str, metadata: dict = None
             "level": level,
             "message": message[:500] if message else "(empty)",
             "metadata": json.dumps(meta),
-            "owner_id": _owner_attr(),
         }
+        # owner_id is attribution-only and only exists post-db/78. Sending
+        # the key (even null) on the pre-db/78 schema makes PostgREST reject
+        # the insert (PGRST204 unknown column) — found by Tier 4 on live.
+        owner_id = _owner_attr()
+        if owner_id:
+            log_data["owner_id"] = owner_id
         supabase.table('audit_logs').insert(log_data).execute()
     except Exception as e:
         print(f"⚠️ AUDIT LOG FAILURE: {e} | Original: [{service}] {level}: {message}")

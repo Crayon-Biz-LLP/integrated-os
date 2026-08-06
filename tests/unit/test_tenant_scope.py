@@ -288,6 +288,59 @@ def test_tenant_context_isolated_across_concurrent_async_tasks():
     assert seen == {"uA": "uA", "uB": "uB"}
 
 
+# ── tenant_mode_enabled legacy detection ─────────────────────────────────
+
+
+def _reset_tenant_mode():
+    db_mod._tenant_mode = None
+
+
+def test_tenant_mode_enabled_confirmed_false_on_postgrest_pgrst204(_mock_supabase):
+    """Regression (found by Tier 4 on live): PostgREST answers a missing
+    table with PGRST204 ('Could not find the 'users' relation in the schema
+    cache') — NOT the native 'relation ... does not exist' shape. The probe
+    must recognize it AND cache the confirmed False so it doesn't re-probe
+    on every call (per-call probe = failing HTTP round trip + log spam)."""
+    _reset_tenant_mode()
+    _mock_supabase.table.side_effect = Exception(
+        "Could not find the 'users' relation in the schema cache"
+    )
+    assert db_mod.tenant_mode_enabled() is False
+    assert db_mod._tenant_mode is False  # confirmed → cached
+    calls = _mock_supabase.table.call_count
+    db_mod.tenant_mode_enabled()
+    assert _mock_supabase.table.call_count == calls  # no re-probe
+
+
+def test_tenant_mode_enabled_confirmed_false_native_shape(_mock_supabase):
+    _reset_tenant_mode()
+    _mock_supabase.table.side_effect = Exception('relation "users" does not exist')
+    assert db_mod.tenant_mode_enabled() is False
+    assert db_mod._tenant_mode is False
+
+
+def test_tenant_mode_enabled_transient_failure_not_cached(_mock_supabase):
+    """A network/auth blip carries no 'table missing' signal: return False
+    WITHOUT caching so scoping retries next call — never silently disable
+    tenant mode for the process lifetime (that would be the worst leak)."""
+    _reset_tenant_mode()
+    _mock_supabase.table.side_effect = Exception("connection timed out")
+    assert db_mod.tenant_mode_enabled() is False
+    assert db_mod._tenant_mode is None  # not confirmed → re-probe next call
+
+
+def test_tenant_mode_enabled_true_cached(_mock_supabase):
+    _reset_tenant_mode()
+    res = MagicMock(data=[{"id": "u1"}])
+    _mock_supabase.table.return_value.select.return_value.limit.return_value \
+        .execute.return_value = res
+    assert db_mod.tenant_mode_enabled() is True
+    assert db_mod._tenant_mode is True
+    calls = _mock_supabase.table.call_count
+    db_mod.tenant_mode_enabled()
+    assert _mock_supabase.table.call_count == calls
+
+
 def test_tenant_scope_restores_outer_context_on_exception():
     """tenant_scope restores the previous tenant even when the block raises —
     no orphaned token leaves a stale tenant for later work."""
