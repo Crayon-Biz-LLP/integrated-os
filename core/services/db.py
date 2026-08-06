@@ -247,6 +247,17 @@ def tenant_table(name: str) -> TenantTable:
 _tenant_mode: bool | None = None
 
 
+def _missing_table_error(msg: str, table: str = "users") -> bool:
+    """True when an error provably means `table` is missing — both the
+    native shape ('relation "users" does not exist') and PostgREST's
+    PGRST204 ('Could not find the 'users' relation in the schema cache').
+    Anything else (timeout, auth, rate limit) is a transient failure and
+    must NOT be treated as confirmed-missing."""
+    return table in msg and (
+        "does not exist" in msg or "not found" in msg or "schema cache" in msg
+    )
+
+
 def tenant_mode_enabled() -> bool:
     """True once the users table exists (db/78 applied) — the scoped world.
 
@@ -265,7 +276,7 @@ def tenant_mode_enabled() -> bool:
         _tenant_mode = True
     except Exception as e:
         msg = str(e)
-        if "users" in msg and ("does not exist" in msg or "not found" in msg):
+        if _missing_table_error(msg):
             _tenant_mode = False  # confirmed: pre-db/78
         else:
             try:
@@ -315,8 +326,10 @@ def resolve_channel_tenant() -> str | None:
             return _channel_tenant
         # Confirmed: users table exists but no active user (or empty).
         _channel_tenant = _NO_CHANNEL_TENANT
-    except Exception:
-        pass  # transient — re-probe next call
+    except Exception as e:
+        msg = str(e)
+        if _missing_table_error(msg):
+            _channel_tenant = _NO_CHANNEL_TENANT  # confirmed: pre-db/78
     return None
 
 
@@ -518,7 +531,7 @@ def resolve_user_by_api_key(api_key: str) -> dict | None:
         return res.data if res.data else None
     except Exception as e:
         msg = str(e)
-        if "users" in msg and ("does not exist" in msg or "not found" in msg):
+        if _missing_table_error(msg):
             if not _missing_users_logged:
                 try:
                     from core.lib.audit_logger import audit_log_sync
