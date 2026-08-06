@@ -4,13 +4,20 @@ from core.llm.compat import call_llm_with_fallback_sync, get_embedding_sync
 import os
 import sys
 import json
+from contextlib import nullcontext as _nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
 from core.lib.graph_rules import resolve_alias, normalize_label
-from core.services.db import channel_tenant_scope, maybe_single_safe, tenant_aware_client
+from core.services.db import (
+    channel_tenant_scope,
+    get_tenant,
+    maybe_single_safe,
+    tenant_aware_client,
+    tenant_scope,
+)
 
 
 
@@ -225,42 +232,49 @@ def backfill_embeddings():
 
     success = 0
     failed = 0
-    
+    # Python 3.11 ThreadPoolExecutor does NOT propagate contextvars, so the
+    # tenant scope set by channel_tenant_scope() in the caller is invisible
+    # in workers — the facade would fail closed with TenantRequiredError.
+    # Capture the UID here (main thread, scope active) and re-enter it inside
+    # each worker.
+    uid = get_tenant()
+
     def process_mem_embed(i, row):
         nonlocal success, failed
-        memory_id = row["id"]
-        content = synthesize_content(row)
+        with tenant_scope(uid) if uid else _nullcontext():
+            memory_id = row["id"]
+            content = synthesize_content(row)
 
-        if not content.strip():
-            print(f"  [{i+1}/{total}] Skipping {memory_id} — empty content.")
-            failed += 1
-            return
+            if not content.strip():
+                print(f"  [{i+1}/{total}] Skipping {memory_id} — empty content.")
+                failed += 1
+                return
 
-        embedding = get_embedding_sync(content)
+            embedding = get_embedding_sync(content)
 
-        if not embedding:
-            audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ Embedding failed for {memory_id}")
-            failed += 1
-            return
+            if not embedding:
+                audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ Embedding failed for {memory_id}")
+                failed += 1
+                return
 
-        try:
-            with_retry(
-                lambda: supabase.table("memories")
-                    .update({"embedding": embedding, "embedding_status": "success"})
-                    .eq("id", memory_id)
-                    .execute(),
-                label=f"Update embedding for {memory_id}"
-            )
-            print(f"  [{i+1}/{total}] ✅ Patched embedding for {memory_id} ({row['memory_type']})")
-            success += 1
-        except Exception as e:
             try:
-                supabase.table("memories").update({"embedding_status": "failed"}).eq("id", memory_id).execute()
-            except Exception:
-                pass
-            
-            audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ DB update failed for {memory_id}: {e}")
-            failed += 1
+                with_retry(
+                    lambda: supabase.table("memories")
+                        .update({"embedding": embedding, "embedding_status": "success"})
+                        .eq("id", memory_id)
+                        .execute(),
+                    label=f"Update embedding for {memory_id}"
+                )
+                print(f"  [{i+1}/{total}] ✅ Patched embedding for {memory_id} ({row['memory_type']})")
+                success += 1
+            except Exception as e:
+                try:
+                    supabase.table("memories").update({"embedding_status": "failed"}).eq("id", memory_id).execute()
+                except Exception:
+                    pass
+                
+                audit_log_sync("backfill_graph", "ERROR", f"  [{i+1}/{total}] ❌ DB update failed for {memory_id}: {e}")
+                failed += 1
 
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = []
@@ -644,10 +658,19 @@ def run_backfill():
         print(f"Processing batch {batch_num} ({len(batch)} memories)...")
         
         extracted_data = []
+        # Re-enter the tenant scope inside each worker (see process_mem_embed
+        # for why — py3.11 thread pools drop contextvars, so the facade would
+        # fail closed and extract 0 nodes).
+        uid = get_tenant()
+
+        def _scoped_extract(text, memory_id):
+            with tenant_scope(uid) if uid else _nullcontext():
+                return extract_graph_elements(text, memory_id)
+
         with ThreadPoolExecutor(max_workers=3) as executor:
             future_to_mem = {
                 executor.submit(
-                    extract_graph_elements, synthesize_content(m), m["id"]
+                    _scoped_extract, synthesize_content(m), m["id"]
                 ): m for m in batch if synthesize_content(m).strip()
             }
             
