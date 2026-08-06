@@ -6,6 +6,8 @@ import 'screens/today_screen.dart';
 import 'screens/inbox_screen.dart';
 import 'screens/adaptive_home_screen.dart';
 import 'screens/quick_capture_overlay.dart';
+import 'screens/onboarding/onboarding_flow.dart';
+import 'services/api_config.dart';
 import 'services/api_service.dart';
 import 'services/notification_service.dart';
 import 'services/share_service.dart';
@@ -74,6 +76,13 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   /// and reopened).
   bool _hasStarted = false;
 
+  /// First-run gate (M8): while loading we show a blank splash; if the user
+  /// has no key or hasn't completed onboarding, we show the onboarding
+  /// journey instead of the shell. Fail-open: any status error → straight to
+  /// the shell (the home screen handles empty data gracefully).
+  bool _gateLoading = true;
+  bool _needsOnboarding = false;
+
   @override
   void initState() {
     super.initState();
@@ -82,6 +91,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       _hasStarted = true;
       UpdateService().check(context);
     });
+    _checkOnboarding();
 
     HomeWidget.widgetClicked.listen((Uri? uri) {
       if (uri?.host == 'capture') {
@@ -94,6 +104,28 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       } else if (uri?.host == 'today') {
         Navigator.push(context, MaterialPageRoute(builder: (_) => const TodayScreen()));
       }
+    });
+  }
+
+  Future<void> _checkOnboarding() async {
+    if (!ApiConfig().isConfigured) {
+      if (!mounted) return;
+      setState(() {
+        _needsOnboarding = true;
+        _gateLoading = false;
+      });
+      return;
+    }
+    final r = await ApiService().getOnboardingStatus();
+    var needs = false;
+    if (r.success && r.data is Map) {
+      final status = (r.data as Map)['status'] as String?;
+      needs = status == null || status == 'new' || status == 'in_progress';
+    }
+    if (!mounted) return;
+    setState(() {
+      _needsOnboarding = needs;
+      _gateLoading = false;
     });
   }
 
@@ -113,6 +145,26 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    if (_gateLoading) {
+      return const Scaffold(
+        backgroundColor: AppTheme.background,
+        body: Center(
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: AppTheme.accent,
+            ),
+          ),
+        ),
+      );
+    }
+    if (_needsOnboarding) {
+      return OnboardingFlow(
+        onDone: () => setState(() => _needsOnboarding = false),
+      );
+    }
     return const AdaptiveHomeScreen();
   }
 }

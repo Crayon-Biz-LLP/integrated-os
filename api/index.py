@@ -6,6 +6,7 @@ import httpx
 import json
 import uuid
 import asyncio
+from urllib.parse import urlencode
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, HTTPException
@@ -3751,3 +3752,179 @@ async def graph_node_enrichment_route(node_id: str, request: Request):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ── Onboarding journey (M8) ────────────────────────────────────────────────
+# In-app onboarding: status → (key | about-you | people | plate | areas |
+# google) → complete. The journey answers are seeded via
+# core/services/onboarding.run_onboarding (wrapping seed_world) and the first
+# briefing is composed deterministically from the answers — no LLM call, so
+# it is instant and free, and shaped exactly like /api/briefing so the app's
+# existing BriefingResponse UI renders it.
+
+@app.get("/api/onboarding/status")
+async def onboarding_status(request: Request):
+    """The tenant's onboarding state: new | in_progress | seeded.
+
+    Requires a per-user API key (the journey starts with the key step).
+    """
+    uid = require_api_auth(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="A per-user API key is required")
+    from core.services.onboarding import fetch_status
+
+    return fetch_status(tenant_aware_client(), uid)
+
+
+@app.post("/api/onboarding/complete")
+async def onboarding_complete(request: Request):
+    """Finish the journey: seed the tenant's world + return the first briefing.
+
+    Payload (all optional except context — fail-open per section):
+      context, people [{name, role}], organizations [{name, context}],
+      tasks [{title, priority}], domains [{name, keywords}],
+      personal_orgs, root_label, timezone.
+    """
+    uid = require_api_auth(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="A per-user API key is required")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object")
+
+    from core.services.onboarding import run_onboarding, welcome_briefing
+    from core.services.user_settings import resolve_user_name
+
+    result = await run_onboarding(tenant_aware_client(), uid, payload)
+    name = resolve_user_name(uid) or ""
+    briefing = welcome_briefing(name, result["world"], result["summary"])
+    return {"status": "seeded", "summary": result["summary"], "briefing": briefing}
+
+
+# ── In-app Google connect (M8) ────────────────────────────────────────────
+# The app opens the consent URL in an in-app browser (flutter_web_auth);
+# Google redirects to rhodey://oauth2/callback?code=..&state=.., the app
+# captures that URI and POSTs code+state back here for exchange. The refresh
+# token is stored per-user in user_oauth_tokens — never in env.
+#
+# NOTE: the redirect URI 'rhodey://oauth2/callback' must be added to the
+# Google Cloud Console OAuth client (the same client that has
+# http://localhost:8080) before the in-app flow works.
+
+_OAUTH_REDIRECT_URI = "rhodey://oauth2/callback"
+_OAUTH_STATE_TTL = 15 * 60
+_OAUTH_STATES: dict[str, tuple[str, float]] = {}  # state -> (uid, expires_at)
+
+
+def _google_scopes() -> str:
+    return (
+        "https://www.googleapis.com/auth/calendar "
+        "https://www.googleapis.com/auth/tasks "
+        "https://www.googleapis.com/auth/gmail.modify "
+        "https://www.googleapis.com/auth/drive.file "
+        "https://www.googleapis.com/auth/documents "
+        "https://www.googleapis.com/auth/spreadsheets.readonly"
+    )
+
+
+@app.get("/api/oauth/start")
+async def oauth_start(request: Request):
+    """Start in-app Google OAuth: returns the consent URL + state token."""
+    uid = require_api_auth(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="A per-user API key is required")
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    if not client_id:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured")
+    state = uuid.uuid4().hex
+    _OAUTH_STATES[state] = (uid, time.time() + _OAUTH_STATE_TTL)
+    params = {
+        "client_id": client_id,
+        "redirect_uri": _OAUTH_REDIRECT_URI,
+        "response_type": "code",
+        "scope": _google_scopes(),
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+    return {
+        "url": "https://accounts.google.com/o/oauth2/auth?" + urlencode(params),
+        "state": state,
+    }
+
+
+@app.post("/api/oauth/exchange")
+async def oauth_exchange(request: Request):
+    """Exchange the authorization code for tokens and store them per-user."""
+    uid = require_api_auth(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="A per-user API key is required")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    code = (body or {}).get("code")
+    state = (body or {}).get("state")
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="code and state are required")
+
+    stored = _OAUTH_STATES.pop(state, None)
+    if not stored or stored[0] != uid or time.time() > stored[1]:
+        raise HTTPException(
+            status_code=400, detail="OAuth state invalid or expired — please try again"
+        )
+
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": _OAUTH_REDIRECT_URI,
+                },
+            )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Google token exchange failed: {e}")
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502, detail="Google rejected the authorization code — please retry"
+        )
+
+    tokens = resp.json()
+    refresh_token = tokens.get("refresh_token")
+    scopes = tokens.get("scope") or ""
+    if not refresh_token:
+        raise HTTPException(
+            status_code=400,
+            detail="No refresh token returned — Google sign-in must grant offline access",
+        )
+
+    supabase = tenant_aware_client()
+    supabase.table("user_oauth_tokens").upsert(
+        {
+            "user_id": uid,
+            "provider": "google",
+            "refresh_token": refresh_token,
+            "scopes": scopes,
+        },
+        on_conflict="user_id,provider",
+    ).execute()
+    supabase.table("users").update({"google_connected": True}).eq("id", uid).execute()
+    try:
+        from core.services.google_service import clear_google_creds_cache
+
+        clear_google_creds_cache(uid)
+    except Exception:
+        pass
+    return {"connected": True, "scopes": scopes}
