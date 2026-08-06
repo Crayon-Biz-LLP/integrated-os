@@ -1,16 +1,16 @@
 from core.context import execute_context_strategy, PRE_FLIGHT_CONFIG
 from core.llm.constants import SYNTHESIS_MODEL
-from core.services.db import get_supabase
+from core.services.db import (
+    active_user_ids, resolve_telegram_chat_id, tenant_aware_client, tenant_scope,
+)
 import os
 import hashlib
 import json
 from datetime import datetime, timezone, timedelta
-from googleapiclient.discovery import build
 
 from core.lib.audit_logger import audit_log_sync
-from core.services.google_service import get_google_creds
+from core.services.google_service import get_cached_service
 from core.webhook.telegram import send_telegram
-from core.pulse.calendar import MemoryCache
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.services.push_notification import send_push_notification
@@ -40,7 +40,9 @@ def get_recently_ended_events(minutes_ended_min=5, minutes_ended_max=30):
     Google Calendar API filters by START time, so we fetch a wider window and filter
     by actual end time in Python.
     """
-    service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
+    service = get_cached_service('calendar', 'v3')
+    if service is None:
+        return []  # tenant has no Google creds (M5) — nothing to scan
     now = datetime.now(timezone.utc)
     # Wider window: fetch events that started up to 2 hours before the end window
     time_min = (now - timedelta(minutes=minutes_ended_max + 120)).isoformat()
@@ -70,8 +72,10 @@ def get_recently_ended_events(minutes_ended_min=5, minutes_ended_max=30):
 
 def get_upcoming_events(minutes_ahead=60):
     """Fetch events starting between now and X minutes from now."""
-    service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
-    
+    service = get_cached_service('calendar', 'v3')
+    if service is None:
+        return []  # tenant has no Google creds (M5) — nothing to scan
+
     # Needs timezone awareness, use UTC because format_rfc3339 expects it or naive.
     # Google API requires RFC3339 format.
     now = datetime.now(timezone.utc)
@@ -116,19 +120,44 @@ async def fetch_event_context(title: str, supabase):
     return result.get_formatted_context()
 
 async def process_sentinel(auth_secret: str, trigger: str = "cron"):
+    """(M4) Cron fan-out: iterate all active users, one tenant-scoped cycle
+    each. Cron traffic carries no API key; each active user gets their own
+    sentinel run under tenant_scope(). A per-tenant failure is isolated and
+    reported without aborting the other tenants.
+
+    Legacy (pre-db/78, or no active users): runs once unscoped, exactly as
+    the pre-M4 sentinel did.
+    """
+    uids = active_user_ids()
+    if not uids:
+        return await _process_sentinel_impl(auth_secret, trigger)
+    results = []
+    for uid in uids:
+        try:
+            with tenant_scope(uid):
+                results.append(await _process_sentinel_impl(auth_secret, trigger))
+        except Exception as e:
+            audit_log_sync("sentinel", "ERROR", f"Sentinel failed for tenant {uid}: {e}")
+            results.append({"tenant": uid, "error": str(e)})
+    return {"success": True, "tenants": len(uids), "results": results}
+
+
+async def _process_sentinel_impl(auth_secret: str, trigger: str = "cron"):
     from core.pulse.run_logger import create_pulse_run, complete_pulse_run
 
-    """Runs the Sentinel high-frequency scanner."""
+    """Runs the Sentinel high-frequency scanner (tenant-scoped by caller)."""
     print("🛡️ Running Sentinel Nudge check...")
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    # M4: per-tenant Telegram chat (None for app-only tenants — sends skip
+    # gracefully via send_telegram's falsy guard).
+    telegram_chat_id = resolve_telegram_chat_id()
     
-    if not supabase_url or not supabase_key or not telegram_chat_id:
+    if not supabase_url or not supabase_key:
         print("Sentinel missing env vars.")
         return {"error": "Missing env vars", "status": 500}
 
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     run_id = await create_pulse_run(supabase, "sentinel", trigger)
 
     try:
@@ -200,7 +229,7 @@ Context:
                         audit_log_sync("sentinel", "WARNING", f"AI context generation failed: {e}")
                         msg += f"\n\n🧠 **Context found:**\n{context}"
 
-                success = await send_telegram(int(telegram_chat_id), msg)
+                success = await send_telegram(telegram_chat_id, msg)
                 
                 if success:
                     audit_log_sync("sentinel", "INFO", f"{search_str} - Nudged for {title}")
@@ -290,7 +319,7 @@ Context:
 
                     if sweep_lines:
                         sweep_msg = "📋 *Weekly Sweep — Items Needing Attention*\n\n" + "\n".join(sweep_lines)
-                        await send_telegram(int(telegram_chat_id), sweep_msg)
+                        await send_telegram(telegram_chat_id, sweep_msg)
                         audit_log_sync("sentinel", "INFO", "weekly_sweep: Sent weekly catch-up summary")
                     else:
                         audit_log_sync("sentinel", "INFO", "weekly_sweep: All clear — nothing stale")
@@ -316,7 +345,7 @@ Context:
                     continue
 
                 msg = f"📝 **Meeting just ended: {title}**\nAny notes, decisions, or follow-ups from this? Just type naturally and I'll capture it."
-                success = await send_telegram(int(telegram_chat_id), msg)
+                success = await send_telegram(telegram_chat_id, msg)
                 if success:
                     audit_log_sync("sentinel", "INFO", f"{search_str} - Post-capture prompt for {title}")
         except Exception as e:
@@ -336,7 +365,7 @@ Context:
                 from core.clarifier import build_batch
                 batch_msg = build_batch(clarifications_res.data, max_items=5)
                 if batch_msg:
-                    success = await send_telegram(int(telegram_chat_id), batch_msg)
+                    success = await send_telegram(telegram_chat_id, batch_msg)
                     if success:
                         c_ids = [c['id'] for c in clarifications_res.data]
                         supabase.table('clarification_feedback').update({
@@ -372,10 +401,13 @@ Context:
                     patterns_str = format_patterns_for_briefing(patterns)
                     if patterns_str and patterns.get('insights'):
                         # Store for next briefing to consume
-                        supabase.table('core_config').upsert({
+                        # M4: core_config PK is (owner_id, key) — per-tenant
+                        # conflict target (see core_config_upsert).
+                        from core.services.db import core_config_upsert
+                        core_config_upsert(supabase, {
                             'key': 'weekly_patterns',
                             'content': patterns_str
-                        }, on_conflict='key').execute()
+                        }).execute()
                         audit_log_sync('sentinel', 'INFO', f'Pattern detection: {len(patterns["insights"])} insight(s) stored')
                     else:
                         audit_log_sync('sentinel', 'INFO', 'Pattern detection: no significant patterns found')
@@ -425,7 +457,7 @@ Context:
                     for d in stale_delegations[:5]:
                         del_lines.append(f"• Waiting on *{d['person']}* for {d['days']}d: {d['title']}")
                     del_msg = "\n".join(del_lines)
-                    success = await send_telegram(int(telegram_chat_id), del_msg)
+                    success = await send_telegram(telegram_chat_id, del_msg)
                     if success:
                         audit_log_sync("sentinel", "INFO", f"delegation alert: {len(stale_delegations)} stale delegation(s) flagged")
                         # P4: Push notification for stale delegations
@@ -541,7 +573,7 @@ Context:
                 
                 if signal_items:
                     alert_msg = "⚠️ *Unknown Organization Signals*\n\nTasks were attempted with orgs that don't exist as `graph_nodes` of type organization. Approve the org first via Decisions, or check the name.\n" + "\n".join(signal_items)
-                    await send_telegram(int(telegram_chat_id), alert_msg)
+                    await send_telegram(telegram_chat_id, alert_msg)
                     audit_log_sync("sentinel", "INFO", f"org_creation_signals: alerted {len(signal_items)} unknown org(s)")
         except Exception as sig_err:
             audit_log_sync("sentinel", "WARNING", f"Org creation signals consumer error (non-critical): {sig_err}")

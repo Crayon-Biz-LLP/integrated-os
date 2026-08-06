@@ -1,4 +1,4 @@
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client, get_tenant
 import difflib
 import re
 import time
@@ -7,7 +7,7 @@ from core.lib.audit_logger import audit_log_sync
 
 load_dotenv()
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 GROUNDED_TYPES = {
     'person':       ('people',        'name'),
@@ -61,7 +61,11 @@ def canonicalize_relationship(rel: str, source_type: str, target_type: str) -> s
     alias_map = RELATIONSHIP_ALIASES.get((source_type, target_type), {})
     return alias_map.get(rel_upper, rel_upper)
 
-_alias_cache = None
+# Module-level caches keyed BY TENANT: these hold tenant data (person
+# labels, aliases, the user's own node) and the queries are tenant-scoped,
+# so a single global slot would leak tenant A's resolved people into tenant
+# B's lookups (the exact class fixed in classify.py/context.py).
+_alias_cache: dict[str, dict] = {}
 
 
 def _meta_aliases(node) -> list:
@@ -121,14 +125,19 @@ def resolve_alias(label: str) -> str:
     """Check if the label matches a known alias and return the canonical name.
 
     Reads graph_nodes metadata.aliases (migration 76). Otherwise returns the
-    original label."""
+    original label. Cache is per-tenant (get_tenant key) — never serve one
+    tenant's alias map to another."""
     global _alias_cache
-    if _alias_cache is None:
-        _alias_cache = _build_alias_cache()
+    _uid = get_tenant()
+    _alias_key = _uid or "__legacy__"
+    _cached = _alias_cache.get(_alias_key)
+    if _cached is None:
+        _alias_cache[_alias_key] = _build_alias_cache()
+        _cached = _alias_cache[_alias_key]
 
     lookup = label.lower().strip()
-    if lookup in _alias_cache:
-        canonical = _alias_cache[lookup]
+    if lookup in _cached:
+        canonical = _cached[lookup]
         # Fire-and-forget write-back: bump metadata.alias_usage on the node.
         try:
             res = supabase.table("graph_nodes") \
@@ -181,7 +190,7 @@ RELATIONSHIP_TERMS = {
     "boss": "WORKS_WITH",
 }
 
-_user_node_cache = None
+_user_node_cache: dict[str, tuple] = {}  # tenant-key -> (ts, value)
 _USER_CACHE_TTL = 300  # seconds — node/alias edits must be visible without a restart
 
 
@@ -190,14 +199,21 @@ def _cache_fresh(cached, ttl: int) -> bool:
 
 
 def get_user_node() -> dict | None:
-    """Return the live 'user' node (the person the app belongs to, e.g. Danny).
+    """Return the live 'user' node (the person the app belongs to).
 
-    Detection order (future-user safe): a live person node whose metadata.aliases
-    contains 'user'/'me'/'my'/'i', else the node labeled 'Danny'. TTL-cached.
+    Detection order (future-user safe): a live person node whose
+    metadata.aliases contains 'user'/'me'/'my'/'i', else the node labeled
+    'Danny' (tenant #1 legacy). Per-tenant TTL cache — never serve tenant
+    A's user node to tenant B.
     """
     global _user_node_cache
-    if _cache_fresh(_user_node_cache, _USER_CACHE_TTL):
-        return _user_node_cache[1]
+    _uid = get_tenant()
+    _user_key = _uid or "__legacy__"
+    _cached = _user_node_cache.get(_user_key)
+    if _cache_fresh(_cached, _USER_CACHE_TTL):
+        return _cached[1]
+    if _cached is not None:
+        _user_node_cache.pop(_user_key, None)  # stale → evict, cap growth
     try:
         res = supabase.table("graph_nodes") \
             .select("id, label, metadata") \
@@ -222,11 +238,11 @@ def get_user_node() -> dict | None:
                 .execute()
             if res2 and res2.data:
                 result = {"id": res2.data[0]["id"], "label": res2.data[0]["label"]}
-        _user_node_cache = (time.time(), result)
+        _user_node_cache[_user_key] = (time.time(), result)
     except Exception as e:
         audit_log_sync("graph_pipeline", "WARNING", f"get_user_node failed: {e}")
-        _user_node_cache = (time.time(), None)
-    return _user_node_cache[1]
+        _user_node_cache[_user_key] = (time.time(), None)
+    return _user_node_cache[_user_key][1]
 
 
 def resolve_relationship_reference(text: str) -> dict | None:
@@ -286,7 +302,7 @@ def resolve_relationship_reference(text: str) -> dict | None:
     return None
 
 
-_person_index_cache = None
+_person_index_cache: dict[str, tuple] = {}  # tenant-key -> (ts, value)
 _PERSON_INDEX_TTL = 300  # seconds — new people/aliases become resolvable quickly
 _COMMON_QUERY_WORDS = {
     "what", "where", "when", "why", "who", "how", "which", "tasks", "related",
@@ -296,10 +312,19 @@ _COMMON_QUERY_WORDS = {
 
 
 def _build_person_index() -> list:
-    """Cache live person nodes as (label, aliases, id) for text scanning. TTL'd."""
+    """Cache live person nodes as (label, aliases, id) for text scanning. TTL'd.
+
+    Per-tenant cache (get_tenant key) — person resolution results are tenant
+    data and must never cross the tenant boundary.
+    """
     global _person_index_cache
-    if _cache_fresh(_person_index_cache, _PERSON_INDEX_TTL):
-        return _person_index_cache[1]
+    _uid = get_tenant()
+    _person_key = _uid or "__legacy__"
+    _cached = _person_index_cache.get(_person_key)
+    if _cache_fresh(_cached, _PERSON_INDEX_TTL):
+        return _cached[1]
+    if _cached is not None:
+        _person_index_cache.pop(_person_key, None)  # stale → evict, cap growth
     idx = []
     try:
         res = supabase.table("graph_nodes") \
@@ -331,7 +356,7 @@ def _build_person_index() -> list:
             pass  # table gone post-migration
     except Exception as e:
         audit_log_sync("graph_pipeline", "WARNING", f"_build_person_index failed: {e}")
-    _person_index_cache = (time.time(), idx)
+    _person_index_cache[_person_key] = (time.time(), idx)
     return idx
 
 
@@ -984,6 +1009,18 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
             
     return None
 
+def _root_person_label() -> str:
+    """The tenant's root person label — their own name, not hardcoded."""
+    try:
+        from core.services.user_settings import resolve_user_name, current_user_id
+        name = resolve_user_name(current_user_id())
+        if name:
+            return name
+    except Exception:
+        pass
+    return "Danny"  # legacy / tenant #1 fallback
+
+
 def insert_pending_edge(source_label: str, target_label: str, relationship: str, source_info: dict) -> dict:
     """Shared edge insertion function with case-insensitive dedup and validation."""
     s_type = source_info.get("source_type", "concept")
@@ -994,7 +1031,7 @@ def insert_pending_edge(source_label: str, target_label: str, relationship: str,
     s_type = source_info.get("source_type", "concept")
     t_type = source_info.get("target_type", "concept")
     
-    if rel == 'OWNS' and source_label != 'Danny':
+    if rel == 'OWNS' and source_label != _root_person_label():
         audit_log_sync("graph_pipeline", "INFO", f"Auto-rejected {source_label} --[OWNS]--> {target_label}: OWNS is query-only, use BELONGS_TO")
         return {"status": "rejected", "reason": "OWNS is query-only, use BELONGS_TO (target -> source) instead"}
 

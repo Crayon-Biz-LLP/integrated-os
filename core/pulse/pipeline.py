@@ -5,22 +5,25 @@ Used by:
 - scripts/run_health.py (on-demand via GHA, via run_full_health_check())
 """
 
-from core.services.db import get_supabase
+from core.services.db import (
+    channel_tenant_scope, core_config_upsert, tenant_aware_client,
+)
 import os
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync, error
 from core.pulse.utils import format_error
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 async def update_heartbeat():
     """Update the last successful Pulse run timestamp."""
     try:
-        supabase.table('core_config').upsert({
+        # M4: core_config PK is (owner_id, key) — per-tenant conflict target.
+        core_config_upsert(supabase, {
             "key": "pulse_last_success",
             "content": datetime.now(timezone.utc).isoformat()
-        }, on_conflict="key").execute()
+        }).execute()
         print("💓 Heartbeat updated.")
     except Exception as e:
         error("pulse", f"Heartbeat update failed: {e}", format_error(e))
@@ -40,6 +43,13 @@ async def check_pipeline_health() -> str:
 
 
 async def run_full_health_check() -> dict:
+    """(M3) Tenant-scoped entry: cron health checks carry no API key, so the
+    tenant resolves from the channel (single active user)."""
+    with channel_tenant_scope():
+        return await _run_full_health_check_impl()
+
+
+async def _run_full_health_check_impl() -> dict:
     """Comprehensive health check — merges janitor checks + pipeline checks.
 
     Returns dict with:

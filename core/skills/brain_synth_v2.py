@@ -4,13 +4,13 @@ import os
 import httpx
 from datetime import datetime, timezone
 
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm.embedding import get_embedding
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 MIN_FRAGMENT_THRESHOLD = 5
 
@@ -337,8 +337,9 @@ async def run_batch_sweep_v2():
             print("No data found to synthesize (all skipped or up-to-date).")
             return
 
-        # Notification
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        # Notification (M6: per-tenant chat id, env fallback for legacy)
+        from core.services.db import resolve_telegram_chat_id
+        telegram_chat_id = resolve_telegram_chat_id()
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if telegram_chat_id and telegram_bot_token:
             try:
@@ -358,12 +359,14 @@ async def run_batch_sweep_v2():
                 org_context = entry.get('org_context', '')
                 is_parent = entry.get('is_parent', False)
                 
+                from core.services.user_settings import resolve_user_name
+                _user_name = resolve_user_name()
                 if is_parent:
-                    prompt_role = "Executive Summary Writer for Danny's OS"
+                    prompt_role = f"Executive Summary Writer for {_user_name}'s OS"
                     prompt_objective = f"Write a high-level overview of the {org_name} domain ({entity_name}). Synthesize all sub-projects and activity under this domain."
                     scope_rules = f"DOMAIN SCOPE: This page covers the {org_name} domain and its sub-projects only.\nEXCLUDE: Any content related to other domains.\nDOMAIN DESCRIPTION: {org_context}"
                 else:
-                    prompt_role = "Knowledge Curator for Danny's OS"
+                    prompt_role = f"Knowledge Curator for {_user_name}'s OS"
                     prompt_objective = f"Update the Master Page for {entity_name} (under {org_name})."
                     scope_rules = f"PROJECT SCOPE: This page is ONLY for {entity_name} under {org_name}.\nEXCLUDE: Any content about other projects.\nDOMAIN CONTEXT: {entity_name} belongs to {org_name} ({org_context})."
                 
@@ -388,8 +391,8 @@ RULES:
    Each bullet describes something that actually happened.
    NEVER use narrative language. NEVER describe actions in present tense.
    Format: [✅/🔄/⏸️] [What] — [context] [source]
-   Example: "✅ Physical financial paperwork submitted — by Danny, Jul 2026 [memory]"
-   NOT: "Danny has successfully submitted physical financial paperwork")
+   Example: "✅ Physical financial paperwork submitted — by {_user_name}, Jul 2026 [memory]"
+   NOT: "{_user_name} has successfully submitted physical financial paperwork")
   
   ## Key People
   (People connected via graph edges, with roles)
@@ -399,8 +402,8 @@ RULES:
 - CRITICAL WRITING RULES:
   - You are writing a KNOWLEDGE DOCUMENT for another AI to consume — not a status report for a human manager.
   - Write in FACTS, not stories. Every sentence must be a standalone verifiable fact.
-  - BAD: "Danny has successfully submitted physical financial paperwork"
-  - GOOD: "✅ Physical financial paperwork submitted — by Danny, Jul 2026"
+  - BAD: "{_user_name} has successfully submitted physical financial paperwork"
+  - GOOD: "✅ Physical financial paperwork submitted — by {_user_name}, Jul 2026"
   - BAD: "Ongoing coordination with Christopher John regarding tax notices persists"
   - GOOD: "🔄 IT hearing notices: Christopher John managing response [memory]"
   - Use ✅ for completed items. Use 🔄 for items still in progress. Use ⏸️ for blocked items.
@@ -547,7 +550,8 @@ FRAGMENTS (Old & New):
         import traceback
         traceback.print_exc()
         print(f"Brain sweep v2 failed: {e}")
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        from core.services.db import resolve_telegram_chat_id
+        telegram_chat_id = resolve_telegram_chat_id()
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if telegram_chat_id and telegram_bot_token:
             try:

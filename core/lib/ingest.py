@@ -28,9 +28,9 @@ from typing import Optional
 
 from core.lib.audit_logger import audit_log_sync
 from core.lib.url_filter import check_and_quarantine_url
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 async def save_resource(text: str) -> bool:

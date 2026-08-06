@@ -15,10 +15,11 @@ Max 50 rules. Oldest-first eviction when full.
 import json
 from datetime import datetime, timezone, timedelta
 
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 
-supabase = get_supabase()
+# M3: tenant-aware facade (see core/webhook/utils.py webhook_tenant_scope)
+supabase = tenant_aware_client()
 
 MAX_CORRECTIONS = 50
 

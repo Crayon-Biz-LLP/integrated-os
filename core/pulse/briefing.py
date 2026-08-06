@@ -25,6 +25,7 @@ from core.lib.redis_cache import acquire_lock, release_lock
 from core.decisions import record_decision
 from core.pulse.models import PulseOutput
 from core.pulse.llm import supabase
+from core.services.db import channel_tenant_scope
 from core.pulse.utils import format_error
 from core.pulse.memory import (
     write_outcome_memory,
@@ -293,6 +294,13 @@ def _auto_expire_recurring_tasks():
 # ──────────────────────────────────────────
 
 async def process_pulse(auth_secret: str = None, request_id: str = None, trigger: str = "api"):
+    """(M3) Tenant-scoped entry: cron/API traffic carries no API key, so the
+    tenant resolves from the channel (single active user)."""
+    with channel_tenant_scope():
+        return await _process_pulse_impl(auth_secret, request_id, trigger)
+
+
+async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, trigger: str = "api"):
     """Generate and send an AI briefing.
 
     Single pipeline: read state → build context → single LLM call (no agent loop)
@@ -407,10 +415,13 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         core = core_res.data or []
 
         # ── Time & Day Intelligence (CPU-only, no IO — compute before parallel phase 1) ──
-        ist_offset = timezone(timedelta(hours=5, minutes=30))
+        from core.lib.time_utils import get_user_timezone
+        from core.services.user_settings import resolve_user_name
+        ist_offset = get_user_timezone()  # M2: per-tenant timezone (settings → env → IST)
         now = datetime.now(ist_offset)
         day = now.isoweekday()
         hour = now.hour
+        user_name = resolve_user_name()  # M2: per-tenant display name
 
         is_weekend = (day == 6 or day == 7) or (day == 5 and hour >= 19)
         is_pre_monday = (day == 7 and hour >= 19)
@@ -425,17 +436,17 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
         else:
             if hour < 12:
                 briefing_mode = "Morning check."
-                system_persona = "Give Danny the plain picture of the board — what's on top, what's new, what needs doing. No coaching."
+                system_persona = f"Give {user_name} the plain picture of the board — what's on top, what's new, what needs doing. No coaching."
             elif hour < 15 or (hour == 15 and now.minute < 30):
                 briefing_mode = "Afternoon check."
-                system_persona = "Keep Danny moving on today's priorities. Be direct."
+                system_persona = f"Keep {user_name} moving on today's priorities. Be direct."
             elif hour < 19:
                 if day == 5:
                     briefing_mode = "Friday wrap-up."
-                    system_persona = "Help Danny close the work week: what's done, what can wait. Be dry."
+                    system_persona = f"Help {user_name} close the work week: what's done, what can wait. Be dry."
                 else:
                     briefing_mode = "Wrap-up."
-                    system_persona = "Help Danny close the day: what's done, what's still open. Be dry."
+                    system_persona = f"Help {user_name} close the day: what's done, what's still open. Be dry."
             else:
                 briefing_mode = "Night wind-down."
                 system_persona = "Close out the day: what got done, what's still open, what's next. Be calm and brief."
@@ -514,7 +525,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             o_id = t.get('organization_id')
             o_name = org_map.get(o_id, 'INBOX')
 
-            personal_orgs = ['Personal', 'Ashraya', 'Ashraya Chennai', 'Chennai North', 'Chennai Central', 'Ashraya India']
+            # M2: personal/life org names come from user_settings (per tenant);
+            # default preserves Danny's pre-M2 list until his row is seeded.
+            from core.services.user_settings import resolve_personal_orgs
+            personal_orgs = resolve_personal_orgs()
             o_name_lower = o_name.lower()
 
             if is_weekend:
@@ -960,13 +974,14 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
             universal_task_map=universal_task_map,
             core=json.dumps(core) if core else "None",
         )
-        prompt = build_pulse_briefing_prompt(ctx)
+        prompt = build_pulse_briefing_prompt(ctx, user_name=user_name)
 
         system_instruction = build_pulse_system_instruction(
             system_persona=system_persona,
             briefing_history_context=briefing_history_context,
             routing_logic=project_routing_logic,
             drift_context=drift_context,
+            user_name=user_name,
         )
 
         # ── Single LLM call with structured output ──

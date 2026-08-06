@@ -1,7 +1,7 @@
 from typing import Optional, List, Tuple
 import asyncio
 from datetime import datetime, timezone
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.llm import get_embedding
 from core.retrieval.config import config, INDEX_VERSION, BACKFILL_MAX_CONCURRENCY
@@ -13,7 +13,7 @@ from core.retrieval.graph import (
 )
 from core.retrieval.schema import Passage
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 # Module-level concurrency limiter for extraction — shared across all index_memory() calls
 index_semaphore = asyncio.Semaphore(BACKFILL_MAX_CONCURRENCY)

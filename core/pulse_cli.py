@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.services.db import get_supabase
+from core.services.db import channel_tenant_scope, tenant_aware_client
 from core.pulse import process_pulse, process_decision_pulse
 from core.pulse.sentinel import process_sentinel
 from core.lib.audit_logger import info, error
@@ -37,7 +37,8 @@ def cleanup_raw_dumps():
     """Remove raw_dumps older than 90 days (aligned with memories pruning window)"""
     info("pulse_cli", "Starting raw_dumps cleanup (90+ days)")
     
-    supabase = get_supabase()
+    with channel_tenant_scope():
+        supabase = tenant_aware_client()
     
     # Calculate cutoff date (90 days ago)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()

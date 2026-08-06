@@ -17,19 +17,135 @@ class _MemoryCache(base.Cache):
         self._cache[url] = content
 
 
-@functools.lru_cache(maxsize=1)
-def get_google_creds():
+def get_refresh_token(user_id: str | None = None) -> str | None:
+    """The tenant's Google refresh token (M5).
+
+    Resolution order:
+      1. `user_id` (or the active tenant context) → user_oauth_tokens row
+      2. GOOGLE_REFRESH_TOKEN env — legacy single-user mode (pre-M5, and
+         the cutover fallback for tenant #1 until his token is stored).
+
+    Returns None when neither exists — callers then skip Google work
+    (app-only tenant that hasn't connected Google yet).
+    """
+    uid = user_id
+    if not uid:
+        try:
+            from core.services.db import get_tenant
+            uid = get_tenant()
+        except Exception:
+            uid = None
+    if uid:
+        try:
+            from core.services.db import get_supabase, maybe_single_safe
+            res = maybe_single_safe(
+                get_supabase()
+                .table("user_oauth_tokens")
+                .select("refresh_token")
+                .eq("user_id", uid)
+                .eq("provider", "google")
+                .limit(1)
+            )
+            # maybe_single_safe may return data as a dict (single row) OR a
+            # list (one-element list in some client versions) — handle both.
+            data = (res.data if res and res.data else None)
+            if isinstance(data, list):
+                data = data[0] if data else None
+            token = (data or {}).get("refresh_token") if isinstance(data, dict) else None
+            if token:
+                return str(token)
+        except Exception:
+            pass  # table missing pre-db/84 → env fallback
+    return os.getenv("GOOGLE_REFRESH_TOKEN")
+
+
+def _resolve_user_id(user_id: str | None) -> str | None:
+    """Explicit user id → active tenant context.
+
+    Resolved BEFORE any cache lookup so per-user caches are keyed by the
+    actual user — never resolve inside an lru_cache'd function (that would
+    collapse every tenant onto one cache slot and leak user A's creds to B).
+    """
+    if user_id:
+        return user_id
+    try:
+        from core.services.db import get_tenant
+        return get_tenant()
+    except Exception:
+        return None
+
+
+@functools.lru_cache(maxsize=64)
+def _google_creds_cached(user_id: str) -> Credentials | None:
+    """Cached per-user Google credentials (user_id must be non-empty)."""
+    refresh = get_refresh_token(user_id)
+    if not refresh:
+        return None
     return Credentials(
         None,
-        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
+        refresh_token=refresh,
         client_id=os.getenv("GOOGLE_CLIENT_ID"),
         client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
         token_uri="https://oauth2.googleapis.com/token"
     )
 
-@functools.lru_cache(maxsize=4)
-def get_cached_service(service_name, version):
-    return build(service_name, version, credentials=get_google_creds(), cache=_MemoryCache())
+
+def clear_google_creds_cache(user_id: str | None = None) -> None:
+    """Drop cached credentials/services — call after a tenant re-runs OAuth.
+
+    Without this, an updated refresh token would not take effect until the
+    process restarts (the per-user lru_caches hold the old creds). The
+    argument is accepted for call-site clarity; both caches are keyed by
+    user id and clearing is cheap, so we drop them wholesale.
+    """
+    _google_creds_cached.cache_clear()
+    _service_cached.cache_clear()
+
+
+def get_google_creds(user_id: str | None = None):
+    """Google API credentials for ONE tenant (M5).
+
+    `user_id` defaults to the active tenant context. Each user's token is
+    resolved from user_oauth_tokens; the legacy env fallback covers pre-M5
+    (and tenant #1 until his token is stored). Returns None when no refresh
+    token exists — callers must skip Google work rather than crash.
+    """
+    uid = _resolve_user_id(user_id)
+    if uid:
+        return _google_creds_cached(uid)
+    # No tenant context at all → legacy env credential (CLI / unscoped runs).
+    refresh = os.getenv("GOOGLE_REFRESH_TOKEN")
+    if not refresh:
+        return None
+    return Credentials(
+        None,
+        refresh_token=refresh,
+        client_id=os.getenv("GOOGLE_CLIENT_ID"),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+        token_uri="https://oauth2.googleapis.com/token"
+    )
+
+
+@functools.lru_cache(maxsize=64)
+def _service_cached(service_name: str, version: str, user_id: str | None) -> object | None:
+    """Cached service builder keyed by (service, version, user)."""
+    if user_id:
+        creds = _google_creds_cached(user_id)
+    else:
+        creds = get_google_creds(None)  # legacy env path
+    if creds is None:
+        return None
+    return build(service_name, version, credentials=creds, cache=_MemoryCache())
+
+
+def get_cached_service(service_name, version, user_id: str | None = None):
+    """Cached API service builder, keyed by (service, version, user).
+
+    `user_id` defaults to the active tenant context so pulse fan-out builds
+    each tenant's own service. Returns None when the tenant has no Google
+    credentials (callers skip rather than crash).
+    """
+    return _service_cached(service_name, version, _resolve_user_id(user_id))
 
 
 def get_tasks_service():
@@ -51,8 +167,19 @@ def format_rfc3339(date_str):
         return None
 
 
+def _user_tz_name() -> str:
+    """The active tenant's IANA timezone (settings → Asia/Kolkata fallback)."""
+    try:
+        from core.services.user_settings import resolve_timezone, current_user_id
+        return resolve_timezone(current_user_id()) or "Asia/Kolkata"
+    except Exception:
+        return "Asia/Kolkata"
+
+
 def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority='important', recurrence=None):
     service = get_cached_service('calendar', 'v3')
+    if service is None:
+        return None  # no Google creds for this tenant — nothing to sync
     try:
         rfc_time = format_rfc3339(start_iso)
         start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
@@ -73,11 +200,12 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority
                 
         formatted_title = f"{prefix}{clean_title}"
 
+        tz_name = _user_tz_name()
         event_body = {
             'summary': formatted_title,
             'description': 'Rhodey created this for you.',
-            'start': {'dateTime': rfc_time, 'timeZone': 'Asia/Kolkata'},
-            'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'},
+            'start': {'dateTime': rfc_time, 'timeZone': tz_name},
+            'end': {'dateTime': end_dt.isoformat(), 'timeZone': tz_name},
             'reminders': {
                 'useDefault': False,
                 'overrides': [
@@ -104,11 +232,14 @@ def sync_to_calendar(title, start_iso, duration_mins=15, event_id=None, priority
                     
                 if is_404:
                     audit_log_sync("google_service", "WARNING", f"Event ID {event_id} deleted (404), healing DB and provisioning new event...")
-                    from core.services.db import get_supabase
+                    from core.services.db import tenant_aware_client
                     try:
                         # Pre-emptively heal the DB before provisioning. We only do this if it's truly a 404.
                         # This avoids the ID being stuck if the following insert fails for another reason.
-                        supabase = get_supabase()
+                        # M3: tenant facade — a raw client would null out the
+                        # google_event_id on OTHER tenants' tasks that happened
+                        # to share the same external event id.
+                        supabase = tenant_aware_client()
                         supabase.table('tasks').update({'google_event_id': None}).eq('google_event_id', event_id).eq('is_current', True).execute()
                     except Exception:
                         pass
@@ -130,6 +261,8 @@ def delete_calendar_event(event_id):
     if not event_id:
         return
     service = get_cached_service('calendar', 'v3')
+    if service is None:
+        return
     try:
         service.events().delete(calendarId='primary', eventId=event_id).execute()
     except Exception as e:
@@ -140,6 +273,8 @@ def delete_google_task(google_task_id):
     if not google_task_id:
         return
     service = get_tasks_service()
+    if service is None:
+        return
     try:
         service.tasks().delete(tasklist='@default', task=google_task_id).execute()
     except Exception as e:
@@ -153,6 +288,8 @@ def delete_calendar_instance(recurring_event_id, instance_id):
     if not recurring_event_id or not instance_id:
         return
     service = get_cached_service('calendar', 'v3')
+    if service is None:
+        return
     try:
         service.events().delete(calendarId='primary', eventId=instance_id).execute()
         audit_log_sync("google_service", "INFO", f"Deleted calendar instance {instance_id} of {recurring_event_id}")

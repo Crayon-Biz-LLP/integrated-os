@@ -3,8 +3,7 @@ import base64
 import httpx
 from email.mime.text import MIMEText
 from email.utils import getaddresses
-from core.services.google_service import get_google_creds
-from googleapiclient.discovery import build
+from core.services.google_service import get_cached_service
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
 from core.webhook.telegram import send_telegram
@@ -14,6 +13,7 @@ from core.services.db import maybe_single_safe
 
 async def process_email_pending_decision(pending_id: int, decision: str, supabase_client=None, auto_decided: bool = False) -> dict:
     """Process approve/reject for an email pending task (shared by Telegram + API).
+    (M3: wrapped in the channel tenant scope.)
 
     For 'approve': inserts into raw_dumps then sets danny_decision='approved'.
     For 'reject': sets danny_decision='rejected' and cleans up orphan drafts.
@@ -25,6 +25,13 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
 
     Returns: dict with keys: success (bool), message (str), action (str|None).
     """
+    from core.webhook.utils import webhook_tenant_scope
+    with webhook_tenant_scope():
+        return await _process_email_pending_decision(pending_id, decision, supabase_client, auto_decided)
+
+
+async def _process_email_pending_decision(pending_id: int, decision: str, supabase_client=None, auto_decided: bool = False) -> dict:
+    """Inner implementation (M3: tenant scope applied by the public wrapper)."""
     client = supabase_client or supabase
 
     # Look up pending row
@@ -170,11 +177,21 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
         }
 
 def get_gmail_service():
-    creds = get_google_creds()
-    return build('gmail', 'v1', credentials=creds, cache=None)
+    service = get_cached_service('gmail', 'v1')
+    if service is None:
+        raise ValueError("No Google creds for this tenant (M5) — Gmail unavailable")
+    return service
 
 async def send_draft_reply(draft_id: int) -> tuple:
-    """Send an approved draft via Gmail or Outlook based on email source. Returns (success: bool, error: str|None)."""
+    """Send an approved draft via Gmail or Outlook based on email source.
+    Returns (success: bool, error: str|None). (M3: channel tenant scope.)"""
+    from core.webhook.utils import webhook_tenant_scope
+    with webhook_tenant_scope():
+        return await _send_draft_reply(draft_id)
+
+
+async def _send_draft_reply(draft_id: int) -> tuple:
+    """Inner implementation (M3: tenant scope applied by the public wrapper)."""
     try:
         draft_res = maybe_single_safe(
             supabase.table('email_drafts')
@@ -340,7 +357,15 @@ async def send_outlook_draft(draft: dict) -> tuple:
         return (False, str(e))
 
 async def handle_ed_command(text: str, chat_id: int):
-    """Handle /ed, ed approve, ed reject, ed edit commands."""
+    """Handle /ed, ed approve, ed reject, ed edit commands.
+    (M3: wrapped in the channel tenant scope.)"""
+    from core.webhook.utils import webhook_tenant_scope
+    with webhook_tenant_scope():
+        return await _handle_ed_command(text, chat_id)
+
+
+async def _handle_ed_command(text: str, chat_id: int):
+    """Inner implementation (M3: tenant scope applied by the public wrapper)."""
     import re as _re
 
     # /ed — list pending drafts

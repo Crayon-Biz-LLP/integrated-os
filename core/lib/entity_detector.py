@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 import re
 
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 
 
 @dataclass
@@ -174,7 +174,7 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     if _is_url_text(text):
         return []
 
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     entities: List[DetectedEntity] = []
     seen_labels: set = set()
 

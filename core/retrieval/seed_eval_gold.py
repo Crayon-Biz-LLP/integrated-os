@@ -16,10 +16,10 @@ To add new entries, append to SEED_DATA. Each entry needs:
 import asyncio
 import json
 from typing import List, Dict
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 # ---------------------------------------------------------------------------
 # Seed data — 18 queries covering all categories.

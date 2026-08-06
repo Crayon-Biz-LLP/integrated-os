@@ -304,10 +304,12 @@ async def process_callback_query(callback_query: dict):
 
             if pattern_action == 'approve':
                 try:
+                    # M3: core_config PK is now (owner_id, key) — the upsert
+                    # conflict target must include owner_id (db/78).
                     supabase.table('core_config').upsert({
                         'key': f'suggest_approved:{subsystem}:{feature_hash}',
                         'content': datetime.now(timezone.utc).isoformat(),
-                    }, on_conflict='key').execute()
+                    }, on_conflict='owner_id,key').execute()
 
                     pattern_row = maybe_single_safe(
                         supabase.table('subsystem_patterns')
@@ -435,7 +437,9 @@ async def process_callback_query(callback_query: dict):
                         pending_type='edge', step='awaiting_edge_edit',
                         label='', expires_minutes=15
                     )
-                    await send_telegram(chat_id, f"Editing edge: {pe['source_label']} → {pe['relationship']} → {pe['target_label']}\nReply with the corrected edge, e.g. `pe{sc_int} Danny KNOWS Alice` or `pe{sc_int} KNOWS`")
+                    from core.services.user_settings import resolve_user_name
+                    _uname = resolve_user_name()
+                    await send_telegram(chat_id, f"Editing edge: {pe['source_label']} → {pe['relationship']} → {pe['target_label']}\nReply with the corrected edge, e.g. `pe{sc_int} {_uname} KNOWS Alice` or `pe{sc_int} KNOWS`")
                     return {"success": True}
                 else:
                     result = await process_pending_edge_decision(sc_int, 'approve' if is_approve else 'reject')
@@ -491,6 +495,17 @@ async def process_callback_query(callback_query: dict):
     return {"success": True}
 
 async def process_webhook(update: dict):
+    """Process an incoming Telegram (or app-simulated) update.
+    (M3: wrapped in the channel tenant scope — Telegram traffic carries no
+    API key, so the tenant resolves via resolve_channel_tenant().)
+    """
+    from core.webhook.utils import webhook_tenant_scope
+    with webhook_tenant_scope():
+        return await _process_webhook(update)
+
+
+async def _process_webhook(update: dict):
+    """Inner implementation (M3: tenant scope applied by the public wrapper)."""
     # Generate correlation IDs for this request
     req_trace_id = str(uuid.uuid4())[:12]
     trace_id_var.set(req_trace_id)
@@ -859,7 +874,7 @@ async def process_webhook(update: dict):
                 _value = _pe_edit_match.group(2).strip()
                 
                 # Try to parse the edit value.
-                # Format: "Danny KNOWS Alice" or just "KNOWS"
+                # Format: "{user} KNOWS Alice" or just "KNOWS"
                 parts = _value.split()
                 if len(parts) == 1:
                     new_rel = parts[0]

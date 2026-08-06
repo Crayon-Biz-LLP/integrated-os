@@ -1,5 +1,5 @@
 from core.context import execute_context_strategy, BRIEFING_CONFIG, HINDSIGHT_CONFIG
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.llm import get_embedding
 import asyncio
 from datetime import datetime, timezone, timedelta
@@ -10,7 +10,7 @@ from core.llm.config import WorkloadProfile
 from core.models import ActionResult, accumulate_action
 from core.retrieval.config import config as retrieval_config
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 async def write_outcome_memory(task_title: str):
@@ -169,7 +169,9 @@ async def generate_after_action_report() -> str:
         open_tasks_res = supabase.table('tasks').select('id').eq('status', 'todo').eq('is_current', True).execute()
         open_count = len(open_tasks_res.data) if open_tasks_res.data else 0
 
-        prompt = f"""You are Danny's Rhodey. Provide a dry After-Action Report (AAR). 1-2 sentences max. Focus on loops closed vs. open.
+        from core.services.user_settings import resolve_user_name
+        _user_name = resolve_user_name()
+        prompt = f"""You are {_user_name}'s Rhodey. Provide a dry After-Action Report (AAR). 1-2 sentences max. Focus on loops closed vs. open.
         - Loops closed today: {completed_count}
         - Loops still open: {open_count}"""
 

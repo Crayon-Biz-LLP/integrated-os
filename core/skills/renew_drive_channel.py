@@ -1,8 +1,7 @@
 import os
 import uuid
-from googleapiclient.discovery import build
 
-from core.services.google_service import get_google_creds
+from core.services.google_service import get_cached_service
 
 GOOGLE_DRIVE_CALLS_FOLDER_ID = os.getenv("GOOGLE_DRIVE_CALLS_FOLDER_ID")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "")
@@ -24,7 +23,10 @@ def renew_channel():
     address = webhook_url
     channel_id = f"{CHANNEL_ID}-{uuid.uuid4().hex[:8]}"
 
-    service = build("drive", "v3", credentials=get_google_creds())
+    service = get_cached_service("drive", "v3")
+    if service is None:
+        print("ERROR: no Google creds for this tenant (M5) — drive channel renewal skipped")
+        return
 
     body = {
         "id": channel_id,

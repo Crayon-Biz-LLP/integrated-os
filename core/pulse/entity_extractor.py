@@ -16,14 +16,14 @@ Major simplifications from the old version:
 from core.llm.constants import CLASSIFICATION_MODEL
 from core.lib.audit_logger import audit_log_sync
 from core.lib.url_filter import is_url_text
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.pulse.graph import insert_extracted_entities
 from core.prompts.relationship import RELATIONSHIP_EXTRACTION_PROMPT
 from core.lib.entity_detector import detect_entities
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 async def extract_and_link_entities(

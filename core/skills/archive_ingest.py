@@ -2,21 +2,44 @@ from core.llm.compat import get_embedding_sync
 import os
 import time
 import json
-from datetime import datetime, timezone, timedelta
-from googleapiclient.discovery import build
+from datetime import datetime
 from googleapiclient.errors import HttpError
 
 from core.retrieval.pipeline import schedule_index_memory
-from core.services.db import get_supabase
-from core.services.google_service import get_google_creds
+from core.services.db import tenant_aware_client
+from core.services.google_service import get_cached_service
 from core.llm.retry import get_jittered_backoff
 from core.lib.graph_rules import normalize_label
+from core.lib.time_utils import get_user_timezone
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
+# Tenant #1 (Danny) entity→keyword mappings — the SINGLE source of truth.
+# Copied verbatim from Danny's core_config 'entity_mappings' row (the rich
+# full mapping, NOT a degraded subset). Used as get_entity_mappings()'s
+# fallback AND written into core_config by
+# scripts/seed_tenant1_m6_config.py (keep in sync via that seed).
+DEFAULT_ENTITY_MAPPINGS = {
+    "Jaden": ["jaden"],
+    "Qhord": ["qhord", "joel", "GTM"],
+    "Sunju": ["sunju", "wife", "wife's", "sunju's"],
+    "Church": ["church", "pastor", "pastor marcus", "marcus"],
+    "Crayon": ["crayon", "crayon biz"],
+    "Jeremy": ["jeremy"],
+    "Jeffery": ["jeffery", "jeffrey"],
+    "The Boys": ["boys", "son", "sons"],
+    "Solvstrat": ["solvstrat", "solv", "production team", "2.0"],
+}
+
+
 def get_entity_mappings() -> dict:
+    """Per-tenant entity→keyword mappings (M6): core_config 'entity_mappings'
+    row, falling back to Danny's full mapping (legacy / tenant #1 pre-seed).
+    Read at call time so a tenant's config edits apply immediately and no
+    cross-tenant value is ever cached in a module-level constant.
+    """
     try:
         res = supabase.table('core_config').select('content').eq('key', 'entity_mappings').execute()
         if res.data and res.data[0].get('content'):
@@ -30,15 +53,100 @@ def get_entity_mappings() -> dict:
                 return content
     except Exception as e:
         print(f"⚠️ Failed to fetch dynamic mappings: {e}")
-    
-    # Absolute fallback to prevent crashes if DB fails
-    return {
-        "Solvstrat": ["solvstrat"],
-        "Crayon": ["crayon"],
-        "Qhord": ["qhord"]
-    }
 
-ENTITY_MAPPINGS = get_entity_mappings()
+    # Absolute fallback to prevent crashes if DB fails — Danny's FULL
+    # mapping, so a new tenant never sees a degraded subset. Returned as a
+    # copy so a future caller can never mutate the module constant.
+    return {k: list(v) for k, v in DEFAULT_ENTITY_MAPPINGS.items()}
+
+# ── Per-tenant graph rules (M6 de-personalization) ──────────────────────────
+# archive_ingest used to hardcode Danny's family/orgs/₹30L debt and the root
+# person label. Now read from core_config per-tenant, with Danny's values as
+# the legacy fallback so tenant #1 behaves identically until his row is
+# seeded. Keys: 'archive_person_labels', 'archive_org_labels',
+# 'archive_edge_rules', 'archive_root_label'.
+
+# Tenant #1 (Danny) default values — the SINGLE source of truth. Used both
+# as the legacy runtime fallback below AND written into core_config by
+# scripts/seed_tenant1_m6_config.py. If you change these, re-run that seed
+# for tenant #1 so config and fallback never drift.
+DEFAULT_ARCHIVE_PERSON_LABELS = ["Danny", "Sunju", "Jaden", "Jeffery", "The Boys"]
+DEFAULT_ARCHIVE_ORG_LABELS = ["Solvstrat", "Crayon", "Church"]
+DEFAULT_ARCHIVE_EDGE_RULES = {
+    "Sunju": [["{root}", "Sunju", "relates_to"], ["Sunju", "{root}", "relates_to"]],
+    "Jaden": [["{root}", "Jaden", "parent_of"], ["Jaden", "{root}", "child_of"]],
+    "Jeffery": [["{root}", "Jeffery", "parent_of"], ["Jeffery", "{root}", "child_of"]],
+    "The Boys": [["{root}", "The Boys", "parent_of"], ["The Boys", "{root}", "child_of"]],
+    "Solvstrat": [["{root}", "Solvstrat", "works_at"], ["Solvstrat", "{root}", "employs"]],
+    "Crayon": [["{root}", "Crayon", "works_at"], ["Crayon", "{root}", "employs"]],
+    "Church": [["{root}", "Church", "belongs_to"]],
+    "₹30L Debt": [["{root}", "₹30L Debt", "struggles_with"]],
+}
+DEFAULT_ARCHIVE_ROOT_LABEL = "Danny"
+
+
+def _get_config_str(key: str) -> str | None:
+    try:
+        res = supabase.table('core_config').select('content').eq('key', key).execute()
+        if res.data and res.data[0].get('content'):
+            c = res.data[0]['content']
+            return c if isinstance(c, str) else (json.dumps(c) if isinstance(c, (dict, list)) else str(c))
+    except Exception:
+        pass
+    return None
+
+
+def _get_config_json(key: str, default):
+    raw = _get_config_str(key)
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+    return default
+
+
+def resolve_root_label() -> str:
+    """The tenant's root person label (their own name).
+
+    Resolution (M6): core_config 'archive_root_label' (admin override) →
+    user_settings name → 'Danny' (legacy / tenant #1 fallback).
+    """
+    try:
+        cfg = _get_config_str("archive_root_label")
+        if cfg and cfg.strip():
+            return cfg.strip()
+    except Exception:
+        pass
+    try:
+        from core.services.user_settings import resolve_user_name, current_user_id
+        name = resolve_user_name(current_user_id())
+        if name:
+            return name
+    except Exception:
+        pass
+    return DEFAULT_ARCHIVE_ROOT_LABEL
+
+
+def person_labels() -> list[str]:
+    """Person entity labels for node typing (per-tenant config, Danny fallback)."""
+    return _get_config_json("archive_person_labels", DEFAULT_ARCHIVE_PERSON_LABELS)
+
+
+def org_labels() -> list[str]:
+    """Organization entity labels for node typing (per-tenant config, Danny fallback)."""
+    return _get_config_json("archive_org_labels", DEFAULT_ARCHIVE_ORG_LABELS)
+
+
+def edge_rules() -> dict:
+    """entity → list of (source, target, relationship) edge specs. '{root}'
+    in source/target is replaced with the tenant's root person label.
+
+    Default = Danny's world (legacy fallback). A tenant's own config is a
+    list of [source, target, rel] triples per entity.
+    """
+    return _get_config_json("archive_edge_rules", DEFAULT_ARCHIVE_EDGE_RULES)
+
 
 MEMORY_TYPE_MAPPING = {
     "Prophetic Word (From God or others)": "Prophecy",
@@ -64,7 +172,10 @@ def with_retry(fn, retries=3, base_delay=1, label="operation"):
 
 
 def get_sheets_service():
-    return build('sheets', 'v4', credentials=get_google_creds())
+    service = get_cached_service('sheets', 'v4')
+    if service is None:
+        raise ValueError("No Google creds for this tenant (M5) — archive ingest requires Google Sheets access")
+    return service
 
 
 def fetch_sheet_data():
@@ -140,24 +251,36 @@ def synthesize_content(entry_type: str, row) -> str:
 
 
 def parse_timestamp(ts: str) -> str:
+    """Parse the archive sheet timestamp in the tenant's timezone (M6:
+    per-tenant via get_user_timezone, IST default for legacy/tenant #1).
+    """
     if not ts:
         return None
-    ist = timezone(timedelta(hours=5, minutes=30))
+    tz = get_user_timezone()
     try:
         dt = datetime.strptime(ts.strip(), "%d/%m/%Y %H:%M:%S")
-        dt = dt.replace(tzinfo=ist)
+        dt = dt.replace(tzinfo=tz)
         return dt.isoformat()
     except Exception:
         try:
             dt = datetime.strptime(ts.strip(), "%d/%m/%Y")
-            dt = dt.replace(tzinfo=ist)
+            dt = dt.replace(tzinfo=tz)
             return dt.isoformat()
         except Exception:
             return None
 
 
 def ensure_node(label: str) -> str:
-    node_type = "person" if label in ["Danny", "Sunju", "Jaden", "Jeffery", "The Boys"] else "organization" if label in ["Solvstrat", "Crayon", "Church"] else "concept"
+    # Per-tenant typing (M6): config-driven person/org lists, Danny fallback.
+    _label = label.lower().strip()
+    _person = {p.lower() for p in person_labels()}
+    _org = {o.lower() for o in org_labels()}
+    if _label in _person:
+        node_type = "person"
+    elif _label in _org:
+        node_type = "organization"
+    else:
+        node_type = "concept"
     existing = with_retry(
         lambda: supabase.table("graph_nodes").select("id, canonical_id").ilike("label", label).eq('is_current', True).execute(),
         label="Node select"
@@ -221,41 +344,38 @@ def check_duplicate(timestamp: str, content: str) -> bool:
         return False
 
 
-def graphify(text: str, memory_id: str):
+def graphify(text: str, memory_id: str, mappings: dict | None = None):
+    """Create graph edges from archive text. `mappings` is the per-tenant
+    entity→keyword map — pass it once per run (run_ingest) to avoid a DB
+    read per row; when omitted it is fetched here (self-sufficient).
+    """
     if not text:
         return
     text_lower = text.lower()
     entities = []
-    
-    for entity, keywords in ENTITY_MAPPINGS.items():
+
+    if mappings is None:
+        mappings = get_entity_mappings()
+    for entity, keywords in mappings.items():
         for kw in keywords:
             if kw in text_lower:
                 entities.append(entity)
                 break
     entities = list(set(entities))
     
-    if "Danny" not in entities and any(e in text_lower for e in ["i ", "my ", "me ", "i'm", "i am"]):
-        pass
-    
+    # M6 de-personalization: edge rules are per-tenant config (default =
+    # Danny's world for legacy/tenant #1). '{root}' is the tenant's own
+    # person label — never a hardcoded name.
+    root = resolve_root_label()
+    rules = edge_rules()
     for entity in entities:
-        if entity == "Sunju":
-            create_edge("Danny", "Sunju", "relates_to", memory_id)
-            create_edge("Sunju", "Danny", "relates_to", memory_id)
-        elif entity in ["Jaden", "Jeffery", "The Boys"]:
-            create_edge("Danny", entity, "parent_of", memory_id)
-            create_edge(entity, "Danny", "child_of", memory_id)
-        elif entity in ["Solvstrat", "Crayon"]:
-            create_edge("Danny", entity, "works_at", memory_id)
-            create_edge(entity, "Danny", "employs", memory_id)
-        elif entity == "Church":
-            create_edge("Danny", "Church", "belongs_to", memory_id)
-        elif entity == "₹30L Debt":
-            create_edge("Danny", "₹30L Debt", "struggles_with", memory_id)
-    
-    if "Sunju" in entities and "Solvstrat" in entities:
-        create_edge("Sunju", "Solvstrat", "connected_via", memory_id)
-    if "The Boys" in entities and "Sunju" in entities:
-        create_edge("The Boys", "Sunju", "cared_by", memory_id)
+        for spec in rules.get(entity, []):
+            if len(spec) < 3:
+                continue
+            src, tgt, rel = spec[0], spec[1], spec[2]
+            src = root if src == "{root}" else src
+            tgt = root if tgt == "{root}" else tgt
+            create_edge(src, tgt, rel, memory_id)
 
 
 def process_row(row) -> dict:
@@ -366,7 +486,11 @@ def run_ingest():
     
     last_sync = get_last_sync_time()
     print(f"Last archive sync: {last_sync or 'None (initial run)'}")
-    
+
+    # Per-tenant entity mappings — read once per run (M6): a tenant's
+    # config edits apply on the next run; no per-row DB round-trip.
+    mappings = get_entity_mappings()
+
     rows = fetch_sheet_data()
     print(f"Fetched {len(rows)} rows from Google Sheet")
     
@@ -409,7 +533,7 @@ def run_ingest():
                 if not embedding:
                     print("Skipping graphify for row — embedding failed")
                 else:
-                    graphify(parsed["content"], memory_id)
+                    graphify(parsed["content"], memory_id, mappings)
                 schedule_index_memory(memory_id, parsed["content"], "archive", "archive_ingest")
             
             inserted += 1

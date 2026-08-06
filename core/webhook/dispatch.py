@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import age_tag, IST_TIMEZONE, now_ist
 from core.pulse.context import context_provider
+from core.services.user_settings import resolve_user_name
 from core.lib.conversation import get_history, log_exchange, format_classify_context
 from core.webhook.telegram import send_telegram
 from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_BY_KEYWORD
@@ -451,6 +452,17 @@ async def handle_role_update(text: str, chat_id: int, classification: dict, sour
 
 
 async def route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None, active_anchor: dict = None, anaphora_task: asyncio.Task = None):
+    """Route a classified intent to its handler (M3: channel tenant scope)."""
+    from core.webhook.utils import webhook_tenant_scope
+    with webhook_tenant_scope():
+        return await _route_by_intent(
+            intent, text, chat_id, session_id, classification, source, sender,
+            task_update_id, active_anchor, anaphora_task,
+        )
+
+
+async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str, classification: dict = None, source="telegram", sender="user", task_update_id: int = None, active_anchor: dict = None, anaphora_task: asyncio.Task = None):
+    """Inner implementation (M3: tenant scope applied by the public wrapper)."""
     cid = get_decision_chain_id()
     if not cid:
         cid = set_decision_chain_id()
@@ -1238,14 +1250,15 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, ac
         
         def _source_tag(name): return f"[source:{name}]"
         _HIST_TAG = "[BACKGROUND — NOT a current task]"
+        _user_name = resolve_user_name()
         
         if tactical_map:
             all_context.append(f"{_source_tag('tactical_map')} TACTICAL MAP:\n{tactical_map}")
             available_sources.append("tactical map")
-        all_context.append(f"{_source_tag('active_tasks')} ACTIVE TASKS — Danny's live to-do list. ONLY items in this section are current active tasks.:\n{compressed_tasks if compressed_tasks else 'No active tasks found.'}")
+        all_context.append(f"{_source_tag('active_tasks')} ACTIVE TASKS — {_user_name}'s live to-do list. ONLY items in this section are current active tasks.:\n{compressed_tasks if compressed_tasks else 'No active tasks found.'}")
         available_sources.append("active tasks")
         if pending_decisions_context != "None":
-            all_context.append(f"{_source_tag('pending_decisions')} PENDING APPROVALS — items awaiting Danny's decision (not current tasks):\n{pending_decisions_context}")
+            all_context.append(f"{_source_tag('pending_decisions')} PENDING APPROVALS — items awaiting {_user_name}'s decision (not current tasks):\n{pending_decisions_context}")
             available_sources.append("pending decisions")
         if completed_context != "None":
             all_context.append(f"{_source_tag('completed_tasks')} RECENTLY COMPLETED TASKS — these are done. The ACTIVE TASKS section above has what's still pending.:\n{completed_context}")

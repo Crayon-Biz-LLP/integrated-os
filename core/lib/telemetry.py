@@ -14,7 +14,7 @@ import json
 from typing import Any, Optional
 from datetime import datetime, timezone, timedelta
 
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import core_config_upsert, maybe_single_safe, tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 
 # Minimum observations required before a pattern is considered meaningful
@@ -205,7 +205,7 @@ async def emit_observation(
         True if observation was recorded, False on failure (fail-open)
     """
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         supabase.table("subsystem_telemetry").insert({
             "subsystem": subsystem,
             "event_type": event_type,
@@ -237,7 +237,7 @@ async def _update_pattern_count(subsystem: str, features: dict, outcome: str) ->
     per feature hash. No ML, no model — just counting.
     """
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         feature_hash = hash_features(features, subsystem)
 
         # Try to find existing pattern row
@@ -311,7 +311,7 @@ async def get_pattern_summary(
     ]
     """
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
 
         rows = (
@@ -422,7 +422,7 @@ async def compute_pattern_confidence(
         }
     """
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
 
         # Build fallback feature sets by progressively stripping dimensions
         # Each iteration strips one more dimension from the previous set.
@@ -579,7 +579,7 @@ async def prune_orphaned_patterns(dry_run: bool = False) -> dict:
         }
     """
     try:
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         
         # Find all patterns across all subsystems with stale feature sets
@@ -653,7 +653,7 @@ async def weekly_synthesis() -> dict:
 
             # Check for drift: compare confidence to stored baseline
             try:
-                supabase = get_supabase()
+                supabase = tenant_aware_client()
                 baseline_key = f"pattern_baseline:{subsystem}"
                 baseline_res = maybe_single_safe(
                     supabase.table("core_config")
@@ -690,13 +690,11 @@ async def weekly_synthesis() -> dict:
                         "total_count": p["total_count"],
                     }
 
-                supabase.table("core_config").upsert(
-                    {
-                        "key": baseline_key,
-                        "content": json.dumps(baseline_data),
-                    },
-                    on_conflict="key",
-                ).execute()
+                # M4: core_config PK is (owner_id, key) — per-tenant target.
+                core_config_upsert(supabase, {
+                    "key": baseline_key,
+                    "content": json.dumps(baseline_data),
+                }).execute()
             except Exception:
                 pass
 

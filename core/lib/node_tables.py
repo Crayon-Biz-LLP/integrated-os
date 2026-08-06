@@ -7,10 +7,10 @@ Abstraction layer for pending_nodes and merge_proposals tables.
 
 from typing import Optional
 from datetime import datetime, timezone
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 # ── pending_nodes ──────────────────────────────────────
 

@@ -1,5 +1,5 @@
 from core.llm.constants import SYNTHESIS_MODEL
-from core.services.db import get_supabase
+from core.services.db import core_config_upsert, tenant_aware_client
 from core.llm import get_embedding
 import json
 from datetime import datetime, timezone, timedelta
@@ -9,7 +9,7 @@ from core.pulse.llm import  cosine_similarity
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 async def detect_practices():
@@ -35,10 +35,11 @@ async def detect_practices():
 
     try:
         # ── Step 0: Initialize core_config key if missing ──
-        supabase.table('core_config').upsert({
+        # M4: core_config PK is (owner_id, key) — per-tenant conflict target.
+        core_config_upsert(supabase, {
             "key": "dismissed_practice_variants",
             "content": "[]"
-        }, on_conflict="key").execute()
+        }).execute()
 
         # ── Step 1: Load exclusion list ──
         exclusion_res = supabase.table('core_config') \

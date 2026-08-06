@@ -9,10 +9,10 @@ Runs weekly (Sunday) via sentinel piggyback. Mines:
 """
 
 from datetime import datetime, timezone, timedelta
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 def detect_completion_patterns() -> dict:

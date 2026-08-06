@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Tuple, Optional
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
@@ -68,7 +68,7 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     Returns (True, None) if the message was consumed, (True, ancillary_text) if the workflow
     handled the offer but there's a separate instruction to re-process, (False, None) if normal routing.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     
     # Prune expired workflows first
     try:

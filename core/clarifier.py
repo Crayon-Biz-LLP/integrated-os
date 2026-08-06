@@ -1,4 +1,4 @@
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 import uuid
 from typing import Optional
 from datetime import datetime, timezone, timedelta
@@ -8,7 +8,7 @@ async def store_and_send_clarification(clar: dict, source_table: str, source_id:
     """
     Store the clarification in DB, update source status, and optionally send via Telegram.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     expires_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
     
     # 1. Update source table FIRST to ensure it's marked as awaiting_clarification
@@ -107,7 +107,7 @@ def evaluate_node(node_data: dict, batch_mode: bool = False) -> Optional[dict]:
 
 def evaluate_edge(edge_data: dict, batch_mode: bool = False) -> Optional[dict]:
     """Phase 2: Evaluate new edge for contradictions or low confidence."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     from_lbl = edge_data.get("source_label")
     to_lbl = edge_data.get("target_label")
     rel = edge_data.get("relationship", "").upper()
@@ -180,7 +180,7 @@ def handle_response(shortcode: str, answer: str) -> dict:
     Handles free-form answers — grounding questions accept any context,
     other question types use expanded positive/negative word sets.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     
     res = maybe_single_safe(supabase.table("clarification_feedback").select("*").eq("shortcode", shortcode))
     if not res.data:
@@ -271,7 +271,7 @@ def handle_response(shortcode: str, answer: str) -> dict:
 
 def next_shortcode() -> str:
     """Phase 1 stub."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     try:
         res = supabase.rpc('next_clarification_shortcode').execute()
         if res and res.data:

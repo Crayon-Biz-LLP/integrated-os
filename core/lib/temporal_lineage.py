@@ -1,10 +1,10 @@
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 """
 Temporal Lineage - Version history for memories, tasks, projects.
 Enables tracking how thoughts/decisions evolve over time.
 """
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 

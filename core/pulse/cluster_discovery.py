@@ -5,7 +5,7 @@ Uses a single LLM call to identify natural groupings of 3+ related
 resources, creating new clusters when a coherent strategic theme emerges.
 """
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm.fallback import generate_content_with_fallback
@@ -75,7 +75,9 @@ Resources:
             return []
 
         created = []
-        ist_ts = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        # M2/M6: per-tenant timezone (fallback IST) — never a hardcoded offset.
+        from core.lib.time_utils import get_user_timezone
+        ist_ts = datetime.now(get_user_timezone())
         for item in discovered:
             title = item.get('cluster_title', '').strip()
             resource_ids = item.get('resource_ids', [])

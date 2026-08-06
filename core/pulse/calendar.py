@@ -1,16 +1,15 @@
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 
 from datetime import datetime, timezone, timedelta
-from googleapiclient.discovery import build
 from googleapiclient.discovery_cache import base
 from core.lib.audit_logger import audit_log_sync
-from core.services.google_service import get_google_creds, format_rfc3339
+from core.services.google_service import get_cached_service, format_rfc3339
 
 from core.services.outlook_service import get_outlook_calendar_events
 
 from core.pulse.context import context_provider
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 class MemoryCache(base.Cache):
@@ -40,7 +39,9 @@ def get_calendar_context(target_date):
 def check_conflict(start_iso, exclude_event_id=None):
     """Radar: Checks if a 30-minute window is already booked."""
     try:
-        service = build('calendar', 'v3', credentials=get_google_creds(), cache=MemoryCache())
+        service = get_cached_service('calendar', 'v3')
+        if service is None:
+            return None
         rfc_time = format_rfc3339(start_iso)
 
         start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
@@ -131,7 +132,9 @@ def get_google_calendar_events(target_date):
     """Fetch calendar events from Google Calendar for a given date.
     Returns list of {time, title, source, id} or [] on failure."""
     try:
-        service = build("calendar", "v3", credentials=get_google_creds(), cache=MemoryCache())
+        service = get_cached_service("calendar", "v3")
+        if service is None:
+            return []
         start_dt = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
         end_dt = start_dt + timedelta(days=1)
         rfc_start = format_rfc3339(start_dt.isoformat())
@@ -161,7 +164,9 @@ def get_google_calendar_events(target_date):
 def get_google_calendar_events_range(start_date, end_date):
     """Fetch calendar events from Google Calendar for a date range (for week/month views)."""
     try:
-        service = build("calendar", "v3", credentials=get_google_creds(), cache=MemoryCache())
+        service = get_cached_service("calendar", "v3")
+        if service is None:
+            return []
         start_dt = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
         end_dt = end_date.replace(hour=23, minute=59, second=59)
         rfc_start = format_rfc3339(start_dt.isoformat())

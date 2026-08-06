@@ -1,8 +1,9 @@
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, tzinfo
 from typing import Optional
+from zoneinfo import ZoneInfo
 
-# ── Shared IST timezone (UTC+05:30) ──
+# ── Shared IST timezone (UTC+05:30) — pre-M2 default / fallback ──
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -13,6 +14,38 @@ def now_ist() -> datetime:
 
 # Re-export the timezone object for callers that need it
 IST_TIMEZONE = _IST
+
+
+_tz_cache: dict[str, tzinfo] = {}
+
+
+def get_user_timezone(user_id: str | None = None) -> tzinfo:
+    """Resolve the user's IANA timezone → tzinfo (M2 de-personalization).
+
+    Resolution order: user_settings.timezone → USER_TIMEZONE env → IST.
+    Invalid/unknown names fall back to IST (never crash on a bad setting).
+    """
+    name: str | None = None
+    try:
+        from core.services.user_settings import resolve_timezone
+        name = resolve_timezone(user_id)
+    except Exception:
+        name = None
+    if not name:
+        name = "Asia/Kolkata"
+    if name in _tz_cache:
+        return _tz_cache[name]
+    try:
+        tz = ZoneInfo(name)
+    except Exception:
+        tz = _IST
+    _tz_cache[name] = tz
+    return tz
+
+
+def now_for_user(user_id: str | None = None) -> datetime:
+    """Current datetime in the user's timezone (M2)."""
+    return datetime.now(get_user_timezone(user_id))
 
 
 def age_tag(created_at_str: str | None) -> str:

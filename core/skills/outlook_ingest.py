@@ -9,11 +9,11 @@ from datetime import datetime, timedelta, timezone
 from core.lib.constants import EmailStatus
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.time_utils import compute_expires_at
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 from core.services.llm import call_gemini_classify
 import requests
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 def build_active_task_list() -> list:
     """Fetch all active task titles ONCE for duplicate checking."""
@@ -90,7 +90,10 @@ def parse_json_response(response_text: str) -> any:
     raise ValueError(f"Could not parse JSON from response: {text[:100]}...")
 
 async def generate_draft(sender: str, subject: str, body: str) -> str:
-    prompt = f"""You are drafting a professional reply on behalf of Danny (Yashwant Daniel), founder of Crayon. Write a concise, warm, and direct reply to this email. Do not sign off with a full signature block — end with just 'Danny'. Do not send — this is a draft for Danny's review.
+    from core.services.user_settings import resolve_user_name, resolve_context
+    _user_name = resolve_user_name()
+    _user_context = resolve_context()
+    prompt = f"""You are drafting a professional reply on behalf of {_user_name}. {_user_context} Write a concise, warm, and direct reply to this email. Do not sign off with a full signature block — end with just '{_user_name}'. Do not send — this is a draft for {_user_name}'s review.
 
 Sender: {sender}
 Subject: {subject}

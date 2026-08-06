@@ -1,11 +1,11 @@
 import asyncio
 from typing import Optional
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.retrieval.config import config, BACKFILL_BATCH_SIZE
 from core.retrieval.pipeline import index_memory
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 CHECKPOINT_KEY = "_backfill_checkpoint"
 MAX_PARTIAL_RETRIES = 2

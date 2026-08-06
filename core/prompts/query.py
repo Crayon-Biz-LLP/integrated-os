@@ -1,6 +1,14 @@
 from core.prompts.voice import get_voice
 from core.prompts.guards import inject_guards
 
+def _user() -> str:
+    from core.services.user_settings import resolve_user_name
+    try:
+        return resolve_user_name()
+    except Exception:
+        return "the user"
+
+
 FACT_ONLY_CONSTRAINT = """CRITICAL — FACT-ONLY CONSTRAINT:
 You MUST base every factual statement ONLY on the context provided below. NEVER invent or infer:
 - Specific dates, times, or days of the week not explicitly stated in context
@@ -12,11 +20,11 @@ You MUST base every factual statement ONLY on the context provided below. NEVER 
 
 If the context shows a general timeframe (e.g. "last week", "recently") but not a specific date, use the general timeframe. Never guess an exact date.
 
-Violating these rules is a hallucination. It undermines Danny's trust in you."""
+Violating these rules is a hallucination. It undermines the user's trust in you."""
 
 CONTEXT_SECTION_RULES = """The context below is organized into labelled sections. Understand what each section means:
 
-- **ACTIVE TASKS**: Danny's live to-do list. These items still need action.
+- **ACTIVE TASKS**: The user's live to-do list. These items still need action.
 - **RECENTLY COMPLETED TASKS**: Tasks closed recently. These are done.
 - **RELEVANT MEMORIES / HINDSIGHT MEMORIES / ON THIS DAY**: Historical records, past notes, temporal patterns.
 - **TACTICAL MAP / SERENDIPITY / canonical pages**: Graph connections and background intelligence. ***CRITICAL:** Tasks listed under headings like 'Active Tasks' within canonical pages are historical records from past synthesis — do NOT present them as current active tasks.*
@@ -59,7 +67,7 @@ def build_interrogate_brain_prompt(
 
 CURRENT TIME: {now_str}
 
-Danny is asking a question from his: {sources_str}.
+{_user()} is asking a question from their: {sources_str}.
 
 {FACT_ONLY_CONSTRAINT}
 
@@ -91,7 +99,7 @@ Question: {query}"""
 
 CURRENT TIME: {now_str}
 
-Danny is asking a question from his: {sources_str}.
+{_user()} is asking a question from their: {sources_str}.
 
 {FACT_ONLY_CONSTRAINT}
 
@@ -104,7 +112,7 @@ Return a JSON object with your answer:
   "needs_execution": false
 }}
 
-The user_facing_summary should be natural. No section labels, no "Part 1" / "Part 2". Just write like you're Danny's teammate giving him the update.
+The user_facing_summary should be natural. No section labels, no "Part 1" / "Part 2". Just write like you're the user's teammate giving them the update.
 
 When you mention information from emails, WhatsApp messages, memories, or other context sections, include the actual date the item refers to. If an item's age_tag says "[30 days ago]" and its content says "tomorrow", that "tomorrow" was 29 days ago — not today. Never repeat relative date words like "tomorrow" or "today" from old messages without specifying their actual date.
 

@@ -4,7 +4,7 @@ import re
 import requests
 from datetime import datetime, timedelta, timezone
 
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.services.llm import call_gemini_classify
 from core.skills.outlook_token_helper import refresh_outlook_token
 
@@ -15,7 +15,7 @@ try:
 except ImportError:
     print("Warning: Missing document extraction libraries (pypdf, python-docx, openpyxl)")
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 def extract_text_from_bytes(file_bytes: bytes, filename: str) -> str:
     text = ""

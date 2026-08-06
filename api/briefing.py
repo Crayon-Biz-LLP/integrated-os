@@ -13,10 +13,11 @@ Sections built:
 """
 
 import json
-import os
 from datetime import datetime, timedelta, timezone
 from typing import TypedDict
-from core.services.db import exec_query
+from core.lib.time_utils import now_for_user
+from core.services.db import exec_query, tenant_aware_client
+from core.services.user_settings import resolve_user_name, current_user_id
 
 
 # ── Typed dicts ──────────────────────────────────────────────────────────────
@@ -92,10 +93,27 @@ IST = timezone(timedelta(hours=5, minutes=30))
 ELLIPSIS = "\u2026"
 
 
+def _user_tz():
+    """Per-user timezone (settings → env → IST fallback) for this request."""
+    try:
+        from core.lib.time_utils import get_user_timezone
+        return get_user_timezone(current_user_id())
+    except Exception:
+        return IST
+
+
+def _now() -> datetime:
+    """Current time in the user's timezone."""
+    try:
+        return now_for_user(current_user_id())
+    except Exception:
+        return _now()
+
+
 # ── Greeting ─────────────────────────────────────────────────────────────────
 
 def _greeting() -> str:
-    now = datetime.now(IST)
+    now = _now()
     h = now.hour
     if h < 12:
         return "Good morning"
@@ -122,9 +140,9 @@ def _human_time(dt: datetime, now: datetime) -> str:
 
 
 def _parse_dt(raw: str) -> datetime | None:
-    """Parse ISO datetime string to IST, returning None on failure."""
+    """Parse ISO datetime string to the user's timezone, returning None on failure."""
     try:
-        return datetime.fromisoformat(raw).astimezone(IST)
+        return datetime.fromisoformat(raw).astimezone(_user_tz())
     except (ValueError, TypeError):
         return None
 
@@ -178,7 +196,7 @@ def _build_briefing_section(
     """Build the morning/evening section: calendar + tasks."""
     items: list[BriefingItem] = []
 
-    now = datetime.now(IST)
+    now = _now()
     soon = now + timedelta(hours=6)
 
     # — Calendar events (next few hours) —
@@ -325,7 +343,7 @@ def _build_recent_section(
 ) -> BriefingSection:
     """Build Recent section from the last ~30 min of activity. Max 3 items."""
     items: list[BriefingItem] = []
-    now = datetime.now(IST)
+    now = _now()
     cutoff = now - timedelta(minutes=30)
 
     # Completed tasks
@@ -406,7 +424,7 @@ def _build_traces(
     text, always a brief summary) and the resolution (what Rhodey did).
     """
     traces: list[TraceItem] = []
-    now = datetime.now(IST)
+    now = _now()
     cutoff = now - timedelta(hours=6)
 
     # Pair inbound messages with their responses
@@ -482,10 +500,14 @@ async def _auto_approve_pending_items(supabase) -> int:
 
     Returns the number of items auto-approved.
     """
-    # ── 5-minute TTL gate ──
+    # ── 5-minute TTL gate (per-tenant: one tenant's sweep must never
+    #    suppress another's — a global key would skip tenant B's auto-
+    #    approvals whenever tenant A ran within the last 5 min) ──
     try:
         from core.lib.redis_cache import cache_get, cache_set
-        _GATE_KEY = "auto_approve:last_run"
+        from core.services.db import get_tenant
+        _uid = get_tenant()
+        _GATE_KEY = f"auto_approve:last_run:{_uid}" if _uid else "auto_approve:last_run"
         if cache_get(_GATE_KEY) is not None:
             return 0
     except Exception:
@@ -627,13 +649,14 @@ async def _live_voice_line(tasks, events, insight_text=None) -> str | None:
             "\n".join(event_rows) if event_rows else "(no events today)"
         )
 
-        h = datetime.now(IST).hour
+        h = _now().hour
         greeting = "morning" if h < 12 else "afternoon" if h < 17 else "evening"
 
+        user_name = resolve_user_name(current_user_id())
         prompt = (
-            "You are Rhodey, Danny's personal Chief of Staff — a real person's "
+            f"You are Rhodey, {user_name}'s personal Chief of Staff — a real person's "
             "assistant, not a generic bot. Write ONE opening line (1-2 sentences) "
-            f"for Danny's home screen right now ({greeting}).\n\n"
+            f"for {user_name}'s home screen right now ({greeting}).\n\n"
             "Rules:\n"
             "- Lead with what matters most right now — the top pending task or the "
             "immediate situation.\n"
@@ -661,8 +684,16 @@ async def _live_voice_line(tasks, events, insight_text=None) -> str | None:
         return None
 
 
-async def build_briefing(supabase) -> BriefingResponse:
-    """Assemble the full briefing from Supabase data. All errors caught per-source."""
+async def build_briefing(supabase=None) -> BriefingResponse:
+    """Assemble the full briefing from Supabase data. All errors caught per-source.
+
+    `supabase` may be passed explicitly (api/index.py passes the tenant-aware
+    facade). When omitted, the tenant-aware client is used directly — a future
+    caller that forgets to scope still fails closed (TenantRequiredError) or
+    reads the active tenant's data instead of silently leaking cross-tenant.
+    """
+    if supabase is None:
+        supabase = tenant_aware_client()
     # ── Auto-approve high-confidence items before reading pending state ──
     try:
         await _auto_approve_pending_items(supabase)
@@ -694,17 +725,18 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     async def _get_events():
         try:
-            from core.services.google_service import get_google_creds, format_rfc3339
-            from googleapiclient.discovery import build
+            from core.services.google_service import get_cached_service, format_rfc3339
 
-            today = datetime.now(IST)
+            today = _now()
             start_dt = today.replace(hour=0, minute=0, second=0)
             end_dt = start_dt.replace(hour=23, minute=59, second=59)
             rfc_start = format_rfc3339(start_dt)
             rfc_end = format_rfc3339(end_dt)
 
             def _fetch():
-                service = build("calendar", "v3", credentials=get_google_creds())
+                service = get_cached_service("calendar", "v3")
+                if service is None:
+                    return {"items": []}  # tenant has no Google creds (M5)
                 return service.events().list(
                     calendarId="primary",
                     timeMin=rfc_start,
@@ -763,7 +795,7 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     async def _get_recent_messages():
         try:
-            recent_cutoff = (datetime.now(IST) - timedelta(minutes=30)).isoformat()
+            recent_cutoff = (_now() - timedelta(minutes=30)).isoformat()
             res = await exec_query(
                 supabase.table("raw_dumps")\
                 .select("id, content, direction, status, message_type, created_at")\
@@ -778,7 +810,7 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     async def _get_recent_done_tasks():
         try:
-            recent_cutoff = (datetime.now(IST) - timedelta(minutes=30)).isoformat()
+            recent_cutoff = (_now() - timedelta(minutes=30)).isoformat()
             res = await exec_query(
                 supabase.table("tasks")\
                 .select("id, title, status, completed_at, updated_at")\
@@ -796,7 +828,7 @@ async def build_briefing(supabase) -> BriefingResponse:
     # Also fetch messages from the last 6 hours for traces
     async def _get_traces_messages():
         try:
-            traces_cutoff = (datetime.now(IST) - timedelta(hours=6)).isoformat()
+            traces_cutoff = (_now() - timedelta(hours=6)).isoformat()
             res = await exec_query(
                 supabase.table("raw_dumps")\
                 .select("id, content, direction, status, message_type, created_at")\
@@ -811,7 +843,7 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     async def _get_traces_done_tasks():
         try:
-            traces_cutoff = (datetime.now(IST) - timedelta(hours=6)).isoformat()
+            traces_cutoff = (_now() - timedelta(hours=6)).isoformat()
             res = await exec_query(
                 supabase.table("tasks")\
                 .select("id, title, status, completed_at, updated_at")\
@@ -837,7 +869,7 @@ async def build_briefing(supabase) -> BriefingResponse:
         pull-forward signal (vault drawer) and overrides a far deadline — so
         "Pull forward" actually brings the task back into the briefing.
         """
-        horizon_cutoff = datetime.now(IST) + timedelta(days=2)
+        horizon_cutoff = _now() + timedelta(days=2)
         filtered = []
         for t in tasks_raw:
             deadline = t.get('deadline')
@@ -897,7 +929,7 @@ async def build_briefing(supabase) -> BriefingResponse:
     try:
         # Find the last pulse timestamp (reuse ai_res result computed later)
         # But we need it now for the delta query — read it here
-        last_pulse_at = (datetime.now(IST) - timedelta(hours=6)).isoformat()
+        last_pulse_at = (_now() - timedelta(hours=6)).isoformat()
         ai_ts_res = await exec_query(
             supabase.table("app_intelligence") \
             .select("created_at") \
@@ -907,7 +939,7 @@ async def build_briefing(supabase) -> BriefingResponse:
         if ai_ts_res.data:
             last_pulse_at = ai_ts_res.data[0]["created_at"]
 
-        now = datetime.now(IST)
+        now = _now()
         raw_deltas: list[tuple[datetime, str, str]] = []  # (timestamp, icon, text)
 
         # Tasks created since last pulse
@@ -1070,11 +1102,11 @@ async def build_briefing(supabase) -> BriefingResponse:
 
     # ── Assemble sections ────────────────────────────────────────────────
     greeting = _greeting()
-    name = os.getenv("USER_NAME", "Danny")
+    name = resolve_user_name(current_user_id())
 
     # Next event for greeting
     next_event: str | None = None
-    now = datetime.now(IST)
+    now = _now()
     for ev in events:
         start_raw = ev.get("start", {}).get("dateTime", "")
         if not start_raw:
@@ -1114,7 +1146,7 @@ async def build_briefing(supabase) -> BriefingResponse:
             created_dt = _parse_dt(created_raw)
             pulse_age_hours = 99.0
             if created_dt is not None:
-                pulse_age_hours = (datetime.now(IST) - created_dt).total_seconds() / 3600.0
+                pulse_age_hours = (_now() - created_dt).total_seconds() / 3600.0
             
             if pulse_age_hours <= 6.0:
                 voice_line = row.get("voice_line") or None
@@ -1181,7 +1213,7 @@ async def build_briefing(supabase) -> BriefingResponse:
         
         # ── If still empty, generate real-time micro-context ──
         if not voice_line:
-            h = datetime.now(IST).hour
+            h = _now().hour
             if h < 12:
                 pulse_mode = pulse_mode or "morning"
             elif h < 17:

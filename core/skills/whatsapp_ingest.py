@@ -5,11 +5,11 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from core.retrieval.pipeline import schedule_index_memory
 from core.pulse.entity_extractor import extract_and_link_entities
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.services.llm import call_gemini_classify
 from core.lib.time_utils import resolve_expiry
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 NOREPLY_PATTERNS = [
     'noreply', 'no-reply', 'donotreply', 'notification',
@@ -18,9 +18,11 @@ NOREPLY_PATTERNS = [
 
 
 async def classify_whatsapp_message(sender_name: str, sender_phone: str, message_text: str) -> dict:
-    prompt = f"""You are classifying a WhatsApp message for Danny (Yashwant Daniel).
+    from core.services.user_settings import resolve_user_name
+    _user_name = resolve_user_name()
+    prompt = f"""You are classifying a WhatsApp message for {_user_name}.
 
-MAILBOX CONTEXT: This is Danny's PERSONAL WhatsApp. It receives messages from family, friends, church contacts, and personal relationships. Work-related messages (clients, vendors, team) should be treated as actionable.
+MAILBOX CONTEXT: This is {_user_name}'s PERSONAL WhatsApp. It receives messages from family, friends, church contacts, and personal relationships. Work-related messages (clients, vendors, team) should be treated as actionable.
 
 Sender: {sender_name or sender_phone}
 Message: {message_text[:1000]}
@@ -37,19 +39,19 @@ CLASSIFY AS "fyi" IF:
 - A forwarded message worth noting but requiring no action
 
 CLASSIFY AS "actionable" IF:
-- A real person asking Danny to do something, respond, decide, coordinate, or take action
+- A real person asking {_user_name} to do something, respond, decide, coordinate, or take action
 - A request related to family, church, work, or personal obligations
 - When in doubt, surface it as actionable
 
 OUTPUT RULES
 
 suggested_title:
-- Verb-first, specific action (e.g., "Call Amma about Sunday lunch", "Review Qhord pricing page", "Confirm prayer meeting time with Elder Thomas")
+- Verb-first, specific action (e.g., "Call Amma about Sunday lunch", "Review the pricing page", "Confirm prayer meeting time with Elder Thomas")
 - NULL if fyi or ignored
 - NULL if action cannot be stated specifically
 
 suggested_project:
-- One of: SOLVSTRAT, QHORD, ASHRAYA, PERSONAL, CRAYON, INBOX
+- One of the user's routing domains, or INBOX
 - NULL if unsure
 
 linked_person_name:

@@ -495,9 +495,9 @@ async def handle_command(text: str, chat_id: int):
 
     elif text in ['/backfill']:
         try:
+            from core.lib.constants import resolve_github_config
             github_token = os.getenv("GITHUB_TOKEN")
-            owner = os.getenv("GITHUB_OWNER", "Crayon-Biz-LLP")
-            repo = os.getenv("GITHUB_REPO", "integrated-os")
+            owner, repo = resolve_github_config()
             if github_token and owner and repo:
                 url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/backfill_graph.yml/dispatches"
                 headers = {

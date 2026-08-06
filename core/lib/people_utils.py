@@ -1,5 +1,5 @@
 import re
-from core.services.db import get_supabase, maybe_single_safe
+from core.services.db import maybe_single_safe, tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 
 PEOPLE_TITLES = [
@@ -40,7 +40,7 @@ def enrich_people_from_graph() -> int:
     Consolidation (migration 74): the graph node is the single source of
     truth; the people mirror table is no longer written.
     Returns count of people enriched."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     enriched = 0
     try:
         # Get all live person graph nodes (the single source of truth)

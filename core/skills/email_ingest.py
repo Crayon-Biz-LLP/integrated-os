@@ -12,12 +12,17 @@ from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.duplicate_guard import check_duplicate
 from core.retrieval.pipeline import schedule_index_memory
 from core.pulse.entity_extractor import extract_and_link_entities
-from core.services.db import get_supabase, maybe_single_safe
-from core.services.google_service import get_google_creds, _MemoryCache
+from core.services.db import maybe_single_safe, tenant_aware_client
+from core.services.google_service import get_cached_service
 from core.lib.time_utils import compute_expires_at
 from core.services.llm import call_gemini_classify
 
-supabase = get_supabase()
+# Tenant #1 (Danny) archive Gmail label — the SINGLE source of truth. Used
+# as the legacy runtime fallback AND written into core_config by
+# scripts/seed_tenant1_m6_config.py (keep in sync via that seed).
+DEFAULT_EMAIL_ARCHIVE_LABEL = "Completed/Ashraya"
+
+supabase = tenant_aware_client()
 
 NOREPLY_PATTERNS = [
     'noreply', 'no-reply', 'donotreply', 'mailer-daemon',
@@ -57,7 +62,10 @@ def fetch_rejected_email_tasks() -> list:
 
 
 async def generate_draft(sender: str, subject: str, body: str) -> str:
-    prompt = f"""You are drafting a professional reply on behalf of Danny (Yashwant Daniel), founder of Crayon. Write a concise, warm, and direct reply to this email. Do not sign off with a full signature block — end with just 'Danny'. Do not send — this is a draft for Danny's review.
+    from core.services.user_settings import resolve_user_name, resolve_context
+    _user_name = resolve_user_name()
+    _user_context = resolve_context()
+    prompt = f"""You are drafting a professional reply on behalf of {_user_name}. {_user_context} Write a concise, warm, and direct reply to this email. Do not sign off with a full signature block — end with just '{_user_name}'. Do not send — this is a draft for {_user_name}'s review.
 
 Sender: {sender}
 Subject: {subject}
@@ -126,7 +134,9 @@ async def add_person_from_email(name: str, email: str = None, source: str = 'ema
 
 
 async def write_relationship_note(sender_name: str, sender_email: str, subject: str, summary: str, people_id: str = None):
-    prompt = f"""Synthesize a brief relationship note based on this email interaction. Focus on: who sent it, what was communicated, why it matters for Danny's relationship knowledge graph. NOT a raw summary.
+    from core.services.user_settings import resolve_user_name
+    _user_name = resolve_user_name()
+    prompt = f"""Synthesize a brief relationship note based on this email interaction. Focus on: who sent it, what was communicated, why it matters for {_user_name}'s relationship knowledge graph. NOT a raw summary.
 
 Sender: {sender_name} ({sender_email})
 Subject: {subject}
@@ -514,8 +524,10 @@ async def main():
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
     print("Email ingest started at " + str(now_ist))
 
-    from googleapiclient.discovery import build
-    gmail_service = build('gmail', 'v1', credentials=get_google_creds(), cache=_MemoryCache())
+    gmail_service = get_cached_service('gmail', 'v1')
+    if gmail_service is None:
+        print("No Google creds for this tenant — email ingest skipped.")
+        return
 
     active_tasks = build_active_task_list()
     rejected_tasks = fetch_rejected_email_tasks()
@@ -523,7 +535,19 @@ async def main():
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     after_timestamp = int(cutoff.timestamp())
-    query = f'(label:inbox OR label:"Completed/Ashraya") after:{after_timestamp}'
+    # Per-tenant Gmail label (M6): core_config 'email_archive_label' is
+    # authoritative when a row exists (empty content → INBOX only). When the
+    # row is absent (legacy / tenant #1 pre-seed), fall back to Danny's
+    # label so existing behaviour is preserved exactly.
+    label_part = f' OR label:"{DEFAULT_EMAIL_ARCHIVE_LABEL}"'
+    try:
+        res = supabase.table('core_config').select('content').eq('key', 'email_archive_label').execute()
+        if res.data:
+            lbl = str(res.data[0].get('content') or '').strip()
+            label_part = f' OR label:"{lbl}"' if lbl else ''
+    except Exception:
+        pass
+    query = f'(label:inbox{label_part}) after:{after_timestamp}'
     result = gmail_service.users().messages().list(userId='me', q=query, maxResults=50).execute()
     messages = result.get('messages', [])
 

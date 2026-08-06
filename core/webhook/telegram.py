@@ -26,6 +26,11 @@ def _chunk_message(text: str, max_len: int = 4000) -> list[str]:
 
 async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True, inline_keyboard: list = None, skip_validation: bool = False, notify_push: bool = True):
     import re
+    # M4: app-only tenants have no Telegram chat id (users.telegram_chat_id
+    # NULL) — skip gracefully instead of failing the pulse. The Android app
+    # is the primary channel; Telegram is optional.
+    if not chat_id:
+        return False
     try:
         evidence = snapshot_action_context()
         if not skip_validation:

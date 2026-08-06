@@ -24,8 +24,12 @@ def _persist_to_raw_dumps(message_text: str) -> None:
     a persist failure must never break the reply itself.
     """
     try:
-        from core.services.db import get_supabase
-        supabase = get_supabase()
+        # M3: tenant facade — raw_dumps.owner_id is NOT NULL (db/78), so an
+        # unscoped insert would 400 in tenant mode (breaking the app's
+        # conversation history) or land under the wrong owner. The facade
+        # injects owner_id from the active tenant context.
+        from core.services.db import tenant_aware_client
+        supabase = tenant_aware_client()
         supabase.table('raw_dumps').insert({
             'content': message_text[:3000],  # Cap at 3000 chars for DB
             'status': 'completed',
@@ -36,7 +40,16 @@ def _persist_to_raw_dumps(message_text: str) -> None:
             'metadata': {'type': 'bot_response'},
         }).execute()
     except Exception as e:
-        audit_log_sync("reply_delivery", "WARNING", f"raw_dumps persist failed: {e}")
+        # In tenant mode, a TenantRequiredError means a caller forgot its
+        # tenant scope — that's a real bug (the app's conversation history
+        # would silently stop getting replies), not a transient infra
+        # failure. Surface it as ERROR so it isn't hidden by fail-open.
+        from core.services.db import tenant_mode_enabled, get_tenant
+        if tenant_mode_enabled() and get_tenant() is None:
+            audit_log_sync("reply_delivery", "ERROR",
+                           f"raw_dumps persist failed — NO TENANT SCOPE (caller bug): {type(e).__name__}: {e}")
+        else:
+            audit_log_sync("reply_delivery", "WARNING", f"raw_dumps persist failed: {e}")
 
 
 async def deliver_outbound_reply(

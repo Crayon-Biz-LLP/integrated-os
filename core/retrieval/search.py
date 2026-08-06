@@ -5,7 +5,7 @@ import asyncio
 from typing import List, Optional, Dict
 import time
 from datetime import datetime, timezone
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client, get_tenant
 from core.retrieval.config import (
     config, DEFAULT_TOP_K_PHRASES, DEFAULT_TOP_K_MEMORIES, RECOGNITION_THRESHOLD,
 )
@@ -16,7 +16,7 @@ from core.retrieval.schema import ExplainableBundle, ScoredMemory
 
 _MAX_SUPPORTING_PASSAGES = 5
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 async def associative_retrieve(
@@ -47,8 +47,14 @@ async def associative_retrieve(
 
     query_norm = query.lower().strip()
     query_hash = hashlib.sha256(query_norm.encode()).hexdigest()
-    ent_key = f"retrieval:entities:{query_hash}"
-    pers_key = f"retrieval:person:{query_hash}"
+    # Tenant-namespaced: entity/person resolution results are tenant data —
+    # tenant B querying the same text must not receive tenant A's resolved
+    # person/entities from the shared cache. Embedding is deterministic per
+    # query text so it stays global (same vector for everyone).
+    _uid = get_tenant()
+    _ns = f":{_uid}" if _uid else ""
+    ent_key = f"retrieval:entities:{query_hash}{_ns}"
+    pers_key = f"retrieval:person:{query_hash}{_ns}"
     emb_key = f"retrieval:embedding:{query_hash}"
 
     async def _get_cached_entities():
@@ -258,7 +264,7 @@ async def _extract_query_entities(query: str) -> List[str]:
             return []
         # Return entity labels from the resolved IDs
         labels = []
-        supabase = get_supabase()
+        supabase = tenant_aware_client()
         if org_id:
             org = supabase.table('graph_nodes').select('label').eq('id', org_id).maybe_single().execute()
             if org and org.data:
