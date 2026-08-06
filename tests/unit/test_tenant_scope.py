@@ -18,8 +18,8 @@ import pytest
 os.environ.setdefault("SUPABASE_URL", "http://localhost:1")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-key")
 
-from core.services import db as db_mod
-from core.services.db import (
+from core.services import db as db_mod  # noqa: E402  (env must be set first)
+from core.services.db import (  # noqa: E402
     hash_api_key,
     require_tenant,
     set_tenant,

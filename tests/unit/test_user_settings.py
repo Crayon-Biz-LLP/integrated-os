@@ -17,7 +17,7 @@ import pytest
 os.environ.setdefault("SUPABASE_URL", "http://localhost:1")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-key")
 
-from core.services import user_settings as us
+from core.services import user_settings as us  # noqa: E402  (env must be set first)
 
 
 @pytest.fixture(autouse=True)
