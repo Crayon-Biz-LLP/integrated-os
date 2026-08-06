@@ -71,9 +71,19 @@ def load_danny(dsn: str) -> dict:
 # ── HEAD truth (git show HEAD:<path>) ───────────────────────────────────────
 
 def head_file(path: str) -> str:
+    """Read the PRE-M2 baseline of `path` — origin/main when available (the
+    true pre-M2 reference), falling back to HEAD (running on main before any
+    commit, or no remote). After the M0-M6 work is committed to the branch,
+    HEAD == M2 code, so HEAD can no longer serve as the literal-Danny
+    baseline; origin/main can.
+    """
     out = subprocess.run(
-        ["git", "show", f"HEAD:{path}"], capture_output=True, text=True, cwd=os.getcwd(), timeout=20
+        ["git", "show", f"origin/main:{path}"], capture_output=True, text=True, cwd=os.getcwd(), timeout=20
     )
+    if out.returncode != 0:
+        out = subprocess.run(
+            ["git", "show", f"HEAD:{path}"], capture_output=True, text=True, cwd=os.getcwd(), timeout=20
+        )
     if out.returncode != 0:
         raise RuntimeError(f"git show {path} failed: {out.stderr.strip()[:300]}")
     return out.stdout

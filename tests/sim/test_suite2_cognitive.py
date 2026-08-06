@@ -5,6 +5,7 @@ from core.webhook.classify import classify_intent, SAFE_HOLD_CLASSIFICATION
 from core.lib.conversation import resolve_thread
 from core.services.db import get_supabase
 from core.lib.audit_logger import set_trace_id
+from sim.conftest import requires_live_db
 
 supabase = get_supabase()
 
@@ -34,8 +35,8 @@ async def test_c3_safe_hold_on_llm_failure():
 async def test_c3_safe_hold_on_rate_limit():
     set_trace_id("sim-c3-ratelimit")
 
-    with patch('core.webhook.classify._classify_limiter') as mock_limiter:
-        mock_limiter._get_wait_secs.return_value = 5.0
+    with patch('core.llm.budget.tenant_llm_limiter') as mock_limiter:
+        mock_limiter.return_value._get_wait_secs.return_value = 5.0
         result = await classify_intent(
             text="[SIM_TEST] Rate limited message",
             context=[],
@@ -46,6 +47,7 @@ async def test_c3_safe_hold_on_rate_limit():
     assert result['intent'] == 'NOTE'
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_k2_routing_workflow_priority():
     set_trace_id("sim-k2-workflow")
@@ -102,12 +104,13 @@ async def test_k2_routing_entity_match():
     supabase.table('organizations').delete().eq('id', entity_id).execute()
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_k2_outer_catch_silent_session():
     set_trace_id("sim-k2-outer")
     chat_id = 9000003
 
-    with patch('core.lib.conversation.get_supabase',
+    with patch('core.lib.conversation.tenant_aware_client',
                side_effect=Exception("DB down")):
         routed_id, anchor = resolve_thread(chat_id, "hello")
 
@@ -125,6 +128,7 @@ async def test_k2_outer_catch_silent_session():
     supabase.table('conversation_threads').delete().eq('chat_id', chat_id).execute()
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_x3_context_provider_returns_dict():
     set_trace_id("sim-x3")

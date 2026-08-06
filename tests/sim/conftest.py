@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from unittest.mock import patch, MagicMock
 from core.lib.audit_logger import set_trace_id
@@ -5,6 +7,42 @@ from core.services.db import get_supabase
 from core.llm.compat import get_embedding_sync
 from core.llm.constants import EMBEDDING_DIMENSION
 from core.lib.graph_rules import normalize_label
+
+
+# ── Live-Supabase integration guard ───────────────────────────────────────
+# tests/sim is a DB-backed behavioral suite: it inserts [SIM_TEST] rows into
+# the Supabase project named by SUPABASE_URL and runs real pipeline code
+# against it. When that project is unreachable (CI sandbox, no network), the
+# DB-backed tests are skipped — they are integration tests, not unit tests.
+def _live_db_reachable() -> bool:
+    """Faithful probe: can the supabase-py client actually talk to this host?
+
+    A bare TCP connect is too lenient (a reachable :443 doesn't mean the
+    client's TLS handshake — with cert verification, like httpx's default —
+    succeeds). We do a real TLS handshake with default cert verification;
+    only a fully verified handshake counts as "reachable".
+    """
+    import socket as _socket
+    import ssl as _ssl
+
+    url = os.environ.get("SUPABASE_URL", "")
+    host = url.split("://")[-1].split("/")[0].split(":")[0]
+    if not host:
+        return False
+    try:
+        ctx = _ssl.create_default_context()
+        with _socket.create_connection((host, 443), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as tls:
+                tls.getpeercert()  # forces full cert-chain verification
+        return True
+    except Exception:
+        return False
+
+
+requires_live_db = pytest.mark.skipif(
+    not _live_db_reachable(),
+    reason="live Supabase unreachable — integration test",
+)
 
 
 # ── Module-level cleanup: sweep stale [SIM_TEST] rows before any test ──

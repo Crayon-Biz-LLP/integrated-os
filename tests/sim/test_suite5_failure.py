@@ -4,10 +4,12 @@ from datetime import datetime, timedelta, timezone
 from core.services.db import get_supabase
 from core.lib.audit_logger import set_trace_id
 from core.webhook.classify import classify_intent
+from sim.conftest import requires_live_db
 
 supabase = get_supabase()
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_c3_llm_failure_trace_id():
     set_trace_id("sim-c3-fail")
@@ -46,6 +48,7 @@ async def test_c3_llm_failure_trace_id():
     assert matched, "At least one WARNING/ERROR audit log must carry trace_id 'sim-c3-fail'"
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_m5_retry_then_warn():
     set_trace_id("sim-m5-fail")
@@ -79,12 +82,13 @@ async def test_m5_retry_then_warn():
     supabase.table('memories').delete().eq('id', mid).execute()
 
 
+@requires_live_db
 @pytest.mark.asyncio
 async def test_k2_outer_catch_trace_id():
     set_trace_id("sim-k2-fail")
     chat_id = 9000005
 
-    with patch('core.lib.conversation.get_supabase',
+    with patch('core.lib.conversation.tenant_aware_client',
                side_effect=Exception("DB connection lost")):
         from core.lib.conversation import resolve_thread
         routed_id, anchor = resolve_thread(chat_id, "hello")

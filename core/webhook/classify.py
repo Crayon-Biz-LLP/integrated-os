@@ -6,7 +6,6 @@ from datetime import datetime
 from core.lib.audit_logger import audit_log_sync
 from core.lib.redis_cache import cache_get, cache_set
 from core.lib.time_utils import IST_TIMEZONE
-from core.lib.rate_limiter import SlidingWindowLimiter
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.llm.constants import SAFE_HOLD_CLASSIFICATION, CLASSIFICATION_MODEL
@@ -19,7 +18,7 @@ except Exception:
 supabase = tenant_aware_client()
 
 # D5: Rate limiter — max 15 classify calls per 60s (flash-lite free tier ceiling)
-_classify_limiter = SlidingWindowLimiter(max_calls=15, per_seconds=60, redis_key="rhodey:rate_limit:classify")
+
 
 
 async def classify_intent(text: str, context: list, ist_hour: int = None, core_json: str = "[]", conversation_history: str = "") -> dict:
@@ -284,8 +283,12 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     )
 
     # D5: Rate limit check before LLM call (fail-open on Redis failure)
+    # M6: per-tenant key so one tenant's volume can't starve another's
+    # classification (legacy: shared key when no tenant context). Cap stays
+    # 15/min per tenant — unchanged from the old global 15/min for Danny.
     try:
-        wait = _classify_limiter._get_wait_secs()
+        from core.llm.budget import CLASSIFY_RPM, current_tenant, tenant_llm_limiter
+        wait = tenant_llm_limiter(current_tenant(), max_calls=CLASSIFY_RPM)._get_wait_secs()
         if wait > 3:
             audit_log_sync("webhook", "WARNING", f"Classification rate limited (wait={wait:.1f}s), returning safe hold")
             cache_set(cache_key, SAFE_HOLD_CLASSIFICATION, ttl=300)

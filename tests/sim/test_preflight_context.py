@@ -57,7 +57,8 @@ def test_entity_extraction_uses_graph_labels_not_regex():
         mock_db = MagicMock()
 
         # Anchor resolution returns realistic graph node labels
-        mock_db.table().select().in_().execute.return_value = MagicMock(data=[
+        # (query chain is .select().in_().eq().execute — must match production)
+        mock_db.table().select().in_().eq().execute.return_value = MagicMock(data=[
             {"label": "Shifrah", "type": "person"},
             {"label": "Vasanth", "type": "person"},
             {"label": "Alpha", "type": "project"},
@@ -74,7 +75,7 @@ def test_entity_extraction_uses_graph_labels_not_regex():
             "Quick update: The deadline is next Friday."
         )
 
-        with patch("core.context.pipeline.get_supabase", return_value=mock_db), \
+        with patch("core.context.pipeline.tenant_aware_client", return_value=mock_db), \
              patch("core.retrieval.search.search_memories_compat") as mock_search:
             mock_search.return_value = [{
                 "id": 999002,

@@ -25,7 +25,7 @@ from core.lib.redis_cache import acquire_lock, release_lock
 from core.decisions import record_decision
 from core.pulse.models import PulseOutput
 from core.pulse.llm import supabase
-from core.services.db import channel_tenant_scope
+from core.services.db import active_user_ids, tenant_scope
 from core.pulse.utils import format_error
 from core.pulse.memory import (
     write_outcome_memory,
@@ -294,10 +294,32 @@ def _auto_expire_recurring_tasks():
 # ──────────────────────────────────────────
 
 async def process_pulse(auth_secret: str = None, request_id: str = None, trigger: str = "api"):
-    """(M3) Tenant-scoped entry: cron/API traffic carries no API key, so the
-    tenant resolves from the channel (single active user)."""
-    with channel_tenant_scope():
+    """(M6) Cron fan-out: iterate all active users, one tenant-scoped briefing
+    each. Cron traffic carries no API key; each active user gets their own
+    briefing under tenant_scope(). A per-tenant failure is isolated and
+    reported without aborting the other tenants.
+
+    Legacy (pre-db/78, or no active users): runs once unscoped, exactly as
+    the pre-M4 briefing did. The top-level "briefing" key keeps the legacy
+    /api/pulse response shape; per-tenant details are in "results".
+    """
+    uids = active_user_ids()
+    if not uids:
         return await _process_pulse_impl(auth_secret, request_id, trigger)
+    results = []
+    for uid in uids:
+        try:
+            with tenant_scope(uid):
+                results.append(await _process_pulse_impl(auth_secret, request_id, trigger))
+        except Exception as e:
+            audit_log_sync("briefing", "ERROR", f"Briefing failed for tenant {uid}: {e}")
+            results.append({"tenant": uid, "error": str(e)})
+    return {
+        "success": True,
+        "briefing": (results[0] or {}).get("briefing") if results else None,
+        "tenants": len(uids),
+        "results": results,
+    }
 
 
 async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, trigger: str = "api"):
