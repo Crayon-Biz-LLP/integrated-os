@@ -134,16 +134,32 @@ def gate_system_persona(danny: dict) -> None:
     """
     m2_src = open("core/pulse/briefing.py").read()
     head_src = head_file("core/pulse/briefing.py")
-    head_personas = [p for p in [
+    personas = [
         "Give Danny the plain picture of the board — what's on top, what's new, what needs doing. No coaching.",
         "Help Danny close the work week: what's done, what can wait. Be dry.",
         "Help Danny close the day: what's done, what's still open. Be dry.",
-    ] if p in head_src]
-    check(
-        "HEAD personas contain Danny (sanity)",
-        len(head_personas) == 3,
-        f"found {len(head_personas)}/3 Danny personas in HEAD",
-    )
+    ]
+    head_personas = [p for p in personas if p in head_src]
+    if head_personas:
+        # Pre-merge baseline (origin/main is still literal-Danny): all three
+        # hardcoded personas must exist there.
+        check(
+            "HEAD personas contain Danny (sanity)",
+            len(head_personas) == 3,
+            f"found {len(head_personas)}/3 Danny personas in HEAD",
+        )
+    else:
+        # Post-merge (origin/main == M2 code with {user_name} slots): the
+        # literal-Danny baseline is gone BY DESIGN; the slot-rendered personas
+        # are the source of truth. Sanity-check all three render via the slot.
+        slot_missing = [
+            p for p in personas if p.replace("Danny", "{user_name}") not in m2_src
+        ]
+        check(
+            "personas render via {user_name} slot (post-merge)",
+            not slot_missing,
+            f"slot templates missing from source: {slot_missing[:1]}",
+        )
     # In M2 source the slot is written as the f-string variable {user_name}.
     slot = "{user_name}"
     missing = [p for p in head_personas if p.replace("Danny", slot) not in m2_src]
