@@ -12,7 +12,10 @@ from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.duplicate_guard import check_duplicate
 from core.retrieval.pipeline import schedule_index_memory
 from core.pulse.entity_extractor import extract_and_link_entities
-from core.services.db import channel_tenant_scope, maybe_single_safe, tenant_aware_client
+from core.services.db import (
+    active_user_ids, channel_tenant_scope, maybe_single_safe, tenant_aware_client,
+    tenant_scope,
+)
 from core.services.google_service import get_cached_service
 from core.lib.time_utils import compute_expires_at
 from core.services.llm import call_gemini_classify
@@ -624,6 +627,43 @@ async def main():
     except Exception as e:
         print(f"Sent emails ingest failed: {e}")
 
-if __name__ == "__main__":
+async def _run_email_ingest_for_tenant(uid: str):
+    """Run one tenant's email ingest cycle under its own scope."""
+    with tenant_scope(uid):
+        await main()
+
+
+async def run_fanout():
+    """(M4) Cron fan-out: iterate all active users, one tenant-scoped email
+    cycle each. Each user's Gmail is read with THEIR OWN OAuth token
+    (get_cached_service resolves per-user), and every write lands under
+    their owner_id. A per-tenant failure is isolated and reported without
+    aborting the other tenants. Tenants without Google creds are skipped
+    gracefully inside main() (no-op, no crash).
+
+    Legacy (pre-db/78, or no active users): runs once unscoped, exactly as
+    the pre-M4 email ingest did — the channel tenant (or env creds) path.
+    """
+    uids = active_user_ids()
+    if not uids:
+        await _run_email_ingest_for_tenant_unscoped()
+        return
+    for uid in uids:
+        try:
+            await _run_email_ingest_for_tenant(uid)
+        except Exception as e:
+            from core.lib.audit_logger import audit_log_sync
+            audit_log_sync("email_ingest", "ERROR", f"Email ingest failed for tenant {uid}: {e}")
+            print(f"❌ Email ingest failed for tenant {uid}: {e}")
+
+
+async def _run_email_ingest_for_tenant_unscoped():
+    """Legacy single-tenant path — pre-db/78 or no active users. Preserves
+    the exact pre-M4 behaviour (channel tenant when resolvable, else env
+    creds)."""
     with channel_tenant_scope():
-        asyncio.run(main())
+        await main()
+
+
+if __name__ == "__main__":
+    asyncio.run(run_fanout())
