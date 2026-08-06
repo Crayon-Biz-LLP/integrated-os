@@ -99,7 +99,8 @@ DSN="postgresql://postgres.<ref>@<host>:6543/postgres"
 for f in db/78_tenant_scoping.sql db/79_rpc_owner_scoping.sql \
          db/80_rpc_owner_scoping_2.sql db/81_rpc_owner_scoping_fixes.sql \
          db/82_rpc_owner_scoping_graph.sql db/83_users_telegram_chat.sql \
-         db/84_user_oauth_tokens.sql db/85_llm_spend.sql db/86_user_credit.sql; do
+         db/84_user_oauth_tokens.sql db/85_llm_spend.sql db/86_user_credit.sql \
+         db/87_grant_api_roles.sql; do
   echo "--- $f ---"
   psql "$DSN" -v ON_ERROR_STOP=1 -f "$f" || { echo "❌ STOP at $f"; exit 1; }
 done
