@@ -228,7 +228,20 @@ def get_user_node() -> dict | None:
                 result = {"id": n["id"], "label": n.get("label")}
                 break
         if not result:
-            # Fallback: any person node labeled danny/user even without aliases
+            # Tenant's own root label first (settings-driven, per-tenant)
+            root_label = resolve_root_label()
+            if root_label:
+                res_root = supabase.table("graph_nodes") \
+                    .select("id, label") \
+                    .eq("type", "person") \
+                    .ilike("label", root_label) \
+                    .eq("is_current", True) \
+                    .limit(1) \
+                    .execute()
+                if res_root and res_root.data:
+                    result = {"id": res_root.data[0]["id"], "label": res_root.data[0]["label"]}
+        if not result:
+            # Legacy fallback: any person node labeled danny/user even without aliases
             res2 = supabase.table("graph_nodes") \
                 .select("id, label") \
                 .eq("type", "person") \
@@ -1009,7 +1022,7 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
             
     return None
 
-def _root_person_label() -> str | None:
+def resolve_root_label() -> str | None:
     """The tenant's root person label — their own name, resolved per-tenant.
 
     Order (mirrors archive_ingest.resolve_root_label): core_config
@@ -1030,6 +1043,11 @@ def _root_person_label() -> str | None:
     except Exception:
         pass
     return None
+
+
+# Back-compat alias (M9.1 promoted the resolver to a public name so
+# core.skills.backfill_graph and others can import it without a private symbol).
+_root_person_label = resolve_root_label
 
 
 def insert_pending_edge(source_label: str, target_label: str, relationship: str, source_info: dict) -> dict:
