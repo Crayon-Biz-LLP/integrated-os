@@ -444,6 +444,15 @@ async def handle_role_update(text: str, chat_id: int, classification: dict, sour
         node_meta['enrichment'] = enrich
         supabase.table('graph_nodes').update({'metadata': node_meta}).eq('id', node_id).execute()
 
+        # M9.2: a role write invalidates the cached ROLE_UPDATE example so the
+        # next classify prompt reflects the fresh enrichment (15-min TTL would
+        # otherwise hide it).
+        try:
+            from core.services.example_entities import clear_cache as _clear_example_cache
+            _clear_example_cache()
+        except Exception:
+            pass
+
         msg = f"\u2705 Role updated: {person_name} \u2192 {role_title}" + (f" at {org_name}." if org_name else ".")
         await send_telegram(chat_id, msg)
     except Exception as e:
