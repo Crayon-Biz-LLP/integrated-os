@@ -198,6 +198,8 @@ def main() -> None:
     )
     created_now = not existing_uid
     if created_now:
+        from core.services.briefing_sections import neutral_briefing_sections_json
+        neutral_sections = _lit(neutral_briefing_sections_json())
         if args.apply:
             _psql(
                 "insert into public.core_config (key, content, owner_id) values "
@@ -205,13 +207,14 @@ def main() -> None:
                 f"('archive_person_labels', '[]', '{uid}'), "
                 f"('archive_org_labels', '[]', '{uid}'), "
                 f"('archive_edge_rules', '[]', '{uid}'), "
-                f"('archive_root_label', '', '{uid}') "
+                f"('archive_root_label', '', '{uid}'), "
+                f"('briefing_sections', {neutral_sections}, '{uid}') "
                 "on conflict (owner_id, key) do nothing",
                 dsn, password,
             )
-            print("  core_config: neutral M6 rows ensured (new tenant)")
+            print("  core_config: neutral M6 + briefing_sections rows ensured (new tenant)")
         else:
-            print("  core_config: would ensure neutral M6 rows (dry-run, new tenant)")
+            print("  core_config: would ensure neutral M6 + briefing_sections rows (dry-run, new tenant)")
     else:
         print("  core_config: existing tenant — M6 rows left untouched (rows/fallbacks preserved)")
 
