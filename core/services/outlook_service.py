@@ -3,6 +3,26 @@ from datetime import timedelta
 from core.lib.audit_logger import audit_log_sync
 
 
+def _outlook_timezone_name() -> str:
+    """The tenant's IANA tz name for the Outlook Prefer header (M9.4).
+
+    Resolution: user_settings.timezone → USER_TIMEZONE env → Asia/Kolkata.
+    The mailbox event times are interpreted in this zone. A stored value
+    that isn't a real IANA name (invalid-but-non-empty) falls back to
+    Asia/Kolkata so the API never 400s — never a crash.
+    """
+    from zoneinfo import ZoneInfo
+    try:
+        from core.services.user_settings import resolve_timezone
+        name = resolve_timezone()
+        if name:
+            ZoneInfo(name)  # sanity: reject invalid-but-non-empty names
+            return name
+    except Exception:
+        pass
+    return "Asia/Kolkata"
+
+
 def get_outlook_calendar_events(target_date):
     try:
         from core.skills.outlook_token_helper import refresh_outlook_token
@@ -14,7 +34,7 @@ def get_outlook_calendar_events(target_date):
 
         headers = {
             "Authorization": f"Bearer {access_token}",
-            "Prefer": 'outlook.timezone="Asia/Kolkata"',
+            "Prefer": f'outlook.timezone="{_outlook_timezone_name()}"',
         }
 
         params = {
@@ -60,7 +80,7 @@ def get_outlook_calendar_events_range(start_date, end_date):
 
         headers = {
             "Authorization": f"Bearer {access_token}",
-            "Prefer": 'outlook.timezone="Asia/Kolkata"',
+            "Prefer": f'outlook.timezone="{_outlook_timezone_name()}"',
         }
 
         params = {

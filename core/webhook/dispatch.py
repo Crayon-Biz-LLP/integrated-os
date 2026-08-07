@@ -4,7 +4,7 @@ import asyncio
 import re
 from datetime import datetime, timezone, timedelta
 from core.lib.audit_logger import audit_log_sync
-from core.lib.time_utils import age_tag, IST_TIMEZONE, now_ist
+from core.lib.time_utils import age_tag, get_user_timezone, now_for_user, now_ist
 from core.pulse.context import context_provider
 from core.services.user_settings import resolve_user_name
 from core.lib.conversation import get_history, log_exchange, format_classify_context
@@ -120,7 +120,7 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None):
     recently_completed = []
 
     try:
-        ist = IST_TIMEZONE
+        ist = get_user_timezone()
         now = datetime.now(ist)
         lowtext = text.lower()
 
@@ -194,7 +194,7 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None):
         ) if events_list else None
 
         prompt = build_daily_brief_prompt(
-            now_str=now.strftime('%A, %d %B %Y, %H:%M %p IST'),
+            now_str=now.strftime('%A, %d %B %Y, %H:%M %p %Z'),
             day_label=day_label.lower(),
             calendar_text=calendar_text,
             overdue_text=fmt_list(overdue_tasks),
@@ -1331,7 +1331,7 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, ac
         else:
             header = "\U0001f9e0 Here's what I found:"
 
-        now_str = now_ist().strftime('%A, %d %B %Y, %H:%M %p IST')
+        now_str = now_for_user().strftime('%A, %d %B %Y, %H:%M %p %Z')
 
         entity_name = active_anchor["name"] if active_anchor else resolved_entity
         retrieved_items = [{"id": src, "content": src, "score": 1.0, "source": "interrogate_brain"} for src in available_sources]
@@ -1631,7 +1631,7 @@ async def handle_declare_practice(text: str, chat_id: int, classification: dict)
                     await send_telegram(chat_id, f"Already tracking: {p_label}")
                     return
 
-        ist_offset = IST_TIMEZONE
+        ist_offset = get_user_timezone()
         now = datetime.now(ist_offset)
         metadata = {
             "declared": True,
