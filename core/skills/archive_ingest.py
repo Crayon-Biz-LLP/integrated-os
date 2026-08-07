@@ -17,11 +17,11 @@ supabase = tenant_aware_client()
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
 # Tenant #1 (Danny) entity→keyword mappings — the SINGLE source of truth.
-# Copied verbatim from Danny's core_config 'entity_mappings' row (the rich
-# full mapping, NOT a degraded subset). Used as get_entity_mappings()'s
-# fallback AND written into core_config by
-# scripts/seed_tenant1_m6_config.py (keep in sync via that seed).
-DEFAULT_ENTITY_MAPPINGS = {
+# Tenant #1 (Danny) entity mappings — kept verbatim so that
+# scripts/seed_tenant1_m6_config.py can re-seed his row exactly. NOT used as
+# a runtime fallback for other tenants (they start neutral via
+# bootstrap_tenant.py).
+TENANT1_ENTITY_MAPPINGS = {
     "Jaden": ["jaden"],
     "Qhord": ["qhord", "joel", "GTM"],
     "Sunju": ["sunju", "wife", "wife's", "sunju's"],
@@ -36,9 +36,10 @@ DEFAULT_ENTITY_MAPPINGS = {
 
 def get_entity_mappings() -> dict:
     """Per-tenant entity→keyword mappings (M6): core_config 'entity_mappings'
-    row, falling back to Danny's full mapping (legacy / tenant #1 pre-seed).
-    Read at call time so a tenant's config edits apply immediately and no
-    cross-tenant value is ever cached in a module-level constant.
+    row, falling back to an EMPTY mapping (neutral) when unset — never
+    another tenant's world. Read at call time so a tenant's config edits
+    apply immediately and no cross-tenant value is ever cached in a
+    module-level constant.
     """
     try:
         res = supabase.table('core_config').select('content').eq('key', 'entity_mappings').execute()
@@ -54,25 +55,26 @@ def get_entity_mappings() -> dict:
     except Exception as e:
         print(f"⚠️ Failed to fetch dynamic mappings: {e}")
 
-    # Absolute fallback to prevent crashes if DB fails — Danny's FULL
-    # mapping, so a new tenant never sees a degraded subset. Returned as a
-    # copy so a future caller can never mutate the module constant.
-    return {k: list(v) for k, v in DEFAULT_ENTITY_MAPPINGS.items()}
+    # Neutral fallback (no cross-tenant data): a tenant without an
+    # 'entity_mappings' row gets no keyword mappings rather than another
+    # tenant's world. Danny's own mapping lives in HIS core_config row
+    # (seeded by scripts/seed_tenant1_m6_config.py).
+    return {}
 
 # ── Per-tenant graph rules (M6 de-personalization) ──────────────────────────
 # archive_ingest used to hardcode Danny's family/orgs/₹30L debt and the root
-# person label. Now read from core_config per-tenant, with Danny's values as
-# the legacy fallback so tenant #1 behaves identically until his row is
-# seeded. Keys: 'archive_person_labels', 'archive_org_labels',
-# 'archive_edge_rules', 'archive_root_label'.
+# person label. Now read from core_config per-tenant. New tenants start
+# neutral (bootstrap_tenant.py seeds empty rows); Danny's values live in HIS
+# core_config row (seeded by scripts/seed_tenant1_m6_config.py). Keys:
+# 'archive_person_labels', 'archive_org_labels', 'archive_edge_rules',
+# 'archive_root_label'.
 
-# Tenant #1 (Danny) default values — the SINGLE source of truth. Used both
-# as the legacy runtime fallback below AND written into core_config by
-# scripts/seed_tenant1_m6_config.py. If you change these, re-run that seed
-# for tenant #1 so config and fallback never drift.
-DEFAULT_ARCHIVE_PERSON_LABELS = ["Danny", "Sunju", "Jaden", "Jeffery", "The Boys"]
-DEFAULT_ARCHIVE_ORG_LABELS = ["Solvstrat", "Crayon", "Church"]
-DEFAULT_ARCHIVE_EDGE_RULES = {
+# Tenant #1 (Danny) default values — used ONLY to seed Danny's core_config
+# row via scripts/seed_tenant1_m6_config.py. Never a runtime fallback for
+# other tenants (they start neutral via bootstrap_tenant.py).
+TENANT1_ARCHIVE_PERSON_LABELS = ["Danny", "Sunju", "Jaden", "Jeffery", "The Boys"]
+TENANT1_ARCHIVE_ORG_LABELS = ["Solvstrat", "Crayon", "Church"]
+TENANT1_ARCHIVE_EDGE_RULES = {
     "Sunju": [["{root}", "Sunju", "relates_to"], ["Sunju", "{root}", "relates_to"]],
     "Jaden": [["{root}", "Jaden", "parent_of"], ["Jaden", "{root}", "child_of"]],
     "Jeffery": [["{root}", "Jeffery", "parent_of"], ["Jeffery", "{root}", "child_of"]],
@@ -82,7 +84,7 @@ DEFAULT_ARCHIVE_EDGE_RULES = {
     "Church": [["{root}", "Church", "belongs_to"]],
     "₹30L Debt": [["{root}", "₹30L Debt", "struggles_with"]],
 }
-DEFAULT_ARCHIVE_ROOT_LABEL = "Danny"
+TENANT1_ARCHIVE_ROOT_LABEL = "Danny"
 
 
 def _get_config_str(key: str) -> str | None:
@@ -106,11 +108,12 @@ def _get_config_json(key: str, default):
     return default
 
 
-def resolve_root_label() -> str:
-    """The tenant's root person label (their own name).
+def resolve_root_label() -> str | None:
+    """The tenant's root person label (their own name), or None if unknown.
 
     Resolution (M6): core_config 'archive_root_label' (admin override) →
-    user_settings name → 'Danny' (legacy / tenant #1 fallback).
+    user_settings name → None. No hardcoded fallback — a tenant without a
+    resolvable root simply gets no root-anchored edges.
     """
     try:
         cfg = _get_config_str("archive_root_label")
@@ -125,27 +128,26 @@ def resolve_root_label() -> str:
             return name
     except Exception:
         pass
-    return DEFAULT_ARCHIVE_ROOT_LABEL
+    return None
 
 
 def person_labels() -> list[str]:
-    """Person entity labels for node typing (per-tenant config, Danny fallback)."""
-    return _get_config_json("archive_person_labels", DEFAULT_ARCHIVE_PERSON_LABELS)
+    """Person entity labels for node typing (per-tenant config; neutral default)."""
+    return _get_config_json("archive_person_labels", [])
 
 
 def org_labels() -> list[str]:
-    """Organization entity labels for node typing (per-tenant config, Danny fallback)."""
-    return _get_config_json("archive_org_labels", DEFAULT_ARCHIVE_ORG_LABELS)
+    """Organization entity labels for node typing (per-tenant config; neutral default)."""
+    return _get_config_json("archive_org_labels", [])
 
 
 def edge_rules() -> dict:
     """entity → list of (source, target, relationship) edge specs. '{root}'
     in source/target is replaced with the tenant's root person label.
 
-    Default = Danny's world (legacy fallback). A tenant's own config is a
-    list of [source, target, rel] triples per entity.
+    Per-tenant config; neutral default (no edges) when unset.
     """
-    return _get_config_json("archive_edge_rules", DEFAULT_ARCHIVE_EDGE_RULES)
+    return _get_config_json("archive_edge_rules", {})
 
 
 MEMORY_TYPE_MAPPING = {
@@ -375,6 +377,8 @@ def graphify(text: str, memory_id: str, mappings: dict | None = None):
             src, tgt, rel = spec[0], spec[1], spec[2]
             src = root if src == "{root}" else src
             tgt = root if tgt == "{root}" else tgt
+            if not src or not tgt:
+                continue  # root-anchored edge but no root label resolvable
             create_edge(src, tgt, rel, memory_id)
 
 

@@ -702,7 +702,7 @@ def run_backfill():
                         "type": "memory",
                         "normalized_label": normalize_label(memory_label),
                         "metadata": meta
-                    }, on_conflict="normalized_label, type").execute()
+                    }, on_conflict="owner_id, normalized_label, type").execute()
                     processed += 1
                 except Exception as e:
                     audit_log_sync("backfill_graph", "WARNING", f"Failed to create memory node for {mem['id']}: {e}")
@@ -948,7 +948,7 @@ def backfill_orphaned_tasks():
                 "type": "task",
                 "normalized_label": normalize_label(task_title),
                 "metadata": {"source": "tasks_table", "task_id": task_id, **meta}
-            }, on_conflict="normalized_label, type").execute()
+            }, on_conflict="owner_id, normalized_label, type").execute()
             node_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", task_title).eq('is_current', True))
             if not node_res or not node_res.data:
                 audit_log_sync("backfill_graph", "WARNING", f"⚠️ Failed to get node for task {task_id}")
@@ -1418,7 +1418,7 @@ def sync_people_to_graph_nodes():
                     "source": "people_reverse_sync",
                     "people_id": pid
                 }
-            }, on_conflict="normalized_label, type").execute()
+            }, on_conflict="owner_id, normalized_label, type").execute()
             
             if upsert_res and upsert_res.data:
                 graph_node_id = upsert_res.data[0].get('id')
@@ -1577,7 +1577,7 @@ def sync_organizations_to_graph_nodes():
                     "source": "organizations_sync",
                     "organization_id": oid
                 }
-            }, on_conflict="normalized_label, type").execute()
+            }, on_conflict="owner_id, normalized_label, type").execute()
             
             if upsert_res and upsert_res.data:
                 graph_node_id = upsert_res.data[0].get('id')
@@ -1668,7 +1668,7 @@ def _sync_projects_disabled():  # Projects decommissioned
                     "source": "projects_sync",
                     "project_id": pid
                 }
-            }, on_conflict="normalized_label, type").execute()
+            }, on_conflict="owner_id, normalized_label, type").execute()
             existing_db_ids.add(pid)
             created += 1
         except Exception as e:

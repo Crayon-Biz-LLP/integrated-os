@@ -96,24 +96,24 @@ KEYS = [
 
 
 def m6_rows() -> list[dict]:
-    """(key, content) pairs for tenant #1, taken from the code's defaults."""
+    """(key, content) pairs for tenant #1, taken from the TENANT1_* constants."""
     from core.skills.archive_ingest import (
-        DEFAULT_ARCHIVE_EDGE_RULES,
-        DEFAULT_ARCHIVE_ORG_LABELS,
-        DEFAULT_ARCHIVE_PERSON_LABELS,
-        DEFAULT_ARCHIVE_ROOT_LABEL,
-        DEFAULT_ENTITY_MAPPINGS,
+        TENANT1_ARCHIVE_EDGE_RULES,
+        TENANT1_ARCHIVE_ORG_LABELS,
+        TENANT1_ARCHIVE_PERSON_LABELS,
+        TENANT1_ARCHIVE_ROOT_LABEL,
+        TENANT1_ENTITY_MAPPINGS,
     )
-    from core.skills.email_ingest import DEFAULT_EMAIL_ARCHIVE_LABEL
+    from core.skills.email_ingest import TENANT1_EMAIL_ARCHIVE_LABEL
     from core.lib.constants import DEFAULT_GITHUB_OWNER, DEFAULT_GITHUB_REPO
 
     return [
-        {"key": "email_archive_label", "content": DEFAULT_EMAIL_ARCHIVE_LABEL},
-        {"key": "archive_person_labels", "content": json.dumps(DEFAULT_ARCHIVE_PERSON_LABELS)},
-        {"key": "archive_org_labels", "content": json.dumps(DEFAULT_ARCHIVE_ORG_LABELS)},
-        {"key": "archive_edge_rules", "content": json.dumps(DEFAULT_ARCHIVE_EDGE_RULES)},
-        {"key": "archive_root_label", "content": DEFAULT_ARCHIVE_ROOT_LABEL},
-        {"key": "entity_mappings", "content": json.dumps(DEFAULT_ENTITY_MAPPINGS)},
+        {"key": "email_archive_label", "content": TENANT1_EMAIL_ARCHIVE_LABEL},
+        {"key": "archive_person_labels", "content": json.dumps(TENANT1_ARCHIVE_PERSON_LABELS)},
+        {"key": "archive_org_labels", "content": json.dumps(TENANT1_ARCHIVE_ORG_LABELS)},
+        {"key": "archive_edge_rules", "content": json.dumps(TENANT1_ARCHIVE_EDGE_RULES)},
+        {"key": "archive_root_label", "content": TENANT1_ARCHIVE_ROOT_LABEL},
+        {"key": "entity_mappings", "content": json.dumps(TENANT1_ENTITY_MAPPINGS)},
         {"key": "github_owner", "content": DEFAULT_GITHUB_OWNER},
         {"key": "github_repo", "content": DEFAULT_GITHUB_REPO},
     ]

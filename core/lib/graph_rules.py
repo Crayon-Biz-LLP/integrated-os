@@ -953,7 +953,7 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
                 "type": typ,
                 "normalized_label": normalize_label(label),
                 "metadata": source_info
-            }, on_conflict="normalized_label, type").execute()
+            }, on_conflict="owner_id, normalized_label, type").execute()
             if res.data:
                 return res.data[0]["id"]
         except Exception as e:
@@ -1009,8 +1009,19 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
             
     return None
 
-def _root_person_label() -> str:
-    """The tenant's root person label — their own name, not hardcoded."""
+def _root_person_label() -> str | None:
+    """The tenant's root person label — their own name, resolved per-tenant.
+
+    Order (mirrors archive_ingest.resolve_root_label): core_config
+    'archive_root_label' (admin override) → user_settings name → None.
+    Callers treat None as fail-closed (no root → no root-anchored writes).
+    """
+    try:
+        cfg = maybe_single_safe(supabase.table("core_config").select("content").eq("key", "archive_root_label"))
+        if cfg and cfg.data and cfg.data.get("content"):
+            return str(cfg.data["content"]).strip() or None
+    except Exception:
+        pass
     try:
         from core.services.user_settings import resolve_user_name, current_user_id
         name = resolve_user_name(current_user_id())
@@ -1018,7 +1029,7 @@ def _root_person_label() -> str:
             return name
     except Exception:
         pass
-    return "Danny"  # legacy / tenant #1 fallback
+    return None
 
 
 def insert_pending_edge(source_label: str, target_label: str, relationship: str, source_info: dict) -> dict:
