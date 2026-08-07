@@ -44,11 +44,11 @@ async def create_graph_node_with_db_record(
     source_tag: str = "pending_approval",
     force: bool = False
 ) -> dict:
-    """Create a domain table row + graph_nodes entry + Danny edge.
+    """Create a domain table row + graph_nodes entry + root edge.
 
     Two modes:
-    - Person: creates people row → graph_nodes with people_id → Danny KNOWS edge
-    - Organization: creates organizations row → graph_nodes with org_id → Danny MEMBER_OF edge
+    - Person: creates people row → graph_nodes with people_id → root KNOWS edge
+    - Organization: creates organizations row → graph_nodes with org_id → root MEMBER_OF edge
     - Other (event, place, etc.): graph_nodes only, no domain table
     """
     try:
@@ -101,7 +101,7 @@ async def create_graph_node_with_db_record(
                         "memory_id": source_text,
                     }
                 },
-                on_conflict="normalized_label, type"
+                on_conflict="owner_id, normalized_label, type"
             ).execute()
 
             if not upsert_res or not upsert_res.data:
@@ -226,7 +226,7 @@ async def create_graph_node_with_db_record(
                         "enrichment": enrich,
                     },
                 },
-                on_conflict="normalized_label, type"
+                on_conflict="owner_id, normalized_label, type"
             ).execute()
 
             if not upsert_res or not upsert_res.data:
@@ -414,29 +414,46 @@ async def _backfill_existing_content_for_entity(
         )
 
 
+def _root_person_label() -> str | None:
+    """The tenant's root person label (their own name), or None.
+
+    Resolution order (mirrors archive_ingest.resolve_root_label): core_config
+    'archive_root_label' (admin override) → user_settings name → None. Never
+    a hardcoded name — a tenant without a resolvable root simply gets no
+    root-anchored edges.
+    """
+    try:
+        cfg = maybe_single_safe(supabase.table("core_config").select("content").eq("key", "archive_root_label"))
+        if cfg and cfg.data and cfg.data.get("content"):
+            return str(cfg.data["content"]).strip() or None
+    except Exception:
+        pass
+    try:
+        from core.services.user_settings import resolve_user_name, current_user_id
+        name = resolve_user_name(current_user_id())
+        if name:
+            return name
+    except Exception:
+        pass
+    return None
+
+
 async def _ensure_danny_edge(label: str, node_type: str):
     """Create OWNS/KNOWS edge from the ROOT person to the node.
 
     M5: the root person is the tenant's own (users.name — bootstrap_tenant
-    creates their person node), NOT hardcoded "Danny". Legacy unscoped runs
-    (pre-db/78) fall back to the "Danny" label exactly as before.
+    creates their person node), resolved per-tenant — never hardcoded.
     """
     rel = TYPE_TO_DANNY_EDGE.get(node_type)
     if not rel:
         return
     try:
-        root_name = "Danny"
-        try:
-            from core.services.user_settings import resolve_user_name, current_user_id
-            root_name = resolve_user_name(current_user_id()) or "Danny"
-        except Exception:
-            pass
+        root_name = _root_person_label()
+        if not root_name:
+            return  # no root person resolvable → no root edge
         root_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", root_name).eq('is_current', True))
         if not root_res or not root_res.data:
-            # Fall back to the classic label (legacy data / pre-M2 names).
-            root_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny").eq('is_current', True))
-            if not root_res or not root_res.data:
-                return
+            return
         danny_id = root_res.data["id"]
 
         label = normalize_label_display(label)
@@ -468,7 +485,7 @@ async def _ensure_danny_edge(label: str, node_type: str):
                 "metadata": {"source": "graph_approval"}
             }).execute()
     except Exception as e:
-        audit_log_sync("pulse", "WARNING", f"Failed to create Danny edge: {e}")
+        audit_log_sync("pulse", "WARNING", f"Failed to create root edge: {e}")
 
 
 def _extract_mentioned_labels(source_text: str, known_labels: list[str]) -> list[str]:
@@ -661,14 +678,19 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                 supabase.table('pending_graph_edges').update({'target_label': label}).eq('target_label', old_label).execute()
                 supabase.table('pending_nodes').update({'label': label, 'status': status}).eq('id', pending_id).execute()
 
-            # Auto-approve any pending Danny→KNOWS edge for this label
-            danny_edge_res = maybe_single_safe(
-                supabase.table("pending_graph_edges")
-                .select("id")
-                .eq("source_label", "Danny")
-                .eq("target_label", label)
-                .eq("relationship", "KNOWS")
-                .eq("status", "pending")
+            # Auto-approve any pending root→KNOWS edge for this label
+            root_label = _root_person_label()
+            danny_edge_res = (
+                maybe_single_safe(
+                    supabase.table("pending_graph_edges")
+                    .select("id")
+                    .eq("source_label", root_label)
+                    .eq("target_label", label)
+                    .eq("relationship", "KNOWS")
+                    .eq("status", "pending")
+                )
+                if root_label
+                else None
             )
             if danny_edge_res and danny_edge_res.data:
                 await process_pending_edge_decision(danny_edge_res.data["id"], "approve", auto_decided=True)
@@ -922,7 +944,7 @@ async def write_graph_edges_for_task(task_id: int, task_title: str, task_descrip
                 "task_id": task_id,
 
             }
-        }, on_conflict="normalized_label, type").execute()
+        }, on_conflict="owner_id, normalized_label, type").execute()
 
         # Task→Organization BELONGS_TO edge
         if organization_id:
@@ -1089,7 +1111,7 @@ async def get_graph_centrality_context() -> str:
 async def check_task_dependencies(active_tasks: list) -> str:
     """
     DEPENDENCY AGENT: Uses graph_edges to detect when a task (B) has an uncompleted
-    dependency on another task (A). Flags blockers before Danny starts work.
+    dependency on another task (A). Flags blockers before the user starts work.
     """
     try:
         if not active_tasks:

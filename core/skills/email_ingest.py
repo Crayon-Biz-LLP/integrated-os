@@ -21,9 +21,10 @@ from core.lib.time_utils import compute_expires_at
 from core.services.llm import call_gemini_classify
 
 # Tenant #1 (Danny) archive Gmail label — the SINGLE source of truth. Used
-# as the legacy runtime fallback AND written into core_config by
-# scripts/seed_tenant1_m6_config.py (keep in sync via that seed).
-DEFAULT_EMAIL_ARCHIVE_LABEL = "Completed/Ashraya"
+# as the value seeded into core_config by scripts/seed_tenant1_m6_config.py.
+# NOT a runtime fallback — a tenant without an 'email_archive_label' row
+# scans INBOX-wide (see _archive_label_filter).
+TENANT1_EMAIL_ARCHIVE_LABEL = "Completed/Ashraya"
 
 supabase = tenant_aware_client()
 
@@ -540,9 +541,9 @@ async def main():
     after_timestamp = int(cutoff.timestamp())
     # Per-tenant Gmail label (M6): core_config 'email_archive_label' is
     # authoritative when a row exists (empty content → INBOX only). When the
-    # row is absent (legacy / tenant #1 pre-seed), fall back to Danny's
-    # label so existing behaviour is preserved exactly.
-    label_part = f' OR label:"{DEFAULT_EMAIL_ARCHIVE_LABEL}"'
+    # Neutral fallback: a tenant without an 'email_archive_label' row gets
+    # no label filter (INBOX-wide scan), never another tenant's label.
+    label_part = ''
     try:
         res = supabase.table('core_config').select('content').eq('key', 'email_archive_label').execute()
         if res.data:

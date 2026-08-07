@@ -43,25 +43,27 @@ def main() -> int:
           "get_entity_mappings()" in inspect.getsource(ai.graphify)
           and "ENTITY_MAPPINGS = get_entity_mappings()" not in src
           and "entity_mappings" in src)
-    check("archive_ingest: entity fallback is the RICH mapping (not degraded)",
-          "wife's" in str(ai.DEFAULT_ENTITY_MAPPINGS)
-          and "production team" in str(ai.DEFAULT_ENTITY_MAPPINGS)
-          and "Jeremy" in str(ai.DEFAULT_ENTITY_MAPPINGS)
-          and "2.0" in str(ai.DEFAULT_ENTITY_MAPPINGS))
+    check("archive_ingest: TENANT1_ENTITY_MAPPINGS holds the rich mapping (seed source)",
+          "wife's" in str(ai.TENANT1_ENTITY_MAPPINGS)
+          and "production team" in str(ai.TENANT1_ENTITY_MAPPINGS)
+          and "Jeremy" in str(ai.TENANT1_ENTITY_MAPPINGS)
+          and "2.0" in str(ai.TENANT1_ENTITY_MAPPINGS))
     check("archive_ingest: root label resolves via settings",
           "resolve_root_label()" in src and "resolve_user_name" in src)
     check("archive_ingest: root label override config is read",
           "archive_root_label" in inspect.getsource(ai.resolve_root_label))
     check("archive_ingest: no hardcoded 'Danny' edge creation at runtime",
           'create_edge("Danny"' not in src and "create_edge(\"Danny\"" not in src)
-    # Danny fallback preserved (in the DEFAULT_* constants — single source of truth)
-    check("archive_ingest: Danny fallback values preserved",
-          "Sunju" in str(ai.DEFAULT_ARCHIVE_EDGE_RULES)
-          and "Danny" in ai.DEFAULT_ARCHIVE_PERSON_LABELS
-          and "Solvstrat" in ai.DEFAULT_ARCHIVE_ORG_LABELS)
-    check("archive_ingest: fallback functions use the DEFAULT_* constants",
-          "DEFAULT_ARCHIVE_PERSON_LABELS" in inspect.getsource(ai.person_labels)
-          and "DEFAULT_ARCHIVE_EDGE_RULES" in inspect.getsource(ai.edge_rules))
+    # Danny's values preserved in the TENANT1_* constants (seed source only)
+    check("archive_ingest: Danny values preserved in TENANT1_* constants (seed source)",
+          "Sunju" in str(ai.TENANT1_ARCHIVE_EDGE_RULES)
+          and "Danny" in ai.TENANT1_ARCHIVE_PERSON_LABELS
+          and "Solvstrat" in ai.TENANT1_ARCHIVE_ORG_LABELS)
+    check("archive_ingest: runtime fallbacks are NEUTRAL (never Danny's world)",
+          "TENANT1_ARCHIVE_PERSON_LABELS" not in inspect.getsource(ai.person_labels)
+          and "TENANT1_ARCHIVE_EDGE_RULES" not in inspect.getsource(ai.edge_rules)
+          and "TENANT1_ARCHIVE_ROOT_LABEL" not in inspect.getsource(ai.resolve_root_label)
+          and "TENANT1_ENTITY_MAPPINGS" not in inspect.getsource(ai.get_entity_mappings))
     check("archive_ingest: sheet timestamps parsed in tenant tz",
           "get_user_timezone" in inspect.getsource(ai.parse_timestamp) and "timedelta(hours=5, minutes=30)" not in inspect.getsource(ai.parse_timestamp))
 
@@ -70,8 +72,11 @@ def main() -> int:
     eisrc = inspect.getsource(ei)
     check("email_ingest: Gmail label from core_config",
           "email_archive_label" in eisrc and "Completed/Ashraya" in eisrc)
-    check("email_ingest: label fallback preserved",
-          ei.DEFAULT_EMAIL_ARCHIVE_LABEL == "Completed/Ashraya")
+    check("email_ingest: TENANT1 email archive label preserved (seed source)",
+          ei.TENANT1_EMAIL_ARCHIVE_LABEL == "Completed/Ashraya")
+    check("email_ingest: runtime label fallback is NEUTRAL (no other tenant's label)",
+          "TENANT1_EMAIL_ARCHIVE_LABEL" not in inspect.getsource(ei.main)
+          and "label_part = ''" in inspect.getsource(ei.main))
 
     # ── 3. GITHUB dispatch sites ──
     import core.lib.constants as const
@@ -109,18 +114,19 @@ def main() -> int:
     grsrc = inspect.getsource(gr)
     check("graph_rules: OWNS guard uses root person label",
           "_root_person_label" in grsrc and "rel == 'OWNS' and source_label != _root_person_label()" in grsrc)
-    check("graph_rules: root fallback is 'Danny' (legacy preserved)",
-          'return "Danny"  # legacy / tenant #1 fallback' in grsrc)
+    check("graph_rules: root label resolves per-tenant (no hardcoded fallback)",
+          "return None" in inspect.getsource(gr._root_person_label)
+          and '"Danny"' not in inspect.getsource(gr._root_person_label))
 
     # ── 7. seeding: new tenants are born neutral, never Danny's world ──
     import scripts.seed_user_world as sw
     import scripts.bootstrap_tenant as bt
-    check("seed_user_world: writes M6 core_config rows",
-          "archive_person_labels" in inspect.getsource(sw)
-          and "archive_edge_rules" in inspect.getsource(sw)
-          and "email_archive_label" in inspect.getsource(sw))
-    check("seed_user_world: neutral edge rules for new tenants",
-          "archive_edge_rules\", \"content\": \"[]\"" in inspect.getsource(sw))
+    check("seed_user_world: seeds the user's world (people/orgs/tasks)",
+          "people" in inspect.getsource(sw)
+          and "organizations" in inspect.getsource(sw)
+          and "tasks" in inspect.getsource(sw))
+    check("seed_user_world: M6 config neutrality handled by bootstrap_tenant, not here",
+          "core_config" not in inspect.getsource(sw))
     check("bootstrap_tenant: neutral core_config rows on create",
           "archive_person_labels" in inspect.getsource(bt)
           and "on conflict (owner_id, key) do nothing" in inspect.getsource(bt))
@@ -137,11 +143,11 @@ def main() -> int:
                                    "archive_org_labels", "archive_edge_rules",
                                    "archive_root_label", "entity_mappings",
                                    "github_owner", "github_repo"]))
-    check("seed_tenant1: values imported from code defaults (no drift)",
-          "DEFAULT_ARCHIVE_PERSON_LABELS" in s1src
-          and "DEFAULT_ARCHIVE_EDGE_RULES" in s1src
-          and "DEFAULT_ENTITY_MAPPINGS" in s1src
-          and "DEFAULT_EMAIL_ARCHIVE_LABEL" in s1src
+    check("seed_tenant1: values imported from the TENANT1_* constants (no drift)",
+          "TENANT1_ARCHIVE_PERSON_LABELS" in s1src
+          and "TENANT1_ARCHIVE_EDGE_RULES" in s1src
+          and "TENANT1_ENTITY_MAPPINGS" in s1src
+          and "TENANT1_EMAIL_ARCHIVE_LABEL" in s1src
           and "DEFAULT_GITHUB_OWNER" in s1src)
     check("seed_tenant1: idempotent upsert (on conflict do update)",
           "on conflict (owner_id, key) do update" in s1src)
@@ -151,9 +157,9 @@ def main() -> int:
     check("seed_tenant1: default values are Danny's canonical ones",
           const.DEFAULT_GITHUB_OWNER == "Crayon-Biz-LLP"
           and const.DEFAULT_GITHUB_REPO == "integrated-os"
-          and ei.DEFAULT_EMAIL_ARCHIVE_LABEL == "Completed/Ashraya"
-          and ai.DEFAULT_ARCHIVE_ROOT_LABEL == "Danny"
-          and ai.DEFAULT_ENTITY_MAPPINGS.get("Sunju") == ["sunju", "wife", "wife's", "sunju's"])
+          and ei.TENANT1_EMAIL_ARCHIVE_LABEL == "Completed/Ashraya"
+          and ai.TENANT1_ARCHIVE_ROOT_LABEL == "Danny"
+          and ai.TENANT1_ENTITY_MAPPINGS.get("Sunju") == ["sunju", "wife", "wife's", "sunju's"])
     check("migrate script: points to the seed as next step",
           "seed_tenant1_m6_config.py" in inspect.getsource(
               __import__("scripts.migrate_danny_to_tenant1", fromlist=["x"])))
