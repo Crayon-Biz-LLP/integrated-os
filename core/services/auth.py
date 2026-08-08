@@ -9,8 +9,9 @@ Design invariants
 2. OTP rows live in `login_otps` (auth state, NOT tenant data) and are
    written through the RAW supabase client (`get_supabase()`) because
    they are created before a tenant context exists.
-3. Anti-enumeration: `/otp/send` answers the same way whether or not
-   the email is provisioned, and only actually sends when it is.
+3. Self-serve (M13): ANY valid email can request a code — the email IS
+   the account. First successful verify auto-creates the tenant
+   (provision_user); the onboarding journey seeds the world after sign-in.
 4. All secrets compare with `hmac.compare_digest` / constant-time hashes.
 """
 
@@ -19,6 +20,7 @@ import hmac
 import os
 import secrets
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlencode
@@ -62,6 +64,70 @@ def _find_user_by_email(email: str) -> Optional[dict]:
         return None
 
 
+class TenantLimitReached(Exception):
+    """Self-serve sign-up hit the MAX_TENANTS cap (0/absent = unlimited)."""
+
+
+def provision_user(email: str, name_hint: str | None = None) -> Optional[dict]:
+    """Create a tenant row for an email that has none (M13 self-serve).
+
+    Open-registration model: the email IS the account. Returns the user
+    dict (existing or freshly created). The rest of the world (settings,
+    orgs, people) is seeded by the onboarding journey right after sign-in.
+    Re-reads once on a unique-email race so two simultaneous sign-ups for
+    the same address both succeed.
+    """
+    user = _find_user_by_email(email)
+    if user:
+        return user
+
+    # Optional tenant cap (env MAX_TENANTS, 0 = unlimited) — the "cap at 50
+    # later" lever. Counts ACTIVE users only; a failed count never blocks
+    # sign-up (fail-open). A malformed env value also fails open.
+    try:
+        cap = int(os.getenv("MAX_TENANTS", "0") or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    if cap > 0:
+        try:
+            res = get_supabase().table("users").select("id").eq("status", "active").execute()
+            count = len(res.data or [])
+        except Exception:
+            count = -1  # fail-open: never block sign-up on a count error
+        if count >= cap:
+            raise TenantLimitReached()
+
+    name = (name_hint or "").strip() or email.split("@")[0]
+    uid = str(uuid.uuid4())
+    try:
+        get_supabase().table("users").insert(
+            {
+                "id": uid,
+                "email": email,
+                "name": name,
+                "status": "active",
+            }
+        ).execute()
+    except Exception as e:
+        # Unique-email race: another request won the insert — re-read.
+        user = _find_user_by_email(email)
+        if user:
+            return user
+        from core.lib.audit_logger import audit_log_sync
+
+        audit_log_sync("auth", "ERROR", f"provision_user failed for {email}: {e}")
+        return None
+    # Visible sign-up trail — new tenants show up in the audit log the
+    # admin already watches (M13 open registration).
+    try:
+        from core.lib.audit_logger import audit_log_sync
+
+        audit_log_sync("auth", "INFO", f"New tenant provisioned: {email} (uid {uid})")
+    except Exception:
+        pass
+    return _find_user_by_email(email)
+
+
 def _latest_otp(email: str) -> Optional[dict]:
     try:
         res = (
@@ -80,11 +146,11 @@ def _latest_otp(email: str) -> Optional[dict]:
 
 
 def send_otp(email: str) -> dict:
-    """Request a sign-in code. Response is identical whether invited or not.
+    """Request a sign-in code (self-serve, M13).
 
-    Only actually emails when the address belongs to an active user —
-    this is what makes the invite model work: Danny provisions the
-    address, the user signs in with it.
+    Open-registration model: ANY valid address gets a code — the email IS
+    the account. verify_otp creates the tenant on first successful use.
+    Rate-limited (60s per email). No invite pre-provisioning needed.
     """
     email = (email or "").strip().lower()
     if not email or "@" not in email or "." not in email.split("@")[-1]:
@@ -103,7 +169,6 @@ def send_otp(email: str) -> dict:
         except Exception:
             pass  # tolerate bad rows; the resend proceeds
 
-    user = _find_user_by_email(email)
     code = f"{secrets.randbelow(10**6):06d}"
     try:
         get_supabase().table("login_otps").insert(
@@ -122,21 +187,40 @@ def send_otp(email: str) -> dict:
         audit_log_sync("auth", "ERROR", f"OTP insert failed for {email}: {e}")
         return {"ok": False, "message": "Could not start sign-in right now — please retry."}
 
-    if user and user.get("status", "active") == "active":
-        from core.services.otp_email import send_otp_email
+    # M13: every valid address is signable — no invite gate. Two guards:
+    # 1. A DISABLED tenant's address is not emailed (they can't sign in
+    #    anyway) — unknown addresses ARE, since the email creates the account.
+    # 2. A cheap daily send cap (env OTP_DAILY_SEND_CAP, default 100) stops
+    #    the endpoint being used to bomb arbitrary addresses with emails;
+    #    the 60s per-address limit alone only throttles ONE victim.
+    user = _find_user_by_email(email)
+    if user and user.get("status", "active") != "active":
+        return {"ok": True, "message": "A 6-digit sign-in code is on its way."}
+    try:
+        daily_cap = int(os.getenv("OTP_DAILY_SEND_CAP", "100") or 0)
+    except (TypeError, ValueError):
+        daily_cap = 100
+    if daily_cap > 0:
+        try:
+            day_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+            sent_count = (
+                get_supabase().table("login_otps").select("id")
+                .gte("created_at", day_ago).execute()
+            )
+            if len(sent_count.data or []) >= daily_cap:
+                return {"ok": False, "message": "Too many sign-in requests right now — please try again later."}
+        except Exception:
+            pass  # count failure fails open
 
-        sent = send_otp_email(email, code)
-        if not sent:
-            return {
-                "ok": False,
-                "message": "Email sign-in isn't configured yet — use Google, or ask your admin.",
-            }
+    from core.services.otp_email import send_otp_email
 
-    # Same message for invited and uninvited: never leak who's provisioned.
-    return {
-        "ok": True,
-        "message": "If an account exists for that email, a 6-digit code is on its way.",
-    }
+    sent = send_otp_email(email, code)
+    if not sent:
+        return {
+            "ok": False,
+            "message": "Email sign-in isn't configured yet — please retry.",
+        }
+    return {"ok": True, "message": "A 6-digit sign-in code is on its way."}
 
 
 def verify_otp(email: str, code: str) -> dict:
@@ -152,7 +236,7 @@ def verify_otp(email: str, code: str) -> dict:
         return {"ok": False, "message": "Email and code are both required."}
 
     user = _find_user_by_email(email)
-    if not user or user.get("status", "active") != "active":
+    if user and user.get("status", "active") != "active":
         return {"ok": False, "message": "Invalid code or email."}
 
     otp = _latest_otp(email)
@@ -189,6 +273,16 @@ def verify_otp(email: str, code: str) -> dict:
         ).eq("id", otp["id"]).execute()
     except Exception:
         pass
+
+    if not user:
+        # M13 self-serve: a verified code for an unknown email CREATES the
+        # account. The email is the identity; onboarding seeds the world.
+        try:
+            user = provision_user(email)
+        except TenantLimitReached:
+            return {"ok": False, "message": "Rhodey has reached its current user limit — ask your admin."}
+        if not user:
+            return {"ok": False, "message": "Could not create your account — please retry."}
 
     api_key = issue_api_key(user["id"])
     if not api_key:
@@ -286,8 +380,16 @@ def signin_by_google_identity(identity: dict) -> dict:
     """Match a verified Google identity to a provisioned tenant + issue key."""
     email = (identity or {}).get("email", "")
     user = _find_user_by_email(email) if email else None
-    if not user or user.get("status", "active") != "active":
-        return {"ok": False, "message": "This Google account isn't invited to Rhodey yet."}
+    if user and user.get("status", "active") != "active":
+        return {"ok": False, "message": "This account isn't active — ask your admin."}
+    if not user:
+        # M13 self-serve: a verified Google identity CREATES the account.
+        try:
+            user = provision_user(email, name_hint=(identity or {}).get("name"))
+        except TenantLimitReached:
+            return {"ok": False, "message": "Rhodey has reached its current user limit — ask your admin."}
+        if not user:
+            return {"ok": False, "message": "Could not create your account — please retry."}
     api_key = issue_api_key(user["id"])
     if not api_key:
         return {"ok": False, "message": "Could not complete sign-in — please try again."}

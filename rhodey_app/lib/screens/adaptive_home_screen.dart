@@ -888,6 +888,12 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// Skip/dismiss the current focal item — persists a real deferral on the
   /// server (snoozed_until) for ALL item types, so "Not now" never silently
   /// resurrects on the next load. No learning signal (defer ≠ reject).
+  ///
+  /// Snooze escalation (M12): 1st "Not now" → 1 day, 2nd → 3 days, 3rd →
+  /// 7 days behind a warning + feedback gate, 4th+ → 7 days (cap, quiet).
+  /// A dry-run call reveals the ladder position without persisting; the
+  /// warning fires exactly once (3rd tap) and the typed feedback is stored
+  /// as a learning signal server-side.
   Future<void> _snoozeFocalItem(_FocalItem item) async {
     _instrumentation.itemsDismissed++;
 
@@ -909,11 +915,37 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       return;
     }
 
+    // ── Escalation gate (M12): ask before the 3rd snooze ──
+    // Dry-run tells us the ladder position without persisting anything. If
+    // the check fails (network, pre-db/92) we degrade to a direct snooze —
+    // the gate is a courtesy, never a blocker.
+    String feedback = '';
+    try {
+      final check = await _api.focalAction(
+        action: 'snooze',
+        itemType: args.$1,
+        itemId: args.$2,
+        title: item.title,
+        dryRun: true,
+      );
+      final checkOk = _focalActionOk(check);
+      final checkData = (checkOk && check.data is Map) ? check.data as Map : null;
+      if (checkData != null && checkData['warn'] == true) {
+        final count = (checkData['count'] as num?)?.toInt() ?? 3;
+        final typed = await _showSnoozeWarningDialog(item, count: count);
+        if (typed == null || !mounted) return; // cancelled — card stays
+        feedback = typed;
+      }
+    } catch (_) {
+      // Degrade gracefully — proceed with a direct snooze.
+    }
+
     final result = await _api.focalAction(
       action: 'snooze',
       itemType: args.$1,
       itemId: args.$2,
       title: item.title,
+      feedback: feedback,
     );
     final persisted = _focalActionOk(result);
 
@@ -947,6 +979,83 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     }
     // N4: local count decrement instead of a 5-call refetch.
     _decrementCountsFor(item);
+  }
+
+  /// Third-tap "Not now" gate (M12): warning + feedback box. Returns the
+  /// typed feedback, or null when the user cancels (card stays on board).
+  Future<String?> _showSnoozeWarningDialog(
+    _FocalItem item, {
+    required int count,
+  }) async {
+    final controller = TextEditingController();
+    final shouldSnooze = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('You\u2019ve snoozed this before'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'This is the ${_ordinal(count)} time this item has been '
+                'snoozed. It will stay off your board for 7 days.',
+                style: const TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Tell Rhodey why you\u2019re deferring it \u2014 every answer '
+                'makes it smarter.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                maxLines: 3,
+                maxLength: 500,
+                decoration: InputDecoration(
+                  hintText: 'e.g. Not urgent right now, follow up next month...',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  contentPadding: const EdgeInsets.all(12),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Keep it'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Snooze 7 days'),
+          ),
+        ],
+      ),
+    );
+    final feedback = (shouldSnooze == true && mounted) ? controller.text.trim() : null;
+    controller.dispose();
+    return feedback;
+  }
+
+  /// "3rd", "4th", ... — used by the snooze warning dialog.
+  String _ordinal(int n) {
+    final mod100 = n % 100;
+    if (mod100 >= 11 && mod100 <= 13) return '${n}th';
+    switch (n % 10) {
+      case 1:
+        return '${n}st';
+      case 2:
+        return '${n}nd';
+      case 3:
+        return '${n}rd';
+      default:
+        return '${n}th';
+    }
   }
 
   /// True when the /api/focal-action response actually reports success.

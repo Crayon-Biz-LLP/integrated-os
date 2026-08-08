@@ -922,12 +922,20 @@ class ApiService {
 
   /// Send a focal item action to /api/focal-action.
   /// [action] is "done", "snooze", or "correct".
+  /// [dryRun] (snooze only) asks the server where the item sits on the
+  /// snooze escalation ladder (1d → 3d → 7d-warn → 7d cap) WITHOUT
+  /// persisting anything — the app uses it to decide whether to show the
+  /// 3rd-tap warning + feedback gate.
+  /// [feedback] (snooze only) is the reason typed at the 3rd-tap gate; it
+  /// is stored server-side as a learning signal.
   Future<ApiResult<dynamic>> focalAction({
     required String action,
     required String itemType,
     required String itemId,
     String title = '',
     String reason = '',
+    bool dryRun = false,
+    String feedback = '',
   }) async {
     return post(
       '/api/focal-action',
@@ -937,6 +945,8 @@ class ApiService {
         'item_id': itemId,
         'title': title,
         'reason': reason,
+        if (dryRun) 'dry_run': true,
+        if (feedback.isNotEmpty) 'feedback': feedback,
       },
       maxRetries: 1,
     );

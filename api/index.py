@@ -1,4 +1,5 @@
 import os
+import html
 import hmac
 import hashlib
 import time
@@ -1405,6 +1406,10 @@ async def _complete_task(task_id: int, new_status: str = "done") -> dict:
     update_data = {'status': new_status}
     if new_status == 'done':
         update_data['completed_at'] = datetime.now().isoformat()
+        # M12: completing the task resets its focal snooze escalation
+        # counter — the next "Not now" starts the ladder over at 1 day.
+        update_data['snooze_count'] = 0
+        update_data['snooze_feedback'] = None
 
     supabase.table('tasks').update(update_data).eq('id', task_id).execute()
 
@@ -1868,9 +1873,12 @@ async def focal_action_route(request: Request):
     }
 
     - "done":    Marks the task/decision as completed
-    - "snooze":  Persists a 7-day deferral (snoozed_until) so the item does
-                  NOT resurface on the next load. No learning signal.
-    - "correct": Same deferral + correction signal to the learning loop.
+    - "snooze":  Deferral with an escalation ladder (1 day -> 3 days -> 7
+                  days; the 3rd tap warns and captures feedback as a
+                  learning signal). Accepts dry_run=true to preview the
+                  ladder position without persisting.
+    - "correct": Same 7-day deferral + correction signal to the learning
+                  loop.
     """
     require_api_auth(request)
     try:
@@ -1898,6 +1906,113 @@ async def focal_action_route(request: Request):
         # Honest failure payload for an item that can no longer be acted on.
         _unactionable = {"success": False, "message": "I couldn't complete that item — it may have changed."}
         _unactionable_reject = {"success": False, "message": "I couldn't reject that item — it may have changed."}
+
+        # ── Focal snooze escalation ladder (M12) ──────────────────────────
+        # 1st "Not now" → 1 day · 2nd → 3 days · 3rd → 7 days behind a
+        # warning + feedback gate · 4th+ → 7 days (cap, quiet). The counter
+        # lives on the item (snooze_count, db/92) and resets only when the
+        # item is completed — not on deferral expiry.
+        _ITEM_TABLE = {
+            "task": "tasks",
+            "graph_node": "pending_nodes",
+            "graph_edge": "pending_graph_edges",
+            "merge": "merge_proposals",
+        }
+
+        def _snooze_days_for_count(count: int) -> int:
+            if count <= 1:
+                return 1
+            if count == 2:
+                return 3
+            return 7
+
+        _SNOOZE_LADDER_OK: dict[str, bool] = {}
+
+        async def _ladder_ok(item_type: str) -> bool:
+            """True when the item's table has the db/92 ladder columns (cached).
+
+            Mirrors the _snooze_ok probe idiom (api/briefing.py): before db/92
+            is applied, the ladder is unavailable and snooze must fall back to
+            the flat 7-day path instead of failing the deferral outright.
+            """
+            table = _ITEM_TABLE.get(item_type)
+            if not table:
+                return False
+            if table in _SNOOZE_LADDER_OK:
+                return _SNOOZE_LADDER_OK[table]
+            try:
+                supabase = tenant_aware_client()
+                supabase.table(table).select('snooze_count').limit(1).execute()
+                _SNOOZE_LADDER_OK[table] = True
+            except Exception:
+                _SNOOZE_LADDER_OK[table] = False
+            return _SNOOZE_LADDER_OK[table]
+
+        async def _read_snooze_count(item_type: str, iid: int | None) -> int | None:
+            """Current snooze_count for an item (None = unreadable/unknown)."""
+            if iid is None:
+                return None
+            table = _ITEM_TABLE.get(item_type)
+            if not table:
+                return None
+            try:
+                supabase = tenant_aware_client()
+                q = supabase.table(table).select('snooze_count').eq('id', iid)
+                if table == 'tasks':
+                    q = q.eq('is_current', True)
+                res = q.limit(1).execute()
+                rows = res.data or []
+                if not rows:
+                    return None
+                return int(rows[0].get('snooze_count') or 0)
+            except Exception as e:
+                print(f"Focal snooze count read error: {e}")
+                return None
+
+        async def _persist_ladder_deferral(item_type: str, iid: int | None, feedback: str) -> dict:
+            """Persist an escalation-ladder deferral and bump the counter.
+
+            Falls back to the legacy flat 7-day deferral (no count bump) when
+            the db/92 ladder columns aren't live yet, so snooze never breaks
+            between code deploy and migration apply.
+            """
+            if iid is None:
+                return {"persisted": False, "count": 0, "days": 0, "ladder": False}
+            table = _ITEM_TABLE.get(item_type)
+            if not table:
+                return {"persisted": False, "count": 0, "days": 0, "ladder": False}
+            if not await _ladder_ok(item_type):
+                # Pre-db/92: legacy flat 7-day path (matches old behavior).
+                try:
+                    defer_until = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+                    supabase = tenant_aware_client()
+                    q = supabase.table(table).update({'snoozed_until': defer_until}).eq('id', iid)
+                    if table == 'tasks':
+                        q = q.eq('is_current', True)
+                    res = q.execute()
+                    return {"persisted": bool(res.data), "count": 0, "days": 7, "ladder": False}
+                except Exception as e:
+                    print(f"Focal fallback deferral error: {e}")
+                    return {"persisted": False, "count": 0, "days": 0, "ladder": False}
+            try:
+                cur = await _read_snooze_count(item_type, iid)
+                if cur is None:
+                    return {"persisted": False, "count": 0, "days": 0, "ladder": True}
+                nxt = cur + 1
+                days = _snooze_days_for_count(nxt)
+                defer_until = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+                update = {'snoozed_until': defer_until, 'snooze_count': nxt}
+                if feedback:
+                    update['snooze_feedback'] = feedback
+                supabase = tenant_aware_client()
+                q = supabase.table(table).update(update).eq('id', iid)
+                if table == 'tasks':
+                    q = q.eq('is_current', True)
+                res = q.execute()
+                return {"persisted": bool(res.data), "count": nxt, "days": days, "ladder": True}
+            except Exception as e:
+                print(f"Focal ladder deferral persist error: {e}")
+                return {"persisted": False, "count": 0, "days": 0, "ladder": True}
 
         # Shared: persist a 7-day deferral so a snoozed/corrected item stops
         # resurfacing until the deferral expires (see db/72_focal_snooze.sql).
@@ -1999,12 +2114,85 @@ async def focal_action_route(request: Request):
             return {"success": True, "message": "Action completed"}
 
         elif action == "snooze":
-            # Persist a real deferral — the item must NOT resurface on the
-            # next load. No learning signal (defer ≠ reject).
-            persisted = await _persist_deferral()
-            if not persisted:
+            # Escalation ladder: 1 day → 3 days → 7 days (warning on the 3rd
+            # tap) → 7 days cap. The app calls once with dry_run=true to learn
+            # whether the 3rd-tap warning gate is up WITHOUT persisting; the
+            # real call then persists the deferral and bumps snooze_count.
+            # Anything else ("correct") keeps the flat 7-day path above.
+            dry_run = bool(body.get("dry_run", False))
+            feedback = (body.get("feedback") or "").strip()[:500]
+            iid = _item_int()
+
+            if dry_run:
+                if not await _ladder_ok(item_type):
+                    # Pre-db/92 — no gate; the app should just snooze flat.
+                    return {
+                        "success": True,
+                        "dry_run": True,
+                        "count": 0,
+                        "warn": False,
+                        "days": 7,
+                        "ladder": False,
+                    }
+                cur = await _read_snooze_count(item_type, iid)
+                if cur is None:
+                    return {"success": False, "message": "Couldn't check this item — please try again."}
+                nxt = cur + 1
+                return {
+                    "success": True,
+                    "dry_run": True,
+                    "count": nxt,
+                    "warn": nxt == 3,
+                    "days": _snooze_days_for_count(nxt),
+                    "ladder": True,
+                }
+
+            result = await _persist_ladder_deferral(item_type, iid, feedback)
+            if not result.get("persisted"):
                 return {"success": False, "message": "Couldn't defer this item — please try again."}
-            return {"success": True, "message": "Dismissed — I'll keep it off your board for now"}
+
+            # 3rd-tap feedback is a learning signal: store it AND feed it to
+            # the observation + decision loop so the "why" actually trains
+            # the OS (the "snooze without learning" anti-pattern).
+            if result.get("count", 0) == 3 and feedback:
+                try:
+                    await emit_observation(
+                        subsystem='focal_selection',
+                        event_type='snooze_feedback',
+                        features={
+                            "item_type": item_type,
+                            "item_id": item_id,
+                            "title": title,
+                            "reason": reason,
+                            "feedback": feedback,
+                        },
+                        predicted=item_type,
+                        actual='snoozed',
+                        outcome='deferred_with_feedback',
+                        source='flutter',
+                    )
+                    try:
+                        await record_decision(
+                            decision_type="focal_snooze_feedback",
+                            title=f"User snoozed '{title}' for the 3rd time",
+                            context=f"Snooze feedback: {feedback}. LLM reason: {reason[:200] if reason else 'N/A'}",
+                            entity_type=item_type,
+                            entity_id=str(item_id),
+                            confidence=1.0,
+                            source="flutter",
+                            auto_decided=False,
+                        )
+                    except Exception as dec_err:
+                        print(f"Focal snooze feedback decision record error: {dec_err}")
+                except Exception as obs_err:
+                    print(f"Focal snooze feedback observation error (non-fatal): {obs_err}")
+
+            return {
+                "success": True,
+                "count": result.get("count", 0),
+                "warn": result.get("count", 0) == 3,
+                "message": "Dismissed — I'll keep it off your board for now",
+            }
 
         elif action == "correct":
             # Defer the item too (so a corrected focal pick doesn't resurface)
@@ -4329,18 +4517,39 @@ async def oauth_callback(request: Request):
     else:
         target = "rhodey://oauth2/callback?error=invalid_state"
 
-    # json.dumps makes the target safe to embed as a JS string literal.
+    # Why the page needs a BUTTON, not just an auto-redirect:
+    # Chrome (since ~73) silently DROPS script-initiated navigations to
+    # custom schemes (rhodey://) — they're not a user gesture, and the OAuth
+    # flow's original tap is long gone by the time this page loads. The
+    # result is the classic "stuck on 'Returning to Rhodey…'" page: the tab
+    # never hands off to the app. flutter_web_auth_2's own troubleshooting
+    # documents the reliable pattern: a plain <a href="scheme://…"> link —
+    # a link click IS a gesture, so Chrome delivers the custom scheme to
+    # the app's CallbackActivity. So: render the button always (the
+    # guaranteed path), and fire the auto-redirect as best-effort (covers
+    # iOS + Android browsers that do allow it).
+    #
+    # json.dumps makes the target safe to embed as a JS string literal;
+    # html.escape makes it safe as an href attribute.
     js_target = json.dumps(target)
+    href_target = html.escape(target, quote=True)
     page = (
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<meta http-equiv='Content-Security-Policy' "
         "content='default-src \"none\"; script-src \"unsafe-inline\"'>"
         "<title>Returning to Rhodey…</title></head>"
-        "<body style='font-family:system-ui;display:flex;align-items:center;"
-        "justify-content:center;height:100vh;margin:0;background:#f5f2ec;"
-        "color:#3a362f'>"
-        "<p>Returning to Rhodey…</p>"
-        f"<script>window.location.replace({js_target});</script>"
+        "<body style='font-family:system-ui;display:flex;flex-direction:column;"
+        "align-items:center;justify-content:center;height:100vh;margin:0;"
+        "background:#f5f2ec;color:#3a362f;text-align:center'>"
+        "<p style='margin:0;font-size:17px'>Returning to Rhodey…</p>"
+        "<p style='margin:16px 0 0;font-size:13px;color:#7a7468'>"
+        "If Rhodey doesn't open automatically, tap the button below.</p>"
+        "<a href='" + href_target + "' "
+        "style='display:inline-block;margin-top:28px;padding:14px 34px;"
+        "background:#3a362f;color:#ffffff;text-decoration:none;"
+        "border-radius:999px;font-weight:600;font-size:16px'>"
+        "Open Rhodey</a>"
+        "<script>try { window.location.href = " + js_target + "; } catch (e) {}</script>"
         "</body></html>"
     )
     return HTMLResponse(page)
