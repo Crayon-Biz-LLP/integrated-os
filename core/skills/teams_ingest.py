@@ -118,6 +118,9 @@ async def ingest_teams_messages(limit_chats=5, limit_messages=10):
     # 1. Get Token
     try:
         token_info = refresh_outlook_token(write_back=True)
+        if not token_info:
+            print("No Outlook token for this tenant — Teams ingest skipped.")
+            return {"error": "No Outlook token"}
         access_token = token_info["access_token"]
     except Exception as e:
         print(f"Token refresh failed: {e}. Check if you added Chat.Read and Files.Read.All scopes.")

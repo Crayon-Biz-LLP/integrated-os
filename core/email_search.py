@@ -62,6 +62,8 @@ def search_outlook_sent(query: str, limit: int = 5) -> list:
         access_token = os.getenv("OUTLOOK_ACCESS_TOKEN")
         if not access_token:
             result = refresh_outlook_token(write_back=True)
+            if not result:
+                return []  # tenant has no Outlook — cleanly no results
             access_token = result["access_token"]
 
         headers = {"Authorization": f"Bearer {access_token}"}
@@ -81,6 +83,8 @@ def search_outlook_sent(query: str, limit: int = 5) -> list:
         
         if response.status_code == 401:
             result = refresh_outlook_token(write_back=True)
+            if not result:
+                return []
             access_token = result["access_token"]
             headers["Authorization"] = f"Bearer {access_token}"
             response = requests.get(url, headers=headers, params=params, timeout=30)

@@ -60,6 +60,10 @@ def get_access_token():
         return access_token
     from core.skills.outlook_token_helper import refresh_outlook_token
     result = refresh_outlook_token(write_back=True)
+    if not result:
+        # Tenant has no Outlook token — the caller skips cleanly instead of
+        # crashing (and never falls back to another tenant's credential).
+        return None
     return result["access_token"]
 
 async def call_gemini_with_retry(prompt: str, model: str, config: dict = None):
@@ -134,6 +138,9 @@ async def classify_email(sender: str, subject: str, body: str, to_header: str = 
 
 def fetch_outlook_sent_messages(limit=25):
     access_token = get_access_token()
+    if not access_token:
+        print("No Outlook token for this tenant — skipping sent-items fetch.")
+        return []
     headers = {"Authorization": f"Bearer {access_token}"}
 
     url = "https://graph.microsoft.com/v1.0/me/mailFolders/sentItems/messages"
@@ -148,6 +155,8 @@ def fetch_outlook_sent_messages(limit=25):
     if response.status_code == 401:
         from core.skills.outlook_token_helper import refresh_outlook_token
         result = refresh_outlook_token(write_back=True)
+        if not result:
+            return []
         access_token = result["access_token"]
         headers["Authorization"] = f"Bearer {access_token}"
         response = requests.get(url, headers=headers, params=params, timeout=30)
@@ -159,6 +168,9 @@ def fetch_outlook_sent_messages(limit=25):
 
 def fetch_outlook_messages(limit=25):
     access_token = get_access_token()
+    if not access_token:
+        print("No Outlook token for this tenant — skipping inbox fetch.")
+        return []
     headers = {"Authorization": f"Bearer {access_token}"}
 
     url = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
@@ -173,6 +185,8 @@ def fetch_outlook_messages(limit=25):
     if response.status_code == 401:
         from core.skills.outlook_token_helper import refresh_outlook_token
         result = refresh_outlook_token(write_back=True)
+        if not result:
+            return []
         access_token = result["access_token"]
         headers["Authorization"] = f"Bearer {access_token}"
         response = requests.get(url, headers=headers, params=params, timeout=30)

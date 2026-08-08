@@ -140,7 +140,7 @@ class DecisionCard extends StatelessWidget {
       case DecisionType.clarification:
         return 'CLARIFICATION';
       case DecisionType.person:
-        return 'NEW PERSON';
+        return item.personBadge;
       case DecisionType.edge:
         return 'NEW EDGE';
       case DecisionType.email:

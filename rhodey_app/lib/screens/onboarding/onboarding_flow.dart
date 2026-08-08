@@ -1327,6 +1327,15 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                   )
                   .toList(),
             ),
+          const SizedBox(height: 14),
+          Text(
+            'Rhodey also spots people and orgs on its own — from your emails, chats, and meetings. If it gets something wrong, correct it: it remembers.',
+            style: TextStyle(
+              color: AppTheme.textSecondary,
+              fontSize: 12,
+              height: 1.45,
+            ),
+          ),
           const Spacer(),
         ],
       ),
@@ -1810,9 +1819,18 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         children: [
           _surfaceCard('🗓️', PersonaStore.current.today, 'Your board — the day\'s shape, tasks, deadlines, and what matters now.'),
           const SizedBox(height: 12),
-          _surfaceCard('📥', PersonaStore.current.inbox, 'Things Rhodey noticed and wants to confirm. Yes, no, or later.'),
+          _surfaceCard(
+            '📥',
+            PersonaStore.current.inbox,
+            'Things Rhodey noticed and wants to confirm. Yes, no, or later.',
+            note: 'Every yes, later, or no teaches Rhodey what matters to you — it gets smarter with each tap.',
+          ),
           const SizedBox(height: 12),
-          _surfaceCard('🧭', PersonaStore.current.entities, 'Who and what Rhodey tracks for you — people, places, and what matters.'),
+          _surfaceCard(
+            '🧭',
+            PersonaStore.current.entities,
+            "Rhodey's living map of who matters — built automatically from your conversations. Correct it when it's wrong; it remembers.",
+          ),
           const SizedBox(height: 12),
           _surfaceCard('🕘', PersonaStore.current.history, 'Everything you\'ve told it — searchable, threaded, yours.'),
           const SizedBox(height: 18),
@@ -1829,7 +1847,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     );
   }
 
-  Widget _surfaceCard(String icon, String title, String desc) {
+  Widget _surfaceCard(String icon, String title, String desc, {String? note}) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -1858,6 +1876,27 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                   desc,
                   style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4),
                 ),
+                if (note != null) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('💡', style: const TextStyle(fontSize: 11)),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          note,
+                          style: const TextStyle(
+                            color: AppTheme.textSecondary,
+                            fontSize: 11.5,
+                            height: 1.4,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),

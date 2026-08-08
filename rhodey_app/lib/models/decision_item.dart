@@ -54,7 +54,7 @@ class DecisionItem {
       case DecisionType.clarification:
         return '❓';
       case DecisionType.person:
-        return '👤';
+        return personIcon;
       case DecisionType.edge:
         return '🔗';
       case DecisionType.email:
@@ -65,6 +65,57 @@ class DecisionItem {
         return '📞';
       case DecisionType.merge:
         return '🔀';
+    }
+  }
+
+  /// Badge for a person-type decision, derived from the RAW node type
+  /// (person / organization / concept / project / ...). The Inbox used to
+  /// label every new node "NEW PERSON" regardless of what it actually was.
+  String get personBadge {
+    switch (nodeType?.toLowerCase()) {
+      case 'organization':
+        return 'NEW ORG';
+      case 'concept':
+        return 'NEW CONCEPT';
+      case 'project':
+        return 'NEW PROJECT';
+      case 'event':
+        return 'NEW EVENT';
+      case 'place':
+        return 'NEW PLACE';
+      case 'animal':
+        return 'NEW ANIMAL';
+      case 'emotional_state':
+        return 'NEW STATE';
+      case 'practice':
+        return 'NEW PRACTICE';
+      case 'person':
+      default:
+        return 'NEW PERSON';
+    }
+  }
+
+  /// Icon matching [personBadge] — so an org approval shows 🏢, not 👤.
+  String get personIcon {
+    switch (nodeType?.toLowerCase()) {
+      case 'organization':
+        return '🏢';
+      case 'concept':
+        return '💡';
+      case 'project':
+        return '📦';
+      case 'event':
+        return '📅';
+      case 'place':
+        return '📍';
+      case 'animal':
+        return '🐾';
+      case 'emotional_state':
+      case 'practice':
+        return '🧠';
+      case 'person':
+      default:
+        return '👤';
     }
   }
 

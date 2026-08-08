@@ -27,6 +27,11 @@ def get_outlook_calendar_events(target_date):
     try:
         from core.skills.outlook_token_helper import refresh_outlook_token
         token_data = refresh_outlook_token(write_back=False)
+        if not token_data:
+            # Tenant has no Outlook token — skip cleanly (never fall back to
+            # another tenant's env credential; no warning spam for tenants
+            # that simply don't use Outlook).
+            return []
         access_token = token_data["access_token"]
 
         start_dt = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -73,6 +78,10 @@ def get_outlook_calendar_events_range(start_date, end_date):
     try:
         from core.skills.outlook_token_helper import refresh_outlook_token
         token_data = refresh_outlook_token(write_back=False)
+        if not token_data:
+            # Tenant has no Outlook token — skip cleanly (no cross-tenant
+            # env fallback, no warning spam).
+            return []
         access_token = token_data["access_token"]
 
         start_dt = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
