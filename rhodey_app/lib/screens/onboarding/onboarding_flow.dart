@@ -5,6 +5,7 @@ import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../../services/api_config.dart';
 import '../../services/api_service.dart';
+import '../../services/persona.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/voice_states.dart';
 
@@ -39,9 +40,16 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   // 6 times · 7 create world (seed) · 8 try it (chat demo) ·
   // 9 surfaces · 10 voice + quick replies · 11 google · 12 first briefing
   static const _totalPages = 13;
-  static const _domainSuggestions = [
-    'Work', 'Business', 'Personal', 'Family', 'Health', 'Finance',
-  ];
+
+  /// M15: the role persona chosen on the welcome screen — the vocabulary
+  /// layer for the onboarding copy + app-shell labels. '' until picked.
+  String _persona = '';
+
+  /// Area chips per persona (defaults to today's list until a persona is
+  /// picked — the household persona gets family-first suggestions).
+  List<String> get _domainSuggestions => _persona.isEmpty
+      ? const ['Work', 'Business', 'Personal', 'Family', 'Health', 'Finance']
+      : PersonaStore.of(_persona).areaPresets;
 
   final _config = ApiConfig();
   final _api = ApiService();
@@ -90,6 +98,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   // M10: voice try state (speech_to_text) + sample quick-reply chips.
   final _speech = stt.SpeechToText();
   VoiceState _demoVoiceState = VoiceState.idle;
+  // M14: auto-scrolls the demo thread so a fresh reply is never hidden below
+  // the fold — the chat stays anchored to the card you just tapped.
+  final _demoScroll = ScrollController();
   String _demoVoiceText = '';
   String? _demoVoiceError;
   // M10: finale live briefing (reflects the seeded world + demo items).
@@ -163,6 +174,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   @override
   void dispose() {
     _speech.cancel();
+    _demoScroll.dispose();
     _controller.dispose();
     _keyController.dispose();
     _signInEmailController.dispose();
@@ -511,6 +523,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       // defaults to balanced / the admin-set timezone).
       'briefing_preset': _presetId,
       'timezone': _deviceTimezone,
+      // M15: the role persona chosen on the welcome screen — vocabulary
+      // layer for the app's surfaces (server copy stays shared for now).
+      'persona': _persona.isEmpty ? 'chief_staff' : _persona,
     };
     final r = await _api.completeOnboarding(payload);
     if (!mounted) return;
@@ -565,6 +580,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       _demoSending = false;
       _demoChat.add({'role': 'rhodey', 'text': reply, 'tag': ok ? (tag ?? '') : ''});
     });
+    _demoScrollToBottom();
     return ok;
   }
 
@@ -573,6 +589,20 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   Future<void> _tryDemoAction(String key, String text, String tag) async {
     final ok = await _runDemoMessage(text, tag: tag);
     if (ok && mounted) setState(() => _demoDone.add(key));
+    if (ok && mounted) _demoScrollToBottom();
+  }
+
+  /// Scrolls the demo thread to the newest message so the reply to the card
+  /// you just tapped is always visible — no hunting for the chat at the bottom.
+  void _demoScrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_demoScroll.hasClients) return;
+      _demoScroll.animateTo(
+        _demoScroll.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOutCubic,
+      );
+    });
   }
 
   /// Voice try: transcribe via speech_to_text, then send the phrase through
@@ -814,51 +844,171 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   // ── Step 0: Welcome ─────────────────────────────────────────
 
   Widget _welcomeStep() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 28),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
             'Rhodey',
             style: TextStyle(
               fontFamily: 'InstrumentSerif',
-              fontSize: 56,
+              fontSize: 46,
               height: 1.05,
               color: AppTheme.textPrimary,
             ),
           ),
           const SizedBox(height: 6),
           Text(
-            'Your chief of staff, in your pocket.',
+            'Your personal assistant, shaped around how you work and live.',
             style: TextStyle(
               fontFamily: 'InstrumentSerif',
-              fontSize: 21,
+              fontSize: 20,
               fontStyle: FontStyle.italic,
               color: AppTheme.textSecondary,
             ),
           ),
-          const SizedBox(height: 34),
-          const _PitchRow(icon: '🧠', text: 'Knows your world — people, work, life'),
-          const SizedBox(height: 14),
-          const _PitchRow(icon: '🎯', text: 'Decides what matters now, not everything'),
-          const SizedBox(height: 14),
-          const _PitchRow(icon: '🌱', text: 'Learns from every choice you make'),
-          const SizedBox(height: 44),
-          _primaryButton(
-            label: 'Set up my world',
-            onTap: () => _goTo(1),
+          const SizedBox(height: 26),
+          const Text(
+            'How would you like Rhodey to assist you?',
+            style: TextStyle(
+              color: AppTheme.textPrimary,
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 12),
+          for (final id in PersonaStore.ids) _personaCard(PersonaStore.of(id)),
+          const SizedBox(height: 4),
+          Center(
+            child: TextButton(
+              onPressed: () {
+                setState(() => _persona = 'simple');
+                unawaited(PersonaStore.set('simple'));
+              },
+              child: Text(
+                _persona == 'simple'
+                    ? '✓ Keep it simple — plain words, no titles'
+                    : 'Keep it simple — plain words, no titles',
+                style: TextStyle(
+                  color: _persona == 'simple'
+                      ? AppTheme.accent
+                      : AppTheme.textSecondary.withValues(alpha: 0.8),
+                  fontSize: 12.5,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text(
+                kPersonaDisclaimer,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: AppTheme.textTertiary.withValues(alpha: 0.75),
+                  fontSize: 10.5,
+                  height: 1.4,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Center(
+            child: _primaryButton(
+              label: 'Continue',
+              onTap: _persona.isEmpty ? null : () => _goTo(1),
+            ),
           ),
           const SizedBox(height: 10),
-          Text(
-            'About 3 minutes — we\'ll do it together.',
-            style: TextStyle(
-              color: AppTheme.textTertiary.withValues(alpha: 0.7),
-              fontSize: 11,
+          Center(
+            child: Text(
+              'About 3 minutes — we\'ll do it together.',
+              style: TextStyle(
+                color: AppTheme.textTertiary.withValues(alpha: 0.7),
+                fontSize: 11,
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// A selectable role card — picking one sets the persona for the whole
+  /// journey (copy + examples + area presets) and stores it for the shell.
+  Widget _personaCard(PersonaLabels p) {
+    const icons = {
+      'chief_staff': '💼',
+      'ops_copilot': '🚀',
+      'organizer': '🎯',
+      'household': '🏡',
+      'simple': '🌿',
+    };
+    final selected = _persona == p.id;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: AppTheme.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+          onTap: () {
+            setState(() => _persona = p.id);
+            unawaited(PersonaStore.set(p.id));
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+              border: Border.all(
+                color: selected ? AppTheme.accent : AppTheme.border,
+                width: selected ? 1.4 : 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Text(icons[p.id] ?? '✨', style: const TextStyle(fontSize: 20)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        p.name,
+                        style: const TextStyle(
+                          color: AppTheme.textPrimary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        p.pitch,
+                        style: TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 12,
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                if (selected)
+                  const Icon(Icons.check_circle, color: AppTheme.accent, size: 18)
+                else
+                  Icon(
+                    Icons.radio_button_unchecked,
+                    color: AppTheme.textTertiary.withValues(alpha: 0.5),
+                    size: 18,
+                  ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1105,7 +1255,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           const SizedBox(height: 10),
           _fieldCard(
             controller: _contextController,
-            hint: 'A little about you — e.g. COO at Acme, leading a 20-person team, Bengaluru',
+            hint: _persona.isEmpty
+                ? 'A little about you — e.g. COO at Acme, leading a 20-person team, Bengaluru'
+                : 'A little about you — e.g. ${PersonaStore.of(_persona).aboutHint}',
             maxLines: 3,
             onChanged: (_) => setState(() {}),
           ),
@@ -1386,6 +1538,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         children: [
           Expanded(
             child: ListView(
+              controller: _demoScroll,
               children: [
                 ..._demoActionCards(person),
                 const SizedBox(height: 18),
@@ -1427,14 +1580,24 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     final doneKey = 'done';
     final noteKey = 'note';
     final queryKey = 'query';
+    // The "up next" card — the first card that is not done AND can be tapped
+    // right now. Highlighting it removes the "what do I tap next?" guesswork.
+    String? nextKey;
+    for (final k in [taskKey, doneKey, noteKey, queryKey]) {
+      if (_demoDone.contains(k)) continue;
+      if (k == doneKey && !_demoDone.contains(taskKey)) continue;
+      nextKey = k;
+      break;
+    }
     return [
       _demoCard(
         icon: '📋',
         label: 'Add a task',
         message: taskText,
-        expect: '→ a task lands on your Today board',
+        expect: '→ a task lands on your ${PersonaStore.current.today} board',
         tag: '📋 Task created',
         done: _demoDone.contains(taskKey),
+        isNext: nextKey == taskKey,
         onTap: () => _tryDemoAction(taskKey, taskText, '📋 Task created'),
       ),
       const SizedBox(height: 10),
@@ -1446,6 +1609,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         tag: '✅ Closed',
         done: _demoDone.contains(doneKey),
         enabled: _demoDone.contains(taskKey),
+        isNext: nextKey == doneKey,
         onTap: () => _tryDemoAction(doneKey, doneText, '✅ Closed'),
       ),
       const SizedBox(height: 10),
@@ -1456,6 +1620,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         expect: person != null ? '→ a note, linked to $person' : '→ a note, filed for later',
         tag: '📝 Noted',
         done: _demoDone.contains(noteKey),
+        isNext: nextKey == noteKey,
         onTap: () => _tryDemoAction(noteKey, noteText, '📝 Noted'),
       ),
       const SizedBox(height: 10),
@@ -1466,6 +1631,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         expect: '→ answered from YOUR world',
         tag: '❓ Answered',
         done: _demoDone.contains(queryKey),
+        isNext: nextKey == queryKey,
         onTap: () => _tryDemoAction(queryKey, 'Who is in my world?', '❓ Answered'),
       ),
     ];
@@ -1479,6 +1645,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     required String tag,
     required bool done,
     bool enabled = true,
+    bool isNext = false,
     required VoidCallback onTap,
   }) {
     final canRun = enabled && !done && !_demoSending;
@@ -1487,11 +1654,14 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         color: done ? AppTheme.surfaceAlt.withValues(alpha: 0.5) : AppTheme.surface,
         borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         border: Border.all(
-          color: done
-              ? AppTheme.border
-              : enabled
-                  ? AppTheme.accent.withValues(alpha: 0.25)
-                  : AppTheme.border.withValues(alpha: 0.4),
+          color: isNext && !done
+              ? AppTheme.accent
+              : done
+                  ? AppTheme.border
+                  : enabled
+                      ? AppTheme.accent.withValues(alpha: 0.25)
+                      : AppTheme.border.withValues(alpha: 0.4),
+          width: isNext && !done ? 1.5 : 1,
         ),
       ),
       child: InkWell(
@@ -1523,6 +1693,13 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                               style: TextStyle(
                                 color: AppTheme.green,
                                 fontSize: 10.5,
+                              ))
+                        else if (isNext && !_demoSending)
+                          Text('↑ up next',
+                              style: TextStyle(
+                                color: AppTheme.accent,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
                               ))
                         else if (!enabled)
                           Text('do #1 first',
@@ -1627,17 +1804,18 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     return _stepScaffold(
       title: 'Your four surfaces',
       subtitle: 'Where your world lives. Everything you just made shows up here.',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: ListView(
+        // Scrollable — four cards + footer overflow on small phones when
+        // forced into a fixed Column inside the step scaffold.
         children: [
-          _surfaceCard('🗓️', 'Today', 'Your board — the day\'s shape, tasks, deadlines, and what matters now.'),
+          _surfaceCard('🗓️', PersonaStore.current.today, 'Your board — the day\'s shape, tasks, deadlines, and what matters now.'),
           const SizedBox(height: 12),
-          _surfaceCard('📥', 'Inbox', 'Rhodey\'s proposals — approve, reject, or snooze. Every choice teaches it.'),
+          _surfaceCard('📥', PersonaStore.current.inbox, 'Things Rhodey noticed and wants to confirm. Yes, no, or later.'),
           const SizedBox(height: 12),
-          _surfaceCard('🧭', 'Entities', 'People and areas — your living map of who and what matters.'),
+          _surfaceCard('🧭', PersonaStore.current.entities, 'Who and what Rhodey tracks for you — people, places, and what matters.'),
           const SizedBox(height: 12),
-          _surfaceCard('🕘', 'History', 'Everything you\'ve told it — searchable, threaded, yours.'),
-          const Spacer(),
+          _surfaceCard('🕘', PersonaStore.current.history, 'Everything you\'ve told it — searchable, threaded, yours.'),
+          const SizedBox(height: 18),
           Text(
             'No new accounts or tabs — the same world, four doors.',
             style: TextStyle(
@@ -1645,6 +1823,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
               fontSize: 11,
             ),
           ),
+          const SizedBox(height: 24),
         ],
       ),
     );
@@ -2203,6 +2382,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                       )
                     : _worldSummary(b),
           ),
+          const SizedBox(height: 10),
+          _briefingLegend(),
           const SizedBox(height: 12),
           Material(
             color: AppTheme.surfaceAlt,
@@ -2238,6 +2419,70 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                 ),
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// A compact legend explaining what a briefing contains — so a first-time
+  /// user knows what each section means (esp. "Ideas").
+  Widget _briefingLegend() {
+    const items = [
+      ('Schedule', 'today\'s calendar events'),
+      ('Tasks', 'what\'s on your plate'),
+      ('Home', 'personal and family'),
+      ('Ideas', 'thoughts worth keeping — captured, not tasks'),
+      ('Done', 'what just closed'),
+    ];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceAlt,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'What you\'re seeing',
+            style: TextStyle(
+              color: AppTheme.textTertiary,
+              fontSize: 10,
+              letterSpacing: 0.6,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 12,
+            runSpacing: 4,
+            children: [
+              for (final (name, desc) in items)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(
+                        color: AppTheme.champagne,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      desc,
+                      style: TextStyle(
+                        color: AppTheme.textSecondary,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+            ],
           ),
         ],
       ),

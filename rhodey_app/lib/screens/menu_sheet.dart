@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/persona.dart';
 import '../theme/app_theme.dart';
 import 'today_screen.dart';
 import 'entities_screen.dart';
@@ -36,7 +37,7 @@ void showMenuSheet(BuildContext context) {
 
             _MenuTile(
               icon: Icons.today_outlined,
-              label: 'Today',
+              label: PersonaStore.current.today,
               onTap: () {
                 Navigator.pop(ctx);
                 Navigator.push(context,
@@ -45,7 +46,7 @@ void showMenuSheet(BuildContext context) {
             ),
             _MenuTile(
               icon: Icons.account_tree_outlined,
-              label: 'Entities',
+              label: PersonaStore.current.entities,
               onTap: () {
                 Navigator.pop(ctx);
                 Navigator.push(context,
@@ -54,7 +55,7 @@ void showMenuSheet(BuildContext context) {
             ),
             _MenuTile(
               icon: Icons.checklist_outlined,
-              label: 'Inbox',
+              label: PersonaStore.current.inbox,
               onTap: () {
                 Navigator.pop(ctx);
                 Navigator.push(context,
@@ -63,7 +64,7 @@ void showMenuSheet(BuildContext context) {
             ),
             _MenuTile(
               icon: Icons.history,
-              label: 'History',
+              label: PersonaStore.current.history,
               onTap: () {
                 Navigator.pop(ctx);
                 Navigator.push(context,

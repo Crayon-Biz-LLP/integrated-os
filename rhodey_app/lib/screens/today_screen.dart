@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/today_data.dart';
 import '../services/api_service.dart';
+import '../services/persona.dart';
 import '../services/today_cache.dart';
 import '../theme/app_theme.dart';
 import '../widgets/push_banner.dart';
@@ -113,7 +114,7 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Today'),
+        title: Text(PersonaStore.current.today),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 12),
@@ -129,7 +130,7 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                 ? ListView(
                     padding: const EdgeInsets.fromLTRB(0, 8, 0, 40),
                     children: [
-                      PushBanner(title: 'Today', content: _pushContent),
+                      PushBanner(title: PersonaStore.current.today, content: _pushContent),
                       const SizedBox(height: 48),
                       const Center(child: CircularProgressIndicator()),
                     ],

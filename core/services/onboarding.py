@@ -45,6 +45,9 @@ def derive_status(settings_row: dict | None, user_row: dict | None) -> dict:
         "status": status,
         "name": (user_row or {}).get("name") or "",
         "has_google": bool((user_row or {}).get("google_connected")),
+        # M15: the role persona chosen at onboarding — vocabulary layer for
+        # the app's surfaces. Absent for existing tenants (chief_staff).
+        "persona": (settings_row or {}).get("persona") or "",
     }
 
 
@@ -184,6 +187,9 @@ def normalize_world(payload: dict, existing_timezone: str | None) -> dict:
         # through_the_day) — seed_world writes the resolved row. Absent →
         # balanced default.
         "briefing_preset": (payload.get("briefing_preset") or "").strip() or None,
+        # M15: role persona (chief_staff/ops_copilot/organizer/household/
+        # simple) — labels the app's surfaces only; server copy stays shared.
+        "persona": (payload.get("persona") or "").strip()[:32] or None,
         "people": people,
         "organizations": organizations,
         "tasks": tasks,

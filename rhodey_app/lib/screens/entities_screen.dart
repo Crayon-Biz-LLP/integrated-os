@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/api_service.dart';
+import '../services/persona.dart';
 import '../theme/app_theme.dart';
 
 /// Live knowledge-graph entities (people, orgs, concepts) — mirrors the web
@@ -148,7 +149,7 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
     return Scaffold(
       backgroundColor: AppTheme.background,
       appBar: AppBar(
-        title: const Text('Entities'),
+        title: Text(PersonaStore.current.entities),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 16),

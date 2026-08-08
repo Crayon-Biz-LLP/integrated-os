@@ -69,6 +69,10 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
             "domains": json.dumps(world.get("domains") or []),
             "personal_orgs": json.dumps(world.get("personal_orgs") or []),
         }
+        # M15: role persona — only written when present so a test/old DB
+        # without the column (migration 93) is never broken by the upsert.
+        if world.get("persona"):
+            settings["persona"] = str(world.get("persona")).strip()[:32]
         row = (
             supabase.table("user_settings")
             .upsert(settings, on_conflict="user_id")

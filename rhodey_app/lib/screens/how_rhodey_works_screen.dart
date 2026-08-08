@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/persona.dart';
 import '../theme/app_theme.dart';
 
 /// How Rhodey works — the full reference (M9.8).
@@ -24,12 +25,7 @@ class HowRhodeyWorksScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
         children: [
-          const _Section(title: 'The idea', body:
-            'Rhodey is a chief of staff in your pocket. It knows your world — '
-            'the people, work, and life areas you told it about — exercises '
-            'judgment about what matters now, and learns from every decision '
-            'you make. You stay in control; it does the remembering and the '
-            'connecting.'),
+          _Section(title: 'The idea', body: _ideaBody()),
           const _Section(title: 'Briefings — your rhythm', body:
             'Rhodey checks in with a briefing at times you pick when you set '
             'up — morning, midday, evening. Your admin can adjust the times '
@@ -37,15 +33,7 @@ class HowRhodeyWorksScreen extends StatelessWidget {
             'on your plate, what\'s new, what\'s stale, and what needs a '
             'decision. It works in your timezone. A "Not now" on a briefing '
             'snoozes it — it is not a silent reset.'),
-          const _Section(title: 'Your board — the surfaces', body:
-            '• Today — what matters right now: the focal card, active tasks, '
-            'and your briefing.\n'
-            '• Inbox — things Rhodey proposes for your attention: pending '
-            'people, links, and decisions waiting on you.\n'
-            '• History — the conversation: everything you and Rhodey said, '
-            'merged into one thread.\n'
-            '• Entities — the people and organizations Rhodey knows, and '
-            'what it believes about each.'),
+          _Section(title: 'Your board — the surfaces', body: _surfacesBody()),
           const _Section(title: 'Approvals — how you stay in control', body:
             'When Rhodey learns something new — a person, a relationship, a '
             'link between ideas — it proposes, and you approve or reject. '
@@ -99,6 +87,35 @@ class HowRhodeyWorksScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// M15: the intro story follows the chosen persona — Chief of Staff keeps
+  /// its metaphor; every other style gets the plain "memory for life" story.
+  static String _ideaBody() {
+    if (PersonaStore.current.id == 'chief_staff') {
+      return 'Rhodey is a chief of staff in your pocket. It knows your world — '
+          'the people, work, and life areas you told it about — exercises '
+          'judgment about what matters now, and learns from every decision '
+          'you make. You stay in control; it does the remembering and the '
+          'connecting.';
+    }
+    return 'Rhodey is your memory for life. Tell it things once — people, '
+        'dates, decisions, ideas — and it keeps the picture straight, spots '
+        'what needs you, and checks in at times you choose. You stay in '
+        'control; it does the remembering and the connecting.';
+  }
+
+  /// M15: the four surfaces use the persona's names for the same doors.
+  static String _surfacesBody() {
+    final p = PersonaStore.current;
+    return '• ${p.today} — what matters right now: the focal card, active '
+        'tasks, and your briefing.\n'
+        '• ${p.inbox} — things Rhodey proposes for your attention: pending '
+        'people, links, and decisions waiting on you.\n'
+        '• ${p.entities} — the people and organizations Rhodey knows, and '
+        'what it believes about each.\n'
+        '• ${p.history} — the conversation: everything you and Rhodey said, '
+        'merged into one thread.';
   }
 }
 

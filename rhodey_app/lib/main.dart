@@ -9,6 +9,7 @@ import 'screens/quick_capture_overlay.dart';
 import 'screens/onboarding/onboarding_flow.dart';
 import 'services/api_config.dart';
 import 'services/api_service.dart';
+import 'services/persona.dart';
 import 'services/notification_service.dart';
 import 'services/share_service.dart';
 import 'services/update_service.dart';
@@ -18,6 +19,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await ApiService().init();
+  await PersonaStore.load();
 
   final uri = await HomeWidget.initiallyLaunchedFromHomeWidget();
   final isCapture = uri?.host == 'capture';

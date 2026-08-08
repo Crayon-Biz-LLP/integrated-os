@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/message.dart';
 import '../services/api_service.dart';
+import '../services/persona.dart';
 import '../theme/app_theme.dart';
 import '../voice/rhodey_voice.dart';
 import '../widgets/chat_bubble.dart';
@@ -393,7 +394,7 @@ class _HistoryScreenState extends State<HistoryScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('History'),
+        title: Text(PersonaStore.current.history),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: AppTheme.textSecondary),
           onPressed: () => Navigator.pop(context),

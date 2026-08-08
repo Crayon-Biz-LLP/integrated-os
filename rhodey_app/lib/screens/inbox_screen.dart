@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/decision_item.dart';
 import '../services/api_service.dart';
+import '../services/persona.dart';
 import '../services/inbox_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/route_observer.dart';
@@ -778,11 +779,11 @@ class _InboxScreenState extends State<InboxScreen>
       // loader — the real list replaces it when the fetch lands.
       if (_pushContent.isNotEmpty) {
         return Scaffold(
-          appBar: AppBar(title: const Text('Inbox')),
+          appBar: AppBar(title: Text(PersonaStore.current.inbox)),
           body: ListView(
             padding: const EdgeInsets.fromLTRB(0, 8, 0, 40),
             children: [
-              PushBanner(title: 'Inbox', content: _pushContent),
+              PushBanner(title: PersonaStore.current.inbox, content: _pushContent),
               const SizedBox(height: 48),
               const Center(child: CircularProgressIndicator()),
             ],
@@ -790,7 +791,7 @@ class _InboxScreenState extends State<InboxScreen>
         );
       }
       return Scaffold(
-        appBar: AppBar(title: const Text('Inbox')),
+        appBar: AppBar(title: Text(PersonaStore.current.inbox)),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
@@ -819,7 +820,7 @@ class _InboxScreenState extends State<InboxScreen>
       appBar: AppBar(
         title: Row(
           children: [
-            const Text('Inbox'),
+            Text(PersonaStore.current.inbox),
             const Spacer(),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
