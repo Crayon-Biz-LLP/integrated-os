@@ -48,6 +48,38 @@ def now_for_user(user_id: str | None = None) -> datetime:
     return datetime.now(get_user_timezone(user_id))
 
 
+def tz_label(user_id: str | None = None) -> str:
+    """The tenant's timezone abbreviation (e.g. 'IST', 'JST', 'EDT') — computed
+    from the resolved tzinfo, never a constant (M9.4). Fallback 'IST' on any
+    error (invalid name, empty tzname) — never a crash.
+    """
+    try:
+        tz = get_user_timezone(user_id)
+        now = datetime.now(tz)
+        label = now.strftime("%Z") or tz.tzname(now) or ""
+        return label or "IST"
+    except Exception:
+        return "IST"
+
+
+def tz_offset_str(user_id: str | None = None) -> str:
+    """The tenant's UTC offset (e.g. '+05:30', '+09:00', '-04:00') — computed
+    from the resolved tzinfo, never a constant (M9.4). Fallback '+05:30' on
+    any error — never a crash.
+    """
+    try:
+        tz = get_user_timezone(user_id)
+        off = tz.utcoffset(datetime.now(tz))
+        if off is None:
+            return "+05:30"
+        total = int(off.total_seconds())
+        sign = "+" if total >= 0 else "-"
+        total = abs(total)
+        return f"{sign}{total // 3600:02d}:{total % 3600 // 60:02d}"
+    except Exception:
+        return "+05:30"
+
+
 def age_tag(created_at_str: str | None) -> str:
     """Returns a bracketed age string for an ISO timestamp, or empty string.
     

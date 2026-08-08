@@ -155,11 +155,15 @@ def get_tasks_service():
 def format_rfc3339(date_str):
     if not date_str:
         return None
+    # M9.4: the tenant's UTC offset (settings → env → +05:30) — Google event
+    # times carry the tenant's zone, not Danny's.
+    from core.lib.time_utils import tz_offset_str
+    tz_off = tz_offset_str()
     clean = str(date_str).replace(' ', 'T')
     if 'T' not in clean:
-        clean = f"{clean}T09:00:00+05:30"
+        clean = f"{clean}T09:00:00{tz_off}"
     if not (clean.endswith('Z') or '+' in clean[-6:]):
-        clean += "+05:30"
+        clean += tz_off
     try:
         datetime.fromisoformat(clean.replace('Z', '+00:00'))
         return clean

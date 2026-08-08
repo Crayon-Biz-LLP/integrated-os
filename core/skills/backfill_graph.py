@@ -10,7 +10,7 @@ import time
 
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
-from core.lib.graph_rules import resolve_alias, normalize_label
+from core.lib.graph_rules import resolve_alias, normalize_label, resolve_root_label
 from core.services.db import (
     channel_tenant_scope,
     get_tenant,
@@ -590,9 +590,11 @@ def process_memory(memory: dict, graph_entities: dict, source_table: str = "memo
             node_label_to_id[label] = node_id
     
     if not node_label_to_id:
-        danny_id = get_or_create_node("Danny", "person", graph_entities, created_nodes, memory_id)
-        if danny_id:
-            node_label_to_id["Danny"] = danny_id
+        root_label = resolve_root_label()
+        if root_label:
+            root_id = get_or_create_node(root_label, "person", graph_entities, created_nodes, memory_id)
+            if root_id:
+                node_label_to_id[root_label] = root_id
     
     insert_edges(edges, node_label_to_id, memory_id, source_table)
     
@@ -651,7 +653,11 @@ def run_backfill():
     
     processed = 0
     failed = 0
-    
+
+    # Root label is constant for the whole run (tenant context is stable in the
+    # main thread), so resolve once — not once per batch.
+    root_label = resolve_root_label()
+
     for i in range(0, len(memories), BATCH_SIZE):
         batch = memories[i:i + BATCH_SIZE]
         batch_num = i // BATCH_SIZE + 1
@@ -738,8 +744,8 @@ def run_backfill():
             if tgt and tgt not in unique_nodes:
                 unique_nodes[tgt] = "concept"
             
-        if "Danny" not in unique_nodes:
-            unique_nodes["Danny"] = "person"
+        if root_label and root_label not in unique_nodes:
+            unique_nodes[root_label] = "person"
             
         # Batch upsert nodes using the existing upsert_nodes function
         upsert_nodes([{"label": k, "type": v} for k, v in unique_nodes.items()], graph_entities, "batch")
@@ -833,13 +839,14 @@ def backfill_emotion_edges():
         for pattern in emotional_patterns:
             supabase.table("graph_nodes").update({"type": "emotional_state"}).eq("type", "concept").ilike("label", pattern).execute()
         
-        # Step B: Create Danny -> FEELS edges
-        # We need to do this via Postgres function or multiple calls since Supabase REST API doesn't support complex cross-joins.
-        # Alternatively, we can fetch all emotional_state nodes, fetch Danny's ID, and insert edges.
-        
-        danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", "Danny").eq("type", "person").eq('is_current', True))
+        # Step B: Create root -> FEELS edges
+        root_label = resolve_root_label()
+        if not root_label:
+            print("Root person not resolvable, skipping emotion edge backfill.")
+            return
+        danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("label", root_label).eq("type", "person").eq('is_current', True))
         if not danny_res or not danny_res.data:
-            print("Danny node not found, skipping emotion edge backfill.")
+            print(f"{root_label} node not found, skipping emotion edge backfill.")
             return
         
         danny_id = danny_res.data["id"]
@@ -865,7 +872,7 @@ def backfill_emotion_edges():
         for es in es_nodes:
             if es["id"] not in existing_target_ids:
                 edges_to_insert.append({
-                    "source_label": "Danny",
+                    "source_label": root_label,
                     "target_label": es["label"],
                     "relationship": "FEELS",
                     "source_text": "backfill_emotions",
@@ -1140,10 +1147,14 @@ def backfill_orphaned_node_edges():
     """
     print("\n🕸️  Node Edge Backfill: Checking for isolated/semi-isolated nodes...")
     
-    # Get Danny's node ID
-    danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", "Danny").eq('is_current', True))
+    # Get the root person's node ID
+    root_label = resolve_root_label()
+    if not root_label:
+        print("Root person not resolvable, skipping orphaned-node rewiring.")
+        return
+    danny_res = maybe_single_safe(supabase.table("graph_nodes").select("id").eq("type", "person").ilike("label", root_label).eq('is_current', True))
     if not danny_res or not danny_res.data:
-        print("Could not find Danny node.")
+        print(f"Could not find {root_label} node.")
         return
     danny_id = danny_res.data["id"]
 
@@ -1170,7 +1181,7 @@ def backfill_orphaned_node_edges():
     pending_all = fetch_all_paginated("pending_graph_edges", "id, source_label, target_label")
     pending_danny_labels = set()
     for pde in (pending_all or []):
-        if pde.get("source_label") == "Danny":
+        if pde.get("source_label") == root_label:
             pending_danny_labels.add(pde["target_label"].lower().strip())
 
     fixed_count = 0
@@ -1244,7 +1255,7 @@ def backfill_orphaned_node_edges():
             if node.get("type") == "concept" and node.get("label", "").lower().strip() in known_people:
                 rel = "KNOWS"
             edges_to_insert.append({
-                "source_label": "Danny",
+                "source_label": root_label,
                 "target_label": node["label"],
                 "relationship": rel,
                 "source_text": "backfill_orphaned_node_edges",

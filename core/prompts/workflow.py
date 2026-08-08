@@ -1,6 +1,6 @@
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
+from core.lib.time_utils import get_user_timezone, tz_offset_str
 from core.prompts.guards import inject_guards
 import json
 
@@ -71,8 +71,11 @@ Return JSON:
 
 def build_enrichment_prompt(text: str, anchor_hint: str) -> str:
     guards = inject_guards("enrichment")
-    ist_tz = ZoneInfo('Asia/Kolkata')
-    now_str = datetime.now(ist_tz).strftime("%A %Y-%m-%d %I:%M %p %Z")
+    # M9.4: the tenant's tz drives both the rendered clock and the ISO offset
+    # (settings → env → IST) — %Z emits the tenant's abbreviation (e.g. IST).
+    user_tz = get_user_timezone()
+    tz_off = tz_offset_str()
+    now_str = datetime.now(user_tz).strftime("%A %Y-%m-%d %I:%M %p %Z")
     return f"""{guards}
 
 Current time: {now_str}
@@ -83,7 +86,7 @@ Do NOT filter or drop signals if there are multiple — extract EVERY detectable
 Capture: "{text}"{anchor_hint}
 
 Signal Types to Extract:
-1. 'calendar_event' — a specific scheduled event, meeting, call, or discussion at a specific time. Include the resolved time in "reminder_at" as ISO 8601 (YYYY-MM-DDTHH:MM:SS+05:30).
+1. 'calendar_event' — a specific scheduled event, meeting, call, or discussion at a specific time. Include the resolved time in "reminder_at" as ISO 8601 (YYYY-MM-DDTHH:MM:SS{tz_off}).
 2. 'deadline' — hard deadline for a specific deliverable ("by Monday evening", "due Friday"). Include the resolved time in "reminder_at" as ISO 8601.
 3. 'task_imperative' — explicit directive to create a task ("I need to...", "Remind me to...").
 4. 'task_closure' — explicit instruction to close, cancel, or mark-as-done an existing task ("close the tasks related to Amita", "mark FC Madras tasks done", "cancel the Qhord task"). Include the description of which tasks to close in "target_task_description".

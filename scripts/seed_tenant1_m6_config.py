@@ -92,6 +92,7 @@ KEYS = [
     "entity_mappings",
     "github_owner",
     "github_repo",
+    "briefing_sections",
 ]
 
 
@@ -106,6 +107,7 @@ def m6_rows() -> list[dict]:
     )
     from core.skills.email_ingest import TENANT1_EMAIL_ARCHIVE_LABEL
     from core.lib.constants import DEFAULT_GITHUB_OWNER, DEFAULT_GITHUB_REPO
+    from core.services.briefing_sections import default_briefing_sections_json
 
     return [
         {"key": "email_archive_label", "content": TENANT1_EMAIL_ARCHIVE_LABEL},
@@ -116,6 +118,7 @@ def m6_rows() -> list[dict]:
         {"key": "entity_mappings", "content": json.dumps(TENANT1_ENTITY_MAPPINGS)},
         {"key": "github_owner", "content": DEFAULT_GITHUB_OWNER},
         {"key": "github_repo", "content": DEFAULT_GITHUB_REPO},
+        {"key": "briefing_sections", "content": default_briefing_sections_json()},
     ]
 
 

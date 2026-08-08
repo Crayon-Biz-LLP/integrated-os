@@ -3,7 +3,7 @@ import os
 import httpx
 import re as _re
 from datetime import datetime, timezone, timedelta
-from core.lib.time_utils import IST_TIMEZONE, now_ist
+from core.lib.time_utils import get_user_timezone, now_for_user, tz_label, tz_offset_str
 from core.lib.audit_logger import audit_log_sync
 from core.pulse.tools import create_note_direct
 from core.webhook.telegram import send_telegram
@@ -120,7 +120,7 @@ async def handle_practices_command(chat_id: int):
 async def handle_status_command(chat_id: int):
     """Pure DB snapshot. No LLM. No Pulse trigger."""
     try:
-        ist_offset = IST_TIMEZONE
+        ist_offset = get_user_timezone()
         now = datetime.now(ist_offset)
         stale_cutoff = (now - timedelta(days=7)).isoformat()
 
@@ -197,7 +197,7 @@ async def handle_status_command(chat_id: int):
             lines.append(f"🕵️ Research queue: {agent_count}")
 
         timestamp = now.strftime("%d %b, %I:%M %p")
-        lines.append(f"\n_As of {timestamp} IST_")
+        lines.append(f"\n_As of {timestamp} {tz_label()}_")
 
         await send_telegram(chat_id, "\n".join(lines))
 
@@ -465,8 +465,8 @@ async def handle_command(text: str, chat_id: int):
                     reply = "❌ Database Error"
 
     elif text in ['/urgent', '🔴 Urgent']:
-        now_ist_value = now_ist()
-        now_iso = now_ist_value.strftime('%Y-%m-%dT%H:%M:%S+05:30')
+        now_ist_value = now_for_user()
+        now_iso = now_ist_value.strftime(f'%Y-%m-%dT%H:%M:%S{tz_offset_str()}')
         fire_res = supabase.table('tasks').select('*').eq('priority', 'urgent').eq('status', 'todo').eq('is_current', True).or_(f"reminder_at.is.null,reminder_at.lte.{now_iso}").limit(1).execute()
         if fire_res.data:
             fire = fire_res.data[0]

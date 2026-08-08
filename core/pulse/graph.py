@@ -1540,17 +1540,19 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
             
             # If person and pending, add KNOWS edge
             if route == "pending" and res["node_type"] == "person":
-                insert_pending_edge(
-                    "Danny", 
-                    c_lbl, 
-                    "KNOWS", 
-                    {
-                        "source_text": f"{source_type}:{source_id}", 
-                        "source_table": source_type,
-                        "source_type": "person", 
-                        "target_type": "person"
-                    }
-                )
+                root_label = _root_person_label()
+                if root_label:
+                    insert_pending_edge(
+                        root_label, 
+                        c_lbl, 
+                        "KNOWS", 
+                        {
+                            "source_text": f"{source_type}:{source_id}", 
+                            "source_table": source_type,
+                            "source_type": "person", 
+                            "target_type": "person"
+                        }
+                    )
 
     # 5. Link extracted nodes to root_node (MENTIONS edges)
     mentions_to_insert = []

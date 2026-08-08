@@ -892,7 +892,7 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
         except Exception as e:
             audit_log_sync("pulse", "WARNING", f"New inputs fetch failed: {e}")
 
-        current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p IST")
+        current_time_str = now.strftime("%A, %B %d, %Y at %I:%M %p %Z")
 
         # ── Practices context ──
         practices_context = ""

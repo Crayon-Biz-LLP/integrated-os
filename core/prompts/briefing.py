@@ -60,19 +60,29 @@ RECENTLY COMPLETED (24h):
 {recent_done_text or "None"}"""
 
 
-def build_pulse_briefing_prompt(ctx, user_name: str | None = None) -> str:
-    """Build the pulse briefing prompt (M2 de-personalized).
+def build_pulse_briefing_prompt(ctx, user_name: str | None = None, sections=None) -> str:
+    """Build the pulse briefing prompt (M2/M9.3 de-personalized).
 
     `user_name` comes from user_settings (fallback: env USER_NAME / "Danny").
+    `sections` is the per-tenant briefing section block (M9.3) — resolved from
+    core_config via briefing_sections.resolve_briefing_sections(); when omitted
+    or on any error it degrades to the Danny-era default (byte-identical).
     """
     from core.services.user_settings import resolve_user_name
     user_name = user_name or resolve_user_name()
+    if sections is None:
+        from core.services.briefing_sections import resolve_briefing_sections
+        sections = resolve_briefing_sections()
     voice = get_voice()
     guards = inject_guards("briefing")
+    # M9.4: the tenant's timezone label (settings → env → IST), so a
+    # non-IST tenant's briefing is framed in THEIR time, not Danny's.
+    from core.lib.time_utils import tz_label
+    tz_lbl = tz_label()
     return f"""
 ROLE: {voice}
 
-You have full situational awareness of {user_name}'s work, family, and faith.
+You have full situational awareness of {user_name}'s {sections.role_framing}.
 Your job is to give {user_name} a clear picture of the board so he can make his next move.
 
 CURRENT TIME: {ctx.current_time_str}
@@ -97,16 +107,10 @@ The system_persona line at the top already encodes the phase-specific focus. Do 
 --- THE BOARD ---
 Build these sections from the data below. Only include sections that have items.
 
-- Schedule: Calendar events today only.
-- Done: Recently completed/closed tasks from SYSTEM TASKS only.
-- Work: Active work tasks from SYSTEM TASKS only.
-- Home: Family and personal tasks only. Not Ashraya/Church.
-- Church: Ashraya admin, operations, finance tasks only.
-- Ideas: ONLY from NEWLY ENRICHED RESOURCES or RECENT LIBRARY PATTERNS. Never from Hindsight or Canonical Pages.
-- Stale Loops: If STALE_TASKS has items, include with day count. Max 5.
+{sections.board_lines}
 
 --- SECTION RULES ---
-1. DATA FIDELITY: Every task in Work/Home/Church/Done MUST appear verbatim in SYSTEM TASKS. Schedule from CALENDAR EVENTS. Hindsight is for opening synthesis only - never bullet points.
+1. DATA FIDELITY: Every task in {sections.fidelity_names} MUST appear verbatim in SYSTEM TASKS. Schedule from CALENDAR EVENTS. Hindsight is for opening synthesis only - never bullet points.
 2. EMPTY SECTIONS: Omit any section with zero items. Never output "None today" or "Empty".
 3. MAX 3 ITEMS per section. Append "...and X more in vault" if over.
 4. BOLD revenue-critical tasks (payments, quotes, high-ticket items like the 30L recovery).
@@ -120,8 +124,8 @@ Build these sections from the data below. Only include sections that have items.
 12. Never mention "Monday" unless it's actually the weekend.
 
 --- MODE OVERRIDES ---
-- URGENT mode: Hide Home, Church, Ideas. Work and Done only.
-- NIGHT mode: Schedule, Done, Home, Church, Work (top 2-3), Ideas.
+- URGENT mode: Hide {sections.urgent_hide}. Work and Done only.
+- NIGHT mode: {sections.night_order}.
 
 --- TONE AND STYLE ---
 Tone: {voice} Direct, punchy, varied phrasing. Never use: {BLOCKED_WORDS}.
@@ -295,7 +299,7 @@ lays out information for {user_name}. Choose the mode that best fits the current
   * Tasks were completed since last check-in
 
 - "wrap": End-of-day closure. Choose when:
-  * It's evening (19:00+ IST / Intel phase)
+  * It's evening (19:00+ {tz_lbl} / Intel phase)
   * {user_name} should transition from work to personal time
   * There are completed tasks to acknowledge
   * Focus should be on closing open loops
@@ -321,6 +325,11 @@ def build_pulse_system_instruction(
     from core.services.user_settings import resolve_user_name
     user_name = user_name or resolve_user_name()
     guards = inject_guards("briefing")
+    # M9.4: the tenant's timezone label/offset (settings → env → IST) — the
+    # HIGH-PRECISION TIME FORMATTING rule must match the tenant's zone.
+    from core.lib.time_utils import tz_label, tz_offset_str
+    tz_lbl = tz_label()
+    tz_off = tz_offset_str()
     return f"""{system_persona}
 
     {briefing_history_context}
@@ -366,7 +375,7 @@ def build_pulse_system_instruction(
     3. ANALYZE NEW INPUTS: Identify completions, new tasks, new people, and new projects for context - inform the briefing, do not action them.
     4. STRATEGIC NAG: If STAGNANT_URGENT_TASKS exists, start the brief by calling these out.
     5. STALE LOOPS: If STALE_TASKS exists, always include the Stale Loops section - never suppress it regardless of mode.
-    6. HIGH-PRECISION TIME FORMATTING (IST/UTC+05:30): When {user_name} mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS+05:30". NAKED TASKS: If NO date and NO time, return null for reminder_at.
+    6. HIGH-PRECISION TIME FORMATTING ({tz_lbl}/UTC{tz_off}): When {user_name} mentions a time, convert to ISO-8601. If DAY only (no time), output "YYYY-MM-DD". If EXACT TIME, output "YYYY-MM-DDTHH:MM:SS{tz_off}". NAKED TASKS: If NO date and NO time, return null for reminder_at.
     7a. RECURRENCE RULES: If {user_name} says "every Monday", "weekly", "daily", output an iCalendar RRULE string in "recurrence" (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO"). If he specifies an end date like "until December", append the UNTIL clause in UTC format (e.g., "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261231T000000Z"). Otherwise leave it null.
     8. STRATEGIC WEIGHTING: Highlight items based on the user's stated priorities in the briefing narrative.
     10. WEEKEND FILTER: If isWeekend is true, do NOT suggest or list Work tasks in the briefing.
