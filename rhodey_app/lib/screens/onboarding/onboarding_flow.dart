@@ -11,12 +11,13 @@ import '../../widgets/voice_states.dart';
 /// In-app onboarding journey (M8 + M9.7 + M9.8 + M10 demo).
 ///
 /// A short conversation that turns a new user into a seeded tenant:
-///   0 Welcome → 1 key → 2 about you → 3 people → 4 plate → 5 areas →
-///   6 briefing times → 7 create my world (SEED) → 8 try it now (chat
-///   demo) → 9 your surfaces → 10 voice + quick replies → 11 Google
-///   (optional) → 12 first briefing.
+///   0 Welcome → 1 sign in (Google + email/OTP, M11) → 2 about you →
+///   3 people → 4 plate → 5 areas → 6 briefing times → 7 create my world
+///   (SEED) → 8 try it now (chat demo) → 9 your surfaces → 10 voice +
+///   quick replies → 11 Google (optional) → 12 first briefing.
 ///
-/// Step 1 validates the API key against /api/onboarding/status; step 6
+/// Step 1 signs the user in (the API key is issued silently by the
+/// server and stored — no key to paste); step 6
 /// picks the briefing schedule preset (M9.7); step 7 seeds the tenant's
 /// world (graph + tasks + settings) and shows the welcome summary inline.
 /// Steps 8-10 (M10) are a HANDS-ON demo: tap-to-try cards run scripted
@@ -39,7 +40,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   // 9 surfaces · 10 voice + quick replies · 11 google · 12 first briefing
   static const _totalPages = 13;
   static const _domainSuggestions = [
-    'Work', 'Business', 'Personal', 'Family', 'Health', 'Finance', 'Ministry',
+    'Work', 'Business', 'Personal', 'Family', 'Health', 'Finance',
   ];
 
   final _config = ApiConfig();
@@ -55,6 +56,18 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   bool _keyValid = false;
   String _resolvedName = '';
   final _keyController = TextEditingController();
+  // M11: sign-in step state — Google is primary, email/OTP is the
+  // fallback, and a "I have an API key" toggle keeps the power path.
+  final _signInEmailController = TextEditingController();
+  final _otpController = TextEditingController();
+  bool _otpSent = false;
+  String _otpEmail = '';
+  bool _showKeyEntry = false;
+  // Step 2 (about you): name + a short write-up — both mandatory. The
+  // write-up (which naturally covers role/designation) is what feeds the
+  // AI's identity context, so the step frames it as "this is how Rhodey
+  // helps you".
+  final _nameController = TextEditingController();
   final _contextController = TextEditingController();
   final _personNameController = TextEditingController();
   final _personRoleController = TextEditingController();
@@ -152,6 +165,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     _speech.cancel();
     _controller.dispose();
     _keyController.dispose();
+    _signInEmailController.dispose();
+    _otpController.dispose();
+    _nameController.dispose();
     _contextController.dispose();
     _personNameController.dispose();
     _personRoleController.dispose();
@@ -201,6 +217,168 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         _statusIsError = true;
       });
     }
+  }
+
+  // ── M11: sign-in actions ────────────────────────────────────
+
+  /// Google is the primary sign-in path. Identity-only consent (email +
+  /// profile) → server matches the email to a provisioned tenant → the
+  /// server issues the API key and this stores it silently.
+  Future<void> _signInWithGoogle() async {
+    setState(() {
+      _busy = true;
+      _statusText = null;
+    });
+    try {
+      final start = await _api.googleSignInStart();
+      if (!start.success || start.data is! Map) {
+        setState(() {
+          _busy = false;
+          _statusText = 'Could not start Google sign-in (${start.error}).';
+          _statusIsError = true;
+        });
+        return;
+      }
+      final url = (start.data as Map)['url'] as String? ?? '';
+      final state = (start.data as Map)['state'] as String? ?? '';
+      if (url.isEmpty) {
+        setState(() {
+          _busy = false;
+          _statusText = 'Google sign-in is not configured on the server yet.';
+          _statusIsError = true;
+        });
+        return;
+      }
+      // In-app browser → Google consent → the Modal HTTPS callback
+      // JS-bridges to rhodey://oauth2/callback?code=..&state=.. — exactly
+      // the same bridge the service-connect step uses.
+      final callback = await FlutterWebAuth2.authenticate(
+        url: url,
+        callbackUrlScheme: 'rhodey',
+      );
+      final uri = Uri.parse(callback);
+      final code = uri.queryParameters['code'];
+      final retState = uri.queryParameters['state'];
+      if (code == null || retState != state) {
+        setState(() {
+          _busy = false;
+          _statusText = 'Google sign-in was interrupted — please retry.';
+          _statusIsError = true;
+        });
+        return;
+      }
+      final ex = await _api.googleSignInExchange(code, state);
+      if (!mounted) return;
+      final data = ex.success && ex.data is Map ? ex.data as Map : null;
+      final apiKey = data?['api_key'] as String? ?? '';
+      if (!ex.success || apiKey.isEmpty) {
+        final msg = (data?['message'] as String?) ?? 'Sign-in failed (${ex.error}).';
+        setState(() {
+          _busy = false;
+          _statusText = msg;
+          _statusIsError = true;
+        });
+        return;
+      }
+      await _config.setApiKey(apiKey);
+      final name = (data?['name'] as String?) ?? '';
+      if (name.isNotEmpty) await _config.setUserName(name);
+      if (!mounted) return;
+      setState(() {
+        _keyValid = true;
+        _resolvedName = name;
+        _busy = false;
+        _statusText = name.isNotEmpty
+            ? 'Signed in as $name — welcome aboard.'
+            : 'Signed in — welcome aboard.';
+        _statusIsError = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _statusText = 'Google sign-in cancelled or failed ($e).';
+        _statusIsError = true;
+      });
+    }
+  }
+
+  /// Email fallback: request a 6-digit code (keyless, rate-limited).
+  Future<void> _sendOtp() async {
+    final email = _signInEmailController.text.trim();
+    if (email.isEmpty) {
+      setState(() {
+        _statusText = 'Enter your email address first.';
+        _statusIsError = true;
+      });
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _statusText = null;
+    });
+    final r = await _api.sendOtp(email);
+    if (!mounted) return;
+    final data = r.success && r.data is Map ? r.data as Map : null;
+    if (r.success && data?['ok'] == true) {
+      setState(() {
+        _otpSent = true;
+        _otpEmail = email;
+        _busy = false;
+        _statusText = (data?['message'] as String?) ?? 'Code sent — check your inbox.';
+        _statusIsError = false;
+      });
+    } else {
+      final msg = (data?['message'] as String?) ?? 'Could not send the code (${r.error}).';
+      setState(() {
+        _busy = false;
+        _statusText = msg;
+        _statusIsError = true;
+      });
+    }
+  }
+
+  /// Email fallback: validate the code, receive the issued API key.
+  Future<void> _verifyOtp() async {
+    final email = _otpEmail.isNotEmpty ? _otpEmail : _signInEmailController.text.trim();
+    final code = _otpController.text.trim();
+    if (code.isEmpty) {
+      setState(() {
+        _statusText = 'Enter the 6-digit code you received.';
+        _statusIsError = true;
+      });
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _statusText = null;
+    });
+    final v = await _api.verifyOtp(email, code);
+    if (!mounted) return;
+    final data = v.success && v.data is Map ? v.data as Map : null;
+    final apiKey = data?['api_key'] as String? ?? '';
+    if (!v.success || data?['ok'] != true || apiKey.isEmpty) {
+      final msg = (data?['message'] as String?) ?? 'Sign-in failed (${v.error}).';
+      setState(() {
+        _busy = false;
+        _statusText = msg;
+        _statusIsError = true;
+      });
+      return;
+    }
+    await _config.setApiKey(apiKey);
+    final name = (data?['name'] as String?) ?? '';
+    if (name.isNotEmpty) await _config.setUserName(name);
+    if (!mounted) return;
+    setState(() {
+      _keyValid = true;
+      _resolvedName = name;
+      _busy = false;
+      _statusText = name.isNotEmpty
+          ? 'Signed in as $name — welcome aboard.'
+          : 'Signed in — welcome aboard.';
+      _statusIsError = false;
+    });
   }
 
   void _addPerson() {
@@ -320,6 +498,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       _statusText = null;
     });
     final payload = <String, dynamic>{
+      'name': _nameController.text.trim(),
       'context': _contextController.text.trim(),
       'people': _people,
       'tasks': _tasks,
@@ -518,7 +697,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                 }),
                 children: [
                   _welcomeStep(),
-                  _keyStep(),
+                  _signInStep(),
                   _aboutStep(),
                   _peopleStep(),
                   _plateStep(),
@@ -571,10 +750,14 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     // The welcome step has its own call-to-action — no bottom bar needed.
     if (_page == 0) return const SizedBox.shrink();
     final isLast = _page == _totalPages - 1;
-    // Gates: key step requires validation; create-world step requires the
-    // seed to have run (its own button does the seeding).
+    // Gates: key step requires validation; the about-you step requires
+    // both fields (name + write-up); create-world step requires the seed
+    // to have run (its own button does the seeding).
+    final aboutValid = _nameController.text.trim().isNotEmpty &&
+        _contextController.text.trim().isNotEmpty;
     final gate = _busy ||
         (_page == 1 && !_keyValid) ||
+        (_page == 2 && !aboutValid) ||
         (_page == 7 && !_seeded);
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
@@ -664,38 +847,41 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           const _PitchRow(icon: '🌱', text: 'Learns from every choice you make'),
           const SizedBox(height: 44),
           _primaryButton(
-            label: 'Start — it takes 3 minutes',
+            label: 'Set up my world',
             onTap: () => _goTo(1),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'About 3 minutes — we\'ll do it together.',
+            style: TextStyle(
+              color: AppTheme.textTertiary.withValues(alpha: 0.7),
+              fontSize: 11,
+            ),
           ),
         ],
       ),
     );
   }
 
-  // ── Step 1: Your key ────────────────────────────────────────
+  // ── Step 1: Sign in (M11) ──────────────────────────────────
 
-  Widget _keyStep() {
+  Widget _signInStep() {
     return _stepScaffold(
-      title: 'Your key',
-      subtitle: 'Paste the API key you were given. It connects you to Rhodey.',
+      title: 'Sign in',
+      subtitle:
+          'You were invited by your admin. Sign in with Google or your email — no key to paste.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _fieldCard(
-            controller: _keyController,
-            hint: 'Paste your API key',
-            obscure: true,
-            onChanged: (_) => setState(() => _keyValid = false),
-          ),
-          const SizedBox(height: 14),
+          // Google — the primary path.
           Material(
             color: AppTheme.surfaceAlt,
             borderRadius: BorderRadius.circular(AppTheme.controlRadius),
             child: InkWell(
               borderRadius: BorderRadius.circular(AppTheme.controlRadius),
-              onTap: _busy ? null : _validateKey,
+              onTap: _busy ? null : _signInWithGoogle,
               child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 13),
+                padding: const EdgeInsets.symmetric(vertical: 14),
                 alignment: Alignment.center,
                 child: _busy
                     ? const SizedBox(
@@ -706,17 +892,175 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                           color: AppTheme.accent,
                         ),
                       )
-                    : Text(
-                        _keyValid ? '✓ Validated' : 'Validate key',
-                        style: const TextStyle(
+                    : const Text(
+                        'Continue with Google',
+                        style: TextStyle(
                           color: AppTheme.textPrimary,
-                          fontSize: 13,
+                          fontSize: 14,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
               ),
             ),
           ),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              const Expanded(child: Divider(color: AppTheme.border)),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Text(
+                  'or use your email',
+                  style: TextStyle(
+                    color: AppTheme.textTertiary,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+              const Expanded(child: Divider(color: AppTheme.border)),
+            ],
+          ),
+          const SizedBox(height: 18),
+          if (!_otpSent) ...[
+            _fieldCard(
+              controller: _signInEmailController,
+              hint: 'Your email address',
+              onChanged: (_) => setState(() => _otpSent = false),
+            ),
+            const SizedBox(height: 14),
+            Material(
+              color: AppTheme.surfaceAlt,
+              borderRadius: BorderRadius.circular(AppTheme.controlRadius),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(AppTheme.controlRadius),
+                onTap: _busy ? null : _sendOtp,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  alignment: Alignment.center,
+                  child: _busy
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppTheme.accent,
+                          ),
+                        )
+                      : const Text(
+                          'Send me a code',
+                          style: TextStyle(
+                            color: AppTheme.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                ),
+              ),
+            ),
+          ] else ...[
+            _fieldCard(
+              controller: _otpController,
+              hint: '6-digit code',
+              onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: 14),
+            Material(
+              color: AppTheme.accent,
+              borderRadius: BorderRadius.circular(AppTheme.controlRadius),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(AppTheme.controlRadius),
+                onTap: _busy ? null : _verifyOtp,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  alignment: Alignment.center,
+                  child: _busy
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Color(0xFF161510),
+                          ),
+                        )
+                      : const Text(
+                          'Sign in',
+                          style: TextStyle(
+                            color: Color(0xFF161510),
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            TextButton(
+              onPressed: _busy
+                  ? null
+                  : () => setState(() {
+                        _otpSent = false;
+                        _otpController.clear();
+                      }),
+              child: const Text(
+                'Change email',
+                style: TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
+          // Power path: paste the key you were given.
+          TextButton(
+            onPressed: _busy
+                ? null
+                : () => setState(() => _showKeyEntry = !_showKeyEntry),
+            child: Text(
+              _showKeyEntry ? 'Use Google or email instead' : 'I have an API key',
+              style: const TextStyle(
+                color: AppTheme.textSecondary,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          if (_showKeyEntry) ...[
+            _fieldCard(
+              controller: _keyController,
+              hint: 'Paste your API key',
+              obscure: true,
+              onChanged: (_) => setState(() => _keyValid = false),
+            ),
+            const SizedBox(height: 14),
+            Material(
+              color: AppTheme.surfaceAlt,
+              borderRadius: BorderRadius.circular(AppTheme.controlRadius),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(AppTheme.controlRadius),
+                onTap: _busy ? null : _validateKey,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  alignment: Alignment.center,
+                  child: _busy
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppTheme.accent,
+                          ),
+                        )
+                      : Text(
+                          _keyValid ? '✓ Validated' : 'Validate key',
+                          style: const TextStyle(
+                            color: AppTheme.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                ),
+              ),
+            ),
+          ],
           if (_statusText != null) ...[
             const SizedBox(height: 14),
             Text(
@@ -748,22 +1092,32 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   Widget _aboutStep() {
     return _stepScaffold(
       title: 'Who are you?',
-      subtitle: 'One line is enough — Rhodey learns the rest over time.',
+      subtitle: 'This helps Rhodey help you — the more it knows about you, '
+          'the sharper its judgment is on your behalf.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _fieldCard(
-            controller: _contextController,
-            hint: 'Priya, COO at Acme, Bengaluru',
+            controller: _nameController,
+            hint: 'Your name',
+            onChanged: (_) => setState(() {}),
           ),
-          const Spacer(),
+          const SizedBox(height: 10),
+          _fieldCard(
+            controller: _contextController,
+            hint: 'A little about you — e.g. COO at Acme, leading a 20-person team, Bengaluru',
+            maxLines: 3,
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 14),
           Text(
-            'Skip ahead if you prefer — you can tell Rhodey any time.',
+            'Both are needed — this is how Rhodey learns who you are.',
             style: TextStyle(
               color: AppTheme.textTertiary.withValues(alpha: 0.7),
               fontSize: 11,
             ),
           ),
+          const Spacer(),
         ],
       ),
     );
@@ -1934,6 +2288,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     required String hint,
     bool dense = false,
     bool obscure = false,
+    int? maxLines,
     ValueChanged<String>? onChanged,
   }) {
     return Container(
@@ -1945,6 +2300,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       child: TextField(
         controller: controller,
         obscureText: obscure,
+        maxLines: maxLines ?? 1,
         onChanged: onChanged,
         decoration: InputDecoration(
           hintText: hint,
@@ -1994,9 +2350,17 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     );
   }
 
+  /// The personal/life area names — these flow into personal_orgs (the
+  /// Home bucket in briefings, weekend mode, etc.). Everything else is a
+  /// work domain.
+  static const _personalAreaNames = {'Personal', 'Family'};
+
+  String _suggestionKind(String name) =>
+      _personalAreaNames.contains(name) ? 'personal' : name.toLowerCase();
+
   Widget _suggestionChip(String name) {
     return GestureDetector(
-      onTap: () => _addDomain(name: name, kind: name.toLowerCase()),
+      onTap: () => _addDomain(name: name, kind: _suggestionKind(name)),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(

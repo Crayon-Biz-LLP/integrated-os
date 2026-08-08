@@ -113,6 +113,13 @@ def normalize_world(payload: dict, existing_timezone: str | None) -> dict:
         if isinstance(keywords, list):
             keywords = [str(k).strip() for k in keywords if str(k).strip()]
         else:
+            keywords = []
+        # An area without keywords is a dead label — it can't route anything
+        # (routing_rules_text / _resolve_domain match on keywords only). The
+        # onboarding chips send no keywords, so default to the area name
+        # itself: "Ministry" → keyword "ministry" → messages about ministry
+        # route to MINISTRY instead of the catch-all INBOX.
+        if not keywords:
             keywords = [name.lower()]
         domains.append({"name": name, "keywords": keywords})
 
@@ -152,8 +159,19 @@ def normalize_world(payload: dict, existing_timezone: str | None) -> dict:
     if device_tz and not is_valid_timezone(timezone):
         timezone = existing_timezone or "Asia/Kolkata"
 
+    # Step 2 is now two mandatory fields (name + write-up). The write-up
+    # naturally covers role/designation, so compose the identity context as
+    # "Name — write-up". Backward compatible: an old client sending only
+    # `context` still works (no name → the raw context is used as-is).
+    name = (payload.get("name") or "").strip()
+    writeup = (payload.get("context") or "").strip()
+    if name:
+        context = name + (f" — {writeup}" if writeup else "")
+    else:
+        context = writeup
+
     return {
-        "context": (payload.get("context") or "").strip(),
+        "context": context,
         # Preserve the admin-set timezone from bootstrap when the journey
         # doesn't ask for one (upsert would otherwise overwrite it with the
         # Asia/Kolkata default). The device timezone can be sent by the app

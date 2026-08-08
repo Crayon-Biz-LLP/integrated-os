@@ -755,7 +755,13 @@ async def _run_web_message_pipeline(fake_update: dict, session_id: str | None) -
 
 @app.post("/api/send-message")
 async def send_message_route(request: Request):
-    require_api_auth(request)
+    # Capture the resolved tenant BEFORE the fast-ack spawn: the contextvar
+    # set here does NOT survive into the background Modal worker (separate
+    # process), so we must pass the uid explicitly and re-scope inside
+    # process_message_background. Without this, the worker falls back to
+    # resolve_channel_tenant() = first active user (Danny) and tenant #2's
+    # messages silently run under tenant #1 (real cross-tenant bug).
+    uid = require_api_auth(request)
     try:
         body = await request.json()
         message_text = body.get("message")
@@ -839,6 +845,7 @@ async def send_message_route(request: Request):
             modal.Function.from_name("rhodey-os", "process_message_background").spawn({
                 "fake_update": fake_update,
                 "session_id": session_id,
+                "uid": uid,
             })
             return {
                 "success": True,
@@ -850,7 +857,11 @@ async def send_message_route(request: Request):
         except Exception as e:
             print(f"Send-message: background spawn failed ({e}) — falling back to inline")
 
-        # Fallback (local dev / non-Modal): run the full pipeline inline
+        # Fallback (local dev / non-Modal): run the full pipeline inline.
+        # Note: no uid needed here — this runs IN-PROCESS, so the tenant
+        # contextvar set by require_api_auth() above is still active and the
+        # pipeline scopes itself correctly. Only the cross-process Modal
+        # spawn above needs the explicit uid.
         response_text, resulting_session_id = await _run_web_message_pipeline(fake_update, session_id)
         return {
             "success": True,
@@ -4054,12 +4065,115 @@ async def onboarding_complete(request: Request):
         raise HTTPException(status_code=400, detail="Expected a JSON object")
 
     from core.services.onboarding import run_onboarding, welcome_briefing
-    from core.services.user_settings import resolve_user_name
+    from core.services.user_settings import resolve_user_name, clear_cache
+
+    # The journey's step 2 asks the user their real name — persist it to
+    # users.name so Rhodey greets them by what they typed, not the
+    # admin-set account placeholder (e.g. "Test"). Fail-open: a payload
+    # without a name (old client / skipped) keeps the existing account name.
+    typed_name = (payload.get("name") or "").strip()
+    if typed_name:
+        try:
+            tenant_aware_client().table("users").update({"name": typed_name}).eq("id", uid).execute()
+            clear_cache(uid)
+        except Exception:
+            pass
 
     result = await run_onboarding(tenant_aware_client(), uid, payload)
     name = resolve_user_name(uid) or ""
     briefing = welcome_briefing(name, result["world"], result["summary"])
     return {"status": "seeded", "summary": result["summary"], "briefing": briefing}
+
+
+# ── M11 sign-in (Google + email/OTP) ──────────────────────────────────────
+# Keyless by design — these run BEFORE the user has an API key. The key is
+# issued at first successful sign-in and returned once; the app stores it
+# silently (SharedPreferences) and never asks the user to paste it.
+# Invite model: the address must be provisioned (bootstrap --email) for the
+# sign-in to succeed; uninvited emails get a generic "not invited" answer.
+
+
+@app.post("/api/auth/otp/send")
+async def auth_otp_send(request: Request):
+    """Request a 6-digit sign-in code for an email (rate-limited)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from core.services.auth import send_otp
+
+    return send_otp((body or {}).get("email", ""))
+
+
+@app.post("/api/auth/otp/verify")
+async def auth_otp_verify(request: Request):
+    """Validate the code, mark it consumed, and issue the tenant's API key."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from core.services.auth import verify_otp
+
+    # 200 with an ok flag (not HTTP 4xx): the app surfaces the `message`
+    # string directly in the sign-in UI without parsing error bodies.
+    return verify_otp(
+        (body or {}).get("email", ""), (body or {}).get("code", "")
+    )
+
+
+@app.get("/api/auth/google/start")
+async def auth_google_start():
+    """Start identity-only Google sign-in: consent URL + state token.
+
+    Reuses the registered /api/oauth/callback redirect URI (Google Cloud
+    Console only accepts http(s) URIs) and the shared state store, tagged
+    with an "identity" sentinel so the service-connect exchange can never
+    collide with the sign-in exchange.
+    """
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    if not client_id:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured")
+    state = uuid.uuid4().hex
+    _oauth_state_store(state, "identity")
+    from core.services.auth import build_google_identity_url
+
+    return {
+        "url": build_google_identity_url(client_id, _OAUTH_REDIRECT_URI, state),
+        "state": state,
+    }
+
+
+@app.post("/api/auth/google/exchange")
+async def auth_google_exchange(request: Request):
+    """Exchange the identity code for the tenant's API key (keyless)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    code = (body or {}).get("code")
+    state = (body or {}).get("state")
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="code and state are required")
+
+    stored = _oauth_state_pop(state)
+    if not stored or stored[0] != "identity" or time.time() > stored[1]:
+        raise HTTPException(
+            status_code=400, detail="Sign-in link expired — please try again"
+        )
+
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured")
+
+    from core.services.auth import exchange_google_identity, signin_by_google_identity
+
+    identity = await exchange_google_identity(
+        code, client_id, client_secret, _OAUTH_REDIRECT_URI
+    )
+    if not identity:
+        raise HTTPException(status_code=401, detail="Could not verify your Google account")
+    return signin_by_google_identity(identity)
 
 
 # ── In-app Google connect (M8) ────────────────────────────────────────────

@@ -1218,6 +1218,39 @@ class ApiService {
         maxRetries: 0,
       );
 
+  // ── M11 sign-in (Google + email/OTP) ────────────────────────────
+
+  /// Requests a 6-digit sign-in code for an email (keyless, rate-limited).
+  Future<ApiResult<dynamic>> sendOtp(String email) =>
+      post(
+        '/api/auth/otp/send',
+        body: {'email': email},
+        timeout: const Duration(seconds: 12),
+        maxRetries: 0,
+      );
+
+  /// Validates the code and returns the issued API key (stored by caller).
+  Future<ApiResult<dynamic>> verifyOtp(String email, String code) =>
+      post(
+        '/api/auth/otp/verify',
+        body: {'email': email, 'code': code},
+        timeout: const Duration(seconds: 12),
+        maxRetries: 0,
+      );
+
+  /// Starts identity-only Google sign-in: returns {url, state} (keyless).
+  Future<ApiResult<dynamic>> googleSignInStart() =>
+      get('/api/auth/google/start', timeout: const Duration(seconds: 12));
+
+  /// Exchanges the identity code for the issued API key (keyless).
+  Future<ApiResult<dynamic>> googleSignInExchange(String code, String state) =>
+      post(
+        '/api/auth/google/exchange',
+        body: {'code': code, 'state': state},
+        timeout: const Duration(seconds: 25),
+        maxRetries: 0,
+      );
+
   // ── Config access ────────────────────────────────────────────
 
   ApiConfig get config => _config;

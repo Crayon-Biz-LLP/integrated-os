@@ -88,17 +88,35 @@ def web_endpoint():
 def process_message_background(payload: dict):
     """Background worker for /api/send-message fast-ack.
 
-    payload: {"fake_update": dict, "session_id": str | None}
+    payload: {"fake_update": dict, "session_id": str | None, "uid": str | None}
 
     Delegates to api.index._run_web_message_pipeline — the exact same code
     path the inline fallback uses, so behavior is identical everywhere.
+
+    Tenant re-scope (REQUIRED): the worker runs in a SEPARATE Modal
+    container, so the tenant contextvar set by require_api_auth() in the web
+    request does NOT propagate here. Without an explicit tenant_scope(uid),
+    webhook_tenant_scope() finds no active tenant and falls back to
+    resolve_channel_tenant() = the first active user (tenant #1) — meaning
+    every tenant #2 message would silently run under tenant #1's world
+    (real cross-tenant bug, Aug 8). The web route passes the authenticated
+    uid explicitly; we re-scope here.
     """
     import asyncio
     from api.index import _run_web_message_pipeline
 
     fake_update = payload.get("fake_update")
     session_id = payload.get("session_id")
+    uid = payload.get("uid")
     if not fake_update:
         print("[process_message_background] Missing fake_update — aborting")
         return
-    asyncio.run(_run_web_message_pipeline(fake_update, session_id))
+    if uid:
+        from core.services.db import tenant_scope
+        with tenant_scope(uid):
+            asyncio.run(_run_web_message_pipeline(fake_update, session_id))
+    else:
+        # Legacy shared-key / pre-db/78: no tenant context existed in the web
+        # route either, so the channel-tenant fallback is the original
+        # behavior — preserve it exactly.
+        asyncio.run(_run_web_message_pipeline(fake_update, session_id))

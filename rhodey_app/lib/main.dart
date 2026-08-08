@@ -30,11 +30,11 @@ void main() async {
     } catch (e) {
       debugPrint('[Firebase] Init failed: $e');
     }
-    try {
-      await NotificationService().init();
-    } catch (e) {
-      debugPrint('[FCM] Init failed (non-fatal): $e');
-    }
+    // Notification setup (incl. the Android permission prompt) is deferred
+    // to MainShell so it never overlaps the onboarding welcome screen — a
+    // system permission dialog over the welcome step eats the first tap on
+    // 'Set up my world'. MainShell fires it once the shell is actually shown
+    // (or after onboarding completes).
     try {
       await ShareService().init();
     } catch (e) {
@@ -107,6 +107,21 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     });
   }
 
+  /// Deferred notification setup (M10 fix): the FCM init + Android
+  /// permission prompt run only once the onboarding gate has cleared —
+  /// never over the welcome screen (which would swallow the first tap).
+  bool _notificationsInitialized = false;
+
+  Future<void> _initNotificationsAfterGate() async {
+    if (_notificationsInitialized) return;
+    _notificationsInitialized = true;
+    try {
+      await NotificationService().init();
+    } catch (e) {
+      debugPrint('[FCM] Init failed (non-fatal): $e');
+    }
+  }
+
   Future<void> _checkOnboarding() async {
     if (!ApiConfig().isConfigured) {
       if (!mounted) return;
@@ -127,6 +142,8 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       _needsOnboarding = needs;
       _gateLoading = false;
     });
+    // Only reach the notification prompt when the journey is NOT showing.
+    if (!needs) _initNotificationsAfterGate();
   }
 
   @override
@@ -162,7 +179,11 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     }
     if (_needsOnboarding) {
       return OnboardingFlow(
-        onDone: () => setState(() => _needsOnboarding = false),
+        onDone: () {
+          setState(() => _needsOnboarding = false);
+          // Onboarding done — now the permission prompt is safe to show.
+          _initNotificationsAfterGate();
+        },
       );
     }
     return const AdaptiveHomeScreen();

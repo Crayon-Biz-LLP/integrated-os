@@ -105,12 +105,18 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
         # timezone, read by the 30-min pulse heartbeat gate). Default =
         # balanced preset; the onboarding journey may pass briefing_preset.
         from core.services.briefing_schedule import schedule_for_preset
+        # M9.3: a new tenant must get the NEUTRAL briefing_sections row — the
+        # runtime treats a MISSING row as the Danny-era default (Church
+        # section + "work, family, and faith" framing), so an app-onboarded
+        # tenant without this row would silently inherit Danny's briefing.
+        from core.services.briefing_sections import neutral_briefing_sections_json
         config_rows = [
             {"key": "archive_person_labels", "content": json.dumps([root_label] + people_names if root_label else people_names)},
             {"key": "archive_org_labels", "content": json.dumps(org_names)},
             {"key": "archive_edge_rules", "content": "[]"},
             {"key": "archive_root_label", "content": root_label},
             {"key": "email_archive_label", "content": (world.get("email_archive_label") or "").strip()},
+            {"key": "briefing_sections", "content": neutral_briefing_sections_json()},
             {"key": "briefing_schedule", "content": json.dumps(schedule_for_preset(world.get("briefing_preset")))},
         ]
         if (world.get("github_owner") or "").strip():
