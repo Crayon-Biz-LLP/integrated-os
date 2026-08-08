@@ -528,10 +528,15 @@ async def execute_planned_actions(
                                     sync_to_google(get_tasks_service(), title=td['title'], task_id=g_id,
                                                     priority=upd.get('priority'), due_at=upd.get('deadline'))
                                 e_id = td.get('google_event_id')
-                                if e_id and upd.get('deadline'):
+                                if upd.get('deadline'):
                                     from core.services.google_service import sync_to_calendar
-                                    sync_to_calendar(td['title'], upd['deadline'], event_id=e_id,
-                                                      priority='important')
+                                    # Same create-or-patch semantics as reschedule:
+                                    # a task without a calendar event still gets
+                                    # one when its deadline is (re)set.
+                                    new_e_id = sync_to_calendar(td['title'], upd['deadline'], event_id=e_id,
+                                                                  priority='important')
+                                    if new_e_id and new_e_id != e_id:
+                                        supabase.table('tasks').update({'google_event_id': new_e_id}).eq('id', int(action.target_id)).execute()
                         except Exception as sync_e:
                             audit_log_sync("executor", "WARNING", f"Google sync for metadata update failed: {sync_e}")
                 except Exception as e:
@@ -584,10 +589,25 @@ async def execute_planned_actions(
                         if task_ref.data:
                             td = task_ref.data[0]
                             supabase.table('tasks').update({'reminder_at': formatted}).eq('id', int(action.target_id)).execute()
+                            # Google Tasks sync — move the task's due date too.
+                            # Previously reschedule never touched Google Tasks, so a
+                            # re-scheduled task's due date went stale in her calendar app.
+                            try:
+                                from core.services.google_service import sync_to_google, get_tasks_service
+                                g_id = td.get('google_task_id')
+                                if g_id:
+                                    sync_to_google(get_tasks_service(), title=td['title'], task_id=g_id, due_at=formatted)
+                            except Exception as sync_e:
+                                audit_log_sync("executor", "WARNING", f"Google Tasks sync for reschedule failed: {sync_e}")
+                            # Calendar sync — create when the task has no event yet,
+                            # patch when it does. Previously gated on `if e_id`, so a
+                            # rescheduled task without a calendar event NEVER got one.
                             e_id = td.get('google_event_id')
-                            if e_id:
-                                sync_to_calendar(td['title'], formatted, event_id=e_id,
-                                                  duration_mins=td.get('duration_mins', 15))
+                            new_e_id = sync_to_calendar(td['title'], formatted,
+                                                          event_id=e_id,
+                                                          duration_mins=td.get('duration_mins', 15))
+                            if new_e_id and new_e_id != e_id:
+                                supabase.table('tasks').update({'google_event_id': new_e_id}).eq('id', int(action.target_id)).execute()
                             closed_ids.append(action.target_id)
                         else:
                             sync_failed = True

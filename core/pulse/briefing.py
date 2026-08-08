@@ -524,10 +524,10 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
         is_monday_morning = (day == 1 and hour < 11)
 
         if is_weekend and not is_pre_monday:
-            briefing_mode = "Weekend: chores and ideas."
+            briefing_mode = "Weekend: Chores and Ideas."
             system_persona = "Focus ONLY on Home, Family, and Chores. Explicitly hide Work tasks. Be relaxed."
         elif is_pre_monday:
-            briefing_mode = "Pre-Monday: loading the week."
+            briefing_mode = "Pre-Monday: Loading the Week."
             system_persona = "Pre-load Monday. Show Work tasks that start tomorrow. Keep Home visible but deprioritized. Be direct."
         else:
             if hour < 12:

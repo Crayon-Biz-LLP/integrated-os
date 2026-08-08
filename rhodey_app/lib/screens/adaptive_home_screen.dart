@@ -19,6 +19,8 @@ import '../widgets/chat_bubble.dart';
 import '../widgets/merge_search_sheet.dart';
 import '../widgets/voice_states.dart';
 import '../widgets/rich_card_content.dart';
+import '../widgets/home_tour_overlay.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/home_instrumentation.dart';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -127,6 +129,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// Guards against duplicate history loads.
   bool _historyLoaded = false;
 
+  /// M14: one-time first-run home tour — teaches what the header icons and
+  /// the input bar are (the task-count icon especially was unclear).
+  bool _showHomeTour = false;
+
   /// Guards against double-tap on the task icon while the ledger is posting.
   bool _taskTapping = false;
 
@@ -233,6 +239,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     _initSpeech();
     _tts.setLanguage("en-US");
     _tts.setSpeechRate(0.5);
+    _maybeShowHomeTour();
 
     NotificationService.onNotificationOpened = _handlePushNotificationTap;
     NotificationService.onPushReceived = _handlePushReceived;
@@ -1511,6 +1518,23 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   void _sendMessage(String text) {
     if (text.trim().isEmpty) return;
+    // Double-send guard: while a send is in flight, drop re-entry — a second
+    // tap on the send button / keyboard submit must not POST the same message
+    // twice (each POST spawns a Modal worker, so a double-send doubles task
+    // creation + LLM spend server-side). The watchdog clears this on timeout.
+    // Feedback instead of silence: a quick-reply chip or voice phrase tapped
+    // during a slow inline send gets a hint, not a silent vanish.
+    if (_sendInFlight) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Still processing — one message at a time.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      return;
+    }
     // Sending a message enters the conversation state (welcome hides).
     if (!_conversationOpen) setState(() => _conversationOpen = true);
     final id = 'u${++_msgCounter}';
@@ -1729,6 +1753,30 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   /// Task icon tap: enter the conversation state and post Rhodey's ledger —
   /// the active task list as a chat message. Tapping a row promotes it.
+  /// M14: show the one-time home tour on first real entry (post-onboarding).
+  /// Gate: only when the user is configured and has never seen it. Best-effort
+  /// — any prefs failure just skips the tour.
+  Future<void> _maybeShowHomeTour() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool('home_tour_seen') ?? false) return;
+      if (!mounted) return;
+      setState(() => _showHomeTour = true);
+    } catch (_) {
+      // Non-fatal — never block the home screen on the tour.
+    }
+  }
+
+  Future<void> _dismissHomeTour() async {
+    setState(() => _showHomeTour = false);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('home_tour_seen', true);
+    } catch (_) {
+      // Non-fatal.
+    }
+  }
+
   Future<void> _handleTaskIconTap() async {
     if (_taskTapping) return;
     _taskTapping = true;
@@ -2494,40 +2542,50 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppTheme.background,
-      body: SafeArea(
-        child: Column(
-          children: [
-            // Repaint boundaries isolate the header (syncing chip animation)
-            // and the content area (chat scroll + focal entrance motion) so a
-            // repaint in one never repaints the other.
-            RepaintBoundary(child: _buildAmbientHeader()),
-            Expanded(
-              child: RepaintBoundary(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 350),
-                  switchInCurve: Curves.easeOut,
-                  switchOutCurve: Curves.easeIn,
-                  child: _conversationOpen
-                      ? _buildConversationState()
-                      : _buildIdleState(),
+    return Stack(
+      children: [
+        Scaffold(
+          backgroundColor: AppTheme.background,
+          body: SafeArea(
+            child: Column(
+              children: [
+                // Repaint boundaries isolate the header (syncing chip animation)
+                // and the content area (chat scroll + focal entrance motion) so a
+                // repaint in one never repaints the other.
+                RepaintBoundary(child: _buildAmbientHeader()),
+                Expanded(
+                  child: RepaintBoundary(
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 350),
+                      switchInCurve: Curves.easeOut,
+                      switchOutCurve: Curves.easeIn,
+                      child: _conversationOpen
+                          ? _buildConversationState()
+                          : _buildIdleState(),
+                    ),
+                  ),
                 ),
-              ),
+                if (_voiceState == VoiceState.listening ||
+                    _voiceState == VoiceState.error)
+                  VoiceStateMachine(
+                    state: _voiceState,
+                    transcribedText: _transcribedText,
+                    errorMessage: _voiceError,
+                    onCancel: _toggleVoice,
+                    onRetry: _retryVoice,
+                  ),
+                _buildInputBar(),
+              ],
             ),
-            if (_voiceState == VoiceState.listening ||
-                _voiceState == VoiceState.error)
-              VoiceStateMachine(
-                state: _voiceState,
-                transcribedText: _transcribedText,
-                errorMessage: _voiceError,
-                onCancel: _toggleVoice,
-                onRetry: _retryVoice,
-              ),
-            _buildInputBar(),
-          ],
+          ),
         ),
-      ),
+        // M14: one-time first-run tour — paged arrow callouts for the header,
+        // the tiny brief, the focal card, and the input bar.
+        if (_showHomeTour)
+          HomeTourOverlay(
+            onDismiss: _dismissHomeTour,
+          ),
+      ],
     );
   }
 

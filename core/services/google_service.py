@@ -55,7 +55,16 @@ def get_refresh_token(user_id: str | None = None) -> str | None:
             if token:
                 return str(token)
         except Exception:
-            pass  # table missing pre-db/84 → env fallback
+            # Table missing pre-db/84 — treat as no-token (never fall back
+            # to another tenant's env token from a tenant-scoped call).
+            return None
+        # A tenant context IS active but has no Google token row — return
+        # None so callers SKIP Google work. Do NOT fall through to the env
+        # token: that is Danny's legacy single-user token, and using it from
+        # tenant #2's scope silently writes tenant #2's data into Danny's
+        # Google account (cross-tenant leak, seen with the wife's seed).
+        return None
+    # No tenant context at all → legacy single-user env mode (scripts/CLI).
     return os.getenv("GOOGLE_REFRESH_TOKEN")
 
 
