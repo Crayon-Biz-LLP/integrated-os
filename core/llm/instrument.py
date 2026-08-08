@@ -36,15 +36,19 @@ def log_llm_outcome(response: LLMResponse, outcome: Outcome, prompt: str = ""):
     except Exception:
         pass  # ledger write is best-effort; never break the LLM path
     
-    # Log to model_registry if successful
-    if response.success and not response.degraded:
+    # Log to model_registry if successful (owner-scoped — raw client, so
+    # stamp owner_id explicitly; skip when no tenant context, same convention
+    # as the llm_spend ledger above).
+    uid = current_tenant()
+    if response.success and not response.degraded and uid:
         try:
             input_tokens = len(str(prompt)) // 4 if prompt else 0
             output_tokens = len(str(response.text)) // 4 if response.text else 0
             if response.function_calls:
                 output_tokens += len(str(response.function_calls)) // 4
-                
+
             get_supabase().table('model_registry').insert({
+                "owner_id": uid,  # raw client: stamp explicitly (uid IS the scope)
                 "model_name": response.model,
                 "provider": response.provider,
                 "input_tokens": input_tokens,

@@ -82,7 +82,7 @@ def _lit(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-# ── The 7 M6 keys + their values, imported from code (no drift) ────────────
+# ── The M6 keys + their values, imported from code (no drift) ──────────────
 KEYS = [
     "email_archive_label",
     "archive_person_labels",
@@ -93,6 +93,7 @@ KEYS = [
     "github_owner",
     "github_repo",
     "briefing_sections",
+    "briefing_schedule",
 ]
 
 
@@ -108,6 +109,7 @@ def m6_rows() -> list[dict]:
     from core.skills.email_ingest import TENANT1_EMAIL_ARCHIVE_LABEL
     from core.lib.constants import DEFAULT_GITHUB_OWNER, DEFAULT_GITHUB_REPO
     from core.services.briefing_sections import default_briefing_sections_json
+    from core.services.briefing_schedule import schedule_for_preset
 
     return [
         {"key": "email_archive_label", "content": TENANT1_EMAIL_ARCHIVE_LABEL},
@@ -119,6 +121,9 @@ def m6_rows() -> list[dict]:
         {"key": "github_owner", "content": DEFAULT_GITHUB_OWNER},
         {"key": "github_repo", "content": DEFAULT_GITHUB_REPO},
         {"key": "briefing_sections", "content": default_briefing_sections_json()},
+        # M9.7: Danny's exact pre-M9.7 schedule (classic) — the 30-min
+        # heartbeat gate reproduces his briefings byte-for-byte.
+        {"key": "briefing_schedule", "content": json.dumps(schedule_for_preset("classic"))},
     ]
 
 

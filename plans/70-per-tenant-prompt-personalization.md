@@ -294,24 +294,67 @@ the resolved tz by construction; the nameless fixed-offset fallback (only if
 `ZoneInfo("Asia/Kolkata")` ever raised) would render blank — unreachable in
 practice, `tz_label()` covers the prompt/display paths that need a label.
 
-### M9.5 — Ingest taxonomy from domains (LOW priority / optional)
+### M9.5 — Ingest taxonomy from domains (CANCELLED by product decision)
 **Files:** `core/skills/call_ingest.py` (~L86–98), `core/skills/whatsapp_ingest.py`
 (~L25,49), `core/pulse/resources.py` (~L65–69).
-**Change:** project enums → "one of the user's domains, or INBOX"; example
-strings → neutral or data-driven via S2.
-**Verdict:** call/WhatsApp channels are confirmed Danny-unique today — this is
-**pure future-proofing, zero current value**. Park unless/until those channels
-are fanned out per-tenant.
+**Original change:** project enums → "one of the user's domains, or INBOX";
+example strings → neutral or data-driven via S2.
+**Verdict — CANCELLED (Danny, 2026-08-07):** WhatsApp / calls / Meetily /
+Teams / Outlook / journal ingest are **permanently Danny-unique channels**
+and will not be released to other tenants. They run under
+`channel_tenant_scope()` → `resolve_channel_tenant()` (the oldest active
+user — tenant #1), driven by hooks only Danny has; tenant #2 can never
+receive them. Gmail is the ONLY shared channel (per-user OAuth, already
+fanned out in `email_ingest.run_fanout()`, which skips unconnected users).
+The Danny-specific taxonomy in these ingests therefore stays as-is — no
+neutralization or per-tenant mapping is needed, ever. This milestone is
+closed, not deferred.
 
-### M9.6 — App name lines (Flutter, separate APK release)
-**Files:** `rhodey_app/lib/voice/rhodey_voice.dart` (~L15,18 "All clear,
-Danny"), `rhodey_app/lib/screens/adaptive_home_screen.dart` (~L2003,2012),
-placeholders `entities_screen.dart` (~L790 "CrayonBiz LLP"),
-`inbox_screen.dart` (~L258 "VP at Qhord").
-**Change:** resolve display name from the user's settings (the API already
-returns the tenant's name); "Danny" only as last-resort fallback. Placeholders
-→ neutral ("e.g. their org").
-**Gate:** `flutter analyze` + manual check on tenant #2's APK.
+### M9.7 — Per-tenant briefing schedule (timeslots) (DONE)
+**The original spark of M9** — "can briefings be customized per user, not stuck
+to what works for me?" — delivered as presets, not free-form times
+(product decision: presets only, no custom picker; Morning-only dropped).
+**Files:** NEW `core/services/briefing_schedule.py` (4 presets — classic /
+balanced / bookends / through_the_day — owner-scoped `core_config`
+`briefing_schedule` row with explicit owner filter + 60s per-user TTL cache,
+pure `briefing_due_now()` gate, fail-closed `_validate_schedule`),
+`core/pulse/briefing.py` (gate in `process_pulse`: scheduled runs only,
+`_user_briefing_due` + `_recently_briefed` 25-min guard, cheap skip,
+heartbeat kept fresh when nobody is due), `core/pulse_cli.py`
+(GITHUB_EVENT_NAME=schedule → trigger="cron" else "manual"),
+`scripts/seed_tenant1_m6_config.py` (Danny → classic), `seeding.py` +
+`onboarding.py` (new tenants → balanced default, accepts briefing_preset),
+`.github/workflows/pulse.yml` → `*/30 * * * *` heartbeat (briefing only),
+NEW `.github/workflows/ingest.yml` (journal + backfill at original cadence,
+20 min before each slot), NEW `scripts/verify_m9_7_schedule.py` (48 checks).
+**Why the heartbeat:** GHA cron is a static UTC list; preset times are local
+per tenant. One static cron cannot express "her 8 AM in Toronto" — the
+30-min heartbeat is the alarm clock and the per-tenant gate decides who is
+due. Manual triggers (workflow_dispatch, /api/pulse) bypass the gate and
+force all users.
+**Danny gate:** seeded `briefing_schedule` = classic reproduces his exact
+pre-M9.7 slots (07:30/11:30/14:30/17:30/20:00 weekday; 08:00/15:00 weekend)
+— proven byte-for-byte by `verify_m9_7_schedule.py` (48/48).
+**Deferred:** the onboarding picker UI (Flutter) that sends `briefing_preset`
++ device timezone — server side is ready (`normalize_world` / `seed_world`).
+
+### M9.6 — App name lines (Flutter) (DONE)
+**Files:** `rhodey_app/lib/services/api_config.dart` (persisted `userName`),
+`rhodey_app/lib/services/api_service.dart` (`resolveUserName()` — stored name
+→ GET /api/onboarding/status → persist; never throws),
+`rhodey_app/lib/voice/rhodey_voice.dart` (`allClear([name])` /
+`allClearPrompt([name])` with `_who()` 'Danny' last-resort),
+`rhodey_app/lib/screens/adaptive_home_screen.dart` (`_userName` resolved in
+parallel in `_loadHome`; banner omits the name while unknown — never flashes
+'Danny'; 3 voice call sites pass the name),
+`entities_screen.dart` / `inbox_screen.dart` (placeholders neutralized).
+**Change:** the app resolves the tenant's display name once (API → local
+storage) and uses it in greetings / "All clear" lines; "Danny" remains only
+as the voice-line last-resort fallback. Placeholders → neutral ("e.g. their
+company").
+**Gate:** `flutter analyze` clean for the changed files (5 pre-existing
+infos in main.dart); user-facing sweep shows zero Danny/org literals except
+the intentional `_who()` fallback. Manual check on tenant #2's APK remains.
 **Deferred product decision (NOT this plan):** APK `applicationId =
 com.crayon.rhodey_app` — rebranding changes package identity, breaks FCM
 tokens + widget IDs. Separate decision.

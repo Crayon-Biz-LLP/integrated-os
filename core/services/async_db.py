@@ -52,6 +52,7 @@ import asyncio
 import asyncpg
 from typing import Optional
 from core.lib.audit_logger import audit_log_sync
+from core.services.db import get_tenant
 
 _pool: Optional[asyncpg.Pool] = None
 _POOL_CONFIG = {
@@ -67,12 +68,31 @@ _POOL_CONFIG = {
 _ASYNCPG_TIMEOUT = 5.0  # seconds per query
 
 
+def _resolve_db_credentials() -> tuple[str, str]:
+    """W1: prefer the tenant-isolated `rhodey_app` role (db/90+).
+
+    Once RHODEY_APP_DB_PASSWORD is set, asyncpg connects as the NOBYPASSRLS
+    app role so Postgres RLS enforces tenant isolation even on the raw-SQL
+    path (which bypasses the application facade). Pre-db/90 environments
+    (no role, no env var) fall back to the legacy superuser connection so
+    existing behavior is preserved until the cutover.
+    """
+    rls_pw = os.getenv("RHODEY_APP_DB_PASSWORD")
+    if rls_pw:
+        return os.getenv("RHODEY_APP_DB_USER", "rhodey_app"), rls_pw
+    return (
+        "postgres",
+        os.getenv("SUPABASE_DB_PASSWORD") or os.getenv("SUPABASE_SERVICE_ROLE_KEY"),
+    )
+
+
 async def init_pool() -> asyncpg.Pool:
     """Initialize the global asyncpg connection pool.
 
-    Called once on Modal container startup. Uses the Supabase
-    database password (SUPABASE_DB_PASSWORD) for auth, with
-    SUPABASE_SERVICE_ROLE_KEY as fallback for backward compat.
+    Called once on Modal container startup. Connects as `rhodey_app` when
+    RHODEY_APP_DB_PASSWORD is set (RLS-enforced, db/90+); otherwise falls
+    back to the legacy postgres role with SUPABASE_DB_PASSWORD (or
+    SUPABASE_SERVICE_ROLE_KEY) for backward compat.
 
     Returns:
         The asyncpg connection pool.
@@ -82,15 +102,15 @@ async def init_pool() -> asyncpg.Pool:
         return _pool
 
     supabase_url = os.getenv("SUPABASE_URL")
-    db_password = os.getenv("SUPABASE_DB_PASSWORD") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    db_user, db_password = _resolve_db_credentials()
 
     if not supabase_url or not db_password:
         raise ValueError(
-            "SUPABASE_URL and SUPABASE_DB_PASSWORD (or SUPABASE_SERVICE_ROLE_KEY) must be set"
+            "SUPABASE_URL and a database password (SUPABASE_DB_PASSWORD or RHODEY_APP_DB_PASSWORD) must be set"
         )
 
     # Convert Supabase URL to PostgreSQL connection string
-    dsn = _build_pg_dsn(supabase_url, db_password)
+    dsn = _build_pg_dsn(supabase_url, db_user, db_password)
 
     # Register JSONB codec so asyncpg returns Python dicts instead of strings
     async def _init_conn(conn):
@@ -105,7 +125,7 @@ async def init_pool() -> asyncpg.Pool:
     return _pool
 
 
-def _build_pg_dsn(supabase_url: str, password: str) -> str:
+def _build_pg_dsn(supabase_url: str, user: str, password: str) -> str:
     """Convert a Supabase REST URL to a PostgreSQL direct DSN.
 
     Supabase connection modes:
@@ -117,12 +137,15 @@ def _build_pg_dsn(supabase_url: str, password: str) -> str:
     IPv6 is supported (confirmed via DNS AAAA records).
     Set SUPABASE_USE_POOLER=1 env var to switch back to transaction pooler.
 
+    For the pooler, Supavisor requires the form {user}.{project_ref} (both
+    for postgres and for the custom rhodey_app role).
+
     Handles input formats:
         https://project-ref.supabase.co
         https://project-ref.supabase.co:443
 
     Returns:
-        postgresql://postgres:PASSWORD@db.{ref}.supabase.co:5432/postgres
+        postgresql://{user}:PASSWORD@db.{ref}.supabase.co:5432/postgres
     """
     # Extract project ref from URL
     # https://abcdefghijklm.supabase.co  →  abcdefghijklm
@@ -142,17 +165,17 @@ def _build_pg_dsn(supabase_url: str, password: str) -> str:
             else:
                 pg_host = f"{project_ref}.pooler.supabase.com"
             pg_port = 6543  # Transaction pooler
-            pg_user = f"postgres.{project_ref}"
+            pg_user = f"{user}.{project_ref}"
         else:
             # Direct connection — IPv6 compatible
             pg_host = f"db.{project_ref}.supabase.co"
             pg_port = 5432
-            pg_user = "postgres"
+            pg_user = user
     else:
         # Fallback for custom hosts — direct connection
         pg_host = host
         pg_port = 5432
-        pg_user = "postgres"
+        pg_user = user
 
     return f"postgresql://{pg_user}:{password}@{pg_host}:{pg_port}/postgres"
 
@@ -254,12 +277,28 @@ async def async_select_one(
     return rows[0] if rows else None
 
 
+async def _tenant_ctx(conn) -> None:
+    """W1: stamp the tenant GUC for this transaction (RLS enforcement).
+
+    Runs inside an explicit transaction, so set_config(..., true) is
+    transaction-scoped (SET LOCAL semantics). With no tenant context the
+    GUC stays unset and Postgres RLS fails closed (0 rows visible).
+    """
+    uid = get_tenant()
+    if uid:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(uid))
+
+
 async def _safe_fetch(query: str, *args) -> list:
     """Internal fetch with safety. Returns empty list on any error."""
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            return await asyncio.wait_for(conn.fetch(query, *args), timeout=_ASYNCPG_TIMEOUT)
+            async with conn.transaction():
+                await _tenant_ctx(conn)
+                return await asyncio.wait_for(
+                    conn.fetch(query, *args), timeout=_ASYNCPG_TIMEOUT
+                )
     except asyncio.TimeoutError:
         audit_log_sync("asyncpg", "WARNING",
             f"_safe_fetch timed out after {_ASYNCPG_TIMEOUT}s, falling back to PostgREST")
@@ -281,7 +320,11 @@ async def async_fetch(query: str, *args) -> list:
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            return await asyncio.wait_for(conn.fetch(query, *args), timeout=_ASYNCPG_TIMEOUT)
+            async with conn.transaction():
+                await _tenant_ctx(conn)
+                return await asyncio.wait_for(
+                    conn.fetch(query, *args), timeout=_ASYNCPG_TIMEOUT
+                )
     except asyncio.TimeoutError:
         audit_log_sync("asyncpg", "WARNING",
             f"async_fetch timed out after {_ASYNCPG_TIMEOUT}s, falling back to PostgREST")
@@ -300,7 +343,11 @@ async def async_fetchrow(query: str, *args) -> Optional[asyncpg.Record]:
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            return await asyncio.wait_for(conn.fetchrow(query, *args), timeout=_ASYNCPG_TIMEOUT)
+            async with conn.transaction():
+                await _tenant_ctx(conn)
+                return await asyncio.wait_for(
+                    conn.fetchrow(query, *args), timeout=_ASYNCPG_TIMEOUT
+                )
     except asyncio.TimeoutError:
         audit_log_sync("asyncpg", "WARNING",
             f"async_fetchrow timed out after {_ASYNCPG_TIMEOUT}s, falling back to PostgREST")
@@ -319,10 +366,16 @@ async def async_execute(query: str, *args) -> str:
 
     Returns:
         Command status string (e.g., "INSERT 0 1").
+
+    RLS note (db/90): as rhodey_app the WITH CHECK policy requires the
+    inserted owner_id to match the tenant GUC — a cross-tenant write is
+    rejected by the database itself.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return await conn.execute(query, *args)
+        async with conn.transaction():
+            await _tenant_ctx(conn)
+            return await conn.execute(query, *args)
 
 
 async def async_executemany(query: str, args_list: list) -> None:
@@ -334,4 +387,6 @@ async def async_executemany(query: str, args_list: list) -> None:
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.executemany(query, args_list)
+        async with conn.transaction():
+            await _tenant_ctx(conn)
+            await conn.executemany(query, args_list)

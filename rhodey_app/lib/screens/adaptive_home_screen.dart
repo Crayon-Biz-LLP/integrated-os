@@ -67,6 +67,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   BriefingResponse _briefing = BriefingResponse.empty();
   bool _briefingLoading = true;
 
+  /// M9.6: the tenant's display name — resolved from the API on load and
+  /// used in greetings instead of the hardcoded 'Danny'.
+  String _userName = '';
+
   // ── Focal zone (Phase 2 v2: LLM-chosen top item + three-button model) ──
   List<_FocalItem> _focalItems = [];
 
@@ -543,6 +547,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// Falls back to the two legacy calls when the endpoint is unavailable
   /// (older backend) or returns an empty payload.
   Future<void> _loadHome() async {
+    // M9.6: resolve the tenant's display name in parallel with the feed — a
+    // local prefs read after the first fetch, one /api/onboarding/status
+    // round-trip before that.
+    final nameFuture = _api.resolveUserName();
     try {
       // WhatsApp-style instant render: show the cached home feed (voice line,
       // focal board, briefing) BEFORE any network round-trip, so cold opens and
@@ -583,6 +591,14 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           _syncingCount = 0;
         });
       }
+    }
+    // M9.6: apply the resolved display name (usually instant — local read;
+    // never throws — the resolver swallows errors and returns ''). The
+    // equality guard skips a pointless rebuild when the name is unchanged
+    // across home refreshes.
+    final who = await nameFuture;
+    if (mounted && who.isNotEmpty && who != _userName) {
+      setState(() => _userName = who);
     }
   }
 
@@ -839,7 +855,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
     // 4. If no items remain, show "all clear" from Rhodey
     if (_focalItems.isEmpty && mounted) {
-      _addRhodeyResponse(RhodeyVoice.allClear());
+      _addRhodeyResponse(RhodeyVoice.allClear(_userName));
     }
 
     // N4: local count decrement instead of a 5-call refetch — the action
@@ -1999,8 +2015,17 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     final greeting = hour < 12
         ? 'Good Morning'
         : (hour < 17 ? 'Good Afternoon' : 'Good Evening');
+    // M9.6: the tenant's own name once resolved. While unknown (first paint
+    // before the resolve lands) omit it entirely — never flash 'Danny' at a
+    // tenant who isn't Danny. 'Danny' remains only as the voice-line
+    // last-resort fallback (RhodeyVoice._who), which fires post-resolution.
+    final who = _userName.trim();
     final line = _capitalizeFirst(
-      voice.isNotEmpty ? voice : "What's on your mind, Danny?",
+      voice.isNotEmpty
+          ? voice
+          : (who.isNotEmpty
+                ? "What's on your mind, $who?"
+                : "What's on your mind?"),
     );
 
     return Padding(
@@ -2009,7 +2034,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '$greeting, Danny.',
+            who.isNotEmpty ? '$greeting, $who.' : '$greeting.',
             style: AppTheme.caption.copyWith(
               color: AppTheme.accent,
               fontSize: 11,
@@ -2088,7 +2113,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         ),
         const SizedBox(width: 8),
         Text(
-          RhodeyVoice.allClear(),
+          RhodeyVoice.allClear(_userName),
           style: const TextStyle(
             fontSize: 12,
             color: AppTheme.textTertiary,
@@ -3012,7 +3037,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           const SizedBox(width: 8),
           Flexible(
             child: Text(
-              RhodeyVoice.allClearPrompt(),
+              RhodeyVoice.allClearPrompt(_userName),
               style: const TextStyle(
                 fontSize: 12,
                 color: AppTheme.textTertiary,

@@ -1,20 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
 import '../../services/api_config.dart';
 import '../../services/api_service.dart';
 import '../../theme/app_theme.dart';
 
-/// In-app onboarding journey (M8).
+/// In-app onboarding journey (M8 + M9.7 + M9.8).
 ///
 /// A short conversation that turns a new user into a seeded tenant:
-///   0 Welcome  → 1 key → 2 about you → 3 people → 4 plate →
-///   5 life areas → 6 Google (optional) → 7 first briefing.
+///   0 Welcome → 1 key → 2 about you → 3 people → 4 plate →
+///   5 life areas → 6 how Rhodey works → 7 briefing times →
+///   8 Google (optional) → 9 first briefing.
 ///
-/// Step 1 validates the API key against /api/onboarding/status; step 7
-/// submits the collected answers to /api/onboarding/complete, which seeds
-/// the tenant's world (graph + tasks + settings) and returns the first
-/// welcome briefing — rendered here with the same BriefingResponse shape the
-/// home screen uses. [onDone] flips the app into the normal shell.
+/// Step 1 validates the API key against /api/onboarding/status; step 6
+/// sets expectations (rhythm, board, approvals, memory, privacy); step 7
+/// picks the briefing schedule preset (M9.7); the final step submits the
+/// collected answers to /api/onboarding/complete, which seeds the tenant's
+/// world (graph + tasks + settings) and returns the first welcome briefing
+/// — rendered here with the same BriefingResponse shape the home screen
+/// uses. [onDone] flips the app into the normal shell.
 class OnboardingFlow extends StatefulWidget {
   final VoidCallback onDone;
   const OnboardingFlow({super.key, required this.onDone});
@@ -24,7 +28,7 @@ class OnboardingFlow extends StatefulWidget {
 }
 
 class _OnboardingFlowState extends State<OnboardingFlow> {
-  static const _totalPages = 8;
+  static const _totalPages = 10;
   static const _domainSuggestions = [
     'Work', 'Business', 'Personal', 'Family', 'Health', 'Finance', 'Ministry',
   ];
@@ -53,12 +57,66 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   final _domainKeywordsController = TextEditingController();
   final List<Map<String, dynamic>> _domains = [];
   bool _googleConnected = false;
+  // M9.7: briefing schedule preset (balanced = default for new tenants).
+  String _presetId = 'balanced';
+  // M9.7: device timezone (IANA name) sent with the seed so briefing times
+  // are in HER local time from day one. Best-effort; '' lets the server keep
+  // the admin-set value.
+  String _deviceTimezone = '';
   Map<String, dynamic>? _briefing;
+  // M9.8: briefing presets fetched from the server (single source of truth
+  // for the times the gate fires on). Null until fetched — the picker then
+  // renders the static offline fallback.
+  Map<String, dynamic>? _presets;
+  // True once the user taps a preset card — the server default must never
+  // override a deliberate choice if the presets fetch lands late.
+  bool _presetTouched = false;
 
   @override
   void initState() {
     super.initState();
     _keyController.text = _config.apiKey;
+    _resolveDeviceTimezone();
+    _resolvePresets();
+  }
+
+  /// Best-effort IANA timezone from the device (e.g. 'Asia/Kolkata',
+  /// 'America/Toronto'). Failures leave '' — the server then keeps whatever
+  /// the admin set at bootstrap.
+  Future<void> _resolveDeviceTimezone() async {
+    try {
+      final tz = await FlutterTimezone.getLocalTimezone();
+      final name = tz.identifier.trim();
+      if (name.isNotEmpty && mounted) {
+        setState(() => _deviceTimezone = name);
+      }
+    } catch (_) {
+      // Non-fatal — server keeps the admin-set timezone.
+    }
+  }
+
+  /// M9.8: fetch the briefing presets from the server — the picker renders
+  /// THOSE times so the cards can never drift from the heartbeat gate.
+  /// Fail-open: the static list in [_presetCards] is the offline fallback,
+  /// so the journey never blocks on this.
+  Future<void> _resolvePresets() async {
+    try {
+      final r = await _api.getBriefingPresets();
+      if (!r.success || r.data is! Map) return;
+      final presets = (r.data as Map)['presets'];
+      final def = (r.data as Map)['default'];
+      if (presets is! Map || presets.isEmpty || !mounted) return;
+      setState(() {
+        _presets = Map<String, dynamic>.from(presets);
+        // Don't clobber a choice the user already made while the fetch was
+        // in flight (slow network) — the default applies pre-choice only.
+        if (!_presetTouched && def is String && _presets!.containsKey(def)) {
+          _presetId = def;
+        }
+      });
+    } catch (_) {
+      // Non-fatal — static fallback.
+    }
   }
 
   @override
@@ -181,8 +239,10 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         });
         return;
       }
-      // In-app browser → Google consent → redirect back to rhodey://oauth2/
-      // callback?code=..&state=.. — flutter_web_auth returns that full URL.
+      // In-app browser → Google consent → Google redirects to the Modal
+      // HTTPS callback (registered redirect URI; Google rejects custom
+      // schemes) → that page JS-bridges to rhodey://oauth2/callback?code=..
+      // &state=.. — flutter_web_auth_2 returns that full URL.
       final callback =
           await FlutterWebAuth2.authenticate(
             url: url,
@@ -239,6 +299,10 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           .where((d) => (d['kind'] as String? ?? 'work') == 'personal')
           .map((d) => d['name'] as String)
           .toList(),
+      // M9.7: briefing schedule + device timezone (both optional — server
+      // defaults to balanced / the admin-set timezone).
+      'briefing_preset': _presetId,
+      'timezone': _deviceTimezone,
     };
     final r = await _api.completeOnboarding(payload);
     if (!mounted) return;
@@ -307,6 +371,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                   _peopleStep(),
                   _plateStep(),
                   _areasStep(),
+                  _howItWorksStep(),
+                  _timesStep(),
                   _googleStep(),
                   _briefingStep(),
                 ],
@@ -738,7 +804,210 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     );
   }
 
-  // ── Step 6: Google (optional) ───────────────────────────────
+  // ── Step 6: How Rhodey works (expectations) ─────────────────
+
+  Widget _howItWorksStep() {
+    return _stepScaffold(
+      title: 'How Rhodey works',
+      subtitle: 'Three things worth knowing before you start.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: const [
+          _PitchRow(icon: '🔔', text: 'Briefings at your times — morning, midday, evening. You pick the rhythm (next step).'),
+          SizedBox(height: 16),
+          _PitchRow(icon: '🗂️', text: 'One living board — tasks, people, and areas. Rhodey keeps the picture current.'),
+          SizedBox(height: 16),
+          _PitchRow(icon: '⚖️', text: 'You stay in control — it proposes, you approve. Nothing important happens without you.'),
+          SizedBox(height: 16),
+          _PitchRow(icon: '🧠', text: 'It learns from you — every approve, reject, and "not now" teaches it what matters.'),
+          SizedBox(height: 16),
+          _PitchRow(icon: '🔐', text: 'Your data stays yours — scoped to you. Gmail is read only with your permission.'),
+          Spacer(),
+          Text(
+            'Best to feed it daily — even one line. The more it knows your world, the sharper it gets.',
+            style: TextStyle(
+              color: AppTheme.textTertiary,
+              fontSize: 11,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Step 7: Briefing times (M9.7 preset picker) ─────────────
+
+  Widget _timesStep() {
+    return _stepScaffold(
+      title: 'When should Rhodey check in?',
+      subtitle: _deviceTimezone.isNotEmpty
+          ? 'Times shown in your timezone ($_deviceTimezone). Your admin can adjust them anytime.'
+          : 'Pick a rhythm — your admin can adjust it anytime.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: ListView(
+              shrinkWrap: true,
+              children: _presetCards(_presets),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The preset cards — built from the SERVER's presets when the fetch
+  /// succeeded (displayed times == gate times, single source of truth),
+  /// otherwise the static offline fallback. Default preset first.
+  List<Widget> _presetCards(Map<String, dynamic>? presets) {
+    const defaultId = 'balanced';
+    if (presets == null || presets.isEmpty) {
+      return [
+        _presetCard('balanced', 'Balanced',
+            'Weekdays 08:00 · 13:00 · 19:00',
+            'Weekends 09:00 · 17:00',
+            recommended: true),
+        const SizedBox(height: 10),
+        _presetCard('classic', 'Classic',
+            'Weekdays 07:30 · 11:30 · 14:30 · 17:30 · 20:00',
+            'Weekends 08:00 · 15:00'),
+        const SizedBox(height: 10),
+        _presetCard('bookends', 'Bookends',
+            'Weekdays 08:00 · 20:00',
+            'Weekends 10:00'),
+        const SizedBox(height: 10),
+        _presetCard('through_the_day', 'Through the day',
+            'Weekdays 08:00 · 11:00 · 14:00 · 17:00 · 20:00',
+            'Weekends 08:00 · 11:00 · 17:00'),
+      ];
+    }
+    // Default preset first, then the rest in server order (a future new
+    // preset shows up automatically — nothing to copy by hand).
+    final ids = presets.keys.where((id) => id != defaultId).toList();
+    ids.insert(0, defaultId);
+    final cards = <Widget>[];
+    for (final id in ids) {
+      final p = presets[id];
+      if (p is! Map) continue;
+      final wd = _formatTimes(p['weekday']);
+      final we = _formatTimes(p['weekend']);
+      cards.add(_presetCard(
+        id,
+        (p['name'] as String?) ?? id,
+        wd.isEmpty ? 'Weekdays' : 'Weekdays $wd',
+        we.isEmpty ? 'Weekends' : 'Weekends $we',
+        recommended: id == defaultId,
+      ));
+      cards.add(const SizedBox(height: 10));
+    }
+    if (cards.isNotEmpty) cards.removeLast();
+    return cards;
+  }
+
+  String _formatTimes(Object? raw) {
+    if (raw is! List || raw.isEmpty) return '';
+    return raw.map((t) => t.toString()).join(' · ');
+  }
+
+  Widget _presetCard(String id, String name, String weekday, String weekend,
+      {bool recommended = false}) {
+    final selected = _presetId == id;
+    return Material(
+      color: selected ? AppTheme.accentBg : AppTheme.surface,
+      borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+        onTap: () => setState(() {
+          _presetId = id;
+          _presetTouched = true;
+        }),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+            border: Border.all(
+              color: selected
+                  ? AppTheme.accent
+                  : AppTheme.border,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                selected
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+                size: 18,
+                color: selected ? AppTheme.accent : AppTheme.textTertiary,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          name,
+                          style: TextStyle(
+                            color: selected
+                                ? AppTheme.champagne
+                                : AppTheme.textPrimary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (recommended) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppTheme.accent.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Text(
+                              'Recommended',
+                              style: TextStyle(
+                                color: AppTheme.champagne,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      weekday,
+                      style: TextStyle(
+                        color: AppTheme.textSecondary,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                    Text(
+                      weekend,
+                      style: TextStyle(
+                        color: AppTheme.textTertiary.withValues(alpha: 0.8),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Step 8: Google (optional) ───────────────────────────────
 
   Widget _googleStep() {
     return _stepScaffold(

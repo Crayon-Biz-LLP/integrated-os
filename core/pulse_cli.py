@@ -126,8 +126,15 @@ def run_pulse():
     print(f"Pulse secret found: {'*' * 20}")
     print("Running process_pulse...")
     
+    # M9.7: GitHub Actions sets GITHUB_EVENT_NAME. The 30-min heartbeat cron
+    # ('schedule') is the gated run — per-tenant briefing_schedule decides who
+    # is due. workflow_dispatch / local runs are manual (force all users).
+    event = os.getenv("GITHUB_EVENT_NAME", "")
+    trigger = "cron" if event == "schedule" else "manual"
+    print(f"Trigger: {trigger} (GITHUB_EVENT_NAME={event or '<local>'})")
+    
     try:
-        result = asyncio.run(process_pulse(auth_secret=pulse_secret, trigger="cli"))
+        result = asyncio.run(process_pulse(auth_secret=pulse_secret, trigger=trigger))
         
         if result.get("success"):
             print("✓ Pulse completed successfully")

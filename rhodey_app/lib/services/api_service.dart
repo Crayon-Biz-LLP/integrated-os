@@ -1131,6 +1131,41 @@ class ApiService {
   Future<ApiResult<dynamic>> getOnboardingStatus() =>
       get('/api/onboarding/status', timeout: const Duration(seconds: 12));
 
+  /// M9.8: the briefing-schedule presets (times + default) served by the
+  /// server — the single source of truth for the onboarding picker, so the
+  /// displayed slots can never drift from the heartbeat gate. Static
+  /// config, no auth.
+  Future<ApiResult<dynamic>> getBriefingPresets() =>
+      get('/api/onboarding/presets', timeout: const Duration(seconds: 12));
+
+  /// M9.6: the tenant's display name for the UI (greetings, "All clear",
+  /// placeholders). Stored locally after first resolution — the backend's
+  /// /api/onboarding/status returns users.name for ANY journey state, so
+  /// seeded tenants (tenant #1) and freshly-onboarded ones both resolve
+  /// correctly. Returns '' only when the backend can't tell us; callers
+  /// fall back to the legacy name.
+  ///
+  /// NOTE: once stored, the name is treated as authoritative (no per-load
+  /// refresh) — an admin-side rename propagates only after the app clears
+  /// or reinstalls. Deliberate: this is a display name, not live state.
+  Future<String> resolveUserName() async {
+    final stored = _config.userName;
+    if (stored.isNotEmpty) return stored;
+    try {
+      final r = await getOnboardingStatus();
+      if (r.success && r.data is Map) {
+        final name = ((r.data as Map)['name'] as String?)?.trim() ?? '';
+        if (name.isNotEmpty) {
+          await _config.setUserName(name);
+          return name;
+        }
+      }
+    } catch (_) {
+      // Network/parse failure — return '' and retry on the next load.
+    }
+    return '';
+  }
+
   /// Submits the completed journey and returns the first welcome briefing.
   /// No retries — the seed is idempotent but must not double-fire.
   Future<ApiResult<dynamic>> completeOnboarding(

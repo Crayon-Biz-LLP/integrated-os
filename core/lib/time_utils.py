@@ -19,6 +19,22 @@ IST_TIMEZONE = _IST
 _tz_cache: dict[str, tzinfo] = {}
 
 
+def is_valid_timezone(name: str | None) -> bool:
+    """True if `name` is a real IANA timezone name (best-effort).
+
+    The shared gate for every path that writes user_settings.timezone — the
+    onboarding device string and the admin seed paths — so a garbage value
+    can never poison the row.
+    """
+    if not name or not isinstance(name, str):
+        return False
+    try:
+        ZoneInfo(name.strip())
+        return True
+    except Exception:
+        return False
+
+
 def get_user_timezone(user_id: str | None = None) -> tzinfo:
     """Resolve the user's IANA timezone → tzinfo (M2 de-personalization).
 

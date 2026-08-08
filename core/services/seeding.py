@@ -56,9 +56,15 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
 
     # ── 1. user_settings (context, domains, personal_orgs, timezone) ──
     try:
+        from core.lib.time_utils import is_valid_timezone
+        timezone = (world.get("timezone") or "").strip()
+        if not is_valid_timezone(timezone):
+            # Same guard as onboarding's normalize_world: never write a
+            # garbage IANA name into user_settings.timezone.
+            timezone = "Asia/Kolkata"
         settings = {
             "user_id": uid,
-            "timezone": world.get("timezone") or "Asia/Kolkata",
+            "timezone": timezone,
             "context": world.get("context") or "",
             "domains": json.dumps(world.get("domains") or []),
             "personal_orgs": json.dumps(world.get("personal_orgs") or []),
@@ -95,12 +101,17 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
             if (o.get("name") or "").strip()
         ]
         root_label = (world.get("root_label") or "").strip()
+        # M9.7: the tenant's own briefing schedule (timeslots in THEIR
+        # timezone, read by the 30-min pulse heartbeat gate). Default =
+        # balanced preset; the onboarding journey may pass briefing_preset.
+        from core.services.briefing_schedule import schedule_for_preset
         config_rows = [
             {"key": "archive_person_labels", "content": json.dumps([root_label] + people_names if root_label else people_names)},
             {"key": "archive_org_labels", "content": json.dumps(org_names)},
             {"key": "archive_edge_rules", "content": "[]"},
             {"key": "archive_root_label", "content": root_label},
             {"key": "email_archive_label", "content": (world.get("email_archive_label") or "").strip()},
+            {"key": "briefing_schedule", "content": json.dumps(schedule_for_preset(world.get("briefing_preset")))},
         ]
         if (world.get("github_owner") or "").strip():
             config_rows.append({"key": "github_owner", "content": world["github_owner"].strip()})
