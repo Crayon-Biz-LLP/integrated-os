@@ -6,11 +6,11 @@ import httpx
 import json
 import uuid
 import asyncio
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from core.lib.audit_logger import trace_id_var
 from core.lib.telemetry import emit_observation
@@ -607,7 +607,9 @@ async def roundup_route(request: Request):
 
         async def _roundup_for_tenant(uid: str | None) -> dict:
             """Evening roundup for ONE tenant: skip when 3+ notes today, else
-            prompt via their Telegram chat (app-only tenants skip silently).
+            prompt via their channel. Telegram tenants get the prompt in chat;
+            app-only tenants (no Telegram chat id) get it as an app push via
+            the same Telegram-independent delivery path.
 
             `uid` None → legacy unscoped run (no tenant context); the chat id
             then resolves from env via the channel scope."""
@@ -630,13 +632,21 @@ async def roundup_route(request: Request):
                     return {"tenant": uid, "skipped": True,
                             "message": "Already captured enough notes today. Skipping prompt."}
 
+            roundup_text = "🌆 Evening roundup — any meeting notes, ideas, or project updates from today?"
             chat_id = resolve_telegram_chat_id(uid)
-            if not chat_id:
-                return {"tenant": uid, "skipped": True,
-                        "message": "No Telegram chat for this tenant — app-only."}
+            if chat_id:
+                await send_telegram(chat_id, roundup_text)
+                return {"tenant": uid, "sent": True, "channel": "telegram",
+                        "message": "Roundup prompt sent"}
 
-            await send_telegram(chat_id, "🌆 Evening roundup — any meeting notes, ideas, or project updates from today?")
-            return {"tenant": uid, "sent": True, "message": "Roundup prompt sent"}
+            # App-only tenant (no Telegram): deliver via the app channel —
+            # raw_dumps persist + FCM push — the same Telegram-independent
+            # path send_telegram uses internally for its primary channel.
+            from core.services.reply_delivery import deliver_outbound_reply
+            pushed = await deliver_outbound_reply(roundup_text, notify_push=True)
+            return {"tenant": uid, "sent": True, "channel": "app",
+                    "devices_pushed": pushed,
+                    "message": "Roundup prompt delivered to app"}
 
         # M4: fan out over all active users. Legacy (no users table / no
         # active users) runs once under the channel scope — the same helper,
@@ -3762,6 +3772,18 @@ async def graph_node_enrichment_route(node_id: str, request: Request):
 # it is instant and free, and shaped exactly like /api/briefing so the app's
 # existing BriefingResponse UI renders it.
 
+@app.get("/api/onboarding/presets")
+async def onboarding_presets():
+    """The briefing-schedule presets for the onboarding picker (M9.8).
+
+    Static config — no auth needed. The app renders THE SERVER's times
+    (single source of truth), so the picker can never drift from the
+    heartbeat gate's PRESETS.
+    """
+    from core.services.briefing_schedule import presets_payload
+    return presets_payload()
+
+
 @app.get("/api/onboarding/status")
 async def onboarding_status(request: Request):
     """The tenant's onboarding state: new | in_progress | seeded.
@@ -3806,17 +3828,84 @@ async def onboarding_complete(request: Request):
 
 # ── In-app Google connect (M8) ────────────────────────────────────────────
 # The app opens the consent URL in an in-app browser (flutter_web_auth);
-# Google redirects to rhodey://oauth2/callback?code=..&state=.., the app
-# captures that URI and POSTs code+state back here for exchange. The refresh
-# token is stored per-user in user_oauth_tokens — never in env.
+# Google redirects to the registered HTTPS callback (this endpoint), which
+# validates the state token and JS-bridges the code back to
+# rhodey://oauth2/callback?code=..&state=.. — the custom scheme the app's
+# flutter_web_auth_2 already captures. The app then POSTs code+state back
+# here for exchange. The refresh token is stored per-user in
+# user_oauth_tokens — never in env.
 #
-# NOTE: the redirect URI 'rhodey://oauth2/callback' must be added to the
-# Google Cloud Console OAuth client (the same client that has
-# http://localhost:8080) before the in-app flow works.
+# Google Cloud Console only accepts http(s) redirect URIs on this Web-app
+# OAuth client (custom schemes are rejected), so the consent URL points at
+# the Modal HTTPS endpoint below instead of the raw scheme.
 
-_OAUTH_REDIRECT_URI = "rhodey://oauth2/callback"
+_OAUTH_REDIRECT_URI = os.getenv(
+    "GOOGLE_OAUTH_REDIRECT_URI",
+    "https://danielyashwant--rhodey-os-web-endpoint.modal.run/api/oauth/callback",
+)
 _OAUTH_STATE_TTL = 15 * 60
 _OAUTH_STATES: dict[str, tuple[str, float]] = {}  # state -> (uid, expires_at)
+
+
+def _oauth_state_store(state: str, uid: str) -> None:
+    """Persist an OAuth state token (memory + Redis for cross-container safety).
+
+    Modal can serve /api/oauth/start and the browser callback from different
+    containers (or a cold start in between), so the in-memory dict alone
+    would lose the state. Redis (fail-open) is the durable cross-container
+    copy; the dict is the fast path.
+    """
+    expires = time.time() + _OAUTH_STATE_TTL
+    _OAUTH_STATES[state] = (uid, expires)
+    try:
+        from core.lib.redis_cache import cache_set
+        cache_set(f"oauth:state:{state}", [uid, expires], ttl=_OAUTH_STATE_TTL)
+    except Exception:
+        pass
+
+
+def _oauth_state_peek(state: str) -> tuple[str, float] | None:
+    """Read an OAuth state without consuming it (callback validation).
+
+    Returns None for missing OR expired states so the callback page can
+    show a clear "sign-in link expired" message instead of letting the
+    app fail at the exchange step."""
+    entry = _OAUTH_STATES.get(state)
+    if entry:
+        return entry if time.time() <= entry[1] else None
+    try:
+        from core.lib.redis_cache import cache_get
+        data = cache_get(f"oauth:state:{state}")
+        if isinstance(data, list) and len(data) == 2:
+            expires = float(data[1])
+            if time.time() <= expires:
+                return str(data[0]), expires
+    except Exception:
+        pass
+    return None
+
+
+def _oauth_state_pop(state: str) -> tuple[str, float] | None:
+    """Consume an OAuth state once (exchange)."""
+    entry = _OAUTH_STATES.pop(state, None)
+    if entry:
+        # Memory hit — also drop any durable copy so the state can't be
+        # replayed through the Redis fallback on another container.
+        try:
+            from core.lib.redis_cache import cache_delete
+            cache_delete(f"oauth:state:{state}")
+        except Exception:
+            pass
+        return entry
+    try:
+        from core.lib.redis_cache import cache_get, cache_delete
+        data = cache_get(f"oauth:state:{state}")
+        if isinstance(data, list) and len(data) == 2:
+            cache_delete(f"oauth:state:{state}")
+            return str(data[0]), float(data[1])
+    except Exception:
+        pass
+    return None
 
 
 def _google_scopes() -> str:
@@ -3840,7 +3929,7 @@ async def oauth_start(request: Request):
     if not client_id:
         raise HTTPException(status_code=503, detail="Google sign-in is not configured")
     state = uuid.uuid4().hex
-    _OAUTH_STATES[state] = (uid, time.time() + _OAUTH_STATE_TTL)
+    _oauth_state_store(state, uid)
     params = {
         "client_id": client_id,
         "redirect_uri": _OAUTH_REDIRECT_URI,
@@ -3854,6 +3943,57 @@ async def oauth_start(request: Request):
         "url": "https://accounts.google.com/o/oauth2/auth?" + urlencode(params),
         "state": state,
     }
+
+
+@app.get("/api/oauth/callback")
+async def oauth_callback(request: Request):
+    """Google's post-consent redirect lands here (registered HTTPS URI).
+
+    Google Cloud Console only accepts http(s) redirect URIs on this OAuth
+    client, so the consent URL points at this endpoint. The page validates
+    the state token (without consuming it), then JS-bridges the
+    authorization code back to the app's custom scheme:
+
+        rhodey://oauth2/callback?code=..&state=..
+
+    which the app's flutter_web_auth_2 (callbackUrlScheme: 'rhodey')
+    captures — the app flow (start → callback → exchange) is unchanged.
+    Returns a tiny HTML page; no auth header is present on a browser
+    redirect, so the state token is the security check here (the exchange
+    endpoint re-validates + consumes it authoritatively).
+    """
+    qp = request.query_params
+    code = qp.get("code", "")
+    state = qp.get("state", "")
+    error = qp.get("error", "")
+
+    if error:
+        # User denied or Google returned an error — bridge it so the app
+        # surfaces "Google sign-in was interrupted" instead of hanging.
+        target = f"rhodey://oauth2/callback?error={quote(error)}&state={quote(state)}"
+    elif code and state and _oauth_state_peek(state):
+        target = f"rhodey://oauth2/callback?code={quote(code)}&state={quote(state)}"
+    elif state:
+        # State exists but is invalid/expired — tell the app to retry.
+        target = f"rhodey://oauth2/callback?error=expired&state={quote(state)}"
+    else:
+        target = "rhodey://oauth2/callback?error=invalid_state"
+
+    # json.dumps makes the target safe to embed as a JS string literal.
+    js_target = json.dumps(target)
+    page = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta http-equiv='Content-Security-Policy' "
+        "content='default-src \"none\"; script-src \"unsafe-inline\"'>"
+        "<title>Returning to Rhodey…</title></head>"
+        "<body style='font-family:system-ui;display:flex;align-items:center;"
+        "justify-content:center;height:100vh;margin:0;background:#f5f2ec;"
+        "color:#3a362f'>"
+        "<p>Returning to Rhodey…</p>"
+        f"<script>window.location.replace({js_target});</script>"
+        "</body></html>"
+    )
+    return HTMLResponse(page)
 
 
 @app.post("/api/oauth/exchange")
@@ -3871,7 +4011,7 @@ async def oauth_exchange(request: Request):
     if not code or not state:
         raise HTTPException(status_code=400, detail="code and state are required")
 
-    stored = _OAUTH_STATES.pop(state, None)
+    stored = _oauth_state_pop(state)
     if not stored or stored[0] != uid or time.time() > stored[1]:
         raise HTTPException(
             status_code=400, detail="OAuth state invalid or expired — please try again"

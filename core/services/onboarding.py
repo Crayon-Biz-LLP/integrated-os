@@ -142,17 +142,30 @@ def normalize_world(payload: dict, existing_timezone: str | None) -> dict:
             task["organization"] = t["organization"].strip()
         tasks.append(task)
 
+    # M9.8: the device timezone must be a REAL IANA name — a garbage string
+    # (bad device, tampered payload) would otherwise be stored verbatim in
+    # user_settings.timezone and poison every timezone-aware prompt + the
+    # briefing gate. Invalid → keep the admin-set value (or the IST default).
+    from core.lib.time_utils import is_valid_timezone
+    device_tz = (payload.get("timezone") or "").strip()
+    timezone = device_tz or existing_timezone or "Asia/Kolkata"
+    if device_tz and not is_valid_timezone(timezone):
+        timezone = existing_timezone or "Asia/Kolkata"
+
     return {
         "context": (payload.get("context") or "").strip(),
         # Preserve the admin-set timezone from bootstrap when the journey
         # doesn't ask for one (upsert would otherwise overwrite it with the
-        # Asia/Kolkata default).
-        "timezone": (payload.get("timezone") or "").strip()
-        or existing_timezone
-        or "Asia/Kolkata",
+        # Asia/Kolkata default). The device timezone can be sent by the app
+        # so a fresh tenant's briefing times are in THEIR local time.
+        "timezone": timezone,
         "domains": domains,
         "personal_orgs": [str(o).strip() for o in personal_orgs if str(o).strip()],
         "root_label": (payload.get("root_label") or "").strip(),
+        # M9.7: briefing schedule preset (classic/balanced/bookends/
+        # through_the_day) — seed_world writes the resolved row. Absent →
+        # balanced default.
+        "briefing_preset": (payload.get("briefing_preset") or "").strip() or None,
         "people": people,
         "organizations": organizations,
         "tasks": tasks,

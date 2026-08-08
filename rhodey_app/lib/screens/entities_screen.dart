@@ -787,7 +787,7 @@ class _EntitiesScreenState extends State<EntitiesScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _enrichField('Role', 'e.g. Wife, Auditor, Vendor…', role),
-                  _enrichField('Organization', 'e.g. CrayonBiz LLP', orgName),
+                  _enrichField('Organization', 'e.g. their company', orgName),
                   _enrichField(
                     'Org type',
                     'e.g. company, nonprofit, family…',

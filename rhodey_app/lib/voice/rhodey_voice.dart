@@ -11,11 +11,19 @@ class RhodeyVoice {
   RhodeyVoice._();
 
   /// All clear — one canonical line (was three divergent phrasings across
-  /// the home screen).
-  static String allClear() => 'All clear, Danny.';
+  /// the home screen). [name] is the tenant's display name (M9.6); 'Danny'
+  /// remains the last-resort fallback for legacy single-tenant installs.
+  static String allClear([String? name]) => 'All clear, ${_who(name)}.';
 
   /// All clear with an open prompt (empty-conversation state).
-  static String allClearPrompt() => 'All clear, Danny. What\'s on your mind?';
+  static String allClearPrompt([String? name]) =>
+      'All clear, ${_who(name)}. What\'s on your mind?';
+
+  /// M9.6: the tenant's display name, or the legacy fallback when unknown.
+  static String _who([String? name]) {
+    final n = name?.trim() ?? '';
+    return n.isNotEmpty ? n : 'Danny';
+  }
 
   // ── Failure lines — one pattern, no hedging ("will" vs "may") ──
 

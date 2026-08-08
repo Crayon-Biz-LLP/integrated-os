@@ -1,12 +1,13 @@
 name: Pulse Engine (Rhodey SITREP)
 on:
   schedule:
-    # 07:30, 11:30, 14:30, 17:30 IST — Morning / Afternoon / Closing the Loop
-    - cron: '0 2,6,9,12 * * 1-5'
-    # 20:00 IST — Intel: Vaulted (evening wind-down)
-    - cron: '30 14 * * 1-5'
-    # 08:00, 15:00 IST — Weekend briefings
-    - cron: '30 2,9 * * 0,6'
+    # M9.7: global 30-minute heartbeat. The per-tenant `briefing_schedule`
+    # (core_config, owner-scoped) decides WHICH tenants are due at each
+    # heartbeat — the GHA cron is now just the alarm clock. This is the only
+    # way one static cron can serve tenants in different timezones (IST,
+    # Canada, etc.) with their own timeslots. Journal ingest + graph backfill
+    # moved to ingest.yml (runs before each briefing slot).
+    - cron: '*/30 * * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [trigger_pulse]
@@ -61,29 +62,7 @@ jobs:
       - name: Install Dependencies
         run: pip install -r requirements.txt
 
-      - name: "Step 1: Ingest New Journal Entries"
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
-          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
-        run: python -m core.skills.archive_ingest
-
-      - name: "Step 2: Update Neural Graph (Link Memories)"
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
-          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
-        run: python -m core.skills.backfill_graph
-
-      - name: "Step 3: Execute Rhodey SITREP (The Briefing)"
+      - name: "Step 1: Execute Rhodey SITREP (The Briefing)"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

@@ -293,11 +293,66 @@ def _auto_expire_recurring_tasks():
 # MAIN PULSE ENGINE
 # ──────────────────────────────────────────
 
+def _user_briefing_due(uid: str) -> bool:
+    """M9.7 gate: is THIS heartbeat one of this tenant's briefing slots?
+
+    Runs INSIDE the tenant scope. Resolves their `briefing_schedule`
+    (core_config row → balanced default) + timezone and checks the pure
+    `briefing_due_now()`. Fail-closed: any error or malformed schedule means
+    NO briefing — never a crash, never an off-slot send, never another
+    tenant's row.
+    """
+    try:
+        from core.services.briefing_schedule import (
+            resolve_briefing_schedule,
+            briefing_due_now,
+        )
+        from core.lib.time_utils import get_user_timezone
+        schedule = resolve_briefing_schedule(uid)
+        now = datetime.now(get_user_timezone(uid))
+        return briefing_due_now(schedule, now)
+    except Exception as e:
+        audit_log_sync("briefing", "WARNING", f"Briefing gate failed for {uid} (fail-closed, skipped): {e}")
+        return False
+
+
+def _recently_briefed(uid: str, within_minutes: int = 25) -> bool:
+    """True if a completed main pulse run exists for this tenant recently.
+
+    Guards a slot against double-firing: the 30-min heartbeat with a 15-min
+    window would double-hit a slot edited to an off-grid time (e.g. 07:15 is
+    inside the window of both the 07:00 and 07:30 heartbeats), and a manual
+    dispatch right before a scheduled slot would otherwise run twice. Any
+    slot ≥30 min apart is never suppressed (25 < 30). Owner-scoped via the
+    tenant facade — never another tenant's run.
+    """
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=within_minutes)).isoformat()
+        res = (
+            supabase.table("pulse_runs")
+            .select("id")
+            .eq("pulse_type", "main")
+            .eq("status", "completed")
+            .gte("completed_at", cutoff)
+            .limit(1)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception:
+        return False
+
+
 async def process_pulse(auth_secret: str = None, request_id: str = None, trigger: str = "api"):
-    """(M6) Cron fan-out: iterate all active users, one tenant-scoped briefing
-    each. Cron traffic carries no API key; each active user gets their own
-    briefing under tenant_scope(). A per-tenant failure is isolated and
-    reported without aborting the other tenants.
+    """(M6 fan-out + M9.7 gate) Iterate all active users, one tenant-scoped
+    briefing each. Cron traffic carries no API key; each active user gets
+    their own briefing under tenant_scope(). A per-tenant failure is
+    isolated and reported without aborting the other tenants.
+
+    M9.7: the GHA heartbeat fires every 30 minutes for EVERY tenant. Only
+    scheduled runs (trigger="cron") are gated by the per-tenant
+    briefing_schedule — a tenant whose slot is not due is skipped cheaply
+    (no LLM, no push). Manual triggers (workflow_dispatch → "manual",
+    /api/pulse → "api") bypass the gate and force a briefing for everyone.
 
     Legacy (pre-db/78, or no active users): runs once unscoped, exactly as
     the pre-M4 briefing did. The top-level "briefing" key keeps the legacy
@@ -306,18 +361,37 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
     uids = active_user_ids()
     if not uids:
         return await _process_pulse_impl(auth_secret, request_id, trigger)
+    gated = trigger == "cron"
     results = []
+    any_briefed = False
     for uid in uids:
         try:
             with tenant_scope(uid):
-                results.append(await _process_pulse_impl(auth_secret, request_id, trigger))
+                if gated and (not _user_briefing_due(uid) or _recently_briefed(uid)):
+                    results.append({"tenant": uid, "skipped": "not_briefing_time"})
+                    continue
+                r = await _process_pulse_impl(auth_secret, request_id, trigger)
+                if r.get("briefing"):
+                    any_briefed = True
+                results.append(r)
         except Exception as e:
             audit_log_sync("briefing", "ERROR", f"Briefing failed for tenant {uid}: {e}")
             results.append({"tenant": uid, "error": str(e)})
+    # Heartbeat freshness: when the heartbeat wakes and NO tenant is due, the
+    # engine still ran — keep the channel tenant's pulse_last_success fresh so
+    # the health check reports a healthy pipeline instead of a stale one.
+    if gated and not any_briefed:
+        try:
+            from core.services.db import channel_tenant_scope
+            with channel_tenant_scope():
+                await update_heartbeat()
+        except Exception:
+            pass
     return {
         "success": True,
-        "briefing": (results[0] or {}).get("briefing") if results else None,
+        "briefing": next((r.get("briefing") for r in results if r.get("briefing")), None),
         "tenants": len(uids),
+        "briefed": any_briefed,
         "results": results,
     }
 

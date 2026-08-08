@@ -1,0 +1,65 @@
+name: Ingest (Journal + Graph Backfill)
+on:
+  schedule:
+    # M9.7: journal ingest + graph backfill extracted from pulse.yml so the
+    # 30-min heartbeat (pulse.yml) never re-runs them wastefully. Runs 20
+    # minutes before each briefing slot so the heartbeat briefs on fresh data:
+    #   Weekday slots 07:30/11:30/14:30/17:30 IST → 07:10/11:10/14:10/17:10 IST
+    #   Weekday evening 20:00 IST → 19:40 IST
+    #   Weekend 08:00/15:00 IST → 07:40/14:40 IST
+    - cron: '40 1,5,8,11 * * 1-5'
+    - cron: '10 14 * * 1-5'
+    - cron: '10 2,9 * * 0,6'
+  workflow_dispatch:
+
+jobs:
+  run-ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          for secret in "$SUPABASE_URL" "$SUPABASE_SERVICE_ROLE_KEY" "$GEMINI_API_KEY"; do
+            if [ -z "$secret" ]; then
+              echo "❌ One or more required secrets are missing"
+              exit 1
+            fi
+          done
+          echo "✅ All secrets present"
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: "Step 1: Ingest New Journal Entries"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+        run: python -m core.skills.archive_ingest
+
+      - name: "Step 2: Update Neural Graph (Link Memories)"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+        run: python -m core.skills.backfill_graph

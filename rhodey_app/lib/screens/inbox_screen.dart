@@ -255,7 +255,7 @@ class _InboxScreenState extends State<InboxScreen>
                 textInputAction: TextInputAction.done,
                 onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
                 decoration: InputDecoration(
-                  hintText: 'e.g. Friend from church, VP at Qhord',
+                  hintText: 'e.g. Friend from church, VP at their company',
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
                     borderSide: BorderSide(color: AppTheme.border),
