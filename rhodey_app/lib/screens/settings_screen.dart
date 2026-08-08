@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_config.dart';
+import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 import 'how_rhodey_works_screen.dart';
 
@@ -12,6 +13,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _config = ApiConfig();
+  final _api = ApiService();
   final _urlController = TextEditingController();
   final _keyController = TextEditingController();
   bool _loading = true;
@@ -60,6 +62,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     // Auto-clear status after 2s
     Future.delayed(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      setState(() => _statusMessage = null);
+    });
+  }
+
+  /// M10: clears the onboarding demo artifacts (idempotent server-side).
+  Future<void> _clearDemoItems() async {
+    setState(() {
+      _saving = true;
+      _statusMessage = null;
+    });
+    try {
+      final r = await _api.cleanupDemo();
+      if (!mounted) return;
+      final removed = r.success && r.data is Map
+          ? (r.data as Map)['removed']
+          : null;
+      final parts = <String>[];
+      if (removed is Map) {
+        for (final e in removed.entries) {
+          final n = e.value is num ? e.value as num : 0;
+          if (n != 0) parts.add('${e.key}: $n');
+        }
+      }
+      setState(() {
+        _saving = false;
+        _statusMessage = parts.isEmpty
+            ? '✅ No demo items to clear'
+            : '✅ Cleared ${parts.join(', ')}';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _statusMessage = 'Could not clear demo items ($e)';
+      });
+    }
+    Future.delayed(const Duration(seconds: 3), () {
       if (!mounted) return;
       setState(() => _statusMessage = null);
     });
@@ -246,6 +286,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
 
                 const SizedBox(height: 32),
+
+                // ── Demo cleanup (M10) ──
+                _SectionHeader('Demo'),
+                const SizedBox(height: 8),
+                Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.border),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: _saving ? null : _clearDemoItems,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 13,
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.cleaning_services_outlined,
+                              size: 18,
+                              color: AppTheme.textSecondary,
+                            ),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Text(
+                                'Clear onboarding demo items',
+                                style: TextStyle(
+                                  color: AppTheme.textPrimary,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                            const Icon(
+                              Icons.chevron_right,
+                              size: 18,
+                              color: AppTheme.textTertiary,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
 
                 // ── Help ──
                 _SectionHeader('Help'),

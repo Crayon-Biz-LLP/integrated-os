@@ -12,7 +12,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from core.lib.audit_logger import trace_id_var
+from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.telemetry import emit_observation
 from core.decisions import record_decision
 from core.actions import begin_action_context, clear_action_context
@@ -864,6 +864,242 @@ async def send_message_route(request: Request):
     except Exception as e:
         print(f"Send message error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+# --- ONBOARDING DEMO (M10) ---
+# The demo rides the REAL pipeline (classify → route → reply → persist) so
+# the "aha" is genuine — a demo task lands on the board, a demo note links to
+# a person, a demo query reads THEIR seeded graph. Artifacts are stamped
+# demo-owned so the tenant can clear them (POST /api/demo/cleanup).
+
+_DEMO_STAMP_MARKER = "[onboarding-demo]"
+
+
+async def _run_demo_message_pipeline(fake_update: dict, session_id: str | None) -> tuple[str | None, str | None]:
+    """Execute the REAL web-message pipeline INLINE for an onboarding demo.
+
+    Same core as _run_web_message_pipeline (classify → route → reply) but
+    skips the briefing rebuild + silent push — the demo UI shows the reply
+    directly, so the extra ~10s rebuild is wasted latency on every tap. The
+    reply is still persisted by the pipeline (raw_dumps + conversations), so
+    the thread stays real and appears in History.
+
+    Returns (response_text, resulting_session_id).
+    """
+    from core.actions import begin_action_context, clear_action_context
+    begin_action_context()
+    try:
+        await process_webhook(fake_update)
+        from core.actions import get_captured_response, get_captured_session_id
+        response_text = get_captured_response()
+        resulting_session_id = get_captured_session_id() or session_id
+        return response_text, resulting_session_id
+    finally:
+        clear_action_context()
+
+
+def _merge_demo_meta(existing) -> dict:
+    meta = dict(existing or {})
+    meta["demo"] = True
+    return meta
+
+
+def _stamp_demo_artifacts(supabase, message_text: str, window_start_iso: str) -> dict:
+    """Stamp artifacts a demo message created as demo-owned.
+
+    Window-scoped recovery tagging (honest limits — read-before-write
+    without a lock leaves a small race window, but the demo runs during
+    onboarding when no real traffic exists):
+      - raw_dumps inbound row whose content == the exact scripted message
+      - raw_dumps outbound rows created in the window (the bot's reply)
+      - tasks created in the window → notes suffixed [onboarding-demo]
+      - memories created in the window → metadata.demo = true
+    Graph nodes are intentionally NOT stamped: they enter the normal
+    pending-approval flow, and rejecting them in the Inbox is the designed
+    training signal.
+    Returns counts of stamped rows.
+    """
+    stamped = {"raw_dumps": 0, "conversations": 0, "tasks": 0, "memories": 0}
+
+    # conversations: the user↔bot thread rows written by log_exchange
+    # during the demo turn (inbound user message + bot replies).
+    try:
+        res = supabase.table("conversations") \
+            .select("id, metadata, role, content") \
+            .gte("created_at", window_start_iso) \
+            .execute()
+        for row in res.data or []:
+            content = row.get("content") or ""
+            if (row.get("role") == "user") and content != message_text:
+                continue  # only the exact scripted message
+            supabase.table("conversations") \
+                .update({"metadata": _merge_demo_meta(row.get("metadata"))}) \
+                .eq("id", row["id"]).execute()
+            stamped["conversations"] += 1
+    except Exception as e:
+        audit_log_sync("demo", "WARNING", f"demo stamp conversations: {e}")
+
+    # raw_dumps: exact-content inbound row + window outbound replies
+    try:
+        res = supabase.table("raw_dumps") \
+            .select("id, metadata, direction") \
+            .gte("created_at", window_start_iso) \
+            .execute()
+        for row in res.data or []:
+            direction = (row.get("direction") or "").lower()
+            content = row.get("content") or ""
+            is_inbound = direction in ("incoming", "inbound")
+            is_outbound = direction in ("outgoing", "outbound")
+            if is_inbound and content != message_text:
+                continue  # only the exact scripted message
+            if not (is_inbound or is_outbound):
+                continue
+            supabase.table("raw_dumps") \
+                .update({"metadata": _merge_demo_meta(row.get("metadata"))}) \
+                .eq("id", row["id"]).execute()
+            stamped["raw_dumps"] += 1
+    except Exception as e:
+        audit_log_sync("demo", "WARNING", f"demo stamp raw_dumps: {e}")
+
+    # tasks: created in the window → notes marker
+    try:
+        res = supabase.table("tasks") \
+            .select("id, notes") \
+            .gte("created_at", window_start_iso) \
+            .execute()
+        for row in res.data or []:
+            notes = (row.get("notes") or "")
+            if _DEMO_STAMP_MARKER not in notes:
+                notes = f"{notes} {_DEMO_STAMP_MARKER}".strip()
+            supabase.table("tasks").update({"notes": notes}).eq("id", row["id"]).execute()
+            stamped["tasks"] += 1
+    except Exception as e:
+        audit_log_sync("demo", "WARNING", f"demo stamp tasks: {e}")
+
+    # memories: created in the window → metadata.demo
+    try:
+        res = supabase.table("memories") \
+            .select("id, metadata") \
+            .gte("created_at", window_start_iso) \
+            .execute()
+        for row in res.data or []:
+            supabase.table("memories") \
+                .update({"metadata": _merge_demo_meta(row.get("metadata"))}) \
+                .eq("id", row["id"]).execute()
+            stamped["memories"] += 1
+    except Exception as e:
+        audit_log_sync("demo", "WARNING", f"demo stamp memories: {e}")
+
+    return stamped
+
+
+@app.post("/api/demo/message")
+async def demo_message_route(request: Request):
+    """Onboarding demo: run ONE scripted message through the REAL pipeline
+    inline, returning the reply synchronously, and stamp the artifacts it
+    creates as demo-owned so they're cleanable.
+
+    Stamping is deliberately precise (never tags real user traffic): the
+    inbound raw_dumps row is only stamped when its content EXACTLY equals
+    the message the app sent through this endpoint, within a 2-second
+    window. The seed at journey step 7 already marks the tenant 'seeded'
+    BEFORE the demo steps run, so a status gate would wrongly block the
+    demo — the exact-content + window match is the real guard.
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        message_text = body.get("message")
+        if not message_text:
+            raise HTTPException(status_code=400, detail="message required")
+
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID") or "0"
+        chat_id = int(telegram_chat_id)
+        session_id = body.get("session_id")
+        metadata = {}
+        if session_id:
+            metadata["session_id"] = session_id
+
+        fake_update = {
+            "update_id": f"web_demo_{int(time.time() * 1000)}",
+            "message": {
+                "chat": {"id": chat_id},
+                "text": message_text,
+                "date": int(time.time()),
+            },
+            "metadata": metadata,
+        }
+
+        supabase = tenant_aware_client()
+        window_start = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
+
+        response_text, resulting_session_id = await _run_demo_message_pipeline(fake_update, session_id)
+
+        stamped = _stamp_demo_artifacts(supabase, message_text, window_start)
+
+        return {
+            "success": True,
+            "response": response_text or "Got it. Processing...",
+            "session_id": resulting_session_id,
+            "stamped": stamped,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Demo message error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/demo/cleanup")
+async def demo_cleanup_route(request: Request):
+    """Delete the tenant's demo-tagged artifacts (idempotent).
+
+    - raw_dumps rows with metadata.demo = true
+    - tasks whose notes contain [onboarding-demo] AND are still 'todo'
+      (completed demo tasks stay — their outcome memory is a learning
+      signal; deleting it would erase what the demo taught)
+    - memories with metadata.demo = true
+    Graph nodes are left: they entered the normal pending-approval flow,
+    and rejecting them in the Inbox is the designed training signal.
+    """
+    require_api_auth(request)
+    try:
+        supabase = tenant_aware_client()
+        removed = {"raw_dumps": 0, "conversations": 0, "tasks": 0, "memories": 0}
+
+        try:
+            res = supabase.table("raw_dumps").delete() \
+                .eq("metadata->>demo", "true").execute()
+            removed["raw_dumps"] = len(res.data or [])
+        except Exception as e:
+            audit_log_sync("demo", "WARNING", f"demo cleanup raw_dumps: {e}")
+
+        try:
+            res = supabase.table("conversations").delete() \
+                .eq("metadata->>demo", "true").execute()
+            removed["conversations"] = len(res.data or [])
+        except Exception as e:
+            audit_log_sync("demo", "WARNING", f"demo cleanup conversations: {e}")
+
+        try:
+            res = supabase.table("tasks").delete() \
+                .ilike("notes", f"%{_DEMO_STAMP_MARKER}%") \
+                .eq("status", "todo").execute()
+            removed["tasks"] = len(res.data or [])
+        except Exception as e:
+            audit_log_sync("demo", "WARNING", f"demo cleanup tasks: {e}")
+
+        try:
+            res = supabase.table("memories").delete() \
+                .eq("metadata->>demo", "true").execute()
+            removed["memories"] = len(res.data or [])
+        except Exception as e:
+            audit_log_sync("demo", "WARNING", f"demo cleanup memories: {e}")
+
+        return {"success": True, "removed": removed}
+    except Exception as e:
+        print(f"Demo cleanup error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 # --- GET MESSAGE HISTORY ---
 @app.get("/api/messages")

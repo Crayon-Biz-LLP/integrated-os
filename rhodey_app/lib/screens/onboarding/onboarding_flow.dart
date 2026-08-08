@@ -1,24 +1,30 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../../services/api_config.dart';
 import '../../services/api_service.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/voice_states.dart';
 
-/// In-app onboarding journey (M8 + M9.7 + M9.8).
+/// In-app onboarding journey (M8 + M9.7 + M9.8 + M10 demo).
 ///
 /// A short conversation that turns a new user into a seeded tenant:
-///   0 Welcome → 1 key → 2 about you → 3 people → 4 plate →
-///   5 life areas → 6 how Rhodey works → 7 briefing times →
-///   8 Google (optional) → 9 first briefing.
+///   0 Welcome → 1 key → 2 about you → 3 people → 4 plate → 5 areas →
+///   6 briefing times → 7 create my world (SEED) → 8 try it now (chat
+///   demo) → 9 your surfaces → 10 voice + quick replies → 11 Google
+///   (optional) → 12 first briefing.
 ///
 /// Step 1 validates the API key against /api/onboarding/status; step 6
-/// sets expectations (rhythm, board, approvals, memory, privacy); step 7
-/// picks the briefing schedule preset (M9.7); the final step submits the
-/// collected answers to /api/onboarding/complete, which seeds the tenant's
-/// world (graph + tasks + settings) and returns the first welcome briefing
-/// — rendered here with the same BriefingResponse shape the home screen
-/// uses. [onDone] flips the app into the normal shell.
+/// picks the briefing schedule preset (M9.7); step 7 seeds the tenant's
+/// world (graph + tasks + settings) and shows the welcome summary inline.
+/// Steps 8-10 (M10) are a HANDS-ON demo: tap-to-try cards run scripted
+/// messages through the REAL pipeline via /api/demo/message, so a demo
+/// task lands on the board, a demo note links to a person, and a demo
+/// query reads THEIR graph — stamped demo-owned and cleanable. The finale
+/// (step 12) fetches the LIVE briefing, which now includes the demo items.
+/// [onDone] flips the app into the normal shell.
 class OnboardingFlow extends StatefulWidget {
   final VoidCallback onDone;
   const OnboardingFlow({super.key, required this.onDone});
@@ -28,7 +34,10 @@ class OnboardingFlow extends StatefulWidget {
 }
 
 class _OnboardingFlowState extends State<OnboardingFlow> {
-  static const _totalPages = 10;
+  // 0 welcome · 1 key · 2 about · 3 people · 4 plate · 5 areas ·
+  // 6 times · 7 create world (seed) · 8 try it (chat demo) ·
+  // 9 surfaces · 10 voice + quick replies · 11 google · 12 first briefing
+  static const _totalPages = 13;
   static const _domainSuggestions = [
     'Work', 'Business', 'Personal', 'Family', 'Health', 'Finance', 'Ministry',
   ];
@@ -57,6 +66,25 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   final _domainKeywordsController = TextEditingController();
   final List<Map<String, dynamic>> _domains = [];
   bool _googleConnected = false;
+  // M10: true once the seed ran (step 7) — gates the demo steps that
+  // follow, which need a real graph to query and a real board to land on.
+  bool _seeded = false;
+  // M10: demo chat state — the tap-to-try actions and the mini thread they
+  // build (role: user|rhodey, text, tag).
+  final List<Map<String, String>> _demoChat = [];
+  bool _demoSending = false;
+  final Set<String> _demoDone = {};
+  // M10: voice try state (speech_to_text) + sample quick-reply chips.
+  final _speech = stt.SpeechToText();
+  VoiceState _demoVoiceState = VoiceState.idle;
+  String _demoVoiceText = '';
+  String? _demoVoiceError;
+  // M10: finale live briefing (reflects the seeded world + demo items).
+  Map<String, dynamic>? _finalBriefing;
+  bool _finalBriefingLoading = false;
+  bool _finalBriefingFetched = false;
+  // M10: cleanup toggle — clear demo artifacts on entry (default: keep).
+  bool _clearDemoItems = false;
   // M9.7: briefing schedule preset (balanced = default for new tenants).
   String _presetId = 'balanced';
   // M9.7: device timezone (IANA name) sent with the seed so briefing times
@@ -121,6 +149,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
   @override
   void dispose() {
+    _speech.cancel();
     _controller.dispose();
     _keyController.dispose();
     _contextController.dispose();
@@ -310,19 +339,137 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       final data = r.data as Map;
       final briefing = data['briefing'];
       setState(() {
+        _seeded = true;
         _briefing = briefing is Map ? Map<String, dynamic>.from(briefing) : {};
         _busy = false;
       });
-      _controller.nextPage(
-        duration: AppTheme.motionBase,
-        curve: AppTheme.motionCurve,
-      );
+      // Stay on the "create my world" step — it now shows the world
+      // summary inline; Continue (bottom bar) advances to the demo.
     } else {
       setState(() {
         _busy = false;
         _statusText = 'Could not create your world (${r.error}). Retry.';
         _statusIsError = true;
       });
+    }
+  }
+
+  // ── M10: onboarding demo actions ────────────────────────────
+
+  /// The person used by the demo script — the first person the user added
+  /// (their world is seeded at step 7, so that node exists), else null
+  /// (the demo then uses person-neutral scripts — no phantom names).
+  String? get _demoPerson {
+    if (_people.isNotEmpty) {
+      final name = (_people.first['name'] ?? '').trim();
+      if (name.isNotEmpty) return name;
+    }
+    return null;
+  }
+
+  /// Runs ONE demo message through the REAL pipeline (inline), appending
+  /// the user message + Rhodey's reply (+ intent tag) to the mini thread.
+  /// Returns true when the demo message was accepted by the server.
+  Future<bool> _runDemoMessage(String text, {String? tag}) async {
+    if (_demoSending) return false;
+    setState(() {
+      _demoSending = true;
+      _demoChat.add({'role': 'user', 'text': text});
+    });
+    final r = await _api.sendDemoMessage(text);
+    if (!mounted) return false;
+    final ok = r.success && r.data is Map;
+    final reply = ok
+        ? ((r.data as Map)['response'] as String?)?.trim() ?? 'Got it.'
+        : 'That didn\'t go through — ${r.error}.';
+    setState(() {
+      _demoSending = false;
+      _demoChat.add({'role': 'rhodey', 'text': reply, 'tag': ok ? (tag ?? '') : ''});
+    });
+    return ok;
+  }
+
+  /// Runs one scripted demo card — marked done ONLY when it actually went
+  /// through, so a failed tap can be retried.
+  Future<void> _tryDemoAction(String key, String text, String tag) async {
+    final ok = await _runDemoMessage(text, tag: tag);
+    if (ok && mounted) setState(() => _demoDone.add(key));
+  }
+
+  /// Voice try: transcribe via speech_to_text, then send the phrase through
+  /// the same demo message path (real pipeline, demo-stamped).
+  Future<void> _startDemoVoice() async {
+    setState(() {
+      _demoVoiceState = VoiceState.listening;
+      _demoVoiceText = '';
+      _demoVoiceError = null;
+    });
+    final available = await _speech.initialize(
+      onStatus: (status) {
+        if (status == 'done' || status == 'notListening') {
+          if (_demoVoiceState == VoiceState.listening && mounted) {
+            setState(() => _demoVoiceState = VoiceState.idle);
+          }
+        }
+      },
+      onError: (error) {
+        if (mounted) {
+          setState(() {
+            _demoVoiceState = VoiceState.error;
+            _demoVoiceError = 'Could not hear anything — try again or type.';
+          });
+        }
+      },
+    );
+    if (!mounted) return;
+    if (!available) {
+      setState(() {
+        _demoVoiceState = VoiceState.error;
+        _demoVoiceError = 'Speech recognition is unavailable on this device.';
+      });
+      return;
+    }
+    await _speech.listen(
+      onResult: (result) {
+        if (!mounted) return;
+        setState(() => _demoVoiceText = result.recognizedWords);
+        if (result.finalResult && result.recognizedWords.trim().isNotEmpty) {
+          _runDemoMessage(result.recognizedWords.trim(), tag: '🗣️ Noted');
+          setState(() => _demoVoiceState = VoiceState.done);
+        }
+      },
+      listenOptions: stt.SpeechListenOptions(
+        listenFor: const Duration(seconds: 15),
+        pauseFor: const Duration(seconds: 3),
+        cancelOnError: true,
+      ),
+    );
+  }
+
+  /// Loads the live briefing for the finale — the REAL /api/briefing now
+  /// includes the demo items, so the first briefing reflects the world the
+  /// user just built and played with.
+  Future<void> _loadFinalBriefing() async {
+    if (_finalBriefingFetched || _finalBriefingLoading) return;
+    setState(() => _finalBriefingLoading = true);
+    final r = await _api.get('/api/briefing', timeout: const Duration(seconds: 20));
+    if (!mounted) return;
+    setState(() {
+      _finalBriefingLoading = false;
+      _finalBriefingFetched = true;
+      if (r.success && r.data is Map) {
+        _finalBriefing = Map<String, dynamic>.from(r.data as Map);
+      }
+    });
+  }
+
+  /// Clears the demo artifacts server-side (idempotent) when the user chose
+  /// "clear demo items" — fired once on the way into the app.
+  Future<void> _clearDemo() async {
+    try {
+      await _api.cleanupDemo();
+    } catch (_) {
+      // Non-fatal — cleanup is also reachable from Settings later.
     }
   }
 
@@ -337,6 +484,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
   void _next() {
     if (_page == _totalPages - 1) {
+      // Final step: honor the demo-cleanup choice before entering.
+      if (_clearDemoItems) unawaited(_clearDemo());
       widget.onDone();
       return;
     }
@@ -363,6 +512,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                   // message into the next.
                   _statusText = null;
                   _statusIsError = false;
+                  // M10: the finale step fetches the LIVE briefing (which
+                  // now includes demo items) as soon as it becomes visible.
+                  if (p == _totalPages - 1) _loadFinalBriefing();
                 }),
                 children: [
                   _welcomeStep(),
@@ -371,8 +523,11 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                   _peopleStep(),
                   _plateStep(),
                   _areasStep(),
-                  _howItWorksStep(),
                   _timesStep(),
+                  _createWorldStep(),
+                  _demoChatStep(),
+                  _surfacesStep(),
+                  _voiceStep(),
                   _googleStep(),
                   _briefingStep(),
                 ],
@@ -416,6 +571,11 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     // The welcome step has its own call-to-action — no bottom bar needed.
     if (_page == 0) return const SizedBox.shrink();
     final isLast = _page == _totalPages - 1;
+    // Gates: key step requires validation; create-world step requires the
+    // seed to have run (its own button does the seeding).
+    final gate = _busy ||
+        (_page == 1 && !_keyValid) ||
+        (_page == 7 && !_seeded);
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
       decoration: BoxDecoration(
@@ -439,9 +599,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           const Spacer(),
           _primaryButton(
             label: isLast ? 'Enter Rhodey' : 'Continue',
-            // The key step requires a successful validation before the
-            // journey can proceed (M8 review fix).
-            onTap: _busy || (_page == 1 && !_keyValid) ? null : _next,
+            onTap: gate ? null : _next,
           ),
         ],
       ),
@@ -804,34 +962,485 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     );
   }
 
-  // ── Step 6: How Rhodey works (expectations) ─────────────────
+  // ── Step 7: Create my world (seed NOW) ──────────────────────
+  // M10: the seed moved BEFORE the demo so the demo can query a real graph
+  // and land tasks on a real board. After the seed runs, this same step
+  // shows the "Your world, as I see it" summary inline; Continue advances.
 
-  Widget _howItWorksStep() {
+  Widget _createWorldStep() {
+    if (!_seeded) {
+      return _stepScaffold(
+        title: 'Create my world',
+        subtitle: 'Rhodey will now build your world from what you told us — '
+            'your people, your plate, your areas.',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: 12),
+            _primaryButton(label: 'Create my world', onTap: _busy ? null : _complete),
+            if (_statusText != null) ...[
+              const SizedBox(height: 14),
+              Text(
+                _statusText!,
+                style: TextStyle(
+                  color: _statusIsError ? AppTheme.red : AppTheme.green,
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+              ),
+            ],
+            const Spacer(),
+            Text(
+              'Then we\'ll try talking to it together — a quick hands-on tour.',
+              style: TextStyle(
+                color: AppTheme.textTertiary.withValues(alpha: 0.7),
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final b = _briefing!;
     return _stepScaffold(
-      title: 'How Rhodey works',
-      subtitle: 'Three things worth knowing before you start.',
+      title: 'Your world, as I see it',
+      subtitle: 'From what you told me. Now — let\'s try talking to it.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: const [
-          _PitchRow(icon: '🔔', text: 'Briefings at your times — morning, midday, evening. You pick the rhythm (next step).'),
-          SizedBox(height: 16),
-          _PitchRow(icon: '🗂️', text: 'One living board — tasks, people, and areas. Rhodey keeps the picture current.'),
-          SizedBox(height: 16),
-          _PitchRow(icon: '⚖️', text: 'You stay in control — it proposes, you approve. Nothing important happens without you.'),
-          SizedBox(height: 16),
-          _PitchRow(icon: '🧠', text: 'It learns from you — every approve, reject, and "not now" teaches it what matters.'),
-          SizedBox(height: 16),
-          _PitchRow(icon: '🔐', text: 'Your data stays yours — scoped to you. Gmail is read only with your permission.'),
-          Spacer(),
-          Text(
-            'Best to feed it daily — even one line. The more it knows your world, the sharper it gets.',
-            style: TextStyle(
-              color: AppTheme.textTertiary,
-              fontSize: 11,
-              height: 1.4,
+        children: [
+          Expanded(child: _worldSummary(b)),
+        ],
+      ),
+    );
+  }
+
+  // ── Step 8: Try it now — chat (M10 demo) ────────────────────
+  // Four guided REAL actions through the real pipeline. Each card is a
+  // tap-to-try: it sends a scripted message via /api/demo/message, which
+  // runs the pipeline inline and stamps the artifacts demo-owned.
+
+  Widget _demoChatStep() {
+    final person = _demoPerson;
+    final chat = List<Map<String, String>>.from(_demoChat);
+    return _stepScaffold(
+      title: 'Try it now',
+      subtitle: 'Tap a card — Rhodey does it for real. Demo items stay marked '
+          'and cleanable.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: ListView(
+              children: [
+                ..._demoActionCards(person),
+                const SizedBox(height: 18),
+                if (chat.isNotEmpty) ...[
+                  Text(
+                    'Your mini thread',
+                    style: TextStyle(
+                      color: AppTheme.textTertiary.withValues(alpha: 0.8),
+                      fontSize: 11,
+                      letterSpacing: 0.6,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ...chat.map((m) => _demoBubble(m)),
+                  if (_demoSending) ...[const SizedBox(height: 8), _demoBubble({'role': 'rhodey', 'text': '…', 'tag': ''})],
+                ],
+              ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  List<Widget> _demoActionCards(String? person) {
+    // Person-specific scripts when the user added people (their nodes exist
+    // post-seed); person-neutral scripts otherwise — never a phantom name.
+    final taskText = person != null
+        ? 'Remind me to call $person about the hiring plan tomorrow morning'
+        : 'Remind me to send the hiring plan draft tomorrow morning';
+    final doneText = person != null
+        ? 'The $person call is done'
+        : 'The hiring plan draft is done';
+    final noteText = person != null
+        ? '$person said the offer letter is out'
+        : 'The offer letter is out for the new hire';
+    final taskKey = 'task';
+    final doneKey = 'done';
+    final noteKey = 'note';
+    final queryKey = 'query';
+    return [
+      _demoCard(
+        icon: '📋',
+        label: 'Add a task',
+        message: taskText,
+        expect: '→ a task lands on your Today board',
+        tag: '📋 Task created',
+        done: _demoDone.contains(taskKey),
+        onTap: () => _tryDemoAction(taskKey, taskText, '📋 Task created'),
+      ),
+      const SizedBox(height: 10),
+      _demoCard(
+        icon: '✅',
+        label: 'Close it',
+        message: doneText,
+        expect: '→ that task closes — the board updates',
+        tag: '✅ Closed',
+        done: _demoDone.contains(doneKey),
+        enabled: _demoDone.contains(taskKey),
+        onTap: () => _tryDemoAction(doneKey, doneText, '✅ Closed'),
+      ),
+      const SizedBox(height: 10),
+      _demoCard(
+        icon: '📝',
+        label: 'Drop a note',
+        message: noteText,
+        expect: person != null ? '→ a note, linked to $person' : '→ a note, filed for later',
+        tag: '📝 Noted',
+        done: _demoDone.contains(noteKey),
+        onTap: () => _tryDemoAction(noteKey, noteText, '📝 Noted'),
+      ),
+      const SizedBox(height: 10),
+      _demoCard(
+        icon: '❓',
+        label: 'Ask it something',
+        message: 'Who is in my world?',
+        expect: '→ answered from YOUR world',
+        tag: '❓ Answered',
+        done: _demoDone.contains(queryKey),
+        onTap: () => _tryDemoAction(queryKey, 'Who is in my world?', '❓ Answered'),
+      ),
+    ];
+  }
+
+  Widget _demoCard({
+    required String icon,
+    required String label,
+    required String message,
+    required String expect,
+    required String tag,
+    required bool done,
+    bool enabled = true,
+    required VoidCallback onTap,
+  }) {
+    final canRun = enabled && !done && !_demoSending;
+    return Container(
+      decoration: BoxDecoration(
+        color: done ? AppTheme.surfaceAlt.withValues(alpha: 0.5) : AppTheme.surface,
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+        border: Border.all(
+          color: done
+              ? AppTheme.border
+              : enabled
+                  ? AppTheme.accent.withValues(alpha: 0.25)
+                  : AppTheme.border.withValues(alpha: 0.4),
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+        onTap: canRun ? onTap : null,
+        child: Padding(
+          padding: const EdgeInsets.all(13),
+          child: Row(
+            children: [
+              Text(icon, style: const TextStyle(fontSize: 20)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          label,
+                          style: const TextStyle(
+                            color: AppTheme.textPrimary,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        if (done)
+                          const Text('✓ tried',
+                              style: TextStyle(
+                                color: AppTheme.green,
+                                fontSize: 10.5,
+                              ))
+                        else if (!enabled)
+                          Text('do #1 first',
+                              style: TextStyle(
+                                color: AppTheme.textTertiary.withValues(alpha: 0.7),
+                                fontSize: 10.5,
+                              )),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      message,
+                      style: TextStyle(
+                        color: done
+                            ? AppTheme.textTertiary
+                            : AppTheme.textSecondary,
+                        fontSize: 12,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      expect,
+                      style: TextStyle(
+                        color: done
+                            ? AppTheme.textTertiary.withValues(alpha: 0.6)
+                            : AppTheme.textTertiary,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (!done)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: canRun ? AppTheme.accent : AppTheme.textMuted,
+                    borderRadius: BorderRadius.circular(AppTheme.controlRadius),
+                  ),
+                  child: Text(
+                    canRun ? 'Try it' : '…',
+                    style: const TextStyle(
+                      color: Color(0xFF161510),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _demoBubble(Map<String, String> m) {
+    final isUser = m['role'] == 'user';
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        constraints: const BoxConstraints(maxWidth: 300),
+        decoration: BoxDecoration(
+          color: isUser ? AppTheme.userBubble : AppTheme.botBubble,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isUser ? AppTheme.border : AppTheme.borderLight,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              m['text'] ?? '',
+              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12.5, height: 1.4),
+            ),
+            if (!isUser && (m['tag'] ?? '').isNotEmpty) ...[
+              const SizedBox(height: 5),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: AppTheme.accentBg,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  m['tag']!,
+                  style: const TextStyle(color: AppTheme.champagne, fontSize: 10),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Step 9: Your surfaces (tour) ────────────────────────────
+
+  Widget _surfacesStep() {
+    return _stepScaffold(
+      title: 'Your four surfaces',
+      subtitle: 'Where your world lives. Everything you just made shows up here.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _surfaceCard('🗓️', 'Today', 'Your board — the day\'s shape, tasks, deadlines, and what matters now.'),
+          const SizedBox(height: 12),
+          _surfaceCard('📥', 'Inbox', 'Rhodey\'s proposals — approve, reject, or snooze. Every choice teaches it.'),
+          const SizedBox(height: 12),
+          _surfaceCard('🧭', 'Entities', 'People and areas — your living map of who and what matters.'),
+          const SizedBox(height: 12),
+          _surfaceCard('🕘', 'History', 'Everything you\'ve told it — searchable, threaded, yours.'),
+          const Spacer(),
+          Text(
+            'No new accounts or tabs — the same world, four doors.',
+            style: TextStyle(
+              color: AppTheme.textTertiary.withValues(alpha: 0.7),
+              fontSize: 11,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _surfaceCard(String icon, String title, String desc) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Row(
+        children: [
+          Text(icon, style: const TextStyle(fontSize: 22)),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: AppTheme.textPrimary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  desc,
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Step 10: Voice + quick replies (M10) ────────────────────
+
+  Widget _voiceStep() {
+    return _stepScaffold(
+      title: 'Talk to it, too',
+      subtitle: 'Voice works everywhere — try it here. And briefings come with quick taps.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: ListView(
+              children: [
+                Material(
+                  color: AppTheme.surfaceAlt,
+                  borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+                    onTap: _demoVoiceState == VoiceState.listening ? null : _startDemoVoice,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        children: [
+                          Icon(
+                            _demoVoiceState == VoiceState.listening
+                                ? Icons.mic
+                                : Icons.mic_none,
+                            color: _demoVoiceState == VoiceState.listening
+                                ? AppTheme.accent
+                                : AppTheme.textSecondary,
+                            size: 30,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _demoVoiceState == VoiceState.listening
+                                ? 'Listening… speak now'
+                                : 'Hold to talk — or tap to start',
+                            style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12.5),
+                          ),
+                          if (_demoVoiceText.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              '"$_demoVoiceText"',
+                              style: const TextStyle(
+                                color: AppTheme.champagne,
+                                fontSize: 12,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ],
+                          if (_demoVoiceError != null) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              _demoVoiceError!,
+                              style: const TextStyle(color: AppTheme.red, fontSize: 11.5),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Quick replies',
+                  style: TextStyle(
+                    color: AppTheme.textTertiary,
+                    fontSize: 11,
+                    letterSpacing: 0.6,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _quickReplyChip('⚡ What\'s urgent?', 'What\'s urgent?', '⚡ Urgent'),
+                    _quickReplyChip('📅 Show today', 'What\'s on today?', '📅 Today'),
+                    _quickReplyChip('🗂️ My plate', 'What\'s on my plate?', '🗂️ Plate'),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                if (_demoChat.isNotEmpty) ...[
+                  ..._demoChat.map((m) => _demoBubble(m)),
+                  if (_demoSending) ...[const SizedBox(height: 8), _demoBubble({'role': 'rhodey', 'text': '…', 'tag': ''})],
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _quickReplyChip(String label, String message, String tag) {
+    return Material(
+      color: AppTheme.accentBg,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: _demoSending ? null : () => _runDemoMessage(message, tag: tag),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+          child: Text(
+            label,
+            style: const TextStyle(color: AppTheme.champagne, fontSize: 12),
+          ),
+        ),
       ),
     );
   }
@@ -1099,148 +1708,181 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     );
   }
 
-  // ── Step 7: First briefing ──────────────────────────────────
+  // ── Step 7 shared: world summary rendering ──────────────────
+  // Used by the create-world step (after seeding) AND the finale briefing
+  // step — the same BriefingResponse shape the home screen renders.
 
-  Widget _briefingStep() {
-    if (_briefing == null) {
-      return _stepScaffold(
-        title: 'Almost there',
-        subtitle: 'Rhodey will now build your world from what you told us — '
-            'your people, your plate, your areas.',
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const SizedBox(height: 12),
-            _primaryButton(label: 'Create my world', onTap: _busy ? null : _complete),
-            if (_statusText != null) ...[
-              const SizedBox(height: 14),
-              Text(
-                _statusText!,
-                style: TextStyle(
-                  color: _statusIsError ? AppTheme.red : AppTheme.green,
-                  fontSize: 12,
-                  height: 1.4,
-                ),
-              ),
-            ],
-            const Spacer(),
-          ],
-        ),
-      );
-    }
-
-    final b = _briefing!;
+  Widget _worldSummary(Map<String, dynamic> b) {
     final greeting = (b['greeting'] as String?) ?? 'Welcome.';
     final voiceLine = (b['voice_line'] as String?) ?? '';
     final sections =
         (b['sections'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
     final insights =
         (b['insights'] as List?)?.cast<String>() ?? const <String>[];
-
-    return _stepScaffold(
-      title: 'Your world, as I see it',
-      subtitle: null,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+    return ListView(
+      shrinkWrap: true,
+      children: [
+        Text(
+          greeting,
+          style: const TextStyle(
+            fontFamily: 'InstrumentSerif',
+            fontSize: 30,
+            color: AppTheme.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 8),
+        if (voiceLine.isNotEmpty)
           Text(
-            greeting,
-            style: const TextStyle(
-              fontFamily: 'InstrumentSerif',
-              fontSize: 30,
-              color: AppTheme.textPrimary,
+            voiceLine,
+            style: TextStyle(
+              color: AppTheme.textSecondary,
+              fontSize: 13.5,
+              height: 1.5,
+            ),
+          ),
+        if (insights.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: insights
+                .map(
+                  (i) => Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppTheme.accentBg,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      i,
+                      style: const TextStyle(
+                        color: AppTheme.champagne,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
+        ],
+        const SizedBox(height: 20),
+        for (final s in sections) ...[
+          Text(
+            (s['title'] as String?) ?? '',
+            style: TextStyle(
+              color: AppTheme.textTertiary.withValues(alpha: 0.8),
+              fontSize: 11,
+              letterSpacing: 0.6,
+              fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 8),
-          if (voiceLine.isNotEmpty)
-            Text(
-              voiceLine,
-              style: TextStyle(
-                color: AppTheme.textSecondary,
-                fontSize: 13.5,
-                height: 1.5,
+          for (final item
+              in (s['items'] as List?)?.cast<Map<String, dynamic>>() ??
+                  const <Map<String, dynamic>>[])
+            Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 9,
+              ),
+              decoration: BoxDecoration(
+                color: AppTheme.surface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.border),
+              ),
+              child: Row(
+                children: [
+                  Text(
+                    (item['icon'] as String?) ?? '•',
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      (item['text'] as String?) ?? '',
+                      style: const TextStyle(
+                        color: AppTheme.textPrimary,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-          if (insights.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: insights
-                  .map(
-                    (i) => Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
-                      ),
-                      decoration: BoxDecoration(
-                        color: AppTheme.accentBg,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
+          const SizedBox(height: 16),
+        ],
+      ],
+    );
+  }
+
+  // ── Step 12: First briefing (finale) ────────────────────────
+  // The LIVE /api/briefing — it now reflects the seeded world PLUS the demo
+  // items the user just created (their task / note / query answers). Falls
+  // back to the welcome briefing if the live fetch fails.
+
+  Widget _briefingStep() {
+    final b = _finalBriefing ?? _briefing;
+    return _stepScaffold(
+      title: 'Your first briefing',
+      subtitle: 'This is what your mornings look like — live, from your real world.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: _finalBriefingLoading
+                ? const Center(
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppTheme.accent,
+                    ),
+                  )
+                : b == null
+                    ? const Center(
+                        child: Text(
+                          'Your world is ready — enter to begin.',
+                          style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                        ),
+                      )
+                    : _worldSummary(b),
+          ),
+          const SizedBox(height: 12),
+          Material(
+            color: AppTheme.surfaceAlt,
+            borderRadius: BorderRadius.circular(10),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => setState(() => _clearDemoItems = !_clearDemoItems),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+                child: Row(
+                  children: [
+                    Icon(
+                      _clearDemoItems
+                          ? Icons.check_box
+                          : Icons.check_box_outline_blank,
+                      size: 19,
+                      color: _clearDemoItems
+                          ? AppTheme.accent
+                          : AppTheme.textTertiary,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
                       child: Text(
-                        i,
-                        style: const TextStyle(
-                          color: AppTheme.champagne,
-                          fontSize: 11,
+                        'Clear the demo items when I enter (keeps your board tidy)',
+                        style: TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 12,
+                          height: 1.3,
                         ),
                       ),
                     ),
-                  )
-                  .toList(),
-            ),
-          ],
-          const SizedBox(height: 20),
-          Expanded(
-            child: ListView(
-              shrinkWrap: true,
-              children: [
-                for (final s in sections) ...[
-                  Text(
-                    (s['title'] as String?) ?? '',
-                    style: TextStyle(
-                      color: AppTheme.textTertiary.withValues(alpha: 0.8),
-                      fontSize: 11,
-                      letterSpacing: 0.6,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  for (final item
-                      in (s['items'] as List?)?.cast<Map<String, dynamic>>() ??
-                          const <Map<String, dynamic>>[])
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 6),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 9,
-                      ),
-                      decoration: BoxDecoration(
-                        color: AppTheme.surface,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: AppTheme.border),
-                      ),
-                      child: Row(
-                        children: [
-                          Text(
-                            (item['icon'] as String?) ?? '•',
-                            style: const TextStyle(fontSize: 14),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              (item['text'] as String?) ?? '',
-                              style: const TextStyle(
-                                color: AppTheme.textPrimary,
-                                fontSize: 13,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  const SizedBox(height: 16),
-                ],
-              ],
+                  ],
+                ),
+              ),
             ),
           ),
         ],

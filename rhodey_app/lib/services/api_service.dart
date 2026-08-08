@@ -1178,6 +1178,32 @@ class ApiService {
         maxRetries: 0,
       );
 
+  /// Onboarding demo: runs a scripted message through the REAL pipeline
+  /// inline (reply returns synchronously — no background worker) and stamps
+  /// the artifacts it creates as demo-owned ([onboarding-demo] / metadata
+  /// demo) so they're cleanable. No retries — a retry would re-run the
+  /// action and double-create the demo item.
+  Future<ApiResult<dynamic>> sendDemoMessage(
+    String text, {
+    String? sessionId,
+  }) async {
+    final body = <String, dynamic>{'message': text};
+    if (sessionId != null && sessionId.isNotEmpty) {
+      body['session_id'] = sessionId;
+    }
+    return post(
+      '/api/demo/message',
+      body: body,
+      timeout: const Duration(seconds: 90),
+      maxRetries: 0,
+    );
+  }
+
+  /// Deletes the tenant's demo-tagged artifacts (raw_dumps rows, open demo
+  /// tasks, demo memories). Idempotent — safe to call more than once.
+  Future<ApiResult<dynamic>> cleanupDemo() =>
+      post('/api/demo/cleanup', body: const {}, timeout: const Duration(seconds: 30));
+
   /// Starts in-app Google OAuth — returns {url, state}.
   Future<ApiResult<dynamic>> startGoogleOAuth() =>
       get('/api/oauth/start', timeout: const Duration(seconds: 12));
