@@ -115,7 +115,7 @@ def seed_ground_truth(entries: List[dict]) -> int:
                 "expected_memory_ids": json.dumps(ids),
                 "category": entry.get("category", "general"),
                 "notes": entry.get("notes"),
-            }, on_conflict="query_text").execute()
+            }, on_conflict="owner_id, query_text").execute()
             count += 1
         except Exception as e:
             audit_log_sync("retrieval", "WARNING",

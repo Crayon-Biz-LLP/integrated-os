@@ -208,6 +208,12 @@ async def seed(dry_run: bool = False) -> dict:
 
 if __name__ == "__main__":
     import sys
+    from core.services.db import channel_tenant_scope
+
     dry_run = "--dry-run" in sys.argv
-    result = asyncio.run(seed(dry_run=dry_run))
+    # Tenant-scoped writes (db/78+): eval-gold rows carry owner_id and an
+    # unscoped write raises TenantRequiredError. The channel tenant (oldest
+    # active user) is the default — an admin seeding their own eval gold.
+    with channel_tenant_scope():
+        result = asyncio.run(seed(dry_run=dry_run))
     print(json.dumps(result, indent=2))
