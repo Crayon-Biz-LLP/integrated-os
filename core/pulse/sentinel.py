@@ -198,16 +198,14 @@ async def _process_sentinel_impl(auth_secret: str, trigger: str = "cron"):
                 
                 msg = f"🚨 **ALARM: Meeting in {mins_until} mins!**\n📅 {title}"
                 if context:
-                    # M18 Phase 2A: persona voice block — empty when no card,
-                    # so the nudge prompt stays byte-identical pre-persona.
-                    _persona_block = ""
+                    # M18c: persona is L3 KNOWLEDGE — fetched through the
+                    # ContextProvider, never read at the prompt site. Empty
+                    # when no card, so the nudge prompt stays byte-identical
+                    # pre-persona (fail-closed).
                     try:
-                        from core.services.persona import persona_voice_block
-                        from core.services.user_settings import resolve_user_name
+                        from core.pulse.context import context_provider
 
-                        _persona_block = persona_voice_block(
-                            user_name=resolve_user_name() or ""
-                        )
+                        _persona_block = await context_provider.hydrate_persona_context()
                     except Exception:
                         _persona_block = ""
                     prompt = f"""Below is verified context for a meeting called '{title}'. Summarize the relevant context for this meeting. You may draw explicit inferences from dates and action items shown (e.g., if a due date is in the past, note it as overdue). Do not fabricate facts not present in the retrieved context. If context is empty, say 'No relevant context found.'

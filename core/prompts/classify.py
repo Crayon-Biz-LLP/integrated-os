@@ -31,18 +31,19 @@ def build_classify_intent_prompt(
     user_name = user_name or resolve_user_name()
     routing_rules = routing_rules or routing_rules_text()
     if night_signoffs is None:
-        # M18: persona card sign-offs take precedence; the fixed override
+        # M18c: persona card sign-offs take precedence; the fixed override
         # row (core_config 'night_signoffs') is next; neutral default last.
-        # Byte-identical to pre-M18 when no persona card exists (fail-closed).
+        # The card is L3 KNOWLEDGE — read through the ContextProvider
+        # accessor, never directly at the prompt site (architectural rule,
+        # session-notes/72). Byte-identical to pre-M18 when no persona card
+        # exists (fail-closed).
         try:
-            from core.services.persona import resolve_persona
+            from core.pulse.context import context_provider
 
-            _persona = resolve_persona()
-            _p_signoffs = (_persona or {}).get("signoffs") or []
-            if _p_signoffs:
-                night_signoffs = " / ".join(f'"{s}"' for s in _p_signoffs[:4])
-            else:
-                night_signoffs = resolve_night_signoffs()
+            night_signoffs = (
+                context_provider.persona_signoffs_context()
+                or resolve_night_signoffs()
+            )
         except Exception:
             night_signoffs = resolve_night_signoffs()
     if role_update_example is None:

@@ -1322,6 +1322,14 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, ac
         context_str = "\n\n".join(all_context)
         sources_str = ", ".join(available_sources)
 
+        # M18c: persona is L3 KNOWLEDGE — fetched through the ContextProvider
+        # (same pipeline as memories/tasks/people), never read at the prompt
+        # site. Empty when no card => prompt byte-identical pre-persona.
+        try:
+            persona_context = await context_provider.hydrate_persona_context()
+        except Exception:
+            persona_context = ""
+
         if is_schedule and "calendar events" in available_sources:
             header = "\U0001f4c5 Here's your schedule:"
         elif is_action and "active tasks" in available_sources:
@@ -1350,7 +1358,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, ac
         
         # Build a streaming prompt — no JSON wrapper, plain text output
         stream_prompt = build_interrogate_brain_prompt(
-            now_str, sources_str, context_str, query, streaming=True
+            now_str, sources_str, context_str, query, streaming=True,
+            persona_context=persona_context,
         )
         
         # Stream to Telegram progressively

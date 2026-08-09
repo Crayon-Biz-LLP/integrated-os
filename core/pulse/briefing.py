@@ -547,19 +547,12 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
                 briefing_mode = "Night wind-down."
                 system_persona = "Close out the day: what got done, what's still open, what's next. Be calm and brief."
 
-        # M18: persona voice block — appended ONLY when a persona card
-        # exists (fail-closed: no card => byte-identical to pre-M18). The
-        # card's prose was verified by the G1-G4 grounding gates at write
-        # time, so it never injects invented facts or timing claims.
-        try:
-            from core.services.persona import persona_voice_block
-
-            # M18 Phase 2A: single source of truth — string shape identical
-            # to the pre-refactor inline block, so byte-identical either way.
-            system_persona += persona_voice_block(user_name=user_name)
-        except Exception:
-            pass  # fail-closed: no card => persona block omitted
-
+        # M18c: the persona card is L3 KNOWLEDGE — it is fetched through the
+        # ContextProvider in the parallel assembly below (same pipeline as
+        # memories/tasks/people), never appended as a presentation-layer
+        # string. Fail-closed: no card => empty block => byte-identical to
+        # pre-M18. The card's prose was verified by the G1-G4 grounding
+        # gates at write time, so it never injects invented facts.
         is_overloaded = len(active_tasks) > 15
 
         # ═══════════════════════════════════════
@@ -574,6 +567,7 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
             centrality_context,
             calendar_context,
             compressed_tasks_final,
+            persona_context,
         ) = await asyncio.gather(
             context_provider.get_people(),
             context_provider.get_organizations(),
@@ -582,7 +576,10 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
             get_graph_centrality_context(),
             _wrap_calendar_context(),
             context_provider.hydrate_tasks_context(f"Briefing for {briefing_mode}"),
+            context_provider.hydrate_persona_context(),
         )
+        if persona_context:
+            system_persona += persona_context
         org_map = {o['id']: o['name'] for o in orgs_list}
         audit_log_sync("pulse", "INFO", f"📦 Phase 1 context fetched in parallel ({len(people)} people, {len(orgs_list)} orgs)")
 

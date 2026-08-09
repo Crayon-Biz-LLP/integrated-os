@@ -55,19 +55,18 @@ def build_interrogate_brain_prompt(
     sources_str: str,
     context_str: str,
     query: str,
-    streaming: bool = False
+    streaming: bool = False,
+    persona_context: str = "",
 ) -> str:
     voice = get_voice()
     guards = inject_guards("query")
 
-    # M18 Phase 2A: persona voice block — empty when no card, so the prompt
-    # stays byte-identical pre-persona (fail-closed).
-    try:
-        from core.services.persona import persona_voice_block
-
-        _persona_text = persona_voice_block(user_name=_user())
-    except Exception:
-        _persona_text = ""
+    # M18c: the persona block is L3 KNOWLEDGE — the caller (dispatch.py)
+    # fetches it via ContextProvider.hydrate_persona_context() and passes it
+    # here. This builder is presentation-only; it never reads the card
+    # itself. Empty when no card, so the prompt stays byte-identical
+    # pre-persona (fail-closed).
+    _persona_text = (persona_context or "").strip()
     persona_section = f"\n\n{_persona_text}" if _persona_text else ""
 
     if streaming:

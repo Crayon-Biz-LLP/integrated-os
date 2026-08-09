@@ -147,10 +147,14 @@ def extract_facts(owner_id: str) -> dict:
         deg[e["target_node_id"]] += 1
 
     by_id = {n["id"]: n for n in nodes}
+    # People cap MUST match the read-path contract (validate_card_shape:
+    # people<=10). The LLM is told to pick from this list, so a 12-person
+    # pool invites an 11-person card that the read path would silently
+    # reject (the dormant-persona bug). Cap at the contract.
     people = sorted(
         (n for n in nodes if (n.get("type") or "").lower() in _PERSON_TYPES),
         key=lambda n: -deg[n["id"]],
-    )[:12]
+    )[:10]
     orgs = sorted(
         (n for n in nodes if (n.get("type") or "").lower() in _ORG_TYPES),
         key=lambda n: -deg[n["id"]],
@@ -461,6 +465,19 @@ def synthesize_tenant(owner_id: str, dry_run: bool = False) -> bool:
     never = card.get("never")
     if isinstance(never, list):
         card["never"] = [t.strip() for t in never if isinstance(t, str) and t.strip()]
+    # Count backstops — clamp to the read-path contract (validate_card_shape)
+    # BEFORE the verifier so a non-compliant LLM output is either clamped or
+    # rejected at write time, never silently refused at read time. The
+    # verifier's count gates below are the real enforcement; clamping here
+    # just avoids churning on trivially over-long lists.
+    for _key, _cap in (("people", 10), ("domains", 8),
+                       ("life_snapshot", 12), ("claims", 20)):
+        _val = card.get(_key)
+        if isinstance(_val, list) and len(_val) > _cap:
+            card[_key] = _val[:_cap]
+    _sign = card.get("signoffs")
+    if isinstance(_sign, list) and len(_sign) > 4:
+        card["signoffs"] = _sign[:4]
 
     ok, errors = verify_persona_card(card, facts)
     if not ok:

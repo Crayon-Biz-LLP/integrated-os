@@ -631,6 +631,69 @@ class ContextProvider:
             audit_log_sync('context', 'WARNING', f'Memory hydration failed: {e}')
             return [] if return_raw else "None"
 
+    async def hydrate_persona_context(self) -> str:
+        """L3 knowledge accessor for the tenant's persona card (M18c).
+
+        THE single place a language generator reads the persona card.
+        Generators must call this method — they must NEVER reach into
+        core.services.persona directly (architectural rule: knowledge
+        flows through the ContextProvider at Layer 3; presentation code
+        at Layer 4 consumes the result but does not read knowledge
+        itself — see session-notes/72-persona-l3-knowledge.md).
+
+        Returns the persona block (who / voice / never / verified life
+        circle) or ``""`` when there is no card — fail-closed: every
+        prompt stays byte-identical pre-persona, and a tenant never
+        inherits another tenant's card (the card read is tenant-scoped).
+        """
+        try:
+            from core.services.persona import persona_voice_block, resolve_persona
+            from core.services.user_settings import resolve_user_name
+
+            # Read the card ONCE and pass it to persona_voice_block (its
+            # signature accepts card=) — avoids a redundant second resolve.
+            card = resolve_persona()
+            block = persona_voice_block(user_name=resolve_user_name() or "", card=card)
+            if not block:
+                return ""
+            # M18c: the verified life circle is KNOWLEDGE, not voice — add
+            # it as a clause so generators can reason about the user's
+            # world the way they reason about memories and people.
+            life = [
+                str(x) for x in ((card or {}).get("life_snapshot") or [])
+                if str(x).strip()
+            ]
+            if life:
+                block += " Life: " + ", ".join(life) + "."
+            return block
+        except Exception:
+            return ""  # fail-closed: no card => block omitted
+
+    def persona_signoffs_context(self) -> str:
+        """L3 knowledge accessor: the tenant's persona card sign-offs (sync).
+
+        Sync counterpart of :meth:`hydrate_persona_context` for prompt
+        builders that cannot await (classify's receipt). THE single place
+        a sync builder reads the card's sign-offs — never import
+        resolve_persona at a prompt site (architectural rule, see
+        session-notes/72-persona-l3-knowledge.md).
+
+        Returns the card's sign-offs as a quoted list ("Rest well." /
+        "Locked in for the night.") or ``""`` when there is no card —
+        fail-closed: callers fall back to the fixed override row or the
+        neutral default, never another tenant's card.
+        """
+        try:
+            from core.services.persona import resolve_persona
+
+            _persona = resolve_persona()
+            _p_signoffs = (_persona or {}).get("signoffs") or []
+            if _p_signoffs:
+                return " / ".join(f'"{s}"' for s in _p_signoffs[:4])
+            return ""
+        except Exception:
+            return ""  # fail-closed: no card => caller falls back
+
     async def get_pending_decisions_context(self):
         try:
             pending_lines = []

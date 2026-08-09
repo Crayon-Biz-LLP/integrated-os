@@ -222,12 +222,26 @@ def verify_persona_card(card: dict, facts: dict) -> tuple[bool, list[str]]:
         if any(re.search(rf"\b{re.escape(t)}\w*\b", entry.casefold()) for t in sensitive):
             errors.append(f"G4 sensitive topic in life_snapshot: {entry[:60]}")
 
-    # ── Bounded lengths ───────────────────────────────────────────────────
+    # ── Bounded lengths / counts — MUST mirror the read-path contract in
+    # core/services/persona.py validate_card_shape() (people<=10, domains<=8,
+    # life_snapshot<=12, signoffs 2-4, claims<=20). A card that passes the
+    # verifier must ALWAYS pass the read path — otherwise the card is
+    # written and then silently rejected at read time (the dormant-persona
+    # bug: Danny's 11-person card passed G1-G4, was written, and the read
+    # path returned None, leaving the persona layer off despite the apply).
     for s in card.get("signoffs", []):
         if not 3 <= len(s) <= 70:
             errors.append(f"sign-off length {len(s)} outside 3-70: {s[:40]}")
+    if len(card.get("signoffs", [])) > 4:
+        errors.append("too many sign-offs (>4)")
+    if len(card.get("people", [])) > 10:
+        errors.append("too many people (>10)")
+    if len(card.get("domains", [])) > 8:
+        errors.append("too many domains (>8)")
     if len(card.get("claims", [])) > 20:
         errors.append("too many claims (>20)")
+    if len(card.get("life_snapshot", [])) > 12:
+        errors.append("too many life_snapshot entries (>12)")
     # ── G1: people/domains entries must be known entities, not inventions ─
     for entry in card.get("people", []) + card.get("domains", []):
         if not isinstance(entry, str) or not 1 <= len(entry) <= 40:
