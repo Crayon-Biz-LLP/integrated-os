@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_config.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
+import 'demo_replay_screen.dart';
 import 'how_rhodey_works_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -20,6 +22,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _saving = false;
   bool _keyVisible = false;
   String? _statusMessage;
+
+  /// Re-entry guard for the "Show me around" row: the handler is async (writes
+  /// a prefs flag then pops), so two rapid taps would run both handlers and
+  /// double-pop — popping Settings AND the route below it. Same pattern as the
+  /// home screen's `_taskTapping` guard.
+  bool _replayingTour = false;
 
   @override
   void initState() {
@@ -339,6 +347,117 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 // ── Help ──
                 _SectionHeader('Help'),
                 const SizedBox(height: 8),
+                // Replay the anchored home-screen tour — pops back to home,
+                // which picks up the home_tour_replay flag in didPopNext.
+                Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.border),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () async {
+                        if (_replayingTour) return;
+                        _replayingTour = true;
+                        try {
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.setBool('home_tour_replay', true);
+                          if (context.mounted) Navigator.pop(context);
+                        } finally {
+                          // Reset only if we didn't pop — once popped the
+                          // screen is gone, so the guard is irrelevant.
+                          if (mounted) _replayingTour = false;
+                        }
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 13,
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.tour_outlined,
+                              size: 18,
+                              color: AppTheme.textSecondary,
+                            ),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Text(
+                                'Show me around the home screen',
+                                style: TextStyle(
+                                  color: AppTheme.textPrimary,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                            const Icon(
+                              Icons.chevron_right,
+                              size: 18,
+                              color: AppTheme.textTertiary,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Replay the onboarding "Try it now" demo — the same real
+                // tap-to-try cards, demo-stamped and cleanable.
+                Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.border),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const DemoReplayScreen(),
+                        ),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 13,
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.rocket_launch_outlined,
+                              size: 18,
+                              color: AppTheme.textSecondary,
+                            ),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Text(
+                                'Run the demo again',
+                                style: TextStyle(
+                                  color: AppTheme.textPrimary,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                            const Icon(
+                              Icons.chevron_right,
+                              size: 18,
+                              color: AppTheme.textTertiary,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
                 Container(
                   decoration: BoxDecoration(
                     color: AppTheme.surface,

@@ -13,6 +13,12 @@ import '../theme/app_theme.dart';
 ///   6. Chat input bar  (bottom)
 /// Tapping the scrim or Next advances; the last page is "Got it". Dismissing
 /// marks the tour as seen (handled by the caller via onDismiss).
+///
+/// Design language: the callouts reuse the home screen's *focal card*
+/// grammar — warm `accentBg` fill, hairline accent border, a vertical accent
+/// bar + mono label header, clean PlusJakartaSans type — so the tour reads as
+/// part of the app, not a system dialog. A small tail points at the element
+/// each page explains. Motion is the app's warm fade + gentle rise.
 class HomeTourOverlay extends StatefulWidget {
   final VoidCallback onDismiss;
 
@@ -28,26 +34,33 @@ class _HomeTourOverlayState extends State<HomeTourOverlay> {
   /// M15: persona-aware titles for the pulse + focal pages (e.g. "Executive
   /// check-in" for Chief of Staff, "Don't forget" for Life & Household);
   /// the four shared pages keep today's copy.
+  ///
+  /// `tailUp` — does the element sit above the callout (tail on the top edge)?
+  /// `tailAlign` — horizontal placement of the tail so it actually points at
+  /// the element: -1 = left edge of the card, 0 = center, 1 = right edge.
   List<_TourStep> get _pages => [
         _TourStep(
           icon: Icons.menu,
           title: 'Menu',
           body: 'Settings, help, and more.',
-          arrow: Icons.arrow_downward,
+          tailUp: true,
+          tailAlign: -0.75,
         ),
         _TourStep(
           icon: Icons.radar,
           title: PersonaStore.current.pulse,
           body: 'The time of day and what it\'s checking in on — morning '
               'check, wrap-up, weekend. It changes as the day does.',
-          arrow: Icons.arrow_downward,
+          tailUp: true,
+          tailAlign: 0,
         ),
         _TourStep(
           icon: Icons.checklist_rtl,
           title: 'Your open tasks',
           body: 'The number here is your open-task count. Tap it to see the '
               'full board in chat.',
-          arrow: Icons.arrow_downward,
+          tailUp: true,
+          tailAlign: 0.75,
         ),
         _TourStep(
           icon: Icons.waving_hand_outlined,
@@ -55,21 +68,24 @@ class _HomeTourOverlayState extends State<HomeTourOverlay> {
           body: 'A greeting plus one line of what Rhodey is thinking about '
               'for you today. Short on purpose — the brief, not the whole '
               'story.',
-          arrow: Icons.arrow_downward,
+          tailUp: true,
+          tailAlign: 0,
         ),
         _TourStep(
           icon: Icons.push_pin_outlined,
           title: PersonaStore.current.focal,
           body: 'The one thing Rhodey thinks matters most right now. Tap it '
               'to act, or say "Not now" to defer it.',
-          arrow: Icons.arrow_downward,
+          tailUp: true,
+          tailAlign: 0,
         ),
         _TourStep(
           icon: Icons.chat_bubble_outline,
           title: 'Talk to Rhodey',
           body: 'Type here — or use voice. Tasks, notes, and questions all '
               'start right here.',
-          arrow: Icons.arrow_upward,
+          tailUp: false,
+          tailAlign: 0,
         ),
       ];
 
@@ -87,18 +103,19 @@ class _HomeTourOverlayState extends State<HomeTourOverlay> {
     final isLast = _page == _pages.length - 1;
     return Stack(
       children: [
-        // Scrim — tap anywhere advances (or dismisses on the last page).
+        // Warm charcoal scrim — tap anywhere advances (or dismisses on the
+        // last page). Matches the app's warm base, not a cold black-out.
         Positioned.fill(
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: _advance,
             child: Container(
-              color: Colors.black.withValues(alpha: 0.62),
+              color: AppTheme.background.withValues(alpha: 0.62),
             ),
           ),
         ),
         // The callout card for the current step — positioned per page so the
-        // arrow always points at the element it explains.
+        // tail always points at the element it explains.
         _positionedCallout(step),
         // Bottom controls: page dots + Next / Got it.
         Positioned(
@@ -140,8 +157,9 @@ class _HomeTourOverlayState extends State<HomeTourOverlay> {
                     ),
                     child: Text(
                       isLast ? 'Got it' : 'Next',
-                      style: const TextStyle(
-                        color: Color(0xFF161510),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onPrimary,
+                        fontFamily: 'PlusJakartaSans',
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
                       ),
@@ -158,48 +176,72 @@ class _HomeTourOverlayState extends State<HomeTourOverlay> {
 
   /// Positions the callout near the element it describes for each page.
   Widget _positionedCallout(_TourStep step) {
+    final callout = AnimatedSwitcher(
+      duration: AppTheme.motionBase,
+      switchInCurve: AppTheme.motionCurve,
+      switchOutCurve: Curves.easeIn,
+      transitionBuilder: (child, animation) {
+        // Warm fade + gentle rise — the app's calm entrance motion.
+        final rise = Tween(begin: const Offset(0, 0.05), end: Offset.zero)
+            .animate(animation);
+        return FadeTransition(
+          opacity: animation,
+          child: SlideTransition(position: rise, child: child),
+        );
+      },
+      child: KeyedSubtree(
+        key: ValueKey(_page),
+        child: _Callout(
+          step: step,
+          pageIndex: _page,
+          totalPages: _pages.length,
+          onTap: _advance,
+        ),
+      ),
+    );
+
     switch (_page) {
       case 0: // Menu — top-left, under the header.
         return Positioned(
-          top: 56,
+          top: 62,
           left: 16,
           right: 16,
-          child: _Callout(step: step, onTap: _advance),
+          child: callout,
         );
       case 1: // Pulse label — upper-center, under the header.
         return Positioned(
-          top: 56,
+          top: 62,
           left: 60,
           right: 60,
-          child: _Callout(step: step, onTap: _advance),
+          child: callout,
         );
       case 2: // Task count — top-right, under the header.
         return Positioned(
-          top: 56,
+          top: 62,
           right: 16,
           left: 60,
-          child: _Callout(step: step, onTap: _advance),
+          child: callout,
         );
       case 3: // Tiny brief — upper body.
         return Positioned(
-          top: 130,
+          top: 138,
           left: 16,
           right: 16,
-          child: _Callout(step: step, onTap: _advance),
+          child: callout,
         );
       case 4: // Focal card — mid-lower body.
         return Positioned(
-          bottom: 120,
+          bottom: 130,
           left: 16,
           right: 16,
-          child: _Callout(step: step, onTap: _advance),
+          child: callout,
         );
-      default: // Input bar — just above the controls, arrow up.
+      default: // Input bar — just above the controls, tail points down.
         return Positioned(
-          bottom: 110,
+          bottom: 116,
           left: 16,
           right: 16,
-          child: _Callout(step: step, onTap: _advance),
+          child: callout,
         );
     }
   }
@@ -209,74 +251,169 @@ class _TourStep {
   final IconData icon;
   final String title;
   final String body;
-  final IconData arrow;
+  final bool tailUp;
+  final double tailAlign;
 
   const _TourStep({
     required this.icon,
     required this.title,
     required this.body,
-    required this.arrow,
+    required this.tailUp,
+    required this.tailAlign,
   });
 }
 
 class _Callout extends StatelessWidget {
   final _TourStep step;
+  final int pageIndex;
+  final int totalPages;
   final VoidCallback onTap;
 
-  const _Callout({required this.step, required this.onTap});
+  const _Callout({
+    required this.step,
+    required this.pageIndex,
+    required this.totalPages,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 340),
-        padding: const EdgeInsets.all(13),
-        decoration: BoxDecoration(
-          color: AppTheme.surfaceAlt,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppTheme.accent, width: 1.2),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.35),
-              blurRadius: 14,
-              offset: const Offset(0, 4),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Tail — points at the element this card explains.
+          if (step.tailUp)
+            Align(
+              alignment: Alignment(step.tailAlign, 0),
+              child: const _CalloutTail(up: true),
             ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(step.icon, color: AppTheme.accent, size: 18),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    step.title,
-                    style: const TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                Icon(step.arrow, color: AppTheme.textTertiary, size: 16),
-              ],
-            ),
-            const SizedBox(height: 5),
-            Text(
-              step.body,
-              style: TextStyle(
-                color: AppTheme.textSecondary,
-                fontSize: 12,
-                height: 1.45,
+          // Card body — focal-card grammar: warm accentBg, hairline border,
+          // accent bar + mono label header, clean sans type.
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.accentBg,
+              borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+              border: Border.all(
+                color: AppTheme.accent.withValues(alpha: 0.18),
+                width: 1,
               ),
             ),
-          ],
-        ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    // Vertical accent bar + mono "STEP N OF 6" label — the
+                    // same ledger notation the focal card uses for FOCUS.
+                    Container(
+                      width: 3,
+                      height: 14,
+                      decoration: BoxDecoration(
+                        color: AppTheme.accent,
+                        borderRadius: BorderRadius.circular(1),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'STEP ${pageIndex + 1} OF $totalPages',
+                        style: AppTheme.monoLabel.copyWith(
+                          color: AppTheme.accent,
+                          fontSize: 9,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ),
+                    Icon(step.icon, color: AppTheme.accent, size: 18),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  step.title,
+                  style: AppTheme.body.copyWith(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    height: 1.3,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  step.body,
+                  style: AppTheme.bodySmall.copyWith(
+                    color: AppTheme.textSecondary,
+                    fontSize: 12,
+                    height: 1.45,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (!step.tailUp)
+            Align(
+              alignment: Alignment(step.tailAlign, 0),
+              child: const _CalloutTail(up: false),
+            ),
+        ],
       ),
     );
   }
+}
+
+/// A small triangular tail that visually connects the callout card to the
+/// element it explains. Matches the card's fill and hairline border.
+class _CalloutTail extends StatelessWidget {
+  final bool up;
+
+  const _CalloutTail({required this.up});
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      size: const Size(14, 8),
+      painter: _TailPainter(up: up),
+    );
+  }
+}
+
+class _TailPainter extends CustomPainter {
+  final bool up;
+
+  _TailPainter({required this.up});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final fill = Paint()
+      ..color = AppTheme.accentBg
+      ..style = PaintingStyle.fill;
+    final stroke = Paint()
+      ..color = AppTheme.accent.withValues(alpha: 0.18)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+
+    final path = Path();
+    if (up) {
+      // Triangle pointing up (base at bottom, apex at top center).
+      path.moveTo(0, h);
+      path.lineTo(w / 2, 0);
+      path.lineTo(w, h);
+    } else {
+      // Triangle pointing down (base at top, apex at bottom center).
+      path.moveTo(0, 0);
+      path.lineTo(w / 2, h);
+      path.lineTo(w, 0);
+    }
+    path.close();
+    canvas.drawPath(path, fill);
+    canvas.drawPath(path, stroke);
+  }
+
+  @override
+  bool shouldRepaint(_TailPainter oldDelegate) => oldDelegate.up != up;
 }

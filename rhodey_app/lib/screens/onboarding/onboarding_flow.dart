@@ -1535,6 +1535,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   // tap-to-try: it sends a scripted message via /api/demo/message, which
   // runs the pipeline inline and stamps the artifacts demo-owned.
 
+  /// KEEP IN SYNC with demo_replay_screen.dart — the Settings replay screen
+  /// ports this exact demo (cards, scripts, bubbles). Update both when the
+  /// demo changes.
   Widget _demoChatStep() {
     final person = _demoPerson;
     final chat = List<Map<String, String>>.from(_demoChat);

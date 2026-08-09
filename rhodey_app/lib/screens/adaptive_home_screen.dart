@@ -204,9 +204,12 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// Regained focus after a pushed screen popped. Refresh live data so the
   /// decision digest and focal board reflect decisions made there — debounced
   /// so a simultaneous lifecycle resume doesn't trigger a duplicate refresh.
+  /// Also picks up a "replay the home tour" request set from Settings (the
+  /// tour is anchored to this screen's layout, so it can only run here).
   @override
   void didPopNext() {
     _scheduleHomeRefresh();
+    _maybeShowHomeTour();
   }
 
   /// App returned to foreground. FCM `onMessage` only fires in the foreground,
@@ -1792,15 +1795,22 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   // ── Task ledger (task icon → conversation) ────────────────
 
-  /// Task icon tap: enter the conversation state and post Rhodey's ledger —
-  /// the active task list as a chat message. Tapping a row promotes it.
   /// M14: show the one-time home tour on first real entry (post-onboarding).
   /// Gate: only when the user is configured and has never seen it. Best-effort
   /// — any prefs failure just skips the tour.
+  ///
+  /// Replay (Settings > Help > "Show me around"): the Settings screen sets
+  /// `home_tour_replay` before popping back here; didPopNext calls this and
+  /// the flag overrides the seen-gate exactly once (consumed on read). The
+  /// tour must run on this screen — its callouts anchor to the home layout.
   Future<void> _maybeShowHomeTour() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      if (prefs.getBool('home_tour_seen') ?? false) return;
+      final replay = prefs.getBool('home_tour_replay') ?? false;
+      if (replay) {
+        await prefs.setBool('home_tour_replay', false); // consume
+      }
+      if (!replay && (prefs.getBool('home_tour_seen') ?? false)) return;
       if (!mounted) return;
       setState(() => _showHomeTour = true);
     } catch (_) {
