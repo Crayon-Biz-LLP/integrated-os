@@ -175,3 +175,51 @@ def persona_guard_text(
         if re.search(rf"\b{re.escape(topic.casefold())}\w*\b", lowered):
             return fallback
     return text
+
+
+# ── Phase 2B: surface summary (R4 closed-enum transport) ──────────────────
+
+# voice_style keyword precedence — most specific first. Derived deterministically
+# from the card's prose voice descriptor so the app only ever receives a closed
+# enum token, never prose (R4). Default is 'calm'. STOPGAP: replaced by a
+# style_token stamped at synthesis time once the card schema gains it.
+_VOICE_STYLE_KEYWORDS = (("direct", "direct"), ("warm", "warm"), ("calm", "calm"))
+_DEFAULT_VOICE_STYLE = "calm"
+
+
+def _derive_voice_style(card: dict) -> str:
+    voice = (((card.get("style") or {}).get("voice") or "").lower())
+    for keyword, token in _VOICE_STYLE_KEYWORDS:
+        if keyword in voice:
+            return token
+    return _DEFAULT_VOICE_STYLE
+
+
+def persona_surface_summary(user_id: str | None = None) -> dict | None:
+    """Safe, display-ready persona summary for app surfaces (Phase 2B, R4).
+
+    The app receives ONLY a closed-enum ``voice_style`` token, the tenant's
+    display name, and up to two signoffs. Never the raw card, curated people
+    names, or the never-topic list — those stay server-side. Fail-closed: no
+    card (or no tenant scope) => None, and every consumer renders today's copy.
+    """
+    card = resolve_persona(user_id)
+    if not card:
+        return None
+    display_name = ""
+    try:
+        from core.services.user_settings import resolve_user_name
+
+        display_name = resolve_user_name(user_id) or ""
+    except Exception:
+        display_name = ""
+    signoffs = [
+        s
+        for s in (card.get("signoffs") or [])
+        if isinstance(s, str) and s.strip()
+    ][:2]
+    return {
+        "display_name": display_name,
+        "voice_style": _derive_voice_style(card),
+        "signoffs": signoffs,
+    }

@@ -67,6 +67,12 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   // ── Pulse intelligence ──
   BriefingResponse _briefing = BriefingResponse.empty();
+
+  /// Phase 2B: the tenant's persona voice_style token ('direct' | 'calm' |
+  /// 'warm' | '' for standard). Drives Rhodey's own static app lines; the
+  /// server-composed strings (briefing, focal confirmations) already carry
+  /// the persona. '' => standard voice (fail-closed).
+  String _voiceStyle = '';
   bool _briefingLoading = true;
 
   /// M9.6: the tenant's display name — resolved from the API on load and
@@ -585,6 +591,12 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           return;
         }
         _applyHomeFeed(feed);
+        // Phase 2B: if the feed carried no persona block (older backend or a
+        // cache written before the persona key shipped), fall back to the
+        // dedicated endpoint so the voice token still lands.
+        if (feed.persona.isEmpty) {
+          unawaited(_resolvePersonaFallback());
+        }
       } finally {
         if (mounted) {
           setState(() => _syncingCount = (_syncingCount - 1).clamp(0, 1 << 30));
@@ -612,6 +624,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// Applies a home feed to state — shared by the cached instant render and
   /// the live fetch so both paths agree on the focal board + briefing.
   void _applyHomeFeed(HomeFeed feed, {bool promoteFocal = true}) {
+    // Phase 2B: adopt the persona voice token from the same round-trip.
+    _voiceStyle = feed.persona.voiceStyle;
     // Live, snooze-filtered board ids. A stored briefing's top_focal_item
     // can outlive its item (deferred/resolved since the pulse ran) — the
     // home-feed lists are snooze-filtered server-side, so an id absent here
@@ -626,6 +640,19 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       promoteFocal: promoteFocal,
     );
     _applyFocalData(feed.decisions, feed.tasks);
+  }
+
+  /// Phase 2B fallback: when the home-feed payload carries no persona block,
+  /// resolve the surface summary from GET /api/persona so Rhodey's voice
+  /// token still lands. Fail-closed: any failure keeps the standard voice.
+  Future<void> _resolvePersonaFallback() async {
+    try {
+      final p = await _api.getPersona();
+      if (!mounted || p.isEmpty || p.voiceStyle == _voiceStyle) return;
+      setState(() => _voiceStyle = p.voiceStyle);
+    } catch (_) {
+      // Keep the standard voice — never throw from a home load.
+    }
   }
 
   bool _isUrgent(String deadline) {
@@ -862,7 +889,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
     // 4. If no items remain, show "all clear" from Rhodey
     if (_focalItems.isEmpty && mounted) {
-      _addRhodeyResponse(RhodeyVoice.allClear(_userName));
+      _addRhodeyResponse(RhodeyVoice.allClear(_userName, _voiceStyle));
     }
 
     // N4: local count decrement instead of a 5-call refetch — the action
@@ -939,7 +966,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       final checkData = (checkOk && check.data is Map) ? check.data as Map : null;
       if (checkData != null && checkData['warn'] == true) {
         final count = (checkData['count'] as num?)?.toInt() ?? 3;
-        final typed = await _showSnoozeWarningDialog(item, count: count);
+        final typed = await _showSnoozeWarningDialog(
+          item,
+          count: count,
+          voiceStyle: _voiceStyle,
+        );
         if (typed == null || !mounted) return; // cancelled — card stays
         feedback = typed;
       }
@@ -990,9 +1021,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   /// Third-tap "Not now" gate (M12): warning + feedback box. Returns the
   /// typed feedback, or null when the user cancels (card stays on board).
+  ///
+  /// Phase 2B: the system gate (title/body) stays neutral — only the
+  /// feedback hint line shifts with the persona voice_style token.
   Future<String?> _showSnoozeWarningDialog(
     _FocalItem item, {
     required int count,
+    String voiceStyle = '',
   }) async {
     final controller = TextEditingController();
     final shouldSnooze = await showDialog<bool>(
@@ -1011,10 +1046,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                 style: const TextStyle(fontSize: 14),
               ),
               const SizedBox(height: 8),
-              const Text(
-                'Tell Rhodey why you\u2019re deferring it \u2014 every answer '
-                'makes it smarter.',
-                style: TextStyle(fontSize: 12, color: Colors.grey),
+              Text(
+                switch (voiceStyle) {
+                  'direct' =>
+                    'Tell Rhodey why — one line is enough. It learns from this.',
+                  'warm' => 'Tell Rhodey what changed — every answer helps it '
+                      'understand you better.',
+                  _ => 'Tell Rhodey why you\u2019re deferring it \u2014 every '
+                      'answer makes it smarter.',
+                },
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
               const SizedBox(height: 12),
               TextField(
@@ -2270,7 +2311,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         ),
         const SizedBox(width: 8),
         Text(
-          RhodeyVoice.allClear(_userName),
+          RhodeyVoice.allClear(_userName, _voiceStyle),
           style: const TextStyle(
             fontSize: 12,
             color: AppTheme.textTertiary,
@@ -3204,7 +3245,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           const SizedBox(width: 8),
           Flexible(
             child: Text(
-              RhodeyVoice.allClearPrompt(_userName),
+              RhodeyVoice.allClearPrompt(_userName, _voiceStyle),
               style: const TextStyle(
                 fontSize: 12,
                 color: AppTheme.textTertiary,

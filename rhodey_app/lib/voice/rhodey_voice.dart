@@ -15,18 +15,34 @@ class RhodeyVoice {
   /// name is unknown (first paint before the resolve lands, or a tenant with
   /// no name on file) the name is omitted entirely — we NEVER flash a
   /// hardcoded 'Danny' at another user (M17).
-  static String allClear([String? name]) {
+  ///
+  /// Phase 2B: [voiceStyle] is the closed-enum token ('direct' | 'calm' |
+  /// 'warm') from /api/persona. It shifts only Rhodey's OWN static app line;
+  /// server-composed strings (briefing, confirmations) take precedence
+  /// everywhere. Unknown/empty style => the standard voice (fail-closed).
+  static String allClear([String? name, String voiceStyle = '']) {
     final who = _who(name);
-    return who.isEmpty ? 'All clear.' : 'All clear, $who.';
+    final base = _allClearBase(voiceStyle);
+    return who.isEmpty ? '$base.' : '$base, $who.';
   }
 
   /// All clear with an open prompt (empty-conversation state).
-  static String allClearPrompt([String? name]) {
+  static String allClearPrompt([String? name, String voiceStyle = '']) {
     final who = _who(name);
+    final base = _allClearBase(voiceStyle);
     return who.isEmpty
-        ? "All clear. What's on your mind?"
-        : 'All clear, $who. What\'s on your mind?';
+        ? "$base. What's on your mind?"
+        : '$base, $who. What\'s on your mind?';
   }
+
+  /// The style-aware stem of the all-clear line. 'direct' and 'warm' are the
+  /// only recognized tokens; everything else (including 'calm', which keeps
+  /// today's line) falls through to the standard voice.
+  static String _allClearBase(String voiceStyle) => switch (voiceStyle) {
+        'direct' => "Board's clear",
+        'warm' => 'All quiet on the board',
+        _ => 'All clear',
+      };
 
   /// M9.6/M17: the tenant's display name, or '' when unknown (never 'Danny').
   static String _who([String? name]) {

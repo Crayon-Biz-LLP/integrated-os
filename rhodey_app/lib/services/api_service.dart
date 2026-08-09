@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'api_config.dart';
 import 'home_feed_cache.dart';
 import '../models/briefing.dart';
+import '../models/persona_summary.dart';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -42,17 +43,19 @@ class PendingDecision {
 }
 
 /// Result of the single-call home feed (/api/home-feed).
-/// Bundles briefing + pending decisions + active tasks so the home screen
-/// opens with ONE network round-trip instead of six.
+/// Bundles briefing + pending decisions + active tasks + the persona
+/// surface summary so the home screen opens with ONE network round-trip.
 class HomeFeed {
   final BriefingResponse briefing;
   final List<PendingDecision> decisions;
   final List<Map<String, dynamic>> tasks;
+  final PersonaSummary persona;
 
   const HomeFeed({
     required this.briefing,
     required this.decisions,
     required this.tasks,
+    this.persona = PersonaSummary.empty,
   });
 
   bool get isEmpty =>
@@ -900,7 +903,28 @@ class ApiService {
     ];
     _sortDecisions(decisions);
     final tasks = (data['tasks'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-    return HomeFeed(briefing: briefing, decisions: decisions, tasks: tasks);
+    final persona = data['persona'] is Map<String, dynamic>
+        ? PersonaSummary.fromJson(data['persona'] as Map<String, dynamic>)
+        : PersonaSummary.empty;
+    return HomeFeed(
+      briefing: briefing,
+      decisions: decisions,
+      tasks: tasks,
+      persona: persona,
+    );
+  }
+
+  // ── Persona surface summary (Phase 2B) ─────────────────────────
+
+  /// Fetches the per-tenant persona surface summary from /api/persona.
+  /// Fail-closed: null payload / network error => [PersonaSummary.empty],
+  /// so the app renders today's standard voice.
+  Future<PersonaSummary> getPersona() async {
+    final result = await get('/api/persona', timeout: const Duration(seconds: 10));
+    if (result.success && result.data is Map) {
+      return PersonaSummary.fromJson(result.data as Map<String, dynamic>);
+    }
+    return PersonaSummary.empty;
   }
 
   // ── Home mode switch ────────────────────────────────────────

@@ -282,24 +282,19 @@ async def _process_decision_pulse_impl(auth_secret: str = None, trigger: str = "
                     channels.append(f"{len(graph_items)} graph node")
                 if pending_edges:
                     channels.append(f"{len(pending_edges)} graph edge")
-                # M18 Phase 2A: persona-aware opener (this tenant's name) +
-                # never-guard — if the copy touches a never-topic the banner
-                # falls back to the neutral form. Full digest still in
-                # data.content.
-                from core.services.persona import persona_guard_text
+                # Phase 2B R2: push copy composes in message_voice (single
+                # home). The name opener is tenant identity, not persona
+                # content — card-less tenants stay byte-identical (R5). Full
+                # digest still in data.content.
+                from core.services.message_voice import (
+                    compose_push_body,
+                    compose_push_title,
+                )
                 from core.services.user_settings import resolve_user_name, current_user_id
 
                 _push_name = resolve_user_name(current_user_id())
-                push_title = persona_guard_text(
-                    f"{_push_name}, {total} things need your call"
-                    if _push_name
-                    else f"{total} things need your call",
-                    fallback=f"{total} things need your call",
-                )
-                push_body = persona_guard_text(
-                    f"From {', '.join(channels)} — want a look?",
-                    fallback="Something needs your call",
-                )
+                push_title = compose_push_title(total, name=_push_name)
+                push_body = compose_push_body(channels)
                 # Carry a summary so the app renders it the moment the
                 # notification is tapped — no waiting on the Inbox fetch.
                 await send_push_notification(

@@ -18,7 +18,10 @@ the layer rule (no generator reaches into the card directly).
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import pathlib
+import re
 from unittest.mock import patch
 
 from core.pulse.context import ContextProvider
@@ -220,18 +223,14 @@ def test_contract_verifier_read_path_agree():
 # ── The layer rule: generators never read the card directly ──────────────
 
 
-def test_l3_accessor_is_only_card_read_path_for_generators():
-    """Architectural gate (session-notes/72): NO generator in the runtime
-    trees may import persona_voice_block / resolve_persona — persona
-    knowledge flows only through the ContextProvider accessors
-    (hydrate_persona_context / persona_signoffs_context). The gate scans
-    whole directories with an ALLOWLIST, so a new generator file added
-    later cannot silently bypass the rule. persona_guard_text (L4
-    post-generation output guarding) remains the one allowed exception."""
-    import ast
-    import pathlib
+def _persona_gate_offenders(root: pathlib.Path) -> list[str]:
+    """Scan runtime trees for direct persona-card reads (layer rule).
 
-    root = pathlib.Path(__file__).resolve().parents[2]
+    Returns offender descriptions (empty = compliant). Scans whole
+    directories with an ALLOWLIST, so a new generator or endpoint file
+    added later cannot silently bypass the rule. `persona_guard_text`
+    (L4 post-generation output guarding) is not a banned symbol.
+    """
     # Allowed readers of the card (legitimate Layer-3 service/context code):
     #   services/persona.py           — the card reader itself
     #   services/persona_verifier.py  — write-time grounding gates
@@ -244,8 +243,14 @@ def test_l3_accessor_is_only_card_read_path_for_generators():
         "core/pulse/context.py",
     }
     scan_dirs = ["core/pulse", "core/prompts", "core/webhook", "core/skills",
-                 "core/actions", "core/agents"]
-    scan_files = ["core/decisions.py", "core/clarifier.py"]
+                 "core/actions", "core/agents", "api"]
+    scan_files = [
+        "core/decisions.py",
+        "core/clarifier.py",
+        # R2: the message composer lives in the (otherwise unscanned) service
+        # layer — it may import persona_guard_text only, never the card.
+        "core/services/message_voice.py",
+    ]
     banned_symbols = ("persona_voice_block", "resolve_persona")
     offenders = []
 
@@ -279,7 +284,102 @@ def test_l3_accessor_is_only_card_read_path_for_generators():
         py = root / f
         if py.exists() and f not in allowlist:
             _scan(py.read_text(), f)
+    return offenders
+
+
+def test_l3_accessor_is_only_card_read_path_for_generators():
+    """Architectural gate (session-notes/72): NO generator in the runtime
+    trees may import persona_voice_block / resolve_persona — persona
+    knowledge flows only through the ContextProvider accessors
+    (hydrate_persona_context / persona_signoffs_context). The gate scans
+    whole directories with an ALLOWLIST — including the API layer
+    (Phase 2B: endpoints receive the surface summary, never the card) — so
+    a new generator/endpoint file added later cannot silently bypass the
+    rule. persona_guard_text (L4 post-generation output guarding) remains
+    the one allowed exception."""
+    root = pathlib.Path(__file__).resolve().parents[2]
+    offenders = _persona_gate_offenders(root)
     assert not offenders, (
         "Layer violation — persona knowledge must flow through "
         "ContextProvider accessors only: " + ", ".join(offenders)
     )
+
+
+def test_gate_catches_planted_api_direct_read(tmp_path):
+    """Negative test (matrix d): the gate must catch a direct card read in
+    api/ — the Phase 2B endpoint layer cannot import the card itself, in
+    either the direct or the alias (`from core.services import persona`)
+    form."""
+    api_dir = tmp_path / "api"
+    api_dir.mkdir()
+    (api_dir / "bad_endpoint.py").write_text(
+        "from core.services.persona import resolve_persona\n"
+        "def handler():\n"
+        "    return resolve_persona()\n"
+    )
+    (api_dir / "alias_endpoint.py").write_text(
+        "from core.services import persona\n"
+        "def handler():\n"
+        "    return persona.resolve_persona()\n"
+    )
+    offenders = _persona_gate_offenders(tmp_path)
+    assert any("bad_endpoint" in o for o in offenders), offenders
+    assert any("alias_endpoint" in o for o in offenders), offenders
+
+
+def test_r2_composition_lives_in_message_voice():
+    """R2 regression (Phase 2B Step 2): proactive copy composes in
+    message_voice — the single home. decision_pulse must not drag
+    persona_guard_text back inline, and both the pulse and API layers must
+    import the composer (so future copy changes happen in one file)."""
+    root = pathlib.Path(__file__).resolve().parents[2]
+    dp = ast.parse((root / "core/pulse/decision_pulse.py").read_text())
+    api = ast.parse((root / "api/index.py").read_text())
+
+    def _imports_guard(tree) -> bool:
+        return any(
+            isinstance(n, ast.ImportFrom)
+            and "persona_guard_text" in [a.name for a in n.names]
+            for n in ast.walk(tree)
+        )
+
+    def _imports_composer(tree) -> bool:
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.ImportFrom):
+                continue
+            if n.module == "core.services.message_voice":
+                return True
+            if n.module == "core.services" and any(
+                a.name == "message_voice" for a in n.names
+            ):
+                return True
+        return False
+
+    assert not _imports_guard(dp), (
+        "R2 violation — decision_pulse must compose push copy via "
+        "message_voice, not import persona_guard_text inline"
+    )
+    assert _imports_composer(dp), "decision_pulse must import the composer"
+    assert _imports_composer(api), "api/index.py must import the composer"
+
+
+def test_frontend_never_reads_persona_card():
+    """Phase 2B Step 5: the web dashboard (frontend/src) must never read the
+    persona card — no resolve_persona imports and no core_config lookups
+    targeting the 'persona' key. The app surface gets persona only via the
+    API summary (R4), never a raw DB read."""
+    root = pathlib.Path(__file__).resolve().parents[2]
+    frontend = root / "frontend/src"
+    if not frontend.exists():
+        return  # frontend not present in this checkout — nothing to scan
+    offenders = []
+    for py in sorted(frontend.rglob("*")):
+        if py.suffix not in (".ts", ".tsx", ".js", ".jsx"):
+            continue
+        text = py.read_text(errors="ignore")
+        rel = py.relative_to(root).as_posix()
+        if re.search(r"resolve_persona|persona_voice_block|persona_guard", text):
+            offenders.append(f"{rel}: persona card symbol")
+        if re.search(r"['\"]persona['\"]", text) and "core_config" in text:
+            offenders.append(f"{rel}: core_config persona lookup")
+    assert not offenders, offenders

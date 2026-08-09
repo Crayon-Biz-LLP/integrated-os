@@ -425,6 +425,7 @@ async def home_feed_route(request: Request):
       pending_merges    → same rows as /api/pending-merges
       pending_messages  → same rows as /api/messages (limit 50)
       tasks             → same rows as /api/tasks?status=todo (limit 200)
+      persona           → Phase 2B surface summary (or null, fail-closed)
     """
     require_api_auth(request)
     try:
@@ -520,14 +521,28 @@ async def home_feed_route(request: Request):
             except Exception:
                 return []
 
+        # ── Persona surface summary (Phase 2B): closed-enum transport ──
+        # persona_surface_summary is sync (cached per-tenant after the first
+        # read) — offload to a worker thread so home-feed stays non-blocking.
+        async def _persona():
+            try:
+                from core.services.persona import persona_surface_summary
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, persona_surface_summary)
+            except Exception as e:
+                print(f"Home feed persona error: {e}")
+                return None
+
         nodes_fut = asyncio.ensure_future(_nodes())
         edges_fut = asyncio.ensure_future(_edges())
         merges_fut = asyncio.ensure_future(_merges())
         msgs_fut = asyncio.ensure_future(_messages())
         tasks_fut = asyncio.ensure_future(_tasks())
+        persona_fut = asyncio.ensure_future(_persona())
 
-        briefing, nodes, edges, merges, messages, tasks = await asyncio.gather(
-            briefing_fut, nodes_fut, edges_fut, merges_fut, msgs_fut, tasks_fut)
+        briefing, nodes, edges, merges, messages, tasks, persona = await asyncio.gather(
+            briefing_fut, nodes_fut, edges_fut, merges_fut, msgs_fut, tasks_fut,
+            persona_fut)
 
         return {
             "briefing": briefing,
@@ -536,12 +551,31 @@ async def home_feed_route(request: Request):
             "pending_merges": merges,
             "pending_messages": messages,
             "tasks": tasks,
+            "persona": persona,
         }
     except Exception as e:
         print(f"Home feed error: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/persona")
+async def get_persona_route(request: Request):
+    """Phase 2B: safe per-tenant persona surface summary for the app.
+
+    Returns {display_name, voice_style, signoffs} or null. Fail-closed: no
+    card (or a legacy shared key without a tenant) => null, so the app
+    renders today's neutral copy everywhere. Closed-enum transport (R4) —
+    the raw card, curated people, and never-topics never leave the server.
+    """
+    require_api_auth(request)
+    try:
+        from core.services.persona import persona_surface_summary
+        return persona_surface_summary()
+    except Exception as e:
+        print(f"Persona summary error: {e}")
+        return None
 
 
 _HOME_FEED_BRIEFING_CACHE_KEY = "rhodey:briefing:home_feed:v1"
@@ -2046,6 +2080,13 @@ async def focal_action_route(request: Request):
                 print(f"Focal deferral persist error: {e}")
                 return False
 
+        # ── Phase 2B: persona-toned confirmations (R2 single composer home) ──
+        # persona_surface_summary is fail-closed (None without a card), so
+        # every composed message degrades to today's exact neutral string.
+        from core.services import message_voice
+        from core.services.persona import persona_surface_summary
+        _persona_summary = persona_surface_summary()
+
         if action == "done":
             if item_type == "task":
                 iid = _item_int()
@@ -2079,7 +2120,10 @@ async def focal_action_route(request: Request):
                 if not res.get("success", False):
                     return res
                 return {"success": True, "message": f"Approved {item_type}"}
-            return {"success": True, "message": "Action completed"}
+            return {
+                "success": True,
+                "message": message_voice.compose_done(_persona_summary),
+            }
 
         elif action == "reject":
             # Permanent rejection for graph nodes/edges/merges — mirrors the
@@ -2191,7 +2235,10 @@ async def focal_action_route(request: Request):
                 "success": True,
                 "count": result.get("count", 0),
                 "warn": result.get("count", 0) == 3,
-                "message": "Dismissed — I'll keep it off your board for now",
+                "message": message_voice.compose_snoozed(
+                    _persona_summary,
+                    _snooze_days_for_count(result.get("count", 0)),
+                ),
             }
 
         elif action == "correct":
@@ -2232,7 +2279,10 @@ async def focal_action_route(request: Request):
                 print(f"Focal correction observation error (non-fatal): {e}")
             if not persisted:
                 return {"success": False, "message": "Correction noted, but I couldn't defer this item — it may resurface."}
-            return {"success": True, "message": "Correction recorded — Rhodey will learn from this."}
+            return {
+                "success": True,
+                "message": message_voice.compose_corrected(_persona_summary),
+            }
 
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 

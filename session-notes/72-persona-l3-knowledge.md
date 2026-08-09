@@ -97,3 +97,43 @@ card within the contract. Check with:
 2. Does it post-process output? → `persona_guard_text` is fine (L4).
 3. Does it write a card or facts? → verifier + synthesis contract applies.
 4. Run the AST gate + `test_contract_verifier_read_path_agree` before commit.
+
+---
+
+# Phase 2B — Per-tenant persona on the remaining surfaces (plan `plans/72`)
+
+**Status:** DELIVERED (Steps 0–5). Read this before touching message copy,
+the API surface, or the Flutter voice lines. Built on the M18c rule above;
+all five rules (R1–R5) extend unchanged.
+
+## New layer-checklist entries (Phase 2B)
+
+1. **API transport (R4)** — the app receives the persona ONLY as a surface
+   summary: `GET /api/persona` and the `/api/home-feed` `persona` key, both
+   built by `core/services/persona.py::persona_surface_summary()` — a closed
+   enum (`display_name`, `voice_style` ∈ direct|calm|warm, `signoffs` ≤ 2).
+   Never the raw card, curated people, or never-topics. Fail-closed `null`.
+   The AST gate now scans `api/`; the frontend gate scans `frontend/src`
+   (`test_frontend_never_reads_persona_card`).
+2. **Message composition (R2)** — all proactive copy composes in ONE home:
+   `core/services/message_voice.py` (done/snoozed/corrected confirmations +
+   decision-pulse push title/body). Every template = `(neutral, persona)`
+   pair, final output through `persona_guard_text` with the neutral form as
+   fallback. `test_r2_composition_lives_in_message_voice` asserts the pulse
+   and API layers import the composer and never drag the guard back inline.
+   NOTE: the push opener is TENANT IDENTITY (a `name` data param), not
+   persona content — card-less tenants stay byte-identical (R5).
+3. **Client rendering (R4)** — the Flutter app switches Rhodey's OWN static
+   lines on the `voice_style` closed enum only (`RhodeyVoice.allClear*`;
+   the snooze-gate feedback hint). Server-composed strings (briefing,
+   focal confirmations) always take precedence; unknown style => standard
+   voice byte-identical pre-2B. The home tour overlay (`home_tour_overlay`)
+   already covers the tiny brief + focal card + time-of-day callouts.
+
+## The dormant-card lesson applies to every new persona surface
+
+If a persona surface "does nothing" after a card is applied, check the
+read-path shape validator FIRST (people ≤ 10 / domains ≤ 8 / signoffs 2–4 /
+claims ≤ 20 / life_snapshot ≤ 12) — the write/read contract is enforced at
+write time, so a stored card that fails validation means it predates the
+contract and must be re-synthesized (`--user <name>`).
