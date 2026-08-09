@@ -369,10 +369,17 @@ HARD RULES — the card is verified by a deterministic checker and rejected if v
 4. Every `claims` entry must be a relationship that is literally in `known_triples`.
 5. If a sensitive topic appears in `sensitive_topics`, it may ONLY appear inside
    the `never` list — never in `who`, `style`, `signoffs`, or `life_snapshot`.
-6. Sign-offs are 3-12 words, warm and PERSONAL — ground them in `life_snapshot`
-   (family/home warmth like parenthood, faith, pets). CRITICAL: never use ANY
-   person's name in a sign-off — not even a family member's — and never a time
-   word like "tonight". Name-drops and times are rejected by the checker.
+6. Sign-offs are 3-12 words in Rhodey's EXISTING voice: the calm, concise
+   chief-of-staff register — warm but composed, direct, never gushing.
+   Ground them in `life_snapshot` (family/home warmth like parenthood,
+   faith, pets) so they feel personal, but keep the current Rhodey tone
+   (e.g. "Rest well." / "Locked in for the night."). NOT an email or
+   letter: never "regards", "sincerely", "yours truly", "faithfully",
+   "cheers", "best". NOT a casual text either: no "hey", "xo", "thinking
+   of you", emoji, exclamation-heavy slang. CRITICAL: never use ANY
+   person's name in a sign-off — not even a family member's — and never a
+   time word ("today", "tonight", "tomorrow", "this week", "on Monday"...):
+   time words and name-drops are rejected by the checker.
 7. `who` is one sentence, <= 200 chars, and may weave in life facts from
    `life_snapshot` (roles, family, faith). `style.voice` <= 150 chars.
 8. `life_snapshot` (optional, max 6 entries) lists the most human life facts,
