@@ -56,6 +56,7 @@ COMMON_CAPITALIZED: set[str] = {
     "This", "Our", "My", "Their", "Her", "His", "When", "What",
     "Who", "Where", "Why", "How", "They", "It", "That", "These",
     "Part", "Christian", "Lord", "Jesus", "Blessed", "Grateful",
+    "Peace", "Joy", "Grace", "Hope", "Faith", "Love",
 }
 
 _TIMING_RE = re.compile(

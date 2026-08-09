@@ -54,6 +54,24 @@ _ROLE_WORD = {"FAMILY_OF": "family", "SPOUSE_OF": "spouse",
               "SIBLING_OF": "sibling", "FRIEND_OF": "friend",
               "RELATES_TO": "close to"}
 
+# Curated-row sections that describe WORK, not life — people under these
+# never become life texture (the card's personal circle is family/home).
+_CURATED_WORK_SECTIONS = {
+    "professional", "work", "business", "team", "client", "clients",
+    "colleague", "colleagues", "office", "vendor", "vendors",
+}
+
+# Curated-row role words → the card vocabulary ("Wife - URGENT/Connection"
+# cleans to "wife", which maps to the graph term "spouse").
+_CURATED_ROLE_WORD = {
+    "wife": "spouse", "husband": "spouse", "partner": "spouse",
+    "son": "child", "daughter": "child", "kid": "child",
+    "kids": "child", "children": "child", "mom": "parent",
+    "mother": "parent", "dad": "parent", "father": "parent",
+    "brother": "sibling", "sister": "sibling", "friend": "friend",
+    "family": "family", "close to": "close to",
+}
+
 # Positive life signals to surface from introspection/relationship memories
 # (snippets containing a sensitive keyword are excluded — the boundary wins).
 _LIFE_KEYWORDS = (
@@ -77,6 +95,11 @@ _SENSITIVE_KEYWORDS = (
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _norm_label(s: str) -> str:
+    """Casefold label for alias/label matching (keeps spaces/punctuation)."""
+    return (s or "").strip().casefold()
 
 
 def _paginate(
@@ -133,33 +156,92 @@ def extract_facts(owner_id: str) -> dict:
         key=lambda n: -deg[n["id"]],
     )[:8]
 
-    # ── Life texture: who the user IS outside work (grounded in edges). ──
+    # ── Life texture: who the user IS outside work. ──────────────────────
+    # M18a: the tenant's CURATED 'relationships' config row is the
+    # authoritative life circle (their own written answer — wife/kids/family
+    # they chose). The graph is only the fallback for tenants who never
+    # curated a row. Curated names are resolved to canonical graph labels
+    # via exact label match, then token-prefix, then entity_mappings aliases.
     life_roles: list[str] = []
     life_other_ids: set[str] = set()
-    for e in edges:
-        a = by_id.get(e["source_node_id"])
-        b = by_id.get(e["target_node_id"])
-        rel = (e.get("relationship") or "").strip().upper()
-        if not a or not b or rel not in _FAMILY_RELS:
-            continue
-        if a.get("label") == root_label:
-            other = b
-        elif b.get("label") == root_label:
-            other = a
-        else:
-            continue
-        if other.get("label") == root_label:
-            continue
-        role = _ROLE_WORD.get(rel, rel.lower())
-        entry = f"{other['label']} ({role})"
-        if entry not in life_roles:
+    curated_display_names: set[str] = set()
+    from core.services.user_settings import resolve_curated_people
+
+    curated = resolve_curated_people(owner_id)
+    if curated:
+        from core.lib.graph_rules import resolve_alias
+
+        _label_by_norm: dict[str, str] = {}
+        for n in nodes:
+            _label_by_norm.setdefault(_norm_label(n.get("label") or ""), n["label"])
+
+        seen: set[tuple[str, str]] = set()
+        for person in curated:
+            name = (person.get("name") or "").strip()
+            if not name:
+                continue
+            # Life texture only — work sections (PROFESSIONAL/TEAM/...) stay
+            # out of the personal circle (they are real people, just not the
+            # card's life snapshot).
+            if (person.get("section") or "").strip().lower() in _CURATED_WORK_SECTIONS:
+                continue
+            # Resolve curated name -> canonical graph label: the graph's own
+            # alias resolver FIRST (metadata.aliases, migration 76 — the same
+            # "sunju" → "Sunjula Daniel" path the chat uses), then exact node
+            # label, then the curated name verbatim. Alias-first matters:
+            # a nickname NODE can exist ("Sunju") whose exact label would
+            # otherwise shadow the canonical person.
+            try:
+                canon_label = resolve_alias(name) or None
+            except Exception:
+                canon_label = None
+            if not canon_label or canon_label.strip().casefold() == _norm_label(name):
+                canon_label = _label_by_norm.get(_norm_label(name)) or canon_label or name
+            display = canon_label or name
+            _role_raw = (person.get("role") or "family").strip().lower()
+            role = _CURATED_ROLE_WORD.get(_role_raw, _role_raw)
+            entry = f"{display} ({role})"
+            key = (display.casefold(), role)
+            if key in seen:
+                continue
+            seen.add(key)
             life_roles.append(entry)
-            life_other_ids.add(other["id"])
+            curated_display_names.add(display)
+            # Vocabulary: canonical node if resolvable, else the curated name
+            # itself (a source row — the verifier's snapshot gate accepts it).
+            matched = next(
+                (n for n in nodes if n.get("label") == canon_label), None
+            ) if canon_label else None
+            if matched:
+                life_other_ids.add(matched["id"])
+    else:
+        for e in edges:
+            a = by_id.get(e["source_node_id"])
+            b = by_id.get(e["target_node_id"])
+            rel = (e.get("relationship") or "").strip().upper()
+            if not a or not b or rel not in _FAMILY_RELS:
+                continue
+            if a.get("label") == root_label:
+                other = b
+            elif b.get("label") == root_label:
+                other = a
+            else:
+                continue
+            if other.get("label") == root_label:
+                continue
+            role = _ROLE_WORD.get(rel, rel.lower())
+            entry = f"{other['label']} ({role})"
+            if entry not in life_roles:
+                life_roles.append(entry)
+                life_other_ids.add(other["id"])
 
     # Claim vocabulary: root + top people + top orgs + family counterparts
     # (both IDs and LABELS — family members are entities the card may name).
+    # Curated names that never resolved to a node are STILL source rows —
+    # the verifier's snapshot gate accepts them as provided vocabulary.
     kept_labels = ({root_label} | {n["label"] for n in people + orgs}
-                   | {by_id[fid]["label"] for fid in life_other_ids if fid in by_id})
+                   | {by_id[fid]["label"] for fid in life_other_ids if fid in by_id}
+                   | curated_display_names)
     kept_ids = {n["id"] for n in people + orgs} | life_other_ids
     if root_label:
         for n in nodes:

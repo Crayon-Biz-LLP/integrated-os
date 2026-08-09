@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 
 from core.services.db import get_supabase, tenant_aware_client
@@ -342,6 +343,100 @@ def resolve_context(user_id: str | None = None) -> str:
             pass
         return ""
     return os.getenv("USER_CONTEXT", DEFAULT_CONTEXT)
+
+
+def _parse_relationships_row(content: str) -> list[dict]:
+    """Parse a per-tenant 'relationships' config row into structured people.
+
+    The row is free-form prose the tenant wrote (e.g. seeded by M6 or edited
+    in the DB). Recognized shape — sectioned name lists::
+
+        FAMILY: Sunju (Wife - URGENT/Connection), Jeremy (8), Jaden (5)
+        PROFESSIONAL: Team leads at Solvstrat.
+
+    Returns [{name, role, section}] with roles cleaned to a single lowercase
+    word ("Wife - URGENT/Connection" → "wife"); numeric parens (ages like
+    "(8)" / "(8mo)") collapse to the section name. Robust to missing
+    parens, bare names, and arbitrary section labels.
+    """
+    out: list[dict] = []
+    section = ""
+    for line in str(content or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if ":" in line:
+            head, _, body = line.partition(":")
+            section = re.sub(r"^\d+\.?\s*", "", head).strip().lower()
+            body = body.strip()
+        else:
+            # Continuation of the previous section ("FAMILY:\nSunju (Wife)\nJeremy").
+            if not section:
+                continue  # stray text before any section header → garbage
+            body = stripped
+        if not body:
+            continue
+        # Trailing period ("Jeffery (8mo).") must not break the entry
+        # delimiter — the last entry would otherwise be silently dropped.
+        body = body.rstrip(".")
+        # Standalone connectors ("Sunju (Wife) and Jeremy") must not drop
+        # the preceding entry — normalize to a comma before the regex loop.
+        # (A "relationships" row almost never names a two-person entity.)
+        body = re.sub(r"\s+(?:and|plus|&)\s+", ", ", body, flags=re.I)
+        for m in re.finditer(
+            r"([A-Za-z][A-Za-z' .-]*?)\s*(?:\(([^)]*)\))?(?:,|$)", body
+        ):
+            name = m.group(1).strip().rstrip(".")
+            if len(name) < 2:
+                continue
+            raw_role = (m.group(2) or "").strip()
+            role = _clean_relationship_role(raw_role, section)
+            out.append({"name": name, "role": role, "section": section})
+    return out
+
+
+def _clean_relationship_role(raw: str, section: str) -> str:
+    """Normalize a parenthetical role to one lowercase word.
+
+    "Wife - URGENT/Connection" → "wife"; ages "(8)"/"(8mo)" are not roles
+    → the section name ("family"); empty → section name.
+    """
+    if not raw:
+        return section or "family"
+    first = re.split(r"[-–—/]", raw, maxsplit=1)[0].strip()
+    if not first or re.fullmatch(r"\d+[a-z]*", first):
+        return section or "family"
+    return first.lower()
+
+
+def resolve_curated_people(user_id: str | None = None) -> list[dict] | None:
+    """Per-tenant curated "who matters" list from core_config 'relationships'.
+
+    The user's own written answer to "who is in my world" (family, close
+    friends). The persona synthesis uses this as the authoritative life
+    circle; the graph is only the fallback for tenants who never curated a
+    row. Fail-closed: no row / empty / parse error → None (caller falls
+    back to graph mining). Never another tenant's row.
+    """
+    user_id = _effective_user_id(user_id)
+    if not user_id:
+        return None
+    try:
+        rows = (
+            tenant_aware_client()
+            .table("core_config")
+            .select("content")
+            .eq("key", "relationships")
+            .limit(1)
+            .execute()
+        )
+        content = (rows.data or [{}])[0].get("content") if rows.data else None
+        if not content or not str(content).strip():
+            return None
+        parsed = _parse_relationships_row(content)
+        return parsed or None
+    except Exception:
+        return None
 
 
 def resolve_night_signoffs(user_id: str | None = None) -> str:
