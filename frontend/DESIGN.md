@@ -594,12 +594,24 @@ Because of that, dashboard access is locked to an explicit admin allowlist:
   not on the allowlist before they can reach dashboard data.
 - `src/app/login/page.tsx` — shows the not-authorized message.
 
-Required env var (fail-closed — if unset or empty, NO ONE can access the
-  dashboard):
+Required env vars (both fail-closed — if either is unset, the dashboard
+  refuses to serve data):
 
 ```
 DASHBOARD_ADMIN_EMAILS=danny@example.com,admin@example.com   # comma-separated
+DASHBOARD_OWNER_ID=c302706e-...                             # users.id of the tenant this dashboard serves
 ```
+
+`DASHBOARD_OWNER_ID` is the second lock. The dashboard reads with the
+service-role key (bypasses RLS), so `owner_id` scoping cannot rely on
+individual queries remembering to filter. Instead `createServerSupabaseClient()`
+wraps every `.from(table)` so select/update/delete auto-append
+`.eq("owner_id", OWNER_ID)` and insert stamps it into the payload — one choke
+point, ~130 query sites covered, no way to forget the filter.
+
+If you later want the dashboard to serve multiple tenants, replace the env pin
+with per-signed-in-admin resolution (users.id by email) — the wrapper makes
+that a one-line change.
 
 ---
 
