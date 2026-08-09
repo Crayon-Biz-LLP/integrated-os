@@ -109,12 +109,18 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     # --- REMINDER PRE-FILTER: "Remind me to X" → TASK deterministically ---
     # Messages asking to create reminders are always TASK, never COMPLETION or NOTE.
     # Common patterns: "Remind me to...", "Remind me that...", "Set a reminder for...",
-    # "Set reminder to...", "Remind Danny to..." (if forwarded).
+    # "Set reminder to...", "Remind <name> to..." (if forwarded).
     # This saves an LLM call and prevents the COMPLETION misclassification that occurred
     # when "Remind me to purchase the Ashraya domain on 10th August" was classified
     # as COMPLETION — the LLM saw "purchase" and wrongfully interpreted it as a closure.
+    # M17: the name variant is the TENANT'S OWN display name (resolved per-tenant),
+    # never a hardcoded 'danny' literal.
+    from core.services.user_settings import resolve_user_name
+    _user_name = (resolve_user_name() or "").strip()
+    _name_alt = re.escape(_user_name) if _user_name else None
+    _me_alt = rf"(me|us{('|' + _name_alt) if _name_alt else ''})"
     _reminder_pattern = re.compile(
-        r"\b[Re]+mind\s+(me|danny)\s+(to|about|that)"
+        rf"\b[Re]+mind\s+{_me_alt}\s+(to|about|that)"
         r"|\bset\s+(a\s+|the\s+)?reminder\s+(for|to)"
         r"|\bremind\s+(me|us)\s+about",
         re.IGNORECASE

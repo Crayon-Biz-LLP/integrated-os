@@ -23,13 +23,13 @@ def _mailbox_context(mailbox_type: str, user_name: str, domain_names: list[str])
         return (
             f"MAILBOX CONTEXT: This is {user_name}'s WORK Outlook inbox. "
             "It receives exclusively work-related emails. "
-            "Personal and church emails do NOT arrive here. "
+            "Personal and community emails do NOT arrive here. "
             f"Business domains: {domains}."
         )
     return (
         f"MAILBOX CONTEXT: This is {user_name}'s PERSONAL Gmail inbox. "
         "It is scoped strictly to personal correspondence, family, "
-        "and community/church-related work.\n"
+        "and community-related work.\n"
         "This mailbox does NOT receive business emails, client work, "
         f"or vendor communications. Those go to the work inbox ({domains})."
     )
@@ -55,7 +55,7 @@ def _arrival_context(mailbox_type: str, domain_names: list[str]) -> str:
     return (
         "What legitimately arrives here:\n"
         "- Personal contacts: family, friends, personal relationships\n"
-        "- Community contacts: volunteers, ministry team, event coordination\n"
+        "- Community contacts: volunteers, local groups, event coordination\n"
         "- Personal finances: CA, personal banking, insurance "
         "(human-sent, not automated alerts)\n"
         "- Government correspondence: direct human responses from officials "
@@ -122,14 +122,14 @@ CLASSIFY AS "fyi" IF:
 
 CLASSIFY AS "actionable" IF:
 - Addressed directly To: {user_name}
-- From a real individual (family, friend, church member, client, vendor, team member, colleague)
+- From a real individual (family, friend, community member, client, vendor, team member, colleague)
 - Requires {user_name} to respond, approve, review, decide, schedule, or fulfill an obligation
 - Bias toward actionable for direct messages from real people — when in doubt, surface it
 
 ─── OUTPUT RULES ───
 
 suggested_task:
-- Verb-first, specific action (e.g., "Confirm attendance for the prayer meeting with Elder Thomas", "Send revised proposal to Ananya at TechCorp")
+- Verb-first, specific action (e.g., "Confirm attendance for the community meeting", "Send revised proposal to Ananya at TechCorp")
 - NULL if fyi or ignored
 - NULL if action cannot be stated specifically
 
@@ -156,7 +156,7 @@ Return ONLY valid JSON, NO markdown, NO explanation:
   "suggested_task": "verb-first task or null",
   "needs_draft": true or false,
   "linked_person_name": "full name if identifiable, else null",
-  "linked_organization_name": "organization or ministry name if mentioned, else null",
+  "linked_organization_name": "organization or community name if mentioned, else null",
   "is_human_sender": true or false,
   "has_memory_value": true or false
 }}"""

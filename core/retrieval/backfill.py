@@ -40,7 +40,7 @@ async def _save_checkpoint(memory_id: int):
                 "status": "completed",
                 "started_at": None,
                 "completed_at": None,
-            }, on_conflict="source_type,source_id,index_version") \
+            }, on_conflict="owner_id,source_type,source_id,index_version") \
             .execute()
     except Exception as e:
         audit_log_sync("retrieval", "WARNING",

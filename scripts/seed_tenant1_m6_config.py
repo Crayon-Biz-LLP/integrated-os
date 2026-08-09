@@ -94,6 +94,8 @@ KEYS = [
     "github_repo",
     "briefing_sections",
     "briefing_schedule",
+    "vault_url",
+    "night_signoffs",
 ]
 
 
@@ -110,6 +112,7 @@ def m6_rows() -> list[dict]:
     from core.lib.constants import DEFAULT_GITHUB_OWNER, DEFAULT_GITHUB_REPO
     from core.services.briefing_sections import default_briefing_sections_json
     from core.services.briefing_schedule import schedule_for_preset
+    from core.services.user_settings import DEFAULT_VAULT_URL
 
     return [
         {"key": "email_archive_label", "content": TENANT1_EMAIL_ARCHIVE_LABEL},
@@ -124,6 +127,8 @@ def m6_rows() -> list[dict]:
         # M9.7: Danny's exact pre-M9.7 schedule (classic) — the 30-min
         # heartbeat gate reproduces his briefings byte-for-byte.
         {"key": "briefing_schedule", "content": json.dumps(schedule_for_preset("classic"))},
+        {"key": "vault_url", "content": DEFAULT_VAULT_URL},
+        {"key": "night_signoffs", "content": json.dumps(["Now go be a dad.", "Rest well.", "Locked in for the night."])},
     ]
 
 
@@ -216,6 +221,25 @@ def main() -> None:
     )
     _psql(sql, dsn, password)
     print(f"✅ Seeded {len(rows)} M6 config rows for tenant #1 ({args.user}) — idempotent (re-run safe).")
+
+    # M17: tenant #1's personal_orgs are authoritative row data now that
+    # load_settings treats an existing row as fully authoritative (null
+    # personal_orgs would otherwise resolve to [] for him). Idempotent.
+    from core.services.user_settings import DEFAULT_PERSONAL_ORGS
+    po_json = json.dumps(DEFAULT_PERSONAL_ORGS)
+    _psql(
+        f"insert into public.user_settings (user_id, personal_orgs) values "
+        f"('{uid}', {_lit(po_json)}) "
+        f"on conflict (user_id) do update set personal_orgs = excluded.personal_orgs, updated_at = now()",
+        dsn, password,
+    )
+    _po_verify = _psql(
+        f"select personal_orgs::text from public.user_settings where user_id = '{uid}'",
+        dsn, password,
+    )
+    if _po_verify != po_json:
+        raise SystemExit("❌ personal_orgs verification failed: " + _po_verify[:80])
+    print(f"✅ Seeded tenant #1 user_settings.personal_orgs ({len(DEFAULT_PERSONAL_ORGS)} orgs) — idempotent.")
 
     # Self-verify: every key now holds exactly the intended value
     bad = []

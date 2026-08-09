@@ -7,7 +7,7 @@ from collections import defaultdict
 # Add parent dir to path so we can import core modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.graph_rules import normalize_label_comparison, execute_graph_node_merge
 
 def classify_group(group: List[dict]) -> str:
@@ -37,7 +37,7 @@ def classify_group(group: List[dict]) -> str:
     return "AUTO_SAFE"
 
 def fetch_all_active_nodes():
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     all_nodes = []
     page = 0
     page_size = 1000
@@ -148,7 +148,7 @@ def main():
     if fuzzy_groups:
         print(f"Found {len(fuzzy_groups)} fuzzy alias groups.\n")
     
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     
     safe_groups = 0
     manual_groups = 0
@@ -213,4 +213,8 @@ def main():
         print("\nDry run complete. Use --apply-safe-only to execute safe merges, or --apply-group 'type|key' to execute manually.")
 
 if __name__ == "__main__":
-    main()
+    from core.services.db import run_tenant_fanout
+
+    # M16: fan out per active tenant — the fetch now runs through the
+    # tenant-aware client (owner-scoped) and merges stay fail-closed.
+    run_tenant_fanout(main, job_name="clean_duplicate_nodes")

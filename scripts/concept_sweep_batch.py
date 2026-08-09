@@ -5,14 +5,14 @@ from datetime import datetime, timezone
 
 load_dotenv()
 
-from core.services.db import get_supabase, maybe_single_safe  # noqa: E402
+from core.services.db import maybe_single_safe, run_tenant_fanout, tenant_aware_client  # noqa: E402
 from core.llm.constants import CLASSIFICATION_MODEL  # noqa: E402
 from core.llm.compat import call_llm_with_fallback_sync  # noqa: E402
 from core.skills.backfill_graph import synthesize_content  # noqa: E402
 from core.clarifier import evaluate_node  # noqa: E402
 from core.lib.graph_rules import normalize_label  # noqa: E402
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 def fetch_unprocessed_memories():
     # Fetch all memories
@@ -269,4 +269,7 @@ def run_batch_sweep():
                 print(f"    Warning: Failed to write audit_logs for {mem_id}: {e}")
                 
 if __name__ == "__main__":
-    run_batch_sweep()
+    # M16: fan out per active tenant — the tenant-aware client stamps
+    # owner_id on every graph_nodes/pending_nodes insert (before M16 the
+    # raw client hit NOT NULL failures and the job died).
+    run_tenant_fanout(run_batch_sweep, job_name="concept_sweep")

@@ -4,7 +4,7 @@ import os
 import httpx
 from datetime import datetime, timezone
 
-from core.services.db import channel_tenant_scope, tenant_aware_client
+from core.services.db import arun_tenant_fanout, tenant_aware_client
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.llm.constants import CLASSIFICATION_MODEL
@@ -562,5 +562,4 @@ FRAGMENTS (Old & New):
                 pass
 
 if __name__ == "__main__":
-    with channel_tenant_scope():
-        asyncio.run(run_batch_sweep_v2())
+    asyncio.run(arun_tenant_fanout(run_batch_sweep_v2, job_name="brain_synth"))

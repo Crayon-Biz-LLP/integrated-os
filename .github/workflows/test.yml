@@ -44,6 +44,15 @@ jobs:
       - name: Lint — Ruff check
         run: ruff check .
 
+      # M17: fail the build if any tenant personal identifier (names, orgs,
+      # domains, vault URL — derived live from the DB when secrets exist,
+      # else the committed supplement) appears in shared runtime code.
+      - name: Residue Gate — no tenant world in shared code
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/scan_tenant1_residue.py
+
       - name: Run Unit Tests
         env:
           LIVE_DB: ${{ steps.secrets_check.outputs.secret_missing == 'false' && 'true' || 'false' }}

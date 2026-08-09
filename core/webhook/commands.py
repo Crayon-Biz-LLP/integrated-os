@@ -443,8 +443,14 @@ async def handle_command(text: str, chat_id: int):
             reply = "The library is empty. Save some links first!"
 
     elif text in ['/vault', '🔓 Vault']:
-        vault_url = "https://danny-integrated-os.streamlit.app"
-        reply = f"🔓 **COMMAND CENTER ONLINE**\n\nYour strategic overview and research library are live.\n\n👉 [Access Secure Vault]({vault_url})"
+        # M17: per-tenant vault URL from core_config — never another
+        # tenant's URL. Danny's row is seeded; others get "not configured".
+        from core.services.user_settings import resolve_vault_url
+        vault_url = resolve_vault_url()
+        if vault_url:
+            reply = f"🔓 **COMMAND CENTER ONLINE**\n\nYour strategic overview and research library are live.\n\n👉 [Access Secure Vault]({vault_url})"
+        else:
+            reply = "🔓 The Vault isn't configured for your account yet."
 
     elif text.startswith('/season') or text == '🧭 Season Context':
         params = text.replace('/season', '').replace('🧭 Season Context', '').strip()

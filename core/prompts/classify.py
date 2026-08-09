@@ -12,6 +12,7 @@ def build_classify_intent_prompt(
     user_name: str | None = None,
     routing_rules: str | None = None,
     role_update_example: str | None = None,
+    night_signoffs: str | None = None,
 ) -> str:
     """Build the intent-classification prompt (M2/M9.2 de-personalized).
 
@@ -22,9 +23,28 @@ def build_classify_intent_prompt(
     example_entities.resolve_role_update_example(); when omitted or on any
     error it degrades to a neutral line (never another tenant's data).
     """
-    from core.services.user_settings import resolve_user_name, routing_rules_text
+    from core.services.user_settings import (
+        resolve_night_signoffs,
+        resolve_user_name,
+        routing_rules_text,
+    )
     user_name = user_name or resolve_user_name()
     routing_rules = routing_rules or routing_rules_text()
+    if night_signoffs is None:
+        # M18: persona card sign-offs take precedence; the fixed override
+        # row (core_config 'night_signoffs') is next; neutral default last.
+        # Byte-identical to pre-M18 when no persona card exists (fail-closed).
+        try:
+            from core.services.persona import resolve_persona
+
+            _persona = resolve_persona()
+            _p_signoffs = (_persona or {}).get("signoffs") or []
+            if _p_signoffs:
+                night_signoffs = " / ".join(f'"{s}"' for s in _p_signoffs[:4])
+            else:
+                night_signoffs = resolve_night_signoffs()
+        except Exception:
+            night_signoffs = resolve_night_signoffs()
     if role_update_example is None:
         from core.services.example_entities import resolve_role_update_example
         role_update_example = resolve_role_update_example()
@@ -82,9 +102,9 @@ Rules:
 - RECEIPT: Confirms the action. Vary your phrasing naturally each time: "Got it — X on your list." / "X is logged." / "Done." / "Added." / "Noted."
 - LITERAL SUBJECT: Mirror {user_name}'s verb. 'Check with the client' → "Client check-in logged."
 - ZERO DATA LOSS: Never drop qualifiers like 'Canadian project' or 'Zoho API'.
-- STEALTH ROUTING: Assign the entity in JSON, never mention it (SOLVSTRAT, PERSONAL) in receipt text.
+- STEALTH ROUTING: Assign the entity in JSON, never mention it (PROJECT, PERSONAL) in receipt text.
 - DATE VERIFICATION: If a time or day is mentioned, include it in the receipt.
-- NIGHT SIGN-OFF: Confirm the entry, then a simple sign-off: "Now go be a dad." / "Rest well." / "Locked in for the night."
+- NIGHT SIGN-OFF: Confirm the entry, then a simple sign-off: {night_signoffs}
 - TONE GUARD: NEVER use: 'momentum', 'focus', 'gentle', 'reflection', 'push', 'strategic', 'SITREP', 'optimal', 'cluster', 'ready for your review'.
 - STRATEGIC CORRECTIONS: If {user_name} starts a message with 'Record this for the Vault', 'Correction for the Historian', or 'Correction of Record', classify it immediately as a NOTE with 1.0 confidence. These are manual strategic overrides and must never be ignored.
 - META-SYSTEM CONTENT: Allow content that talks about the user's high-value domains (from the PROJECT ROUTING block) even if the message is long or complex. These are high-value strategic inputs."""

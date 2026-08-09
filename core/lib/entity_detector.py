@@ -110,9 +110,23 @@ def _get_ngrams(words: list[str], n: int) -> set[str]:
 
 def _find_capitalized_phrases(text: str) -> list[tuple[str, int, int]]:
     """Find capitalized phrases in text. Returns [(phrase, start, end)]."""
+    # M17: the user's OWN display name + root label are skipped (a tenant's
+    # self-references are not entities) — resolved per-tenant instead of a
+    # hardcoded 'danny' literal. 'mother' stays: it is a generic reference.
     _SKIP_WORDS = {'i', 'a', 'an', 'the', 'this', 'that', 'these', 'those',
                    'my', 'your', 'his', 'her', 'its', 'our', 'their',
-                   'danny', 'mother', 'we', 'he', 'she', 'it', 'they'}
+                   'mother', 'we', 'he', 'she', 'it', 'they'}
+    try:
+        from core.services.user_settings import resolve_user_name
+        from core.lib.graph_rules import resolve_root_label
+        _self_name = (resolve_user_name() or "").strip().lower()
+        _root_name = (resolve_root_label() or "").strip().lower()
+        if _self_name:
+            _SKIP_WORDS.add(_self_name)
+        if _root_name and _root_name not in _SKIP_WORDS:
+            _SKIP_WORDS.add(_root_name)
+    except Exception:
+        pass  # fail-open: no tenant context → legacy behavior
     pattern = r'\b([A-Z][a-z]*(?:\s+[A-Z][a-z]*)*)\b'
     matches = []
     for m in re.finditer(pattern, text):

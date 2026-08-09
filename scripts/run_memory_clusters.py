@@ -14,11 +14,12 @@ async def main():
     result = await build_memory_clusters()
     print(json.dumps(result, indent=2, default=str))
     if result.get("errors"):
-        raise SystemExit(f"Clustering failed: {result['errors']}")
+        # RuntimeError (not SystemExit) so arun_tenant_fanout's except
+        # Exception isolates this tenant instead of aborting the loop.
+        raise RuntimeError(f"Clustering failed: {result['errors']}")
 
 
 if __name__ == "__main__":
-    from core.services.db import channel_tenant_scope
+    from core.services.db import arun_tenant_fanout
 
-    with channel_tenant_scope():
-        asyncio.run(main())
+    asyncio.run(arun_tenant_fanout(main, job_name="memory_clusters"))

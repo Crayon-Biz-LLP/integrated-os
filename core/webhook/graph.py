@@ -45,7 +45,7 @@ Return format MUST be a valid JSON array:
   {{
     "id": 1,
     "action": "approve",
-    "corrected_label": "Paulsons Ledgers",
+    "corrected_label": "Northwind Traders",
     "corrected_type": "organization"
   }},
   {{
@@ -53,7 +53,7 @@ Return format MUST be a valid JSON array:
     "action": "approve",
     "corrected_label": "Sarah Johnson",
     "corrected_type": "person",
-    "context": "VP Engineering at Equisoft"
+    "context": "VP Engineering at Acme"
   }},
   {{
     "id": 3,

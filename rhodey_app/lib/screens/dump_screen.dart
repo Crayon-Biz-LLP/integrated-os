@@ -74,7 +74,7 @@ class _DumpScreenState extends State<DumpScreen> with WidgetsBindingObserver {
         if (!mounted) return;
         setState(() {
           _voiceState = VoiceState.transcribing;
-          _transcribedText = 'Remind me to call Sunju about school tomorrow';
+          _transcribedText = 'Remind me to call the school about tomorrow';
         });
         Future.delayed(const Duration(seconds: 1), () {
           if (!mounted) return;

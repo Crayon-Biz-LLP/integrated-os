@@ -14,13 +14,16 @@ supabase = tenant_aware_client()
 # Default questions (used when no ground-truth labels exist)
 # ---------------------------------------------------------------------------
 EVAL_QUESTIONS = [
+    # M17: tenant-agnostic defaults — tenant-specific ground truth lives in
+    # the owner-scoped retrieval_eval_gold rows (seeded per tenant), never in
+    # shared default question text.
     "What prior situation is similar to this?",
-    "What should I remember before meeting Ashraya?",
-    "Which people are connected to QHORD?",
+    "What should I remember before the meeting?",
+    "Which people are connected to this project?",
     "What pattern is repeating in my week?",
-    "What earlier decision is relevant for Solvstrat?",
-    "What do I know about the church operations issue?",
-    "Who have I discussed the Crayon project with?",
+    "What earlier decision is relevant to this?",
+    "What do I know about the operations issue?",
+    "Who have I discussed this initiative with?",
     "What deadlines are approaching this week?",
 ]
 

@@ -150,9 +150,17 @@ async def process_dlq(max_items: int = 5, max_retries: int = 3) -> dict:
             # Also send a push notification
             try:
                 from core.services.push_notification import send_push_notification
+                from core.services.persona import persona_guard_text
+
+                # M18 Phase 2A: never-guard on the banner copy (no-op unless
+                # a persona card exists with overlapping topics).
+                _dlq_body = persona_guard_text(
+                    f"DLQ item {item['audit_id']} failed after {max_retries} retries. Table: {table}",
+                    fallback="A background job needs attention",
+                )
                 await send_push_notification(
                     title="DLQ Escalation Alert",
-                    body=f"DLQ item {item['audit_id']} failed after {max_retries} retries. Table: {table}",
+                    body=_dlq_body,
                     data={"type": "dlq_escalation", "audit_id": item["audit_id"]},
                 )
             except Exception:

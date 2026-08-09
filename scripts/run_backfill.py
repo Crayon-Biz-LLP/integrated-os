@@ -28,4 +28,9 @@ async def main():
     print(f"Partials swept: {result['partials_swept']}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from core.services.db import arun_tenant_fanout
+
+    # M16: fan out per active tenant — each tenant's memories are indexed
+    # under their own scope (before M16 this ran unscoped and failed closed
+    # with TenantRequiredError every Monday).
+    asyncio.run(arun_tenant_fanout(main, job_name="retrieval_backfill"))

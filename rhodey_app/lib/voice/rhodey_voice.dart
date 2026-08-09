@@ -11,18 +11,27 @@ class RhodeyVoice {
   RhodeyVoice._();
 
   /// All clear — one canonical line (was three divergent phrasings across
-  /// the home screen). [name] is the tenant's display name (M9.6); 'Danny'
-  /// remains the last-resort fallback for legacy single-tenant installs.
-  static String allClear([String? name]) => 'All clear, ${_who(name)}.';
+  /// the home screen). [name] is the tenant's display name (M9.6). While the
+  /// name is unknown (first paint before the resolve lands, or a tenant with
+  /// no name on file) the name is omitted entirely — we NEVER flash a
+  /// hardcoded 'Danny' at another user (M17).
+  static String allClear([String? name]) {
+    final who = _who(name);
+    return who.isEmpty ? 'All clear.' : 'All clear, $who.';
+  }
 
   /// All clear with an open prompt (empty-conversation state).
-  static String allClearPrompt([String? name]) =>
-      'All clear, ${_who(name)}. What\'s on your mind?';
+  static String allClearPrompt([String? name]) {
+    final who = _who(name);
+    return who.isEmpty
+        ? "All clear. What's on your mind?"
+        : 'All clear, $who. What\'s on your mind?';
+  }
 
-  /// M9.6: the tenant's display name, or the legacy fallback when unknown.
+  /// M9.6/M17: the tenant's display name, or '' when unknown (never 'Danny').
   static String _who([String? name]) {
     final n = name?.trim() ?? '';
-    return n.isNotEmpty ? n : 'Danny';
+    return n;
   }
 
   // ── Failure lines — one pattern, no hedging ("will" vs "may") ──

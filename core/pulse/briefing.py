@@ -547,6 +547,19 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
                 briefing_mode = "Night wind-down."
                 system_persona = "Close out the day: what got done, what's still open, what's next. Be calm and brief."
 
+        # M18: persona voice block — appended ONLY when a persona card
+        # exists (fail-closed: no card => byte-identical to pre-M18). The
+        # card's prose was verified by the G1-G4 grounding gates at write
+        # time, so it never injects invented facts or timing claims.
+        try:
+            from core.services.persona import persona_voice_block
+
+            # M18 Phase 2A: single source of truth — string shape identical
+            # to the pre-refactor inline block, so byte-identical either way.
+            system_persona += persona_voice_block(user_name=user_name)
+        except Exception:
+            pass  # fail-closed: no card => persona block omitted
+
         is_overloaded = len(active_tasks) > 15
 
         # ═══════════════════════════════════════
@@ -1187,6 +1200,15 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
         # Decoupled from send_success so app gets notified even if Telegram fails
         try:
             notification_body = briefing_text[:80].strip() if briefing_text.strip() else "New pulse briefing available"
+            # M18 Phase 2A: never-guard — if the banner preview touches a
+            # persona never-topic (e.g. debt/stress), fall back to a neutral
+            # banner. The FULL briefing still travels in data.content, so the
+            # app renders it intact; only the lock-screen copy is neutral.
+            from core.services.persona import persona_guard_text
+
+            notification_body = persona_guard_text(
+                notification_body, fallback="New pulse briefing available"
+            )
             push_count = await send_push_notification(
                 title="Rhodey",
                 body=notification_body,

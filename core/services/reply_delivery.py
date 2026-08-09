@@ -78,9 +78,19 @@ async def deliver_outbound_reply(
     try:
         from core.services.push_notification import send_push_notification
         from core.services.push_notification import push_data_content
+        from core.services.persona import persona_guard_text
+
+        preview = message_text[:120] + ("\u2026" if len(message_text) > 120 else "")
+        # M18 Phase 2A: never-guard on the banner preview — if it touches a
+        # persona never-topic the lock-screen shows a neutral banner. The
+        # FULL reply still travels in data.content, so the app renders it
+        # intact; nothing is ever hidden from the conversation itself.
+        preview = persona_guard_text(
+            preview, fallback="New message from Rhodey"
+        )
         pushed = await send_push_notification(
             title="Rhodey",
-            body=message_text[:120] + ("\u2026" if len(message_text) > 120 else ""),
+            body=preview,
             data={"type": "briefing", "content": push_data_content(message_text)},
         )
         return pushed

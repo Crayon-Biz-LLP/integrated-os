@@ -60,10 +60,20 @@ def build_interrogate_brain_prompt(
     voice = get_voice()
     guards = inject_guards("query")
 
+    # M18 Phase 2A: persona voice block — empty when no card, so the prompt
+    # stays byte-identical pre-persona (fail-closed).
+    try:
+        from core.services.persona import persona_voice_block
+
+        _persona_text = persona_voice_block(user_name=_user())
+    except Exception:
+        _persona_text = ""
+    persona_section = f"\n\n{_persona_text}" if _persona_text else ""
+
     if streaming:
         return f"""{voice}
 
-{guards}
+{guards}{persona_section}
 
 CURRENT TIME: {now_str}
 
@@ -95,7 +105,7 @@ Question: {query}"""
     # Non-streaming path — JSON wrapper for parse safety (legacy/fallback)
     return f"""{voice}
 
-{guards}
+{guards}{persona_section}
 
 CURRENT TIME: {now_str}
 

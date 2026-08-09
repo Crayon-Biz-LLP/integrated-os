@@ -282,8 +282,24 @@ async def _process_decision_pulse_impl(auth_secret: str = None, trigger: str = "
                     channels.append(f"{len(graph_items)} graph node")
                 if pending_edges:
                     channels.append(f"{len(pending_edges)} graph edge")
-                push_title = f"{total} things need your call"
-                push_body = f"From {', '.join(channels)} — want a look?"
+                # M18 Phase 2A: persona-aware opener (this tenant's name) +
+                # never-guard — if the copy touches a never-topic the banner
+                # falls back to the neutral form. Full digest still in
+                # data.content.
+                from core.services.persona import persona_guard_text
+                from core.services.user_settings import resolve_user_name, current_user_id
+
+                _push_name = resolve_user_name(current_user_id())
+                push_title = persona_guard_text(
+                    f"{_push_name}, {total} things need your call"
+                    if _push_name
+                    else f"{total} things need your call",
+                    fallback=f"{total} things need your call",
+                )
+                push_body = persona_guard_text(
+                    f"From {', '.join(channels)} — want a look?",
+                    fallback="Something needs your call",
+                )
                 # Carry a summary so the app renders it the moment the
                 # notification is tapped — no waiting on the Inbox fetch.
                 await send_push_notification(

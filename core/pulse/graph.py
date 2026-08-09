@@ -514,7 +514,7 @@ Other entities mentioned: {json.dumps(mentioned)}
 
 PROJECT DEFINITION:
 - What is NOT a project: GitHub repos, open-source libraries (e.g. Supabase, React), theoretical concepts, events/conferences, generic work terms (e.g. 'code review', 'frontend').
-- What IS a project: Specific professional work streams, client engagements, side projects with structure (e.g. Qhord, SOLVSTRAT, Ashraya, Integrated OS).
+- What IS a project: Specific professional work streams, client engagements, side projects with structure (e.g. 'Acme website redesign', 'Q4 client engagement').
 
 Return a JSON array of edges these entities have with each other or the new node. 
 Only include relationships explicitly stated or very strongly implied by the source text.

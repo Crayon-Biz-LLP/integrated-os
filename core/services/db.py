@@ -533,6 +533,55 @@ def resolve_telegram_chat_id(user_id: str | None = None) -> str | None:
 _missing_users_logged = False
 
 
+# ── M16: cron fan-out primitive ─────────────────────────────────────────────
+
+
+def run_tenant_fanout(fn, *args, job_name: str = "fanout", **kwargs):
+    """Run fn once per active tenant, each under its own tenant_scope(uid).
+
+    The cron fan-out primitive for per-user maintenance jobs: iterate
+    active_user_ids() and run the core under each tenant's scope so every
+    tenant gets the job (not just the channel tenant). A per-tenant failure
+    is audit-logged and reported without aborting the other tenants. When
+    there are no active users (or the users table is missing, pre-db/78),
+    falls back to channel_tenant_scope() — the exact legacy behaviour.
+    """
+    uids = active_user_ids()
+    if not uids:
+        with channel_tenant_scope():
+            return fn(*args, **kwargs)
+    results = []
+    for uid in uids:
+        try:
+            with tenant_scope(uid):
+                print(f"── {job_name} · tenant {uid[:8]} ──", flush=True)
+                results.append(fn(*args, **kwargs))
+        except Exception as e:
+            from core.lib.audit_logger import audit_log_sync
+            audit_log_sync(job_name, "ERROR", f"{job_name} failed for tenant {uid}: {e}")
+            print(f"❌ {job_name} failed for tenant {uid}: {e}", flush=True)
+    return results
+
+
+async def arun_tenant_fanout(afn, *args, job_name: str = "fanout", **kwargs):
+    """Async variant of run_tenant_fanout — awaits afn per tenant scope."""
+    uids = active_user_ids()
+    if not uids:
+        with channel_tenant_scope():
+            return await afn(*args, **kwargs)
+    results = []
+    for uid in uids:
+        try:
+            with tenant_scope(uid):
+                print(f"── {job_name} · tenant {uid[:8]} ──", flush=True)
+                results.append(await afn(*args, **kwargs))
+        except Exception as e:
+            from core.lib.audit_logger import audit_log_sync
+            audit_log_sync(job_name, "ERROR", f"{job_name} failed for tenant {uid}: {e}")
+            print(f"❌ {job_name} failed for tenant {uid}: {e}", flush=True)
+    return results
+
+
 def resolve_user_by_api_key(api_key: str) -> dict | None:
     """Resolve X-API-Key → user row (users.api_key_hash, sha256).
 

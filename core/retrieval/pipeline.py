@@ -76,7 +76,7 @@ async def index_memory(memory_id: int, content: str, memory_type: str,
                 "index_version": INDEX_VERSION,
                 "status": "processing",
                 "started_at": datetime.now(timezone.utc).isoformat(),
-            }, on_conflict="source_type,source_id,index_version") \
+            }, on_conflict="owner_id,source_type,source_id,index_version") \
             .execute()
         if run_res and run_res.data:
             run_id = run_res.data[0]["id"]

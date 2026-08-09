@@ -25,7 +25,7 @@ import json
 import os
 from dataclasses import dataclass, field
 
-from core.services.db import get_supabase
+from core.services.db import get_supabase, tenant_aware_client
 
 
 # ── Defaults (Danny-era constants — preserved behaviour when unseeded) ──────
@@ -54,6 +54,19 @@ DEFAULT_PERSONAL_ORGS = [
 ]
 
 DEFAULT_CONTEXT = "Danny (Yashwant Daniel), founder of Crayon, Chennai, India."
+
+# Night sign-off options in the classify receipt. Danny's seeded core_config
+# row keeps his personal line; the unscoped/env default reproduces his exact
+# pre-M17 behaviour for legacy CLI paths. A tenant-scoped call NEVER inherits
+# this — it resolves from their own core_config row (or the neutral list).
+DEFAULT_NIGHT_SIGNOFFS = '"Now go be a dad." / "Rest well." / "Locked in for the night."'
+NEUTRAL_NIGHT_SIGNOFFS = '"Rest well." / "Locked in for the night."'
+
+# Tenant #1's Vault URL — legacy unscoped fallback + seed value (M17). The
+# /vault command resolves per-tenant from core_config; a tenant without a row
+# gets "not configured", never this URL.
+DEFAULT_VAULT_URL = "https://danny-integrated-os.streamlit.app"
+NEUTRAL_VAULT_URL = ""
 
 
 @dataclass
@@ -150,7 +163,7 @@ def load_settings(user_id: str) -> UserSettings:
         res = (
             get_supabase()
             .table("user_settings")
-            .select("user_id, timezone, domains, voice, context")
+            .select("user_id, timezone, domains, voice, context, personal_orgs")
             .eq("user_id", user_id)
             .limit(1)
             .maybe_single()
@@ -171,30 +184,62 @@ def load_settings(user_id: str) -> UserSettings:
     base.user_id = user_id
     if row.get("timezone"):
         base.timezone = row["timezone"]
-    if row.get("voice"):
-        base.voice = row["voice"]
-    if row.get("context"):
-        base.context = row["context"]
-    domains = row.get("domains")
-    if domains:
-        if isinstance(domains, str):
+    # M17: an EXISTING row is authoritative — a null/empty field means "not
+    # set by this tenant" and resolves to neutral ("" / []), never tenant
+    # #1's values. Danny's row carries his own context/domains/personal_orgs,
+    # so his rendering is unchanged (proven by the M6/M9 gates + goldens).
+    if "voice" in row:
+        base.voice = row.get("voice") or ""
+    if "context" in row:
+        base.context = (row.get("context") or "").strip()
+    if "domains" in row:
+        parsed = _parse_domains(row["domains"])
+        if parsed is not None:
+            base.domains = parsed
+    if "personal_orgs" in row:
+        _po = row.get("personal_orgs")
+        if isinstance(_po, str):
             try:
-                domains = json.loads(domains)
+                _po = json.loads(_po)
             except Exception:
-                domains = None
-        if isinstance(domains, list) and domains:
-            base.domains = [
-                {
-                    "name": str(d.get("name", "")).strip(),
-                    "keywords": [str(k).lower() for k in (d.get("keywords") or [])],
-                }
-                for d in domains
-                if isinstance(d, dict) and d.get("name")
-            ]
-            if not base.domains:
-                base.domains = list(DEFAULT_DOMAINS)
+                _po = None
+        base.personal_orgs = [
+            str(x).strip() for x in (_po or []) if str(x).strip()
+        ]
     _settings_cache[user_id] = base
     return base
+
+
+def _parse_domains(raw) -> list[dict] | None:
+    """Parse a stored domains value into dict form.
+
+    Returns None when the value is a legacy string-array (tenant #1's stored
+    shape) — callers then keep the Danny-era DEFAULT_DOMAINS fallback so his
+    routing is byte-identical. Returns [] for a present-but-empty value so a
+    tenant with no domains gets neutral, never tenant #1's.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return []
+    domains = raw
+    if isinstance(domains, str):
+        try:
+            domains = json.loads(domains)
+        except Exception:
+            return []
+    if not isinstance(domains, list):
+        return []
+    if all(isinstance(d, str) for d in domains):
+        # Legacy tenant-#1 shape (plain name strings) → keep default routing.
+        return None
+    parsed = [
+        {
+            "name": str(d.get("name", "")).strip(),
+            "keywords": [str(k).lower() for k in (d.get("keywords") or [])],
+        }
+        for d in domains
+        if isinstance(d, dict) and d.get("name")
+    ]
+    return parsed
 
 
 def _effective_user_id(user_id: str | None) -> str | None:
@@ -247,24 +292,37 @@ def resolve_timezone(user_id: str | None = None) -> str:
 
 
 def resolve_domains(user_id: str | None = None) -> list[dict]:
-    """Routing domains for the classifier/pulse: settings row → defaults."""
+    """Routing domains for the classifier/pulse.
+
+    M17 privacy guarantee (mirrors resolve_context): once a tenant identity
+    is resolved, domains come from THEIR settings row only — a tenant with
+    no domains gets [] (no routing block), never tenant #1's DEFAULT_DOMAINS.
+    The Danny-era defaults serve only unscoped legacy calls (CLI/pre-db/78).
+    """
     user_id = _effective_user_id(user_id)
     if user_id:
         try:
-            return load_settings(user_id).domains or list(DEFAULT_DOMAINS)
+            return load_settings(user_id).domains or []
         except Exception:
             pass
+        return []
     return list(DEFAULT_DOMAINS)
 
 
 def resolve_personal_orgs(user_id: str | None = None) -> list[str]:
-    """Personal/life org names for the pulse work-life split."""
+    """Personal/life org names for the pulse work-life split.
+
+    M17: tenant-scoped calls return the tenant's own row (or [] when unset)
+    — never tenant #1's Ashraya/Church list. The Danny-era default serves
+    only unscoped legacy calls.
+    """
     user_id = _effective_user_id(user_id)
     if user_id:
         try:
-            return load_settings(user_id).personal_orgs or list(DEFAULT_PERSONAL_ORGS)
+            return load_settings(user_id).personal_orgs or []
         except Exception:
             pass
+        return []
     return list(DEFAULT_PERSONAL_ORGS)
 
 
@@ -284,6 +342,64 @@ def resolve_context(user_id: str | None = None) -> str:
             pass
         return ""
     return os.getenv("USER_CONTEXT", DEFAULT_CONTEXT)
+
+
+def resolve_night_signoffs(user_id: str | None = None) -> str:
+    """Per-tenant night sign-off options for the classify receipt.
+
+    Reads core_config key 'night_signoffs' (JSON array of quoted phrases)
+    under the tenant scope. Tenant-scoped calls never inherit tenant #1's
+    personal line — a tenant without a row gets the neutral list. The
+    Danny-era default serves only unscoped legacy calls (CLI/pre-db/78).
+    """
+    user_id = _effective_user_id(user_id)
+    if user_id:
+        try:
+            rows = (
+                tenant_aware_client()
+                .table("core_config")
+                .select("content")
+                .eq("key", "night_signoffs")
+                .limit(1)
+                .execute()
+            )
+            content = (rows.data or [{}])[0].get("content") if rows.data else None
+            if content:
+                try:
+                    arr = json.loads(content)
+                    if isinstance(arr, list) and arr:
+                        return " / ".join(f'"{str(s)}"' for s in arr)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return NEUTRAL_NIGHT_SIGNOFFS
+    return os.getenv("NIGHT_SIGNOFFS", DEFAULT_NIGHT_SIGNOFFS)
+
+
+def resolve_vault_url(user_id: str | None = None) -> str:
+    """Per-tenant Vault URL for the /vault command (M17).
+
+    Reads core_config key 'vault_url' under the tenant scope. A tenant
+    without a row gets "" — commands then reply "not configured", never
+    tenant #1's URL. The Danny-era default serves only unscoped legacy calls.
+    """
+    user_id = _effective_user_id(user_id)
+    if user_id:
+        try:
+            rows = (
+                tenant_aware_client()
+                .table("core_config")
+                .select("content")
+                .eq("key", "vault_url")
+                .limit(1)
+                .execute()
+            )
+            content = (rows.data or [{}])[0].get("content") if rows.data else None
+            return (content or "").strip()
+        except Exception:
+            return ""
+    return os.getenv("VAULT_URL", DEFAULT_VAULT_URL)
 
 
 def routing_rules_text(user_id: str | None = None) -> str:

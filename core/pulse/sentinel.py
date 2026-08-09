@@ -198,7 +198,20 @@ async def _process_sentinel_impl(auth_secret: str, trigger: str = "cron"):
                 
                 msg = f"🚨 **ALARM: Meeting in {mins_until} mins!**\n📅 {title}"
                 if context:
+                    # M18 Phase 2A: persona voice block — empty when no card,
+                    # so the nudge prompt stays byte-identical pre-persona.
+                    _persona_block = ""
+                    try:
+                        from core.services.persona import persona_voice_block
+                        from core.services.user_settings import resolve_user_name
+
+                        _persona_block = persona_voice_block(
+                            user_name=resolve_user_name() or ""
+                        )
+                    except Exception:
+                        _persona_block = ""
                     prompt = f"""Below is verified context for a meeting called '{title}'. Summarize the relevant context for this meeting. You may draw explicit inferences from dates and action items shown (e.g., if a due date is in the past, note it as overdue). Do not fabricate facts not present in the retrieved context. If context is empty, say 'No relevant context found.'
+{_persona_block.strip()}
 
 Return ONLY valid JSON:
 {{
@@ -238,10 +251,23 @@ Context:
                     # P4: Push notification for meeting nudge (only when within 15 mins)
                     if mins_until <= 15:
                         try:
+                            from core.services.persona import persona_guard_text
+
                             nudge_content = f"{title} starts in {mins_until} min"
+                            # M18 Phase 2A: never-guard — if the event title
+                            # touches a persona never-topic, the banner falls
+                            # back to a neutral reminder. The full message
+                            # still travels in data.content.
+                            nudge_title = persona_guard_text(
+                                nudge_content,
+                                fallback=f"Meeting in {mins_until} min",
+                            )
+                            nudge_body = persona_guard_text(
+                                title, fallback="Meeting reminder"
+                            )
                             await send_push_notification(
-                                title=nudge_content,
-                                body=title,
+                                title=nudge_title,
+                                body=nudge_body,
                                 data={
                                     "type": "nudge",
                                     "event_title": title,
@@ -464,6 +490,13 @@ Context:
                         try:
                             top_person = stale_delegations[0]["person"] if stale_delegations else "someone"
                             delegation_body = f"Waiting on {top_person} and {len(stale_delegations)-1} other(s)" if len(stale_delegations) > 1 else f"Waiting on {top_person}"
+                            # M18 Phase 2A: never-guard on Rhodey's copy.
+                            from core.services.persona import persona_guard_text
+
+                            delegation_body = persona_guard_text(
+                                delegation_body,
+                                fallback="A follow-up is waiting on you",
+                            )
                             await send_push_notification(
                                 title="Something's waiting on you",
                                 body=delegation_body,

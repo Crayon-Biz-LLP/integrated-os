@@ -1236,8 +1236,8 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, ac
                     "ENTITY ALIASES — these names refer to the SAME person/entity. Treat them as identical:\n"
                     + "\n".join(alias_lines)
                     + "\n\nIMPORTANT: Do NOT list aliased names as separate people/entities. "
-                    "For example, if 'Sunju' is aliased to 'Sunjula Daniel' and you're discussing Sunjula, "
-                    "never treat 'Sunju' as a separate family member — they are the same person."
+                    "For example, if 'Sam' is aliased to 'Samantha' and you're discussing Samantha, "
+                    "never treat 'Sam' as a separate person — they are the same person."
                 )
         except Exception as e:
             audit_log_sync("webhook", "WARNING", f"Alias context fetch failed: {e}")
