@@ -38,7 +38,11 @@ def _mailbox_context(mailbox_type: str, user_name: str, domain_names: list[str])
 def _arrival_context(mailbox_type: str, domain_names: list[str]) -> str:
     """What legitimately arrives in this mailbox (templated domains)."""
     if mailbox_type == "work":
-        domains = ", ".join(domain_names) if domain_names else "Crayon, Solvstrat, Product Labs, Qhord"
+        # Neutral fallback — NEVER tenant #1's company names in a shared
+        # prompt (tenant #2 with no domains row would see Danny's companies
+        # as its legitimate work entities). Fresh tenants get domains seeded
+        # at onboarding; the generic phrase is the safe unseeded default.
+        domains = ", ".join(domain_names) if domain_names else "the user's work domains"
         return (
             "What legitimately arrives here:\n"
             "- Clients: briefs, feedback, approvals, project questions\n"

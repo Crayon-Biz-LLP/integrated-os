@@ -1,4 +1,3 @@
-import os
 import requests
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -59,12 +58,10 @@ def search_gmail_sent(query: str, limit: int = 5) -> list:
 def search_outlook_sent(query: str, limit: int = 5) -> list:
     """Searches Outlook Sent Items folder for emails matching the query."""
     try:
-        access_token = os.getenv("OUTLOOK_ACCESS_TOKEN")
+        from core.skills.outlook_token_helper import get_outlook_access_token
+        access_token = get_outlook_access_token()
         if not access_token:
-            result = refresh_outlook_token(write_back=True)
-            if not result:
-                return []  # tenant has no Outlook — cleanly no results
-            access_token = result["access_token"]
+            return []  # tenant has no Outlook — cleanly no results
 
         headers = {"Authorization": f"Bearer {access_token}"}
         

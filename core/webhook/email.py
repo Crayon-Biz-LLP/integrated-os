@@ -305,14 +305,12 @@ async def send_outlook_draft(draft: dict) -> tuple:
         email = draft['emails']
         body = draft['draft_body']
 
-        access_token = os.getenv("OUTLOOK_ACCESS_TOKEN")
+        from core.skills.outlook_token_helper import get_outlook_access_token
+        access_token = get_outlook_access_token()
         if not access_token:
-            from core.skills.outlook_token_helper import refresh_outlook_token
-            result = refresh_outlook_token(write_back=True)
-            if not result:
-                # Tenant has no Outlook token — never falls back to another
-                # tenant's credential; fail cleanly instead of crashing.
-                return (False, "Outlook is not connected for this account.")
+            # Tenant has no Outlook token — never falls back to another
+            # tenant's credential; fail cleanly instead of crashing.
+            return (False, "Outlook is not connected for this account.")
 
         payload = {
             "message": {

@@ -36,7 +36,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from core.services.db import get_supabase, maybe_single_safe, tenant_scope
+from core.services.db import (
+    maybe_single_safe,
+    tenant_aware_client,
+    tenant_scope,
+)
 
 
 # ── The Danny-era default (byte-identical pre-seed fallback) ────────────────
@@ -115,7 +119,7 @@ def _fetch_briefing_sections_cfg() -> dict | None:
     """
     try:
         cfg = maybe_single_safe(
-            get_supabase().table("core_config").select("content").eq("key", "briefing_sections")
+            tenant_aware_client().table("core_config").select("content").eq("key", "briefing_sections")
         )
         if cfg and cfg.data and cfg.data.get("content") is not None:
             return str(cfg.data["content"])

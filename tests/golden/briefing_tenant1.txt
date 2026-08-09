@@ -59,8 +59,8 @@ Build these sections from the data below. Only include sections that have items.
 1. DATA FIDELITY: Every task in Work/Home/Church/Done MUST appear verbatim in SYSTEM TASKS. Schedule from CALENDAR EVENTS. Hindsight is for opening synthesis only - never bullet points.
 2. EMPTY SECTIONS: Omit any section with zero items. Never output "None today" or "Empty".
 3. MAX 3 ITEMS per section. Append "...and X more in vault" if over.
-4. BOLD revenue-critical tasks (payments, quotes, high-ticket items like the 30L recovery).
-5. Commitments: Tasks marked [OWED TO: person] surface as "Owed to Marcus: contract". Tasks marked [WAITING ON: person] flag as blocked: "Waiting on Marcus for 6 days: contract".
+4. BOLD revenue-critical tasks (payments, quotes, high-ticket items).
+5. Commitments: Tasks marked [OWED TO: person] surface as "Owed to the client: contract". Tasks marked [WAITING ON: person] flag as blocked: "Waiting on the vendor for 6 days: contract".
 6. The LINK RULE: If a task is derived from a URL in NEW INPUTS, embed the URL via Markdown: "ICON [Action] using [Source Title](URL)".
 7. MONDAY RULE: If MONDAY REENTRY is TRUE, start with a "WEEKEND RECON" section summarizing weekend work ideas.
 8. RECENCY BIAS: First sentence prioritizes NEW INPUTS. Use Master Pages for the "Why" behind the "What".
@@ -200,15 +200,15 @@ act on. Follow these rules:
    cannot act on blocked items. Never pick an item Danny has repeatedly
    dismissed (conversation history shows this).
 
-2. IMPORTANCE OVER URGENCY: An overdue but trivial task (e.g. "Clean cobwebs")
-   is LESS important than a strategic task with no deadline (e.g. "Meet Arani
-   on Phase 2"). Use your judgment, not just deadline.
+2. IMPORTANCE OVER URGENCY: An overdue but trivial task (e.g. "Clean the
+   garage") is LESS important than a strategic task with no deadline (e.g.
+   "Meet the client on Phase 2"). Use your judgment, not just deadline.
 
 3. INVISIBLE BLOCKERS: If Danny keeps ignoring an overdue task, it might be
    blocked or deprioritized — don't keep surfacing it. Pick something fresh.
 
 4. REASON MATTERS: The `reason` field is shown to Danny. Make it specific:
-   "DBS forms are blocking the Qhord transfer" NOT "This task is overdue."
+   "The bank forms are blocking the fund transfer" NOT "This task is overdue."
 
 5. ACTION LABEL BY TYPE: The `action_label` controls what the first button
    says. Set it based on the item type:
@@ -225,8 +225,8 @@ Output format for top_focal_item:
 {
   "type": "task",           // "task", "graph_node", "graph_edge", or other
   "item_id": "123",         // task ID or pending item ID from the data
-  "title": "Fill DBS forms",
-  "reason": "Blocking Qhord fund transfer — the bank is waiting on these forms.",
+  "title": "Fill the bank forms",
+  "reason": "Blocking the fund transfer — the bank is waiting on these forms.",
   "urgency": "critical",    // "critical", "important", "normal"
   "action_label": "I'll do it"
 }
@@ -236,7 +236,7 @@ For a pending person node:
 {
   "type": "graph_node",
   "item_id": "456",
-  "title": "Approve: Yasir",
+  "title": "Approve: New person",
   "reason": "New person to add to your network",
   "urgency": "normal",
   "action_label": "Approve person"

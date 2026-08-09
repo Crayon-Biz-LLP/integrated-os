@@ -46,11 +46,27 @@ FIXED_INPUTS = dict(
 
 
 def render_current_prompt() -> str:
-    """Render the classify prompt exactly as shipped today."""
+    """Render the classify prompt exactly as shipped today.
+
+    Uses the SAME mocked Danny-graph setup as scripts/verify_m9_2_examples.py
+    (get_tenant -> uid-danny, Marcus Durai as the role-carrying person) so the
+    captured golden is byte-for-byte comparable to the gate's rendering.
+    """
+    from unittest.mock import patch
     from core.services import user_settings
     user_settings.clear_cache()
     from core.prompts.classify import build_classify_intent_prompt
-    return build_classify_intent_prompt(**FIXED_INPUTS)
+
+    MARCUS = {
+        "label": "Marcus Durai",
+        "role": "Pastor of Ashraya Chennai Central",
+        "org": "Ashraya Chennai Central",
+        "_meta": {"enrichment": {"role": "Pastor of Ashraya Chennai Central", "organization_name": "Ashraya Chennai Central"}},
+    }
+    with patch("core.services.example_entities.get_tenant", return_value="uid-danny"), \
+         patch("core.services.example_entities._fetch_important_titles", return_value={"marcus durai", "ashraya"}), \
+         patch("core.services.example_entities._fetch_role_people", return_value=[MARCUS]):
+        return build_classify_intent_prompt(**FIXED_INPUTS)
 
 
 def main() -> int:

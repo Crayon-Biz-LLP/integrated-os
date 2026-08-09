@@ -197,22 +197,47 @@ def load_settings(user_id: str) -> UserSettings:
     return base
 
 
+def _effective_user_id(user_id: str | None) -> str | None:
+    """Explicit user id, else the ACTIVE tenant context, else None.
+
+    This is the de-personalization safety net: every resolve_* helper here
+    was being called without a user id from tenant-scoped code (pulse,
+    webhook, prompts) and silently fell back to the env/Danny-era default —
+    so tenant #2's briefing voice line, prompts, and domains all rendered
+    "Danny"/Danny's world (cross-tenant privacy leak, Aug 9). Resolving the
+    tenant from the ambient contextvar means a tenant-scoped caller NEVER
+    inherits tenant #1's identity; only truly unscoped legacy code (CLI,
+    pre-db/78) still gets the env/default path.
+    """
+    if user_id:
+        return user_id
+    return current_user_id()
+
+
 def resolve_user_name(user_id: str | None = None) -> str:
     """The user's display name: users.name → env → Danny-era default.
 
-    `user_id` is required for the per-tenant name to resolve — without it
-    (legacy single-user mode) the env var or the default is used.
+    `user_id` may be omitted — the ACTIVE tenant context is then used, so a
+    tenant-scoped caller always resolves THEIR name (never tenant #1's). The
+    env var / Danny-era default is only the legacy unscoped fallback.
+
+    Privacy guarantee: once a tenant identity is resolved, we NEVER fall
+    through to tenant #1's literal ("Danny") — a tenant with no name on file
+    returns "" (callers already treat empty as generic phrasing), not Danny.
     """
+    user_id = _effective_user_id(user_id)
     if user_id:
         try:
-            return load_settings(user_id).name or _env_name()
+            return load_settings(user_id).name or ""
         except Exception:
             pass
+        return ""
     return _env_name()
 
 
 def resolve_timezone(user_id: str | None = None) -> str:
     """The user's IANA timezone name: settings row → env → Asia/Kolkata."""
+    user_id = _effective_user_id(user_id)
     if user_id:
         try:
             return load_settings(user_id).timezone or _env_timezone()
@@ -223,6 +248,7 @@ def resolve_timezone(user_id: str | None = None) -> str:
 
 def resolve_domains(user_id: str | None = None) -> list[dict]:
     """Routing domains for the classifier/pulse: settings row → defaults."""
+    user_id = _effective_user_id(user_id)
     if user_id:
         try:
             return load_settings(user_id).domains or list(DEFAULT_DOMAINS)
@@ -233,6 +259,7 @@ def resolve_domains(user_id: str | None = None) -> list[dict]:
 
 def resolve_personal_orgs(user_id: str | None = None) -> list[str]:
     """Personal/life org names for the pulse work-life split."""
+    user_id = _effective_user_id(user_id)
     if user_id:
         try:
             return load_settings(user_id).personal_orgs or list(DEFAULT_PERSONAL_ORGS)
@@ -242,12 +269,20 @@ def resolve_personal_orgs(user_id: str | None = None) -> list[str]:
 
 
 def resolve_context(user_id: str | None = None) -> str:
-    """One-line 'who they are' for prompt slots."""
+    """One-line 'who they are' for prompt slots.
+
+    Privacy guarantee: once a tenant identity is resolved we NEVER fall back
+    to DEFAULT_CONTEXT ("Danny (Yashwant Daniel), founder of Crayon…") — a
+    tenant with no seeded context gets "" (prompt slot omitted), not tenant
+    #1's identity. The Danny-era default only serves unscoped legacy calls.
+    """
+    user_id = _effective_user_id(user_id)
     if user_id:
         try:
-            return load_settings(user_id).context or DEFAULT_CONTEXT
+            return load_settings(user_id).context or ""
         except Exception:
             pass
+        return ""
     return os.getenv("USER_CONTEXT", DEFAULT_CONTEXT)
 
 

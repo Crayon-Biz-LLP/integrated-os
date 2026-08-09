@@ -577,6 +577,32 @@ Banned animations:
 
 ---
 
+## Security: dashboard access control
+
+This dashboard is the **operator's cross-tenant view** — its pages and `/api/*`
+proxy routes read the DB with `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS) and
+intentionally carry **no `owner_id` filter**. It is NOT a per-tenant surface;
+the end-user product surface is the mobile app + backend API, which are
+owner-scoped.
+
+Because of that, dashboard access is locked to an explicit admin allowlist:
+
+- `src/middleware.ts` — gates `/dashboard/*` and `/api/*` (except `/api/health`)
+  for every request, redirecting non-admins to `/login?error=not-authorized`
+  (401 for API routes).
+- `src/app/auth/callback/route.ts` — after Google OAuth, signs out any email
+  not on the allowlist before they can reach dashboard data.
+- `src/app/login/page.tsx` — shows the not-authorized message.
+
+Required env var (fail-closed — if unset or empty, NO ONE can access the
+  dashboard):
+
+```
+DASHBOARD_ADMIN_EMAILS=danny@example.com,admin@example.com   # comma-separated
+```
+
+---
+
 ## Anti-patterns — enforce in code review
 
 Do not ship:

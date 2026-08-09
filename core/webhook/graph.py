@@ -58,7 +58,7 @@ Return format MUST be a valid JSON array:
   {{
     "id": 3,
     "action": "approve",
-    "corrected_label": "Qhord Cloud Console",
+    "corrected_label": "Client Portal",
     "corrected_type": "project"
   }}
 ]

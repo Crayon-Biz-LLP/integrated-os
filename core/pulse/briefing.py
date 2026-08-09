@@ -25,7 +25,7 @@ from core.lib.redis_cache import acquire_lock, release_lock
 from core.decisions import record_decision
 from core.pulse.models import PulseOutput
 from core.pulse.llm import supabase
-from core.services.db import active_user_ids, tenant_scope
+from core.services.db import active_user_ids, resolve_telegram_chat_id, tenant_scope
 from core.pulse.utils import format_error
 from core.pulse.memory import (
     write_outcome_memory,
@@ -1162,7 +1162,13 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
         # WRITE PHASE (all side effects happen here)
         # ═══════════════════════════════════════
 
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        # M-leak fix: per-tenant Telegram chat — NEVER the env var from a
+        # tenant-scoped loop. users.telegram_chat_id for THIS tenant (Danny
+        # has his chat stored); app-only tenants get None → no Telegram send
+        # (their channel is push). Using the env chat here would deliver
+        # every tenant's briefing to tenant #1's Telegram (cross-tenant
+        # leak, Aug 9).
+        telegram_chat_id = resolve_telegram_chat_id()
         send_success = False
 
         if telegram_chat_id and briefing_text:

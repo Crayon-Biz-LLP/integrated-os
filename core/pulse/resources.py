@@ -62,11 +62,11 @@ async def batch_enrich_resources():
     _user_name = resolve_user_name()
     prompt = f"""You are {_user_name}'s Trusted Partner. For each resource below, provide a strategic_note (one sentence on strategic value) and category.
 
-    Categories: COMPETITOR, TECH_TOOL, LEAD_POTENTIAL, MARKET_TREND, ASHRAYA, PERSONAL
+    Categories: COMPETITOR, TECH_TOOL, LEAD_POTENTIAL, MARKET_TREND, COMMUNITY, PERSONAL
     Rules:
-    - ASHRAYA for Ashraya church admin/operations content
+    - COMMUNITY for faith/community/church organization admin or operations content
     - PERSONAL for family/home/personal spiritual topics
-    - COMPETITOR for competitors to Qhord
+    - COMPETITOR for competitors to the user's own products
     - TECH_TOOL for SaaS/dev/productivity tools
     - LEAD_POTENTIAL for potential clients/partners
     - MARKET_TREND for market patterns/industry shifts

@@ -16,6 +16,7 @@ const categoryColors: Record<string, string> = {
   LEADPOTENTIAL: 'text-green-500 bg-green-500/10',
   MARKETTREND: 'text-purple-500 bg-purple-500/10',
   ASHRAYA: 'text-amber-500 bg-amber-500/10',
+  COMMUNITY: 'text-amber-500 bg-amber-500/10',
   PERSONAL: 'text-emerald-500 bg-emerald-500/10',
 };
 

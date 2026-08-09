@@ -142,6 +142,38 @@ def refresh_outlook_token(write_back: bool = True, user_id: str | None = None):
     }
 
 
+def get_outlook_access_token(user_id: str | None = None) -> str | None:
+    """An Outlook access token for the ACTIVE TENANT (or None).
+
+    Replacement for the old `os.getenv("OUTLOOK_ACCESS_TOKEN")` reads in
+    webhook/email.py and email_search.py: that env var is tenant #1's legacy
+    token, so reading it from tenant #2's scope used tenant #1's credential
+    (cross-tenant mailbox access, Aug 9 audit). Resolution mirrors
+    get_outlook_refresh_token:
+      1. tenant context (or explicit user_id) → refresh via the per-tenant
+         row; None when the tenant has no Outlook row.
+      2. NO tenant context (legacy scripts/CLI) → env OUTLOOK_ACCESS_TOKEN
+         first (pre-cached), else refresh from env refresh token.
+
+    A tenant-scoped call NEVER falls back to the env token.
+    """
+    uid = _resolve_uid(user_id)
+    if uid:
+        result = refresh_outlook_token(write_back=True, user_id=uid)
+        if result:
+            return result.get("access_token")
+        return None
+    # Legacy unscoped mode: the env access token may already be cached;
+    # otherwise refresh from the env refresh token.
+    cached = os.getenv("OUTLOOK_ACCESS_TOKEN")
+    if cached:
+        return cached
+    result = refresh_outlook_token(write_back=True)
+    if result:
+        return result.get("access_token")
+    return None
+
+
 if __name__ == "__main__":
     result = refresh_outlook_token(write_back=True)
     if not result:

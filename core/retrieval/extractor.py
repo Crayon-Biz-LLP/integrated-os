@@ -22,8 +22,8 @@ RULES:
 - Keep subject/predicate/object wording close to the original text.
 - Use lowercase for predicates.
 - Skip trivial or vague statements (e.g., "there is", "it has", generic statements).
-  ✓ "Danny leads QHORD" — extract this
-  ✓ "Ashraya meeting at 8 PM" — extract "Danny attends Ashraya meeting"
+  ✓ "Alex leads the marketing team" — extract this
+  ✓ "team meeting at 8 PM" — extract "Alex attends team meeting"
   ✗ "there is a meeting" — skip, too vague
   ✗ "it has been decided" — skip, no actionable relation
   ✗ "things are going well" — skip, no entity relation

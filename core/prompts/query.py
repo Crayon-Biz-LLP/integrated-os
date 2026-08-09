@@ -47,7 +47,7 @@ FORMATTING_RULES = """Formatting rules:
 - Bullet points only, no numbered lists
 - **Do NOT invent custom section headings** like "Immediate Priorities", "Scheduled", "Today's Bottleneck", or "Summary". Just write naturally.
 - **Do NOT include intent labels** like TASK, NOTE, or QUERY in your response text.
-- **Mention sources naturally when helpful**: E.g., "From the email thread with Anita..." or "Marcus mentioned in a WhatsApp message..." — but do NOT copy `[source:name]` tags or `[BACKGROUND — NOT a current task]` markers into your response. Those are internal metadata."""
+- **Mention sources naturally when helpful**: E.g., "From the email thread with the client..." or "The vendor mentioned in a WhatsApp message..." — but do NOT copy `[source:name]` tags or `[BACKGROUND — NOT a current task]` markers into your response. Those are internal metadata."""
 
 
 def build_interrogate_brain_prompt(
