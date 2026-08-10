@@ -26,7 +26,7 @@ export default async function EntitiesPage() {
       .limit(100),
   ]);
 
-  const rejectedNodes = ((rejectedRes.data ?? []) as any[])
+  const rejectedNodes = ((rejectedRes.data ?? []))
     .map((n) => ({ ...n, type: n.node_type })) as GraphPendingNode[];
 
   return (

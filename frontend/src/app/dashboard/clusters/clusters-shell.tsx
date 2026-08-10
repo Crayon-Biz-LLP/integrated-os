@@ -9,6 +9,7 @@ import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { errMsg } from "@/lib/errors";
 
 const categoryColors: Record<string, string> = {
   TECHTOOL: 'text-blue-500 bg-blue-500/10',
@@ -110,9 +111,9 @@ export function ClustersShell({
           setRelatedResources([]);
         }
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to update cluster:', err);
-      alert('Failed to update cluster: ' + (err.message || 'Unknown error'));
+      alert('Failed to update cluster: ' + (errMsg(err, 'Unknown error')));
     }
   }, [selectedResource]);
 
@@ -123,9 +124,9 @@ export function ClustersShell({
       if (selectedResource?.id === resourceId) {
         setSelectedResource(null);
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to dismiss resource:', err);
-      alert('Failed to dismiss resource: ' + (err.message || 'Unknown error'));
+      alert('Failed to dismiss resource: ' + (errMsg(err, 'Unknown error')));
     }
   }, [selectedResource]);
 

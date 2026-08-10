@@ -50,7 +50,7 @@ export default async function EmailsPage() {
   ]);
 
   const rawEmails = emailsRes.data ?? [];
-  const emails = rawEmails.map((row: any) => ({
+  const emails = rawEmails.map((row) => ({
     ...row,
     sender: row.sender_name,
     sender_email: row.sender_id,
@@ -60,7 +60,7 @@ export default async function EmailsPage() {
   const emailClassList = emailClassRes.data ?? [];
   
   const rawPendingTasks = pendingTasksRes.data ?? [];
-  const pendingTasks = rawPendingTasks.map((row: any) => ({
+  const pendingTasks = rawPendingTasks.map((row) => ({
     id: row.id,
     email_id: row.id,
     suggested_title: row.suggested_title,
@@ -76,7 +76,7 @@ export default async function EmailsPage() {
   })) as unknown as EmailPendingTask[];
 
   const rawDrafts = draftsRes.data ?? [];
-  const drafts = rawDrafts.map((row: any) => ({
+  const drafts = rawDrafts.map((row) => ({
     ...row,
     email_id: row.message_id,
     email: row.message ? {
@@ -89,8 +89,8 @@ export default async function EmailsPage() {
 
   const emailStats: EmailStatsData = {
     total: emailClassList.length,
-    actionable: emailClassList.filter((e: any) => e.classification === "actionable").length,
-    fyi: emailClassList.filter((e: any) => e.classification === "fyi").length,
+    actionable: emailClassList.filter((e) => e.classification === "actionable").length,
+    fyi: emailClassList.filter((e) => e.classification === "fyi").length,
     pending_tasks: pendingTasks.length,
     pending_drafts: pendingDraftsCountRes.count ?? 0,
   };

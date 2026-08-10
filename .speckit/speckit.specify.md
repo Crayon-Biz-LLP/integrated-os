@@ -145,6 +145,8 @@ UAT validation: **22/22 scenarios passing** against LIVE_DB (S1-S22 in `tests/ua
 | B1 | Briefing prompt compression — holistic token budget allocator | ~2h | Optimization | Gemini context window easily absorbs current size |
 | S3 | Energy-aware scheduling — task complexity classification + calendar density analysis | ~4h | New capability | Privacy-adjacent; needs explicit opt-in design |
 | X3 | App versioning and FCM polling hardening | ~2h | Optimization | ✅ Completed (Phase 28) |
+| X4 | Mypy type enforcement (baselined) | ~1h | Hygiene | Backend has zero type checking; 504 errors in 73 files today. Add with error baseline + `follow_imports=skip` so CI catches NEW errors only |
+| X5 | Fail-closed webhook secrets — `/api/whatsapp-ingest` + `/api/drive-webhook` | ~20m | Security | Both gate auth on `if expected_secret:` — fail OPEN when env missing (same anti-pattern 2.2 fixed for API_SECRET_KEY). Make them reject when the env var is unset |
 
 ---
 

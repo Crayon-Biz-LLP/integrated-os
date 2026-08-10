@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { errMsg } from "@/lib/errors";
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
   const apiKey = process.env.API_SECRET_KEY || "";
 
@@ -22,10 +23,10 @@ export async function GET(request: NextRequest) {
 
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
-  } catch (error: any) {
+  } catch (error) {
     console.error("Proxy fetch error:", error);
     return NextResponse.json(
-      { error: "Failed to connect to backend", details: error.message },
+      { error: "Failed to connect to backend", details: errMsg(error) },
       { status: 500 }
     );
   }

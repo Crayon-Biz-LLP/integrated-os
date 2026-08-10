@@ -44,6 +44,12 @@ jobs:
       - name: Lint — Ruff check
         run: ruff check .
 
+      - name: Lint — Frontend (Next.js)
+        run: |
+          cd frontend
+          npm ci
+          npm run lint
+
       # M17: fail the build if any tenant personal identifier (names, orgs,
       # domains, vault URL — derived live from the DB when secrets exist,
       # else the committed supplement) appears in shared runtime code.

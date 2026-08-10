@@ -39,7 +39,7 @@ function formatIsoTime(time: string): string {
   return `${display}:${min} ${ampm}`;
 }
 
-export function DayView({ events, date, onEventClick }: DayViewProps) {
+export function DayView({ events, date: _date, onEventClick }: DayViewProps) {
   const allDayEvents = events.filter((e) => !e.start.dateTime && e.start.date);
 
   return (

@@ -101,7 +101,7 @@ export default function FullGraph({ nodes, edges, onNodeClick }: FullGraphProps)
       .on('zoom', (event) => {
         g.attr('transform', event.transform);
       });
-    svg.call(zoom as any);
+    svg.call(zoom as unknown as (selection: typeof svg) => void);
 
     const drag = d3.drag<SVGCircleElement, SimNode>()
       .on('start', (event, d) => {
@@ -143,17 +143,18 @@ export default function FullGraph({ nodes, edges, onNodeClick }: FullGraphProps)
       .attr('fill', (d) => colorMap[d.type] || '#52525b')
       .attr('stroke', '#18181b')
       .attr('stroke-width', 1.5)
-      .on('mouseenter', function (_, d) {
+      .on('mouseenter', function (_event, _d) {
         d3.select(this).attr('r', 13).attr('filter', 'drop-shadow(0 0 4px rgba(0,0,0,0.5))');
       })
-      .on('mouseleave', function (_, d) {
+      .on('mouseleave', function (_event, _d) {
         d3.select(this).attr('r', 10).attr('filter', null);
       })
       .on('click', (event, d) => {
         event.stopPropagation();
         onNodeClick(d);
       })
-      .call(drag as any);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- d3 drag/zoom generics mismatch the selection's own generics; runtime contract is stable
+      .call(drag as unknown as (selection: any) => void);
 
     nodeGroup.selectAll('text')
       .data(simNodes)

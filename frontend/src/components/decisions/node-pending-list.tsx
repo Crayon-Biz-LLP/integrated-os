@@ -5,11 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { checkSimilarGraphNodes, decideGraphNode, batchDecideGraphNodes, mergeGraphNodeIntoExisting, searchGraphNodes, changePendingGraphNodeType } from '@/lib/decisions/api';
-import type { GraphPendingNode } from '@/lib/decisions/types';
+import type { GraphPendingNode, SimilarGraphNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
-import { Check, X, Box, GitMerge, Loader2, Pencil, CheckCheck, XCircle } from 'lucide-react';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Check, X, Box, GitMerge, Loader2, Pencil } from 'lucide-react';
+import { errMsg } from "@/lib/errors";
 
 function MergeDropdown({ 
   nodeType, 
@@ -24,10 +24,7 @@ function MergeDropdown({
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    if (query.length < 2) {
-      setResults([]);
-      return;
-    }
+    if (query.length < 2) return;
     
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
@@ -56,7 +53,7 @@ function MergeDropdown({
         className="h-8 text-sm pr-8"
       />
       {loading && <Loader2 className="absolute right-2 top-2 h-4 w-4 animate-spin text-muted-foreground" />}
-      {results.length > 0 && (
+      {query.length >= 2 && results.length > 0 && (
         <div className="absolute top-full left-0 mt-1 w-full bg-popover border rounded-md shadow-md z-10 max-h-48 overflow-y-auto">
           {results.map(r => (
             <button
@@ -75,17 +72,24 @@ function MergeDropdown({
 
 export function NodePendingList({ items: initialItems }: { items: GraphPendingNode[] }) {
   const [items, setItems] = useState<GraphPendingNode[]>(initialItems);
+  const [prevItems, setPrevItems] = useState(initialItems);
+  if (prevItems !== initialItems) {
+    setPrevItems(initialItems);
+    setItems(initialItems);
+  }
   const [changingTypeId, setChangingTypeId] = useState<number | null>(null);
   const [mergingId, setMergingId] = useState<number | null>(null);
   const [editedLabels, setEditedLabels] = useState<Record<number, string>>({});
   const [editingLabelId, setEditingLabelId] = useState<number | null>(null);
-  const [similarNodes, setSimilarNodes] = useState<Record<number, any[]>>({});
+  if (prevItems !== initialItems) {
+    setPrevItems(initialItems);
+    setItems(initialItems);
+  }
+  const [similarNodes, setSimilarNodes] = useState<Record<number, SimilarGraphNode[]>>({});
   const [ignoredSimilar, setIgnoredSimilar] = useState<Record<number, boolean>>({});
   const [detailsExpanded, setDetailsExpanded] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
-    setItems(initialItems);
-    
     // Proactive merge check for all nodes
     Promise.all(initialItems.map(async (item) => {
       try {
@@ -93,7 +97,7 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
         if (matches && matches.length > 0) {
           setSimilarNodes(prev => ({ ...prev, [item.id]: matches }));
         }
-      } catch (e) {}
+      } catch {}
     }));
   }, [initialItems]);
 
@@ -101,7 +105,7 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
     const item = items.find((i) => i.id === id);
     if (!item) return;
 
-    let payload: any = undefined;
+    let payload: { label?: string } | undefined = undefined;
     if (decision === 'approve' && editedLabels[id]) {
       payload = { label: editedLabels[id] };
     }
@@ -160,8 +164,8 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
       setItems(prev => prev.map(i => i.id === id ? { ...i, type: newType } : i));
       setChangingTypeId(null);
       toast.success(`Changed type to ${newType}`);
-    } catch (e: any) {
-      toast.error(e.message || 'Failed to change type');
+    } catch (e) {
+      toast.error(errMsg(e, 'Failed to change type'));
     }
   };
 
@@ -169,7 +173,7 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
     setEditedLabels((prev) => ({ ...prev, [id]: newLabel }));
   };
 
-  const saveLabelEdit = (id: number) => {
+  const saveLabelEdit = (_id: number) => {
     setEditingLabelId(null);
   };
 
@@ -333,7 +337,7 @@ export function NodePendingList({ items: initialItems }: { items: GraphPendingNo
                     <div className="mt-3 bg-yellow-900/20 border border-yellow-700/50 p-3 rounded-md">
                       <p className="text-xs font-medium text-yellow-500 mb-2">⚠️ Similar existing nodes found:</p>
                       <div className="space-y-2">
-                        {similarNodes[item.id].map((sim: any) => (
+                        {similarNodes[item.id].map((sim) => (
                           <div key={sim.id} className="flex items-center justify-between text-sm">
                             <span className="text-zinc-300">
                               "{sim.label}" <span className="text-xs text-zinc-500">({Math.round(sim.score * 100)}%) {sim.is_pending ? '(pending)' : ''}</span>

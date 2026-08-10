@@ -10,7 +10,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
 
 import { Button } from '@/components/ui/button';
 
@@ -19,14 +18,6 @@ interface TasksTableProps {
   onTaskClick: (task: Task) => void;
   onTaskDone?: (task: Task) => Promise<void>;
 }
-
-  const statusVariants: Record<string, 'default' | 'secondary' | 'outline' | 'destructive'> = {
-    todo: 'default',
-    in_progress: 'secondary',
-    done: 'outline',
-    blocked: 'destructive',
-    cancelled: 'outline',
-  };
 
   const statusClasses: Record<string, string> = {
     todo: 'bg-primary text-primary-foreground text-xs px-2.5 py-0.5 rounded-full font-medium',

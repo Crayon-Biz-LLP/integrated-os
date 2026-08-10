@@ -8,10 +8,18 @@ T3 — emit_observation fail-open returns False on error
 T4 — compute_pattern_confidence returns 'review' for <3 observations
 T5 — compute_pattern_confidence returns correct values for known pattern
 T6 — get_pattern_summary returns sorted results
+T7 — weekly_synthesis returns structured output
+
+Mocking note (M3 refactor): the module no longer calls `get_supabase()`
+directly — every DB touch goes through `tenant_aware_client()` and
+`maybe_single_safe()`. The tests therefore patch
+`core.lib.telemetry.tenant_aware_client` with a self-chaining builder client
+(any chain shape resolves; `.execute()` returns the configured data).
 """
 
 import pytest
 from unittest.mock import patch, MagicMock
+from datetime import datetime, timezone, timedelta
 from core.lib.telemetry import (
     emit_observation,
     hash_features,
@@ -19,6 +27,40 @@ from core.lib.telemetry import (
     compute_pattern_confidence,
     weekly_synthesis,
 )
+
+
+# Recent timestamps (relative to now) so temporal decay leaves confidence at
+# 1.0× — hardcoded dates would drift into the decay window as time passes.
+_RECENT = datetime.now(timezone.utc)
+_T1_AGO = (_RECENT - timedelta(days=6)).isoformat()
+_T2_AGO = (_RECENT - timedelta(days=5)).isoformat()
+
+
+def _make_builder(data=None):
+    """Self-chaining query builder mock: every chain verb returns self,
+    `.execute()` returns a response whose `.data` is `data`."""
+    m = MagicMock()
+    for verb in (
+        "select", "eq", "in_", "or_", "is_", "not_", "gte", "lt", "lte", "gt",
+        "order", "limit", "range", "maybe_single", "ilike", "neq", "filter",
+        "text_search", "insert", "update", "upsert", "delete",
+    ):
+        getattr(m, verb).return_value = m
+    m.execute.return_value = MagicMock(data=data)
+    return m
+
+
+class _FakeClient:
+    """Stand-in for tenant_aware_client(): per-table self-chaining builders."""
+
+    def __init__(self, table_data=None):
+        self._data = table_data or {}
+        self.builders = {}
+
+    def table(self, name):
+        if name not in self.builders:
+            self.builders[name] = _make_builder(self._data.get(name))
+        return self.builders[name]
 
 
 # ── T1: hash_features is deterministic and unique per subsystem ──────────────
@@ -51,26 +93,12 @@ def test_t1_hash_null_values_filtered():
 
 @pytest.mark.asyncio
 async def test_t2_emit_inserts_row():
-    """emit_observation calls supabase.table('subsystem_telemetry').insert()."""
-    with patch("core.lib.telemetry.get_supabase") as mock_get_db:
-        mock_supabase = MagicMock()
-        mock_table = MagicMock()
-        mock_insert = MagicMock()
-        mock_supabase.table.return_value = mock_table
-        mock_table.insert.return_value = mock_insert
-        mock_get_db.return_value = mock_supabase
+    """emit_observation inserts into subsystem_telemetry and returns True."""
+    # subsystem_patterns returns no existing row → the counter takes the
+    # insert branch (both are exercised through the self-chaining builder).
+    client = _FakeClient({"subsystem_patterns": None})
 
-        # Also mock the pattern count update path
-        def table_side_effect(name):
-            if name == "subsystem_patterns":
-                mock_patterns = MagicMock()
-                mock_select = MagicMock()
-                mock_select.maybe_single.return_value = MagicMock(data=None)
-                mock_patterns.select.return_value = mock_select
-                return mock_patterns
-            return mock_table
-        mock_supabase.table.side_effect = table_side_effect
-
+    with patch("core.lib.telemetry.tenant_aware_client", return_value=client):
         result = await emit_observation(
             subsystem="classification",
             event_type="correction",
@@ -83,11 +111,14 @@ async def test_t2_emit_inserts_row():
         )
 
         assert result is True
-        # Verify subsystem_telemetry insert was called
-        insert_call_args = mock_table.insert.call_args[0][0]
-        assert insert_call_args["subsystem"] == "classification"
-        assert insert_call_args["event_type"] == "correction"
-        assert insert_call_args["outcome"] == "corrected"
+        telemetry_builder = client.builders["subsystem_telemetry"]
+        assert telemetry_builder.insert.called
+        insert_payload = telemetry_builder.insert.call_args[0][0]
+        assert insert_payload["subsystem"] == "classification"
+        assert insert_payload["event_type"] == "correction"
+        assert insert_payload["outcome"] == "corrected"
+        # The rolling pattern counter also wrote a row.
+        assert client.builders["subsystem_patterns"].insert.called
 
 
 # ── T3: emit_observation fail-open ─────────────────────────────────────────
@@ -95,8 +126,9 @@ async def test_t2_emit_inserts_row():
 @pytest.mark.asyncio
 async def test_t3_emit_fail_open():
     """emit_observation failure returns False, doesn't crash."""
-    with patch("core.lib.telemetry.get_supabase") as mock_get_db:
-        mock_get_db.side_effect = Exception("DB down")
+    with patch(
+        "core.lib.telemetry.tenant_aware_client", side_effect=Exception("DB down")
+    ):
         result = await emit_observation(
             subsystem="classification",
             event_type="correction",
@@ -111,15 +143,9 @@ async def test_t3_emit_fail_open():
 @pytest.mark.asyncio
 async def test_t4_compute_confidence_insufficient():
     """With <3 observations in DB, returns recommendation='review'."""
-    with patch("core.lib.telemetry.get_supabase") as mock_get_db:
-        mock_supabase = MagicMock()
-        mock_table = MagicMock()
-        mock_supabase.table.return_value = mock_table
-        mock_select = MagicMock()
-        mock_select.maybe_single.return_value = MagicMock(data=None)
-        mock_table.select.return_value = mock_select
-        mock_get_db.return_value = mock_supabase
+    client = _FakeClient({"subsystem_patterns": None})  # no existing pattern
 
+    with patch("core.lib.telemetry.tenant_aware_client", return_value=client):
         result = await compute_pattern_confidence(
             {"source": "email"}, "entity_extraction"
         )
@@ -134,30 +160,19 @@ async def test_t4_compute_confidence_insufficient():
 @pytest.mark.asyncio
 async def test_t5_compute_confidence_known():
     """With 42 approve + 0 reject, returns approve recommendation."""
-    with patch("core.lib.telemetry.get_supabase") as mock_get_db:
-        mock_supabase = MagicMock()
-        mock_table = MagicMock()
-        mock_supabase.table.return_value = mock_table
-
-        # Method chaining: .select().eq().eq().limit().maybe_single().execute()
-        # (maybe_single_safe adds .limit(1) before .maybe_single())
-        mock_select = MagicMock()
-        mock_select.eq.return_value = mock_select  # chain eq() calls
-        mock_select.limit.return_value = mock_select  # chain limit() from maybe_single_safe
-        mock_maybe = MagicMock()
-        mock_execute = MagicMock()
-        mock_execute.data = {
+    client = _FakeClient({
+        "subsystem_patterns": {
             "total_count": 42,
             "correct_count": 42,
             "corrected_count": 0,
             "soft_accepted_count": 0,
             "feature_json": {"source": "email", "node_type": "person"},
+            "first_seen": _T1_AGO,
+            "last_seen": _T2_AGO,
         }
-        mock_maybe.execute.return_value = mock_execute
-        mock_select.maybe_single.return_value = mock_maybe
-        mock_table.select.return_value = mock_select
-        mock_get_db.return_value = mock_supabase
+    })
 
+    with patch("core.lib.telemetry.tenant_aware_client", return_value=client):
         result = await compute_pattern_confidence(
             {"source": "email", "node_type": "person"}, "entity_extraction"
         )
@@ -180,6 +195,8 @@ async def test_t6_get_pattern_summary_returns_sorted():
             "correct_count": 20,
             "corrected_count": 0,
             "confidence": 1.0,
+            "first_seen": _T1_AGO,
+            "last_seen": _T2_AGO,
         },
         {
             "feature_json": {"source": "telegram", "node_type": "concept"},
@@ -187,6 +204,8 @@ async def test_t6_get_pattern_summary_returns_sorted():
             "correct_count": 13,
             "corrected_count": 2,
             "confidence": 0.87,
+            "first_seen": _T1_AGO,
+            "last_seen": _T2_AGO,
         },
         {
             "feature_json": {"source": "backfill"},
@@ -194,33 +213,20 @@ async def test_t6_get_pattern_summary_returns_sorted():
             "correct_count": 5,
             "corrected_count": 5,
             "confidence": 0.5,
+            "first_seen": _T1_AGO,
+            "last_seen": _T2_AGO,
         },
     ]
+    client = _FakeClient({"subsystem_patterns": mock_rows})
 
-    with patch("core.lib.telemetry.get_supabase") as mock_get_db:
-        mock_supabase = MagicMock()
-        mock_table = MagicMock()
-        mock_supabase.table.return_value = mock_table
-
-        # Method chaining: .select().eq().gte().gte().order().limit().execute()
-        mock_select = MagicMock()
-        mock_select.eq.return_value = mock_select
-        mock_select.gte.return_value = mock_select
-        mock_select.order.return_value = mock_select
-        mock_select.limit.return_value = mock_select
-        mock_execute = MagicMock()
-        mock_execute.data = mock_rows
-        mock_select.execute.return_value = mock_execute
-        mock_table.select.return_value = mock_select
-        mock_get_db.return_value = mock_supabase
-
+    with patch("core.lib.telemetry.tenant_aware_client", return_value=client):
         result = await get_pattern_summary("entity_extraction", min_observations=3)
 
         assert len(result) == 3
         # Should be sorted by confidence descending
         assert result[0]["confidence"] >= result[1]["confidence"]
         assert result[1]["confidence"] >= result[2]["confidence"]
-        # First should be auto_approve (100%), second suggest (87%)
+        # All rows clear CONFIDENCE_AUTO_APPLY (0.5) → the top row is auto_approve
         assert result[0]["recommendation"] == "auto_approve"
 
 
@@ -229,33 +235,9 @@ async def test_t6_get_pattern_summary_returns_sorted():
 @pytest.mark.asyncio
 async def test_t7_weekly_synthesis_structured():
     """weekly_synthesis returns dict with patterns, drift, recommendations."""
-    with patch("core.lib.telemetry.get_supabase") as mock_get_db:
-        mock_supabase = MagicMock()
-        mock_table = MagicMock()
-        mock_supabase.table.return_value = mock_table
+    client = _FakeClient({})  # no patterns anywhere → empty synthesis
 
-        # Make all pattern queries return empty (no patterns yet)
-        mock_execute = MagicMock()
-        mock_execute.data = []
-
-        mock_limit = MagicMock()
-        mock_limit.execute.return_value = mock_execute
-
-        mock_order = MagicMock()
-        mock_order.limit.return_value = mock_limit
-
-        mock_gte2 = MagicMock()
-        mock_gte2.order.return_value = mock_order
-
-        mock_gte1 = MagicMock()
-        mock_gte1.gte.return_value = mock_gte2
-
-        mock_eq = MagicMock()
-        mock_eq.gte.return_value = mock_gte1
-
-        mock_table.select.return_value = mock_eq
-        mock_get_db.return_value = mock_supabase
-
+    with patch("core.lib.telemetry.tenant_aware_client", return_value=client):
         result = await weekly_synthesis()
 
         assert isinstance(result, dict)

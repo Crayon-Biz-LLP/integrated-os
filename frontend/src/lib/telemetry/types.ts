@@ -1,6 +1,6 @@
 export interface TelemetryPattern {
   subsystem: string;
-  features: Record<string, any>;
+  features: Record<string, unknown>;
   total_count: number;
   correct_count: number;
   confidence: number;
@@ -12,9 +12,9 @@ export interface TelemetryObservation {
   id: number;
   subsystem: string;
   event_type: string;
-  features: Record<string, any>;
-  predicted: any;
-  actual: any;
+  features: Record<string, unknown>;
+  predicted: unknown;
+  actual: unknown;
   outcome: string;
   confidence: number | null;
   source: string;

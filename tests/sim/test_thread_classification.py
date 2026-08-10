@@ -2,7 +2,7 @@ import pytest
 import os
 import uuid
 from unittest.mock import patch, AsyncMock
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.webhook.handler import process_webhook
 
 skip_unless_live_db = pytest.mark.skipif(
@@ -55,7 +55,7 @@ def mock_webhook_side_effects():
 @pytest.fixture
 def seeded_thread():
     """Create a seeded conversation thread and cleanup after test."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     created_threads = []
     
     def _seed(chat_id: int, pairs: list, summary: str = None, active_anchor: dict = None):
@@ -213,7 +213,9 @@ async def test_s7_resolve_thread_integration(seeded_thread, spy_classifier, mock
         {"bot": {"content": "Meeting notes logged. Now go be a dad."}},
     ]
     summary = "User recorded meeting notes."
-    anchor = {"name": "Integration Test Project", "type": "project"}
+    from datetime import datetime, timezone
+    anchor = {"name": "Integration Test Project", "type": "project",
+              "last_mentioned_at": datetime.now(timezone.utc).isoformat()}
     
     seeded_thread(chat_id, pairs, summary=summary, active_anchor=anchor)
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "What about the integration?"}}

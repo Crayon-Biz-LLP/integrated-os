@@ -1,11 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { getCachedOrFetch } from "@/lib/redis";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-async function resolveRootNodeId(supabase: any): Promise<{ id: string; label: string; type: string; canonical_page_id: number | null } | null> {
+type GraphNodeRow = {
+  id: string;
+  label: string | null;
+  type: string;
+  canonical_id: string | null;
+  canonical_page_id: number | null;
+  metadata: { preview?: string } | null;
+  reference_count: number | null;
+};
+
+type EdgeRow = {
+  id: string;
+  source_node_id: string;
+  target_node_id: string;
+  relationship: string;
+  weight: number | null;
+};
+
+async function resolveRootNodeId(supabase: SupabaseClient): Promise<{ id: string; label: string; type: string; canonical_page_id: number | null } | null> {
   // 1. Stable lookup: core_config key 'root_entity_id'
   const { data: config } = await supabase
     .from("core_config")
@@ -63,7 +82,7 @@ export async function GET(req: NextRequest) {
       if (e.target_node_id !== dannyId) neighborIds.add(e.target_node_id);
     });
 
-    let allEdges = [...(hop1Edges || [])];
+    const allEdges = [...(hop1Edges || [])];
 
     // Build the full node set (1-hop only by default, 2-hop if depth > 1)
     const allNodeIds = new Set<string>([dannyId]);
@@ -77,12 +96,12 @@ export async function GET(req: NextRequest) {
         .in("id", Array.from(neighborIds));
 
       const entityNodeIds = (neighborNodes || [])
-        .filter((n: any) => n.type !== "memory")
-        .map((n: any) => n.id);
+        .filter((n) => n.type !== "memory")
+        .map((n) => n.id);
 
       // 2-hop: query edges for each entity neighbor individually but sequentially bounded
-      let hop2NeighborIds = new Set<string>();
-      let hop2Edges: any[] = [];
+      const hop2NeighborIds = new Set<string>();
+      const hop2Edges: EdgeRow[] = [];
 
       for (const entityId of entityNodeIds.slice(0, 60)) {
         const { data: eEdges } = await supabase
@@ -92,7 +111,7 @@ export async function GET(req: NextRequest) {
           .limit(30);
 
         if (eEdges) {
-          for (const e of eEdges) {
+          for (const e of eEdges as EdgeRow[]) {
             if (allNodeIds.has(e.source_node_id) && allNodeIds.has(e.target_node_id)) continue;
             if (e.source_node_id !== dannyId && !neighborIds.has(e.source_node_id)) {
               hop2NeighborIds.add(e.source_node_id);
@@ -128,9 +147,9 @@ export async function GET(req: NextRequest) {
       )
     );
 
-    const allNodeMap = new Map<string, any>();
+    const allNodeMap = new Map<string, GraphNodeRow>();
     for (const result of nodeResults) {
-      for (const node of result.data || []) {
+      for (const node of (result.data ?? []) as GraphNodeRow[]) {
         if (!allNodeMap.has(node.id) && !node.canonical_id) {
           if ((node.type === "memory" || node.type === "raw_dump") && node.metadata?.preview) {
             node.label = node.metadata.preview;
@@ -146,14 +165,14 @@ export async function GET(req: NextRequest) {
       cluster: 5, task: 6, emotional_state: 7, concept: 8, memory: 9,
     };
 
-    const allNodes = Array.from(allNodeMap.values()).sort((a: any, b: any) => {
+    const allNodes = Array.from(allNodeMap.values()).sort((a, b) => {
       const aPrio = typeOrder[a.type] ?? 99;
       const bPrio = typeOrder[b.type] ?? 99;
       if (aPrio !== bPrio) return aPrio - bPrio;
       return (b.reference_count ?? 0) - (a.reference_count ?? 0);
     }).slice(0, cap);
 
-    const cappedNodeIds = new Set(allNodes.map((n: any) => n.id));
+    const cappedNodeIds = new Set(allNodes.map((n) => n.id));
 
     // Filter edges to only include capped nodes
     const filteredEdges = allEdges.filter(

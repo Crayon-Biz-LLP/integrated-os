@@ -7,7 +7,7 @@ from core.lib.decision_audit import set_decision_chain_id
 from core.webhook.dispatch import _persist_chain_id
 from core.webhook.why_handler import _resolve_chain_id, _fetch_decision_records, handle_why
 from core.context import execute_context_strategy, PRE_FLIGHT_CONFIG
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.webhook.handler import process_webhook
 
 skip_unless_live_db = pytest.mark.skipif(
@@ -20,7 +20,7 @@ skip_unless_live_db = pytest.mark.skipif(
 @pytest.mark.asyncio
 async def test_ws1_execute_context_strategy_writes_decision_audit(seed_test_data):
     """W-S1: Real DB write from execute_context_strategy for CONTEXT_REGISTRY."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     target_chain = "sim-test-chain-001"
     set_decision_chain_id(target_chain)
     
@@ -67,7 +67,7 @@ async def test_ws1_execute_context_strategy_writes_decision_audit(seed_test_data
 @skip_unless_live_db
 def test_ws2_persist_chain_id():
     """W-S2: _persist_chain_id() updates conversation_threads.last_decision_chain_id."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     thread_id = "00000000-0000-4000-8000-00000000bbbb"
     target_chain = "sim-test-chain-002"
     
@@ -92,7 +92,7 @@ def test_ws2_persist_chain_id():
 @skip_unless_live_db
 def test_ws3_resolve_chain_id_fallback():
     """W-S3: _resolve_chain_id() prefers thread/session and falls back correctly."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     thread_id = "00000000-0000-4000-8000-00000000cccc"
     target_chain = "sim-test-chain-003"
     chat_id = 888888888
@@ -118,7 +118,7 @@ def test_ws3_resolve_chain_id_fallback():
 @skip_unless_live_db
 def test_ws4_fetch_decision_records():
     """W-S4: _fetch_decision_records() filters correctly from real stored rows."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     target_chain = "sim-test-chain-004"
     other_chain = "sim-test-chain-other"
     
@@ -157,7 +157,7 @@ def test_ws4_fetch_decision_records():
 @pytest.mark.asyncio
 async def test_ws5_handle_why_end_to_end():
     """W-S5: handle_why() with real stored thread + decision rows produces coherent Telegram output."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     thread_id = "00000000-0000-4000-8000-00000000dddd"
     target_chain = "sim-test-chain-005"
     chat_id = 777777777

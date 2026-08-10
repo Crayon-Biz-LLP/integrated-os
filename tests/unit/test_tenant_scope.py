@@ -252,12 +252,30 @@ def test_require_api_auth_unknown_key_rejected():
     assert get_tenant() is None  # failed auth leaves no stale tenant
 
 
-def test_require_api_auth_dev_mode_allows():
+def test_require_api_auth_fails_closed_without_env():
+    """Audit 2.2: missing API_SECRET_KEY must NOT leave the API open.
+    Without the explicit ALLOW_DEV_AUTH=1 dev flag, an unauthenticated
+    request is rejected."""
     import api.index as api
+    from fastapi import HTTPException
     with patch.dict(os.environ, {}, clear=False):
         if "API_SECRET_KEY" in os.environ:
             del os.environ["API_SECRET_KEY"]
-        api.require_api_auth(_req(None))  # no key, no env → allowed
+        if "ALLOW_DEV_AUTH" in os.environ:
+            del os.environ["ALLOW_DEV_AUTH"]
+        with pytest.raises(HTTPException) as exc:
+            api.require_api_auth(_req(None))  # no key, no env → rejected
+    assert exc.value.status_code == 503
+    assert get_tenant() is None
+
+
+def test_require_api_auth_dev_mode_allows_with_flag():
+    """Dev mode is explicit: ALLOW_DEV_AUTH=1 opts into open auth locally."""
+    import api.index as api
+    with patch.dict(os.environ, {"ALLOW_DEV_AUTH": "1"}, clear=False):
+        if "API_SECRET_KEY" in os.environ:
+            del os.environ["API_SECRET_KEY"]
+        api.require_api_auth(_req(None))  # dev flag set → allowed
     assert get_tenant() is None
 
 

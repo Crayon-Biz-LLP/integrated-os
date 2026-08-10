@@ -38,8 +38,9 @@ from unittest.mock import patch, AsyncMock  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from core.services.db import get_supabase  # noqa: E402
+from core.services.db import tenant_aware_client, tenant_scope  # noqa: E402
 from core.webhook.handler import process_webhook  # noqa: E402
+from tests.fixtures.test_tenant import resolve_test_tenant_uid  # noqa: E402
 
 
 # ── Configuration ──────────────────────────────────────────────────────
@@ -49,7 +50,11 @@ _CHAT_ID_ENV = os.getenv("TELEGRAM_CHAT_ID", "")
 CHAT_ID = int(_CHAT_ID_ENV) if _CHAT_ID_ENV.isdigit() else 999888777
 os.environ["TELEGRAM_CHAT_ID"] = str(CHAT_ID)
 
-supabase = get_supabase()
+# Tenant-aware facade: every read/write in this suite is owner-scoped to
+# the TEST TENANT once the run is wrapped in tenant_scope() (see __main__).
+# Seeds get owner_id injected, verification reads only see the test tenant's
+# rows — a scope slip is a loud TenantRequiredError, not a cross-tenant write.
+supabase = tenant_aware_client()
 
 # ── Captured send_telegram calls ──────────────────────────────────────
 _captured_sends: list[dict] = []
@@ -83,10 +88,11 @@ def _delete_ilike(table: str, col: str, pattern: str):
 
 def cleanup_uat_rows():
     """Remove all [UAT] rows from DB. Safe to call multiple times."""
-    # FK orphans first (tasks/projects linked to [UAT] orgs)
+    # FK orphans first (tasks/projects linked to [UAT] org graph nodes)
     uat_org_ids = []
     try:
-        orgs = supabase.table('organizations').select('id').ilike('name', f'{PREFIX}%').execute()
+        orgs = supabase.table('graph_nodes').select('id') \
+            .eq('type', 'organization').ilike('label', f'{PREFIX}%').execute()
         if orgs.data:
             uat_org_ids = [o['id'] for o in orgs.data]
     except Exception:
@@ -101,6 +107,10 @@ def cleanup_uat_rows():
             supabase.table('projects').delete().in_('organization_id', uat_org_ids).execute()
         except Exception:
             pass
+        try:
+            supabase.table('graph_nodes').delete().in_('id', uat_org_ids).execute()
+        except Exception:
+            pass
 
     # Direct ilike sweep — broadest tables first
     for tbl, col in [
@@ -112,7 +122,6 @@ def cleanup_uat_rows():
         ('raw_dumps', 'content'),
         ('raw_dumps', 'text'),
         ('projects', 'name'),
-        ('organizations', 'name'),
         ('graph_nodes', 'label'),
         ('resources', 'url'),
         ('audit_logs', 'message'),
@@ -131,30 +140,25 @@ def seed_uat_orgs() -> dict:
     cleanup_uat_rows()
     orgs = {}
     from core.lib.graph_rules import normalize_label
+    # Post-migration-75 the organizations mirror table is GONE — an org IS a
+    # graph_nodes row (type='organization'). Tasks reference organization_id
+    # = the graph node UUID directly (create_task_direct + _resolve_org_id).
     for name in [f'{PREFIX} TestOrg Alpha', f'{PREFIX} TestOrg Beta']:
-        existing = supabase.table('organizations').select('id').ilike('name', name).limit(1).execute()
+        existing = supabase.table('graph_nodes').select('id') \
+            .eq('type', 'organization').ilike('label', name).limit(1).execute()
         if existing and existing.data:
             orgs[name] = existing.data[0]['id']
         else:
-            res = supabase.table('organizations').insert({"name": name}).execute()
+            res = supabase.table('graph_nodes').upsert({
+                "label": name,
+                "type": "organization",
+                "normalized_label": normalize_label(name),
+                "epistemic_status": "asserted",
+                "is_current": True,
+                "metadata": {"source": "uat_seed"},
+            }, on_conflict="owner_id, normalized_label, type").execute()
             if res.data:
                 orgs[name] = res.data[0]['id']
-        # Create graph node for org so enrichment can find it for BELONGS_TO edges
-        if orgs.get(name):
-            try:
-                supabase.table('graph_nodes').upsert({
-                    "label": name,
-                    "type": "organization",
-                    "normalized_label": normalize_label(name),
-                    "db_record_id": str(orgs[name]),
-                    "epistemic_status": "asserted",
-                    "metadata": {
-                        "source": "uat_seed",
-                        "organization_id": str(orgs[name]),
-                    }
-                }, on_conflict="normalized_label, type").execute()
-            except Exception:
-                pass
     projects = {}
     for pname, org in [
         (f'{PREFIX} Project X', orgs.get(f'{PREFIX} TestOrg Alpha')),
@@ -321,10 +325,10 @@ async def scenario_2_entity_resolution(seed: dict) -> UatResult:
         org_id = t.get('organization_id')
         _assert(org_id is not None, f"organization_id={org_id} set on task")
         if org_id:
-            org = supabase.table('organizations').select('name').eq('id', org_id).maybe_single().execute()
+            org = supabase.table('graph_nodes').select('label').eq('id', org_id).maybe_single().execute()
             if org.data:
-                r.details['org_name'] = org.data['name']
-                _assert('TestOrg Beta' in org.data.get('name', ''), "Org matches TestOrg Beta")
+                r.details['org_name'] = org.data['label']
+                _assert('TestOrg Beta' in org.data.get('label', ''), "Org matches TestOrg Beta")
 
     r.passed = len(r.errors) == 0
     return r
@@ -336,11 +340,20 @@ async def scenario_3_note_creation(seed: dict) -> UatResult:
     _reset_sends()
 
     marker = f"uat-note-{uuid.uuid4().hex[:6]}"
-    text = f"{PREFIX} Noted — pricing discussion concluded for {marker}"
-    await simulate_telegram(text)
-
-    mems = supabase.table('memories').select('id, content, memory_type') \
-        .ilike('content', f'%{marker}%').limit(3).execute()
+    # LLM classification is non-deterministic — retry with alternate phrasings
+    # so a single misclassification doesn't fail the scenario.
+    phrasings = [
+        f"{PREFIX} Noted — pricing discussion concluded for {marker}",
+        f"{PREFIX} Note: pricing discussion for {marker} is done",
+        f"{PREFIX} FYI: pricing discussion for {marker} concluded",
+    ]
+    mems = None
+    for text in phrasings:
+        await simulate_telegram(text)
+        mems = supabase.table('memories').select('id, content, memory_type') \
+            .ilike('content', f'%{marker}%').limit(3).execute()
+        if mems and mems.data:
+            break
 
     if not _assert(mems and mems.data, f"Memory with marker '{marker}' created"):
         # Broader search — memory may have been created with different content
@@ -621,10 +634,10 @@ async def scenario_10_task_with_entity_linker(seed: dict) -> UatResult:
             r.details['organization_id'] = org_id
             _assert(org_id is not None, f"organization_id={org_id} resolved and set")
             if org_id:
-                org = supabase.table('organizations').select('name').eq('id', org_id).maybe_single().execute()
+                org = supabase.table('graph_nodes').select('label').eq('id', org_id).maybe_single().execute()
                 if org.data:
-                    r.details['org_name'] = org.data['name']
-                    _assert('TestOrg Beta' in org.data.get('name', ''), "Resolved org matches TestOrg Beta")
+                    r.details['org_name'] = org.data['label']
+                    _assert('TestOrg Beta' in org.data.get('label', ''), "Resolved org matches TestOrg Beta")
     else:
         r.fail(f"Task creation failed: {result.get('reason', 'unknown')}")
 
@@ -1553,7 +1566,7 @@ async def run_all():
 
     remaining = 0
     for tbl, col in [
-        ('tasks', 'title'), ('memories', 'content'), ('organizations', 'name'),
+        ('tasks', 'title'), ('memories', 'content'),
         ('projects', 'name'), ('graph_nodes', 'label'), ('raw_dumps', 'text'),
         ('resources', 'url'), ('audit_logs', 'message'),
         ('pending_enrichment_jobs', 'content'),
@@ -1601,13 +1614,18 @@ if __name__ == "__main__":
     if not os.getenv("LIVE_DB"):
         print("WARNING: LIVE_DB not set. Set LIVE_DB=true to proceed.")
         sys.exit(1)
-    try:
-        supabase.table("organizations").select("id").limit(1).execute()
-    except Exception:
-        print("\n⏭️  Migration 75 removed the organizations table — this UAT suite targets the old org schema.")
-        sys.exit(0)
+    test_uid = resolve_test_tenant_uid()
+    if not test_uid:
+        print("\n⛔ No test tenant resolvable (users row 'Test' missing).")
+        print("   Bootstrap it first:")
+        print("     python scripts/bootstrap_tenant.py --name 'Test' --apply")
+        print("   Refusing to run UAT unscoped — that would write into the")
+        print("   channel tenant's (Danny's) data, the exact leak M3 prevents.")
+        sys.exit(1)
     if CHAT_ID in (0, 999888777):
         print("ERROR: TELEGRAM_CHAT_ID must be set. Check .env file.")
         sys.exit(1)
-    success = asyncio.run(run_all())
+    print(f"\n  [TENANT] UAT running under test tenant {test_uid[:8]}…")
+    with tenant_scope(test_uid):
+        success = asyncio.run(run_all())
     sys.exit(0 if success else 1)

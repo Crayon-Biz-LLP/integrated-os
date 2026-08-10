@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { errMsg } from "@/lib/errors";
 
 function getHostname(url: string | null): string | null {
   if (!url) return null;
@@ -82,7 +83,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message, details: error }, { status: 500 });
     }
 
-    const resources = (data ?? []).map((r: any) => {
+    const resources = (data ?? []).map((r) => {
       const clusterData = Array.isArray(r.clusters) ? r.clusters[0] : r.clusters;
       return {
         id: r.id,
@@ -102,8 +103,8 @@ export async function GET(req: NextRequest) {
     });
 
     return NextResponse.json(resources);
-  } catch (err: any) {
+  } catch (err) {
     console.error("Unexpected error in resources route:", err);
-    return NextResponse.json({ error: err.message || "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: errMsg(err, "Internal server error") }, { status: 500 });
   }
 }

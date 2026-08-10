@@ -1,6 +1,6 @@
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { computeTaskStats } from "@/lib/tasks/stats";
-import type { Task, TaskStats } from "@/lib/tasks/types";
+import type { Task, TaskRow, TaskStats } from "@/lib/tasks/types";
 import type { EmailPendingTask, EmailStats } from "@/lib/emails/types";
 import { DashboardShell } from "./dashboard-shell";
 
@@ -55,12 +55,12 @@ export default async function DashboardPage() {
 
   const orgNames: Record<string, string> = {};
   if (orgsRes.data) {
-    orgsRes.data.forEach((o: any) => {
+    orgsRes.data.forEach((o) => {
       orgNames[o.id] = o.label;
     });
   }
 
-  function mapOpenTask(t: any): Task {
+  function mapOpenTask(t: TaskRow): Task {
     return {
       id: t.id,
       title: t.title,
@@ -83,7 +83,7 @@ export default async function DashboardPage() {
   const taskStats: TaskStats = computeTaskStats(taskStatsRes.data ?? []);
   
   const rawPendingEmails = pendingEmailsRes.data ?? [];
-  const pendingEmails: EmailPendingTask[] = rawPendingEmails.map((row: any) => ({
+  const pendingEmails: EmailPendingTask[] = rawPendingEmails.map((row) => ({
     id: row.id,
     email_id: row.id,
     suggested_title: row.suggested_title,
@@ -101,8 +101,8 @@ export default async function DashboardPage() {
   const emailClassList = emailClassRes.data ?? [];
   const emailStats: EmailStats = {
     total: emailClassList.length,
-    actionable: emailClassList.filter((e: any) => e.classification === "actionable").length,
-    fyi: emailClassList.filter((e: any) => e.classification === "fyi").length,
+    actionable: emailClassList.filter((e) => e.classification === "actionable").length,
+    fyi: emailClassList.filter((e) => e.classification === "fyi").length,
     pending_tasks: pendingEmails.length,
     pending_drafts: pendingDraftsCountRes.count ?? 0,
   };

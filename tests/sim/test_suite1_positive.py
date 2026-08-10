@@ -1,11 +1,11 @@
 import pytest
 from datetime import datetime, timedelta, timezone
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import set_trace_id
 from core.pulse.sentinel import process_sentinel
 from sim.conftest import requires_live_db
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 @requires_live_db

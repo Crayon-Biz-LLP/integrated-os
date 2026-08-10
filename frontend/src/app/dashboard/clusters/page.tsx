@@ -25,7 +25,7 @@ export default async function ClustersPage() {
       .limit(500),
   ]);
 
-  const resources: Resource[] = ((resourcesRes.data ?? []) as any[]).map((r: any) => {
+  const resources: Resource[] = ((resourcesRes.data ?? [])).map((r) => {
     const clusterData = Array.isArray(r.clusters) ? r.clusters[0] : r.clusters;
     const hostname = r.url
       ? (() => { try { return new URL(r.url).hostname.replace(/^www\./, ''); } catch { return null; } })()
@@ -48,7 +48,7 @@ export default async function ClustersPage() {
     };
   });
 
-  const clusters: ResourceCluster[] = ((clustersRes.data ?? []) as any[]).map((m: any) => {
+  const clusters: ResourceCluster[] = ((clustersRes.data ?? [])).map((m) => {
     const resourceCount = resources.filter((r) => r.cluster_id === m.id).length;
     return {
       id: m.id,

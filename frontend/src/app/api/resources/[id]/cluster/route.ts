@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { errMsg } from "@/lib/errors";
 
 export async function PATCH(
   req: NextRequest,
@@ -36,8 +37,8 @@ export async function PATCH(
     }
 
     return NextResponse.json(data);
-  } catch (err: any) {
+  } catch (err) {
     console.error("Unexpected error in resource cluster update route:", err);
-    return NextResponse.json({ error: err.message || "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: errMsg(err, "Internal server error") }, { status: 500 });
   }
 }

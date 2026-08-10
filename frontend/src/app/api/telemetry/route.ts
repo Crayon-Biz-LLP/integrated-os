@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { errMsg } from "@/lib/errors";
 
 export async function GET() {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -16,7 +17,7 @@ export async function GET() {
       .order('confidence', { ascending: false })
       .limit(20);
 
-    const patterns = (patternRows || []).map((row: any) => {
+    const patterns = (patternRows || []).map((row) => {
       const total = row.total_count;
       const correct = row.correct_count;
       const conf = total > 0 ? correct / total : 0;
@@ -29,7 +30,7 @@ export async function GET() {
 
       const features = row.feature_json || {};
       const featureParts = Object.entries(features)
-        .filter(([_, v]) => v)
+        .filter(([_k, v]) => v)
         .map(([k, v]) => `${k}=${v}`);
       const rule = `${featureParts.join(', ')}: ${correct}/${total} (${(conf * 100).toFixed(0)}%)`;
 
@@ -54,7 +55,7 @@ export async function GET() {
       .order('created_at', { ascending: false })
       .limit(50);
 
-    const recentActivity = (activityRows || []).map((row: any) => ({
+    const recentActivity = (activityRows || []).map((row) => ({
       id: row.id,
       subsystem: row.subsystem,
       event_type: row.event_type,
@@ -122,8 +123,8 @@ export async function GET() {
     };
 
     return NextResponse.json({ stats });
-  } catch (err: any) {
+  } catch (err) {
     console.error("Telemetry API error:", err);
-    return NextResponse.json({ error: err.message || "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: errMsg(err, "Internal server error") }, { status: 500 });
   }
 }

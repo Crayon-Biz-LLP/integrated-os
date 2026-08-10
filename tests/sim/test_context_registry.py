@@ -1,6 +1,6 @@
 import pytest
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from core.context import execute_context_strategy, PRE_FLIGHT_CONFIG
 from core.context.schema import RetrievalItem
 from core.context.gates import apply_entity_grounding_gate
@@ -53,6 +53,40 @@ async def test_walk_with_shifrah_returns_grounded(seed_test_data):
     assert len(res.excluded_items) >= 1
 
 
+class _Result:
+    """Minimal Supabase response stand-in."""
+    def __init__(self, data):
+        self.data = data
+
+
+class _Builder:
+    """Self-chaining query builder for the M3 pipeline chain shapes."""
+    def __init__(self, data):
+        self._data = data
+
+    def __getattr__(self, name):
+        return self
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def execute(self):
+        return _Result(self._data)
+
+
+class _RaisingClient:
+    """Every query raises — simulates a DB timeout at the client level."""
+    def table(self, name):
+        class _RaisingBuilder:
+            def __getattr__(self, n):
+                return self
+            def __call__(self, *a, **k):
+                return self
+            def execute(self):
+                raise Exception("DB timeout")
+        return _RaisingBuilder()
+
+
 @skip_unless_live_db
 @pytest.mark.asyncio
 async def test_anchor_lookup_failure_degrades_safely(seed_test_data):
@@ -67,11 +101,9 @@ async def test_anchor_lookup_failure_degrades_safely(seed_test_data):
             # The pipeline itself may throw; the caller (fetch_event_context) wraps in try/except
             pass
 
-    # The real test: simulate a graph_nodes query failure by injecting a mock that throws
-    mock_db = MagicMock()
-    mock_db.table().select().in_().execute.side_effect = Exception("DB timeout")
-
-    with patch("core.context.pipeline.get_supabase", return_value=mock_db), \
+    # The real test: simulate a graph_nodes query failure by injecting a client that throws.
+    # M3 note: the pipeline now binds tenant_aware_client(), not get_supabase().
+    with patch("core.context.pipeline.tenant_aware_client", return_value=_RaisingClient()), \
          patch("core.retrieval.search.search_memories_compat") as mock_sem:
         mock_sem.return_value = []
 
@@ -86,15 +118,23 @@ async def test_anchor_lookup_failure_degrades_safely(seed_test_data):
 @pytest.mark.asyncio
 async def test_stale_anchor_returns_empty(seed_test_data):
     """T4 — DB returns data without matching anchor → safe empty."""
-    mock_db = MagicMock()
-    # graph_nodes query returns data but NOT "Shifrah"
-    mock_db.table().select().in_().execute.return_value = MagicMock(data=[
-        {"label": "SomeoneElse", "type": "person"}
-    ])
-    mock_db.table().select().eq().not_.in_().text_search().limit().execute.return_value = MagicMock(data=[])
-    mock_db.table().select().eq().execute.return_value = MagicMock(data=[])
+    # graph_nodes query returns data but NOT "Shifrah"; all other tables empty.
+    client = type(
+        "_FakeClient",
+        (),
+        {
+            "_data": {
+                "graph_nodes": [{"label": "SomeoneElse", "type": "person"}],
+                "tasks": [],
+                "graph_edges": [],
+                "messages": [],
+                "memories": [],
+            },
+            "table": lambda self, name: _Builder(self._data.get(name, [])),
+        },
+    )()
 
-    with patch("core.context.pipeline.get_supabase", return_value=mock_db), \
+    with patch("core.context.pipeline.tenant_aware_client", return_value=client), \
          patch("core.retrieval.search.search_memories_compat") as mock_sem:
         mock_sem.return_value = []
 

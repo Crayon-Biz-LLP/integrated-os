@@ -23,9 +23,9 @@ import {
   TrendingUp,
   Zap,
 } from 'lucide-react';
-import { TrendingUpDown, AlertTriangle, ArrowUp, ArrowDown } from 'lucide-react';
+import { TrendingUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { fetcher } from '@/lib/fetcher';
-import type { TelemetryPattern, TelemetryObservation, TelemetryDrift, TelemetryResponse } from '@/lib/telemetry/types';
+import type { TelemetryPattern, TelemetryObservation, TelemetryResponse } from '@/lib/telemetry/types';
 
 interface TelemetryShellProps {
   initialPatterns: TelemetryPattern[];

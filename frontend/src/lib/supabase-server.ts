@@ -1,4 +1,6 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+
+type QueryBuilder = ReturnType<SupabaseClient['from']>;
 
 /**
  * createServerSupabaseClient — dashboard DB access, HARD-pinned to one tenant.
@@ -53,7 +55,7 @@ export async function createServerSupabaseClient() {
 /**
  * Wrap a PostgrestQueryBuilder so every terminal op carries the owner filter.
  */
-function scopedBuilder(builder: any, ownerId: string): any {
+function scopedBuilder(builder: QueryBuilder, ownerId: string): QueryBuilder {
   return new Proxy(builder, {
     get(target, prop, receiver) {
       const orig = Reflect.get(target, prop, receiver);
@@ -72,7 +74,7 @@ function scopedBuilder(builder: any, ownerId: string): any {
 
       return typeof orig === 'function' ? orig.bind(target) : orig;
     },
-  });
+  }) as QueryBuilder;
 }
 
 function stampOwner(values: unknown, ownerId: string): unknown {

@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
     .eq("is_current", true);
   const orgMap: Record<string, string> = {};
   if (orgsData) {
-    orgsData.forEach((o: any) => { orgMap[o.id] = o.label; });
+    orgsData.forEach((o) => { orgMap[o.id] = o.label; });
   }
 
   let query = supabase
@@ -63,7 +63,28 @@ export async function GET(req: NextRequest) {
 
   const now = new Date();
 
-  let tasks = (data ?? []).map((t: any) => {
+  // PostgREST embeds the to-one projects relation as an OBJECT (verified live),
+  // but supabase-js's select-string inference types embedded relations as
+  // arrays — so the row shape is typed explicitly here.
+  type TaskRow = {
+    id: number;
+    title: string;
+    status: string;
+    priority: string | null;
+    project_id: number | null;
+    projects: { name: string | null; organization_id: string | null } | null;
+    organization_id: string | null;
+    reminder_at: string | null;
+    duration_mins: number | null;
+    recurrence: unknown;
+    estimated_minutes: number | null;
+    is_revenue_critical: boolean | null;
+    deadline: string | null;
+    created_at: string | null;
+    completed_at: string | null;
+  };
+
+  let tasks = ((data ?? []) as unknown as TaskRow[]).map((t) => {
     const resolvedOrgId = t.organization_id ?? t.projects?.organization_id ?? null;
     return {
       id: t.id,

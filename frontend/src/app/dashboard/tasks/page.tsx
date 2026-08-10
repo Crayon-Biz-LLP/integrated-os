@@ -1,6 +1,6 @@
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { computeTaskStats } from "@/lib/tasks/stats";
-import type { Task } from "@/lib/tasks/types";
+import type { Task, TaskRow } from "@/lib/tasks/types";
 import { TasksShell } from "./tasks-shell";
 
 export const dynamic = 'force-dynamic';
@@ -33,12 +33,12 @@ export default async function Page() {
 
   const orgNames: Record<string, string> = {};
   if (orgsRes.data) {
-    orgsRes.data.forEach((o: any) => {
+    orgsRes.data.forEach((o) => {
       orgNames[o.id] = o.label;
     });
   }
 
-  function mapTask(t: any): Task {
+  function mapTask(t: TaskRow): Task {
     return {
       id: t.id,
       title: t.title,

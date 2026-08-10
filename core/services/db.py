@@ -3,18 +3,35 @@ import contextvars
 import hashlib
 import os
 from contextlib import contextmanager
+
+import httpx
 from supabase import create_client, Client
+from supabase.lib.client_options import SyncClientOptions
 
 _supabase: Client = None
+
+
+def _new_client() -> Client:
+    """Build a supabase client with an explicit httpx transport.
+
+    supabase-py >= 2.29 passes the deprecated `timeout`/`verify` kwargs to
+    SyncPostgrestClient on every (lazy) client creation unless an
+    `http_client` is provided — emitting ~2 DeprecationWarnings per query
+    builder. Passing a configured httpx.Client takes the non-deprecated
+    branch and keeps the 120s default timeout.
+    """
+    options = SyncClientOptions(httpx_client=httpx.Client(timeout=120.0))
+    return create_client(
+        os.getenv("SUPABASE_URL"),
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY"),
+        options=options,
+    )
 
 
 def get_supabase() -> Client:
     global _supabase
     if _supabase is None:
-        _supabase = create_client(
-            os.getenv("SUPABASE_URL"),
-            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        )
+        _supabase = _new_client()
     return _supabase
 
 

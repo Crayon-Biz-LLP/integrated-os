@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
         .select("id, metadata")
         .eq("type", "memory")
         .limit(100);
-      const found = metaNodes?.find((n: any) => n.metadata?.memory_id == memoryId);
+      const found = metaNodes?.find((n) => n.metadata?.memory_id == memoryId);
       if (found) memoryNodeId = found.id;
     }
 
@@ -87,7 +87,17 @@ export async function GET(req: NextRequest) {
     if (e.target_node_id !== effectiveNodeId) neighborIds.add(e.target_node_id);
   });
 
-  let internalEdges: any[] = [];
+  type EdgeRow = { id: string; source_node_id: string; target_node_id: string; relationship: string };
+  type NodeRow = {
+    id: string;
+    label: string | null;
+    type: string;
+    canonical_page_id: number | null;
+    metadata: { preview?: string } | null;
+    reference_count?: number | null;
+  };
+
+  let internalEdges: EdgeRow[] = [];
   if (neighborIds.size > 0) {
     const ids = Array.from(neighborIds);
     const { data: inner } = await supabase
@@ -97,10 +107,10 @@ export async function GET(req: NextRequest) {
       .in("target_node_id", ids)
       .order("created_at", { ascending: false })
       .limit(500);
-    internalEdges = inner || [];
+    internalEdges = (inner || []) as EdgeRow[];
   }
 
-  let neighborNodes: any[] = [];
+  let neighborNodes: NodeRow[] = [];
   if (neighborIds.size > 0) {
     const { data: nodes } = await supabase
       .from("graph_nodes")
@@ -111,13 +121,13 @@ export async function GET(req: NextRequest) {
       .limit(200);
       
     if (nodes) {
-      nodes.forEach((n: any) => {
+      (nodes as NodeRow[]).forEach((n) => {
         if ((n.type === "memory" || n.type === "raw_dump") && n.metadata?.preview) {
           n.label = n.metadata.preview;
         }
       });
     }
-    neighborNodes = nodes || [];
+    neighborNodes = (nodes || []) as NodeRow[];
   }
 
   const allEdges = [...(edges || []), ...internalEdges];

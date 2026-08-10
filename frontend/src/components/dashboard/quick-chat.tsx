@@ -6,17 +6,6 @@ import { fetchMessages, sendMessage } from '@/lib/messages/api';
 import { Button } from '@/components/ui/button';
 import { Send } from 'lucide-react';
 
-// Safe metadata parser
-const parseMetadata = (meta: string | Record<string, any>): Record<string, any> => {
-  if (typeof meta === 'object' && meta !== null) return meta;
-  if (typeof meta !== 'string') return {};
-  try {
-    return JSON.parse(meta);
-  } catch {
-    return {};
-  }
-};
-
 export function QuickChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');

@@ -1,29 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { errMsg } from "@/lib/errors";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-async function fetchAllPaginated(
-  supabase: any,
+// Loose builder type: supabase-js's generic chains (eq/order/range/or) produce
+// deeply-nested instantiations that trip "excessively deep" errors when typed
+// precisely, so the paginator treats the builder opaquely.
+type FilterBuilder = ReturnType<ReturnType<SupabaseClient["from"]>["select"]> & {
+  [key: string]: unknown;
+};
+
+type GraphNodeRow = {
+  id: string;
+  label: string | null;
+  type: string;
+  canonical_page_id: number | null;
+  metadata: { preview?: string } | null;
+};
+
+async function fetchAllPaginated<T = unknown>(
+  supabase: SupabaseClient,
   table: string,
   select: string,
-  buildQuery?: (q: any) => any,
-) {
-  let allData: any[] = [];
+  buildQuery?: (q: FilterBuilder) => FilterBuilder,
+): Promise<T[]> {
+  let allData: T[] = [];
   let from = 0;
   const step = 1000;
   let keepGoing = true;
   while (keepGoing) {
-    let q = supabase
+    const base = supabase
       .from(table)
       .select(select)
-      .range(from, from + step - 1);
-    if (buildQuery) q = buildQuery(q);
+      .range(from, from + step - 1) as FilterBuilder;
+    const q: FilterBuilder = buildQuery ? (buildQuery(base) as FilterBuilder) : base;
     const { data, error } = await q;
     if (error) throw error;
     if (data && data.length > 0) {
-      allData = allData.concat(data);
+      allData = allData.concat(data as T[]);
       if (data.length < step) keepGoing = false;
       else from += step;
     } else {
@@ -52,8 +69,8 @@ export async function GET(req: NextRequest) {
           "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
         },
       });
-    } catch (error: any) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    } catch (error) {
+      return NextResponse.json({ error: errMsg(error) }, { status: 500 });
     }
   }
 
@@ -82,7 +99,7 @@ export async function GET(req: NextRequest) {
   if (type === "nodes") {
     const pageId = searchParams.get("pageId");
     try {
-      const data = await fetchAllPaginated(
+      const data = await fetchAllPaginated<GraphNodeRow>(
         supabase,
         "graph_nodes",
         "id,label,type,canonical_page_id,metadata",
@@ -94,7 +111,7 @@ export async function GET(req: NextRequest) {
       );
       
       if (data) {
-        data.forEach((n: any) => {
+        data.forEach((n) => {
           if ((n.type === "memory" || n.type === "raw_dump") && n.metadata?.preview) {
             n.label = n.metadata.preview;
           }
@@ -106,8 +123,8 @@ export async function GET(req: NextRequest) {
           "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
         },
       });
-    } catch (error: any) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    } catch (error) {
+      return NextResponse.json({ error: errMsg(error) }, { status: 500 });
     }
   }
 
@@ -138,7 +155,7 @@ export async function GET(req: NextRequest) {
             "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
           },
         });
-      } catch (error: any) {
+      } catch {
         return NextResponse.json([], {
           status: 200,
           headers: {
@@ -159,7 +176,7 @@ export async function GET(req: NextRequest) {
           "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
         },
       });
-    } catch (error: any) {
+    } catch {
       return NextResponse.json([], {
         status: 200,
         headers: {

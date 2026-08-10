@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
       .select("id, metadata")
       .eq("type", "memory")
       .limit(100);
-    const found = metaNodes?.find((n: any) => n.metadata?.memory_id == memoryId);
+    const found = metaNodes?.find((n) => n.metadata?.memory_id == memoryId);
     if (found) memoryNodeId = found.id;
   }
 

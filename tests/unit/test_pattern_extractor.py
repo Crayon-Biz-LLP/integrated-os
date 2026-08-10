@@ -1,8 +1,10 @@
 """Unit tests for core.lib.pattern_extractor.
 
-Note: detect_drift() uses lazy imports (from core.services.db import get_supabase,
-from core.lib.telemetry import hash_features) inside the function body,
-so mocks must target the canonical import paths, not pattern_extractor module attrs.
+Note: detect_drift() uses tenant_aware_client() (the M3 tenant facade) and
+lazily imports hash_features inside the function body, so mocks target the
+module-level bindings that detect_drift actually resolves: the
+`tenant_aware_client` name imported into pattern_extractor, plus
+`core.lib.telemetry.hash_features`.
 """
 
 import pytest
@@ -66,8 +68,8 @@ async def test_extract_patterns_passes_max_patterns(mock_get_pattern_summary):
 
 @pytest.mark.asyncio
 @patch("core.lib.pattern_extractor.get_pattern_summary", new_callable=AsyncMock)
-@patch("core.services.db.get_supabase")
-async def test_detect_drift_returns_empty_when_no_baseline(mock_get_supabase, mock_get_pattern_summary):
+@patch("core.lib.pattern_extractor.tenant_aware_client")
+async def test_detect_drift_returns_empty_when_no_baseline(mock_tenant_client, mock_get_pattern_summary):
     """detect_drift returns empty list when no baseline exists."""
     mock_get_pattern_summary.return_value = [
         {"subsystem": "classification", "features": {"source": "telegram"},
@@ -78,7 +80,7 @@ async def test_detect_drift_returns_empty_when_no_baseline(mock_get_supabase, mo
     mock_supabase = MagicMock()
     mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = \
         MagicMock(data=None)
-    mock_get_supabase.return_value = mock_supabase
+    mock_tenant_client.return_value = mock_supabase
 
     result = await detect_drift("classification")
 
@@ -87,10 +89,10 @@ async def test_detect_drift_returns_empty_when_no_baseline(mock_get_supabase, mo
 
 @pytest.mark.asyncio
 @patch("core.lib.pattern_extractor.get_pattern_summary", new_callable=AsyncMock)
-@patch("core.services.db.get_supabase")
+@patch("core.lib.pattern_extractor.tenant_aware_client")
 @patch("core.lib.telemetry.hash_features")
 async def test_detect_drift_returns_signals_when_delta_above_threshold(
-    mock_hash_features, mock_get_supabase, mock_get_pattern_summary
+    mock_hash_features, mock_tenant_client, mock_get_pattern_summary
 ):
     """Returns drift signals when confidence changed by more than 20%."""
     mock_get_pattern_summary.return_value = [
@@ -102,7 +104,7 @@ async def test_detect_drift_returns_signals_when_delta_above_threshold(
     mock_hash_features.return_value = "abc123"
 
     mock_supabase = MagicMock()
-    mock_get_supabase.return_value = mock_supabase
+    mock_tenant_client.return_value = mock_supabase
     mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = \
         MagicMock(data={"content": json.dumps({"abc123": {"confidence": 0.5, "total_count": 5}})})
 
@@ -117,10 +119,10 @@ async def test_detect_drift_returns_signals_when_delta_above_threshold(
 
 @pytest.mark.asyncio
 @patch("core.lib.pattern_extractor.get_pattern_summary", new_callable=AsyncMock)
-@patch("core.services.db.get_supabase")
+@patch("core.lib.pattern_extractor.tenant_aware_client")
 @patch("core.lib.telemetry.hash_features")
 async def test_detect_drift_ignores_small_deltas(
-    mock_hash_features, mock_get_supabase, mock_get_pattern_summary
+    mock_hash_features, mock_tenant_client, mock_get_pattern_summary
 ):
     """Does not emit drift signal for changes below 20% threshold."""
     mock_get_pattern_summary.return_value = [
@@ -132,7 +134,7 @@ async def test_detect_drift_ignores_small_deltas(
     mock_hash_features.return_value = "def456"
 
     mock_supabase = MagicMock()
-    mock_get_supabase.return_value = mock_supabase
+    mock_tenant_client.return_value = mock_supabase
     mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = \
         MagicMock(data={"content": json.dumps({"def456": {"confidence": 0.5, "total_count": 5}})})
 
@@ -143,10 +145,10 @@ async def test_detect_drift_ignores_small_deltas(
 
 @pytest.mark.asyncio
 @patch("core.lib.pattern_extractor.get_pattern_summary", new_callable=AsyncMock)
-@patch("core.services.db.get_supabase")
+@patch("core.lib.pattern_extractor.tenant_aware_client")
 @patch("core.lib.telemetry.hash_features")
 async def test_detect_drift_detects_downward_drift(
-    mock_hash_features, mock_get_supabase, mock_get_pattern_summary
+    mock_hash_features, mock_tenant_client, mock_get_pattern_summary
 ):
     """Correctly detects when confidence has decreased."""
     mock_get_pattern_summary.return_value = [
@@ -158,7 +160,7 @@ async def test_detect_drift_detects_downward_drift(
     mock_hash_features.return_value = "ghi789"
 
     mock_supabase = MagicMock()
-    mock_get_supabase.return_value = mock_supabase
+    mock_tenant_client.return_value = mock_supabase
     mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = \
         MagicMock(data={"content": json.dumps({"ghi789": {"confidence": 0.8, "total_count": 5}})})
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { errMsg } from "@/lib/errors";
 
 export async function GET() {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -43,7 +44,7 @@ export async function GET() {
       }
     }
 
-    const result = (clusters ?? []).map((m: any) => ({
+    const result = (clusters ?? []).map((m) => ({
       id: m.id,
       title: m.title,
       description: m.description,
@@ -52,8 +53,8 @@ export async function GET() {
     }));
 
     return NextResponse.json(result);
-  } catch (err: any) {
+  } catch (err) {
     console.error("Unexpected error in clusters route:", err);
-    return NextResponse.json({ error: err.message || "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: errMsg(err, "Internal server error") }, { status: 500 });
   }
 }

@@ -24,7 +24,23 @@ function minutesDiff(a: string, b: string): number {
   return Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 60000;
 }
 
-function makeTitle(memories: any[], entities: any[]): string {
+type MemoryRow = {
+  id: number;
+  content: string | null;
+  memory_type: string | null;
+  created_at: string | null;
+  metadata: { memory_id?: unknown; source?: unknown } | null;
+};
+
+type EnrichedMemory = MemoryRow & {
+  entity_ids: string[];
+  non_root_entity_ids: string[];
+  source: unknown;
+};
+
+type EntityBrief = { id: string; label: string; type: string };
+
+function makeTitle(memories: EnrichedMemory[], entities: EntityBrief[]): string {
   if (entities.length === 1) {
     return `About ${entities[0].label}`;
   }
@@ -36,11 +52,11 @@ function makeTitle(memories: any[], entities: any[]): string {
   }
   const [topEid, topCount] = [...entityCounts.entries()].sort((a, b) => b[1] - a[1])[0] || [];
   if (topEid && topCount > memories.length * 0.5) {
-    const topEntity = entities.find((e: any) => e.id === topEid);
+    const topEntity = entities.find((e) => e.id === topEid);
     if (topEntity) return `About ${topEntity.label}`;
   }
 
-  const types = new Set(memories.map((m: any) => m.memory_type).filter(Boolean));
+  const types = new Set(memories.map((m) => m.memory_type).filter((t): t is string => !!t));
   if (types.size === 1) {
     const t = [...types][0].replace(/_/g, " ");
     return t.charAt(0).toUpperCase() + t.slice(1);
@@ -49,7 +65,7 @@ function makeTitle(memories: any[], entities: any[]): string {
   return "Recent notes";
 }
 
-function makeSummary(memories: any[]): string {
+function makeSummary(memories: EnrichedMemory[]): string {
   for (const m of memories) {
     const cleaned = (m.content || "")
       .replace(/\[.*?\]/g, "")
@@ -102,7 +118,7 @@ export async function GET(req: NextRequest) {
       .limit(limit * 2);
 
     if (edges && edges.length > 0) {
-      const memNodeIds = edges.map((e: any) => e.source_node_id);
+      const memNodeIds = edges.map((e) => e.source_node_id);
       const { data: memNodes } = await supabase
         .from("graph_nodes")
         .select("metadata")
@@ -110,7 +126,7 @@ export async function GET(req: NextRequest) {
         .eq("type", "memory");
 
       memoryIds = (memNodes || [])
-        .map((n: any) => n.metadata?.memory_id)
+        .map((n) => n.metadata?.memory_id)
         .filter(Boolean)
         .map(Number);
     }
@@ -124,7 +140,7 @@ export async function GET(req: NextRequest) {
       .limit(limit * 3);
 
     if (recentMemories && recentMemories.length > 0) {
-      const labels = recentMemories.map((m: any) => `Memory_${m.id}`);
+      const labels = recentMemories.map((m) => `Memory_${m.id}`);
       const { data: linkedNodes } = await supabase
         .from("graph_nodes")
         .select("metadata")
@@ -132,9 +148,9 @@ export async function GET(req: NextRequest) {
         .eq("type", "memory");
 
       const linkedIds = new Set(
-        (linkedNodes || []).map((n: any) => n.metadata?.memory_id).filter(Boolean).map(Number)
+        (linkedNodes || []).map((n) => n.metadata?.memory_id).filter(Boolean).map(Number)
       );
-      memoryIds = recentMemories.filter((m: any) => linkedIds.has(m.id)).slice(0, limit).map((m: any) => m.id);
+      memoryIds = recentMemories.filter((m) => linkedIds.has(m.id)).slice(0, limit).map((m) => m.id);
     }
   }
 
@@ -154,7 +170,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Step 3: Find memory nodes and their MENTIONS edges
-  const memLabels = memories.map((m: any) => `Memory_${m.id}`);
+  const memLabels = memories.map((m) => `Memory_${m.id}`);
   const { data: memNodeData } = await supabase
     .from("graph_nodes")
     .select("id, label, metadata")
@@ -209,7 +225,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Step 5: Cluster memories — exclude root entity from overlap
-  const enriched: any[] = memories.map((m: any) => ({
+  const enriched: EnrichedMemory[] = memories.map((m) => ({
     ...m,
     entity_ids: memToEntities.get(m.id) || [],
     non_root_entity_ids: (memToEntities.get(m.id) || []).filter((eid) => eid !== rootEntityId),
@@ -227,7 +243,7 @@ export async function GET(req: NextRequest) {
       // Only cluster on non-root entity overlap — never merge solely because both mention Danny
       const sharedNonRootEntity = a.non_root_entity_ids.some((eid: string) => b.non_root_entity_ids.includes(eid));
       const sameSource = a.source && b.source && a.source === b.source;
-      const timeDiff = minutesDiff(a.created_at, b.created_at);
+      const timeDiff = a.created_at && b.created_at ? minutesDiff(a.created_at, b.created_at) : Infinity;
       const sameType = a.memory_type && b.memory_type && a.memory_type === b.memory_type;
 
       if (sharedNonRootEntity && timeDiff < 120) { uf.union(i, j); }
@@ -237,7 +253,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Build clusters from union-find
-  const clusters = new Map<number, any[]>();
+  const clusters = new Map<number, EnrichedMemory[]>();
   for (let i = 0; i < enriched.length; i++) {
     const root = uf.find(i);
     if (!clusters.has(root)) clusters.set(root, []);
@@ -247,13 +263,13 @@ export async function GET(req: NextRequest) {
   // Step 6: Build episodes from clusters
   const episodes = Array.from(clusters.values()).map((cluster) => {
     const sorted = cluster.sort(
-      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
     );
     const entityIdSet = new Set<string>();
     for (const m of sorted) m.entity_ids.forEach((eid: string) => entityIdSet.add(eid));
     const entities = Array.from(entityIdSet)
       .map((id) => entityMap.get(id))
-      .filter(Boolean);
+      .filter((e): e is EntityBrief => !!e);
 
     return {
       id: `ep_${sorted[0].id}_${sorted.length}`,
@@ -274,7 +290,7 @@ export async function GET(req: NextRequest) {
     };
   });
 
-  episodes.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  episodes.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
 
   return NextResponse.json({ episodes });
 }

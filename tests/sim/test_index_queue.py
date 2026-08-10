@@ -1,7 +1,7 @@
 import pytest
 import os
 from unittest.mock import patch
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.retrieval.pipeline import schedule_index_memory, process_pending_index_jobs
 
 skip_unless_live_db = pytest.mark.skipif(
@@ -49,7 +49,7 @@ def _cleanup_jobs(supabase, memory_id: int):
 @pytest.mark.asyncio
 async def test_enqueue_creates_pending_job(seed_test_data):
     """C1 — schedule_index_memory creates a pending job row."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     mem_id = seed_test_data["memories"][0]
 
     try:
@@ -76,7 +76,7 @@ async def test_process_completes_job(seed_test_data):
 
     index_memory is mocked to return True so we don't need real LLM calls.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     mem_id = seed_test_data["memories"][0]
     mem_content = "test content for indexing"
 
@@ -119,7 +119,7 @@ async def test_enqueue_dedupes_identical_memory(seed_test_data):
 
     Only one pending job row should exist for the same memory_id.
     """
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     mem_id = seed_test_data["memories"][0]
 
     try:
@@ -146,7 +146,7 @@ async def test_enqueue_dedupes_identical_memory(seed_test_data):
 @pytest.mark.asyncio
 async def test_failed_job_retries_then_dead_letter(seed_test_data):
     """C4 — A job that fails repeatedly escalates to dead_letter after 3 retries."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     mem_id = seed_test_data["memories"][0]
 
     try:

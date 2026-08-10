@@ -171,7 +171,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _ConfigField(
                   label: 'Backend URL',
                   controller: _urlController,
-                  hint: 'https://your-backend.vercel.app',
+                  hint: 'https://danielyashwant--rhodey-os-web-endpoint.modal.run',
                   keyboardType: TextInputType.url,
                 ),
                 const SizedBox(height: 16),

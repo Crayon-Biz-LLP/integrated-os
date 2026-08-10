@@ -7,11 +7,8 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { Button } from '@/components/ui/button';
-import { ExternalLink, FolderOpen } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { ExternalLink } from 'lucide-react';
 
 const categoryColors: Record<string, string> = {
   TECHTOOL: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
@@ -61,9 +58,6 @@ export function ResourceDetailSheet({
 }: ResourceDetailSheetProps) {
   if (!resource) return null;
 
-  const categoryColor = resource.category 
-    ? (categoryColors[resource.category] || 'bg-gray-100 text-gray-700') 
-    : '';
 
   const categoryBadgeClass = resource.category 
     ? (categoryColors[resource.category] || 'text-xs bg-muted/60 text-muted-foreground/70 px-2 py-0.5 rounded-md font-semibold tracking-wide uppercase') 

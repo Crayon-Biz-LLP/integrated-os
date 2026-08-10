@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
-export async function GET(req: NextRequest) {
+export async function GET(_req: NextRequest) {
   const supabase = await createServerSupabaseClient();
   const isOrgRoutingEnabled = true;
 
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: nodesError.message }, { status: 500 });
   }
 
-  const orgs = (nodes || []).map((n: any) => {
+  const orgs = (nodes || []).map((n) => {
     const meta = n.metadata || {};
     const enrich = meta.enrichment || {};
     return {
@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
     };
   });
 
-  orgs.sort((a: any, b: any) => a.name.localeCompare(b.name));
+  orgs.sort((a, b) => a.name.localeCompare(b.name));
 
   return NextResponse.json(orgs);
 }

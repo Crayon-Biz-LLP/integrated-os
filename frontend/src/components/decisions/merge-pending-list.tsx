@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { decideMergeProposal } from '@/lib/decisions/api';
@@ -11,11 +11,13 @@ import { GitMerge, X, ArrowLeftRight } from 'lucide-react';
 
 export function MergePendingList({ items: initialItems }: { items: GraphMergeProposal[] }) {
   const [items, setItems] = useState<GraphMergeProposal[]>(initialItems);
+  const [prevItems, setPrevItems] = useState(initialItems);
+  if (prevItems !== initialItems) {
+    setPrevItems(initialItems);
+    setItems(initialItems);
+  }
   const [swappedIds, setSwappedIds] = useState<Set<number>>(new Set());
 
-  useEffect(() => {
-    setItems(initialItems);
-  }, [initialItems]);
 
   const toggleSwap = (id: number) => {
     setSwappedIds(prev => {

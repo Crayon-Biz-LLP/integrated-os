@@ -1,11 +1,11 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useEffect, useState, useCallback, Suspense, useRef } from 'react';
+import { useEffect, useState, Suspense, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { BookOpen, Loader2, AlertCircle, FileText, Search, X, GitFork, Network } from 'lucide-react';
+import { BookOpen, AlertCircle, FileText, Search, X, GitFork, Network } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchPagesList, fetchPageById, fetchNodesByPageId, fetchEdgesByPageId } from '@/lib/memories/api';
 import { CanonicalPage, CanonicalPageListItem, GraphNode, GraphEdge } from '@/lib/memories/types';
@@ -82,65 +82,65 @@ function MemoriesContent() {
     .filter(p => selectedCategory === null || p.category === selectedCategory)
     .filter(p => p.title.toLowerCase().includes(searchQuery.toLowerCase()));
 
-  const loadPages = useCallback(async () => {
-    setPagesLoading(true);
-    setPagesError(null);
-    try {
-      const data = await fetchPagesList();
-      setPages(data);
-      if (data.length > 0 && !hasAutoSelected.current) {
-        hasAutoSelected.current = true;
-        router.replace(`/dashboard/memories?page=${data[0].id}`);
-      }
-    } catch (e: unknown) {
-      setPagesError(e instanceof Error ? e.message : 'Failed to load pages');
-    } finally {
-      setPagesLoading(false);
-    }
-  }, [router]);
-
-  const loadPageContent = useCallback(async (id: number) => {
-    setContentLoading(true);
-    setContentError(null);
-    setNodes([]);
-    setEdges([]);
-    setNodesLoading(true);
-    try {
-      const data = await fetchPageById(id);
-      setSelectedPage(data);
-      try {
-        const nodesData = await fetchNodesByPageId(id);
-        setNodes(nodesData);
-        try {
-          const edgesData = await fetchEdgesByPageId(id);
-          setEdges(edgesData);
-        } catch {
-          setEdges([]);
-        }
-      } catch {
-        setNodes([]);
-        setEdges([]);
-      } finally {
-        setNodesLoading(false);
-      }
-    } catch (e: unknown) {
-      setContentError(e instanceof Error ? e.message : 'Failed to load page');
-      setSelectedPage(null);
-      setNodesLoading(false);
-    } finally {
-      setContentLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    loadPages();
-  }, [loadPages]);
+    const run = async () => {
+      setPagesLoading(true);
+      setPagesError(null);
+      try {
+        const data = await fetchPagesList();
+        setPages(data);
+        if (data.length > 0 && !hasAutoSelected.current) {
+          hasAutoSelected.current = true;
+          router.replace(`/dashboard/memories?page=${data[0].id}`);
+        }
+      } catch (e: unknown) {
+        setPagesError(e instanceof Error ? e.message : 'Failed to load pages');
+      } finally {
+        setPagesLoading(false);
+      }
+    };
+    void run();
+  }, [router]);
 
   useEffect(() => {
     if (selectedId) {
-      loadPageContent(Number(selectedId));
+      const run = async () => {
+        setContentLoading(true);
+        setContentError(null);
+        setNodes([]);
+        setEdges([]);
+        setNodesLoading(true);
+        try {
+          const pageId = Number(selectedId);
+          const data = await fetchPageById(pageId);
+          setSelectedPage(data);
+          try {
+            const nodesData = await fetchNodesByPageId(pageId);
+            setNodes(nodesData);
+            try {
+              const edgesData = await fetchEdgesByPageId(pageId);
+              setEdges(edgesData);
+            } catch {
+              setEdges([]);
+            }
+          } catch {
+            setNodes([]);
+            setEdges([]);
+          } finally {
+            setNodesLoading(false);
+          }
+        } catch (e: unknown) {
+          setContentError(e instanceof Error ? e.message : 'Failed to load page');
+          setSelectedPage(null);
+          setNodesLoading(false);
+        } finally {
+          setContentLoading(false);
+        }
+      };
+      void run();
     }
-  }, [selectedId, loadPageContent]);
+  }, [selectedId]);
+
 
   const handleSelectPage = (id: number) => {
     router.push(`/dashboard/memories?page=${id}`);

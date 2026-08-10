@@ -30,13 +30,17 @@ async def associative_retrieve(
     
     Pipeline:
     1. Parse query → extract query phrases + embedding.
-    2. Retrieve candidate phrase nodes + edges via rpc_get_associative_data (1 RPC call).
+    2. Retrieve candidate phrase nodes via the search_phrase_nodes RPC.
     3. Recognition filter (discard weak candidates).
     4. Run Personalized PageRank on returned edges.
     5. Aggregate PPR scores to memories via nodes' memory_ids.
-    6. Fetch memory metadata + scores via rpc_get_memory_metadata (1 RPC call).
+    6. Fetch memory metadata + scores via match_memories_hybrid.
     7. Blended ranking with semantic, recency, importance, project/person boosts.
     8. Bundle assembly with dedup and explanation.
+
+    NOTE: the asyncpg RPC consolidation (rpc_get_associative_data /
+    rpc_get_memory_metadata, plan 68) was reverted — PostgREST measured
+    faster (see plans/68 status header). This pipeline stays on PostgREST.
     """
     start = time.time()
     debug = {}

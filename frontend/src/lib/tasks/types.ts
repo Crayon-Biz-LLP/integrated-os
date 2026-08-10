@@ -15,6 +15,23 @@ export interface Task {
   recurrence: string | null;
 }
 
+/** Raw tasks row as returned by PostgREST (used when mapping to Task). */
+export interface TaskRow {
+  id: number;
+  title: string;
+  status: string | null;
+  priority: string | null;
+  organization_id: string | null;
+  estimated_minutes: number | null;
+  is_revenue_critical: boolean | null;
+  deadline: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+  reminder_at: string | null;
+  duration_mins: number | null;
+  recurrence: string | null;
+}
+
 export interface TaskFilters {
   search?: string;
   status?: string;

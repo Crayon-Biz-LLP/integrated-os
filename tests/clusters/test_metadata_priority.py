@@ -4,10 +4,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.pulse.tools import update_task_status  # noqa: E402
-from core.services.db import get_supabase  # noqa: E402
+from core.services.db import tenant_aware_client  # noqa: E402
 from tests.fixtures.task_factory import factory  # noqa: E402
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 @pytest.fixture(autouse=True)

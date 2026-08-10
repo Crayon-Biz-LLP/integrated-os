@@ -1,5 +1,14 @@
 # Part 67: Modal Migration Plan — Vercel → Modal for Python Backend
 
+**Status: ✅ EXECUTED & LIVE (commit `26033ec`, Jul 2026)**
+
+> This plan is complete. The FastAPI backend runs on Modal via `infra/modal_app.py`
+> (`https://danielyashwant--rhodey-os-web-endpoint.modal.run`); `modal>=1.0.0` is pinned in
+> requirements.txt. The root `vercel.json` / `.vercelignore` were removed (Aug 2026) and
+> `validate_deployment.yml` now polls the Modal `/api/health` endpoint instead of Vercel.
+> The Next.js frontend is a separate project (talks to Supabase directly) — see `frontend/`.
+> The text below is retained as the historical record of the migration.
+
 **Date:** July 26, 2026
 **Target Latency Reduction:** ~12-21s (from ~30-45s down to ~15-22s)
 **Cost Impact:** $7.12/mo (covered by Modal's $30/mo free credit) — **You pay ₹0**

@@ -3,18 +3,6 @@
 import { Message } from '@/lib/messages/types';
 import { fetchMessages } from '@/lib/messages/api';
 import { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/button';
-
-// Safe metadata parser
-const parseMetadata = (meta: string | Record<string, any>): Record<string, any> => {
-  if (typeof meta === 'object' && meta !== null) return meta;
-  if (typeof meta !== 'string') return {};
-  try {
-    return JSON.parse(meta);
-  } catch {
-    return {};
-  }
-};
 
 export function PulseBriefings() {
   const [briefings, setBriefings] = useState<Message[]>([]);
@@ -74,7 +62,6 @@ export function PulseBriefings() {
       
       <div className="space-y-3">
         {briefings.map((briefing) => {
-          const metadata = parseMetadata(briefing.metadata);
           const isSystem = briefing.sender === 'system';
           const contentPreview = briefing.content.length > 150 
             ? briefing.content.substring(0, 150) + '...' 

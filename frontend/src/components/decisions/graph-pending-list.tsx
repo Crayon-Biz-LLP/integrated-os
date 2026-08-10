@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { checkSimilarGraphEdges, decideGraphEdge, batchDecideGraphEdges, submitClarification } from '@/lib/decisions/api';
-import type { GraphPendingEdge } from '@/lib/decisions/types';
+import type { GraphPendingEdge, SimilarGraphEdge } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { Check, X, Network, Pencil, Save, XCircle, Loader2 } from 'lucide-react';
@@ -55,28 +55,31 @@ const REL_GROUPS = [...new Set(RELATIONSHIP_OPTIONS.map(o => o.group))];
 
 export function GraphPendingList({ items: initialItems }: { items: GraphPendingEdge[] }) {
   const [items, setItems] = useState<GraphPendingEdge[]>(initialItems);
+  const [prevItems, setPrevItems] = useState(initialItems);
+  if (prevItems !== initialItems) {
+    setPrevItems(initialItems);
+    setItems(initialItems);
+  }
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ source: '', target: '', rel: '' });
   const [contextOpen, setContextOpen] = useState<number | null>(null);
   const [contextText, setContextText] = useState('');
-  const [similarEdges, setSimilarEdges] = useState<Record<number, any[]>>({});
+  const [similarEdges, setSimilarEdges] = useState<Record<number, SimilarGraphEdge[]>>({});
   const [detailsExpanded, setDetailsExpanded] = useState<Record<number, boolean>>({});
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<number, string>>({});
 
   useEffect(() => {
-    setItems(initialItems);
-    
     Promise.all(initialItems.map(async (item) => {
       try {
         const matches = await checkSimilarGraphEdges(item.source_label, item.target_label, item.relationship);
         if (matches && matches.length > 0) {
           // exclude self
-          const realMatches = matches.filter((m: any) => !(m.is_pending && m.id === item.id));
+          const realMatches = (matches as SimilarGraphEdge[]).filter((m) => !(m.is_pending && m.id === item.id));
           if (realMatches.length > 0) {
             setSimilarEdges(prev => ({ ...prev, [item.id]: realMatches }));
           }
         }
-      } catch (e) {}
+      } catch {}
     }));
   }, [initialItems]);
 

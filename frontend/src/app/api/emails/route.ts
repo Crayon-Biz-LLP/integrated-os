@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
   
-  const mappedData = (data || []).map((row: any) => ({
+  const mappedData = (data || []).map((row) => ({
     ...row,
     sender: row.sender_name,
     sender_email: row.sender_id,

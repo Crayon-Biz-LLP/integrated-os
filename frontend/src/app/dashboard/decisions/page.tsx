@@ -51,14 +51,14 @@ export default async function DecisionsPage() {
   ]);
 
   const rawCallItems = callRes.data ?? [];
-  const callItems = rawCallItems.map((row: any) => ({
+  const callItems = rawCallItems.map((row) => ({
     ...row,
     action_type: row.metadata?.action_type ?? 'task',
     people_mentioned: row.metadata?.people_mentioned ?? '[]',
   })) as unknown as CallPendingItem[];
 
   const rawWhatsappItems = whatsappRes.data ?? [];
-  const whatsappItems = rawWhatsappItems.map((row: any) => ({
+  const whatsappItems = rawWhatsappItems.map((row) => ({
     ...row,
     sender_phone: row.sender_id,
     message_text: row.body,
@@ -66,7 +66,7 @@ export default async function DecisionsPage() {
   })) as unknown as WhatsAppPendingMessage[];
 
   const graphItems = (graphRes.data ?? []) as GraphPendingEdge[];
-  const graphNodes = ((nodeRes.data ?? []) as any[]).map(n => ({ ...n, type: n.node_type })) as GraphPendingNode[];
+  const graphNodes = ((nodeRes.data ?? [])).map(n => ({ ...n, type: n.node_type })) as GraphPendingNode[];
   const mergeProposals = (mergeRes.data ?? []) as GraphMergeProposal[];
   const autoDecisions = (autoDecisionsRes.data ?? []) as AutoDecisionItem[];
 
@@ -85,14 +85,14 @@ export default async function DecisionsPage() {
 
   for (const item of graphItems) {
     if (item.status === 'awaiting_clarification') {
-      const clar = clarMap.get(`pending_graph_edges:${item.id}`);
-      if (clar) (item as any).clarification = clar;
+      const clar = clarMap.get(`pending_graph_edges:${item.id}`) as GraphPendingEdge['clarification'] | undefined;
+      if (clar) item.clarification = clar;
     }
   }
   for (const node of graphNodes) {
     if (node.status === 'awaiting_clarification') {
-      const clar = clarMap.get(`pending_nodes:${node.id}`);
-      if (clar) (node as any).clarification = clar;
+      const clar = clarMap.get(`pending_nodes:${node.id}`) as GraphPendingNode['clarification'] | undefined;
+      if (clar) node.clarification = clar;
     }
   }
 

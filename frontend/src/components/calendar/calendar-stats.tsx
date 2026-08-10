@@ -9,7 +9,7 @@ interface CalendarStatsProps {
   viewLabel: string;
 }
 
-export function CalendarStats({ events, date, viewLabel }: CalendarStatsProps) {
+export function CalendarStats({ events, date: _date, viewLabel: _viewLabel }: CalendarStatsProps) {
   const total = events.length;
   const google = events.filter((e) => e.source === 'google').length;
   const outlook = events.filter((e) => e.source === 'outlook').length;

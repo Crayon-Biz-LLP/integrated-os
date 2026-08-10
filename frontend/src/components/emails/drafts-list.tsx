@@ -1,9 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
@@ -71,7 +69,7 @@ export function DraftsList({
       } else {
         setError(res.error || "Failed to send draft");
       }
-    } catch (err) {
+    } catch {
       setError("Failed to send draft");
     } finally {
       setSendingId(null);

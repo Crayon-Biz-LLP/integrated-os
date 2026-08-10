@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { errMsg } from "@/lib/errors";
 
 export async function GET() {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -21,7 +22,7 @@ export async function GET() {
       return NextResponse.json({ error: patErr.message }, { status: 500 });
     }
 
-    const patterns = (patternRows || []).map((row: any) => {
+    const patterns = (patternRows || []).map((row) => {
       const total = row.total_count || 0;
       const correct = row.correct_count || 0;
       const conf = total > 0 ? correct / total : 0;
@@ -93,8 +94,8 @@ export async function GET() {
       subsystem_rollups: subsystemRollups,
       total_patterns: patterns.length,
     });
-  } catch (err: any) {
+  } catch (err) {
     console.error("Patterns API error:", err);
-    return NextResponse.json({ error: err.message || "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: errMsg(err, "Internal server error") }, { status: 500 });
   }
 }

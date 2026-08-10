@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -12,10 +12,12 @@ import { Check, X, Mic, FileText, Lightbulb, Loader2 } from 'lucide-react';
 
 export function CallPendingList({ items: initialItems }: { items: CallPendingItem[] }) {
   const [items, setItems] = useState<CallPendingItem[]>(initialItems);
-
-  useEffect(() => {
+  const [prevItems, setPrevItems] = useState(initialItems);
+  if (prevItems !== initialItems) {
+    setPrevItems(initialItems);
     setItems(initialItems);
-  }, [initialItems]);
+  }
+
 
   const handleDecision = async (id: number, decision: 'approve' | 'reject') => {
     const item = items.find((i) => i.id === id);

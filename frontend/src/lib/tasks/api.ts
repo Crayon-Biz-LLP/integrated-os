@@ -1,4 +1,3 @@
-import { Task } from "./types";
 
 export async function fetchOrganizations(): Promise<{ id: string; name: string }[]> {
   const res = await fetch(`/api/organizations`, { cache: "no-store" });

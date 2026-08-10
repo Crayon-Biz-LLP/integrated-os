@@ -16,7 +16,7 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id } = await params;
+  await params; // node id reserved for a future owner-based query
   const { searchParams } = new URL(req.url);
   const name = searchParams.get("name");
 
@@ -63,8 +63,23 @@ export async function GET(
     low: 5,
   };
 
-  const tasks = (data ?? [])
-    .map((t: any) => ({
+  // PostgREST embeds the to-one graph_nodes relation as an OBJECT (verified
+  // live), but supabase-js's select-string inference types embedded relations
+  // as arrays — so the row shape is typed explicitly here.
+  type TaskRow = {
+    id: number;
+    title: string;
+    status: string;
+    priority: string | null;
+    reminder_at: string | null;
+    deadline: string | null;
+    created_at: string | null;
+    organization_id: string | null;
+    graph_nodes: { label: string | null } | null;
+  };
+
+  const tasks = ((data ?? []) as unknown as TaskRow[])
+    .map((t) => ({
       id: t.id,
       title: t.title,
       status: t.status,
@@ -75,8 +90,8 @@ export async function GET(
       organization_id: t.organization_id,
       organization_name: t.graph_nodes?.label || null,
     }))
-    .sort((a: any, b: any) => {
-      const priorityDiff = (priorityOrder[a.priority] || 6) - (priorityOrder[b.priority] || 6);
+    .sort((a, b) => {
+      const priorityDiff = (priorityOrder[a.priority || ""] || 6) - (priorityOrder[b.priority || ""] || 6);
       if (priorityDiff !== 0) return priorityDiff;
       return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
     });

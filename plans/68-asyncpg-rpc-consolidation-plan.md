@@ -1,5 +1,20 @@
 # Phase 68: Asyncpg + RPC Consolidation — Final Implementation Plan
 
+**Status: ⚠️ IMPLEMENTED THEN PARTIALLY REVERTED (commits `67d2a30` + `0495824`, Jul 2026)**
+
+> **What happened:** Phase 2a/2b/2d (asyncpg pool, `rpc_get_associative_data` /
+> `rpc_get_memory_metadata` RPCs, search.py wiring) shipped, but **Phase 2c (hot-path
+> conversion) was REVERTED with measured evidence that asyncpg was SLOWER**: through the
+> Supavisor pooler asyncpg added 5s+/query (DNS+SSL overhead); direct connection was still
+> 1-2s vs PostgREST. PostgREST on the same Supabase infra wins via pre-warmed HTTP pools and
+> prepared statements. **Verified: entity_done dropped 19.5s → 1.0s (18.5s saved) by reverting.**
+>
+> **Current state:** `core/services/async_db.py` (pool) remains and is used by ONE guarded
+> fast-path in `core/webhook/classify.py` (PostgREST fallback on any error). The two RPCs in
+> `db/70_*.sql` / `db/71_*.sql` exist but are NOT called by the live pipeline (search.py uses
+> `search_phrase_nodes` / `match_memories_hybrid`). **Do NOT re-attempt the asyncpg hot-path
+> without new evidence** — the revert commit documents why it loses to PostgREST here.
+
 **Status**: Approved after 3 external reviews (9 issues identified and resolved)
 **Target**: Save 7-10s per query (31s → ~18-21s average)
 **Strategy**: Hybrid — only hot-path reads (~109 calls) migrate. Writes, scripts, and cold paths stay on PostgREST.

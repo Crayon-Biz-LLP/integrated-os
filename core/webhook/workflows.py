@@ -114,6 +114,14 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     w_id = workflow['id']
     w_type = workflow['workflow_type']
     payload = workflow.get('payload') or {}
+
+    # Batch-resume fields — MUST be initialized before the deterministic
+    # bypass below: a simple "yes/sure" reply to a batch workflow skips the
+    # LLM block (step 2) that normally assigns these, and the confirm path
+    # reads them at step 3. UnboundLocalError otherwise.
+    signal_decisions = []
+    has_other_content = False
+    other_content_text = ""
     
     # 0. Deterministic topical relevance guard (before any LLM call)
     if text and not _check_topic_overlap(text, payload):
@@ -164,13 +172,13 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         
         if not update_res.data:
             audit_log_sync("workflow", "WARNING", f"Workflow {w_id} already resolved concurrently. Skipping.")
-            return True, other_content_text if decision == "decline" and 'other_content_text' in locals() and other_content_text else None
+            return True, other_content_text if decision == "decline" and other_content_text else None
     except Exception as e:
         audit_log_sync("workflow", "ERROR", f"Failed atomic update for {w_id}: {e}")
         return False, None
     
     if decision == "decline":
-        has_other = 'has_other_content' in locals() and has_other_content and other_content_text.strip()
+        has_other = has_other_content and bool(other_content_text.strip())
         reply_text = "Cancelled the pending items." if has_other else "Cancelled."
         await send_telegram(chat_id, reply_text)
         log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
@@ -278,7 +286,7 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
         await send_telegram(chat_id, reply_text)
         log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
         log_exchange(thread_id, 'bot', 'WORKFLOW_RESOLUTION', reply_text, chat_id)
-        has_other = 'has_other_content' in locals() and has_other_content and other_content_text.strip()
+        has_other = has_other_content and bool(other_content_text.strip())
         if has_other:
             return True, other_content_text.strip()
         return True, None

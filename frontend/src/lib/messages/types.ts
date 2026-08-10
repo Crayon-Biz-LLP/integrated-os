@@ -6,7 +6,7 @@ export interface Message {
   sender: 'user' | 'telegram' | 'system';
   message_type: 'chat' | 'task' | 'note' | 'briefing' | 'clarification' | 'acknowledgment' | 'system' | 'response';
   status: string;
-  metadata: string | Record<string, any>;
+  metadata: string | Record<string, unknown>;
   source: string;
 }
 

@@ -8,6 +8,7 @@ import { HealthStats } from '@/lib/health/types';
 import { fetchHealthStats } from '@/lib/health/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { errMsg } from "@/lib/errors";
 
 export default function HealthPage() {
   const [stats, setStats] = useState<HealthStats | null>(null);
@@ -22,8 +23,8 @@ export default function HealthPage() {
       try {
         const data = await fetchHealthStats();
         if (!cancelled) setStats(data);
-      } catch (err: any) {
-        if (!cancelled) setError(err.message);
+      } catch (err) {
+        if (!cancelled) setError(errMsg(err));
       } finally {
         if (!cancelled) setLoading(false);
       }

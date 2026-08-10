@@ -4,6 +4,8 @@ import json
 from datetime import datetime, timezone
 
 from core.retrieval.pipeline import schedule_index_memory
+from core.llm.compat import get_embedding_sync
+from core.llm import get_embedding
 from core.services.db import maybe_single_safe, tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
@@ -212,10 +214,17 @@ async def create_note_direct(
 
         # ── Build insert data with entity context ──
         # Note: project_id is intentionally not set — notes live under orgs directly
+        # Embedding computed at insert time (mirrors core/pulse/memory.py and the
+        # recurring-completion path) — memories.embedding is the legacy vector-search
+        # column and the null-embedding health check (M6 fan-out per tenant).
+        # Async await (create_note_direct is async) — non-blocking on the webhook path.
+        note_embedding = (await get_embedding(content)).vector
         insert_data = {
             "content": content,
             "memory_type": "note",
             "source": source,
+            "embedding": note_embedding,
+            "embedding_status": 'success' if note_embedding and any(note_embedding) else 'failed',
             "is_current": True,
             "version": 1,
         }
@@ -333,13 +342,29 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
             
             if "No upcoming instances found" not in skip_msg:
                 try:
+                    label = f"Completed instance of recurring task: {td['title']} (Task {task_id})"
+                    # Embedding computed at insert time (mirrors core/pulse/memory.py
+                    # write_outcome_memory) — the memories.embedding column is the
+                    # legacy vector-search path and the null-embedding health check.
+                    # Failure is NON-fatal: the memory still lands (NULL embedding +
+                    # failed status) and the sentinel index job backfills later.
+                    try:
+                        embedding = get_embedding_sync(label)
+                        status = 'success' if embedding and any(embedding) else 'failed'
+                    except Exception as emb_err:
+                        audit_log_sync("pulse", "WARNING",
+                                       f"Embedding failed for recurring completion, storing unembedded: {emb_err}")
+                        embedding = None
+                        status = 'failed'
                     result = supabase.table('memories').insert({
-                        'content': f"Completed instance of recurring task: {td['title']} (Task {task_id})",
+                        'content': label,
                         'memory_type': 'outcome',
+                        'embedding': embedding,
+                        'embedding_status': status,
                         'source': 'pulse_tools'
                     }).execute()
                     memory_id = result.data[0]['id']
-                    schedule_index_memory(memory_id, f"Completed instance of recurring task: {td['title']} (Task {task_id})", "outcome", "pulse_tools")
+                    schedule_index_memory(memory_id, label, "outcome", "pulse_tools")
                 except Exception:
                     pass
                 return f"OK: Marked this week's instance done for '{td['title']}'. {skip_msg} The series continues — use 'cancelled' to end it entirely."

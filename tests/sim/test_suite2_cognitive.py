@@ -3,11 +3,11 @@ import uuid
 from unittest.mock import patch
 from core.webhook.classify import classify_intent, SAFE_HOLD_CLASSIFICATION
 from core.lib.conversation import resolve_thread
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import set_trace_id
 from sim.conftest import requires_live_db
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 @pytest.mark.asyncio
@@ -137,7 +137,7 @@ async def test_x3_context_provider_returns_dict():
         query_text="SIM_TEST",
         max_chars=4000
     )
-    assert isinstance(c, tuple)
-    assert len(c) == 2
-    assert isinstance(c[0], str)
-    assert isinstance(c[1], str)
+    # hydrate_tasks_context returns a formatted string since the context
+    # refactor (was a (str, str) tuple pre-refactor).
+    assert isinstance(c, str), f"Expected str, got {type(c).__name__}"
+    assert len(c) > 0, "Formatted task context should be non-empty"

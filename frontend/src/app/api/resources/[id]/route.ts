@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { errMsg } from "@/lib/errors";
 
 function getHostname(url: string | null): string | null {
   if (!url) return null;
@@ -62,8 +63,8 @@ export async function GET(
     };
 
     return NextResponse.json(resource);
-  } catch (err: any) {
+  } catch (err) {
     console.error("Unexpected error in resource [id] route:", err);
-    return NextResponse.json({ error: err.message || "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: errMsg(err, "Internal server error") }, { status: 500 });
   }
 }

@@ -1,10 +1,10 @@
-import { PatternHealthList } from '@/components/patterns/pattern-health-list';
+import { PatternHealthList, type Pattern, type SubsystemRollup } from '@/components/patterns/pattern-health-list';
 
 export const dynamic = 'force-dynamic';
 
 export default async function PatternsPage() {
-  let patterns: any[] = [];
-  let rollups: Record<string, any> = {};
+  let patterns: Pattern[] = [];
+  let rollups: Record<string, SubsystemRollup> = {};
 
   try {
     const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
@@ -15,7 +15,10 @@ export default async function PatternsPage() {
       },
     });
     if (res.ok) {
-      const data = await res.json();
+      const data = (await res.json()) as {
+        patterns: Pattern[];
+        subsystem_rollups: Record<string, SubsystemRollup>;
+      };
       patterns = data.patterns || [];
       rollups = data.subsystem_rollups || {};
     }

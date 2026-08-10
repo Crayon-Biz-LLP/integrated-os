@@ -78,10 +78,19 @@ async def lifespan(app):
 
 app = FastAPI(title="Integrated-OS", lifespan=lifespan)
 
-# CORS setup for future dashboard scalability
+# CORS allowlist (audit 2.3): the API is consumed by the Flutter app (native,
+# no CORS) and the Next.js dashboard. Wildcard origins were a defense-in-depth
+# hole — restrict to the env-driven ALLOWED_ORIGINS list (comma-separated),
+# defaulting to the local dev dashboard. Server-to-server callers (Telegram,
+# cron, Modal) are not subject to CORS and are unaffected.
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -94,6 +103,22 @@ def health_check():
 # --- TELEGRAM INTAKE (Inline processing with 55s timeout) ---
 @app.post("/api/webhook")
 async def webhook_route(request: Request):
+    # Telegram webhook authentication (audit 2.1): when TELEGRAM_WEBHOOK_SECRET
+    # is configured, Telegram sends it in the X-Telegram-Bot-Api-Secret-Token
+    # header (set via setWebhook(secret_token=...)). Reject requests without a
+    # matching token — otherwise anyone who knows the Modal URL can inject fake
+    # updates. When the secret is NOT configured, log a loud warning but accept
+    # (backward-compat until the webhook is re-registered with a secret_token).
+    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET")
+    if secret:
+        token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if not hmac.compare_digest(token, secret):
+            print("Webhook rejected: bad X-Telegram-Bot-Api-Secret-Token")
+            raise HTTPException(status_code=401, detail="Unauthorized")
+    else:
+        print("⚠️ Webhook auth DISABLED — set TELEGRAM_WEBHOOK_SECRET and "
+              "re-register the webhook with secret_token to close this hole.")
+
     update = await request.json()
     trace_id_var.set(f"tg_{update.get('update_id', uuid.uuid4().hex[:8])}")
     begin_action_context()
@@ -127,7 +152,9 @@ def require_api_auth(request: Request) -> str | None:
          per-user key auto-scopes every query in the handler body.
       2. Legacy shared key: X-API-Key matches API_SECRET_KEY. Authorized but
          UN-scoped (pre-db/78 production / transition) — returns None.
-      3. Dev mode: API_SECRET_KEY unset → allow all (unchanged) — None.
+      3. Fail closed (audit 2.2): when API_SECRET_KEY is unset the API is
+         REJECTED unless ALLOW_DEV_AUTH=1 is explicitly set (local dev). A
+         missing env var in production must never leave the whole API open.
     """
     api_key = request.headers.get("X-API-Key")
     expected = os.getenv("API_SECRET_KEY")
@@ -139,7 +166,10 @@ def require_api_auth(request: Request) -> str | None:
             return str(user["id"])
 
     if not expected:
-        return None
+        # Fail closed: reject unless dev mode is explicitly enabled.
+        if os.getenv("ALLOW_DEV_AUTH") == "1":
+            return None
+        raise HTTPException(status_code=503, detail="API auth not configured")
     if not api_key or not hmac.compare_digest(api_key, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return None
@@ -3723,7 +3753,12 @@ async def graph_edges_similar_route(request: Request):
 async def whatsapp_ingest_route(request: Request):
     trace_id_var.set(f"wa_{uuid.uuid4().hex[:8]}")
     expected_secret = os.getenv("WHATSAPP_INGEST_SECRET")
-    if expected_secret:
+    if not expected_secret:
+        # Fail closed (audit X5): an unset secret must reject, never leave the
+        # endpoint open — unless ALLOW_DEV_AUTH=1 is explicitly set (local dev).
+        if os.getenv("ALLOW_DEV_AUTH") != "1":
+            raise HTTPException(status_code=503, detail="WhatsApp ingest auth not configured")
+    else:
         provided = request.headers.get("X-Ingest-Secret", "")
         if not hmac.compare_digest(provided, expected_secret):
             raise HTTPException(status_code=401, detail="Unauthorized")
@@ -3893,7 +3928,12 @@ async def drive_webhook(request: Request):
     channel_token = request.headers.get("X-Goog-Channel-Token", "")
 
     expected_token = os.getenv("PULSE_SECRET")
-    if expected_token and channel_token != expected_token:
+    if not expected_token:
+        # Fail closed (audit X5): an unset secret must reject, never leave the
+        # endpoint open — unless ALLOW_DEV_AUTH=1 is explicitly set (local dev).
+        if os.getenv("ALLOW_DEV_AUTH") != "1":
+            raise HTTPException(status_code=503, detail="Drive webhook auth not configured")
+    elif channel_token != expected_token:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     print(f"Drive webhook: channel={channel_id} state={resource_state} resource={resource_id}")

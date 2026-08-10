@@ -4,6 +4,9 @@ import type { TelemetryPattern } from '@/lib/telemetry/types';
 
 export const dynamic = 'force-dynamic';
 
+// Computed at module load (not during render) to keep the page render pure.
+const SINCE_7D_ISO = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
 export default async function TelemetryPage() {
   const supabase = await createServerSupabaseClient();
 
@@ -17,7 +20,7 @@ export default async function TelemetryPage() {
     supabase
       .from('subsystem_telemetry')
       .select('*')
-      .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+      .gte('created_at', SINCE_7D_ISO)
       .order('created_at', { ascending: false })
       .limit(50),
     supabase
@@ -26,7 +29,7 @@ export default async function TelemetryPage() {
   ]);
 
   // Build patterns
-  const patterns = (patternRes.data || []).map((row: any) => {
+  const patterns = (patternRes.data || []).map((row) => {
     const total = row.total_count;
     const correct = row.correct_count;
     const conf = total > 0 ? correct / total : 0;
@@ -37,7 +40,7 @@ export default async function TelemetryPage() {
       recommendation = 'suggest';
     }
     const features = row.feature_json || {};
-    const featureParts = Object.entries(features).filter(([_, v]) => v).map(([k, v]) => `${k}=${v}`);
+    const featureParts = Object.entries(features).filter(([_k, v]) => v).map(([k, v]) => `${k}=${v}`);
     const rule = `${featureParts.join(', ')}: ${correct}/${total} (${(conf * 100).toFixed(0)}%)`;
     return {
       subsystem: row.subsystem,
@@ -51,7 +54,7 @@ export default async function TelemetryPage() {
   });
 
   // Build recent activity
-  const recentActivity = (activityRes.data || []).map((row: any) => ({
+  const recentActivity = (activityRes.data || []).map((row) => ({
     id: row.id,
     subsystem: row.subsystem,
     event_type: row.event_type,

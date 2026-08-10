@@ -8,7 +8,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 
 interface TaskDetailSheetProps {
@@ -16,14 +15,6 @@ interface TaskDetailSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
-
-const statusVariants: Record<string, 'default' | 'secondary' | 'outline' | 'destructive'> = {
-  todo: 'default',
-  in_progress: 'secondary',
-  done: 'outline',
-  blocked: 'destructive',
-  cancelled: 'outline',
-};
 
 const statusClasses: Record<string, string> = {
   todo: 'bg-primary text-primary-foreground text-xs px-2.5 py-0.5 rounded-full font-medium',

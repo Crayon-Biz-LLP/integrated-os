@@ -2,9 +2,9 @@ import pytest
 from unittest.mock import patch, MagicMock
 from core.pulse.tools import update_task_status
 from tests.fixtures.task_factory import factory
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 @pytest.fixture(autouse=True)
 def cleanup():
@@ -44,7 +44,10 @@ def test_external_deletion_404_handling():
 
     with patch("core.services.google_service.get_cached_service", return_value=mock_service):
         with patch("core.pulse.tools.sync_to_google"):
-            # Call the real update_task_status, which calls the real sync_to_calendar
+            # Move the task out of 'todo' first so the update path runs
+            # (update_task_status is a no-op when the status is unchanged),
+            # then reschedule with a reminder_at — which calls sync_to_calendar.
+            res = update_task_status(task["id"], status="in_progress")
             res = update_task_status(task["id"], status="todo", reminder_at="2026-10-10T10:00:00Z")
 
     assert "updated successfully" in res
@@ -62,6 +65,7 @@ def test_reminder_at_removed_deletes_calendar(mock_google_apis):
     # Call update_task_status with a status update but no reminder_at
     # Default args: status="done", reminder_at=None
     # But wait, bug C5 is about when you just update to todo and omit reminder_at.
+    update_task_status(task["id"], status="in_progress")
     update_task_status(task["id"], status="todo")
 
     # This will call delete_calendar_event because of:

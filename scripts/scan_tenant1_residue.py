@@ -96,6 +96,11 @@ ALLOW_PAIRS: set[tuple[str, str]] = {
     # Product endpoint / package — shared infrastructure, not tenant data.
     ("api/index.py", "danielyashwant"),
     ("rhodey_app/lib/services/api_config.dart", "danielyashwant"),
+    # Settings hint shows the same product endpoint as api_config.dart's
+    # defaultBaseUrl (which is allowed above) — shared infrastructure, not
+    # another tenant's experience. KEEP IN SYNC: if defaultBaseUrl is ever
+    # neutralized to a per-tenant placeholder, this hint must change too.
+    ("rhodey_app/lib/screens/settings_screen.dart", "danielyashwant"),
     ("rhodey_app/lib/services/widget_data_provider.dart", "Crayon"),
     ("rhodey_app/lib/services/notification_service.dart", "Crayon"),
     ("rhodey_app/lib/services/update_service.dart", "Crayon"),

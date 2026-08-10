@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
-import { Clock, FileText, ChevronDown, ChevronRight, Hash, Search, Database, Link2, Link2Off, ArrowDownAZ, ArrowUpAZ, Component, BarChart2 } from 'lucide-react';
+import { Clock, FileText, ChevronDown, ChevronRight, Hash, Search, Database, Link2, Link2Off } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Episode } from '@/lib/memories/stream';
 import type { GraphNode } from '@/lib/memories/types';
@@ -212,7 +212,7 @@ export default function GraphFinder({
   onLoadMore,
   onNavigateNode,
   graphLoading,
-  entityTypeFilter,
+  entityTypeFilter: _entityTypeFilter,
   onFilterByType,
   graphLinked,
   onToggleGraphLinked,
@@ -366,7 +366,7 @@ export default function GraphFinder({
                 {/* Sort control */}
                 <select 
                   value={sortMode}
-                  onChange={(e) => setSortMode(e.target.value as any)}
+                  onChange={(e) => setSortMode(e.target.value as 'alpha-asc' | 'alpha-desc' | 'type' | 'connections')}
                   className="bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-400 rounded px-1.5 py-0.5 outline-none focus:border-zinc-700"
                 >
                   <option value="alpha-asc">A–Z</option>

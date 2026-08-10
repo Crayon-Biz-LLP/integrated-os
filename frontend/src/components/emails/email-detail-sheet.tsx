@@ -1,7 +1,6 @@
 'use client';
 
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
-import { Badge } from '@/components/ui/badge';
 import type { Email } from '@/lib/emails/types';
 import { format } from 'date-fns';
 import { User, Building, Mail, Tag, Globe } from 'lucide-react';

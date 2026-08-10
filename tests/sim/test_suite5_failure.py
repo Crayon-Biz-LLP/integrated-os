@@ -1,12 +1,12 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 from core.lib.audit_logger import set_trace_id
 from core.webhook.classify import classify_intent
 from sim.conftest import requires_live_db
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 
 @requires_live_db
@@ -50,7 +50,14 @@ async def test_c3_llm_failure_trace_id():
 
 @requires_live_db
 @pytest.mark.asyncio
-async def test_m5_retry_then_warn():
+async def test_m5_cleanup_is_safe_noop():
+    """M5 — cleanup_memory_retrieval_index is a safe no-op.
+
+    db/32 replaced the manual cleanup sweep with the AFTER DELETE trigger
+    trg_memories_cleanup, so the function must never touch the DB (or raise
+    when the DB is unavailable) — a regression here would silently break
+    the trigger's guarantees on the delete path.
+    """
     set_trace_id("sim-m5-fail")
     expired_at = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     mem = supabase.table('memories').insert({
@@ -62,22 +69,8 @@ async def test_m5_retry_then_warn():
 
     from core.retrieval.cleanup import cleanup_memory_retrieval_index
 
-    with patch('core.retrieval.cleanup.get_supabase') as mock_db:
-        mock_instance = MagicMock()
-        mock_instance.table.return_value.select.return_value.execute.side_effect = Exception("DB fail")
-        mock_db.return_value = mock_instance
-
-        failed = 0
-        for attempt in range(2):
-            try:
-                cleanup_memory_retrieval_index(mid)
-                break
-            except Exception:
-                if attempt == 0:
-                    continue
-                failed += 1
-
-    assert failed >= 0
+    # Must not raise even though no DB work is expected (and must not hang).
+    cleanup_memory_retrieval_index(mid)
 
     supabase.table('memories').delete().eq('id', mid).execute()
 

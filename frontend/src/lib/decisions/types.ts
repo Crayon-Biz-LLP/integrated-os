@@ -47,7 +47,7 @@ export interface GraphPendingEdge {
   };
   eval_context?: {
     justification?: string;
-    [key: string]: any;
+    [key: string]: unknown;
   };
   epistemic_status?: string;
 }
@@ -81,6 +81,18 @@ export interface AutoDecisionItem {
   source_ref: string | null;
 }
 
+export interface SimilarGraphNode {
+  id: string;
+  label: string;
+  score: number;
+  is_pending?: boolean;
+}
+
+export interface SimilarGraphEdge {
+  id: number;
+  is_pending?: boolean;
+}
+
 export interface GraphPendingNode {
   id: number;
   label: string;
@@ -102,7 +114,7 @@ export interface GraphPendingNode {
     confidence?: number;
     health_score?: number;
     typical_time?: string;
-    [key: string]: any;
+    [key: string]: unknown;
   };
   epistemic_status?: string;
   /** Present on LIVE nodes: graph_nodes.metadata (enrichment lives here). */
@@ -115,9 +127,9 @@ export interface GraphPendingNode {
       description?: string | null;
       organization_name?: string | null;
       last_interaction_date?: string | null;
-      [key: string]: any;
+      [key: string]: unknown;
     };
-    [key: string]: any;
+    [key: string]: unknown;
   };
 }
 

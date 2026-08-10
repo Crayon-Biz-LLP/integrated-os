@@ -4,12 +4,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes, decideGraphNode, batchDecideGraphNodes, changePendingGraphNodeType, submitClarification, updateGraphNodeEnrichment, fetchAliasesForEntity, createEntityAlias, deleteEntityAlias, fetchEntityTasks, type EnrichmentUpdates } from '@/lib/decisions/api';
+import { renamePendingGraphNode, deletePendingGraphNode, mergeGraphNodeIntoExisting, searchGraphNodes, fetchLiveGraphNodes, decideGraphNode, batchDecideGraphNodes, changePendingGraphNodeType, submitClarification, updateGraphNodeEnrichment, fetchAliasesForEntity, createEntityAlias, deleteEntityAlias, fetchEntityTasks, type EnrichmentUpdates, type EntityAlias } from '@/lib/decisions/api';
 import type { GraphPendingNode } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { Loader2, Trash2, Pencil, GitMerge, Check, X, Settings2, Save, Tag, Plus, Search } from 'lucide-react';
 import { Textarea } from "@/components/ui/textarea";
+import { errMsg } from "@/lib/errors";
 import {
   Dialog,
   DialogContent,
@@ -34,17 +35,14 @@ function MergeSearchInput({
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    if (query.length < 2) {
-      setResults([]);
-      return;
-    }
+    if (query.length < 2) return;
     
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       setLoading(true);
       try {
         const data = await searchGraphNodes(query, nodeType, scope);
-        setResults(Array.isArray(data) ? data : (data as any).data || []);
+        setResults(data);
       } catch (e) {
         console.error(e);
       } finally {
@@ -66,7 +64,7 @@ function MergeSearchInput({
         className="h-8 text-sm pr-8"
       />
       {loading && <Loader2 className="absolute right-2 top-2 h-4 w-4 animate-spin text-muted-foreground" />}
-      {results.length > 0 && (
+      {query.length >= 2 && results.length > 0 && (
         <div className="absolute top-full left-0 mt-1 w-full bg-popover border rounded-md shadow-md z-50 max-h-48 overflow-y-auto">
           {results.map(r => (
             <button
@@ -87,6 +85,16 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
   const [items, setItems] = useState<GraphPendingNode[]>(initialItems);
   const [scope, setScope] = useState<'pending' | 'live' | 'rejected'>(defaultScope);
   const [loading, setLoading] = useState(defaultScope === 'live');
+  const [prevScope, setPrevScope] = useState(scope);
+  const [prevInitial, setPrevInitial] = useState(initialItems);
+  const [prevRejected, setPrevRejected] = useState(rejectedItems);
+  if (prevScope !== scope || prevInitial !== initialItems || prevRejected !== rejectedItems) {
+    setPrevScope(scope);
+    setPrevInitial(initialItems);
+    setPrevRejected(rejectedItems);
+    if (scope === 'pending') setItems(initialItems);
+    else if (scope === 'rejected') setItems(rejectedItems);
+  }
   const [filterType, setFilterType] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -100,11 +108,11 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
   const [enrichId, setEnrichId] = useState<number | string | null>(null);
   const [enrichDraft, setEnrichDraft] = useState<EnrichmentUpdates>({});
   const [enrichSaving, setEnrichSaving] = useState(false);
-  const [enrichAliases, setEnrichAliases] = useState<any[]>([]);
+  const [enrichAliases, setEnrichAliases] = useState<EntityAlias[]>([]);
   const [enrichAliasesLoading, setEnrichAliasesLoading] = useState(false);
   const [enrichNewAlias, setEnrichNewAlias] = useState('');
   const [enrichAddingAlias, setEnrichAddingAlias] = useState(false);
-  const [enrichTasks, setEnrichTasks] = useState<any[]>([]);
+  const [enrichTasks, setEnrichTasks] = useState<Array<{ id: number; title: string; status: string; priority: string; organization_name?: string | null }>>([]);
   const [enrichTasksLoading, setEnrichTasksLoading] = useState(false);
   
   const [deleteId, setDeleteId] = useState<number | string | null>(null);
@@ -112,23 +120,23 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<number, string>>({});
 
   useEffect(() => {
-    if (scope === 'pending') {
-      setItems(initialItems);
-    } else if (scope === 'rejected') {
-      setItems(rejectedItems);
-    } else {
-      setLoading(true);
-      fetchLiveGraphNodes().then(data => {
-        setItems(data);
-        setLoading(false);
-      }).catch(e => {
-        console.error(e);
-        toast.error(e.message || "Failed to load live nodes");
-        setItems([]);
-        setLoading(false);
-      });
+    if (scope === 'live') {
+      const run = async () => {
+        setLoading(true);
+        try {
+          const data = await fetchLiveGraphNodes();
+          setItems(data);
+        } catch (e) {
+          console.error(e);
+          toast.error(e instanceof Error ? e.message : "Failed to load live nodes");
+          setItems([]);
+        } finally {
+          setLoading(false);
+        }
+      };
+      void run();
     }
-  }, [initialItems, rejectedItems, scope]);
+  }, [scope]);
 
   const handleDecision = async (id: number | string, decision: 'approve' | 'reject' | 'unreject') => {
     try {
@@ -140,8 +148,8 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
         setItems(prev => prev.filter(i => i.id !== id));
         toast.success(decision === 'approve' ? 'Approved successfully' : decision === 'unreject' ? 'Un-rejected successfully' : 'Rejected successfully');
       }
-    } catch (e: any) {
-      toast.error(e.message || `Failed to ${decision}`);
+    } catch (e) {
+      toast.error(errMsg(e, `Failed to ${decision}`));
     }
   };
 
@@ -167,8 +175,8 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
       setItems(prev => prev.map(i => i.id === id ? { ...i, label: editLabel } : i));
       setEditingId(null);
       toast.success("Renamed successfully");
-    } catch (e: any) {
-      toast.error(e.message || "Failed to rename");
+    } catch (e) {
+      toast.error(errMsg(e, "Failed to rename"));
     }
   };
 
@@ -178,8 +186,8 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
       setItems(prev => prev.map(i => i.id === id ? { ...i, type: newType } : i));
       setChangingTypeId(null);
       toast.success("Changed type successfully");
-    } catch (e: any) {
-      toast.error(e.message || "Failed to change type");
+    } catch (e) {
+      toast.error(errMsg(e, "Failed to change type"));
     }
   };
 
@@ -189,8 +197,8 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
       setItems(prev => prev.filter(i => i.id !== sourceId));
       setMergingId(null);
       toast.success(`Merged into ${targetLabel}`);
-    } catch (e: any) {
-      toast.error(e.message || "Failed to merge");
+    } catch (e) {
+      toast.error(errMsg(e, "Failed to merge"));
     }
   };
 
@@ -202,8 +210,8 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
       setDeleteId(null);
       setDeleteConfirmText("");
       toast.success(res.message || "Deleted successfully");
-    } catch (e: any) {
-      toast.error(e.message || "Failed to delete");
+    } catch (e) {
+      toast.error(errMsg(e, "Failed to delete"));
     }
   };
 
@@ -246,15 +254,16 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
     setEnrichAddingAlias(true);
     try {
       const result = await createEntityAlias(alias, canonicalName);
-      if (result.success && result.alias) {
-        setEnrichAliases(prev => [...prev, result.alias]);
+      const newAlias = result.alias;
+      if (result.success && newAlias) {
+        setEnrichAliases(prev => [...prev, newAlias]);
         setEnrichNewAlias('');
         toast.success('Alias added');
       } else {
         toast.error(result.message || 'Failed to add alias');
       }
-    } catch (e: any) {
-      toast.error(e.message || 'Failed to add alias');
+    } catch (e) {
+      toast.error(errMsg(e, 'Failed to add alias'));
     } finally {
       setEnrichAddingAlias(false);
     }
@@ -269,8 +278,8 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
       } else {
         toast.error(result.message || 'Failed to remove alias');
       }
-    } catch (e: any) {
-      toast.error(e.message || 'Failed to remove alias');
+    } catch (e) {
+      toast.error(errMsg(e, 'Failed to remove alias'));
     }
   };
 
@@ -289,8 +298,8 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
       setEnrichId(null);
       setEnrichDraft({});
       toast.success(result.message || "Details updated");
-    } catch (e: any) {
-      toast.error(e.message || "Failed to update details");
+    } catch (e) {
+      toast.error(errMsg(e, "Failed to update details"));
     } finally {
       setEnrichSaving(false);
     }
@@ -856,12 +865,12 @@ export function EntityTableList({ items: initialItems, rejectedItems = [], defau
  * Compact enrichment summary for the Details column.
  * Person: role + weight. Org: org_type + description. Others: nothing.
  */
-function EntityDetails({ type, enrichment }: { type: string; enrichment?: Record<string, any> }) {
+function EntityDetails({ type, enrichment }: { type: string; enrichment?: Record<string, unknown> }) {
   if (!enrichment) return <span className="text-muted-foreground">—</span>;
 
   const bits: { text: string; highlight?: boolean }[] = [];
   if (type === 'person') {
-    if (enrichment.role) bits.push({ text: enrichment.role });
+    if (typeof enrichment.role === 'string') bits.push({ text: enrichment.role });
     if (typeof enrichment.strategic_weight === 'number') {
       bits.push({
         text: `weight ${enrichment.strategic_weight}/10`,
@@ -869,7 +878,7 @@ function EntityDetails({ type, enrichment }: { type: string; enrichment?: Record
       });
     }
   } else if (type === 'organization') {
-    if (enrichment.org_type) bits.push({ text: enrichment.org_type });
+    if (typeof enrichment.org_type === 'string') bits.push({ text: enrichment.org_type });
     if (enrichment.description) bits.push({ text: String(enrichment.description) });
   }
   if (bits.length === 0) return <span className="text-muted-foreground">—</span>;

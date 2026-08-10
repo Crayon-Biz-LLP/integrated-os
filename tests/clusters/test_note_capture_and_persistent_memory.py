@@ -7,12 +7,12 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 import pytest
-from core.services.db import get_supabase
-from core.retrieval.cleanup import cleanup_memory_retrieval_index, sweep_orphan_retrieval_entries
+from core.services.db import tenant_aware_client
 from core.webhook.workflows import check_and_resume_workflow
 from core.lib.conversation import resolve_thread
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
+
 
 TEST_CHAT_BASE = 9000000
 TEST_SOURCE = "test_e2e_nc"
@@ -122,7 +122,7 @@ class TestNoteCaptureCorrectness:
             n_check = supabase.table('raw_dumps').select('status').eq('id', note_id).execute()
             assert n_check.data[0]['status'] == 'staged'
 
-            handled = await check_and_resume_workflow(chat_id, "By the way, I need milk", thread_id)
+            handled, _ = await check_and_resume_workflow(chat_id, "By the way, I need milk", thread_id)
             assert not handled
 
             w_check2 = supabase.table('conversation_workflows').select('status').eq('id', w_id).execute()
@@ -198,7 +198,7 @@ class TestWorkflowContinuity:
             }).execute()
             w_id = w_res.data[0]['id']
 
-            handled1 = await check_and_resume_workflow(chat_id, "yes", thread_id)
+            handled1, _ = await check_and_resume_workflow(chat_id, "yes", thread_id)
             assert handled1
 
             w_check = supabase.table('conversation_workflows').select('status').eq('id', w_id).execute()
@@ -209,7 +209,7 @@ class TestWorkflowContinuity:
             task_ids_before = {t['id'] for t in task_check.data}
 
             # Second "yes" on already-resolved workflow — returns False (correct: nothing to handle)
-            handled2 = await check_and_resume_workflow(chat_id, "yes", thread_id)
+            handled2, _ = await check_and_resume_workflow(chat_id, "yes", thread_id)
             assert not handled2
 
             w_check2 = supabase.table('conversation_workflows').select('status').eq('id', w_id).execute()
@@ -249,7 +249,7 @@ class TestWorkflowContinuity:
             }).execute()
             w2_id = w2_res.data[0]['id']
 
-            handled = await check_and_resume_workflow(chat_id, "yes", thread_id_2)
+            handled, _ = await check_and_resume_workflow(chat_id, "yes", thread_id_2)
             assert handled
 
             expired_check = supabase.table('conversation_workflows') \
@@ -279,15 +279,15 @@ class TestWorkflowContinuity:
             }).execute()
             w_id = w_res.data[0]['id']
 
-            handled1 = await check_and_resume_workflow(chat_id, "Marcus approved the pricing", thread_id)
+            handled1, _ = await check_and_resume_workflow(chat_id, "Marcus approved the pricing", thread_id)
             assert not handled1
             assert supabase.table('conversation_workflows').select('status').eq('id', w_id).execute().data[0]['status'] == 'active'
 
-            handled2 = await check_and_resume_workflow(chat_id, "cancel", thread_id)
+            handled2, _ = await check_and_resume_workflow(chat_id, "cancel", thread_id)
             assert handled2
             assert supabase.table('conversation_workflows').select('status').eq('id', w_id).execute().data[0]['status'] == 'cancelled'
 
-            handled3 = await check_and_resume_workflow(chat_id, "yes", thread_id)
+            handled3, _ = await check_and_resume_workflow(chat_id, "yes", thread_id)
             assert not handled3
         finally:
             _cleanup_conversations(chat_id)
@@ -592,7 +592,9 @@ class TestDeletionCleanup:
                 .select('id').eq('memory_id', memory_id).execute()
             assert len(links_before.data) > 0
 
-            cleanup_memory_retrieval_index(memory_id)
+            # cleanup_memory_retrieval_index() is now a no-op (DB trigger db/32
+            # owns cascade cleanup on memories DELETE) — simulate the delete.
+            supabase.table('memories').delete().eq('id', memory_id).execute()
 
             assert len(supabase.table('retrieval_passages').select('id').eq('memory_id', memory_id).execute().data) == 0
             assert len(supabase.table('retrieval_memory_bundle_links').select('id').eq('memory_id', memory_id).execute().data) == 0
@@ -604,7 +606,13 @@ class TestDeletionCleanup:
 
     @pytest.mark.asyncio
     async def test_18_orphan_sweep(self):
+        # sweep_orphan_retrieval_entries() is retired (no-op) — DB trigger
+        # trg_memories_cleanup (db/32) cascades retrieval cleanup when a memory
+        # row is DELETEd. Verify that trigger is the live cleanup mechanism.
         supabase.table('memories').delete().ilike('content', '[TEST] G18%').execute()
+        # Clear any leftover orphan passages from older test-runs that used the
+        # retired sweep (memory_id 99999999 was the old orphan sentinel).
+        supabase.table('retrieval_passages').delete().eq('memory_id', 99999999).execute()
 
         try:
             mem_res = supabase.table('memories').insert({
@@ -626,28 +634,20 @@ class TestDeletionCleanup:
                 'source_id': str(valid_memory_id), 'source_type': 'memory', 'status': 'completed'
             }).execute()
 
-            orphan_memory_id = 99999999
-            supabase.table('retrieval_passages').insert({
-                'memory_id': orphan_memory_id, 'text': '[TEST] G18 orphan passage',
-                'raw_text': '[TEST] G18 orphan passage',
-                'embedding': [0.0] * 768,
-                'source_type': 'memory', 'source_id': 'orphan',
-                'passage_index': 0
-            }).execute()
-
-            sweep_orphan_retrieval_entries()
-
-            assert len(supabase.table('retrieval_passages').select('id').eq('memory_id', valid_memory_id).execute().data) == 1
-            assert len(supabase.table('retrieval_passages').select('id').eq('memory_id', orphan_memory_id).execute().data) == 0
-
-            sweep_orphan_retrieval_entries()
-
+            # Passage exists before delete
             assert len(supabase.table('retrieval_passages').select('id').eq('memory_id', valid_memory_id).execute().data) == 1
 
-            cleanup_memory_retrieval_index(valid_memory_id)
+            # Deleting the memory row must cascade cleanup to retrieval tables
+            # via the DB trigger (the replacement for the retired sweep).
             supabase.table('memories').delete().eq('id', valid_memory_id).execute()
+
+            assert len(supabase.table('retrieval_passages').select('id').eq('memory_id', valid_memory_id).execute().data) == 0, \
+                "DB trigger did not cascade cleanup on memory delete"
+            assert len(supabase.table('retrieval_index_runs').select('id').eq('source_id', str(valid_memory_id)).eq('source_type', 'memory').execute().data) == 0, \
+                "DB trigger did not clean retrieval_index_runs on memory delete"
         finally:
             supabase.table('memories').delete().ilike('content', '[TEST] G18%').execute()
+            supabase.table('retrieval_passages').delete().eq('memory_id', 99999999).execute()
 
 
 # ─────────────────────────────────────────────
@@ -716,7 +716,7 @@ class TestEndToEnd:
             assert supabase.table('raw_dumps').select('id').eq('id', note2_id).execute().data
 
             # Step 6: Thread A — delayed "yes" resumes workflow
-            handled = await check_and_resume_workflow(chat_id, "yes", thread_a_id)
+            handled, _ = await check_and_resume_workflow(chat_id, "yes", thread_a_id)
             assert handled
             w1_check = supabase.table('conversation_workflows').select('status').eq('id', w1_id).execute()
             assert w1_check.data[0]['status'] == 'resolved'
@@ -732,7 +732,7 @@ class TestEndToEnd:
             }).execute()
             w2_id = w2_res.data[0]['id']
 
-            handled_cancel = await check_and_resume_workflow(chat_id, "no", thread_a_id)
+            handled_cancel, _ = await check_and_resume_workflow(chat_id, "no", thread_a_id)
             assert handled_cancel
             assert supabase.table('conversation_workflows').select('status').eq('id', w2_id).execute().data[0]['status'] == 'cancelled'
 
@@ -759,7 +759,8 @@ class TestEndToEnd:
                 'source_id': str(memory_id), 'source_type': 'memory', 'status': 'completed'
             }).execute()
 
-            cleanup_memory_retrieval_index(memory_id)
+            # cleanup_memory_retrieval_index() is now a no-op (DB trigger db/32) —
+            # the memories DELETE below cascades retrieval cleanup automatically.
             supabase.table('memories').delete().eq('id', memory_id).execute()
             assert len(supabase.table('retrieval_passages').select('id').eq('memory_id', memory_id).execute().data) == 0
 
@@ -851,8 +852,8 @@ class TestCleanupRegression:
             assert len(supabase.table('retrieval_index_runs').select('id').eq('source_id', str(mem_a_id)).execute().data) >= 1
             assert len(supabase.table('retrieval_index_runs').select('id').eq('source_id', str(mem_b_id)).execute().data) >= 1
 
-            # Act: clean up memory A
-            cleanup_memory_retrieval_index(mem_a_id)
+            # Act: clean up memory A (trigger cascades retrieval rows on delete)
+            supabase.table('memories').delete().eq('id', mem_a_id).execute()
 
             # Assert: all retrieval rows for memory A are gone
             assert len(supabase.table('retrieval_passages').select('id').eq('memory_id', mem_a_id).execute().data) == 0
@@ -866,8 +867,8 @@ class TestCleanupRegression:
             assert len(supabase.table('retrieval_passage_phrase_links').select('id').eq('passage_id', pid_b).execute().data) == 1
             assert len(supabase.table('retrieval_index_runs').select('id').eq('source_id', str(mem_b_id)).execute().data) >= 1
 
-            # Clean up memory B rows
-            cleanup_memory_retrieval_index(mem_b_id)
+            # Clean up memory B rows (trigger cascades)
+            supabase.table('memories').delete().eq('id', mem_b_id).execute()
 
         finally:
             supabase.table('memories').delete().ilike('content', f'{tag}%').execute()

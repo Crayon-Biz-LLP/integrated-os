@@ -9,7 +9,7 @@ export async function PATCH(
   const body = await req.json();
   const { project_id } = body;
   
-  const updateData: any = { project_id };
+  const updateData: Record<string, unknown> = { project_id };
   if ('organization_id' in body) {
     updateData.organization_id = body.organization_id;
   }

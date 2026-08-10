@@ -1,7 +1,6 @@
 'use client';
 
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Badge } from '@/components/ui/badge';
 
 export function EmailTabs({
   activeTab,

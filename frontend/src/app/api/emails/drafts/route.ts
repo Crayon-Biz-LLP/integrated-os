@@ -13,7 +13,7 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const mappedData = (data || []).map((row: any) => ({
+  const mappedData = (data || []).map((row) => ({
     ...row,
     email_id: row.message_id,
     email: row.message ? {

@@ -1,10 +1,13 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Persisted API configuration.
 ///
 /// The user sets the base URL and API key once in Settings.
-/// Both survive app restarts via SharedPreferences.
+/// The API key is a credential — stored in the OS keychain/Keystore via
+/// flutter_secure_storage (audit 2.4), never plaintext SharedPreferences.
+/// Base URL and display name are non-secret and stay in SharedPreferences.
 class ApiConfig {
   static final ApiConfig _instance = ApiConfig._();
   factory ApiConfig() => _instance;
@@ -13,6 +16,8 @@ class ApiConfig {
   static const String _keyBaseUrl = 'api_base_url';
   static const String _keyApiKey = 'api_api_key';
   static const String _keyUserName = 'api_user_name';
+
+  static const _secure = FlutterSecureStorage();
 
   /// Production backend URL (Modal).
   static const String defaultBaseUrl = 'https://danielyashwant--rhodey-os-web-endpoint.modal.run';
@@ -35,7 +40,17 @@ class ApiConfig {
     try {
       final prefs = await SharedPreferences.getInstance();
       _baseUrl = prefs.getString(_keyBaseUrl) ?? defaultBaseUrl;
-      _apiKey = prefs.getString(_keyApiKey) ?? '';
+      // Legacy migration: a previously-plaintext key is moved into secure
+      // storage on first load (audit 2.4), then the plaintext copy is removed.
+      _apiKey = await _secure.read(key: _keyApiKey) ?? '';
+      final legacy = prefs.getString(_keyApiKey);
+      if (_apiKey.isEmpty && legacy != null && legacy.isNotEmpty) {
+        _apiKey = legacy;
+        await _secure.write(key: _keyApiKey, value: legacy);
+        await prefs.remove(_keyApiKey);
+      } else if (legacy != null && legacy.isNotEmpty && legacy != _apiKey) {
+        await prefs.remove(_keyApiKey);
+      }
       _userName = prefs.getString(_keyUserName) ?? '';
       debugPrint('[ApiConfig] loaded: baseUrl=$_baseUrl configured=$isConfigured');
     } catch (e) {
@@ -50,11 +65,10 @@ class ApiConfig {
     await prefs.setString(_keyBaseUrl, _baseUrl);
   }
 
-  /// Persist a new API key.
+  /// Persist a new API key (stored in secure storage, not plaintext prefs).
   Future<void> setApiKey(String key) async {
     _apiKey = key.trim();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_keyApiKey, _apiKey);
+    await _secure.write(key: _keyApiKey, value: _apiKey);
   }
 
   /// Persist the tenant's display name (M9.6) — survives restarts.
@@ -71,7 +85,7 @@ class ApiConfig {
     _userName = '';
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_keyBaseUrl);
-    await prefs.remove(_keyApiKey);
     await prefs.remove(_keyUserName);
+    await _secure.delete(key: _keyApiKey);
   }
 }

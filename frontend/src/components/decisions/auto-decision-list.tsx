@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -8,7 +8,7 @@ import { verifyAutoDecision, rejectAutoDecision } from '@/lib/decisions/api';
 import type { AutoDecisionItem } from '@/lib/decisions/types';
 import { toast } from 'sonner';
 import { formatDistanceToNow, parseISO } from 'date-fns';
-import { Check, X, Bot, RefreshCw, Calendar, TrendingDown, GitBranch, Network, Brain } from 'lucide-react';
+import { Check, X, Bot, Calendar, TrendingDown, GitBranch, Network, Brain } from 'lucide-react';
 
 const DECISION_TYPE_CONFIG: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
   channel_approval: { label: 'Auto-Approved', icon: <Check className="h-3.5 w-3.5" />, color: 'bg-green-500/10 text-green-500' },
@@ -40,10 +40,12 @@ function DecisionBadge({ decisionType }: { decisionType: string }) {
 
 export function AutoDecisionList({ initialItems }: { initialItems: AutoDecisionItem[] }) {
   const [items, setItems] = useState<AutoDecisionItem[]>(initialItems);
-
-  useEffect(() => {
+  const [prevItems, setPrevItems] = useState(initialItems);
+  if (prevItems !== initialItems) {
+    setPrevItems(initialItems);
     setItems(initialItems);
-  }, [initialItems]);
+  }
+
 
   const handleVerify = useCallback(async (id: number) => {
     const item = items.find((i) => i.id === id);

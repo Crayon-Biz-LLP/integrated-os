@@ -96,10 +96,11 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     _checkOnboarding();
 
     HomeWidget.widgetClicked.listen((Uri? uri) {
+      if (!mounted) return;
       if (uri?.host == 'capture') {
         Navigator.of(context).push(PageRouteBuilder(
           opaque: false,
-          pageBuilder: (_, __, ___) => const QuickCaptureOverlay(),
+          pageBuilder: (_, _, _) => const QuickCaptureOverlay(),
         ));
       } else if (uri?.host == 'inbox') {
         Navigator.push(context, MaterialPageRoute(builder: (_) => const InboxScreen()));

@@ -166,7 +166,7 @@ async def test_s2_soft_accepted_count_incremented(
     msg = mock_send_telegram.call_args[0][1] if len(mock_send_telegram.call_args[0]) > 1 else (
         mock_send_telegram.call_args[1].get("message_text", "")
     )
-    assert "Pattern auto-approve enabled" in msg, (
+    assert "will auto-approve from now on" in msg, (
         f"Expected success message, got: {msg}"
     )
 
@@ -250,7 +250,7 @@ async def test_s3_approve_fails_gracefully(
         if len(mock_send_telegram.call_args[0]) > 1
         else ""
     )
-    assert "Failed to approve pattern" in call_text, (
+    assert "Couldn't approve that pattern" in call_text, (
         f"Expected error message, got: {call_text}"
     )
 

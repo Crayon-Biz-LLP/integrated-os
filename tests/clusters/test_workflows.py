@@ -2,12 +2,56 @@ import pytest
 from unittest.mock import patch, MagicMock
 from core.webhook.workflows import check_and_resume_workflow
 from core.lib.conversation import resolve_thread
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 import uuid
+
+def _seed_org_node(label: str) -> str:
+    """Create (or reuse) an organization graph node owned by the test tenant.
+
+    The topic-overlap guard resolves entities via graph_nodes; under the
+    test-tenant scope only nodes owned by the TEST tenant are visible.
+    Tests referencing Danny-world orgs (Equisoft/Amico/LPG) must seed their
+    own nodes or the resolver finds nothing and the guard passes wrongly.
+    """
+    supabase = tenant_aware_client()
+    from core.lib.graph_rules import normalize_label
+    existing = supabase.table("graph_nodes").select("id") \
+        .eq("type", "organization").ilike("label", label).limit(1).execute()
+    if existing and existing.data:
+        return existing.data[0]["id"]
+    res = supabase.table("graph_nodes").insert({
+        "label": label,
+        "type": "organization",
+        "normalized_label": normalize_label(label),
+        "epistemic_status": "asserted",
+        "is_current": True,
+        "metadata": {"source": "test"},
+    }).execute()
+    return res.data[0]["id"]
+
+
+def _seed_person_node(label: str) -> str:
+    """Same, for person nodes."""
+    supabase = tenant_aware_client()
+    from core.lib.graph_rules import normalize_label
+    existing = supabase.table("graph_nodes").select("id") \
+        .eq("type", "person").ilike("label", label).limit(1).execute()
+    if existing and existing.data:
+        return existing.data[0]["id"]
+    res = supabase.table("graph_nodes").insert({
+        "label": label,
+        "type": "person",
+        "normalized_label": normalize_label(label),
+        "epistemic_status": "asserted",
+        "is_current": True,
+        "metadata": {"source": "test"},
+    }).execute()
+    return res.data[0]["id"]
+
 
 @pytest.mark.asyncio
 async def test_workflow_yes_reply():
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     chat_id = 9999999
     thread_id = str(uuid.uuid4())
     
@@ -32,7 +76,7 @@ async def test_workflow_yes_reply():
     
     try:
         # Test "yes" reply
-        handled = await check_and_resume_workflow(chat_id, "Yes, go ahead", thread_id)
+        handled, _ = await check_and_resume_workflow(chat_id, "Yes, go ahead", thread_id)
         assert handled
         
         # Verify workflow resolved
@@ -44,7 +88,11 @@ async def test_workflow_yes_reply():
         supabase.table('conversation_workflows').delete().eq('id', w_id).execute()
         supabase.table('conversation_threads').delete().eq('id', thread_id).execute()
         supabase.table('tasks').delete().eq('title', 'Test Event').execute()
-    supabase = get_supabase()
+
+
+@pytest.mark.asyncio
+async def test_workflow_unrelated_note_stays_active():
+    supabase = tenant_aware_client()
     chat_id = 9999998
     thread_id = str(uuid.uuid4())
     
@@ -69,7 +117,7 @@ async def test_workflow_yes_reply():
     
     try:
         # Test raw note reply (should bypass workflow, stay active, return False to fall open)
-        handled = await check_and_resume_workflow(chat_id, "By the way, remind me to buy milk", thread_id)
+        handled, _ = await check_and_resume_workflow(chat_id, "By the way, remind me to buy milk", thread_id)
         assert not handled
         
         # Verify workflow STILL ACTIVE (not cancelled) — unrelated replies bypass without destroying state
@@ -83,7 +131,7 @@ async def test_workflow_yes_reply():
 
 @pytest.mark.asyncio
 async def test_multiple_workflows_fall_open():
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     chat_id = 9999997
     thread_id_1 = str(uuid.uuid4())
     thread_id_2 = str(uuid.uuid4())
@@ -100,7 +148,7 @@ async def test_multiple_workflows_fall_open():
     
     try:
         # Should detect multiple active workflows and fail open safely
-        handled = await check_and_resume_workflow(chat_id, "Yes", thread_id_1)
+        handled, _ = await check_and_resume_workflow(chat_id, "Yes", thread_id_1)
         assert not handled
     finally:
         supabase.table('conversation_workflows').delete().in_('id', [w['id'] for w in w_res.data]).execute()
@@ -109,7 +157,8 @@ async def test_multiple_workflows_fall_open():
 
 def test_resolve_thread_unrelated_entity_falls_through():
     """Active workflow + unrelated named entity → fallback thread, not workflow thread."""
-    supabase = get_supabase()
+    _seed_org_node("Equisoft")
+    supabase = tenant_aware_client()
     chat_id = 9999996
     thread_id = str(uuid.uuid4())
     
@@ -136,7 +185,7 @@ def test_resolve_thread_unrelated_entity_falls_through():
 
 def test_resolve_thread_filler_yes_resumes_workflow():
     """Active workflow + filler 'yes' → workflow thread."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     chat_id = 9999995
     thread_id = str(uuid.uuid4())
     
@@ -165,7 +214,8 @@ def test_resolve_thread_filler_yes_resumes_workflow():
 @pytest.mark.asyncio
 async def test_check_resume_skips_llm_on_topic_mismatch(mock_llm):
     """check_and_resume_workflow with unrelated entity skips LLM, returns False."""
-    supabase = get_supabase()
+    _seed_org_node("Equisoft")
+    supabase = tenant_aware_client()
     chat_id = 9999994
     thread_id = str(uuid.uuid4())
     
@@ -182,7 +232,7 @@ async def test_check_resume_skips_llm_on_topic_mismatch(mock_llm):
     w_id = w_res.data[0]['id']
     
     try:
-        handled = await check_and_resume_workflow(chat_id, "Equisoft team approved", thread_id)
+        handled, _ = await check_and_resume_workflow(chat_id, "Equisoft team approved", thread_id)
         assert not handled, "Should return False (not handled) for unrelated entity"
         mock_llm.assert_not_called(), "LLM should not be called for topic mismatch"
         
@@ -197,7 +247,8 @@ async def test_check_resume_skips_llm_on_topic_mismatch(mock_llm):
 @pytest.mark.asyncio
 async def test_check_resume_lowercase_entity_no_overlap(mock_llm):
     """Lowercase 'equisoft' text still resolves as known entity and correctly bypasses Amico workflow."""
-    supabase = get_supabase()
+    _seed_org_node("Equisoft")
+    supabase = tenant_aware_client()
     chat_id = 9999993
     thread_id = str(uuid.uuid4())
 
@@ -214,7 +265,7 @@ async def test_check_resume_lowercase_entity_no_overlap(mock_llm):
     w_id = w_res.data[0]['id']
 
     try:
-        handled = await check_and_resume_workflow(chat_id, "equisoft gave approval", thread_id)
+        handled, _ = await check_and_resume_workflow(chat_id, "equisoft gave approval", thread_id)
         assert not handled, "Should bypass workflow — text references Equisoft, not Amico"
         mock_llm.assert_not_called()
     finally:
@@ -226,7 +277,8 @@ async def test_check_resume_lowercase_entity_no_overlap(mock_llm):
 @pytest.mark.asyncio
 async def test_check_resume_short_entity_no_overlap(mock_llm):
     """Short acronym entity 'LPG' correctly bypasses unrelated Amico workflow."""
-    supabase = get_supabase()
+    _seed_org_node("LPG")
+    supabase = tenant_aware_client()
     chat_id = 9999992
     thread_id = str(uuid.uuid4())
 
@@ -243,7 +295,7 @@ async def test_check_resume_short_entity_no_overlap(mock_llm):
     w_id = w_res.data[0]['id']
 
     try:
-        handled = await check_and_resume_workflow(chat_id, "LPG project status", thread_id)
+        handled, _ = await check_and_resume_workflow(chat_id, "LPG project status", thread_id)
         assert not handled, "Should bypass workflow — text references LPG, not Amico"
         mock_llm.assert_not_called()
     finally:
@@ -253,7 +305,7 @@ async def test_check_resume_short_entity_no_overlap(mock_llm):
 
 def test_resolve_thread_sentence_start_non_entity_passes():
     """Sentence-start capitalized common word ('The') does not trigger false overlap."""
-    supabase = get_supabase()
+    supabase = tenant_aware_client()
     chat_id = 9999991
     thread_id = str(uuid.uuid4())
 
@@ -285,7 +337,9 @@ async def test_check_resume_mixed_topic_with_workflow_entity(mock_llm):
     mock_resp = MagicMock()
     mock_resp.parse_json.return_value = {"decision": "confirm"}
     mock_llm.return_value = mock_resp
-    supabase = get_supabase()
+    _seed_org_node("Amico")
+    _seed_org_node("Equisoft")
+    supabase = tenant_aware_client()
     chat_id = 9999990
     thread_id = str(uuid.uuid4())
 
@@ -302,7 +356,7 @@ async def test_check_resume_mixed_topic_with_workflow_entity(mock_llm):
     w_id = w_res.data[0]['id']
 
     try:
-        handled = await check_and_resume_workflow(chat_id, "Yes, go ahead on Amico — also Equisoft is approved", thread_id)
+        handled, _ = await check_and_resume_workflow(chat_id, "Yes, go ahead on Amico — also Equisoft is approved", thread_id)
         assert handled, "Should handle workflow — Amico is explicitly mentioned"
         mock_llm.assert_called_once()
     finally:

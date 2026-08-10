@@ -1,3 +1,5 @@
+import type { AutoDecisionItem, GraphPendingNode } from '@/lib/decisions/types';
+
 export async function decideCallItem(id: number, decision: 'approve' | 'reject'): Promise<void> {
   const res = await fetch('/api/call-action', {
     method: 'POST',
@@ -34,7 +36,7 @@ export async function decideGraphEdge(id: number, decision: 'approve' | 'reject'
   }
 }
 
-export async function submitClarification(shortcode: string, answer: string): Promise<any> {
+export async function submitClarification(shortcode: string, answer: string): Promise<{ success: boolean; message?: string }> {
   const res = await fetch('/api/clarification', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -59,7 +61,12 @@ export async function decideMergeProposal(id: number, decision: 'accept' | 'reje
   }
 }
 
-export async function decideGraphNode(id: number, decision: 'approve' | 'reject' | 'unreject', updates?: { context?: string; label?: string }): Promise<any> {
+export interface GraphNodeDecisionResult {
+  action: string;
+  message?: string;
+}
+
+export async function decideGraphNode(id: number, decision: 'approve' | 'reject' | 'unreject', updates?: { context?: string; label?: string }): Promise<GraphNodeDecisionResult> {
   const res = await fetch('/api/graph-node-action', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -187,7 +194,7 @@ export async function checkSimilarGraphEdges(source: string, target: string, rel
   return res.json();
 }
 
-export async function fetchAutoDecisions(limit = 100): Promise<any[]> {
+export async function fetchAutoDecisions(limit = 100): Promise<AutoDecisionItem[]> {
   const params = new URLSearchParams({ limit: String(limit) });
   const res = await fetch(`/api/auto-decisions?${params.toString()}`);
   if (!res.ok) {
@@ -214,7 +221,7 @@ export async function rejectAutoDecision(id: number): Promise<boolean> {
   }
   return true;
 }
-export async function fetchLiveGraphNodes(): Promise<any[]> {
+export async function fetchLiveGraphNodes(): Promise<GraphPendingNode[]> {
   const res = await fetch('/api/graph-nodes/live');
   if (!res.ok) {
     const errText = await res.text();
@@ -250,7 +257,7 @@ export interface EnrichmentUpdates {
 export async function updateGraphNodeEnrichment(
   nodeId: number | string,
   updates: EnrichmentUpdates
-): Promise<{ success: boolean; message?: string; enrichment?: Record<string, any> }> {
+): Promise<{ success: boolean; message?: string; enrichment?: Record<string, unknown> }> {
   const res = await fetch(`/api/graph-node/${nodeId}/enrichment`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },

@@ -8,8 +8,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import type { EmailPendingTask } from '@/lib/emails/types';
 import { decideTask } from '@/lib/emails/api';
 import { toast } from 'sonner';
-import { formatDistanceToNow, parseISO } from 'date-fns';
-import { Check, X, AlertTriangle } from 'lucide-react';
+import { parseISO } from 'date-fns';
+import { Check, X } from 'lucide-react';
 
 interface PendingTasksListProps {
   tasks: EmailPendingTask[];

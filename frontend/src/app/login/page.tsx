@@ -3,25 +3,21 @@
 import { createBrowserClient } from '@supabase/ssr';
 import { Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 export default function LoginPage() {
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
   );
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  useEffect(() => {
+  const [errorMsg] = useState<string | null>(() => {
     const error = new URLSearchParams(window.location.search).get('error');
     if (error === 'not-authorized') {
-      setErrorMsg(
-        'This account is not authorized to access the dashboard. Access is restricted to approved admins.',
-      );
-    } else if (error) {
-      setErrorMsg('Sign-in failed. Please try again.');
+      return 'This account is not authorized to access the dashboard. Access is restricted to approved admins.';
     }
-  }, []);
+    if (error) return 'Sign-in failed. Please try again.';
+    return null;
+  });
 
   const handleGoogleLogin = async () => {
     await supabase.auth.signInWithOAuth({

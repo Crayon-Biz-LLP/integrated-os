@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import type { CalendarEvent, CalendarViewType, CalendarSource } from '@/lib/calendar/types';
 import { fetchCalendarEvents, fetchEventsByRange } from '@/lib/calendar/api';
 import { CalendarViewSwitcher } from '@/components/calendar/calendar-view-switcher';
@@ -23,40 +23,39 @@ export default function CalendarPage() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<CalendarSource | 'all'>('all');
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      if (view === 'month') {
-        const start = startOfMonth(currentDate);
-        const end = endOfMonth(currentDate);
-        const data = await fetchEventsByRange(
-          format(start, 'yyyy-MM-dd'),
-          format(end, 'yyyy-MM-dd'),
-        );
-        setEvents(data);
-      } else if (view === 'week') {
-        const start = startOfWeek(currentDate, { weekStartsOn: 1 });
-        const end = endOfWeek(currentDate, { weekStartsOn: 1 });
-        const data = await fetchEventsByRange(
-          format(start, 'yyyy-MM-dd'),
-          format(end, 'yyyy-MM-dd'),
-        );
-        setEvents(data);
-      } else {
-        const data = await fetchCalendarEvents(format(currentDate, 'yyyy-MM-dd'));
-        setEvents(data);
-      }
-    } catch (e) {
-      console.error('Failed to fetch calendar events:', e);
-      setEvents([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [view, currentDate]);
-
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    const run = async () => {
+      setLoading(true);
+      try {
+        if (view === 'month') {
+          const start = startOfMonth(currentDate);
+          const end = endOfMonth(currentDate);
+          const data = await fetchEventsByRange(
+            format(start, 'yyyy-MM-dd'),
+            format(end, 'yyyy-MM-dd'),
+          );
+          setEvents(data);
+        } else if (view === 'week') {
+          const start = startOfWeek(currentDate, { weekStartsOn: 1 });
+          const end = endOfWeek(currentDate, { weekStartsOn: 1 });
+          const data = await fetchEventsByRange(
+            format(start, 'yyyy-MM-dd'),
+            format(end, 'yyyy-MM-dd'),
+          );
+          setEvents(data);
+        } else {
+          const data = await fetchCalendarEvents(format(currentDate, 'yyyy-MM-dd'));
+          setEvents(data);
+        }
+      } catch (e) {
+        console.error('Failed to fetch calendar events:', e);
+        setEvents([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    void run();
+  }, [view, currentDate]);
 
   function handleEventClick(event: CalendarEvent) {
     setSelectedEvent(event);

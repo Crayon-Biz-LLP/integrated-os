@@ -2,9 +2,9 @@ import pytest
 from unittest.mock import patch
 from core.pulse.tools import update_task_status
 from tests.fixtures.task_factory import factory
-from core.services.db import get_supabase
+from core.services.db import tenant_aware_client
 
-supabase = get_supabase()
+supabase = tenant_aware_client()
 
 @pytest.fixture(autouse=True)
 def cleanup():

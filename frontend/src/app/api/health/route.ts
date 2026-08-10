@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { errMsg } from "@/lib/errors";
 
 const STATUSES = ['staged', 'pending', 'processing', 'processed', 'completed', 'embedding_failed', 'noise'];
 
@@ -73,8 +74,8 @@ export async function GET() {
     };
 
     return NextResponse.json({ stats });
-  } catch (err: any) {
+  } catch (err) {
     console.error("Health API error:", err);
-    return NextResponse.json({ error: err.message || "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: errMsg(err, "Internal server error") }, { status: 500 });
   }
 }

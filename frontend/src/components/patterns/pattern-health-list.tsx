@@ -1,17 +1,17 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useState } from 'react';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { AlertCircle, CheckCircle, RefreshCw, Clock, TrendingDown, ThumbsUp, ThumbsDown, Brain } from 'lucide-react';
+import { AlertCircle, CheckCircle, Clock, TrendingDown, ThumbsUp, ThumbsDown, Brain } from 'lucide-react';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 
-interface Pattern {
+export interface Pattern {
   id: number;
   subsystem: string;
   feature_hash: string;
-  features: Record<string, any>;
+  features: Record<string, unknown>;
   total_count: number;
   correct_count: number;
   corrected_count: number;
@@ -23,7 +23,7 @@ interface Pattern {
   first_seen: string | null;
 }
 
-interface SubsystemRollup {
+export interface SubsystemRollup {
   total: number;
   avg_confidence: number;
   trusted: number;
@@ -81,7 +81,7 @@ function SubsystemLabel({ subsystem }: { subsystem: string }) {
   return <span className="text-xs font-medium">{displayNames[subsystem] || subsystem}</span>;
 }
 
-function FeatureTag({ k, v }: { k: string; v: any }) {
+function FeatureTag({ k, v }: { k: string; v: unknown }) {
   const label = k.replace(/_/g, ' ');
   return (
     <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-mono">
@@ -103,7 +103,6 @@ export function PatternHealthList({ initialPatterns, initialRollups }: { initial
   const learningCount = patterns.filter(p => p.health === 'learning').length;
   const demotedCount = patterns.filter(p => p.health === 'demoted').length;
   const decayedCount = patterns.filter(p => p.decay_status === 'decaying' || p.decay_status === 'stale').length;
-  const avgConf = patterns.length > 0 ? Math.round(patterns.reduce((s, p) => s + p.confidence, 0) / patterns.length) : 0;
 
   if (patterns.length === 0) {
     return (

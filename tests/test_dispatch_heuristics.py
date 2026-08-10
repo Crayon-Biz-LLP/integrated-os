@@ -2,9 +2,12 @@ from core.webhook.dispatch import _format_task_line, resolve_dates_from_query
 
 def test_format_task_line():
     assert _format_task_line("Clean desk", "HOME") == "Clean desk [HOME]"
-    assert _format_task_line("Buy groceries", "") == "Buy groceries []"
-    assert _format_task_line("Call Bob HOME", "HOME") == "Call Bob [HOME]"
-    assert _format_task_line("Call Bob HOME", "home") == "Call Bob [home]"
+    # Empty org string falls back to the INBOX bracket (loc = org or "INBOX").
+    assert _format_task_line("Buy groceries", "") == "Buy groceries [INBOX]"
+    # Title is not rewritten — the org bracket is appended as-is.
+    assert _format_task_line("Call Bob", "HOME") == "Call Bob [HOME]"
+    assert _format_task_line("Call Bob", "home") == "Call Bob [home]"
+    assert _format_task_line("Call Bob HOME", "HOME") == "Call Bob HOME [HOME]"
     assert _format_task_line("Important task", "WORK", priority="high") == "Important task [WORK] (high)"
 
 def test_resolve_dates_from_query():
