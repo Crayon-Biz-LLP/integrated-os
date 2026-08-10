@@ -198,6 +198,30 @@ async def pulse_route_post(request: Request):
         
     return {"success": True, "briefing": result.get("briefing")}
 
+# --- PULSE HEARTBEAT (cron-job.org — gated per-tenant briefing) ---
+@app.api_route("/api/pulse-cron", methods=["GET", "POST"])
+async def pulse_cron_route(request: Request):
+    """Triggered by cron-job.org every 30 minutes — the briefing heartbeat.
+
+    Mirrors the /api/sentinel + /api/roundup auth (simple Bearer token, NOT
+    the HMAC-signed /api/pulse) so cron-job.org can call it. Crucially it
+    runs process_pulse with trigger="cron", which HONORS each tenant's
+    briefing_schedule: a tenant whose slot is not due is skipped cheaply.
+    (The old /api/pulse used trigger="api" which bypasses the gate — a
+    30-min cron against it would spam every tenant a briefing every 30 min.)
+    """
+    auth_header = request.headers.get("Authorization", "")
+    cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
+
+    if not cron_secret:
+        raise HTTPException(status_code=500, detail="CRON_SECRET missing")
+
+    if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    result = await process_pulse(auth_secret=cron_secret, trigger="cron")
+    return result
+
 # --- THE SENTINEL WATCHER (Vercel Cron) ---
 @app.api_route("/api/sentinel", methods=["GET", "POST"])
 async def sentinel_route(request: Request):
