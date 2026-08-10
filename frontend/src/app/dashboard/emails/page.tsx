@@ -15,7 +15,7 @@ export default async function EmailsPage() {
         classification, source, received_at,
         linked_project_id, linked_person_id,
         linked_project:projects(name),
-        linked_person:graph_nodes(name)
+        linked_person:graph_nodes(label)
       `)
       .eq("channel", "email")
       .order("received_at", { ascending: false })
@@ -39,14 +39,16 @@ export default async function EmailsPage() {
       .limit(100),
     supabase
       .from("email_drafts")
-      .select(`*, message:messages(subject, sender_id, sender_name, source)`)
+      .select(`*, message:messages!inner(subject, sender_id, sender_name, source, danny_decision)`)
       .eq("status", "pending")
+      .is("message.danny_decision", null)
       .order("created_at", { ascending: false })
       .limit(100),
     supabase
       .from("email_drafts")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "pending"),
+      .select("id, message:messages!inner(id)", { count: "exact", head: true })
+      .eq("status", "pending")
+      .is("message.danny_decision", null),
   ]);
 
   const rawEmails = emailsRes.data ?? [];
