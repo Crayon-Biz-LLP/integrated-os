@@ -136,6 +136,8 @@ Layout rules:
 - Never combine tasks into a paragraph. Never put a paragraph between a section header and its task list.
 - Every item must follow: "- ICON Task Title [Project]"
 - Use actual newlines, not \n text. No markdown code blocks.
+- Never use `###` (or any `#`) headers — use **bold** or just plain text for section breaks.
+- Anti-duplication: if the task title already contains the org/domain name as a word or phrase, do NOT append a duplicate [Project] tag.
 
 --- DATA CONTEXT ---
 STRATEGIC CONTEXT: {ctx.season_config}

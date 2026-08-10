@@ -1132,6 +1132,12 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
         # Inject formatting for readability
         briefing_text = re.sub(r'(?<!\n)\n(?=🚀|🏠|⛪|💡|✅|📅|🔴|🟡|⚪|⏳|🛡️)', r'\n\n', briefing_text)
         briefing_text = re.sub(r'\[ID:\d+\]', '', briefing_text)
+        # Defense-in-depth: the pulse prompt bans markdown ### headers, but a
+        # disobedient LLM run can still emit them. Convert "### Home" → "**Home**"
+        # so Telegram renders a clean bold section header instead of raw markdown.
+        # Requires whitespace after the hashes so task titles like "#1 Follow up"
+        # (which start a line with # but no space) are never mangled.
+        briefing_text = re.sub(r'^#{1,6}\s+(.+?)\s*$', r'**\1**', briefing_text, flags=re.MULTILINE)
 
         # ── Opening guarantee: headline + Rhodey opening line (server-side) ──
         # The prompt mandates an opening, but a weak LLM run can still drop it.
