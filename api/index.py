@@ -168,11 +168,20 @@ def require_api_auth(request: Request) -> str | None:
     if not expected:
         # Fail closed: reject unless dev mode is explicitly enabled.
         if os.getenv("ALLOW_DEV_AUTH") == "1":
-            return None
+            from core.services.db import resolve_channel_tenant
+            uid = resolve_channel_tenant()
+            if uid:
+                set_tenant(uid)
+            return uid
         raise HTTPException(status_code=503, detail="API auth not configured")
     if not api_key or not hmac.compare_digest(api_key, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return None
+        
+    from core.services.db import resolve_channel_tenant
+    uid = resolve_channel_tenant()
+    if uid:
+        set_tenant(uid)
+    return uid
 
 # --- THE PULSE ENGINE (Routes to pulse.py) ---
 @app.post("/api/pulse")
