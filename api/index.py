@@ -522,7 +522,7 @@ async def home_feed_route(request: Request):
         async def _edges():
             try:
                 q = supabase.table('pending_graph_edges') \
-                    .select('id, source_label, target_label, relationship, status, context, confidence, created_at') \
+                    .select('id, source_label, target_label, relationship, status, confidence, created_at') \
                     .in_('status', ['pending', 'flagged'])
                 if _snooze_ok(supabase, 'pending_graph_edges'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
@@ -3819,7 +3819,10 @@ async def whatsapp_ingest_route(request: Request):
         if not sender_phone:
             sender_phone = sender_name
 
-        result = await process_whatsapp_message(sender_name, sender_phone, message_text, received_at)
+        from core.services.db import channel_tenant_scope
+        with channel_tenant_scope():
+            result = await process_whatsapp_message(sender_name, sender_phone, message_text, received_at)
+            
         return {"success": True, "result": result}
 
     except HTTPException:
@@ -4048,7 +4051,7 @@ async def pending_graph_edges_route(request: Request):
     try:
         supabase = tenant_aware_client()
         res = supabase.table('pending_graph_edges') \
-            .select('id, source_label, target_label, relationship, status, context, confidence, created_at')
+            .select('id, source_label, target_label, relationship, status, confidence, created_at')
         res = res.in_('status', ['pending', 'flagged'])
         if _snooze_ok(supabase, 'pending_graph_edges'):
             res = res.or_('snoozed_until.is.null,snoozed_until.lt.now')
@@ -4095,7 +4098,7 @@ async def inbox_route(request: Request):
         async def _edges():
             try:
                 q = supabase.table('pending_graph_edges') \
-                    .select('id, source_label, target_label, relationship, status, context, confidence, created_at') \
+                    .select('id, source_label, target_label, relationship, status, confidence, created_at') \
                     .in_('status', ['pending', 'flagged'])
                 if _snooze_ok(supabase, 'pending_graph_edges'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
